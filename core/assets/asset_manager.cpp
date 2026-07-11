@@ -159,4 +159,55 @@ bool AssetManager::has_mesh(const std::string& path) const {
     return has(path);
 }
 
+// ---------------------------------------------------------------------------
+// 异步加载特化
+// ---------------------------------------------------------------------------
+template<>
+void AssetManager::load_async<MeshData>(const std::string& path,
+                                        std::function<void(AssetHandle<MeshData>)> on_complete) {
+    // 已缓存则同步回调
+    if (has(path)) {
+        if (on_complete) on_complete(load<MeshData>(path));
+        return;
+    }
+
+    auto* self = this;
+    AsyncLoader::instance().submit(
+        path, typeid(MeshData),
+        [self, path]() { self->load_mesh_internal(path); },
+        [self, path, on_complete]() {
+            if (on_complete) on_complete(self->load<MeshData>(path));
+        }
+    );
+}
+
+template<>
+void AssetManager::load_async<TextureData>(const std::string& path,
+                                           std::function<void(AssetHandle<TextureData>)> on_complete) {
+    if (has(path)) {
+        if (on_complete) on_complete(load<TextureData>(path));
+        return;
+    }
+
+    auto* self = this;
+    AsyncLoader::instance().submit(
+        path, typeid(TextureData),
+        [self, path]() { self->load_texture_internal(path); },
+        [self, path, on_complete]() {
+            if (on_complete) on_complete(self->load<TextureData>(path));
+        }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 异步加载状态查询
+// ---------------------------------------------------------------------------
+LoadingState AssetManager::get_async_state(const std::string& path) const {
+    return AsyncLoader::instance().get_state(path);
+}
+
+bool AssetManager::is_async_loading(const std::string& path) const {
+    return AsyncLoader::instance().is_loading(path);
+}
+
 } // namespace gryce_engine::assets

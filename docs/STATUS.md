@@ -160,7 +160,7 @@
 | `AssetManager` 缓存 mesh/texture/material | 已实现 |
 | `res:/` 路径虚拟化 | 已实现 |
 | 资源引用计数 | 未实现 |
-| 异步加载 | 部分实现（`AsyncLoader` 框架存在） |
+| 异步加载 | 已实现（`AsyncLoader` 线程池 + `AssetManager::load_async`） |
 | LRU 卸载 | 未实现 |
 | 资源导入设置 `.gimport` | 未实现 |
 | 资源包 `.gpack` | 未实现 |
