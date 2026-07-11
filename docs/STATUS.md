@@ -27,7 +27,7 @@
 | RHI 句柄化（`RHIMeshHandle` 等） | 已实现 |
 | OpenGL 4.6 后端 | 已实现 |
 | Vulkan 1.2 后端 | 已实现 |
-| 命令缓冲合并批处理 | 未实现 |
+| 命令缓冲合并批处理 | 已实现（`CommandStateCache` 状态去重） |
 | D3D12 / Metal 后端 | 未实现 |
 
 ### 2.2 OpenGL 后端
@@ -41,8 +41,8 @@
 | 2D 批处理渲染 | 已实现 |
 | 3D 网格渲染 | 已实现 |
 | 帧率限制 | 已实现（CPU sleep） |
-| NVIDIA `WGL_NV_delay_before_swap` | 未实现 |
-| DSA（Direct State Access）路径 | 未实现 |
+| NVIDIA `WGL_NV_delay_before_swap` | 已实现（`GLFramePacing` 检测 + 调用） |
+| DSA（Direct State Access）路径 | 已实现（`gl_dsa_available()` 分支） |
 
 ### 2.3 Vulkan 后端
 
@@ -54,7 +54,7 @@
 | GPU 资源（mesh/texture/shader/framebuffer） | 已实现 |
 | 2D 批处理 | 已实现 |
 | ImGui Vulkan 后端 | 已实现 |
-| VMA 集成 | 未实现（当前使用裸 `vkAllocateMemory`） |
+| VMA 集成 | 已实现（`vmaCreateBuffer` / `vmaCreateImage`） |
 | Multi-viewport / secondary command buffer | 未实现 |
 
 ### 2.4 渲染管线（3D）

@@ -104,6 +104,86 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
     }
 }
 
+// ---------------------------------------------------------------------------
+// CommandStateCache — 渲染命令状态缓存，跳过冗余的状态设置命令。
+// 每帧开始时重置，执行 draw/uniform 等不缓存的命令后状态仍然保持。
+// 只缓存状态设置命令（SetDepthTest/SetBlend/SetViewport/...），不缓存 draw/uniform。
+// ---------------------------------------------------------------------------
+struct CommandStateCache {
+    bool depth_test = false;
+    bool blend = false;
+    bool cull_face = false;
+    BlendFactor blend_src = BlendFactor::One;
+    BlendFactor blend_dst = BlendFactor::One;
+    BlendEquation blend_eq = BlendEquation::Add;
+    int viewport_x = -1, viewport_y = -1, viewport_w = -1, viewport_h = -1;
+    int scissor_x = -1, scissor_y = -1, scissor_w = -1, scissor_h = -1;
+    RHIFramebufferHandle framebuffer;
+    bool has_framebuffer = false;
+    bool initialized = false;
+
+    bool should_dispatch(const RenderCommandTyped& cmd) {
+        switch (cmd.type) {
+            case RenderCommandType::SetDepthTest: {
+                if (initialized && depth_test == cmd.depth_test.enabled) return false;
+                depth_test = cmd.depth_test.enabled;
+                break;
+            }
+            case RenderCommandType::SetBlend: {
+                if (initialized && blend == cmd.blend.enabled) return false;
+                blend = cmd.blend.enabled;
+                break;
+            }
+            case RenderCommandType::SetBlendFunc: {
+                if (initialized && blend_src == cmd.blend_func.src && blend_dst == cmd.blend_func.dst) return false;
+                blend_src = cmd.blend_func.src;
+                blend_dst = cmd.blend_func.dst;
+                break;
+            }
+            case RenderCommandType::SetBlendEquation: {
+                if (initialized && blend_eq == cmd.blend_equation) return false;
+                blend_eq = cmd.blend_equation;
+                break;
+            }
+            case RenderCommandType::SetCullFace: {
+                if (initialized && cull_face == cmd.cull_face.enabled) return false;
+                cull_face = cmd.cull_face.enabled;
+                break;
+            }
+            case RenderCommandType::SetViewport: {
+                if (initialized && viewport_x == cmd.viewport.x && viewport_y == cmd.viewport.y &&
+                    viewport_w == cmd.viewport.w && viewport_h == cmd.viewport.h) return false;
+                viewport_x = cmd.viewport.x; viewport_y = cmd.viewport.y;
+                viewport_w = cmd.viewport.w; viewport_h = cmd.viewport.h;
+                break;
+            }
+            case RenderCommandType::SetScissor: {
+                if (initialized && scissor_x == cmd.scissor.x && scissor_y == cmd.scissor.y &&
+                    scissor_w == cmd.scissor.w && scissor_h == cmd.scissor.h) return false;
+                scissor_x = cmd.scissor.x; scissor_y = cmd.scissor.y;
+                scissor_w = cmd.scissor.w; scissor_h = cmd.scissor.h;
+                break;
+            }
+            case RenderCommandType::BindFramebuffer: {
+                if (initialized && has_framebuffer && framebuffer == cmd.framebuffer) return false;
+                framebuffer = cmd.framebuffer;
+                has_framebuffer = true;
+                break;
+            }
+            // 其他命令（draw, clear, uniform, shader, texture, swap）不做缓存，总是执行
+            default:
+                return true;
+        }
+        initialized = true;
+        return true;
+    }
+
+    void reset() {
+        initialized = false;
+        has_framebuffer = false;
+    }
+};
+
 } // namespace
 
 RenderThread::RenderThread(IRenderBackend* backend, RenderCommandBuffer* cmd_buffer, void* native_window)
@@ -181,9 +261,12 @@ void RenderThread::thread_loop() {
         }
 
         backend_->begin_frame();
+        CommandStateCache state_cache;
         for (auto& item : *commands) {
             if (item.is_typed()) {
-                dispatch_typed_command(backend_, item.typed());
+                if (state_cache.should_dispatch(item.typed())) {
+                    dispatch_typed_command(backend_, item.typed());
+                }
             } else {
                 item.lambda()(backend_);
             }
