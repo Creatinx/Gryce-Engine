@@ -187,7 +187,7 @@ Gryce-Engine/
 ├── third_party/            # 第三方库（imgui、json、stb、miniaudio）
 ├── CMakeLists.txt          # 根 CMake
 ├── README.md               # 本文件
-└── ROADMAP.md              # 开发路线图
+└── build.py                # 一键构建脚本
 ```
 
 ---
@@ -230,18 +230,7 @@ Gryce-Engine/
 
 ## 开发计划
 
-详见 [`docs/STATUS.md`](./docs/STATUS.md) 与 [`ROADMAP.md`](./ROADMAP.md)。
-
-主要里程碑：
-
-1. P0：渲染器收尾（RHI 稳定、双后端干净退出、性能优化）。
-2. P1：组件系统完善（生命周期、Prefab、Inspector）。
-3. P2：物理系统接入专业库（Jolt/Box2D）。
-4. P3：资源管线（Assimp、材质文件、热重载）。
-5. P4：编辑器基础（Hierarchy、Inspector、Viewport Gizmo）。
-6. P5：脚本系统（Lua/C#）。
-7. P6：音频系统。
-8. P7~P9：高级渲染、光追、发布。
+详见 [`docs/STATUS.md`](./docs/STATUS.md)。
 
 ---
 
