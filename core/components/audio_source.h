@@ -50,7 +50,13 @@ public:
         max_distance = in.value("max_distance", 100.0f);
     }
 
+    void on_awake() override;
     void on_init() override;
+    void on_start() override;
+    void on_enable() override;
+    void on_disable() override;
+    void on_update(float dt) override;
+    void on_destroy() override;
     void on_update(float dt) override;
     void on_destroy() override;
 

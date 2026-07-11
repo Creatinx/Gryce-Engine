@@ -43,6 +43,7 @@ target_sources(gryce_core
         ecs/systems/fracture_system.cpp
         physics/physics_factory.cpp
         physics/box2d_world_2d.cpp
+        physics/jolt_physics_world_3d.cpp
         physics/builtin_physics_world_2d.cpp
         physics/builtin_physics_world_3d.cpp
         scene/uuid.cpp
@@ -124,6 +125,7 @@ target_sources(gryce_core
             physics/physics_world_3d.h
             physics/physics_factory.h
             physics/box2d_world_2d.h
+            physics/jolt_physics_world_3d.h
             physics/builtin_physics_world_2d.h
             physics/builtin_physics_world_3d.h
             assets/mesh_data.h

@@ -29,12 +29,28 @@ void AudioSource::sync_to_owner() {
     }
 }
 
-void AudioSource::on_init() {
+void AudioSource::on_awake() {
     ensure_clip_loaded();
     if (play_on_awake && !started_on_awake_) {
         started_on_awake_ = true;
         play();
     }
+}
+
+void AudioSource::on_init() {
+    ensure_clip_loaded();
+}
+
+void AudioSource::on_start() {
+    // 场景正式开始时可选触发（如延迟播放）
+}
+
+void AudioSource::on_enable() {
+    // 组件被启用时可恢复播放（保留扩展点）
+}
+
+void AudioSource::on_disable() {
+    stop();
 }
 
 void AudioSource::on_update(float dt) {

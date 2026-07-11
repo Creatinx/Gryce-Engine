@@ -3,6 +3,7 @@
 #include "physics/box2d_world_2d.h"
 #include "physics/builtin_physics_world_2d.h"
 #include "physics/builtin_physics_world_3d.h"
+#include "physics/jolt_physics_world_3d.h"
 
 #include "utils/glog/glog_lib.h"
 
@@ -37,19 +38,13 @@ std::unique_ptr<IPhysicsWorld3D> create_physics_world_3d(const std::string& back
     // 默认优先 Jolt；只有显式传入 "builtin" 才使用自研实现
     if (backend_name == "jolt" || backend_name.empty()) {
 #ifdef GRYCE_HAS_JOLT
-        // TODO: return std::make_unique<JoltPhysicsWorld3D>();
-        if (backend_name == "jolt") {
-            GLOG_WARN("create_physics_world_3d: Jolt requested but not yet implemented, falling back to builtin");
-        }
-        GLOG_WARN("create_physics_world_3d: Jolt integration is TODO; using builtin physics (unstable, may cause errors). "
-                  "Consider checking project status for Jolt availability.");
-        return std::make_unique<BuiltinPhysicsWorld3D>();
+        return std::make_unique<JoltPhysicsWorld3D>();
 #else
         if (backend_name == "jolt") {
             GLOG_WARN("create_physics_world_3d: Jolt requested but not available, falling back to builtin");
         }
-        GLOG_WARN("create_physics_world_3d: using builtin physics (unstable, may cause errors). "
-                  "Jolt integration is TODO; consider contributing or waiting for updates.");
+        GLOG_WARN("create_physics_world_3d: Jolt not available, using builtin physics (unstable, may cause errors). "
+                  "Build with -DGRYCE_FETCH_JOLT=ON to enable Jolt.");
         return std::make_unique<BuiltinPhysicsWorld3D>();
 #endif
     }
