@@ -67,6 +67,38 @@ bool AsyncLoader::submit(const std::string& path, std::type_index type,
                          std::function<void()> on_complete) {
     if (!running_) start();
 
+    std::lock_guard<std::mutex> lock(tasks_mutex_);
+    auto it = tasks_.find(path);
+    if (it != tasks_.end()) {
+        // 已有任务，追加回调
+        auto& task = it->second;
+        LoadingState s = task->state.load();
+        if (s == LoadingState::Ready || s == LoadingState::Failed) {
+            // 任务已完成但未 poll，直接追加回调（poll 会统一执行）
+            if (on_complete) task->callbacks.push_back(std::move(on_complete));
+        } else {
+            // Pending / Loading，追加回调
+            if (on_complete) task->callbacks.push_back(std::move(on_complete));
+        }
+        return false;
+    }
+
+    // 新建任务
+    auto task = std::make_shared<LoadingTask>(path, type, std::move(worker), std::move(on_complete));
+    task->state.store(LoadingState::Pending);
+    tasks_[path] = task;
+
+    {
+        std::lock_guard<std::mutex> qlock(queue_mutex_);
+        queue_.push_back(task);
+    }
+    cv_.notify_one();
+    return true;
+}
+                         std::function<void()> worker,
+                         std::function<void()> on_complete) {
+    if (!running_) start();
+
     {
         std::lock_guard<std::mutex> lock(tasks_mutex_);
         auto it = tasks_.find(path);
