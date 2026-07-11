@@ -212,7 +212,7 @@
 | 射线检测（Physics.Raycast） | 未实现 |
 | 角色控制器 | 未实现 |
 | 关节系统（Hinge/Fixed/Spring/Distance） | 未实现 |
-| Jolt Physics 集成 | 接口已预留（`GRYCE_HAS_JOLT`），默认优先，不可用时 fallback builtin 并告警 |
+| Jolt Physics 集成 | 已实现（`GRYCE_HAS_JOLT`），默认优先，不可用时 fallback builtin 并告警 |
 
 ### 5.2 2D 物理
 
