@@ -31,19 +31,39 @@ else:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def run(cmd, cwd=None, check=False):
-    """Run a command, return (ok, stdout+stderr)."""
+def run(cmd, cwd=None, check=False, stream=True):
+    """Run a command. If stream=True, prints output in real-time.
+    Returns (ok, collected_output)."""
     try:
-        result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, shell=(os.name == 'nt')
+        if not stream:
+            result = subprocess.run(
+                cmd, cwd=cwd, capture_output=True, text=True,
+                shell=(os.name == 'nt')
+            )
+            output = (result.stdout or '') + (result.stderr or '')
+            if check and result.returncode != 0:
+                print(f"{C_ERR}[ERROR] Command failed:{C_RESET}")
+                print(f"  {' '.join(cmd)}")
+                print(output)
+                sys.exit(1)
+            return result.returncode == 0, output
+
+        # Stream mode: real-time output so user sees progress
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, shell=(os.name == 'nt')
         )
-        output = (result.stdout or '') + (result.stderr or '')
-        if check and result.returncode != 0:
-            print(f"{C_ERR}[ERROR] Command failed:{C_RESET}")
-            print(f"  {' '.join(cmd)}")
-            print(output)
+        lines = []
+        for line in proc.stdout:
+            stripped = line.rstrip('\n')
+            if stripped:
+                lines.append(stripped)
+                print(stripped)
+        proc.stdout.close()
+        return_code = proc.wait()
+        if check and return_code != 0:
             sys.exit(1)
-        return result.returncode == 0, output
+        return return_code == 0, '\n'.join(lines)
     except FileNotFoundError as e:
         return False, str(e)
 
