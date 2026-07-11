@@ -20,6 +20,22 @@ set(GRYCE_BUILD_SHARED ON)  # 默认 OFF
 
 ## 2. CMake 集成
 
+### 2.0 构建环境
+
+| 项 | 要求 |
+|---|---|
+| 平台 | Windows 10/11 |
+| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64） |
+| CMake | ≥ 3.28 |
+| 生成器 | Ninja（推荐） |
+
+> **注意**：在默认 Windows PowerShell / CMD 中运行 CMake 时，若未安装 MSYS2 或未将 MinGW 加入 PATH，CMake 可能自动检测到 MSVC 并因缺少 `rc.exe` / `mt.exe` 而失败。请使用以下任一方式：
+> 1. **推荐**：在 MSYS2 UCRT64 终端中构建。
+> 2. 显式指定 MinGW 编译器：`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++`
+> 3. 若使用 MSVC，必须在 **x64 Native Tools Command Prompt for VS 2022** 中运行。
+
+根 CMakeLists.txt 已内置自动检测：如果未指定编译器，会尝试在 `C:/msys64/ucrt64/bin` 或 `C:/msys64/mingw64/bin` 中自动找到 MinGW GCC 并锁定。
+
 ### 2.1 作为子目录引入
 
 ```cmake

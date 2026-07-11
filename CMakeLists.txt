@@ -3,6 +3,28 @@ cmake_minimum_required(VERSION 3.28)
 # 必须在 project() 之前禁用 C++20 modules 扫描，否则 CMake 4.x 在 C++23 下会自动启用
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+# 平台锁定：Windows 下优先使用 MinGCC GCC，避免自动检测 MSVC 导致 rc/mt 缺失错误
+if(WIN32 AND NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
+    find_program(GRYCE_MINGW_GCC gcc
+        PATHS "$ENV{MSYS2_PREFIX}/bin" "C:/msys64/ucrt64/bin" "C:/msys64/mingw64/bin"
+    )
+    find_program(GRYCE_MINGW_GXX g++
+        PATHS "$ENV{MSYS2_PREFIX}/bin" "C:/msys64/ucrt64/bin" "C:/msys64/mingw64/bin"
+    )
+    if(GRYCE_MINGW_GCC AND GRYCE_MINGW_GXX)
+        set(CMAKE_C_COMPILER "${GRYCE_MINGW_GCC}" CACHE FILEPATH "C compiler" FORCE)
+        set(CMAKE_CXX_COMPILER "${GRYCE_MINGW_GXX}" CACHE FILEPATH "C++ compiler" FORCE)
+        message(STATUS "[Gryce Engine] Auto-selected MinGW GCC: ${GRYCE_MINGW_GCC}")
+    else()
+        message(WARNING
+            "[Gryce Engine] MinGW GCC not found in PATH.  "
+            "This project is primarily developed and tested with MSYS2 UCRT64 MinGW-w64.  "
+            "Install with: pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja  "
+            "Or specify compiler explicitly: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++"
+        )
+    endif()
+endif()
+
 project(GryceEngine
     VERSION 0.1.0
     LANGUAGES CXX

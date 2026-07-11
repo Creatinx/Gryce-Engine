@@ -37,14 +37,19 @@
 
 ### 环境要求
 
-- Windows 10/11（当前主要支持平台）
-- [MSYS2 UCRT64](https://www.msys2.org/) 或 MinGW-w64
-- CMake ≥ 3.28
-- Ninja（推荐）或 Make
-- OpenGL 4.6 / Vulkan 1.2 兼容显卡
-- Vulkan SDK（可选，仅当使用 `--vulkan` 时）
+| 项 | 说明 |
+|---|---|
+| 平台 | Windows 10/11（主要支持） |
+| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64） |
+| 构建工具 | CMake ≥ 3.28，Ninja（推荐） |
+| 显卡 | OpenGL 4.6 / Vulkan 1.2 兼容 |
+| Vulkan SDK | 可选，仅当使用 `--vulkan` 时需要 |
 
-### 安装依赖（MSYS2 UCRT64）
+> **注意**：本项目当前主要使用 **MSYS2 UCRT64 MinGW-w64** 工具链开发与测试。在默认 Windows PowerShell / CMD 中运行 CMake 时，若未安装 MSYS2 或未将 MinGW 加入 PATH，CMake 可能自动检测到 MSVC 并因缺少 `rc.exe` / `mt.exe` 而失败。解决方案见下方。
+
+### 安装依赖（MSYS2 UCRT64，推荐）
+
+打开 **MSYS2 UCRT64** 终端（开始菜单中搜索 "MSYS2 UCRT64"）：
 
 ```bash
 pacman -S mingw-w64-ucrt-x86_64-gcc \
@@ -56,6 +61,10 @@ pacman -S mingw-w64-ucrt-x86_64-gcc \
 
 ### 构建
 
+#### 方式 A：MSYS2 UCRT64 终端（推荐）
+
+在 MSYS2 UCRT64 终端中 cd 到项目目录后：
+
 ```bash
 # Debug（默认 OpenGL 后端）
 cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -65,6 +74,38 @@ cmake --build build/debug
 cmake -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release
 ```
+
+#### 方式 B：普通 PowerShell / CMD（显式指定编译器）
+
+若未使用 MSYS2 终端，CMake 会自动尝试检测系统默认编译器。为避免自动选中 MSVC 导致缺少 `rc.exe` 错误，请显式指定 MinGW 编译器：
+
+```powershell
+# 确保 gcc 在 PATH 中（如 C:\msys64\ucrt64\bin 已加入系统 PATH）
+cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+cmake --build build/debug
+```
+
+> 如果 `gcc` 不在 PATH 中，请使用完整路径：
+> `-DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe`
+
+#### 方式 C：使用 build.bat（Windows 批处理）
+
+```powershell
+.\build.bat        # 默认 Debug
+.\build.bat Release
+```
+
+#### 方式 D：MSVC（Visual Studio 2022）
+
+若坚持使用 MSVC，必须打开 **x64 Native Tools Command Prompt for VS 2022** 后执行：
+
+```powershell
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+```
+
+> 注意：MSVC 构建尚未作为 CI 验证路径，部分 MinGW 特定逻辑（如 `libgcc` 运行时 DLL 复制）在 MSVC 下会被自动跳过。
 
 构建完成后，可执行文件位于：
 
@@ -123,33 +164,24 @@ cmake --build build/release
 ```
 Gryce-Engine/
 ├── cmake/                  # CMake 工具脚本
-├── core/                   # 引擎核心库
+├── core/                   # 引擎核心静态库（gryce_core）
 │   ├── assets/             # 资源加载器（OBJ、纹理、字体）
-│   ├── audio/              # 音频系统（占位）
+│   ├── audio/              # 音频系统
 │   ├── components/         # ECS 组件（3D + 2D）
 │   ├── ecs/                # ECS 系统（World、System、调度）
 │   ├── math/               # 数学库（Vector、Matrix、Quaternion）
-│   ├── physics/            # 物理工具与常量
+│   ├── physics/            # 物理抽象与实现
 │   ├── platform/           # 窗口、输入、光标
 │   ├── render/             # RHI、渲染管线、OpenGL/Vulkan 后端
 │   ├── resources/          # 资源路径、项目根解析
 │   ├── scene/              # Scene、Entity、Transform 层级
-│   ├── server/             # 渲染服务器/线程
 │   └── utils/              # 日志、帧率限制、工具类
-├── docs/                   # 文档（Todo、架构解析等）
-├── editor/                 # 编辑器入口（占位）
-├── res/                    # 运行时资源
-│   ├── fonts/
-│   ├── models/
-│   ├── scenes/
-│   ├── shaders/
-│   ├── textures/
-│   └── tilesets/
-├── tests/                  # 测试与演示程序
-│   ├── 3dtest.cpp          # 3D 演示
-│   ├── gt2dDemo.cpp        # 2D 演示
-│   ├── *_test.cpp          # 单元测试
-│   └── ui/                 # 演示共享 UI（DebugPanel）
+├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API）
+├── editor/                 # 编辑器入口
+├── examples/               # 示例游戏项目
+│   ├── 3dtest/             # 3D 演示项目
+│   └── gt2dDemo/           # 2D 演示项目
+├── tests/                  # 单元测试
 ├── third_party/            # 第三方库（imgui、json、stb、miniaudio）
 ├── CMakeLists.txt          # 根 CMake
 ├── README.md               # 本文件
@@ -190,13 +222,13 @@ Gryce-Engine/
 └─────────────────────────────────────────────────────────────┘
 ```
 
-更多细节参见 [`docs/PROJECT_ANALYSIS.md`](./docs/PROJECT_ANALYSIS.md)。
+更多细节参见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)。
 
 ---
 
 ## 开发计划
 
-详见 [`docs/TODO.md`](./docs/TODO.md) 与 [`ROADMAP.md`](./ROADMAP.md)。
+详见 [`docs/STATUS.md`](./docs/STATUS.md) 与 [`ROADMAP.md`](./ROADMAP.md)。
 
 主要里程碑：
 
