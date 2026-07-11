@@ -167,6 +167,7 @@ Gryce 采用 ECS + 场景树混合方案：
 | `ecs::ISystem` | 系统基类，提供 `on_update(scene, dt)`。 |
 | `ecs::World` | 持有 Scene 和 Systems，负责主循环调度。 |
 | `components::ComponentFactory` | 通过类型名反射创建组件。 |
+| `scene::Prefab` | 预制体模板，从 `.gesc` 加载并实例化到任意 Scene。 |
 
 ### 5.3 生命周期
 
@@ -240,6 +241,32 @@ JSON 结构：
 - `deserialize(const json& in)`：读取 JSON。
 
 `ComponentFactory` 根据 `"type"` 字段创建对应组件实例。
+
+### 6.4 预制体（Prefab）
+
+Prefab 是场景的可复用模板：
+
+```
+Prefab::load("res:/prefabs/enemy_tank.gesc")
+    → 加载为独立的 Entity 树（不关联 ComponentStore）
+    → Prefab 持有根实体列表
+
+Prefab::instantiate(scene)
+    → Entity::clone() 深拷贝每个实体
+        → 新 UUID、新 EntityID
+        → 组件通过 serialize/deserialize 深拷贝
+    → scene->add_root_entity(cloned)
+```
+
+使用方式：
+
+```cpp
+auto prefab = scene::Prefab::load("res:/prefabs/coin.gesc");
+for (int i = 0; i < 10; ++i) {
+    auto* coin = prefab->instantiate(scene);
+    coin->transform()->position = math::Vector3f(i * 2.0f, 0, 0);
+}
+```
 
 ---
 

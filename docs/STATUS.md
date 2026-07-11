@@ -109,7 +109,7 @@
 | `on_awake`、`on_start` 回调 | 已实现 |
 | `on_enable`、`on_disable` 回调 | 已实现 |
 | System 优先级与依赖排序 | 已实现（同 phase 按 `priority()` 降序） |
-| Entity 预制体（Prefab） | 未实现 |
+| Entity 预制体（Prefab） | 已实现（`Prefab::load` + `Entity::clone`） |
 
 ### 3.2 场景序列化
 
@@ -138,6 +138,16 @@
 | AudioSource、AudioListener | 已实现（miniaudio 后端） |
 | Animator、AnimationClip | 未实现 |
 | NavMeshAgent、BehaviorTree | 未实现 |
+
+### 3.4 预制体（Prefab）
+
+| 功能 | 状态 |
+|---|---|
+| `.gesc` 作为 Prefab 加载 | 已实现（`Prefab::load`） |
+| 实例化到任意 Scene | 已实现（`Prefab::instantiate`） |
+| 深拷贝（新 UUID / EntityID、序列化级组件复制） | 已实现（`Entity::clone`） |
+| 运行时变体（Prefab Variant） | 未实现 |
+| 嵌套 Prefab | 未实现 |
 
 ---
 

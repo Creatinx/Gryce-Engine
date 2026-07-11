@@ -200,4 +200,37 @@ void Entity::foreach(std::function<void(Entity*)> callback) {
     }
 }
 
+std::unique_ptr<Entity> Entity::clone() const {
+    auto clone_entity = std::make_unique<Entity>(name_);
+    clone_entity->enabled = enabled;
+
+    // 深拷贝所有组件（除 Transform 外，Transform 由构造函数自动创建）
+    for (const auto& comp : components_) {
+        if (comp->type() == std::string("Transform")) {
+            // 深拷贝 Transform 数据
+            nlohmann::json t_json;
+            comp->serialize(t_json);
+            if (clone_entity->transform_) {
+                clone_entity->transform_->deserialize(t_json);
+            }
+            continue;
+        }
+        auto new_comp = components::ComponentFactory::instance().create(comp->type());
+        if (!new_comp) continue;
+        nlohmann::json json;
+        comp->serialize(json);
+        new_comp->deserialize(json);
+        new_comp->enabled = comp->enabled;
+        clone_entity->add_component(std::move(new_comp));
+    }
+
+    // 递归深拷贝子节点
+    for (const auto& child : children_) {
+        auto child_clone = child->clone();
+        clone_entity->add_child(std::move(child_clone));
+    }
+
+    return clone_entity;
+}
+
 } // namespace gryce_engine::scene

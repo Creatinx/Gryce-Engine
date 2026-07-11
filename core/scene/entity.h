@@ -100,10 +100,9 @@ public:
     void on_update(float dt);
     void on_render(render::RenderContext& ctx);
     void on_destroy();
-    void on_init();
-    void on_update(float dt);
-    void on_render(render::RenderContext& ctx);
-    void on_destroy();
+
+    // 深拷贝自身（生成新 UUID 和新 EntityID），不关联任何 store/parent
+    std::unique_ptr<Entity> clone() const;
 
 private:
     static ecs::EntityID generate_id();

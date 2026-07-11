@@ -48,6 +48,7 @@ target_sources(gryce_core
         scene/uuid.cpp
         scene/entity.cpp
         scene/scene.cpp
+        scene/prefab.cpp
         scene/scene_serializer.cpp
         ecs/world.cpp
         ecs/component_store.cpp
@@ -136,6 +137,7 @@ target_sources(gryce_core
             scene/uuid.h
             scene/entity.h
             scene/scene.h
+            scene/prefab.h
             scene/scene_serializer.h
             ecs/types.h
             ecs/system.h

@@ -1,5 +1,6 @@
 #include "scene.h"
 
+#include "prefab.h"
 #include "scene_serializer.h"
 #include "utils/glog/glog_lib.h"
 
@@ -51,21 +52,12 @@ bool Scene::destroy_entity(Entity* entity) {
 }
 
 Entity* Scene::create_prefab(const std::string& scene_path) {
-    auto prefab = SceneSerializer::load_from_file(scene_path);
+    auto prefab = Prefab::load(scene_path);
     if (!prefab) {
         GLOG_ERROR("Scene::create_prefab: failed to load prefab '{}'", scene_path);
         return nullptr;
     }
-
-    Entity* first_root = nullptr;
-    for (auto& root : prefab->roots()) {
-        Entity* raw = root.get();
-        if (!first_root) first_root = raw;
-        set_store_on_entity(raw);
-        add_root_entity(std::move(root));
-    }
-    // 注意：prefab 的 roots_ 已被移空，prefab 析构时不会重复释放
-    return first_root;
+    return prefab->instantiate(this);
 }
 
 void Scene::set_store_on_entity(Entity* entity) {

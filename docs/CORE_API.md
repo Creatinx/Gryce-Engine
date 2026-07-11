@@ -96,7 +96,7 @@ target_link_libraries(your_app PRIVATE Gryce::GryceCore)
 ```
 scene/entity.h
 scene/scene.h
-scene/scene_serializer.h
+scene/prefab.h               # Prefab 加载与实例化
 scene/uuid.h
 ecs/world.h
 ecs/system.h
