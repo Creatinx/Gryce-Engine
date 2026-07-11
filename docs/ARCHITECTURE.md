@@ -1,12 +1,12 @@
-# Gryce Engine 完整解析
+# Gryce Engine Architecture
 
-> 本文档从架构、模块、数据流三个维度对 Gryce Engine 进行系统性解析，便于开发者快速理解代码组织方式与扩展路径。
+> 本文档从架构、模块、数据流三个维度对 Gryce Engine 进行系统性描述。
 
 ---
 
-## 1. 项目总览
+## 1. 项目概况
 
-| 项 | 说明 |
+| 项 | 值 |
 |---|---|
 | 名称 | Gryce Engine |
 | 版本 | 0.1.0 |
@@ -14,41 +14,37 @@
 | 构建 | CMake + Ninja |
 | 平台 | Windows（MSYS2 UCRT64 / MinGW-w64） |
 | 渲染后端 | OpenGL 4.6、Vulkan 1.2 |
-| 架构风格 | ECS + 场景树混合（类 Godot/Unity） |
-
-设计目标：先稳住“双后端渲染 + ECS + 场景序列化”这一核心三角，再逐步叠加物理、音频、脚本、编辑器。
+| 架构风格 | ECS + 场景树混合 |
 
 ---
 
-## 2. 目录结构与职责
+## 2. 目录结构
 
 ```
 Gryce-Engine/
 ├── cmake/                  # 编译器选项、依赖 FetchContent 脚本
 ├── core/                   # 引擎核心静态库（gryce_core）
 │   ├── assets/             # 资源加载器
-│   ├── audio/              # 音频系统（占位）
+│   ├── audio/              # 音频系统
 │   ├── components/         # ECS 组件定义
 │   │   └── 2d/             # 2D 专用组件
 │   ├── ecs/                # ECS 调度与系统
 │   │   └── systems/        # 各系统实现
 │   ├── math/               # 数学库
-│   ├── physics/            # 物理辅助与常量
+│   ├── physics/            # 物理抽象与实现
 │   ├── platform/           # 平台抽象（窗口、输入、光标）
 │   ├── render/             # 渲染抽象 + OpenGL/Vulkan 实现
-│   │   ├── opengl/         # GLBackend、GLShader、GLTexture...
-│   │   └── vulkan/         # VulkanBackend、VulkanDevice、VulkanSwapchain...
+│   │   ├── opengl/         # GL 后端实现
+│   │   └── vulkan/         # Vulkan 后端实现
 │   ├── resources/          # res:/ 路径解析、项目根
 │   ├── scene/              # Scene、Entity、Transform、UUID
-│   ├── server/             # RenderContext 服务器线程
-│   └── utils/              # 日志（glog）、帧率限制、工具类
+│   └── utils/              # 日志、帧率限制
 ├── docs/                   # 文档
-├── editor/                 # 编辑器入口（占位）
-├── res/                    # 运行时资源
-├── tests/                  # 单元测试 + 演示程序
-│   ├── ui/                 # DebugPanel 共享 UI
-│   ├── 3dtest.cpp          # 3D 演示
-│   └── gt2dDemo.cpp        # 2D 演示
+├── editor/                 # 编辑器入口
+├── examples/               # 示例游戏项目
+│   ├── 3dtest/             # 3D 演示项目
+│   └── gt2dDemo/           # 2D 演示项目
+├── tests/                  # 单元测试
 └── third_party/            # ImGui、nlohmann/json、stb、miniaudio
 ```
 
@@ -61,8 +57,10 @@ Gryce-Engine/
 - 根 `CMakeLists.txt`：项目定义、C++23 标准、输出目录、子目录。
 - `cmake/compiler_options.cmake`：编译警告、Debug/Release 优化选项。
 - `cmake/dependencies.cmake`：第三方依赖（GLFW、GLEW、Vulkan、GTest 等）。
-- `core/CMakeLists.txt`：核心库源文件。
-- `tests/CMakeLists.txt`：单元测试与演示程序。
+- `core/CMakeLists.txt`：核心库源文件与链接依赖。
+- `editor/CMakeLists.txt`：编辑器可执行文件。
+- `examples/CMakeLists.txt`：示例程序。
+- `tests/CMakeLists.txt`：单元测试。
 
 ### 3.2 输出目录
 
@@ -71,8 +69,6 @@ CMAKE_RUNTIME_OUTPUT_DIRECTORY = ${CMAKE_BINARY_DIR}/bin
 CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG = ${CMAKE_BINARY_DIR}/bin/Debug
 CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE = ${CMAKE_BINARY_DIR}/bin/Release
 ```
-
-这样避免 `Debug/Debug/...` 嵌套，保持 `build/debug/bin/Debug/3dtest.exe` 的清晰结构。
 
 ### 3.3 运行时 DLL 复制
 
@@ -87,7 +83,8 @@ MinGW 下构建后自动复制：
 
 | 目标 | 类型 | 说明 |
 |---|---|---|
-| `gryce_core` | 静态库 | 引擎核心 |
+| `gryce_core` | 静态库 | 引擎核心（默认，可通过 `GRYCE_BUILD_SHARED=ON` 切换为动态库） |
+| `gryce_editor` | 可执行文件 | 编辑器 |
 | `3dtest` | 可执行文件 | 3D 演示 |
 | `gt2dDemo` | 可执行文件 | 2D 演示 |
 | `gryce_tests` | 可执行文件 | 单元测试（GTest） |
@@ -98,24 +95,25 @@ MinGW 下构建后自动复制：
 
 ### 4.1 设计原则
 
-- **接口抽象**：所有上层逻辑通过 `IRenderBackend` 等接口与具体图形 API 解耦。
+- **接口抽象**：上层逻辑通过 `IRenderBackend` 等接口与具体图形 API 解耦。
 - **命令队列**：主线程把渲染指令压入 `RenderCommandBuffer`，渲染线程消费执行。
-- **资源延迟销毁**：GPU 资源在“已渲染完对应帧”后才真正释放，避免跨线程 use-after-free。
+- **资源延迟销毁**：GPU 资源在对应帧渲染完成后才释放，避免跨线程 use-after-free。
+- **RHI 句柄化**：资源通过 `RHIMeshHandle`、`RHITextureHandle` 等句柄引用，替代裸指针。
 
 ### 4.2 核心接口
 
 ```
-IRenderBackend          # 后端总入口：初始化、交换、2D/3D 渲染器
-├── create_mesh()       # IMesh
-├── create_texture()    # ITexture
-├── create_shader()     # IShader
-├── create_framebuffer()# IFramebuffer
-├── renderer2d()        # IRenderer2D
-├── renderer3d()        # IRenderer3D
-├── present()           # 提交并交换
-└── push_command()      # 提交 lambda 到渲染线程
-
-IMesh / ITexture / IShader / IFramebuffer   # GPU 资源抽象
+IRenderBackend
+├── create_mesh()       → RHIMeshHandle
+├── create_texture()    → RHITextureHandle
+├── create_shader()     → RHIShaderHandle
+├── create_framebuffer()→ RHIFramebufferHandle
+├── draw_mesh()         # 使用 RHI 句柄绘制
+├── create_renderer2d() → IRenderer2D
+├── create_imgui_backend() → IImGuiBackend
+├── begin_frame()
+├── end_frame()
+└── flush_gpu() / wait_gpu_idle()
 ```
 
 ### 4.3 OpenGL 后端
@@ -127,7 +125,7 @@ IMesh / ITexture / IShader / IFramebuffer   # GPU 资源抽象
 - `GLFramebuffer`：FBO 用于 shadow map、HDR、后处理。
 - `GLRenderer2D`：2D 批处理渲染（矩形、文字、精灵、形状）。
 - `GLRenderer3D`：3D 网格渲染。
-- `GLFramePacing`：帧率限制与 NVIDIA `WGL_NV_delay_before_swap`（可选）。
+- `GLFramePacing`：帧率限制与 NVIDIA `WGL_NV_delay_before_swap`。
 
 ### 4.4 Vulkan 后端
 
@@ -141,14 +139,12 @@ IMesh / ITexture / IShader / IFramebuffer   # GPU 资源抽象
 ### 4.5 渲染管线（3D）
 
 ```
-1. Shadow Pass        # 渲染 depth map（2048x2048）
-2. Main Pass          # PBR 着色 + shadow sampling
-3. HDR Post-Process   # tone mapping
-4. 2D Overlay         # UI、文字、DebugPanel
-5. Present            # 交换到屏幕
+1. Shadow Pass        → 渲染 depth map（2048x2048）
+2. Main Pass          → PBR 着色 + shadow sampling
+3. HDR Post-Process   → tone mapping
+4. 2D Overlay         → UI、文字、DebugPanel
+5. Present            → 交换到屏幕
 ```
-
-着色器文件位于 `res/shaders/`，按阶段分为 `.vert`、`.frag`、`.geom`（未来）。
 
 ---
 
@@ -156,23 +152,21 @@ IMesh / ITexture / IShader / IFramebuffer   # GPU 资源抽象
 
 ### 5.1 核心概念
 
-Gryce 采用 **ECS + 场景树混合** 方案：
+Gryce 采用 ECS + 场景树混合方案：
 - `Entity` 是场景中的节点，带 `Transform` 和父子关系。
 - `Component` 挂载在 `Entity` 上，负责数据与局部逻辑。
 - `ISystem` 遍历场景中的组件，执行全局更新。
 
-这种混合兼顾了 ECS 的批量处理能力与 Unity/Godot 式场景树的直观性。
-
 ### 5.2 关键类
 
-| 类                              | 职责                                                            |
-| ------------------------------ | ------------------------------------------------------------- |
-| `scene::Scene`                 | 管理所有 Entity，序列化/反序列化 `.gesc`。                                 |
-| `scene::Entity`                | 节点，拥有 Transform、Component 列表、父子引用。                            |
-| `components::Component`        | 组件基类，提供 `type()`、`serialize()`、`deserialize()`、`on_update()`。 |
-| `ecs::ISystem`                 | 系统基类，提供 `on_update(scene, dt)`。                               |
-| `ecs::World`                   | 持有 Scene 和 Systems，负责主循环调度。                                   |
-| `components::ComponentFactory` | 通过类型名反射创建组件。                                                  |
+| 类 | 职责 |
+|---|---|
+| `scene::Scene` | 管理所有 Entity，序列化/反序列化 `.gesc`。 |
+| `scene::Entity` | 节点，拥有 Transform、Component 列表、父子引用。 |
+| `components::Component` | 组件基类，提供 `type()`、`serialize()`、`deserialize()`、`on_update()`。 |
+| `ecs::ISystem` | 系统基类，提供 `on_update(scene, dt)`。 |
+| `ecs::World` | 持有 Scene 和 Systems，负责主循环调度。 |
+| `components::ComponentFactory` | 通过类型名反射创建组件。 |
 
 ### 5.3 生命周期
 
@@ -181,23 +175,23 @@ Scene::load() / create_entity()
     → Entity::add_component<T>()
         → Component::deserialize() / 默认值
 
-World::on_update(dt)
+World::update(dt)
     → 各 System::on_update(scene, dt)
         → Entity::on_update(dt)
             → Component::on_update(dt)
 ```
 
-目前缺少正式的 `on_awake` / `on_start` / `on_destroy` 回调，部分初始化逻辑分散在构造函数或系统里。
+当前组件生命周期包含 `on_init`、`on_update`、`on_render`、`on_destroy`，`on_awake` / `on_start` 尚未实现。
 
 ### 5.4 已实现的系统
 
-| 系统                | 说明                           |
-| ----------------- | ---------------------------- |
-| `PhysicsSystem`   | 3D 物理积分、碰撞检测、睡眠。             |
-| `PhysicsSystem2D` | 2D 物理。                       |
-| `FractureSystem`  | 检测 DestructibleBody 冲量并生成碎片。 |
-| `RenderSystem2D`  | 收集 2D 组件并提交到渲染器。             |
-| `RenderSystem3D`  | 收集 3D MeshRenderer 并提交。      |
+| 系统 | 说明 |
+|---|---|
+| `PhysicsSystem` | 3D 物理积分、碰撞检测、睡眠。 |
+| `PhysicsSystem2D` | 2D 物理。 |
+| `FractureSystem` | 检测 `DestructibleBody` 冲量并生成碎片。 |
+| `RenderSystem2D` | 收集 2D 组件并提交到渲染器。 |
+| `RenderSystem3D` | 收集 3D `MeshRenderer` 并提交。 |
 
 ---
 
@@ -205,7 +199,7 @@ World::on_update(dt)
 
 ### 6.1 `.gesc` 格式
 
-JSON 结构示例：
+JSON 结构：
 
 ```json
 {
@@ -219,7 +213,7 @@ JSON 结构示例：
       "transform": { "position": [...], "rotation": [...], "scale": [...] },
       "components": [
         { "type": "MeshRenderer", "mesh_path": "res:/models/cube_pbr.obj", "material": {...} },
-        { "type": "RigidBody", "mass": 1.0, ... },
+        { "type": "RigidBody", "mass": 1.0 },
         { "type": "BoxCollider", "size": [...] }
       ]
     }
@@ -229,9 +223,9 @@ JSON 结构示例：
 
 ### 6.2 虚拟路径 `res:/`
 
-- `res:/scenes/main.gesc` → 项目根目录下的 `res/scenes/main.gesc`。
+- `res:/scenes/main.gesc` → 项目根目录下的 `scenes/main.gesc`。
 - 解析逻辑在 `core/resources/resource_path.cpp`。
-- 便于打包后统一资源根目录。
+- 运行示例时通过 `--project-root <path>` 指定项目根。
 
 ### 6.3 序列化机制
 
@@ -243,7 +237,7 @@ JSON 结构示例：
 
 ---
 
-## 7. 组件系统详解
+## 7. 组件系统
 
 ### 7.1 变换与层级
 
@@ -281,7 +275,7 @@ JSON 结构示例：
 | `TileMap` | 瓦片地图。 |
 | `ParticleEmitter2D` | 2D 粒子发射器。 |
 | `ParallaxBackground` | 视差背景。 |
-| `Light2D` | 2D 光源组件（基础占位）。 |
+| `Light2D` | 2D 光源组件（占位）。 |
 
 ---
 
@@ -289,7 +283,7 @@ JSON 结构示例：
 
 ### 8.1 当前实现
 
-当前为自研轻量物理，用于原型验证：
+当前为自研轻量物理：
 - **碰撞检测**：AABB 粗测 + 基于 penetration 的分离。
 - **积分**：显式欧拉，每帧 `velocity += acceleration * dt; position += velocity * dt`。
 - **睡眠**：速度持续很小时标记 `is_sleeping`，跳过积分。
@@ -302,11 +296,14 @@ JSON 结构示例：
 - 角速度/旋转不稳定。
 - 碎裂只针对立方体做了网格切分，通用 mesh 碎裂未实现。
 
-### 8.3 扩展路径
+### 8.3 物理后端抽象
 
-推荐分阶段替换为专业物理库：
-1. **3D**：Jolt Physics（现代、性能好、C++）或 Bullet。
-2. **2D**：Box2D。
+引擎提供统一的物理接口：
+- `IPhysicsWorld2D` / `IPhysicsWorld3D`：物理世界抽象。
+- `BuiltinPhysicsWorld2D` / `BuiltinPhysicsWorld3D`：自研实现。
+- `Box2DWorld2D`：Box2D 封装（已接入 CMake，需 `GRYCE_HAS_BOX2D=ON`）。
+
+Jolt Physics 集成已预留接口（`GRYCE_HAS_JOLT`），尚未实现。
 
 ---
 
@@ -322,7 +319,7 @@ JSON 结构示例：
 
 - `ObjLoader`：解析 `.obj` + `.mtl`（部分）。
 - 输出 `MeshData`：顶点位置、法线、切线、UV、索引。
-- 未来接入 Assimp 支持 FBX/glTF/DAE。
+- Assimp 集成已预留（`GRYCE_HAS_ASSIMP=ON`）。
 
 ### 9.3 纹理加载
 
@@ -334,7 +331,7 @@ JSON 结构示例：
 
 - `Material` 结构体：albedo_color、roughness、metallic、ao、各贴图路径与 use_xxx_map 开关。
 - MeshRenderer 上传时同时上传材质到 GPU（OpenGL UBO / Vulkan uniform buffer + descriptor set）。
-- 未来支持 `.gmat` 材质文件。
+- 材质资源文件 `.gmat` 尚未实现。
 
 ---
 
@@ -342,7 +339,7 @@ JSON 结构示例：
 
 ### 10.1 Window
 
-- GLFW 抽象：`Window` 类。
+- GLFW 抽象：`platform::Window` 类。
 - 支持窗口化、无边框、VSync、大小调整。
 - 焦点管理：只有窗口有焦点时才处理鼠标锁定与输入。
 
@@ -354,7 +351,7 @@ JSON 结构示例：
 
 ### 10.3 Cursor
 
-- 自定义光标贴图：`res/textures/cursor.png`。
+- 自定义光标贴图支持。
 - 鼠标锁定时隐藏光标（`glfwSetInputMode(GLFW_CURSOR_DISABLED)`）。
 - 无焦点时恢复系统默认光标。
 
@@ -400,7 +397,7 @@ JSON 结构示例：
 - `pending_destroys_`：帧延迟销毁队列，资源在 `safe_seq` 帧完成后才释放。
 - `MeshRenderer::uploaded_`：原子标志，避免主线程在材质上传完成前渲染。
 
-### 12.3 注意事项
+### 12.3 线程安全约束
 
 - 渲染 lambda 必须捕获值或安全对象，避免悬空引用。
 - GPU 资源释放必须通过 `RenderContext::destroy_*` 走延迟队列。
@@ -416,7 +413,7 @@ Window::poll_events()
 Input::update()
 ImGui::NewFrame()
 
-World::on_update(dt)
+World::update(dt)
     PhysicsSystem::on_update(scene, dt)
     FractureSystem::on_update(scene, dt)
     ...其他系统...
@@ -458,47 +455,23 @@ Scene::serialize()
 
 ---
 
-## 14. 当前已知问题与设计债
+## 14. 扩展点
 
-| 问题 | 影响 | 建议处理 |
-|---|---|---|
-| 自研物理功能有限 | 3D 碰撞不稳定、无 CCD | 接入 Jolt / Bullet |
-| 2D 光照未完整实现 | 2D 演示视觉效果弱 | 实现 2D normal + SDF shadow |
-| 资源释放靠延迟队列 | 代码路径多，容易遗漏 | 统一 RHI Handle + RAII |
-| 缺少正式组件生命周期 | 初始化/销毁逻辑分散 | 增加 on_awake/on_start/on_destroy |
-| 字体 SDF 未实现 | 文字放大发虚 | stbtt 生成 SDF atlas |
-| 缺少材质文件 | 材质无法独立编辑 | 实现 `.gmat` |
-| Vulkan 关闭时曾报 framebuffer 泄漏 | 已修复，但需长期观察 | 每次改渲染代码后验证 |
-| ImGui 与运行时 UI 两套体系 | 维护成本高 | 未来统一为编辑器用 ImGui，运行时 UI 走 ECS |
-
----
-
-## 15. 扩展指南
-
-### 15.1 添加新组件
+### 14.1 添加新组件
 
 1. 在 `core/components/`（或 `core/components/2d/`）新建头文件。
 2. 继承 `Component`，实现 `type()`、`serialize()`、`deserialize()`、`on_update()`（可选）。
 3. 在 `core/components/component_factory.cpp` 注册类型。
 4. 在对应 System 中处理该组件。
-5. 更新 `docs/TODO.md` 与本文档。
 
-### 15.2 添加新渲染后端
+### 14.2 添加新渲染后端
 
 1. 实现 `IRenderBackend`、`IShader`、`ITexture`、`IMesh`、`IFramebuffer`、`IRenderer2D`、`IRenderer3D`。
 2. 在 `RenderContext` 中注册后端创建函数。
 3. 添加命令行参数切换后端。
 
-### 15.3 添加新系统
+### 14.3 添加新系统
 
 1. 继承 `ecs::ISystem`。
-2. 在 `World::init()` 中注册。
+2. 在 `World` 构造或初始化时注册。
 3. 注意 System 执行顺序依赖。
-
----
-
-## 16. 相关文档
-
-- [`README.md`](../README.md)：项目简介、构建与运行。
-- [`docs/TODO.md`](./TODO.md)：详细开发任务清单。
-- [`ROADMAP.md`](../ROADMAP.md)：里程碑路线图。
