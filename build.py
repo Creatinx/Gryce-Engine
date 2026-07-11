@@ -181,7 +181,11 @@ Then either:
     # -----------------------------------------------------------------------
     # 4. Configure
     # -----------------------------------------------------------------------
-    if not (build_dir / "build.ninja").exists() and not (build_dir / "CMakeCache.txt").exists():
+    # Only trust build.ninja as the marker of a valid configuration.
+    # A stale CMakeCache.txt (from a failed MSVC run) must not skip configure.
+    if not (build_dir / "build.ninja").exists():
+        if build_dir.exists():
+            print(f"{C_WARN}[Gryce Engine]{C_RESET} {build_dir} exists but has no build.ninja, reconfiguring ...")
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Configuring with CMake ...")
         configure_cmd = [
             cmake, "-B", str(build_dir),
