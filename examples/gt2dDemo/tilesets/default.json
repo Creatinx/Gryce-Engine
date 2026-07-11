@@ -1,0 +1,34 @@
+{
+  "name": "default",
+  "texture": "res:/textures/tileset_default.png",
+  "tile_size": 64,
+  "columns": 4,
+  "tiles": {
+    "0": {
+      "name": "sky"
+    },
+    "1": {
+      "name": "ground",
+      "solid": true
+    },
+    "2": {
+      "name": "brick",
+      "solid": true
+    },
+    "3": {
+      "name": "coin",
+      "collectible": true
+    },
+    "4": {
+      "name": "enemy"
+    },
+    "5": {
+      "name": "spike",
+      "hazard": true
+    },
+    "6": {
+      "name": "platform",
+      "solid": true
+    }
+  }
+}

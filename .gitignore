@@ -1,0 +1,24 @@
+# Build outputs
+build/
+cmake-build-*/
+out/
+
+# IDE
+.idea/
+.vs/
+.vscode/
+*.user
+
+# ImGui runtime layout
+imgui.ini
+
+# Runtime generated assets / screenshots
+font_atlas_debug.bmp
+screenshot_*.bmp
+
+# Test textures (not referenced by source)
+checkerboard.bmp
+
+# Obsidian personal config
+docs/.obsidian/
+docs/*.base

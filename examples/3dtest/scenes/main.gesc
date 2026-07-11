@@ -1,0 +1,546 @@
+{
+  "entities": [
+    {
+      "components": [
+        {
+          "color": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.800000011920929
+          ],
+          "enabled": true,
+          "height": 30.0,
+          "render_order": 0,
+          "type": "ColorRect",
+          "width": 120.0
+        }
+      ],
+      "name": "FPS_BG",
+      "parent": null,
+      "transform": {
+        "position": [
+          5.0,
+          5.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "5668b034-5d2b-4bf0-b177-1f4ebc637e63"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "enabled": true,
+          "font_size": 26.0,
+          "render_order": 10,
+          "text": "FPS: 2255.7",
+          "type": "Label"
+        }
+      ],
+      "name": "FPS_Label",
+      "parent": null,
+      "transform": {
+        "position": [
+          15.0,
+          23.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "ff8f4c60-7140-435d-a5f8-289c5e06405c"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            0.15000000596046448,
+            0.15000000596046448,
+            0.15000000596046448,
+            1.0
+          ],
+          "enabled": true,
+          "height": 200.0,
+          "render_order": 0,
+          "type": "ColorRect",
+          "width": 200.0
+        }
+      ],
+      "name": "Panel_BG",
+      "parent": null,
+      "transform": {
+        "position": [
+          1060.0,
+          500.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "0cc20798-7d8f-4973-8b7c-57188b13394d"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            1.0,
+            0.6499999761581421,
+            0.0,
+            1.0
+          ],
+          "enabled": true,
+          "radius": 50.0,
+          "render_order": 0,
+          "segments": 32,
+          "type": "Circle"
+        }
+      ],
+      "name": "Circle",
+      "parent": null,
+      "transform": {
+        "position": [
+          1160.0,
+          600.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "c4d6820a-ba94-453f-b155-74bf88fe6147"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            0.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "enabled": true,
+          "points": [
+            [
+              -70.0,
+              70.0
+            ],
+            [
+              0.0,
+              -70.0
+            ],
+            [
+              70.0,
+              70.0
+            ]
+          ],
+          "render_order": 0,
+          "type": "Polygon"
+        }
+      ],
+      "name": "Triangle",
+      "parent": null,
+      "transform": {
+        "position": [
+          1160.0,
+          600.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "63bfe95c-3e69-4811-82f0-ae9c96f1b277"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            1.0,
+            0.0,
+            1.0,
+            1.0
+          ],
+          "enabled": true,
+          "points": [
+            [
+              -1.3113416343912832e-06,
+              -30.0
+            ],
+            [
+              17.633556365966797,
+              24.270509719848633
+            ],
+            [
+              -28.531696319580078,
+              -9.270508766174316
+            ],
+            [
+              28.531696319580078,
+              -9.2705078125
+            ],
+            [
+              -17.63357162475586,
+              24.27050018310547
+            ]
+          ],
+          "render_order": 0,
+          "type": "Polygon"
+        }
+      ],
+      "name": "Pentagon",
+      "parent": null,
+      "transform": {
+        "position": [
+          1160.0,
+          600.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "84c72fae-f0d4-46b3-9da2-67b402394bdb"
+    },
+    {
+      "components": [
+        {
+          "background_color": [
+            0.15000000596046448,
+            0.15000000596046448,
+            0.18000000715255737,
+            1.0
+          ],
+          "enabled": true,
+          "far_plane": 500.0,
+          "fov": 60.0,
+          "is_main": true,
+          "near_plane": 0.10000000149011612,
+          "type": "Camera"
+        }
+      ],
+      "name": "MainCamera",
+      "parent": null,
+      "transform": {
+        "position": [
+          120.0,
+          20.0,
+          0.0
+        ],
+        "rotation": [
+          -0.258819043636322,
+          -1.1313339598473249e-08,
+          0.9659258127212524,
+          -4.222195926217864e-08
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "fe5c1c83-a9c9-4e52-93fe-7ebe7e06540f"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "direction": [
+            -0.6507914066314697,
+            -0.7592566013336182,
+            0.0
+          ],
+          "enabled": true,
+          "intensity": 3.0,
+          "light_type": 0,
+          "range": 10.0,
+          "spot_angle": 45.0,
+          "type": "Light"
+        }
+      ],
+      "name": "MainLight",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          -0.0990457683801651,
+          -0.2391176074743271,
+          -0.36964383721351624,
+          0.8923990726470947
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "460ae209-c056-4cd0-a2e7-e4f13151099b"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.20000000298023224,
+              0.5,
+              0.20000000298023224
+            ],
+            "albedo_map_path": "",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Ground",
+            "normal_map_path": "",
+            "preset_name": "",
+            "roughness": 0.8999999761581421,
+            "roughness_map_path": "",
+            "softness": 0.0,
+            "use_albedo_map": false,
+            "use_ao_map": false,
+            "use_metallic_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "type": "BoxCollider"
+        }
+      ],
+      "name": "Ground",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          -2.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          60.0,
+          0.5,
+          60.0
+        ]
+      },
+      "uuid": "bc45703e-95bd-46b8-ade6-f388033f8a64"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "albedo_map_path": "res:/textures/cube_albedo.png",
+            "ao": 1.0,
+            "ao_map_path": "res:/textures/cube_ao.png",
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "metallic": 0.0,
+            "metallic_map_path": "res:/textures/cube_metallic.png",
+            "name": "DynamicCube",
+            "normal_map_path": "res:/textures/cube_normal.png",
+            "preset_name": "",
+            "roughness": 0.5,
+            "roughness_map_path": "res:/textures/cube_roughness.png",
+            "softness": 0.0,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "density": 1.100000023841858,
+          "drag_coefficient": 0.25,
+          "enabled": true,
+          "friction": 0.8500000238418579,
+          "preset_name": "Rubber",
+          "softness": 0.15000000596046448,
+          "type": "PhysicalMaterial"
+        },
+        {
+          "acceleration": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "angular_damping": 0.0,
+          "angular_velocity": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "friction": 0.8500000238418579,
+          "inertia_tensor": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "is_kinematic": false,
+          "linear_damping": 0.0,
+          "mass": 70.4000015258789,
+          "restitution": 0.8500000238418579,
+          "type": "RigidBody",
+          "use_gravity": true,
+          "velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "center": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "type": "BoxCollider"
+        }
+      ],
+      "name": "Cube",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          200.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          40.0,
+          40.0,
+          40.0
+        ]
+      },
+      "uuid": "f0769d39-5aac-4317-849a-5e58ca5a2b55"
+    }
+  ],
+  "name": "main",
+  "version": 1
+}
