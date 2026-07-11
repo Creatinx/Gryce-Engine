@@ -94,6 +94,13 @@ public:
 
     // 组件生命周期驱动
     void on_init();
+    void on_start();
+    void on_enable();
+    void on_disable();
+    void on_update(float dt);
+    void on_render(render::RenderContext& ctx);
+    void on_destroy();
+    void on_init();
     void on_update(float dt);
     void on_render(render::RenderContext& ctx);
     void on_destroy();

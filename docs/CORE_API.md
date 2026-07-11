@@ -114,6 +114,7 @@ components/transform.h
 components/camera.h
 components/light.h
 components/mesh_renderer.h
+components/audio_listener.h
 components/audio_source.h
 components/physics_body.h
 components/static_body.h

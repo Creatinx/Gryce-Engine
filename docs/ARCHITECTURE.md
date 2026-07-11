@@ -173,15 +173,21 @@ Gryce 采用 ECS + 场景树混合方案：
 ```
 Scene::load() / create_entity()
     → Entity::add_component<T>()
-        → Component::deserialize() / 默认值
+        → Component::on_attach() / 默认值
+        → Component::on_awake()
+
+World::init()
+    → Scene::init()
+        → Entity::on_init()      // 递归初始化所有组件
+        → Entity::on_start()     // 场景正式开始
 
 World::update(dt)
-    → 各 System::on_update(scene, dt)
+    → 各 System::on_update(scene, dt)  // 按 phase + priority 排序
         → Entity::on_update(dt)
             → Component::on_update(dt)
 ```
 
-当前组件生命周期包含 `on_init`、`on_update`、`on_render`、`on_destroy`，`on_awake` / `on_start` 尚未实现。
+当前组件生命周期包含 `on_attach`、`on_awake`、`on_init`、`on_start`、`on_enable`、`on_disable`、`on_update`、`on_render`、`on_destroy`。
 
 ### 5.4 已实现的系统
 
@@ -300,8 +306,8 @@ JSON 结构：
 
 引擎提供统一的物理接口：
 - `IPhysicsWorld2D` / `IPhysicsWorld3D`：物理世界抽象。
-- `BuiltinPhysicsWorld2D` / `BuiltinPhysicsWorld3D`：自研实现。
-- `Box2DWorld2D`：Box2D 封装（已接入 CMake，需 `GRYCE_HAS_BOX2D=ON`）。
+- `BuiltinPhysicsWorld2D` / `BuiltinPhysicsWorld3D`：自研实现（默认不启用，显式传入 `"builtin"` 时可用；已知问题：无 CCD、旋转不稳定、形状支持有限）。
+- `Box2DWorld2D`：Box2D 封装（已接入 CMake，默认优先，需 `GRYCE_HAS_BOX2D=ON`）。
 
 Jolt Physics 集成已预留接口（`GRYCE_HAS_JOLT`），尚未实现。
 

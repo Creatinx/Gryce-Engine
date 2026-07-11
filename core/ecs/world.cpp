@@ -81,6 +81,17 @@ void World::shutdown() {
     GLOG_INFO("World shutdown");
 }
 
+// 按 phase 分组后，同 phase 内按 priority 降序排序
+static void sort_systems_by_priority(std::vector<std::unique_ptr<ISystem>>& systems) {
+    std::stable_sort(systems.begin(), systems.end(),
+        [](const std::unique_ptr<ISystem>& a, const std::unique_ptr<ISystem>& b) {
+            if (a->phase() != b->phase()) {
+                return static_cast<int>(a->phase()) < static_cast<int>(b->phase());
+            }
+            return a->priority() > b->priority(); // 数值越大越先执行
+        });
+}
+
 void World::update(float dt) {
     if (!initialized_ || !scene_ || !updates_enabled_) return;
     // 先驱动组件级 update，再按阶段跑 System update

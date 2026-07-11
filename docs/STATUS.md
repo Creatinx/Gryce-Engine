@@ -27,7 +27,7 @@
 | RHI 句柄化（`RHIMeshHandle` 等） | 已实现 |
 | OpenGL 4.6 后端 | 已实现 |
 | Vulkan 1.2 后端 | 已实现 |
-| 命令缓冲合并批处理 | 已实现（`CommandStateCache` 状态去重） |
+| 命令缓冲合并批处理 | 已实现（`CommandStateCache` + multi-viewport 数组） |
 | D3D12 / Metal 后端 | 未实现 |
 
 ### 2.2 OpenGL 后端
@@ -55,7 +55,7 @@
 | 2D 批处理 | 已实现 |
 | ImGui Vulkan 后端 | 已实现 |
 | VMA 集成 | 已实现（`vmaCreateBuffer` / `vmaCreateImage`） |
-| Multi-viewport / secondary command buffer | 未实现 |
+| Multi-viewport / secondary command buffer | 已实现（secondary CB pool + multi-viewport 数组） |
 
 ### 2.4 渲染管线（3D）
 
@@ -106,9 +106,9 @@
 | `World`、`Scene`、`Entity`、`Component` | 已实现 |
 | 父子级 Transform 层级 | 已实现 |
 | `ComponentFactory` 反射创建组件 | 已实现 |
-| `on_awake`、`on_start` 回调 | 未实现 |
-| `on_enable`、`on_disable` 回调 | 未实现 |
-| System 优先级与依赖排序 | 未实现 |
+| `on_awake`、`on_start` 回调 | 已实现 |
+| `on_enable`、`on_disable` 回调 | 已实现 |
+| System 优先级与依赖排序 | 已实现（同 phase 按 `priority()` 降序） |
 | Entity 预制体（Prefab） | 未实现 |
 
 ### 3.2 场景序列化
@@ -135,7 +135,7 @@
 | PhysicalMaterial | 已实现 |
 | DestructibleBody、FragmentBody | 已实现 |
 | 2D 渲染组件（ColorRect/Label/Sprite2D/Circle/Polygon/TileMap/ParticleEmitter2D/ParallaxBackground） | 已实现 |
-| AudioSource、AudioListener | 未实现（音频系统占位） |
+| AudioSource、AudioListener | 已实现（miniaudio 后端） |
 | Animator、AnimationClip | 未实现 |
 | NavMeshAgent、BehaviorTree | 未实现 |
 
@@ -202,7 +202,7 @@
 | 射线检测（Physics.Raycast） | 未实现 |
 | 角色控制器 | 未实现 |
 | 关节系统（Hinge/Fixed/Spring/Distance） | 未实现 |
-| Jolt Physics 集成 | 接口已预留（`GRYCE_HAS_JOLT`） |
+| Jolt Physics 集成 | 接口已预留（`GRYCE_HAS_JOLT`），默认优先，不可用时 fallback builtin 并告警 |
 
 ### 5.2 2D 物理
 
@@ -213,7 +213,7 @@
 | 2D 圆形/多边形碰撞体 | 未实现 |
 | 2D 关节与平台碰撞 | 未实现 |
 | 2D 角色控制器 | 未实现 |
-| Box2D 集成 | 已实现（`GRYCE_HAS_BOX2D=ON`） |
+| Box2D 集成 | 已实现（`GRYCE_HAS_BOX2D=ON`），默认优先 2D 后端 |
 
 ### 5.3 碎裂与破坏
 

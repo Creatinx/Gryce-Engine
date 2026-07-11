@@ -36,6 +36,9 @@ public:
 
     virtual Phase phase() const { return Phase::Update; }
 
+    // 优先级：同 phase 下数值越大越先执行（默认 0）
+    virtual int priority() const { return 0; }
+
     // 声明本 System 感兴趣的组件类型（空表示处理所有 Entity）
     virtual std::vector<ComponentTypeID> required_components() const { return {}; }
 

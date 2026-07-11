@@ -322,11 +322,22 @@ void VulkanBackend::clear(float r, float g, float b, float a) {
     clear_a_ = a;
 }
 
+uint32_t VulkanBackend::max_viewports() const {
+    return k_max_viewports;
+}
+
 void VulkanBackend::set_viewport(int x, int y, int w, int h) {
-    if (!initialized_) return;
+    set_viewport(x, y, w, h, 0);
+}
+
+void VulkanBackend::set_scissor(int x, int y, int w, int h) {
+    set_scissor(x, y, w, h, 0);
+}
+
+void VulkanBackend::set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {
+    if (!initialized_ || viewport_index >= k_max_viewports) return;
     VkCommandBuffer cmd = current_command_buffer();
     if (cmd == VK_NULL_HANDLE) return;
-    // Negative viewport height restores OpenGL's Y convention.
     VkViewport viewport{};
     viewport.x = static_cast<float>(x);
     viewport.y = static_cast<float>(y + h);
@@ -334,32 +345,17 @@ void VulkanBackend::set_viewport(int x, int y, int w, int h) {
     viewport.height = -static_cast<float>(h);
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
-    set_viewport_cached(cmd, viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = {x, y};
-    scissor.extent = {static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
-    set_scissor_cached(cmd, scissor);
+    set_viewport_cached(cmd, viewport, viewport_index);
 }
 
-void VulkanBackend::set_scissor(int x, int y, int w, int h) {
-    if (!initialized_) return;
+void VulkanBackend::set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {
+    if (!initialized_ || viewport_index >= k_max_viewports) return;
     VkCommandBuffer cmd = current_command_buffer();
     if (cmd == VK_NULL_HANDLE) return;
     VkRect2D scissor{};
     scissor.offset = {x, y};
     scissor.extent = {static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
-    set_scissor_cached(cmd, scissor);
-}
-
-void VulkanBackend::set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {
-    (void)viewport_index;
-    set_viewport(x, y, w, h);
-}
-
-void VulkanBackend::set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {
-    (void)viewport_index;
-    set_scissor(x, y, w, h);
+    set_scissor_cached(cmd, scissor, viewport_index);
 }
 
 void VulkanBackend::set_depth_test(bool enabled) {
@@ -410,8 +406,13 @@ void VulkanBackend::reset_state_cache() {
     state_cache_.front_face = VK_FRONT_FACE_CLOCKWISE;
     state_cache_.depth_test = VK_FALSE;
     state_cache_.depth_write = VK_FALSE;
-    state_cache_.viewport_valid = false;
-    state_cache_.scissor_valid = false;
+
+    viewports_.fill(VkViewport{});
+    scissors_.fill(VkRect2D{});
+    viewport_count_ = 0;
+    scissor_count_ = 0;
+    applied_viewport_count_ = 0;
+    applied_scissor_count_ = 0;
 }
 
 VkCommandBuffer VulkanBackend::primary_command_buffer() const {
@@ -485,6 +486,20 @@ VkCommandBuffer VulkanBackend::allocate_secondary_cb() {
     return cb;
 }
 
+void VulkanBackend::free_secondary_cb(VkCommandBuffer cb) {
+    if (cb == VK_NULL_HANDLE || device_.device() == VK_NULL_HANDLE) return;
+    auto it = std::find(per_frame_secondary_cbs_.begin(), per_frame_secondary_cbs_.end(), cb);
+    if (it != per_frame_secondary_cbs_.end()) {
+        per_frame_secondary_cbs_.erase(it);
+    }
+    vkFreeCommandBuffers(device_.device(), swapchain_.secondary_command_pool(), 1, &cb);
+}
+
+void VulkanBackend::reset_inline_secondary_state() {
+    inline_secondary_cb_ = VK_NULL_HANDLE;
+    inline_secondary_recording_ = false;
+}
+
 void VulkanBackend::execute_secondary(VkCommandBuffer secondary) {
     VkCommandBuffer primary = primary_command_buffer();
     if (primary == VK_NULL_HANDLE || secondary == VK_NULL_HANDLE) return;
@@ -538,21 +553,23 @@ void VulkanBackend::bind_descriptor_set(VkCommandBuffer cmd, VkPipelineLayout la
     }
 }
 
-void VulkanBackend::set_viewport_cached(VkCommandBuffer cmd, const VkViewport& viewport) {
-    if (!state_cache_.viewport_valid ||
-        std::memcmp(&state_cache_.viewport, &viewport, sizeof(VkViewport)) != 0) {
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        state_cache_.viewport = viewport;
-        state_cache_.viewport_valid = true;
+void VulkanBackend::set_viewport_cached(VkCommandBuffer cmd, const VkViewport& viewport, uint32_t index) {
+    if (index >= k_max_viewports || cmd == VK_NULL_HANDLE) return;
+    viewports_[index] = viewport;
+    if (index >= viewport_count_) viewport_count_ = index + 1;
+    if (viewport_count_ != applied_viewport_count_) {
+        vkCmdSetViewport(cmd, 0, viewport_count_, viewports_.data());
+        applied_viewport_count_ = viewport_count_;
     }
 }
 
-void VulkanBackend::set_scissor_cached(VkCommandBuffer cmd, const VkRect2D& scissor) {
-    if (!state_cache_.scissor_valid ||
-        std::memcmp(&state_cache_.scissor, &scissor, sizeof(VkRect2D)) != 0) {
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-        state_cache_.scissor = scissor;
-        state_cache_.scissor_valid = true;
+void VulkanBackend::set_scissor_cached(VkCommandBuffer cmd, const VkRect2D& scissor, uint32_t index) {
+    if (index >= k_max_viewports || cmd == VK_NULL_HANDLE) return;
+    scissors_[index] = scissor;
+    if (index >= scissor_count_) scissor_count_ = index + 1;
+    if (scissor_count_ != applied_scissor_count_) {
+        vkCmdSetScissor(cmd, 0, scissor_count_, scissors_.data());
+        applied_scissor_count_ = scissor_count_;
     }
 }
 
@@ -656,11 +673,11 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
     vkBeginCommandBuffer(secondary, &begin_info);
 
     // Secondary CB 必须显式设置动态 viewport/scissor
-    if (state_cache_.viewport_valid) {
-        vkCmdSetViewport(secondary, 0, 1, &state_cache_.viewport);
+    if (applied_viewport_count_ > 0) {
+        vkCmdSetViewport(secondary, 0, applied_viewport_count_, viewports_.data());
     }
-    if (state_cache_.scissor_valid) {
-        vkCmdSetScissor(secondary, 0, 1, &state_cache_.scissor);
+    if (applied_scissor_count_ > 0) {
+        vkCmdSetScissor(secondary, 0, applied_scissor_count_, scissors_.data());
     }
 
     bind_pipeline(secondary, vk_shader->pipeline());

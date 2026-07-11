@@ -93,6 +93,7 @@ target_sources(gryce_core
             components/sphere_collider.h
             components/plane_collider.h
             components/audio_source.h
+            components/audio_listener.h
             components/physical_material.h
             components/static_body_2d.h
             components/rigid_body_2d.h

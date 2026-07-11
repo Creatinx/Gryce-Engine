@@ -20,6 +20,7 @@
 #include "components/destructible_body.h"
 #include "components/fragment_body.h"
 #include "components/audio_source.h"
+#include "components/audio_listener.h"
 #include "components/2d/basic_rect.h"
 #include "components/2d/shape.h"
 #include "components/2d/label.h"
@@ -93,6 +94,9 @@ void register_builtin_components() {
     });
     ComponentFactory::instance().register_type("AudioSource", []() {
         return std::make_unique<AudioSource>();
+    });
+    ComponentFactory::instance().register_type("AudioListener", []() {
+        return std::make_unique<AudioListener>();
     });
     ComponentFactory::instance().register_type("ColorRect", []() {
         return std::make_unique<d2::basic_rect::ColorRect>();

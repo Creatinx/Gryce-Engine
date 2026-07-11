@@ -40,12 +40,69 @@ Entity::~Entity() {
     }
 }
 
+components::Component* Entity::add_component(std::unique_ptr<components::Component> comp) {
+    if (!comp) return nullptr;
+    components::Component* raw = comp.get();
+    raw->on_attach(this);
+    components_.push_back(std::move(comp));
+    if (store_) {
+        store_->register_component(id_, std::type_index(typeid(*raw)), raw);
+    }
+    // 生命周期：awake（组件已挂载但场景尚未开始）
+    raw->on_awake();
+    return raw;
+}
+
+bool Entity::remove_component(components::Component* comp) {
+    if (!comp) return false;
+    for (auto it = components_.begin(); it != components_.end(); ++it) {
+        if (it->get() == comp) {
+            if (store_) {
+                store_->unregister_component(id_, std::type_index(typeid(*comp)));
+            }
+            comp->on_disable();
+            comp->on_detach();
+            components_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
 void Entity::on_init() {
     for (auto& comp : components_) {
         if (comp->enabled) comp->on_init();
     }
     for (auto& child : children_) {
         child->on_init();
+    }
+}
+
+void Entity::on_start() {
+    for (auto& comp : components_) {
+        if (comp->enabled) comp->on_start();
+    }
+    for (auto& child : children_) {
+        child->on_start();
+    }
+}
+
+void Entity::on_enable() {
+    if (!enabled) return;
+    for (auto& comp : components_) {
+        if (comp->enabled) comp->on_enable();
+    }
+    for (auto& child : children_) {
+        child->on_enable();
+    }
+}
+
+void Entity::on_disable() {
+    for (auto& comp : components_) {
+        comp->on_disable();
+    }
+    for (auto& child : children_) {
+        child->on_disable();
     }
 }
 
@@ -114,32 +171,6 @@ bool Entity::remove_child(Entity* child) {
         if (it->get() == child) {
             child->parent_ = nullptr;
             children_.erase(it);
-            return true;
-        }
-    }
-    return false;
-}
-
-components::Component* Entity::add_component(std::unique_ptr<components::Component> comp) {
-    if (!comp) return nullptr;
-    components::Component* raw = comp.get();
-    raw->on_attach(this);
-    components_.push_back(std::move(comp));
-    if (store_) {
-        store_->register_component(id_, std::type_index(typeid(*raw)), raw);
-    }
-    return raw;
-}
-
-bool Entity::remove_component(components::Component* comp) {
-    if (!comp) return false;
-    for (auto it = components_.begin(); it != components_.end(); ++it) {
-        if (it->get() == comp) {
-            if (store_) {
-                store_->unregister_component(id_, std::type_index(typeid(*comp)));
-            }
-            comp->on_detach();
-            components_.erase(it);
             return true;
         }
     }

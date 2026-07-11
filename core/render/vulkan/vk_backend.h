@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vulkan/vulkan.h>
 
 #include "render/render.h"
@@ -19,8 +20,8 @@ namespace gryce_engine::render {
 class VulkanFramebuffer;
 
 // ---------------------------------------------------------------------------
-// VulkanBackend — Vulkan 渲染后端骨架
-// 当前仅实现清屏，资源创建接口返回 stub。
+// VulkanBackend — Vulkan 渲染后端实现
+// 支持 multi-viewport、secondary command buffer、动态状态缓存。
 // ---------------------------------------------------------------------------
 class VulkanBackend : public IRenderBackend {
 public:
@@ -40,11 +41,11 @@ public:
 
     void clear(float r, float g, float b, float a) override;
     void clear_depth() override {}
+    uint32_t max_viewports() const override;
     void set_viewport(int x, int y, int w, int h) override;
-    void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) override;
     void set_scissor(int x, int y, int w, int h) override;
+    void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) override;
     void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) override;
-    uint32_t max_viewports() const override { return 1; }
     void set_depth_test(bool enabled) override;
     void set_blend(bool enabled) override;
     void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) override;
@@ -100,8 +101,8 @@ public:
     void reset_state_cache();
     void bind_pipeline(VkCommandBuffer cmd, VkPipeline pipeline);
     void bind_descriptor_set(VkCommandBuffer cmd, VkPipelineLayout layout, VkDescriptorSet set);
-    void set_viewport_cached(VkCommandBuffer cmd, const VkViewport& viewport);
-    void set_scissor_cached(VkCommandBuffer cmd, const VkRect2D& scissor);
+    void set_viewport_cached(VkCommandBuffer cmd, const VkViewport& viewport, uint32_t index = 0);
+    void set_scissor_cached(VkCommandBuffer cmd, const VkRect2D& scissor, uint32_t index = 0);
     void set_cull_mode_cached(VkCommandBuffer cmd, VkCullModeFlags mode);
     void set_front_face_cached(VkCommandBuffer cmd, VkFrontFace face);
     void set_depth_test_cached(VkCommandBuffer cmd, VkBool32 enable);
@@ -152,7 +153,9 @@ private:
     void free_secondary_cb(VkCommandBuffer cb);
     void execute_secondary(VkCommandBuffer secondary);
     void reset_inline_secondary_state();
-    void begin_render_pass_secondary(VkRenderPass rp, VkFramebuffer fb, const VkClearValue* clears, uint32_t clear_count, const VkExtent2D& extent);
+    void begin_render_pass_secondary(VkRenderPass rp, VkFramebuffer fb,
+                                     const VkClearValue* clears, uint32_t clear_count,
+                                     const VkExtent2D& extent);
     void end_current_render_pass();
 
     // 当前渲染状态缓存（高层 API 状态）
@@ -172,11 +175,16 @@ private:
         VkFrontFace front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         VkBool32 depth_test = VK_FALSE;
         VkBool32 depth_write = VK_FALSE;
-        VkViewport viewport{};
-        VkRect2D scissor{};
-        bool viewport_valid = false;
-        bool scissor_valid = false;
     } state_cache_;
+
+    // Multi-viewport 支持
+    static constexpr uint32_t k_max_viewports = 8;
+    std::array<VkViewport, k_max_viewports> viewports_{};
+    std::array<VkRect2D, k_max_viewports> scissors_{};
+    uint32_t viewport_count_ = 0;
+    uint32_t scissor_count_ = 0;
+    uint32_t applied_viewport_count_ = 0;
+    uint32_t applied_scissor_count_ = 0;
 
     // 截图请求
     std::string screenshot_path_;

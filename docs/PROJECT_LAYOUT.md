@@ -105,6 +105,6 @@ GryceGC-A 允许在 `project.gryce` 中指定物理后端：
 |------|---------|------|
 | 2D   | `box2d` | 已实现 CMake 集成，需 `GRYCE_HAS_BOX2D=ON` |
 | 3D   | `jolt`  | 接口预留，尚未实现 |
-| 3D   | `builtin`| 自研实现，默认启用 |
+| 3D   | `builtin`| 自研实现，显式传入 `"builtin"` 才启用（已知不稳定） |
 
 引擎内部提供统一的 `IPhysicsWorld2D` / `IPhysicsWorld3D` 接口，底层由 Box2D / Jolt / 自研实现。
