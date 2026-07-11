@@ -11,7 +11,7 @@
 | CMake 多配置（Debug/Release） | 已实现 |
 | MinGW 运行时 DLL 自动复制 | 已实现 |
 | 统一输出目录（`bin/Debug`、`bin/Release`） | 已实现 |
-| CI/本地一键构建脚本 | 未实现 |
+| CI/本地一键构建脚本 | 已实现（`build.py`：一键 cmake + ninja + 编译器检测） |
 | 发布包打包脚本 | 未实现 |
 | 安装程序 | 未实现 |
 

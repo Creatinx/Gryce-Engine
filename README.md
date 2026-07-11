@@ -89,11 +89,13 @@ cmake --build build/debug
 > 如果 `gcc` 不在 PATH 中，请使用完整路径：
 > `-DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe`
 
-#### 方式 C：使用 build.bat（Windows 批处理）
+#### 方式 C：使用 build.py（Python 脚本，推荐）
 
 ```powershell
-.\build.bat        # 默认 Debug
-.\build.bat Release
+python build.py          # 默认 Debug
+python build.py Release  # Release
+python build.py --clean  # 清理后重新构建
+python build.py --jobs 8 # 指定并行任务数
 ```
 
 #### 方式 D：MSVC（Visual Studio 2022）
