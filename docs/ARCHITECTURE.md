@@ -12,7 +12,7 @@
 | 版本 | 0.1.0 |
 | 语言 | C++23 |
 | 构建 | CMake + Ninja |
-| 平台 | Windows（MSYS2 UCRT64 / MinGW-w64） |
+| 平台 | Windows（MSYS2 UCRT64 / MinGW-w64，MSVC 2022+）|
 | 渲染后端 | OpenGL 4.6、Vulkan 1.2 |
 | 架构风格 | ECS + 场景树混合 |
 

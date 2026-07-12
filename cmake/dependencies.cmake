@@ -44,31 +44,6 @@ else()
     set(GRYCE_HAS_GLFW TRUE)
 endif()
 
-set(FETCHCONTENT_QUIET OFF)
-
-# ---------------------------------------------------------------------------
-# GLFW（窗口系统）
-# ---------------------------------------------------------------------------
-find_package(glfw3 QUIET CONFIG)
-if(glfw3_FOUND)
-    message(STATUS "glfw3 found: ${glfw3_DIR}")
-    set(GRYCE_HAS_GLFW TRUE)
-else()
-    message(STATUS "glfw3 not found locally, fetching from GitHub...")
-    FetchContent_Declare(
-        glfw
-        URL       https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz
-        DOWNLOAD_NO_PROGRESS FALSE
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-    set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
-    set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(glfw)
-    set(GRYCE_HAS_GLFW TRUE)
-endif()
-
 # ---------------------------------------------------------------------------
 # 数学库：glm（可选，引擎自研 math.h 不依赖它）
 # ---------------------------------------------------------------------------

@@ -40,12 +40,12 @@
 | 项 | 说明 |
 |---|---|
 | 平台 | Windows 10/11（主要支持） |
-| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64） |
+| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64）或 **MSVC**（VS 2022+）|
 | 构建工具 | CMake ≥ 3.28，Ninja（推荐） |
 | 显卡 | OpenGL 4.6 / Vulkan 1.2 兼容 |
 | Vulkan SDK | 可选，仅当使用 `--vulkan` 时需要 |
 
-> **注意**：本项目当前主要使用 **MSYS2 UCRT64 MinGW-w64** 工具链开发与测试。在默认 Windows PowerShell / CMD 中运行 CMake 时，若未安装 MSYS2 或未将 MinGW 加入 PATH，CMake 可能自动检测到 MSVC 并因缺少 `rc.exe` / `mt.exe` 而失败。解决方案见下方。
+> **注意**：本项目当前主要使用 **MSYS2 UCRT64 MinGW-w64** 工具链开发与测试。CMake 会优先自动选择 MinGW；若未找到则自动 fallback 到 MSVC（需打开 VS 2022 x64 Native Tools Prompt）。
 
 ### 安装依赖（MSYS2 UCRT64，推荐）
 
@@ -92,7 +92,7 @@ cmake --build build/debug
 #### 方式 C：使用 build.py（Python 脚本，推荐）
 
 ```powershell
-# 默认 Debug，自动预下载缺失依赖（带 rich 进度条）
+# 默认 Debug，自动预下载缺失依赖（带进度条）
 python build.py
 
 # Release
@@ -107,32 +107,26 @@ python build.py --jobs 8
 # 不使用预下载（让 CMake 自行下载）
 python build.py --no-prefetch
 
-# 国内镜像加速（ghproxy.com fallback）
-python build.py --mirror
-
-# 自定义缓存目录
-python build.py --cache-dir D:/gryce_deps_cache
-python build.py --no-prefetch
-
-# 不使用国内镜像（ghproxy.com）
-python build.py --no-mirror
-
 # 自定义缓存目录
 python build.py --cache-dir D:/gryce_deps_cache
 ```
 
-> 首次构建时，build.py 会预下载 assimp/glfw 等 tar.gz 依赖到 `deps_cache/` 目录，并显示 **rich 进度条**。安装 rich：`pip install rich`。未安装 rich 时会 fallback 到无进度条下载。
+> 首次构建时，`build.py` 会预下载 assimp/glfw 等 tar.gz 依赖到 `deps_cache/` 目录，并显示进度条。若安装了 `rich` 则使用彩色进度条，否则显示 ASCII 百分比条。安装 rich：`pip install rich`。
 
-#### 方式 D：MSVC（Visual Studio 2022）
+#### 方式 D：MSVC（Visual Studio 2022+）
 
-若坚持使用 MSVC，必须打开 **x64 Native Tools Command Prompt for VS 2022** 后执行：
+打开 **x64 Native Tools Command Prompt for VS 2022** 后执行：
 
 ```powershell
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+# 方式 D1：直接 cmake
+cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/debug
+
+# 方式 D2：使用 build.py（自动检测 cl.exe）
+python build.py
 ```
 
-> 注意：MSVC 构建尚未作为 CI 验证路径，部分 MinGW 特定逻辑（如 `libgcc` 运行时 DLL 复制）在 MSVC 下会被自动跳过。
+> MSVC 已作为 CMake 的 auto-detect fallback 路径支持。部分 MinGW 特定逻辑（如 `libgcc` 运行时 DLL 复制）在 MSVC 下会被自动跳过。
 
 构建完成后，可执行文件位于：
 

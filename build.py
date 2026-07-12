@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gryce Engine — 一键构建脚本（Windows + MinGW-w64）"""
+"""Gryce Engine — 一键构建脚本（Windows，支持 MinGW-w64 / MSVC）"""
 
 import argparse
 import hashlib
@@ -47,15 +47,46 @@ DEPENDENCIES = {
     },
 }
 
-MIRROR_PREFIX = "https://ghproxy.com/"
-
 
 # ---------------------------------------------------------------------------
-# Download helpers
+# Download helpers — every download shows a progress bar
 # ---------------------------------------------------------------------------
-def _download_simple(url, dest):
-    """Fallback download without progress bar."""
-    urllib.request.urlretrieve(url, dest)
+def _download_simple(url, dest, description=""):
+    """Fallback download with manual percentage progress bar."""
+    import time
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req) as response:
+        total = int(response.headers.get("Content-Length", 0))
+        downloaded = 0
+        chunk_size = 65536
+        start_time = time.time()
+        desc = description or os.path.basename(dest)
+
+        with open(dest, "wb") as f:
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                elapsed = time.time() - start_time
+                speed = downloaded / elapsed if elapsed > 0 else 0.0
+
+                if total > 0:
+                    pct = downloaded / total
+                    bar_len = 30
+                    filled = int(bar_len * pct)
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    eta = (total - downloaded) / speed if speed > 0 else 0
+                    print(
+                        f"\r  {desc} |{bar}| {pct*100:5.1f}% "
+                        f"{downloaded/1024/1024:.1f}/{total/1024/1024:.1f} MB "
+                        f"{speed/1024/1024:.1f} MB/s ETA {eta:.0f}s",
+                        end="", flush=True,
+                    )
+                else:
+                    print(f"\r  {desc} {downloaded/1024/1024:.1f} MB downloaded", end="", flush=True)
+        print()  # newline after completion
 
 
 def _download_rich(url, dest, description=""):
@@ -92,36 +123,33 @@ def _download_rich(url, dest, description=""):
                     progress.update(task, advance=len(chunk))
 
 
-def download_with_progress(url, dest, description="", use_mirror=False):
-    """Download a file with progress bar (rich if available)."""
+def download_with_progress(url, dest, description=""):
+    """Download a file with progress bar (rich if available, else manual)."""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
 
-    urls = [url]  # GitHub 优先
-    if use_mirror:
-        urls.append(MIRROR_PREFIX + url)
-    if use_mirror:
-        urls.append(MIRROR_PREFIX + url)
-    urls.append(url)
-
-    for try_url in urls:
+    # Try rich first; fallback to manual percentage bar on ImportError
+    try:
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} Downloading {description} from {url} ...")
+        _download_rich(url, dest, description)
+        return True
+    except ImportError:
+        print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using manual progress bar (pip install rich for colors)")
         try:
-            print(f"{C_INFO}[Gryce Engine]{C_RESET} Downloading {description} from {try_url} ...")
-            try:
-                _download_rich(try_url, dest, description)
-            except ImportError:
-                print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using simple download (pip install rich for progress bars)")
-                _download_simple(try_url, dest)
+            _download_simple(url, dest, description)
             return True
         except Exception as e:
-            print(f"{C_WARN}[WARN]{C_RESET} Failed to download from {try_url}: {e}")
+            print(f"{C_ERR}[ERROR]{C_RESET} Download failed: {e}")
             if os.path.exists(dest):
                 os.remove(dest)
-            continue
+            return False
+    except Exception as e:
+        print(f"{C_WARN}[WARN]{C_RESET} Download failed: {e}")
+        if os.path.exists(dest):
+            os.remove(dest)
+        return False
 
-    return False
 
-
-def prefetch_dependencies(cache_dir, use_mirror=True):
+def prefetch_dependencies(cache_dir):
     """Pre-download tar.gz dependencies to cache_dir before cmake runs."""
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -143,7 +171,7 @@ def prefetch_dependencies(cache_dir, use_mirror=True):
                 print(f"{C_OK}[OK]{C_RESET} {name}: cached {dest}")
                 continue
 
-        if not download_with_progress(info["url"], str(dest), f"Downloading {name}", use_mirror):
+        if not download_with_progress(info["url"], str(dest), f"Downloading {name}"):
             if info["required"]:
                 print(f"{C_ERR}[ERROR]{C_RESET} Failed to download required dependency: {name}")
                 sys.exit(1)
@@ -245,7 +273,7 @@ def main():
     )
     parser.add_argument(
         "--no-lock", action="store_true",
-        help="Do NOT auto-lock MinGW compiler (use system default)"
+        help="Do NOT auto-lock compiler (use CMake default detection)"
     )
     parser.add_argument(
         "--cache-dir", default="deps_cache",
@@ -254,10 +282,6 @@ def main():
     parser.add_argument(
         "--no-prefetch", action="store_true",
         help="Skip pre-downloading dependencies to cache"
-    )
-    parser.add_argument(
-        "--mirror", action="store_true",
-        help="Use ghproxy.com mirror for GitHub downloads (fallback if direct fails)"
     )
     args = parser.parse_args()
 
@@ -272,26 +296,55 @@ def main():
     # -----------------------------------------------------------------------
     gcc_path = find_in_path("gcc")
     gxx_path = find_in_path("g++")
+    cl_path = find_in_path("cl")
     msys_bin = None
+    compiler_family = None
 
-    if not gcc_path or not gxx_path:
-        gcc_path, gxx_path, msys_bin = find_msys2_mingw()
-        if gcc_path and msys_bin:
-            print(f"{C_INFO}[Gryce Engine]{C_RESET} Found MSYS2 MinGW: {msys_bin}")
-            # Temporarily prepend to PATH so that cmake/ninja can find it
-            os.environ["PATH"] = msys_bin + os.pathsep + os.environ.get("PATH", "")
+    if not args.no_lock:
+        if gcc_path and gxx_path:
+            print(f"{C_OK}[OK]{C_RESET} Found gcc in PATH: {gcc_path}")
+            compiler_family = "gcc"
         else:
-            print(f"{C_INFO}[Gryce Engine]{C_RESET} gcc not found in PATH, trying to find...")
-    else:
-        print(f"{C_OK}[OK]{C_RESET} Found gcc in PATH: {gcc_path}")
+            gcc_path, gxx_path, msys_bin = find_msys2_mingw()
+            if gcc_path and msys_bin:
+                print(f"{C_INFO}[Gryce Engine]{C_RESET} Found MSYS2 MinGW: {msys_bin}")
+                os.environ["PATH"] = msys_bin + os.pathsep + os.environ.get("PATH", "")
+                compiler_family = "gcc"
 
-    if not gcc_path:
-        print(f"""
-{C_ERR}[ERROR] gcc not found in PATH.{C_RESET}
+        if compiler_family is None and cl_path:
+            print(f"{C_OK}[OK]{C_RESET} Found MSVC cl.exe in PATH: {cl_path}")
+            compiler_family = "msvc"
 
-This project is primarily built with MSYS2 UCRT64 MinGW-w64.
+        if compiler_family is None:
+            print(
+                f"\n{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}\n\n"
+                "This project supports:\n"
+                "  * MSYS2 UCRT64 MinGW-w64 (recommended)\n"
+                "  * MSVC (Visual Studio 2022+)\n\n"
+                "For MinGW (MSYS2 UCRT64 terminal):\n"
+                "    pacman -S mingw-w64-ucrt-x86_64-gcc \\\n"
+                "              mingw-w64-ucrt-x86_64-cmake \\\n"
+                "              mingw-w64-ucrt-x86_64-ninja \\\n"
+                "              mingw-w64-ucrt-x86_64-glew \\\n"
+                "              mingw-w64-ucrt-x86_64-glfw\n\n"
+                "Then either:\n"
+                "    1. Run this script from the MSYS2 UCRT64 terminal.\n"
+                "    2. Add C:\\\\msys64\\\\ucrt64\\\\bin to your system PATH and retry.\n\n"
+                "For MSVC:\n"
+                '    Open "x64 Native Tools Command Prompt for VS 2022" and run:\n'
+                "        python build.py\n"
+            )
+            sys.exit(1)
+            print(f"""
+{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}
 
-Install (MSYS2 UCRT64 terminal):
+This project supports:
+  * MSYS2 UCRT64 MinGW-w64 (recommended)
+  * MSVC (Visual Studio 2022+)
+  • MSYS2 UCRT64 MinGW-w64 (recommended)
+  • MSVC (Visual Studio 2022+)
+
+For MinGW (MSYS2 UCRT64 terminal):
     pacman -S mingw-w64-ucrt-x86_64-gcc \\
               mingw-w64-ucrt-x86_64-cmake \\
               mingw-w64-ucrt-x86_64-ninja \\
@@ -301,11 +354,15 @@ Install (MSYS2 UCRT64 terminal):
 Then either:
     1. Run this script from the MSYS2 UCRT64 terminal.
     2. Add C:\\msys64\\ucrt64\\bin to your system PATH and retry.
-    3. Use MSVC Developer Prompt and run cmake directly:
-       cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-       cmake --build build
+
+For MSVC:
+    Open "x64 Native Tools Command Prompt for VS 2022" and run:
+        python build.py
 """)
-        sys.exit(1)
+            sys.exit(1)
+    else:
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} --no-lock: using CMake default compiler detection")
+        compiler_family = "auto"
 
     # -----------------------------------------------------------------------
     # 2. Detect cmake and ninja
@@ -331,7 +388,7 @@ Then either:
     # 3. Pre-fetch dependencies
     # -----------------------------------------------------------------------
     if not args.no_prefetch:
-        prefetch_dependencies(args.cache_dir, use_mirror=args.mirror)
+        prefetch_dependencies(args.cache_dir)
     else:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Skipping dependency prefetch (--no-prefetch)")
 
@@ -359,7 +416,7 @@ Then either:
         if generator:
             configure_cmd += ["-G", generator]
 
-        if not args.no_lock:
+        if not args.no_lock and compiler_family == "gcc" and gcc_path:
             configure_cmd += [
                 "-DCMAKE_C_COMPILER=" + gcc_path,
                 "-DCMAKE_CXX_COMPILER=" + gxx_path,
