@@ -311,10 +311,6 @@ def main():
         "--no-prefetch", action="store_true",
         help="Skip pre-downloading dependencies to cache"
     )
-    parser.add_argument(
-        "--keep-cache", action="store_true",
-        help="Keep the dependency cache directory after build (default: auto-delete on success)"
-    )
     args = parser.parse_args()
 
     config = args.config
@@ -460,15 +456,6 @@ def main():
 
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
-
-    # -----------------------------------------------------------------------
-    # 7. Clean up temporary dependency cache
-    # -----------------------------------------------------------------------
-    cache_path = Path(args.cache_dir)
-    if cache_path.exists() and not args.keep_cache:
-        print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning dependency cache {cache_path} ...")
-        shutil.rmtree(cache_path)
-        print(f"{C_OK}[OK]{C_RESET} Cache removed.")
 
 
 if __name__ == "__main__":
