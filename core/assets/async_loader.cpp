@@ -95,47 +95,6 @@ bool AsyncLoader::submit(const std::string& path, std::type_index type,
     cv_.notify_one();
     return true;
 }
-                         std::function<void()> worker,
-                         std::function<void()> on_complete) {
-    if (!running_) start();
-
-    {
-        std::lock_guard<std::mutex> lock(tasks_mutex_);
-        auto it = tasks_.find(path);
-        if (it != tasks_.end()) {
-            // 已有任务，追加回调
-            auto& task = it->second;
-            if (on_complete) {
-                LoadingState expected = LoadingState::Pending;
-                if (task->state.compare_exchange_strong(expected, LoadingState::Pending)) {
-                    // 还在 Pending，可以追加回调
-                    task->callbacks.push_back(std::move(on_complete));
-                } else {
-                    // 已经在 Loading / Ready / Failed
-                    if (task->state.load() == LoadingState::Ready || task->state.load() == LoadingState::Failed) {
-                        // 已完成，立即回调
-                        if (on_complete) on_complete();
-                    } else {
-                        task->callbacks.push_back(std::move(on_complete));
-                    }
-                }
-            }
-            return false;
-        }
-
-        // 新建任务
-        auto task = std::make_shared<LoadingTask>(path, type, std::move(worker), std::move(on_complete));
-        task->state.store(LoadingState::Pending);
-        tasks_[path] = task;
-
-        {
-            std::lock_guard<std::mutex> qlock(queue_mutex_);
-            queue_.push_back(task);
-        }
-        cv_.notify_one();
-        return true;
-    }
-}
 
 void AsyncLoader::poll() {
     std::deque<std::shared_ptr<LoadingTask>> done;

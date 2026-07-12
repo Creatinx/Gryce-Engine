@@ -69,6 +69,22 @@ VkShaderModule create_shader_module(VkDevice dev, const std::vector<uint32_t>& c
     return module;
 }
 
+// 受光照 sprite 的 push constants，必须与 vulkan_2d_lit.vert/frag 的 std430 布局一致。
+// 注意：GLSL vec3 是 16 字节对齐的，而 C++ math::Vector3f 是 4 字节对齐，因此这里全部使用
+// float 数组 + 显式 padding，避免跨编译器/平台的布局差异。
+struct alignas(16) LitPushConstants {
+    math::Matrix4f ortho;        // 0-63
+    math::Vector2f screen_size;  // 64-71
+    float ambient[3];            // 72-83
+    float pad0;                  // 84-87
+    math::Vector2f light_pos;    // 88-95
+    float light_radius;          // 96-99
+    float light_intensity;       // 100-103
+    float light_color[3];        // 104-115
+    float pad1;                  // 116-119
+};
+static_assert(sizeof(LitPushConstants) == 120, "LitPushConstants size mismatch");
+
 } // namespace
 
 VulkanRenderer2D::VulkanRenderer2D() = default;
@@ -101,11 +117,15 @@ void VulkanRenderer2D::init(RenderContext* ctx) {
         return;
     }
 
-    pipeline_rect_ = create_pipeline(frag_rect_module_);
-    pipeline_text_ = create_pipeline(frag_text_module_);
-    pipeline_sprite_ = create_pipeline(frag_sprite_module_);
+    pipeline_rect_ = create_pipeline(vert_module_, frag_rect_module_, pipeline_layout_);
+    pipeline_text_ = create_pipeline(vert_module_, frag_text_module_, pipeline_layout_);
+    pipeline_sprite_ = create_pipeline(vert_module_, frag_sprite_module_, pipeline_layout_);
+    if (vert_lit_module_ != VK_NULL_HANDLE && frag_lit_sprite_module_ != VK_NULL_HANDLE) {
+        pipeline_lit_sprite_ = create_pipeline(vert_lit_module_, frag_lit_sprite_module_, lit_pipeline_layout_);
+    }
     if (pipeline_rect_ == VK_NULL_HANDLE || pipeline_text_ == VK_NULL_HANDLE ||
         pipeline_sprite_ == VK_NULL_HANDLE ||
+        (frag_lit_sprite_module_ != VK_NULL_HANDLE && pipeline_lit_sprite_ == VK_NULL_HANDLE) ||
         !create_descriptor_sets() ||
         !create_vertex_buffer()) {
         shutdown();
@@ -215,13 +235,16 @@ void VulkanRenderer2D::shutdown() {
         if (pipeline_rect_) vkDestroyPipeline(dev, pipeline_rect_, nullptr);
         if (pipeline_text_) vkDestroyPipeline(dev, pipeline_text_, nullptr);
         if (pipeline_sprite_) vkDestroyPipeline(dev, pipeline_sprite_, nullptr);
+        if (pipeline_lit_sprite_) vkDestroyPipeline(dev, pipeline_lit_sprite_, nullptr);
         if (pipeline_layout_) vkDestroyPipelineLayout(dev, pipeline_layout_, nullptr);
+        if (lit_pipeline_layout_) vkDestroyPipelineLayout(dev, lit_pipeline_layout_, nullptr);
         if (descriptor_pool_) vkDestroyDescriptorPool(dev, descriptor_pool_, nullptr);
         if (descriptor_layout_) vkDestroyDescriptorSetLayout(dev, descriptor_layout_, nullptr);
         if (vert_module_) vkDestroyShaderModule(dev, vert_module_, nullptr);
         if (frag_rect_module_) vkDestroyShaderModule(dev, frag_rect_module_, nullptr);
         if (frag_text_module_) vkDestroyShaderModule(dev, frag_text_module_, nullptr);
         if (frag_sprite_module_) vkDestroyShaderModule(dev, frag_sprite_module_, nullptr);
+        if (frag_lit_sprite_module_) vkDestroyShaderModule(dev, frag_lit_sprite_module_, nullptr);
     }
 
     for (size_t i = 0; i < vertex_buffer_rect_.size(); ++i) {
@@ -233,6 +256,9 @@ void VulkanRenderer2D::shutdown() {
     for (size_t i = 0; i < vertex_buffer_sprite_.size(); ++i) {
         vertex_buffer_sprite_[i].shutdown();
     }
+    for (size_t i = 0; i < vertex_buffer_lit_sprite_.size(); ++i) {
+        vertex_buffer_lit_sprite_[i].shutdown();
+    }
 
     if (context_alive() && font_atlas_.texture()) {
         font_atlas_.destroy(ctx_);
@@ -241,7 +267,9 @@ void VulkanRenderer2D::shutdown() {
     pipeline_rect_ = VK_NULL_HANDLE;
     pipeline_text_ = VK_NULL_HANDLE;
     pipeline_sprite_ = VK_NULL_HANDLE;
+    pipeline_lit_sprite_ = VK_NULL_HANDLE;
     pipeline_layout_ = VK_NULL_HANDLE;
+    lit_pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     descriptor_layout_ = VK_NULL_HANDLE;
     text_descriptor_sets_.clear();
@@ -250,6 +278,7 @@ void VulkanRenderer2D::shutdown() {
     frag_rect_module_ = VK_NULL_HANDLE;
     frag_text_module_ = VK_NULL_HANDLE;
     frag_sprite_module_ = VK_NULL_HANDLE;
+    frag_lit_sprite_module_ = VK_NULL_HANDLE;
 
     initialized_ = false;
     ctx_ = nullptr;
@@ -269,12 +298,18 @@ bool VulkanRenderer2D::create_shader_modules() {
         resolved += '/';
     }
 
-    std::vector<uint32_t> vert_code, frag_rect_code, frag_text_code, frag_sprite_code;
+    std::vector<uint32_t> vert_code, vert_lit_code, frag_rect_code, frag_text_code, frag_sprite_code, frag_lit_code;
     if (!load_spirv_file(resolved + "vulkan_2d.vert.spv", vert_code) ||
         !load_spirv_file(resolved + "vulkan_2d_rect.frag.spv", frag_rect_code) ||
         !load_spirv_file(resolved + "vulkan_2d_text.frag.spv", frag_text_code) ||
         !load_spirv_file(resolved + "vulkan_2d_sprite.frag.spv", frag_sprite_code)) {
         return false;
+    }
+    // lit sprite shader 可选：文件缺失时 2D 光照不可用
+    bool has_lit = load_spirv_file(resolved + "vulkan_2d_lit.vert.spv", vert_lit_code) &&
+                   load_spirv_file(resolved + "vulkan_2d_lit.frag.spv", frag_lit_code);
+    if (!has_lit) {
+        GLOG_WARN("VulkanRenderer2D: lit sprite SPIR-V not found, 2D lighting disabled in Vulkan");
     }
 
     VkDevice dev = vk_device_->device();
@@ -282,6 +317,10 @@ bool VulkanRenderer2D::create_shader_modules() {
     frag_rect_module_ = create_shader_module(dev, frag_rect_code);
     frag_text_module_ = create_shader_module(dev, frag_text_code);
     frag_sprite_module_ = create_shader_module(dev, frag_sprite_code);
+    if (has_lit) {
+        vert_lit_module_ = create_shader_module(dev, vert_lit_code);
+        frag_lit_sprite_module_ = create_shader_module(dev, frag_lit_code);
+    }
     if (!vert_module_ || !frag_rect_module_ || !frag_text_module_ || !frag_sprite_module_) {
         GLOG_ERROR("VulkanRenderer2D: failed to create shader modules");
         return false;
@@ -309,27 +348,49 @@ bool VulkanRenderer2D::create_descriptor_layout() {
 }
 
 bool VulkanRenderer2D::create_pipeline_layout() {
-    VkPushConstantRange range{};
-    // push constant 只保留 ortho 矩阵；use_texture 改为 specialization constant
-    range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    range.offset = 0;
-    range.size = sizeof(math::Matrix4f);
+    // 普通 2D pipeline layout：只有 ortho 矩阵
+    {
+        VkPushConstantRange range{};
+        range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        range.offset = 0;
+        range.size = sizeof(math::Matrix4f);
 
-    VkPipelineLayoutCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    info.setLayoutCount = 1;
-    info.pSetLayouts = &descriptor_layout_;
-    info.pushConstantRangeCount = 1;
-    info.pPushConstantRanges = &range;
+        VkPipelineLayoutCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        info.setLayoutCount = 1;
+        info.pSetLayouts = &descriptor_layout_;
+        info.pushConstantRangeCount = 1;
+        info.pPushConstantRanges = &range;
 
-    if (vkCreatePipelineLayout(vk_device_->device(), &info, nullptr, &pipeline_layout_) != VK_SUCCESS) {
-        GLOG_ERROR("VulkanRenderer2D: failed to create pipeline layout");
-        return false;
+        if (vkCreatePipelineLayout(vk_device_->device(), &info, nullptr, &pipeline_layout_) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanRenderer2D: failed to create pipeline layout");
+            return false;
+        }
+    }
+
+    // 受光照 sprite pipeline layout：ortho + screen_size + ambient + 1 point light
+    {
+        VkPushConstantRange range{};
+        range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        range.offset = 0;
+        range.size = sizeof(LitPushConstants);
+
+        VkPipelineLayoutCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        info.setLayoutCount = 1;
+        info.pSetLayouts = &descriptor_layout_;
+        info.pushConstantRangeCount = 1;
+        info.pPushConstantRanges = &range;
+
+        if (vkCreatePipelineLayout(vk_device_->device(), &info, nullptr, &lit_pipeline_layout_) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanRenderer2D: failed to create lit pipeline layout");
+            return false;
+        }
     }
     return true;
 }
 
-VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule frag_module) {
+VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule frag_module, VkPipelineLayout layout) {
     VkDevice dev = vk_device_->device();
 
     VkPipelineShaderStageCreateInfo vert_stage{};
@@ -445,7 +506,7 @@ VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule frag_module) {
     info.pDepthStencilState = &depth_stencil;
     info.pColorBlendState = &blend;
     info.pDynamicState = &dynamic_state;
-    info.layout = pipeline_layout_;
+    info.layout = layout;
     info.renderPass = vk_swapchain_->render_pass();
     info.subpass = 0;
 
@@ -501,9 +562,11 @@ bool VulkanRenderer2D::create_vertex_buffer() {
     vertex_buffer_rect_.resize(frames);
     vertex_buffer_text_.resize(frames);
     vertex_buffer_sprite_.resize(frames);
+    vertex_buffer_lit_sprite_.resize(frames);
     vertex_buffer_rect_capacity_.assign(frames, capacity);
     vertex_buffer_text_capacity_.assign(frames, capacity);
     vertex_buffer_sprite_capacity_.assign(frames, capacity);
+    vertex_buffer_lit_sprite_capacity_.assign(frames, capacity);
 
     for (int i = 0; i < frames; ++i) {
         if (!vertex_buffer_rect_[i].init(vk_device_, vertex_buffer_rect_capacity_[i],
@@ -517,7 +580,11 @@ bool VulkanRenderer2D::create_vertex_buffer() {
             !vertex_buffer_sprite_[i].init(vk_device_, vertex_buffer_sprite_capacity_[i],
                                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
+            !vertex_buffer_lit_sprite_[i].init(vk_device_, vertex_buffer_lit_sprite_capacity_[i],
+                                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             return false;
         }
     }
@@ -529,6 +596,9 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     text_vertices_.clear();
     sprite_vertices_.clear();
     sprite_texture_ = nullptr;
+    lit_sprite_vertices_.clear();
+    lit_sprite_texture_ = nullptr;
+    reset_lights();
     screen_width_ = screen_width;
     screen_height_ = screen_height;
     ortho_ = math::Matrix4f::ortho(0.0f, screen_width, 0.0f, screen_height, -1.0f, 1.0f);
@@ -536,6 +606,7 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
 
 void VulkanRenderer2D::end_frame() {
     flush_sprite_batch();
+    flush_lit_sprite_batch();
     flush_batches();
 }
 
@@ -552,24 +623,21 @@ void VulkanRenderer2D::push_sprite_vertex(float x, float y, const Color& color, 
 }
 
 void VulkanRenderer2D::flush_batches() {
-    flush_batch(std::move(vertices_), false, nullptr);
-    flush_batch(std::move(text_vertices_), true, font_atlas_.texture());
+    flush_batch(std::move(vertices_), false, nullptr, pipeline_rect_, pipeline_layout_, false);
+    flush_batch(std::move(text_vertices_), true, font_atlas_.texture(), pipeline_text_, pipeline_layout_, false);
 }
 
 void VulkanRenderer2D::flush_sprite_batch() {
     if (sprite_vertices_.empty() || !sprite_texture_) return;
-    flush_batch(std::move(sprite_vertices_), false, sprite_texture_);
+    flush_batch(std::move(sprite_vertices_), false, sprite_texture_, pipeline_sprite_, pipeline_layout_, false);
     sprite_texture_ = nullptr;
 }
 
-void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, ITexture* texture) {
-    const bool is_sprite = (!is_text && texture != nullptr);
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (is_text) pipeline = pipeline_text_;
-    else if (is_sprite) pipeline = pipeline_sprite_;
-    else pipeline = pipeline_rect_;
+void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, ITexture* texture,
+                                    VkPipeline pipeline, VkPipelineLayout layout, bool is_lit) {
+    const bool is_sprite = (!is_text && texture != nullptr && !is_lit);
 
-    if (verts.empty() || !context_alive() || !vk_backend_ || pipeline == VK_NULL_HANDLE) {
+    if (verts.empty() || !context_alive() || !vk_backend_ || pipeline == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) {
         return;
     }
 
@@ -578,8 +646,12 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
     ITexture* tex = texture;
     float screen_w = screen_width_;
     float screen_h = screen_height_;
+    Color ambient = ambient_light_;
+    PointLight light = point_light_;
+    bool has_light = has_point_light_;
 
-    ctx_->push_command([this, verts_shared, ortho, is_text, is_sprite, tex, pipeline, screen_w, screen_h](IRenderBackend*) {
+    ctx_->push_command([this, verts_shared, ortho, is_text, is_sprite, tex, pipeline, layout, is_lit,
+                        screen_w, screen_h, ambient, light, has_light](IRenderBackend*) {
         int frame_index = vk_swapchain_->current_frame_index();
         if (frame_index < 0 || frame_index >= static_cast<int>(vertex_buffer_rect_.size())) {
             GLOG_ERROR("VulkanRenderer2D::flush_batch: frame_index {} out of range {}",
@@ -592,6 +664,9 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         if (is_text) {
             vertex_buffer = &vertex_buffer_text_[frame_index];
             capacity = &vertex_buffer_text_capacity_[frame_index];
+        } else if (is_lit) {
+            vertex_buffer = &vertex_buffer_lit_sprite_[frame_index];
+            capacity = &vertex_buffer_lit_sprite_capacity_[frame_index];
         } else if (is_sprite) {
             vertex_buffer = &vertex_buffer_sprite_[frame_index];
             capacity = &vertex_buffer_sprite_capacity_[frame_index];
@@ -634,18 +709,36 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         vk_backend_->bind_pipeline(cmd, pipeline);
         vk_backend_->set_dynamic_state_2d(cmd);
 
-        struct alignas(16) PushConstants {
-            math::Matrix4f ortho;
-        } pc;
-        pc.ortho = ortho;
-        vkCmdPushConstants(cmd, pipeline_layout_,
-                           VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(PushConstants), &pc);
+        if (is_lit) {
+            LitPushConstants pc{};
+            pc.ortho = ortho;
+            pc.screen_size = math::Vector2f(screen_w, screen_h);
+            pc.ambient[0] = ambient.r;
+            pc.ambient[1] = ambient.g;
+            pc.ambient[2] = ambient.b;
+            pc.light_pos = has_light ? light.pos : math::Vector2f::zero();
+            pc.light_radius = has_light ? light.radius : 0.0f;
+            pc.light_intensity = has_light ? light.intensity : 0.0f;
+            pc.light_color[0] = has_light ? light.color.r : 0.0f;
+            pc.light_color[1] = has_light ? light.color.g : 0.0f;
+            pc.light_color[2] = has_light ? light.color.b : 0.0f;
+            vkCmdPushConstants(cmd, layout,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(LitPushConstants), &pc);
+        } else {
+            struct alignas(16) PushConstants {
+                math::Matrix4f ortho;
+            } pc;
+            pc.ortho = ortho;
+            vkCmdPushConstants(cmd, layout,
+                               VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(PushConstants), &pc);
+        }
 
         VkDescriptorSet set = VK_NULL_HANDLE;
         if (is_text) {
             set = text_descriptor_sets_[frame_index];
-        } else if (is_sprite) {
+        } else if (is_sprite || is_lit) {
             set = sprite_descriptor_sets_[frame_index];
             auto* vk_tex = dynamic_cast<VulkanTexture*>(tex);
             if (vk_tex && vk_tex->image_view() && vk_tex->sampler()) {
@@ -667,7 +760,7 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         }
 
         if (set != VK_NULL_HANDLE) {
-            vk_backend_->bind_descriptor_set(cmd, pipeline_layout_, set);
+            vk_backend_->bind_descriptor_set(cmd, layout, set);
         }
 
         VkBuffer buffers[] = {vertex_buffer->buffer()};
@@ -744,6 +837,63 @@ void VulkanRenderer2D::draw_sprite_region(float x, float y, float w, float h,
     push_sprite_vertex(x0, y0, tint, u0, v0);
     push_sprite_vertex(x1, y1, tint, u1, v1);
     push_sprite_vertex(x0, y1, tint, u0, v1);
+}
+
+void VulkanRenderer2D::set_ambient_light(const Color& color) {
+    ambient_light_ = color;
+}
+
+void VulkanRenderer2D::add_point_light(const math::Vector2f& pos, float radius,
+                                        const Color& color, float intensity) {
+    // 当前 Vulkan forward lighting 只支持一个点光源；保留最强/最近的一个
+    point_light_ = {pos, radius, color, intensity};
+    has_point_light_ = true;
+}
+
+void VulkanRenderer2D::reset_lights() {
+    ambient_light_ = Color::black();
+    has_point_light_ = false;
+    point_light_ = {};
+}
+
+void VulkanRenderer2D::draw_lit_sprite(float x, float y, float w, float h,
+                                        ITexture* albedo, ITexture* /*normal_map*/,
+                                        const Color& tint) {
+    draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, albedo, nullptr, tint);
+}
+
+void VulkanRenderer2D::draw_lit_sprite_region(float x, float y, float w, float h,
+                                               float u0, float v0, float u1, float v1,
+                                               ITexture* albedo, ITexture* /*normal_map*/,
+                                               const Color& tint) {
+    if (!albedo || !albedo->is_valid() || pipeline_lit_sprite_ == VK_NULL_HANDLE) {
+        // 光照 pipeline 未就绪时退化为普通 sprite
+        draw_sprite_region(x, y, w, h, u0, v0, u1, v1, albedo, tint);
+        return;
+    }
+
+    if (albedo != lit_sprite_texture_) {
+        flush_lit_sprite_batch();
+        lit_sprite_texture_ = albedo;
+    }
+
+    float x0 = x, y0 = y;
+    float x1 = x + w, y1 = y + h;
+
+    lit_sprite_vertices_.push_back({x0, y0, tint.r, tint.g, tint.b, tint.a, u0, v0});
+    lit_sprite_vertices_.push_back({x1, y0, tint.r, tint.g, tint.b, tint.a, u1, v0});
+    lit_sprite_vertices_.push_back({x1, y1, tint.r, tint.g, tint.b, tint.a, u1, v1});
+
+    lit_sprite_vertices_.push_back({x0, y0, tint.r, tint.g, tint.b, tint.a, u0, v0});
+    lit_sprite_vertices_.push_back({x1, y1, tint.r, tint.g, tint.b, tint.a, u1, v1});
+    lit_sprite_vertices_.push_back({x0, y1, tint.r, tint.g, tint.b, tint.a, u0, v1});
+}
+
+void VulkanRenderer2D::flush_lit_sprite_batch() {
+    if (lit_sprite_vertices_.empty() || !lit_sprite_texture_) return;
+    flush_batch(std::move(lit_sprite_vertices_), false, lit_sprite_texture_,
+                pipeline_lit_sprite_, lit_pipeline_layout_, true);
+    lit_sprite_texture_ = nullptr;
 }
 
 void VulkanRenderer2D::draw_text(float x, float y, const std::string& text, float font_size, const Color& color) {

@@ -473,9 +473,12 @@ void reset_game(scene::Scene* scene, int& score, int& coins, int& lives, bool& g
 
 int main(int argc, char* argv[]) {
     float auto_close_seconds = 0.0f;
+    std::string screenshot_path;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
+        } else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            screenshot_path = argv[++i];
         }
     }
 
@@ -891,6 +894,10 @@ int main(int argc, char* argv[]) {
                 });
             });
             render_ctx.present();
+            if (!screenshot_path.empty()) {
+                render_ctx.request_screenshot(screenshot_path);
+                screenshot_path.clear(); // 只截一次
+            }
         } else {
             // 画面未变化：不提交 ImGui 渲染命令，也不 present，保持 ImGui 帧状态正确
             imgui.end_frame([](ImDrawData*, std::shared_ptr<std::promise<void>> sync_promise) {

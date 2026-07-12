@@ -1,0 +1,361 @@
+ninja: Entering directory `build/debug'
+[1/5] Building CXX object core/CMakeFiles/gryce_core.dir/render/vulkan/vk_backend.cpp.obj
+In file included from D:/Gryce-Engine/core/render/vulkan/vk_backend.h:6,
+                 from D:/Gryce-Engine/core/render/vulkan/vk_backend.cpp:1:
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_viewport(int, int, int, int, uint32_t)':
+D:/Gryce-Engine/core/render/render.h:77:35: warning: unused parameter 'x' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                               ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:42: warning: unused parameter 'y' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                      ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:49: warning: unused parameter 'w' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                             ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:56: warning: unused parameter 'h' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                    ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:68: warning: unused parameter 'viewport_index' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                           ~~~~~~~~~^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_scissor(int, int, int, int)':
+D:/Gryce-Engine/core/render/render.h:78:34: warning: unused parameter 'x' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                              ~~~~^
+D:/Gryce-Engine/core/render/render.h:78:41: warning: unused parameter 'y' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                                     ~~~~^
+D:/Gryce-Engine/core/render/render.h:78:48: warning: unused parameter 'w' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                                            ~~~~^
+D:/Gryce-Engine/core/render/render.h:78:55: warning: unused parameter 'h' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                                                   ~~~~^
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_scissor(int, int, int, int, uint32_t)':
+D:/Gryce-Engine/core/render/render.h:79:34: warning: unused parameter 'x' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                              ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:41: warning: unused parameter 'y' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                     ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:48: warning: unused parameter 'w' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                            ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:55: warning: unused parameter 'h' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                   ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:67: warning: unused parameter 'viewport_index' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                          ~~~~~~~~~^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_blend_func(gryce_engine::render::BlendFactor, gryce_engine::render::BlendFactor)':
+D:/Gryce-Engine/core/render/render.h:83:45: warning: unused parameter 'src_factor' [-Wunused-parameter]
+   83 |     virtual void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {}
+      |                                 ~~~~~~~~~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h:83:69: warning: unused parameter 'dst_factor' [-Wunused-parameter]
+   83 |     virtual void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {}
+      |                                                         ~~~~~~~~~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_blend_equation(gryce_engine::render::BlendEquation)':
+D:/Gryce-Engine/core/render/render.h:84:51: warning: unused parameter 'mode' [-Wunused-parameter]
+   84 |     virtual void set_blend_equation(BlendEquation mode) {}
+      |                                     ~~~~~~~~~~~~~~^~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_swap_interval(int)':
+D:/Gryce-Engine/core/render/render.h:114:40: warning: unused parameter 'interval' [-Wunused-parameter]
+  114 |     virtual void set_swap_interval(int interval) {}
+      |                                    ~~~~^~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_gpu_busy_spin(bool, int)':
+D:/Gryce-Engine/core/render/render.h:115:41: warning: unused parameter 'enabled' [-Wunused-parameter]
+  115 |     virtual void set_gpu_busy_spin(bool enabled, int iterations) {}
+      |                                    ~~~~~^~~~~~~
+D:/Gryce-Engine/core/render/render.h:115:54: warning: unused parameter 'iterations' [-Wunused-parameter]
+  115 |     virtual void set_gpu_busy_spin(bool enabled, int iterations) {}
+      |                                                  ~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_nv_delay_before_swap(float)':
+D:/Gryce-Engine/core/render/render.h:116:49: warning: unused parameter 'seconds' [-Wunused-parameter]
+  116 |     virtual void set_nv_delay_before_swap(float seconds) {}
+      |                                           ~~~~~~^~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::request_screenshot(const std::string&)':
+D:/Gryce-Engine/core/render/render.h:127:56: warning: unused parameter 'path' [-Wunused-parameter]
+  127 |     virtual void request_screenshot(const std::string& path) {}
+      |                                     ~~~~~~~~~~~~~~~~~~~^~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_validation_enabled(bool)':
+D:/Gryce-Engine/core/render/render.h:136:46: warning: unused parameter 'enabled' [-Wunused-parameter]
+  136 |     virtual void set_validation_enabled(bool enabled) {}
+      |                                         ~~~~~^~~~~~~
+In file included from D:/Gryce-Engine/core/render/vulkan/vk_backend.h:10:
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkFence_T* gryce_engine::render::VulkanSwapchain::current_frame_fence() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:41:64: warning: conversion to 'std::vector<VkFence_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   41 |     VkFence current_frame_fence() const { return frame_fences_[current_frame_]; }
+      |                                                                ^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkSemaphore_T* gryce_engine::render::VulkanSwapchain::current_image_available_semaphore() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:56:96: warning: conversion to 'std::vector<VkSemaphore_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   56 |     VkSemaphore current_image_available_semaphore() const { return image_available_semaphores_[current_frame_]; }
+      |                                                                                                ^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkSemaphore_T* gryce_engine::render::VulkanSwapchain::current_render_finished_semaphore() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:57:96: warning: conversion to 'std::vector<VkSemaphore_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   57 |     VkSemaphore current_render_finished_semaphore() const { return render_finished_semaphores_[current_frame_]; }
+      |                                                                                                ^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkFence_T* gryce_engine::render::VulkanSwapchain::current_fence() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:58:58: warning: conversion to 'std::vector<VkFence_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   58 |     VkFence current_fence() const { return frame_fences_[current_frame_]; }
+      |                                                          ^~~~~~~~~~~~~~
+In file included from D:/Gryce-Engine/core/render/vulkan/vk_shader.h:3,
+                 from D:/Gryce-Engine/core/render/vulkan/vk_backend.h:12:
+D:/Gryce-Engine/core/render/shader.h: In member function 'virtual bool gryce_engine::render::IShader::load_program(const std::string&, const std::string&, gryce_engine::render::IFramebuffer*, bool, bool)':
+D:/Gryce-Engine/core/render/shader.h:74:50: warning: unused parameter 'name' [-Wunused-parameter]
+   74 |     virtual bool load_program(const std::string& name,
+      |                               ~~~~~~~~~~~~~~~~~~~^~~~
+D:/Gryce-Engine/core/render/shader.h:75:50: warning: unused parameter 'shader_dir' [-Wunused-parameter]
+   75 |                               const std::string& shader_dir,
+      |                               ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:76:45: warning: unused parameter 'target' [-Wunused-parameter]
+   76 |                               IFramebuffer* target = nullptr,
+      |                               ~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:77:36: warning: unused parameter 'color_output' [-Wunused-parameter]
+   77 |                               bool color_output = true,
+      |                               ~~~~~^~~~~~~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:78:36: warning: unused parameter 'post_process' [-Wunused-parameter]
+   78 |                               bool post_process = false) { return false; }
+      |                               ~~~~~^~~~~~~~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h: In member function 'virtual void gryce_engine::render::IShader::set_post_process_params(float, int)':
+D:/Gryce-Engine/core/render/shader.h:81:48: warning: unused parameter 'exposure' [-Wunused-parameter]
+   81 |     virtual void set_post_process_params(float exposure, int mode) {}
+      |                                          ~~~~~~^~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:81:62: warning: unused parameter 'mode' [-Wunused-parameter]
+   81 |     virtual void set_post_process_params(float exposure, int mode) {}
+      |                                                          ~~~~^~~~
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h: In member function 'virtual void gryce_engine::render::VulkanBackend::set_gpu_busy_spin(bool, int)':
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h:76:33: warning: unused parameter 'enabled' [-Wunused-parameter]
+   76 |     void set_gpu_busy_spin(bool enabled, int iterations) override {}
+      |                            ~~~~~^~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h:76:46: warning: unused parameter 'iterations' [-Wunused-parameter]
+   76 |     void set_gpu_busy_spin(bool enabled, int iterations) override {}
+      |                                          ~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h: In member function 'virtual void gryce_engine::render::VulkanBackend::set_nv_delay_before_swap(float)':
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h:77:41: warning: unused parameter 'seconds' [-Wunused-parameter]
+   77 |     void set_nv_delay_before_swap(float seconds) override {}
+      |                                   ~~~~~~^~~~~~~
+[2/5] Building CXX object core/CMakeFiles/gryce_core.dir/render/vulkan/vk_renderer2d.cpp.obj
+In file included from D:/Gryce-Engine/core/render/render_context.h:12,
+                 from D:/Gryce-Engine/core/render/renderer2d_impl.h:6,
+                 from D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.h:7,
+                 from D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:1:
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_viewport(int, int, int, int, uint32_t)':
+D:/Gryce-Engine/core/render/render.h:77:35: warning: unused parameter 'x' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                               ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:42: warning: unused parameter 'y' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                      ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:49: warning: unused parameter 'w' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                             ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:56: warning: unused parameter 'h' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                    ~~~~^
+D:/Gryce-Engine/core/render/render.h:77:68: warning: unused parameter 'viewport_index' [-Wunused-parameter]
+   77 |     virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                           ~~~~~~~~~^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_scissor(int, int, int, int)':
+D:/Gryce-Engine/core/render/render.h:78:34: warning: unused parameter 'x' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                              ~~~~^
+D:/Gryce-Engine/core/render/render.h:78:41: warning: unused parameter 'y' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                                     ~~~~^
+D:/Gryce-Engine/core/render/render.h:78:48: warning: unused parameter 'w' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                                            ~~~~^
+D:/Gryce-Engine/core/render/render.h:78:55: warning: unused parameter 'h' [-Wunused-parameter]
+   78 |     virtual void set_scissor(int x, int y, int w, int h) {}
+      |                                                   ~~~~^
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_scissor(int, int, int, int, uint32_t)':
+D:/Gryce-Engine/core/render/render.h:79:34: warning: unused parameter 'x' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                              ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:41: warning: unused parameter 'y' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                     ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:48: warning: unused parameter 'w' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                            ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:55: warning: unused parameter 'h' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                   ~~~~^
+D:/Gryce-Engine/core/render/render.h:79:67: warning: unused parameter 'viewport_index' [-Wunused-parameter]
+   79 |     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+      |                                                          ~~~~~~~~~^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_blend_func(gryce_engine::render::BlendFactor, gryce_engine::render::BlendFactor)':
+D:/Gryce-Engine/core/render/render.h:83:45: warning: unused parameter 'src_factor' [-Wunused-parameter]
+   83 |     virtual void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {}
+      |                                 ~~~~~~~~~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h:83:69: warning: unused parameter 'dst_factor' [-Wunused-parameter]
+   83 |     virtual void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {}
+      |                                                         ~~~~~~~~~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_blend_equation(gryce_engine::render::BlendEquation)':
+D:/Gryce-Engine/core/render/render.h:84:51: warning: unused parameter 'mode' [-Wunused-parameter]
+   84 |     virtual void set_blend_equation(BlendEquation mode) {}
+      |                                     ~~~~~~~~~~~~~~^~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_swap_interval(int)':
+D:/Gryce-Engine/core/render/render.h:114:40: warning: unused parameter 'interval' [-Wunused-parameter]
+  114 |     virtual void set_swap_interval(int interval) {}
+      |                                    ~~~~^~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_gpu_busy_spin(bool, int)':
+D:/Gryce-Engine/core/render/render.h:115:41: warning: unused parameter 'enabled' [-Wunused-parameter]
+  115 |     virtual void set_gpu_busy_spin(bool enabled, int iterations) {}
+      |                                    ~~~~~^~~~~~~
+D:/Gryce-Engine/core/render/render.h:115:54: warning: unused parameter 'iterations' [-Wunused-parameter]
+  115 |     virtual void set_gpu_busy_spin(bool enabled, int iterations) {}
+      |                                                  ~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_nv_delay_before_swap(float)':
+D:/Gryce-Engine/core/render/render.h:116:49: warning: unused parameter 'seconds' [-Wunused-parameter]
+  116 |     virtual void set_nv_delay_before_swap(float seconds) {}
+      |                                           ~~~~~~^~~~~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::request_screenshot(const std::string&)':
+D:/Gryce-Engine/core/render/render.h:127:56: warning: unused parameter 'path' [-Wunused-parameter]
+  127 |     virtual void request_screenshot(const std::string& path) {}
+      |                                     ~~~~~~~~~~~~~~~~~~~^~~~
+D:/Gryce-Engine/core/render/render.h: In member function 'virtual void gryce_engine::render::IRenderBackend::set_validation_enabled(bool)':
+D:/Gryce-Engine/core/render/render.h:136:46: warning: unused parameter 'enabled' [-Wunused-parameter]
+  136 |     virtual void set_validation_enabled(bool enabled) {}
+      |                                         ~~~~~^~~~~~~
+In file included from D:/Gryce-Engine/core/render/vulkan/vk_backend.h:10,
+                 from D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:14:
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkFence_T* gryce_engine::render::VulkanSwapchain::current_frame_fence() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:41:64: warning: conversion to 'std::vector<VkFence_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   41 |     VkFence current_frame_fence() const { return frame_fences_[current_frame_]; }
+      |                                                                ^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkSemaphore_T* gryce_engine::render::VulkanSwapchain::current_image_available_semaphore() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:56:96: warning: conversion to 'std::vector<VkSemaphore_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   56 |     VkSemaphore current_image_available_semaphore() const { return image_available_semaphores_[current_frame_]; }
+      |                                                                                                ^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkSemaphore_T* gryce_engine::render::VulkanSwapchain::current_render_finished_semaphore() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:57:96: warning: conversion to 'std::vector<VkSemaphore_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   57 |     VkSemaphore current_render_finished_semaphore() const { return render_finished_semaphores_[current_frame_]; }
+      |                                                                                                ^~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h: In member function 'VkFence_T* gryce_engine::render::VulkanSwapchain::current_fence() const':
+D:/Gryce-Engine/core/render/vulkan/vk_swapchain.h:58:58: warning: conversion to 'std::vector<VkFence_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+   58 |     VkFence current_fence() const { return frame_fences_[current_frame_]; }
+      |                                                          ^~~~~~~~~~~~~~
+In file included from D:/Gryce-Engine/core/render/vulkan/vk_shader.h:3,
+                 from D:/Gryce-Engine/core/render/vulkan/vk_backend.h:12:
+D:/Gryce-Engine/core/render/shader.h: In member function 'virtual bool gryce_engine::render::IShader::load_program(const std::string&, const std::string&, gryce_engine::render::IFramebuffer*, bool, bool)':
+D:/Gryce-Engine/core/render/shader.h:74:50: warning: unused parameter 'name' [-Wunused-parameter]
+   74 |     virtual bool load_program(const std::string& name,
+      |                               ~~~~~~~~~~~~~~~~~~~^~~~
+D:/Gryce-Engine/core/render/shader.h:75:50: warning: unused parameter 'shader_dir' [-Wunused-parameter]
+   75 |                               const std::string& shader_dir,
+      |                               ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:76:45: warning: unused parameter 'target' [-Wunused-parameter]
+   76 |                               IFramebuffer* target = nullptr,
+      |                               ~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:77:36: warning: unused parameter 'color_output' [-Wunused-parameter]
+   77 |                               bool color_output = true,
+      |                               ~~~~~^~~~~~~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:78:36: warning: unused parameter 'post_process' [-Wunused-parameter]
+   78 |                               bool post_process = false) { return false; }
+      |                               ~~~~~^~~~~~~~~~~~~~~~~~~~
+D:/Gryce-Engine/core/render/shader.h: In member function 'virtual void gryce_engine::render::IShader::set_post_process_params(float, int)':
+D:/Gryce-Engine/core/render/shader.h:81:48: warning: unused parameter 'exposure' [-Wunused-parameter]
+   81 |     virtual void set_post_process_params(float exposure, int mode) {}
+      |                                          ~~~~~~^~~~~~~~
+D:/Gryce-Engine/core/render/shader.h:81:62: warning: unused parameter 'mode' [-Wunused-parameter]
+   81 |     virtual void set_post_process_params(float exposure, int mode) {}
+      |                                                          ~~~~^~~~
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h: In member function 'virtual void gryce_engine::render::VulkanBackend::set_gpu_busy_spin(bool, int)':
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h:76:33: warning: unused parameter 'enabled' [-Wunused-parameter]
+   76 |     void set_gpu_busy_spin(bool enabled, int iterations) override {}
+      |                            ~~~~~^~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h:76:46: warning: unused parameter 'iterations' [-Wunused-parameter]
+   76 |     void set_gpu_busy_spin(bool enabled, int iterations) override {}
+      |                                          ~~~~^~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h: In member function 'virtual void gryce_engine::render::VulkanBackend::set_nv_delay_before_swap(float)':
+D:/Gryce-Engine/core/render/vulkan/vk_backend.h:77:41: warning: unused parameter 'seconds' [-Wunused-parameter]
+   77 |     void set_nv_delay_before_swap(float seconds) override {}
+      |                                   ~~~~~~^~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp: In member function 'bool gryce_engine::render::VulkanRenderer2D::create_descriptor_sets()':
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:534:55: warning: conversion to 'std::vector<VkDescriptorSetLayout_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  534 |     std::vector<VkDescriptorSetLayout> layouts(frames * 2, descriptor_layout_);
+      |                                                ~~~~~~~^~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp: In member function 'bool gryce_engine::render::VulkanRenderer2D::create_vertex_buffer()':
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:556:32: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  556 |     vertex_buffer_rect_.resize(frames);
+      |                                ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:557:32: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  557 |     vertex_buffer_text_.resize(frames);
+      |                                ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:558:34: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  558 |     vertex_buffer_sprite_.resize(frames);
+      |                                  ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:559:38: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  559 |     vertex_buffer_lit_sprite_.resize(frames);
+      |                                      ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:560:41: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  560 |     vertex_buffer_rect_capacity_.assign(frames, capacity);
+      |                                         ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:561:41: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  561 |     vertex_buffer_text_capacity_.assign(frames, capacity);
+      |                                         ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:562:43: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  562 |     vertex_buffer_sprite_capacity_.assign(frames, capacity);
+      |                                           ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:563:47: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  563 |     vertex_buffer_lit_sprite_capacity_.assign(frames, capacity);
+      |                                               ^~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:566:34: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  566 |         if (!vertex_buffer_rect_[i].init(vk_device_, vertex_buffer_rect_capacity_[i],
+      |                                  ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:566:83: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  566 |         if (!vertex_buffer_rect_[i].init(vk_device_, vertex_buffer_rect_capacity_[i],
+      |                                                                                   ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:570:34: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  570 |             !vertex_buffer_text_[i].init(vk_device_, vertex_buffer_text_capacity_[i],
+      |                                  ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:570:83: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  570 |             !vertex_buffer_text_[i].init(vk_device_, vertex_buffer_text_capacity_[i],
+      |                                                                                   ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:574:36: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  574 |             !vertex_buffer_sprite_[i].init(vk_device_, vertex_buffer_sprite_capacity_[i],
+      |                                    ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:574:87: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  574 |             !vertex_buffer_sprite_[i].init(vk_device_, vertex_buffer_sprite_capacity_[i],
+      |                                                                                       ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:578:40: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  578 |             !vertex_buffer_lit_sprite_[i].init(vk_device_, vertex_buffer_lit_sprite_capacity_[i],
+      |                                        ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:578:95: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  578 |             !vertex_buffer_lit_sprite_[i].init(vk_device_, vertex_buffer_lit_sprite_capacity_[i],
+      |                                                                                               ^
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp: In lambda function:
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:659:50: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  659 |             vertex_buffer = &vertex_buffer_text_[frame_index];
+      |                                                  ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:660:54: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  660 |             capacity = &vertex_buffer_text_capacity_[frame_index];
+      |                                                      ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:662:56: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  662 |             vertex_buffer = &vertex_buffer_lit_sprite_[frame_index];
+      |                                                        ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:663:60: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  663 |             capacity = &vertex_buffer_lit_sprite_capacity_[frame_index];
+      |                                                            ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:665:52: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  665 |             vertex_buffer = &vertex_buffer_sprite_[frame_index];
+      |                                                    ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:666:56: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  666 |             capacity = &vertex_buffer_sprite_capacity_[frame_index];
+      |                                                        ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:668:50: warning: conversion to 'std::vector<gryce_engine::render::VulkanBuffer>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  668 |             vertex_buffer = &vertex_buffer_rect_[frame_index];
+      |                                                  ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:669:54: warning: conversion to 'std::vector<long long unsigned int>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  669 |             capacity = &vertex_buffer_rect_capacity_[frame_index];
+      |                                                      ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:744:41: warning: conversion to 'std::vector<VkDescriptorSet_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  744 |             set = text_descriptor_sets_[frame_index];
+      |                                         ^~~~~~~~~~~
+D:/Gryce-Engine/core/render/vulkan/vk_renderer2d.cpp:746:43: warning: conversion to 'std::vector<VkDescriptorSet_T*>::size_type' {aka 'long long unsigned int'} from 'int' may change the sign of the result [-Wsign-conversion]
+  746 |             set = sprite_descriptor_sets_[frame_index];
+      |                                           ^~~~~~~~~~~
+[3/5] Linking CXX static library lib\Debug\libgryce_core.a
+[4/5] Linking CXX executable bin\Debug\gt2dDemo.exe; Copying runtime DLL: D:/msys64/ucrt64/bin/glew32.dll; Copying runtime DLL: D:/msys64/ucrt64/bin/glfw3.dll
+[5/5] Linking CXX executable bin\Debug\3dtest.exe; Copying runtime DLL: D:/msys64/ucrt64/bin/glew32.dll; Copying runtime DLL: D:/msys64/ucrt64/bin/glfw3.dll

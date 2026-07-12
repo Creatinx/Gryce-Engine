@@ -103,10 +103,6 @@ void Scene::init() {
         root->on_start();
     }
 }
-    for (auto& root : roots_) {
-        root->on_init();
-    }
-}
 
 void Scene::update(float dt) {
     for (auto& root : roots_) {

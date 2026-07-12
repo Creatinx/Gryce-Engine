@@ -1,5 +1,6 @@
 #include "entity.h"
 
+#include "components/component_factory.h"
 #include "render/render_context.h"
 #include "utils/glog/glog_lib.h"
 

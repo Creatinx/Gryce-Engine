@@ -57,8 +57,6 @@ public:
     void on_disable() override;
     void on_update(float dt) override;
     void on_destroy() override;
-    void on_update(float dt) override;
-    void on_destroy() override;
 
     // 立即播放一次；若当前已有非循环实例在播放，会先停止。
     void play();

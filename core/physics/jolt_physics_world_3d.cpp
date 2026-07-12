@@ -2,10 +2,6 @@
 
 #ifdef GRYCE_HAS_JOLT
 
-#include "physics/jolt_physics_world_3d.h"
-
-#ifdef GRYCE_HAS_JOLT
-
 #include <atomic>
 
 #include <Jolt/RegisterTypes.h>

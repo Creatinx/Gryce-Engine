@@ -112,6 +112,8 @@ python build.py --cache-dir D:/gryce_deps_cache
 ```
 
 > 首次构建时，`build.py` 会预下载 assimp/glfw 等 tar.gz 依赖到 `deps_cache/` 目录，并显示进度条。若安装了 `rich` 则使用彩色进度条，否则显示 ASCII 百分比条。安装 rich：`pip install rich`。
+> 
+> `deps_cache/` 为本地缓存目录，**不上传 Git**，首次 clone 后需自行下载或让 build.py 自动下载。
 
 #### 方式 D：MSVC（Visual Studio 2022+）
 

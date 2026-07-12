@@ -3,6 +3,9 @@ build/
 cmake-build-*/
 out/
 
+# Dependency cache (downloaded tar.gz, local only)
+deps_cache/
+
 # IDE
 .idea/
 .vs/

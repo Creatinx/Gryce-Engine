@@ -79,9 +79,19 @@ private:
 
     void push_vertex(float x, float y, const Color& color, float u, float v);
     void push_text_vertex(float x, float y, const Color& color, float u, float v);
-    void push_lit_vertex(float x, float y, const Color& color, float u, float v, float nu, float nv);
+    void push_lit_vertex(ITexture* albedo, ITexture* normal,
+                         float x, float y, const Color& color,
+                         float u, float v, float nu, float nv);
     void flush_batches();
     void flush_batch(std::vector<Vertex2D>&& verts, bool is_text);
+
+    // 受光照精灵批次：按 (albedo, normal) 纹理分组，减少 gbuffer 状态切换
+    struct LitBatch {
+        ITexture* albedo = nullptr;
+        ITexture* normal = nullptr;
+        std::vector<LitVertex2D> verts;
+    };
+    std::vector<LitBatch>::iterator find_lit_batch(ITexture* albedo, ITexture* normal);
 
     void ensure_lighting_resources();
     void resize_lighting_targets(int w, int h);
@@ -98,7 +108,7 @@ private:
     FontAtlas font_atlas_;
     std::vector<Vertex2D> vertices_;       // 普通图形顶点（无纹理）
     std::vector<Vertex2D> text_vertices_;  // 文字顶点（使用字体图集）
-    std::vector<LitVertex2D> lit_vertices_; // 受光照精灵顶点
+    std::vector<LitBatch> lit_batches_;    // 受光照精灵批次（按纹理分组）
     math::Matrix4f ortho_;
     math::Matrix4f view_proj_;
     math::Vector2f camera_center_ = math::Vector2f::zero();
@@ -124,6 +134,13 @@ private:
     RHITextureHandle normal_tex_;
     int lighting_width_ = 0;
     int lighting_height_ = 0;
+    bool lighting_resources_ready_ = false;
+
+    // OpenGL 原生光照资源（延迟光照直接操作 GL，避免 RenderContext 命令队列延迟）
+    unsigned int gl_albedo_tex_ = 0;
+    unsigned int gl_normal_tex_ = 0;
+    unsigned int gl_albedo_fbo_ = 0;
+    unsigned int gl_normal_fbo_ = 0;
 };
 
 } // namespace gryce_engine::render
