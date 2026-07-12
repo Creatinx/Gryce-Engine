@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gryce Engine — 一键构建脚本（Windows，支持 MinGW-w64 / MSVC）"""
+"""Gryce Engine -- one-click build script (Windows, MinGW-w64 / MSVC)"""
 
 import argparse
 import hashlib
@@ -37,7 +37,7 @@ DEPENDENCIES = {
         "url": "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz",
         "filename": "glfw-3.4.tar.gz",
         "sha256": None,
-        "required": False,  # Optional: glfw is typically already installed
+        "required": False,
     },
     "assimp": {
         "url": "https://github.com/assimp/assimp/archive/refs/tags/v5.4.3.tar.gz",
@@ -49,7 +49,7 @@ DEPENDENCIES = {
 
 
 # ---------------------------------------------------------------------------
-# Download helpers — every download shows a progress bar
+# Download helpers -- every download shows a progress bar
 # ---------------------------------------------------------------------------
 def _download_simple(url, dest, description=""):
     """Fallback download with manual percentage progress bar."""
@@ -76,7 +76,7 @@ def _download_simple(url, dest, description=""):
                     pct = downloaded / total
                     bar_len = 30
                     filled = int(bar_len * pct)
-                    bar = "█" * filled + "░" * (bar_len - filled)
+                    bar = "#" * filled + "-" * (bar_len - filled)
                     eta = (total - downloaded) / speed if speed > 0 else 0
                     print(
                         f"\r  {desc} |{bar}| {pct*100:5.1f}% "
@@ -86,7 +86,7 @@ def _download_simple(url, dest, description=""):
                     )
                 else:
                     print(f"\r  {desc} {downloaded/1024/1024:.1f} MB downloaded", end="", flush=True)
-        print()  # newline after completion
+        print()
 
 
 def _download_rich(url, dest, description=""):
@@ -105,11 +105,11 @@ def _download_rich(url, dest, description=""):
             TextColumn(f"[bold blue]{description}"),
             BarColumn(bar_width=40),
             "[progress.percentage]{task.percentage:>3.0f}%",
-            "•",
+            "*",
             DownloadColumn(binary_units=True),
-            "•",
+            "*",
             TransferSpeedColumn(),
-            "•",
+            "*",
             TimeRemainingColumn(),
             console=console,
         ) as progress:
@@ -127,7 +127,6 @@ def download_with_progress(url, dest, description=""):
     """Download a file with progress bar (rich if available, else manual)."""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
 
-    # Try rich first; fallback to manual percentage bar on ImportError
     try:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Downloading {description} from {url} ...")
         _download_rich(url, dest, description)
@@ -157,7 +156,6 @@ def prefetch_dependencies(cache_dir):
     for name, info in DEPENDENCIES.items():
         dest = cache_path / info["filename"]
         if dest.exists():
-            # Verify SHA256 if available
             if info["sha256"]:
                 with open(dest, "rb") as f:
                     actual = hashlib.sha256(f.read()).hexdigest()
@@ -199,7 +197,6 @@ def run(cmd, cwd=None, check=False, stream=True):
                 sys.exit(1)
             return result.returncode == 0, output
 
-        # Stream mode: real-time output so user sees progress
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, shell=(os.name == 'nt')
@@ -231,7 +228,6 @@ def find_msys2_mingw():
         Path("C:/msys64/mingw64/bin"),
         Path("C:/msys64/clang64/bin"),
     ]
-    # Also check MSYS2_PREFIX env var
     if os.environ.get("MSYS2_PREFIX"):
         candidates.insert(0, Path(os.environ["MSYS2_PREFIX"]) / "bin")
 
@@ -243,12 +239,40 @@ def find_msys2_mingw():
     return None, None, None
 
 
+def clean_build_artifacts(build_dir, keep_deps=True):
+    """Remove build artifacts but optionally preserve _deps/ cache."""
+    import shutil
+    bd = Path(build_dir)
+    if not bd.exists():
+        return
+
+    if not keep_deps:
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (including _deps) ...")
+        shutil.rmtree(bd)
+        return
+
+    print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (preserving _deps cache) ...")
+    # Preserve _deps/ directory; remove everything else
+    deps_dir = bd / "_deps"
+    if deps_dir.exists():
+        # Move _deps to a temp location, rmtree build_dir, restore _deps
+        import tempfile
+        tmp = Path(tempfile.gettempdir()) / f"gryce_deps_{os.getpid()}"
+        shutil.move(str(deps_dir), str(tmp))
+        shutil.rmtree(bd)
+        bd.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tmp), str(deps_dir))
+        print(f"{C_OK}[OK]{C_RESET} Preserved dependency cache: {deps_dir}")
+    else:
+        shutil.rmtree(bd)
+
+
 # ---------------------------------------------------------------------------
 # Build logic
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Gryce Engine build script — wrapper around cmake + ninja"
+        description="Gryce Engine build script -- wrapper around cmake + ninja"
     )
     parser.add_argument(
         "config", nargs="?", default="Debug",
@@ -257,7 +281,11 @@ def main():
     )
     parser.add_argument(
         "--clean", action="store_true",
-        help="Remove build directory and reconfigure from scratch"
+        help="Clean build artifacts but preserve FetchContent _deps/ cache"
+    )
+    parser.add_argument(
+        "--clean-all", action="store_true",
+        help="Remove entire build directory including _deps/ (forces re-download)"
     )
     parser.add_argument(
         "--verbose", action="store_true",
@@ -335,31 +363,6 @@ def main():
                 "        python build.py\n"
             )
             sys.exit(1)
-            print(f"""
-{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}
-
-This project supports:
-  * MSYS2 UCRT64 MinGW-w64 (recommended)
-  * MSVC (Visual Studio 2022+)
-  • MSYS2 UCRT64 MinGW-w64 (recommended)
-  • MSVC (Visual Studio 2022+)
-
-For MinGW (MSYS2 UCRT64 terminal):
-    pacman -S mingw-w64-ucrt-x86_64-gcc \\
-              mingw-w64-ucrt-x86_64-cmake \\
-              mingw-w64-ucrt-x86_64-ninja \\
-              mingw-w64-ucrt-x86_64-glew \\
-              mingw-w64-ucrt-x86_64-glfw
-
-Then either:
-    1. Run this script from the MSYS2 UCRT64 terminal.
-    2. Add C:\\msys64\\ucrt64\\bin to your system PATH and retry.
-
-For MSVC:
-    Open "x64 Native Tools Command Prompt for VS 2022" and run:
-        python build.py
-""")
-            sys.exit(1)
     else:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} --no-lock: using CMake default compiler detection")
         compiler_family = "auto"
@@ -395,16 +398,14 @@ For MSVC:
     # -----------------------------------------------------------------------
     # 4. Clean if requested
     # -----------------------------------------------------------------------
-    if args.clean and build_dir.exists():
-        print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {build_dir} ...")
-        import shutil as _shutil
-        _shutil.rmtree(build_dir)
+    if args.clean_all and build_dir.exists():
+        clean_build_artifacts(build_dir, keep_deps=False)
+    elif args.clean and build_dir.exists():
+        clean_build_artifacts(build_dir, keep_deps=True)
 
     # -----------------------------------------------------------------------
     # 5. Configure
     # -----------------------------------------------------------------------
-    # Only trust build.ninja as the marker of a valid configuration.
-    # A stale CMakeCache.txt (from a failed MSVC run) must not skip configure.
     if not (build_dir / "build.ninja").exists():
         if build_dir.exists():
             print(f"{C_WARN}[Gryce Engine]{C_RESET} {build_dir} exists but has no build.ninja, reconfiguring ...")
@@ -422,7 +423,6 @@ For MSVC:
                 "-DCMAKE_CXX_COMPILER=" + gxx_path,
             ]
 
-        # Pass cache directory to cmake
         configure_cmd += [
             "-DGRYCE_CACHE_DIR=" + str(Path(args.cache_dir).resolve()),
         ]
