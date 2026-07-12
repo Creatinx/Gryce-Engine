@@ -104,7 +104,14 @@ python build.py --clean
 # 指定并行任务数
 python build.py --jobs 8
 
-# 不预下载依赖（让 CMake 自行下载）
+# 不使用预下载（让 CMake 自行下载）
+python build.py --no-prefetch
+
+# 国内镜像加速（ghproxy.com fallback）
+python build.py --mirror
+
+# 自定义缓存目录
+python build.py --cache-dir D:/gryce_deps_cache
 python build.py --no-prefetch
 
 # 不使用国内镜像（ghproxy.com）

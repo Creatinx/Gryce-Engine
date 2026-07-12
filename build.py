@@ -92,11 +92,13 @@ def _download_rich(url, dest, description=""):
                     progress.update(task, advance=len(chunk))
 
 
-def download_with_progress(url, dest, description="", use_mirror=True):
+def download_with_progress(url, dest, description="", use_mirror=False):
     """Download a file with progress bar (rich if available)."""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
 
-    urls = []
+    urls = [url]  # GitHub 优先
+    if use_mirror:
+        urls.append(MIRROR_PREFIX + url)
     if use_mirror:
         urls.append(MIRROR_PREFIX + url)
     urls.append(url)
@@ -254,8 +256,8 @@ def main():
         help="Skip pre-downloading dependencies to cache"
     )
     parser.add_argument(
-        "--no-mirror", action="store_true",
-        help="Do NOT use ghproxy.com mirror for GitHub downloads"
+        "--mirror", action="store_true",
+        help="Use ghproxy.com mirror for GitHub downloads (fallback if direct fails)"
     )
     args = parser.parse_args()
 
@@ -329,7 +331,7 @@ Then either:
     # 3. Pre-fetch dependencies
     # -----------------------------------------------------------------------
     if not args.no_prefetch:
-        prefetch_dependencies(args.cache_dir, use_mirror=not args.no_mirror)
+        prefetch_dependencies(args.cache_dir, use_mirror=args.mirror)
     else:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Skipping dependency prefetch (--no-prefetch)")
 
