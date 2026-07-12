@@ -16,13 +16,13 @@ namespace gryce_engine::scene {
 class SceneSerializer {
 public:
     static nlohmann::json serialize(const Scene& scene);
+    static nlohmann::json serialize_entity(const Entity& entity);
     static std::unique_ptr<Scene> deserialize(const nlohmann::json& json);
 
     static bool save_to_file(const Scene& scene, const std::string& path);
     static std::unique_ptr<Scene> load_from_file(const std::string& path);
 
 private:
-    static nlohmann::json serialize_entity(const Entity& entity);
     static std::unique_ptr<Entity> deserialize_entity(const nlohmann::json& json,
                                                        std::unordered_map<UUID, Entity*>& entity_map);
 };

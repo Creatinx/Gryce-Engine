@@ -72,6 +72,7 @@ VkShaderModule create_shader_module(VkDevice dev, const std::vector<uint32_t>& c
 // 受光照 sprite 的 push constants，必须与 vulkan_2d_lit.vert/frag 的 std430 布局一致。
 // 注意：GLSL vec3 是 16 字节对齐的，而 C++ math::Vector3f 是 4 字节对齐，因此这里全部使用
 // float 数组 + 显式 padding，避免跨编译器/平台的布局差异。
+// 整个 block 按 16 字节补齐到 128 字节，与 GLSL std430 块末尾填充一致。
 struct alignas(16) LitPushConstants {
     math::Matrix4f ortho;        // 0-63
     math::Vector2f screen_size;  // 64-71
@@ -82,8 +83,9 @@ struct alignas(16) LitPushConstants {
     float light_intensity;       // 100-103
     float light_color[3];        // 104-115
     float pad1;                  // 116-119
+    float pad2[2];               // 120-127
 };
-static_assert(sizeof(LitPushConstants) == 120, "LitPushConstants size mismatch");
+static_assert(sizeof(LitPushConstants) == 128, "LitPushConstants size mismatch");
 
 } // namespace
 

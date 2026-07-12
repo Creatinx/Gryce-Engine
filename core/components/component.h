@@ -39,6 +39,10 @@ public:
     virtual void on_render(render::RenderContext& ctx) { (void)ctx; } // 每帧渲染（可选）
     virtual void on_destroy() {}                      // 组件销毁前
 
+    // 运行时状态快照（用于热重载保留）
+    virtual void snapshot_runtime_state(nlohmann::json& out) const { (void)out; }
+    virtual void restore_runtime_state(const nlohmann::json& in) { (void)in; }
+
     scene::Entity* owner() const { return owner_; }
 
     bool enabled = true;

@@ -36,9 +36,14 @@ public:
     Entity(Entity&&) = default;
     Entity& operator=(Entity&&) = default;
 
+    // Dirty tracking for delta save / hot reload
+    void mark_dirty() { dirty_ = true; }
+    bool is_dirty() const { return dirty_; }
+    void clear_dirty() { dirty_ = false; }
+
     // 标识
     const std::string& name() const { return name_; }
-    void set_name(const std::string& name) { name_ = name; }
+    void set_name(const std::string& name) { name_ = name; mark_dirty(); }
 
     const UUID& uuid() const { return uuid_; }
     void set_uuid(const UUID& id) { uuid_ = id; }
@@ -64,6 +69,7 @@ public:
         if (store_) {
             store_->register_component(id_, std::type_index(typeid(T)), ptr);
         }
+        mark_dirty();
         return ptr;
     }
 
@@ -104,6 +110,10 @@ public:
     // 深拷贝自身（生成新 UUID 和新 EntityID），不关联任何 store/parent
     std::unique_ptr<Entity> clone() const;
 
+    // 运行时状态快照（用于热重载时保留）
+    nlohmann::json snapshot_runtime_state() const;
+    void restore_runtime_state(const nlohmann::json& json);
+
 private:
     static ecs::EntityID generate_id();
 
@@ -118,6 +128,8 @@ private:
     components::Transform* transform_ = nullptr; // 指向 components_ 中的 Transform
 
     ecs::ComponentStore* store_ = nullptr;
+
+    bool dirty_ = false; // 标记自上次保存后是否变更
 };
 
 } // namespace gryce_engine::scene

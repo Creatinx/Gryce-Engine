@@ -51,6 +51,7 @@ components::Component* Entity::add_component(std::unique_ptr<components::Compone
     }
     // 生命周期：awake（组件已挂载但场景尚未开始）
     raw->on_awake();
+    mark_dirty();
     return raw;
 }
 
@@ -64,6 +65,7 @@ bool Entity::remove_component(components::Component* comp) {
             comp->on_disable();
             comp->on_detach();
             components_.erase(it);
+            mark_dirty();
             return true;
         }
     }
@@ -232,6 +234,39 @@ std::unique_ptr<Entity> Entity::clone() const {
     }
 
     return clone_entity;
+}
+
+nlohmann::json Entity::snapshot_runtime_state() const {
+    nlohmann::json out;
+    out["uuid"] = uuid_.str();
+    out["enabled"] = enabled;
+
+    nlohmann::json comps = nlohmann::json::array();
+    for (const auto& comp : components_) {
+        if (comp->type() == std::string("Transform")) continue;
+        nlohmann::json c_json;
+        c_json["type"] = comp->type();
+        comp->snapshot_runtime_state(c_json);
+        if (!c_json.empty()) {
+            comps.push_back(c_json);
+        }
+    }
+    if (!comps.empty()) {
+        out["components"] = comps;
+    }
+    return out;
+}
+
+void Entity::restore_runtime_state(const nlohmann::json& json) {
+    enabled = json.value("enabled", true);
+    for (const auto& c_json : json.value("components", nlohmann::json::array())) {
+        std::string type = c_json.value("type", "");
+        if (type.empty()) continue;
+        auto* comp = get_component_by_type(type);
+        if (comp) {
+            comp->restore_runtime_state(c_json);
+        }
+    }
 }
 
 } // namespace gryce_engine::scene

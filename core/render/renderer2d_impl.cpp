@@ -167,7 +167,9 @@ void main() {
     vec3 lit = albedo * uAmbientLight;
 
     if (uPassType == 1 && uLightRadius > 0.0) {
-        vec2 fragPos = vTexCoord * uScreenSize;
+        // OpenGL 纹理/屏幕坐标：vTexCoord.y=0 在底部；而 world_to_screen 返回 y=0 在顶部。
+        // 将 fragment 位置转换到与光源一致的“y=0 在顶部”屏幕坐标系。
+        vec2 fragPos = vec2(vTexCoord.x * uScreenSize.x, (1.0 - vTexCoord.y) * uScreenSize.y);
         vec2 toLight = uLightPos - fragPos;
         float dist = length(toLight);
         if (dist <= uLightRadius) {
@@ -451,8 +453,8 @@ void Renderer2D::end_frame() {
     flush_batches();
 
     // 2. 若有受光照精灵，执行延迟光照
-    GLOG_INFO("Renderer2D: {} lit batches, gbuffer_valid={} light_valid={}",
-              lit_batches_.size(), gbuffer_shader_.is_valid(), light_shader_.is_valid());
+    GLOG_DEBUG("Renderer2D: {} lit batches, gbuffer_valid={} light_valid={}",
+               lit_batches_.size(), gbuffer_shader_.is_valid(), light_shader_.is_valid());
     if (!lit_batches_.empty() && context_alive() && gbuffer_shader_.is_valid() && light_shader_.is_valid() && fullscreen_mesh_.is_valid()) {
         render_lit_geometry_to_gbuffer();
     }
@@ -871,8 +873,8 @@ void Renderer2D::draw_lit_sprite_region(float x, float y, float w, float h,
                                          ITexture* albedo, ITexture* normal_map,
                                          const Color& tint) {
     if (!context_alive()) return;
-    GLOG_INFO("draw_lit_sprite_region: x={} y={} w={} h={} albedo={} normal={} tint=({},{},{})",
-              x, y, w, h, (void*)albedo, (void*)normal_map, tint.r, tint.g, tint.b);
+    GLOG_DEBUG("draw_lit_sprite_region: x={} y={} w={} h={} albedo={} normal={} tint=({},{},{})",
+               x, y, w, h, (void*)albedo, (void*)normal_map, tint.r, tint.g, tint.b);
 
     float x0 = x, y0 = y;
     float x1 = x + w, y1 = y + h;
