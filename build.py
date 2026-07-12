@@ -156,6 +156,10 @@ def prefetch_dependencies(cache_dir):
     for name, info in DEPENDENCIES.items():
         dest = cache_path / info["filename"]
         if dest.exists():
+            print(f"{C_OK}[OK]{C_RESET} {name}: cached {dest}")
+            continue
+        dest = cache_path / info["filename"]
+        if dest.exists():
             if info["sha256"]:
                 with open(dest, "rb") as f:
                     actual = hashlib.sha256(f.read()).hexdigest()
