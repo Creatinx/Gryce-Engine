@@ -58,6 +58,7 @@ if(WIN32 AND MINGW)
     set(_runtime_dlls
         ${_compiler_dir}/glew32.dll
         ${_compiler_dir}/glfw3.dll
+        ${_compiler_dir}/libwinpthread-1.dll
     )
     foreach(_target IN ITEMS 3dtest gt2dDemo)
         foreach(_dll IN LISTS _runtime_dlls)

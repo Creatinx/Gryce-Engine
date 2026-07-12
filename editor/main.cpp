@@ -58,7 +58,7 @@
 #include "utils/glog/glog_lib.h"
 #include "utils/frame_limiter.h"
 #include "ecs/world.h"
-#include "ecs/systems/physics_system.h"
+#include "ecs/systems/physics_system_3d.h"
 #include "ecs/systems/render_system_2d.h"
 #include "ecs/systems/render_system_3d.h"
 #include "render/render_pipeline.h"
@@ -505,7 +505,7 @@ int main(int argc, char* argv[])
     ecs::World world;
     if (current_scene) {
         world.attach_scene(std::move(current_scene));
-        world.add_system<ecs::PhysicsSystem>();
+        world.add_system<ecs::PhysicsSystem3D>();
         world.add_system<ecs::RenderSystem3D>(&pipeline);
         if (renderer2d) {
             world.add_system<ecs::RenderSystem2D>(renderer2d.get());

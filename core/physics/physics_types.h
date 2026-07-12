@@ -2,6 +2,7 @@
 
 #include "math/math.h"
 #include <cstdint>
+#include <limits>
 
 namespace gryce_engine::physics {
 
@@ -10,9 +11,10 @@ using BodyHandle = uint32_t;
 using ShapeHandle = uint32_t;
 using JointHandle = uint32_t;
 
-constexpr BodyHandle k_invalid_body = 0;
-constexpr ShapeHandle k_invalid_shape = 0;
-constexpr JointHandle k_invalid_joint = 0;
+// 使用最大值作为无效句柄，避免与合法索引 0 冲突（第一个 shape/body 的索引通常是 0）
+constexpr BodyHandle k_invalid_body = std::numeric_limits<BodyHandle>::max();
+constexpr ShapeHandle k_invalid_shape = std::numeric_limits<ShapeHandle>::max();
+constexpr JointHandle k_invalid_joint = std::numeric_limits<JointHandle>::max();
 
 enum class BodyType {
     Static,
@@ -32,6 +34,7 @@ struct ShapeDesc {
     math::Vector3f size{1.0f, 1.0f, 1.0f}; // box half-extents, sphere radius in x, etc.
     math::Vector3f offset;
     math::Quaternionf rotation;
+    float density = 1.0f; // 用于后端根据体积自动计算质量（kg/m^3 相对值）
 };
 
 struct BodyDesc {
@@ -44,6 +47,7 @@ struct BodyDesc {
     float linear_damping = 0.0f;
     float angular_damping = 0.0f;
     bool allow_sleep = true;
+    ShapeHandle shape = k_invalid_shape; // 创建 body 时直接附带一个 shape
 };
 
 struct MaterialDesc {

@@ -60,7 +60,7 @@
 #include "utils/glog/glog_lib.h"
 #include "utils/frame_limiter.h"
 #include "ecs/world.h"
-#include "ecs/systems/physics_system.h"
+#include "ecs/systems/physics_system_3d.h"
 #include "ecs/systems/fracture_system.h"
 #include "ecs/systems/render_system_2d.h"
 #include "ecs/systems/render_system_3d.h"
@@ -70,6 +70,9 @@
 #include "ui/debug_panel.h"
 
 using namespace gryce_engine;
+
+// 前向声明：定义在文件后部的工具函数
+static math::Vector3f mul_per_component(const math::Vector3f& a, const math::Vector3f& b);
 
 // ---------------------------------------------------------------------------
 // 生成测试纹理（棋盘格 BMP，top-down，24bpp）
@@ -398,56 +401,144 @@ static std::vector<render::RenderPipeline::Light> collect_lights(scene::Scene& s
 }
 
 // ---------------------------------------------------------------------------
-// 物理材质调试面板
+// 物理调试面板：显示选中物体的位置、速度、加速度、方向、弹性、材质预设等
 // ---------------------------------------------------------------------------
-static void show_physical_material_panel(scene::Scene* scene) {
+static float estimate_entity_volume(scene::Entity* entity) {
+    if (!entity) return 0.0f;
+    auto* t = entity->transform();
+    if (!t) return 0.0f;
+
+    constexpr float k_pi = 3.14159265358979323846f;
+    if (auto* box = entity->get_component<components::BoxCollider>()) {
+        math::Vector3f world_size = mul_per_component(box->size, t->scale);
+        return std::abs(world_size.x * world_size.y * world_size.z);
+    }
+    if (auto* sphere = entity->get_component<components::SphereCollider>()) {
+        float scale_max = std::max({std::abs(t->scale.x), std::abs(t->scale.y), std::abs(t->scale.z)});
+        float r = sphere->radius * scale_max;
+        return (4.0f / 3.0f) * k_pi * r * r * r;
+    }
+    return 0.0f;
+}
+
+static void show_physics_debug_panel(scene::Scene* scene, scene::Entity* selected) {
     if (!scene) return;
 
-    ImGui::SetNextWindowSize(ImVec2(260, 300), ImGuiCond_Always);
-    ImGui::Begin("Physical Material");
-
-    scene::Entity* cube = scene->find_entity_by_name("Cube");
-    auto* pm = cube ? cube->get_component<components::PhysicalMaterial>() : nullptr;
-    if (!pm) {
-        ImGui::Text("No PhysicalMaterial on 'Cube'");
+    scene::Entity* target = selected ? selected : scene->find_entity_by_name("Cube");
+    if (!target) {
+        ImGui::Begin("Physics Debug");
+        ImGui::Text("No physics object selected");
         ImGui::End();
         return;
     }
 
-    // 预设下拉框
-    int current = -1;
-    for (int i = 0; i < components::k_physical_material_preset_count; ++i) {
-        if (pm->preset_name == components::k_physical_material_presets[i].name) {
-            current = i;
-            break;
-        }
-    }
+    ImGui::SetNextWindowSize(ImVec2(340, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(950.0f, 150.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Physics Debug");
 
-    auto preset_getter = [](void* data, int idx, const char** out_text) -> bool {
-        auto* presets = static_cast<const components::PhysicalMaterialPreset*>(data);
-        *out_text = presets[idx].name;
-        return true;
-    };
-
-    if (ImGui::Combo("Preset", &current, preset_getter,
-                     const_cast<components::PhysicalMaterialPreset*>(components::k_physical_material_presets),
-                     components::k_physical_material_preset_count)) {
-        pm->apply_preset(components::k_physical_material_presets[current].name);
-    }
-
+    ImGui::Text("Object: %s", target->name().c_str());
     ImGui::Separator();
-    ImGui::Text("Softness:      %.2f", pm->softness);
-    ImGui::Text("Drag coeff.:   %.2f", pm->drag_coefficient);
-    ImGui::Text("Density:       %.2f", pm->density);
-    ImGui::Text("Friction:      %.2f", pm->friction);
-    ImGui::Text("Restitution:   %.2f", pm->restitution());
-    ImGui::Text("Eff. gravity:  %.2f m/s^2", pm->effective_gravity(9.81f));
 
-    // 显示根据当前密度和碰撞体估算出的质量
-    if (cube) {
-        auto* rb = cube->get_component<components::RigidBody>();
+    auto* t = target->transform();
+    if (t) {
+        ImGui::Text("Position");
+        ImGui::DragFloat3("Pos", &t->position.x, 0.1f);
+        ImGui::Text("Scale");
+        ImGui::DragFloat3("Scl", &t->scale.x, 0.01f);
+
+        math::Vector3f forward = t->rotation.rotate_vector(math::Vector3f::forward());
+        ImGui::Text("Direction: (%.2f, %.2f, %.2f)",
+                    static_cast<double>(forward.x),
+                    static_cast<double>(forward.y),
+                    static_cast<double>(forward.z));
+    }
+
+    auto* rb = target->get_component<components::RigidBody>();
+    if (rb) {
+        ImGui::Separator();
+        ImGui::Text("RigidBody");
+        ImGui::DragFloat("Mass", &rb->mass, 0.1f, 0.001f, 100000.0f);
+        ImGui::Checkbox("Use Gravity", &rb->use_gravity);
+        ImGui::Checkbox("Kinematic", &rb->is_kinematic);
+        ImGui::Text("Sleeping: %s", rb->is_sleeping ? "yes" : "no");
+
+        ImGui::Text("Velocity");
+        ImGui::DragFloat3("Vel", &rb->velocity.x, 0.1f);
+        ImGui::Text("Speed: %.2f m/s", static_cast<double>(rb->velocity.length()));
+
+        ImGui::Text("Acceleration");
+        ImGui::DragFloat3("Acc", &rb->acceleration.x, 0.1f);
+
+        ImGui::DragFloat("Linear Damping", &rb->linear_damping, 0.001f, 0.0f, 1.0f);
+        ImGui::DragFloat("Angular Damping", &rb->angular_damping, 0.001f, 0.0f, 1.0f);
+        ImGui::Text("Last collision impulse: %.2f", static_cast<double>(rb->last_collision_impulse));
+    }
+
+    auto* sb = target->get_component<components::StaticBody>();
+    if (sb) {
+        ImGui::Separator();
+        ImGui::Text("StaticBody");
+        ImGui::Checkbox("Kinematic", &sb->kinematic);
+    }
+
+    auto* box_col = target->get_component<components::BoxCollider>();
+    if (box_col) {
+        ImGui::Separator();
+        ImGui::Text("BoxCollider");
+        ImGui::DragFloat3("Size", &box_col->size.x, 0.01f);
+        ImGui::DragFloat3("Center", &box_col->center.x, 0.01f);
+    }
+
+    auto* sphere_col = target->get_component<components::SphereCollider>();
+    if (sphere_col) {
+        ImGui::Separator();
+        ImGui::Text("SphereCollider");
+        ImGui::DragFloat("Radius", &sphere_col->radius, 0.01f, 0.0f, 1000.0f);
+        ImGui::DragFloat3("Center", &sphere_col->center.x, 0.01f);
+    }
+
+    auto* pm = target->get_component<components::PhysicalMaterial>();
+    if (pm) {
+        ImGui::Separator();
+        ImGui::Text("Physical Material");
+
+        int current = -1;
+        for (int i = 0; i < components::k_physical_material_preset_count; ++i) {
+            if (pm->preset_name == components::k_physical_material_presets[i].name) {
+                current = i;
+                break;
+            }
+        }
+
+        auto preset_getter = [](void* data, int idx, const char** out_text) -> bool {
+            auto* presets = static_cast<const components::PhysicalMaterialPreset*>(data);
+            *out_text = presets[idx].name;
+            return true;
+        };
+
+        if (ImGui::Combo("Preset", &current, preset_getter,
+                         const_cast<components::PhysicalMaterialPreset*>(components::k_physical_material_presets),
+                         components::k_physical_material_preset_count)) {
+            pm->apply_preset(components::k_physical_material_presets[current].name);
+        }
+
+        ImGui::SliderFloat("Softness", &pm->softness, 0.0f, 1.0f);
+        ImGui::SliderFloat("Drag Coefficient", &pm->drag_coefficient, 0.0f, 1.0f);
+        ImGui::DragFloat("Density (g/cm^3)", &pm->density, 0.01f, 0.01f, 25.0f);
+        ImGui::SliderFloat("Friction", &pm->friction, 0.0f, 1.0f);
+
+        ImGui::Text("Restitution (elasticity): %.2f", static_cast<double>(pm->restitution()));
+        ImGui::Text("Density: %.2f kg/m^3", static_cast<double>(pm->density_kg_m3()));
+        ImGui::Text("Effective gravity: %.2f m/s^2", static_cast<double>(pm->effective_gravity(9.81f)));
+
         if (rb) {
-            ImGui::Text("Computed mass: %.1f", rb->mass);
+            ImGui::Text("Mass (physics): %.2f kg", static_cast<double>(rb->mass));
+        }
+        float volume = estimate_entity_volume(target);
+        if (volume > 1e-6f) {
+            ImGui::Text("Estimated volume: %.3f unit^3", static_cast<double>(volume));
+            ImGui::Text("Estimated mass @ 1 unit=1m: %.1f kg",
+                        static_cast<double>(pm->mass_for_volume(volume)));
         }
     }
 
@@ -753,7 +844,7 @@ int main(int argc, char* argv[])
     ecs::World world;
     if (current_scene) {
         world.attach_scene(std::move(current_scene));
-        world.add_system<ecs::PhysicsSystem>();
+        world.add_system<ecs::PhysicsSystem3D>();
         world.add_system<ecs::FractureSystem>();
         world.add_system<ecs::RenderSystem3D>(&pipeline);
         if (renderer2d) {
@@ -1007,7 +1098,7 @@ int main(int argc, char* argv[])
         imgui.begin_frame();
         debug_panel.show(&window, world.scene(), &camera, &frame_limiter, &render_ctx, &pipeline);
         model_loaded = model_loader_panel.show(world.scene());
-        show_physical_material_panel(world.scene());
+        show_physics_debug_panel(world.scene(), debug_panel.selected_entity());
 
         imgui.end_frame([&](ImDrawData* draw_data, std::shared_ptr<std::promise<void>> sync_promise) {
             // 深拷贝 ImDrawData，避免无限制帧率下主线程继续 NewFrame 覆盖 draw data

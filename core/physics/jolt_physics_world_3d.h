@@ -5,6 +5,7 @@
 #ifdef GRYCE_HAS_JOLT
 
 #include <Jolt/Jolt.h>
+#include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Body/BodyID.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
@@ -28,6 +29,7 @@ public:
     void shutdown() override;
 
     void step(float dt, int substeps = 1) override;
+    void set_gravity(const math::Vector3f& gravity) override;
 
     BodyHandle create_body(const BodyDesc& desc) override;
     void destroy_body(BodyHandle handle) override;
@@ -40,6 +42,12 @@ public:
     math::Vector3f get_linear_velocity(BodyHandle handle) const override;
     void set_angular_velocity(BodyHandle handle, const math::Vector3f& vel) override;
     math::Vector3f get_angular_velocity(BodyHandle handle) const override;
+
+    void set_linear_damping(BodyHandle handle, float damping) override;
+    void set_angular_damping(BodyHandle handle, float damping) override;
+    void set_gravity_scale(BodyHandle handle, float scale) override;
+    void wake_up(BodyHandle handle) override;
+    bool is_sleeping(BodyHandle handle) const override;
 
     void apply_force(BodyHandle handle, const math::Vector3f& force, const math::Vector3f& point) override;
     void apply_impulse(BodyHandle handle, const math::Vector3f& impulse, const math::Vector3f& point) override;
@@ -63,6 +71,11 @@ private:
     std::unique_ptr<JPH::TempAllocatorImpl> temp_allocator_;
     std::unique_ptr<JPH::JobSystemThreadPool> job_system_;
     std::unique_ptr<JPH::PhysicsSystem> physics_system_;
+
+    // BroadPhase / ObjectLayer 过滤器（Jolt Init 只保存指针，需保持存活）
+    JPH::BroadPhaseLayerInterface* bp_layer_interface_ = nullptr;
+    JPH::ObjectVsBroadPhaseLayerFilter* obj_vs_bp_filter_ = nullptr;
+    JPH::ObjectLayerPairFilter* obj_pair_filter_ = nullptr;
 
     // Body 与 Shape 句柄管理（Jolt BodyID 可直接作为 BodyHandle）
     std::vector<JPH::BodyID> bodies_;

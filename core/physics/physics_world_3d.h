@@ -20,6 +20,7 @@ public:
     virtual void shutdown() = 0;
 
     virtual void step(float dt, int substeps = 1) = 0;
+    virtual void set_gravity(const math::Vector3f& gravity) = 0;
 
     // 刚体
     virtual BodyHandle create_body(const BodyDesc& desc) = 0;
@@ -33,6 +34,12 @@ public:
     virtual math::Vector3f get_linear_velocity(BodyHandle handle) const = 0;
     virtual void set_angular_velocity(BodyHandle handle, const math::Vector3f& vel) = 0;
     virtual math::Vector3f get_angular_velocity(BodyHandle handle) const = 0;
+
+    virtual void set_linear_damping(BodyHandle handle, float damping) = 0;
+    virtual void set_angular_damping(BodyHandle handle, float damping) = 0;
+    virtual void set_gravity_scale(BodyHandle handle, float scale) = 0;
+    virtual void wake_up(BodyHandle handle) = 0;
+    virtual bool is_sleeping(BodyHandle handle) const = 0;
 
     virtual void apply_force(BodyHandle handle, const math::Vector3f& force, const math::Vector3f& point) = 0;
     virtual void apply_impulse(BodyHandle handle, const math::Vector3f& impulse, const math::Vector3f& point) = 0;

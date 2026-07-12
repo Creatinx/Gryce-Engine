@@ -21,14 +21,25 @@ struct PhysicalMaterialPreset {
 
 constexpr PhysicalMaterialPreset k_physical_material_presets[] = {
     // name,       softness, drag,  density, friction
-    {"Wood",     0.20f, 0.15f, 0.70f, 0.55f},
-    {"Stone",    0.05f, 0.05f, 2.50f, 0.75f},
-    {"Metal",    0.05f, 0.08f, 7.80f, 0.40f},
-    {"Rubber",   0.15f, 0.25f, 1.10f, 0.85f},
-    {"Ice",      0.20f, 0.02f, 0.92f, 0.05f},
-    {"Concrete", 0.15f, 0.12f, 2.40f, 0.70f},
-    {"Fabric",   0.90f, 0.55f, 0.15f, 0.90f},
-    {"Glass",    0.05f, 0.03f, 2.50f, 0.10f},
+    // density 单位为 g/cm^3（相对水的密度），与现实中常见物质对应：
+    // Wood ~0.7, Stone ~2.5, Concrete ~2.4, Steel ~7.85, Aluminum ~2.7,
+    // Copper ~8.96, Rubber ~1.1, Ice ~0.92, Glass ~2.5, Plastic ~1.05 等。
+    {"BalsaWood", 0.30f, 0.25f, 0.16f, 0.50f},
+    {"Wood",      0.25f, 0.18f, 0.70f, 0.55f},
+    {"Stone",     0.05f, 0.05f, 2.50f, 0.75f},
+    {"Concrete",  0.15f, 0.12f, 2.40f, 0.70f},
+    {"Brick",     0.10f, 0.10f, 1.90f, 0.65f},
+    {"Metal",     0.05f, 0.08f, 7.80f, 0.40f},
+    {"Steel",     0.05f, 0.08f, 7.85f, 0.40f},
+    {"Aluminum",  0.08f, 0.06f, 2.70f, 0.35f},
+    {"Copper",    0.06f, 0.07f, 8.96f, 0.45f},
+    {"Lead",      0.04f, 0.09f, 11.34f, 0.50f},
+    {"Rubber",    0.20f, 0.28f, 1.10f, 0.85f},
+    {"Plastic",   0.15f, 0.18f, 1.05f, 0.40f},
+    {"Ice",       0.20f, 0.02f, 0.92f, 0.05f},
+    {"Glass",     0.05f, 0.03f, 2.50f, 0.10f},
+    {"Fabric",    0.90f, 0.55f, 0.15f, 0.90f},
+    {"Foam",      0.95f, 0.60f, 0.05f, 0.80f},
 };
 constexpr int k_physical_material_preset_count =
     static_cast<int>(sizeof(k_physical_material_presets) / sizeof(k_physical_material_presets[0]));
@@ -73,10 +84,19 @@ public:
     // 应用预设；name 不存在时保持当前值
     void apply_preset(const std::string& name);
 
-    // 由软度推导弹性（restitution）
+    // 由软度推导弹性（restitution，0=完全非弹性，1=完全弹性）
     float restitution() const { return 1.0f - softness; }
 
+    // 密度换算为 kg/m^3（1 g/cm^3 = 1000 kg/m^3）
+    float density_kg_m3() const { return density * 1000.0f; }
+
+    // 给定体积（立方米）估算质量（kg）
+    float mass_for_volume(float volume_m3) const {
+        return density_kg_m3() * volume_m3;
+    }
+
     // 给定环境重力加速度，计算考虑风阻后的等效重力加速度
+    // 注意：这是简化模型，真实风阻还与速度、迎风面积相关。
     float effective_gravity(float world_gravity) const {
         return world_gravity * (1.0f - drag_coefficient);
     }

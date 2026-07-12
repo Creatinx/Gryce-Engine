@@ -5,7 +5,7 @@
 #include "components/box_collider.h"
 #include "components/sphere_collider.h"
 #include "components/plane_collider.h"
-#include "ecs/systems/physics_system.h"
+#include "ecs/systems/physics_system_3d.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "math/math.h"
@@ -19,7 +19,7 @@ TEST(Physics3D, RigidBodyFallsUnderGravity) {
     e->add_component<components::RigidBody>();
     e->add_component<components::SphereCollider>();
 
-    ecs::PhysicsSystem sys;
+    ecs::PhysicsSystem3D sys;
     sys.on_update(scene, 1.0f);
 
     auto* rb = e->get_component<components::RigidBody>();
@@ -34,7 +34,7 @@ TEST(Physics3D, StaticBodyDoesNotMove) {
     ground->add_component<components::StaticBody>();
     ground->add_component<components::BoxCollider>();
 
-    ecs::PhysicsSystem sys;
+    ecs::PhysicsSystem3D sys;
     sys.on_update(scene, 1.0f);
 
     EXPECT_EQ(ground->transform()->position.y, 0.0f);
@@ -56,7 +56,8 @@ TEST(Physics3D, SphereRestsOnBox) {
     rb->restitution = 0.1f;
     ball->add_component<components::SphereCollider>();
 
-    ecs::PhysicsSystem sys;
+    ecs::PhysicsSystem3D sys;
+    sys.max_steps_per_frame = 240; // 允许 2 秒物理模拟完整跑完
     sys.on_update(scene, 2.0f);
 
     EXPECT_GT(ball->transform()->position.y, 0.9f);
@@ -81,7 +82,7 @@ TEST(Physics3D, TwoSpheresCollideAndBounce) {
     rb_b->restitution = 1.0f;
     b->add_component<components::SphereCollider>();
 
-    ecs::PhysicsSystem sys;
+    ecs::PhysicsSystem3D sys;
     sys.on_update(scene, 0.2f);
 
     EXPECT_LT(rb_a->velocity.x, 0.0f);
@@ -106,7 +107,8 @@ TEST(Physics3D, SphereRestsOnPlane) {
     auto* sphere = ball->add_component<components::SphereCollider>();
     sphere->radius = 0.5f;
 
-    ecs::PhysicsSystem sys;
+    ecs::PhysicsSystem3D sys;
+    sys.max_steps_per_frame = 240; // 允许 2 秒物理模拟完整跑完
     sys.on_update(scene, 2.0f);
 
     EXPECT_NEAR(ball->transform()->position.y, -0.5f, 0.15f);

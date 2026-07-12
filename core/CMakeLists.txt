@@ -38,14 +38,12 @@ target_sources(gryce_core
         components/physical_material.cpp
         audio/audio_engine.cpp
         audio/miniaudio_impl.cpp
-        ecs/systems/physics_system.cpp
+        ecs/systems/physics_system_3d.cpp
         ecs/systems/physics_system_2d.cpp
         ecs/systems/fracture_system.cpp
         physics/physics_factory.cpp
         physics/box2d_world_2d.cpp
         physics/jolt_physics_world_3d.cpp
-        physics/builtin_physics_world_2d.cpp
-        physics/builtin_physics_world_3d.cpp
         scene/uuid.cpp
         scene/entity.cpp
         scene/scene.cpp
@@ -126,8 +124,6 @@ target_sources(gryce_core
             physics/physics_factory.h
             physics/box2d_world_2d.h
             physics/jolt_physics_world_3d.h
-            physics/builtin_physics_world_2d.h
-            physics/builtin_physics_world_3d.h
             assets/mesh_data.h
             assets/asset.h
             assets/asset_handle.h
@@ -146,7 +142,7 @@ target_sources(gryce_core
             ecs/world.h
             ecs/query.h
             ecs/component_store.h
-            ecs/systems/physics_system.h
+            ecs/systems/physics_system_3d.h
             ecs/systems/physics_system_2d.h
             ecs/systems/fracture_system.h
             ecs/systems/render_system_2d.h
@@ -206,7 +202,29 @@ if(GRYCE_HAS_IMGUI)
             ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
     )
     target_include_directories(gryce_core PUBLIC ${IMGUI_DIR})
+
+    # 抑制第三方 ImGui 源码的编译警告
+    set(_imgui_sources
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_demo.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+    if(GRYCE_HAS_VULKAN)
+        list(APPEND _imgui_sources ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+    endif()
+    set_source_files_properties(${_imgui_sources} PROPERTIES COMPILE_FLAGS -w)
 endif()
+
+# 抑制 third_party 单文件实现的编译警告
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio/miniaudio_impl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/stb_image_impl.cpp
+    PROPERTIES COMPILE_FLAGS -w
+)
 
 target_include_directories(gryce_core
     PUBLIC
@@ -215,6 +233,9 @@ target_include_directories(gryce_core
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/stb>
         $<INSTALL_INTERFACE:include>
 )
+
+# 引擎内部严格警告选项（不传播到第三方依赖）
+target_link_libraries(gryce_core PUBLIC gryce::compile_options)
 
 # 将依赖可用性暴露给 C++ 代码
 target_compile_definitions(gryce_core PUBLIC

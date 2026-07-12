@@ -9,6 +9,7 @@
 #include "assets/assimp_importer.h"
 #endif
 #include "resources/project.h"
+#include "resources/resource_path.h"
 #include "physics/physics_point.h"
 
 using namespace gryce_engine;
@@ -51,7 +52,7 @@ TEST_F(AssetTest, ObjLoaderLoadCubeObj) {
 
 #ifdef GRYCE_HAS_ASSIMP
 TEST_F(AssetTest, AssimpImporterLoadCubeObj) {
-    std::string path = "res/models/cube.obj";
+    std::string path = resources::ResourcePath::resolve("res:/models/cube.obj");
     ASSERT_TRUE(std::filesystem::exists(path));
 
     assets::AssimpImporter importer;

@@ -42,8 +42,20 @@ DEPENDENCIES = {
     "assimp": {
         "url": "https://github.com/assimp/assimp/archive/refs/tags/v5.4.3.tar.gz",
         "filename": "assimp-v5.4.3.tar.gz",
-        "sha256": "9cdd1fb0a778618506dd89c0d850667ec1312e05453ef569e19b463ca1abded2",
+        "sha256": "66dfbaee288f2bc43172440a55d0235dfc7bf885dda6435c038e8000e79582cb",
         "required": True,
+    },
+    "box2d": {
+        "url": "https://github.com/erincatto/box2d/archive/refs/tags/v3.0.0.tar.gz",
+        "filename": "box2d-v3.0.0.tar.gz",
+        "sha256": None,
+        "required": False,
+    },
+    "jolt": {
+        "url": "https://github.com/jrouwe/JoltPhysics/archive/refs/tags/v5.2.0.tar.gz",
+        "filename": "jolt-v5.2.0.tar.gz",
+        "sha256": None,
+        "required": False,
     },
 }
 

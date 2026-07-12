@@ -122,7 +122,7 @@ elseif(GRYCE_FETCH_ASSIMP)
     FetchContent_Declare(
         assimp
         URL       ${ASSIMP_URL}
-        URL_HASH  SHA256=9cdd1fb0a778618506dd89c0d850667ec1312e05453ef569e19b463ca1abded2
+        URL_HASH  SHA256=66dfbaee288f2bc43172440a55d0235dfc7bf885dda6435c038e8000e79582cb
         DOWNLOAD_NO_PROGRESS FALSE
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
@@ -132,6 +132,7 @@ elseif(GRYCE_FETCH_ASSIMP)
     set(ASSIMP_BUILD_DOCS               OFF CACHE BOOL "" FORCE)
     set(ASSIMP_INSTALL                  OFF CACHE BOOL "" FORCE)
     set(ASSIMP_NO_EXPORT                ON  CACHE BOOL "" FORCE)
+    set(ASSIMP_WARNINGS_AS_ERRORS       OFF CACHE BOOL "" FORCE)
     set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
     # 仅启用 Blender 常用导出格式
     set(ASSIMP_BUILD_OBJ_IMPORTER       ON CACHE BOOL "" FORCE)
@@ -182,12 +183,18 @@ if(box2d_FOUND)
     message(STATUS "box2d found: ${box2d_DIR}")
     set(GRYCE_HAS_BOX2D TRUE)
 elseif(GRYCE_FETCH_BOX2D)
-    message(STATUS "box2d not found locally, fetching from GitHub...")
+    if(_GRYCE_HAS_CACHE AND EXISTS "${GRYCE_CACHE_DIR}/box2d-v3.0.0.tar.gz")
+        file(TO_CMAKE_PATH "${GRYCE_CACHE_DIR}/box2d-v3.0.0.tar.gz" BOX2D_URL)
+        message(STATUS "Using cached box2d from ${GRYCE_CACHE_DIR}")
+    else()
+        set(BOX2D_URL "https://github.com/erincatto/box2d/archive/refs/tags/v3.0.0.tar.gz")
+    endif()
+    message(STATUS "box2d not found locally, fetching from ${BOX2D_URL}...")
     FetchContent_Declare(
         box2d
-        GIT_REPOSITORY https://github.com/erincatto/box2d.git
-        GIT_TAG        v3.0.0
-        GIT_SHALLOW    TRUE
+        URL       ${BOX2D_URL}
+        DOWNLOAD_NO_PROGRESS FALSE
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
     set(BOX2D_BUILD_TESTBED OFF CACHE BOOL "" FORCE)
     set(BOX2D_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
@@ -208,18 +215,24 @@ endif()
 # 默认不自动抓取：Jolt 仓库较大，网络不稳定时容易失败。
 # 需要时打开 -DGRYCE_FETCH_JOLT=ON，或本地安装 Jolt 后通过 find_package 使用。
 # ---------------------------------------------------------------------------
-option(GRYCE_FETCH_JOLT "Fetch JoltPhysics from GitHub (requires network)" OFF)
+option(GRYCE_FETCH_JOLT "Fetch JoltPhysics from GitHub (requires network)" ON)
 find_package(Jolt QUIET CONFIG)
 if(Jolt_FOUND)
     message(STATUS "Jolt found: ${Jolt_DIR}")
     set(GRYCE_HAS_JOLT TRUE)
 elseif(GRYCE_FETCH_JOLT)
-    message(STATUS "Jolt not found locally, fetching from GitHub...")
+    if(_GRYCE_HAS_CACHE AND EXISTS "${GRYCE_CACHE_DIR}/jolt-v5.2.0.tar.gz")
+        file(TO_CMAKE_PATH "${GRYCE_CACHE_DIR}/jolt-v5.2.0.tar.gz" JOLT_URL)
+        message(STATUS "Using cached JoltPhysics from ${GRYCE_CACHE_DIR}")
+    else()
+        set(JOLT_URL "https://github.com/jrouwe/JoltPhysics/archive/refs/tags/v5.2.0.tar.gz")
+    endif()
+    message(STATUS "Jolt not found locally, fetching from ${JOLT_URL}...")
     FetchContent_Declare(
         JoltPhysics
-        GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
-        GIT_TAG        v5.2.0
-        GIT_SHALLOW    TRUE
+        URL       ${JOLT_URL}
+        DOWNLOAD_NO_PROGRESS FALSE
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR  Build
     )
     set(USE_AVX OFF CACHE BOOL "" FORCE)

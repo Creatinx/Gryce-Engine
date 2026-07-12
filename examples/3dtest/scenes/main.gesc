@@ -50,7 +50,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 10,
-          "text": "FPS: 2279.8",
+          "text": "FPS: 2383.0",
           "type": "Label"
         }
       ],
@@ -450,11 +450,11 @@
           "type": "MeshRenderer"
         },
         {
-          "density": 1.100000023841858,
-          "drag_coefficient": 0.25,
+          "density": 2.4000000953674316,
+          "drag_coefficient": 0.11999999731779099,
           "enabled": true,
-          "friction": 0.8500000238418579,
-          "preset_name": "Rubber",
+          "friction": 0.699999988079071,
+          "preset_name": "Concrete",
           "softness": 0.15000000596046448,
           "type": "PhysicalMaterial"
         },
@@ -471,7 +471,7 @@
             0.0
           ],
           "enabled": true,
-          "friction": 0.8500000238418579,
+          "friction": 0.699999988079071,
           "inertia_tensor": [
             1.0,
             0.0,
@@ -491,8 +491,8 @@
             1.0
           ],
           "is_kinematic": false,
-          "linear_damping": 0.0,
-          "mass": 70.4000015258789,
+          "linear_damping": 0.11999999731779099,
+          "mass": 153.60000610351563,
           "restitution": 0.8500000238418579,
           "type": "RigidBody",
           "use_gravity": true,

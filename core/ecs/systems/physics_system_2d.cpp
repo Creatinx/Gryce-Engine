@@ -77,20 +77,20 @@ struct PhysicsSystem2D::Impl {
 
     std::unordered_map<scene::UUID, Slot> slots;
     bool initialized = false;
+    bool create_failed = false;
 
     // Box2D 等外部后端要求每帧使用固定小步长，不能一次性 step 整个 dt
     float time_accumulator = 0.0f;
 
     physics::IPhysicsWorld2D* ensure_world(const math::Vector2f& gravity) {
+        if (create_failed) return nullptr;
         if (!world) {
             world = physics::create_physics_world_2d("box2d");
             if (!world || !world->init(gravity)) {
-                GLOG_ERROR("PhysicsSystem2D: failed to create 2D physics world, falling back to builtin");
-                world = physics::create_physics_world_2d("builtin");
-                if (!world || !world->init(gravity)) {
-                    GLOG_ERROR("PhysicsSystem2D: builtin 2D physics world also failed");
-                    return nullptr;
-                }
+                GLOG_ERROR("PhysicsSystem2D: failed to create 2D physics world (Box2D). "
+                           "Pass -DGRYCE_FETCH_BOX2D=ON.");
+                create_failed = true;
+                return nullptr;
             }
             GLOG_INFO("PhysicsSystem2D: using backend '{}'", world->backend_name());
         }

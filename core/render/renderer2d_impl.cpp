@@ -407,18 +407,6 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
     screen_height_ = screen_height;
     ortho_ = math::Matrix4f::ortho(0.0f, screen_width, screen_height, 0.0f, -1.0f, 1.0f);
 
-    // 在主线程直接创建/调整 OpenGL 光照资源（避免 RenderContext 命令队列延迟）
-    if (screen_width_ > 0.0f && screen_height_ > 0.0f) {
-        int target_w = static_cast<int>(screen_width_);
-        int target_h = static_cast<int>(screen_height_);
-        if (!lighting_resources_ready_ || target_w != lighting_width_ || target_h != lighting_height_) {
-            ensure_lighting_resources();
-            resize_lighting_targets(target_w, target_h);
-            lighting_resources_ready_ = gl_albedo_fbo_ != 0 && gl_normal_fbo_ != 0 &&
-                                        gl_albedo_tex_ != 0 && gl_normal_tex_ != 0;
-        }
-    }
-
     math::Vector2f screen_center(screen_width * 0.5f, screen_height * 0.5f);
     math::Matrix4f view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
                         * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
@@ -488,7 +476,16 @@ void Renderer2D::render_lit_geometry_to_gbuffer() {
             return;
         }
 
-        if (gl_albedo_fbo_ == 0 || gl_normal_fbo_ == 0 || gl_albedo_tex_ == 0 || gl_normal_tex_ == 0) {
+        // OpenGL 光照资源必须在渲染线程创建（GL context 在渲染线程）
+        if (target_w > 0 && target_h > 0 &&
+            (!lighting_resources_ready_ || target_w != lighting_width_ || target_h != lighting_height_)) {
+            ensure_lighting_resources();
+            resize_lighting_targets(target_w, target_h);
+            lighting_resources_ready_ = gl_albedo_fbo_ != 0 && gl_normal_fbo_ != 0 &&
+                                        gl_albedo_tex_ != 0 && gl_normal_tex_ != 0;
+        }
+
+        if (!lighting_resources_ready_) {
             GLOG_ERROR("Renderer2D: GL lighting resources not created");
             return;
         }

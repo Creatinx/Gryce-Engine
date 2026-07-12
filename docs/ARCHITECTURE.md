@@ -316,27 +316,32 @@ for (int i = 0; i < 10; ++i) {
 
 ### 8.1 当前实现
 
-当前为自研轻量物理：
-- **碰撞检测**：AABB 粗测 + 基于 penetration 的分离。
-- **积分**：显式欧拉，每帧 `velocity += acceleration * dt; position += velocity * dt`。
-- **睡眠**：速度持续很小时标记 `is_sleeping`，跳过积分。
-- **碎裂**：当 `last_collision_impulse > fracture_threshold`，按 `segments` 网格切分 Cube 为碎片。
+物理后端已全面切换到成熟第三方库：
+
+| 维度 | 后端 | 状态 |
+|---|---|---|
+| 2D | Box2D v3.0.0 | 已接入，默认启用 |
+| 3D | Jolt Physics v5.2.0 | 已接入，默认启用 |
+| 自研 | BuiltinPhysicsWorld2D/3D | 已删除 |
+
+- **碰撞检测**：由 Box2D / Jolt 的 broadphase + narrowphase 完成。
+- **积分**：Box2D 使用子步求解器；Jolt 使用 `PhysicsSystem::Update` 内部积分。
+- **睡眠**：依赖底层引擎的睡眠机制，通过 `is_sleeping` 字段暴露给上层。
+- **碎裂**：`FractureSystem` 在检测到碰撞冲量超过 `DestructibleBody::threshold` 时，按网格切分生成 `FragmentBody` 并交给 Jolt/Box2D 继续模拟。
 
 ### 8.2 设计限制
 
-- 仅支持 Box/Sphere/Plane 基础形状。
-- 缺少连续碰撞检测（CCD），高速物体会穿透。
-- 角速度/旋转不稳定。
-- 碎裂只针对立方体做了网格切分，通用 mesh 碎裂未实现。
+- 仍缺少连续碰撞检测（CCD）配置，高速小物体可能穿透。
+- 通用 mesh 碎裂（Voronoi / 有限元）未实现，当前只支持立方体网格切分。
+- 物理材质仅通过 `PhysicalMaterial` 组件映射到摩擦/弹性/密度，更复杂的表面属性尚未支持。
 
 ### 8.3 物理后端抽象
 
 引擎提供统一的物理接口：
 - `IPhysicsWorld2D` / `IPhysicsWorld3D`：物理世界抽象。
-- `BuiltinPhysicsWorld2D` / `BuiltinPhysicsWorld3D`：自研实现（默认不启用，显式传入 `"builtin"` 时可用；已知问题：无 CCD、旋转不稳定、形状支持有限）。
-- `Box2DWorld2D`：Box2D 封装（已接入 CMake，默认优先，需 `GRYCE_HAS_BOX2D=ON`）。
-
-Jolt Physics 集成已预留接口（`GRYCE_HAS_JOLT`），尚未实现。
+- `Box2DPhysicsWorld2D`：Box2D v3 封装（默认 2D 后端，需要 `GRYCE_HAS_BOX2D=ON`）。
+- `JoltPhysicsWorld3D`：Jolt Physics 封装（默认 3D 后端，需要 `GRYCE_HAS_JOLT=ON`）。
+- `PhysicsFactory` 通过字符串 `"box2d"` / `"jolt"` 创建对应后端。
 
 ---
 
@@ -351,8 +356,9 @@ Jolt Physics 集成已预留接口（`GRYCE_HAS_JOLT`），尚未实现。
 ### 9.2 模型加载
 
 - `ObjLoader`：解析 `.obj` + `.mtl`（部分）。
+- `AssimpImporter`：通过 Assimp v5.4.3 加载 OBJ、FBX、gITF、DAE、PLY、STL 等常见格式。
 - 输出 `MeshData`：顶点位置、法线、切线、UV、索引。
-- Assimp 集成已预留（`GRYCE_HAS_ASSIMP=ON`）。
+- `MeshData::to_physics_points()` 可将顶点转换为物理质点，方便后续软体/碎裂扩展。
 
 ### 9.3 纹理加载
 
