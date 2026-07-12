@@ -124,22 +124,67 @@ void Tilemap::draw(render::IRenderer2D* renderer) {
     }
 }
 
+namespace {
+
+bool load_tileset_json(const std::string& path, resources::Tileset& out) {
+    if (path.empty()) return false;
+    std::string resolved = resources::ResourcePath::resolve(path);
+    if (resolved.empty()) return false;
+    std::ifstream file(resolved);
+    if (!file.is_open()) return false;
+    try {
+        nlohmann::json j;
+        file >> j;
+        out.deserialize(j);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+} // namespace
+
+bool Tilemap::is_solid_tile(int x, int y) const {
+    int tile = get_tile(x, y);
+    if (tile < 0) return false;
+    if (!tileset_loaded_ && !tileset_path.empty()) {
+        tileset_loaded_ = load_tileset_json(tileset_path, tileset);
+    }
+    // 如果图集没有定义属性，兼容旧行为：所有非空瓦片都视为 solid
+    if (tileset.tile_properties.empty()) return true;
+    return tileset.is_solid(tile);
+}
+
+bool Tilemap::is_outer_ring_tile(int x, int y) const {
+    if (!is_solid_tile(x, y)) return false;
+    // 地图边缘即外圈
+    if (x == 0 || x == map_width - 1 || y == 0 || y == map_height - 1) return true;
+    // 任一四邻域非 solid 即为外圈
+    return !is_solid_tile(x - 1, y) || !is_solid_tile(x + 1, y) ||
+           !is_solid_tile(x, y - 1) || !is_solid_tile(x, y + 1);
+}
+
 void Tilemap::on_init() {
     if (!generate_colliders || !owner() || map_width <= 0 || map_height <= 0) return;
+
+    // 确保 tileset 属性已加载，以便正确判断 solid/outer-ring
+    if (!tileset_loaded_ && !tileset_path.empty()) {
+        tileset_loaded_ = load_tileset_json(tileset_path, tileset);
+    }
 
     math::Vector2f pos = position();
     math::Vector2f s = scale();
     float cw = cell_width * s.x;
     float ch = cell_height * s.y;
 
-    // 每行水平合并连续非空瓦片，生成 BoxCollider2D
+    // 只对外圈 solid 瓦片按行水平合并生成碰撞体
     for (int y = 0; y < map_height; ++y) {
         int x = 0;
         while (x < map_width) {
-            while (x < map_width && get_tile(x, y) < 0) ++x;
+            while (x < map_width && !is_outer_ring_tile(x, y)) ++x;
             if (x >= map_width) break;
             int start = x;
-            while (x < map_width && get_tile(x, y) >= 0) ++x;
+            while (x < map_width && is_outer_ring_tile(x, y)) ++x;
             int end = x; // [start, end)
 
             int count = end - start;
@@ -154,7 +199,7 @@ void Tilemap::on_init() {
             col->size = math::Vector2f(count * cw, ch);
             owner()->add_child(std::move(child));
 
-            GLOG_INFO("Tilemap: generated collider '{}' ({}x{} tiles)", col_name, count, 1);
+            GLOG_INFO("Tilemap: generated outer-ring collider '{}' ({}x{} tiles)", col_name, count, 1);
         }
     }
 }

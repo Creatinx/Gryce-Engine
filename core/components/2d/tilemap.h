@@ -112,6 +112,12 @@ public:
     void draw(render::IRenderer2D* renderer) override;
     void on_init() override;
 
+    // 判断 (x,y) 处瓦片是否为 solid（会触发 tileset 加载）
+    bool is_solid_tile(int x, int y) const;
+
+    // 判断 (x,y) 处瓦片是否属于 solid 区域的最外围一圈
+    bool is_outer_ring_tile(int x, int y) const;
+
     uint64_t render_hash() const override {
         uint64_t h = Component2D::render_hash();
         hash_combine(h, hash_string(tileset_path));

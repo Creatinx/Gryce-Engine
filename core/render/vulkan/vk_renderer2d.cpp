@@ -1,5 +1,6 @@
 #include "vk_renderer2d.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -70,22 +71,27 @@ VkShaderModule create_shader_module(VkDevice dev, const std::vector<uint32_t>& c
 }
 
 // 受光照 sprite 的 push constants，必须与 vulkan_2d_lit.vert/frag 的 std430 布局一致。
-// 注意：GLSL vec3 是 16 字节对齐的，而 C++ math::Vector3f 是 4 字节对齐，因此这里全部使用
-// float 数组 + 显式 padding，避免跨编译器/平台的布局差异。
-// 整个 block 按 16 字节补齐到 128 字节，与 GLSL std430 块末尾填充一致。
+// GLSL std430: vec3 按 16 字节对齐；struct Light 大小为 32 字节。
+struct alignas(16) LightData {
+    math::Vector2f pos;     // 0-7
+    float radius;           // 8-11
+    float intensity;        // 12-15
+    float color[3];         // 16-27
+    float pad;              // 28-31
+};
+static_assert(sizeof(LightData) == 32, "LightData size mismatch");
+
 struct alignas(16) LitPushConstants {
     math::Matrix4f ortho;        // 0-63
     math::Vector2f screen_size;  // 64-71
-    float ambient[3];            // 72-83
-    float pad0;                  // 84-87
-    math::Vector2f light_pos;    // 88-95
-    float light_radius;          // 96-99
-    float light_intensity;       // 100-103
-    float light_color[3];        // 104-115
-    float pad1;                  // 116-119
-    float pad2[2];               // 120-127
+    float pad0[2];               // 72-79（使 uAmbient 在 GLSL 中从 80 开始对齐到 16）
+    float ambient[3];            // 80-91
+    float pad1;                  // 92-95
+    int light_count;             // 96-99
+    float pad2[3];               // 100-111（对齐 LightData 数组到 16）
+    LightData lights[4];         // 112-239
 };
-static_assert(sizeof(LitPushConstants) == 128, "LitPushConstants size mismatch");
+static_assert(sizeof(LitPushConstants) == 240, "LitPushConstants size mismatch");
 
 } // namespace
 
@@ -651,11 +657,10 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
     float screen_w = screen_width_;
     float screen_h = screen_height_;
     Color ambient = ambient_light_;
-    PointLight light = point_light_;
-    bool has_light = has_point_light_;
+    auto lights_copy = std::make_shared<std::vector<PointLight>>(point_lights_);
 
     ctx_->push_command([this, verts_shared, ortho, is_text, is_sprite, tex, pipeline, layout, is_lit,
-                        screen_w, screen_h, ambient, light, has_light](IRenderBackend*) {
+                        screen_w, screen_h, ambient, lights_copy](IRenderBackend*) {
         int frame_index = vk_swapchain_->current_frame_index();
         if (frame_index < 0 || frame_index >= static_cast<int>(vertex_buffer_rect_.size())) {
             GLOG_ERROR("VulkanRenderer2D::flush_batch: frame_index {} out of range {}",
@@ -720,12 +725,17 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
             pc.ambient[0] = ambient.r;
             pc.ambient[1] = ambient.g;
             pc.ambient[2] = ambient.b;
-            pc.light_pos = has_light ? light.pos : math::Vector2f::zero();
-            pc.light_radius = has_light ? light.radius : 0.0f;
-            pc.light_intensity = has_light ? light.intensity : 0.0f;
-            pc.light_color[0] = has_light ? light.color.r : 0.0f;
-            pc.light_color[1] = has_light ? light.color.g : 0.0f;
-            pc.light_color[2] = has_light ? light.color.b : 0.0f;
+            int count = static_cast<int>(std::min<size_t>(lights_copy->size(), k_max_lights));
+            pc.light_count = count;
+            for (int i = 0; i < count; ++i) {
+                const auto& L = (*lights_copy)[i];
+                pc.lights[i].pos = L.pos;
+                pc.lights[i].radius = L.radius;
+                pc.lights[i].intensity = L.intensity;
+                pc.lights[i].color[0] = L.color.r;
+                pc.lights[i].color[1] = L.color.g;
+                pc.lights[i].color[2] = L.color.b;
+            }
             vkCmdPushConstants(cmd, layout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(LitPushConstants), &pc);
@@ -849,15 +859,13 @@ void VulkanRenderer2D::set_ambient_light(const Color& color) {
 
 void VulkanRenderer2D::add_point_light(const math::Vector2f& pos, float radius,
                                         const Color& color, float intensity) {
-    // 当前 Vulkan forward lighting 只支持一个点光源；保留最强/最近的一个
-    point_light_ = {pos, radius, color, intensity};
-    has_point_light_ = true;
+    if (static_cast<int>(point_lights_.size()) >= k_max_lights) return;
+    point_lights_.push_back({pos, radius, color, intensity});
 }
 
 void VulkanRenderer2D::reset_lights() {
     ambient_light_ = Color::black();
-    has_point_light_ = false;
-    point_light_ = {};
+    point_lights_.clear();
 }
 
 void VulkanRenderer2D::draw_lit_sprite(float x, float y, float w, float h,

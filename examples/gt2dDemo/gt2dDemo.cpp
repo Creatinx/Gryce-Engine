@@ -116,9 +116,146 @@ struct PlayerTag : public components::Component {
     void deserialize(const nlohmann::json&) override {}
 };
 
+struct Bullet : public components::Component {
+    float lifetime = 2.0f;
+    float speed = 720.0f;
+    math::Vector2f velocity;
+
+    const char* type() const override { return "Bullet"; }
+    void serialize(nlohmann::json&) const override {}
+    void deserialize(const nlohmann::json&) override {}
+};
+
 // ---------------------------------------------------------------------------
 // 辅助
 // ---------------------------------------------------------------------------
+struct AABB {
+    float min_x, min_y, max_x, max_y;
+};
+
+AABB get_aabb(scene::Entity* e) {
+    math::Vector2f pos(e->transform()->position.x, e->transform()->position.y);
+    math::Vector2f size(28.0f, 28.0f);
+    if (auto* col = e->get_component<components::BoxCollider2D>()) {
+        size = col->size;
+    }
+    return { pos.x - size.x * 0.5f, pos.y - size.y * 0.5f,
+             pos.x + size.x * 0.5f, pos.y + size.y * 0.5f };
+}
+
+bool aabb_overlap(const AABB& a, const AABB& b) {
+    return a.min_x < b.max_x && a.max_x > b.min_x &&
+           a.min_y < b.max_y && a.max_y > b.min_y;
+}
+
+// 平台角色踩踏判定：玩家从上方落到敌人头顶时触发
+bool is_stomp(scene::Entity* player, components::RigidBody2D* player_rb, scene::Entity* enemy) {
+    if (!player || !player_rb || !enemy) return false;
+    AABB pa = get_aabb(player);
+    AABB ea = get_aabb(enemy);
+    if (!aabb_overlap(pa, ea)) return false;
+
+    math::Vector2f pp(player->transform()->position.x, player->transform()->position.y);
+    math::Vector2f ep(enemy->transform()->position.x, enemy->transform()->position.y);
+
+    // 玩家中心必须在敌人中心上方
+    if (pp.y >= ep.y) return false;
+    // 玩家必须正在下落（Y 轴向下为正）
+    if (player_rb->velocity.y <= 0.0f) return false;
+
+    // 玩家底边应落在敌人顶边附近
+    float player_bottom = pa.max_y;
+    float enemy_top = ea.min_y;
+    float vertical_penetration = player_bottom - enemy_top;
+    // 横向重叠必须明显大于纵向穿透，确保是“站在头顶”而不是侧面擦碰
+    float overlap_left = std::max(pa.min_x, ea.min_x);
+    float overlap_right = std::min(pa.max_x, ea.max_x);
+    float horizontal_overlap = overlap_right - overlap_left;
+
+    return vertical_penetration >= -2.0f && vertical_penetration < 12.0f &&
+           horizontal_overlap > 4.0f;
+}
+
+void spawn_bullet(scene::Scene* scene, const math::Vector3f& from, const math::Vector2f& target) {
+    if (!scene) return;
+    scene::Entity* e = scene->create_entity("Bullet");
+    e->transform()->position = from;
+
+    auto* sprite = e->add_component<components::d2::sprite::Sprite2D>("res:/textures/bullet.png", 12.0f, 12.0f);
+    sprite->color = render::Color(1.0f, 0.95f, 0.40f, 1.0f);
+    sprite->lit = true;
+    sprite->render_order = 20;
+
+    // 子弹发光，用于测试 2D 光照
+    auto* light = e->add_component<components::d2::light::Light2D>(
+        render::Color(1.0f, 0.85f, 0.25f, 1.0f), 2.5f, 90.0f);
+    light->render_order = 100;
+
+    auto* rb = e->add_component<components::RigidBody2D>();
+    rb->mass = 0.05f;
+    rb->use_gravity = false;
+    rb->is_kinematic = false;
+    rb->restitution = 0.0f;
+    rb->friction = 0.0f;
+
+    auto* col = e->add_component<components::CircleCollider2D>();
+    col->radius = 5.0f;
+
+    auto* bullet = e->add_component<Bullet>();
+    math::Vector2f dir = target - math::Vector2f(from.x, from.y);
+    if (dir.length_sq() < 1e-6f) {
+        dir = math::Vector2f(1.0f, 0.0f);
+    } else {
+        dir = dir.normalized();
+    }
+    bullet->velocity = dir * bullet->speed;
+    rb->velocity = bullet->velocity;
+}
+
+void update_bullets(scene::Scene* scene, float dt, int& score,
+                    components::AudioSource* sfx_stomp,
+                    components::d2::ParticleEmitter2D* hit_fx) {
+    if (!scene) return;
+
+    std::vector<scene::Entity*> bullets_to_remove;
+    std::vector<scene::Entity*> enemies_to_destroy;
+
+    ecs::foreach_with_component<Bullet>(*scene, [&](scene::Entity* e, Bullet* bullet) {
+        bullet->lifetime -= dt;
+        if (bullet->lifetime <= 0.0f) {
+            bullets_to_remove.push_back(e);
+            return;
+        }
+
+        // 同步刚体速度（运动学子弹）
+        if (auto* rb = e->get_component<components::RigidBody2D>()) {
+            rb->velocity = bullet->velocity;
+        }
+
+        AABB ba = get_aabb(e);
+        // 子弹与敌人 AABB 碰撞
+        ecs::foreach_with_component<Enemy>(*scene, [&](scene::Entity* enemy, Enemy*) {
+            if (aabb_overlap(ba, get_aabb(enemy))) {
+                enemies_to_destroy.push_back(enemy);
+                bullets_to_remove.push_back(e);
+                score += 25;
+                if (sfx_stomp) sfx_stomp->play();
+                if (hit_fx && hit_fx->owner()) {
+                    hit_fx->owner()->transform()->position = enemy->transform()->position;
+                    hit_fx->burst();
+                }
+            }
+        });
+    });
+
+    for (auto* e : enemies_to_destroy) {
+        scene->destroy_entity(e);
+    }
+    for (auto* e : bullets_to_remove) {
+        scene->destroy_entity(e);
+    }
+}
+
 std::mt19937& rng() {
     static std::mt19937 engine{std::random_device{}()};
     return engine;
@@ -252,8 +389,8 @@ scene::Scene* create_platformer_scene() {
         e->transform()->position = math::Vector3f(3.0f * k_tile_size, (k_map_h - 6) * k_tile_size, 0.0f);
         e->add_component<PlayerTag>();
 
-        auto* sprite = e->add_component<components::d2::sprite::Sprite2D>("", 28.0f, 28.0f);
-        sprite->color = render::Color(0.25f, 0.75f, 1.0f, 1.0f);
+        auto* sprite = e->add_component<components::d2::sprite::Sprite2D>("res:/textures/player.png", 28.0f, 28.0f);
+        sprite->color = render::Color::white();
         sprite->lit = true;
         sprite->render_order = 10;
 
@@ -270,7 +407,7 @@ scene::Scene* create_platformer_scene() {
         }
 
         auto* col = e->add_component<components::BoxCollider2D>();
-        col->size = math::Vector2f(26.0f, 26.0f);
+        col->size = math::Vector2f(28.0f, 28.0f);
 
         // 手电筒
         auto* light = e->add_component<components::d2::light::Light2D>(
@@ -355,7 +492,7 @@ scene::Scene* create_platformer_scene() {
     make_label("ScoreLabel", "Score: 0", 12.0f, 28.0f, render::Color::white());
     make_label("CoinsLabel", "Coins: 0", 12.0f, 54.0f, render::Color::yellow());
     make_label("LivesLabel", "Lives: 3", 12.0f, 80.0f, render::Color::white());
-    make_label("HintLabel", "A/D move | Space/W jump | R restart", 12.0f, 106.0f, render::Color::gray(0.75f));
+    make_label("HintLabel", "A/D move | Space/W jump | Mouse aim/shoot | R restart", 12.0f, 106.0f, render::Color::gray(0.75f));
     make_label("GameOverLabel", "", 12.0f, 140.0f, render::Color::red());
     make_label("FPSLabel", "Render FPS: --", 12.0f, 174.0f, render::Color::green());
 
@@ -367,8 +504,8 @@ void spawn_coin(scene::Scene* scene, float x, float y) {
     scene::Entity* e = scene->create_entity("Coin");
     e->transform()->position = math::Vector3f(x, y, 0.0f);
 
-    auto* sprite = e->add_component<components::d2::sprite::Sprite2D>("", 18.0f, 18.0f);
-    sprite->color = render::Color(1.0f, 0.85f, 0.15f, 1.0f);
+    auto* sprite = e->add_component<components::d2::sprite::Sprite2D>("res:/textures/coin.png", 18.0f, 18.0f);
+    sprite->color = render::Color::white();
     sprite->lit = true;
     sprite->render_order = 5;
 
@@ -384,8 +521,8 @@ void spawn_enemy(scene::Scene* scene, float x, float y, float patrol_w) {
     scene::Entity* e = scene->create_entity("Enemy");
     e->transform()->position = math::Vector3f(x, y, 0.0f);
 
-    auto* sprite = e->add_component<components::d2::sprite::Sprite2D>("", 28.0f, 28.0f);
-    sprite->color = render::Color(1.0f, 0.25f, 0.25f, 1.0f);
+    auto* sprite = e->add_component<components::d2::sprite::Sprite2D>("res:/textures/enemy.png", 28.0f, 28.0f);
+    sprite->color = render::Color::white();
     sprite->lit = true;
     sprite->render_order = 8;
 
@@ -398,7 +535,7 @@ void spawn_enemy(scene::Scene* scene, float x, float y, float patrol_w) {
     rb->velocity.x = k_enemy_speed;
 
     auto* col = e->add_component<components::BoxCollider2D>();
-    col->size = math::Vector2f(26.0f, 26.0f);
+    col->size = math::Vector2f(28.0f, 28.0f);
 
     auto* enemy = e->add_component<Enemy>();
     enemy->min_x = x - patrol_w * 0.5f;
@@ -440,12 +577,15 @@ void reset_game(scene::Scene* scene, int& score, int& coins, int& lives, bool& g
     lives = 3;
     game_over = false;
 
-    // 销毁所有金币和敌人
+    // 销毁所有金币、敌人和子弹
     std::vector<scene::Entity*> to_destroy;
     ecs::foreach_with_component<Coin>(*scene, [&](scene::Entity* e, Coin*) {
         to_destroy.push_back(e);
     });
     ecs::foreach_with_component<Enemy>(*scene, [&](scene::Entity* e, Enemy*) {
+        to_destroy.push_back(e);
+    });
+    ecs::foreach_with_component<Bullet>(*scene, [&](scene::Entity* e, Bullet*) {
         to_destroy.push_back(e);
     });
     for (auto* e : to_destroy) {
@@ -614,6 +754,7 @@ int main(int argc, char* argv[]) {
 
     int rendered_frames = 0;
     float fps_update_timer = 0.0f;
+    math::Vector2f mouse_world;
 
     render_ctx.start();
     utils::FrameLimiter frame_limiter;
@@ -640,6 +781,15 @@ int main(int argc, char* argv[]) {
         int w = 0, h = 0;
         window.get_size(w, h);
         render_ctx.set_viewport(0, 0, w, h);
+
+        // 计算鼠标世界坐标（用于射击瞄准）
+        {
+            math::Vector2f screen_center(w * 0.5f, h * 0.5f);
+            math::Vector2f mouse_screen(static_cast<float>(input.mouse_x()), static_cast<float>(input.mouse_y()));
+            float zoom = (main_camera && main_camera->owner()) ? main_camera->zoom : 1.0f;
+            math::Vector2f cam_center = (main_camera && main_camera->owner()) ? main_camera->center() : screen_center;
+            mouse_world = cam_center + (mouse_screen - screen_center) / zoom;
+        }
 
         float dt = static_cast<float>(window.delta_time());
         if (dt > 0.1f) dt = 0.1f;
@@ -756,30 +906,32 @@ int main(int argc, char* argv[]) {
             world.scene()->destroy_entity(e);
         }
 
-        // 敌人交互
+        // 玩家射击（鼠标左键）
+        bool shoot = input.is_mouse_button_pressed(0);
+        if (!game_over && shoot && player_entity) {
+            spawn_bullet(world.scene(), player_entity->transform()->position, mouse_world);
+        }
+
+        // 子弹更新与碰撞
+        update_bullets(world.scene(), dt, score, sfx_stomp, hit_fx);
+
+        // 敌人交互：使用 AABB + 穿透方向判定踩踏/受伤
         std::vector<scene::Entity*> enemies_to_destroy;
         bool player_hurt_this_frame = false;
         if (!game_over && player_entity && player_rb) {
-            math::Vector2f pp(player_entity->transform()->position.x,
-                              player_entity->transform()->position.y);
             ecs::foreach_with_component<Enemy>(*world.scene(), [&](scene::Entity* e, Enemy*) {
-                math::Vector2f ep(e->transform()->position.x,
-                                  e->transform()->position.y);
-                math::Vector2f diff = ep - pp;
-                if (std::abs(diff.x) < 24.0f && std::abs(diff.y) < 24.0f) {
-                    // 踩头：玩家在敌人上方且正在下落
-                    if (pp.y < ep.y - 4.0f && player_rb->velocity.y > 0.0f) {
-                        enemies_to_destroy.push_back(e);
-                        player_rb->velocity.y = k_stomp_bounce;
-                        score += 50;
-                        if (sfx_stomp) sfx_stomp->play();
-                        if (hit_fx && hit_fx->owner()) {
-                            hit_fx->owner()->transform()->position = e->transform()->position;
-                            hit_fx->burst();
-                        }
-                    } else if (invulnerable_timer <= 0.0f) {
+                if (is_stomp(player_entity, player_rb, e)) {
+                    enemies_to_destroy.push_back(e);
+                    player_rb->velocity.y = k_stomp_bounce;
+                    score += 50;
+                    if (sfx_stomp) sfx_stomp->play();
+                    if (hit_fx && hit_fx->owner()) {
+                        hit_fx->owner()->transform()->position = e->transform()->position;
+                        hit_fx->burst();
+                    }
+                } else if (aabb_overlap(get_aabb(player_entity), get_aabb(e))) {
+                    if (invulnerable_timer <= 0.0f) {
                         player_hurt_this_frame = true;
-                        enemies_to_destroy.push_back(e);
                     }
                 }
             });
@@ -853,7 +1005,7 @@ int main(int argc, char* argv[]) {
 
         imgui.begin_frame();
         ImGui::Begin("2D Platformer");
-        ImGui::Text("A/D move, Space/W jump, R restart");
+        ImGui::Text("A/D move, Space/W jump, Mouse aim/shoot, R restart");
         ImGui::Text("Score: %d  Coins: %d  Lives: %d", score, coins, lives);
         if (game_over) ImGui::TextColored(ImVec4(1, 0, 0, 1), "GAME OVER - Press R to restart");
 

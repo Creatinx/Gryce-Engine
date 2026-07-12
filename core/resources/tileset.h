@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "math/math.h"
@@ -15,6 +16,25 @@ class ITexture;
 } // namespace gryce_engine::render
 
 namespace gryce_engine::resources {
+
+// ---------------------------------------------------------------------------
+// TileProperties — 单个瓦片的物理/游戏属性
+// ---------------------------------------------------------------------------
+struct TileProperties {
+    std::string name;
+    bool solid = false;
+    bool hazard = false;
+    bool collectible = false;
+    bool platform = false; // 单向平台（可跳上跳下）
+
+    void deserialize(const nlohmann::json& in) {
+        name = in.value("name", "");
+        solid = in.value("solid", false);
+        hazard = in.value("hazard", false);
+        collectible = in.value("collectible", false);
+        platform = in.value("platform", false);
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Tileset — 2D 瓦片图集资源定义。
@@ -35,7 +55,21 @@ public:
     // 运行时加载的 GPU 纹理句柄（不序列化）
     mutable render::RHITextureHandle texture;
 
+    // 瓦片属性表（按 tile_index 索引）
+    std::unordered_map<int, TileProperties> tile_properties;
+
     Tileset() = default;
+
+    // 查询瓦片属性（不存在时返回默认空属性）
+    const TileProperties& properties(int tile_index) const {
+        static const TileProperties k_default;
+        auto it = tile_properties.find(tile_index);
+        return (it != tile_properties.end()) ? it->second : k_default;
+    }
+
+    bool is_solid(int tile_index) const {
+        return properties(tile_index).solid;
+    }
 
     // 计算瓦片索引对应的 UV 归一化坐标（左上角原点）。
     // 返回 {u0, v0, u1, v1}
@@ -81,6 +115,20 @@ public:
         margin = in.value("margin", 0);
         spacing = in.value("spacing", 0);
         tile_count = in.value("tile_count", 1);
+
+        tile_properties.clear();
+        if (in.contains("tiles") && in["tiles"].is_object()) {
+            for (auto& [key, value] : in["tiles"].items()) {
+                try {
+                    int index = std::stoi(key);
+                    TileProperties props;
+                    props.deserialize(value);
+                    tile_properties[index] = props;
+                } catch (...) {
+                    // 忽略非数字键
+                }
+            }
+        }
     }
 #endif
 };

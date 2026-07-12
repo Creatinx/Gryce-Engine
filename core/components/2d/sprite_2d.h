@@ -23,6 +23,8 @@ public:
     // 运行时加载的 GPU 纹理（不序列化）
     mutable render::ITexture* albedo_texture = nullptr;
     mutable render::ITexture* normal_texture = nullptr;
+    mutable render::RHITextureHandle albedo_handle;
+    mutable render::RHITextureHandle normal_handle;
 
     Sprite2D() = default;
     Sprite2D(const std::string& tex, float w, float h)

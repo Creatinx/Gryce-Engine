@@ -120,7 +120,8 @@ private:
     ITexture* sprite_texture_ = nullptr;
     math::Matrix4f ortho_;
 
-    // 2D 光照状态（Forward Lighting）
+    // 2D 光照状态（Forward Lighting，最多 4 个点光源）
+    static constexpr int k_max_lights = 4;
     Color ambient_light_ = Color::black();
     struct PointLight {
         math::Vector2f pos;
@@ -128,8 +129,7 @@ private:
         Color color;
         float intensity = 0.0f;
     };
-    PointLight point_light_;
-    bool has_point_light_ = false;
+    std::vector<PointLight> point_lights_;
     std::vector<Vertex2D> lit_sprite_vertices_;
     ITexture* lit_sprite_texture_ = nullptr;
 
