@@ -2,6 +2,12 @@
 
 #ifdef GRYCE_HAS_JOLT
 
+#include "physics/jolt_physics_world_3d.h"
+
+#ifdef GRYCE_HAS_JOLT
+
+#include <atomic>
+
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
@@ -91,7 +97,74 @@ static BodyType from_jolt_type(JPH::EMotionType t) {
 JoltPhysicsWorld3D::JoltPhysicsWorld3D() = default;
 JoltPhysicsWorld3D::~JoltPhysicsWorld3D() { shutdown(); }
 
+namespace {
+
+// Jolt 全局初始化计数器，确保 RegisterTypes/UnregisterTypes 只调用一次
+std::atomic<int> g_jolt_ref_count{0};
+std::once_flag g_jolt_init_flag;
+
+} // namespace
+
 bool JoltPhysicsWorld3D::init(const math::Vector3f& gravity) {
+    if (initialized_) return true;
+
+    // 全局 Jolt 初始化（进程级，只执行一次）
+    std::call_once(g_jolt_init_flag, []() {
+        JPH::RegisterDefaultAllocator();
+        JPH::Factory::sInstance = new JPH::Factory();
+        JPH::RegisterTypes();
+    });
+    ++g_jolt_ref_count;
+
+    temp_allocator_ = std::make_unique<JPH::TempAllocatorImpl>(10 * 1024 * 1024);
+    job_system_ = std::make_unique<JPH::JobSystemThreadPool>(
+        JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
+        static_cast<int>(std::thread::hardware_concurrency()) - 1);
+
+    physics_system_ = std::make_unique<JPH::PhysicsSystem>();
+    physics_system_->Init(
+        1024, 0, 1024, 1024,
+        new BPLayerInterfaceImpl(),
+        new ObjectVsBroadPhaseLayerFilterImpl(),
+        new ObjectLayerPairFilterImpl());
+
+    physics_system_->SetGravity(to_jolt(gravity));
+    initialized_ = true;
+    GLOG_INFO("JoltPhysicsWorld3D initialized (ref_count={})", g_jolt_ref_count.load());
+    return true;
+}
+
+void JoltPhysicsWorld3D::shutdown() {
+    if (!initialized_) return;
+
+    if (physics_system_ && !bodies_.empty()) {
+        auto* bi = body_interface();
+        for (auto& id : bodies_) {
+            if (id.IsInvalid()) continue;
+            bi->RemoveBody(id);
+            bi->DestroyBody(id);
+        }
+    }
+    bodies_.clear();
+    shapes_.clear();
+
+    physics_system_.reset();
+    job_system_.reset();
+    temp_allocator_.reset();
+
+    // 最后一个实例 shutdown 时才反注册全局类型
+    int prev = --g_jolt_ref_count;
+    if (prev == 0) {
+        JPH::UnregisterTypes();
+        delete JPH::Factory::sInstance;
+        JPH::Factory::sInstance = nullptr;
+        // std::call_once 的 flag 无法重置，
+        // 如果之后需要重新初始化（极端场景），需进程重启。
+    }
+
+    initialized_ = false;
+    GLOG_INFO("JoltPhysicsWorld3D shutdown (ref_count={})", g_jolt_ref_count.load());
+}
     if (initialized_) return true;
 
     JPH::RegisterDefaultAllocator();
