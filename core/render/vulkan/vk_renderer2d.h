@@ -70,7 +70,7 @@ private:
     bool create_shader_modules();
     bool create_descriptor_layout();
     bool create_pipeline_layout();
-    VkPipeline create_pipeline(VkShaderModule frag_module, VkPipelineLayout layout);
+    VkPipeline create_pipeline(VkShaderModule vert_module, VkShaderModule frag_module, VkPipelineLayout layout);
     bool create_descriptor_sets();
     bool create_vertex_buffer();
 

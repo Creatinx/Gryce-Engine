@@ -6,6 +6,12 @@ out/
 # Dependency cache (downloaded tar.gz, local only)
 deps_cache/
 
+# Build logs
+*.log
+
+# Compiled SPIR-V shaders
+*.spv
+
 # IDE
 .idea/
 .vs/
@@ -18,6 +24,7 @@ imgui.ini
 # Runtime generated assets / screenshots
 font_atlas_debug.bmp
 screenshot_*.bmp
+*.png
 
 # Test textures (not referenced by source)
 checkerboard.bmp

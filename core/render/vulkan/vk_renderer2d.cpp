@@ -241,6 +241,7 @@ void VulkanRenderer2D::shutdown() {
         if (descriptor_pool_) vkDestroyDescriptorPool(dev, descriptor_pool_, nullptr);
         if (descriptor_layout_) vkDestroyDescriptorSetLayout(dev, descriptor_layout_, nullptr);
         if (vert_module_) vkDestroyShaderModule(dev, vert_module_, nullptr);
+        if (vert_lit_module_) vkDestroyShaderModule(dev, vert_lit_module_, nullptr);
         if (frag_rect_module_) vkDestroyShaderModule(dev, frag_rect_module_, nullptr);
         if (frag_text_module_) vkDestroyShaderModule(dev, frag_text_module_, nullptr);
         if (frag_sprite_module_) vkDestroyShaderModule(dev, frag_sprite_module_, nullptr);
@@ -275,6 +276,7 @@ void VulkanRenderer2D::shutdown() {
     text_descriptor_sets_.clear();
     sprite_descriptor_sets_.clear();
     vert_module_ = VK_NULL_HANDLE;
+    vert_lit_module_ = VK_NULL_HANDLE;
     frag_rect_module_ = VK_NULL_HANDLE;
     frag_text_module_ = VK_NULL_HANDLE;
     frag_sprite_module_ = VK_NULL_HANDLE;
@@ -390,13 +392,13 @@ bool VulkanRenderer2D::create_pipeline_layout() {
     return true;
 }
 
-VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule frag_module, VkPipelineLayout layout) {
+VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule vert_module, VkShaderModule frag_module, VkPipelineLayout layout) {
     VkDevice dev = vk_device_->device();
 
     VkPipelineShaderStageCreateInfo vert_stage{};
     vert_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vert_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vert_stage.module = vert_module_;
+    vert_stage.module = vert_module;
     vert_stage.pName = "main";
 
     VkPipelineShaderStageCreateInfo frag_stage{};

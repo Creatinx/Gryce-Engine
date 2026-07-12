@@ -10,11 +10,13 @@ layout(location = 1) out vec2 vTexCoord;
 layout(push_constant, std430) uniform PushConstants {
     mat4 uOrtho;
     vec2 uScreenSize;
-    vec3 uAmbient;
+    float uAmbient[3];
+    float uPad0;
     vec2 uLightPos;
     float uLightRadius;
     float uLightIntensity;
-    vec3 uLightColor;
+    float uLightColor[3];
+    float uPad1;
 } pc;
 
 void main() {
