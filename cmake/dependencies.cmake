@@ -6,6 +6,47 @@ include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
 # ---------------------------------------------------------------------------
+# 缓存目录支持：build.py 预下载的依赖包优先使用本地文件
+# ---------------------------------------------------------------------------
+if(DEFINED GRYCE_CACHE_DIR AND EXISTS "${GRYCE_CACHE_DIR}")
+    set(_GRYCE_HAS_CACHE TRUE)
+    message(STATUS "[Gryce Engine] Using dependency cache: ${GRYCE_CACHE_DIR}")
+else()
+    set(_GRYCE_HAS_CACHE FALSE)
+endif()
+
+# ---------------------------------------------------------------------------
+# GLFW（窗口系统）
+# ---------------------------------------------------------------------------
+find_package(glfw3 QUIET CONFIG)
+if(glfw3_FOUND)
+    message(STATUS "glfw3 found: ${glfw3_DIR}")
+    set(GRYCE_HAS_GLFW TRUE)
+else()
+    if(_GRYCE_HAS_CACHE AND EXISTS "${GRYCE_CACHE_DIR}/glfw-3.4.tar.gz")
+        set(GLFW_URL "file://${GRYCE_CACHE_DIR}/glfw-3.4.tar.gz")
+        message(STATUS "Using cached glfw from ${GRYCE_CACHE_DIR}")
+    else()
+        set(GLFW_URL "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz")
+    endif()
+    message(STATUS "glfw3 not found locally, fetching from ${GLFW_URL}...")
+    FetchContent_Declare(
+        glfw
+        URL       ${GLFW_URL}
+        DOWNLOAD_NO_PROGRESS FALSE
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(glfw)
+    set(GRYCE_HAS_GLFW TRUE)
+endif()
+
+set(FETCHCONTENT_QUIET OFF)
+
+# ---------------------------------------------------------------------------
 # GLFW（窗口系统）
 # ---------------------------------------------------------------------------
 find_package(glfw3 QUIET CONFIG)
@@ -96,10 +137,16 @@ if(assimp_FOUND)
     message(STATUS "assimp found: ${assimp_DIR}")
     set(GRYCE_HAS_ASSIMP TRUE)
 elseif(GRYCE_FETCH_ASSIMP)
-    message(STATUS "assimp not found locally, fetching from GitHub...")
+    if(_GRYCE_HAS_CACHE AND EXISTS "${GRYCE_CACHE_DIR}/assimp-v5.4.3.tar.gz")
+        set(ASSIMP_URL "file://${GRYCE_CACHE_DIR}/assimp-v5.4.3.tar.gz")
+        message(STATUS "Using cached assimp from ${GRYCE_CACHE_DIR}")
+    else()
+        set(ASSIMP_URL "https://github.com/assimp/assimp/archive/refs/tags/v5.4.3.tar.gz")
+    endif()
+    message(STATUS "assimp not found locally, fetching from ${ASSIMP_URL}...")
     FetchContent_Declare(
         assimp
-        URL       https://github.com/assimp/assimp/archive/refs/tags/v5.4.3.tar.gz
+        URL       ${ASSIMP_URL}
         URL_HASH  SHA256=9cdd1fb0a778618506dd89c0d850667ec1312e05453ef569e19b463ca1abded2
         DOWNLOAD_NO_PROGRESS FALSE
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE

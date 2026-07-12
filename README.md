@@ -92,11 +92,29 @@ cmake --build build/debug
 #### 方式 C：使用 build.py（Python 脚本，推荐）
 
 ```powershell
-python build.py          # 默认 Debug
-python build.py Release  # Release
-python build.py --clean  # 清理后重新构建
-python build.py --jobs 8 # 指定并行任务数
+# 默认 Debug，自动预下载缺失依赖（带 rich 进度条）
+python build.py
+
+# Release
+python build.py Release
+
+# 清理后重新构建
+python build.py --clean
+
+# 指定并行任务数
+python build.py --jobs 8
+
+# 不预下载依赖（让 CMake 自行下载）
+python build.py --no-prefetch
+
+# 不使用国内镜像（ghproxy.com）
+python build.py --no-mirror
+
+# 自定义缓存目录
+python build.py --cache-dir D:/gryce_deps_cache
 ```
+
+> 首次构建时，build.py 会预下载 assimp/glfw 等 tar.gz 依赖到 `deps_cache/` 目录，并显示 **rich 进度条**。安装 rich：`pip install rich`。未安装 rich 时会 fallback 到无进度条下载。
 
 #### 方式 D：MSVC（Visual Studio 2022）
 

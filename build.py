@@ -2,12 +2,13 @@
 """Gryce Engine — 一键构建脚本（Windows + MinGW-w64）"""
 
 import argparse
+import hashlib
 import shutil
 import subprocess
 import sys
 import os
+import urllib.request
 from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # Colors (disabled on Windows without ANSI support)
@@ -26,6 +27,126 @@ if supports_color():
     C_RESET = '\033[0m'
 else:
     C_OK = C_WARN = C_ERR = C_INFO = C_RESET = ''
+
+
+# ---------------------------------------------------------------------------
+# Dependency definitions
+# ---------------------------------------------------------------------------
+DEPENDENCIES = {
+    "glfw": {
+        "url": "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz",
+        "filename": "glfw-3.4.tar.gz",
+        "sha256": None,
+        "required": False,  # Optional: glfw is typically already installed
+    },
+    "assimp": {
+        "url": "https://github.com/assimp/assimp/archive/refs/tags/v5.4.3.tar.gz",
+        "filename": "assimp-v5.4.3.tar.gz",
+        "sha256": "9cdd1fb0a778618506dd89c0d850667ec1312e05453ef569e19b463ca1abded2",
+        "required": True,
+    },
+}
+
+MIRROR_PREFIX = "https://ghproxy.com/"
+
+
+# ---------------------------------------------------------------------------
+# Download helpers
+# ---------------------------------------------------------------------------
+def _download_simple(url, dest):
+    """Fallback download without progress bar."""
+    urllib.request.urlretrieve(url, dest)
+
+
+def _download_rich(url, dest, description=""):
+    """Download with rich progress bar."""
+    from rich.progress import (
+        Progress, TextColumn, BarColumn, DownloadColumn, TransferSpeedColumn, TimeRemainingColumn
+    )
+    from rich.console import Console
+
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req) as response:
+        total = int(response.headers.get("Content-Length", 0))
+        console = Console()
+
+        with Progress(
+            TextColumn(f"[bold blue]{description}"),
+            BarColumn(bar_width=40),
+            "[progress.percentage]{task.percentage:>3.0f}%",
+            "•",
+            DownloadColumn(binary_units=True),
+            "•",
+            TransferSpeedColumn(),
+            "•",
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(description, total=total)
+            with open(dest, "wb") as f:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    progress.update(task, advance=len(chunk))
+
+
+def download_with_progress(url, dest, description="", use_mirror=True):
+    """Download a file with progress bar (rich if available)."""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+    urls = []
+    if use_mirror:
+        urls.append(MIRROR_PREFIX + url)
+    urls.append(url)
+
+    for try_url in urls:
+        try:
+            print(f"{C_INFO}[Gryce Engine]{C_RESET} Downloading {description} from {try_url} ...")
+            try:
+                _download_rich(try_url, dest, description)
+            except ImportError:
+                print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using simple download (pip install rich for progress bars)")
+                _download_simple(try_url, dest)
+            return True
+        except Exception as e:
+            print(f"{C_WARN}[WARN]{C_RESET} Failed to download from {try_url}: {e}")
+            if os.path.exists(dest):
+                os.remove(dest)
+            continue
+
+    return False
+
+
+def prefetch_dependencies(cache_dir, use_mirror=True):
+    """Pre-download tar.gz dependencies to cache_dir before cmake runs."""
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+    for name, info in DEPENDENCIES.items():
+        dest = cache_path / info["filename"]
+        if dest.exists():
+            # Verify SHA256 if available
+            if info["sha256"]:
+                with open(dest, "rb") as f:
+                    actual = hashlib.sha256(f.read()).hexdigest()
+                if actual.lower() == info["sha256"].lower():
+                    print(f"{C_OK}[OK]{C_RESET} {name}: cached {dest} (SHA256 verified)")
+                    continue
+                else:
+                    print(f"{C_WARN}[WARN]{C_RESET} {name}: SHA256 mismatch, re-downloading...")
+                    os.remove(dest)
+            else:
+                print(f"{C_OK}[OK]{C_RESET} {name}: cached {dest}")
+                continue
+
+        if not download_with_progress(info["url"], str(dest), f"Downloading {name}", use_mirror):
+            if info["required"]:
+                print(f"{C_ERR}[ERROR]{C_RESET} Failed to download required dependency: {name}")
+                sys.exit(1)
+            else:
+                print(f"{C_WARN}[WARN]{C_RESET} Failed to download optional dependency: {name}, cmake will try fallback")
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +245,18 @@ def main():
         "--no-lock", action="store_true",
         help="Do NOT auto-lock MinGW compiler (use system default)"
     )
+    parser.add_argument(
+        "--cache-dir", default="deps_cache",
+        help="Directory to cache downloaded dependencies (default: deps_cache)"
+    )
+    parser.add_argument(
+        "--no-prefetch", action="store_true",
+        help="Skip pre-downloading dependencies to cache"
+    )
+    parser.add_argument(
+        "--no-mirror", action="store_true",
+        help="Do NOT use ghproxy.com mirror for GitHub downloads"
+    )
     args = parser.parse_args()
 
     config = args.config
@@ -145,6 +278,8 @@ def main():
             print(f"{C_INFO}[Gryce Engine]{C_RESET} Found MSYS2 MinGW: {msys_bin}")
             # Temporarily prepend to PATH so that cmake/ninja can find it
             os.environ["PATH"] = msys_bin + os.pathsep + os.environ.get("PATH", "")
+        else:
+            print(f"{C_INFO}[Gryce Engine]{C_RESET} gcc not found in PATH, trying to find...")
     else:
         print(f"{C_OK}[OK]{C_RESET} Found gcc in PATH: {gcc_path}")
 
@@ -155,10 +290,10 @@ def main():
 This project is primarily built with MSYS2 UCRT64 MinGW-w64.
 
 Install (MSYS2 UCRT64 terminal):
-    pacman -S mingw-w64-ucrt-x86_64-gcc \
-              mingw-w64-ucrt-x86_64-cmake \
-              mingw-w64-ucrt-x86_64-ninja \
-              mingw-w64-ucrt-x86_64-glew \
+    pacman -S mingw-w64-ucrt-x86_64-gcc \\
+              mingw-w64-ucrt-x86_64-cmake \\
+              mingw-w64-ucrt-x86_64-ninja \\
+              mingw-w64-ucrt-x86_64-glew \\
               mingw-w64-ucrt-x86_64-glfw
 
 Then either:
@@ -191,7 +326,15 @@ Then either:
         print(f"{C_OK}[OK]{C_RESET} ninja: {ninja}")
 
     # -----------------------------------------------------------------------
-    # 3. Clean if requested
+    # 3. Pre-fetch dependencies
+    # -----------------------------------------------------------------------
+    if not args.no_prefetch:
+        prefetch_dependencies(args.cache_dir, use_mirror=not args.no_mirror)
+    else:
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} Skipping dependency prefetch (--no-prefetch)")
+
+    # -----------------------------------------------------------------------
+    # 4. Clean if requested
     # -----------------------------------------------------------------------
     if args.clean and build_dir.exists():
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {build_dir} ...")
@@ -199,7 +342,7 @@ Then either:
         _shutil.rmtree(build_dir)
 
     # -----------------------------------------------------------------------
-    # 4. Configure
+    # 5. Configure
     # -----------------------------------------------------------------------
     # Only trust build.ninja as the marker of a valid configuration.
     # A stale CMakeCache.txt (from a failed MSVC run) must not skip configure.
@@ -220,6 +363,11 @@ Then either:
                 "-DCMAKE_CXX_COMPILER=" + gxx_path,
             ]
 
+        # Pass cache directory to cmake
+        configure_cmd += [
+            "-DGRYCE_CACHE_DIR=" + str(Path(args.cache_dir).resolve()),
+        ]
+
         configure_cmd += [str(project_root)]
 
         ok, output = run(configure_cmd, check=False)
@@ -232,7 +380,7 @@ Then either:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Using existing configuration: {build_dir}")
 
     # -----------------------------------------------------------------------
-    # 5. Build
+    # 6. Build
     # -----------------------------------------------------------------------
     print(f"{C_INFO}[Gryce Engine]{C_RESET} Building ...")
     build_cmd = [cmake, "--build", str(build_dir)]
