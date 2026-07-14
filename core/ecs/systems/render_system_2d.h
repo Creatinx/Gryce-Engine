@@ -19,16 +19,12 @@ public:
 
     void on_render(scene::Scene& scene, render::RenderContext& ctx) override;
 
-    // 上一帧是否真正执行了渲染（用于 Dirty-Frame 优化）
+    // 上一帧是否真正执行了渲染（保留接口；2D 现在每帧都会重绘，恒为 true）
     bool rendered_last_frame() const { return rendered_last_frame_; }
 
 private:
     render::IRenderer2D* renderer_ = nullptr;
-    uint64_t last_hash_ = 0;
-    bool first_frame_ = true;
     bool rendered_last_frame_ = true;
-
-    uint64_t compute_scene_hash(scene::Scene& scene);
 };
 
 } // namespace gryce_engine::ecs

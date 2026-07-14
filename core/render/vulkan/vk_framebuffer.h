@@ -29,6 +29,8 @@ public:
     int width() const override { return width_; }
     int height() const override { return height_; }
 
+    void set_clear_color(float r, float g, float b, float a);
+
     // 由 VulkanBackend 调用，开始/结束 shadow render pass
     void begin_render_pass(VkCommandBuffer cmd,
                            VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE) const;
@@ -50,6 +52,11 @@ private:
     VulkanTexture* color_texture_ = nullptr;
     VulkanTexture* depth_texture_ = nullptr;
     bool owns_depth_texture_ = false;
+
+    float clear_color_r_ = 0.15f;
+    float clear_color_g_ = 0.15f;
+    float clear_color_b_ = 0.18f;
+    float clear_color_a_ = 1.0f;
 
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
     VkFramebuffer framebuffer_ = VK_NULL_HANDLE;

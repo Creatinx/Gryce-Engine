@@ -112,7 +112,7 @@ bool GLTexture::load_from_file(const std::string& path) {
 
     stbi_image_free(data);
 
-    GLOG_INFO("Texture loaded: {} ({}x{}, {} channels)", path, w, h, ch);
+    GLOG_INFO("Texture loaded: {} ({}x{}, {} channels) tex_id={}", path, w, h, ch, texture_id_);
     return true;
 }
 
@@ -203,16 +203,20 @@ bool GLTexture::upload_data(const void* data, int width, int height, int channel
         glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texture_id_, GL_TEXTURE_BASE_LEVEL, 0);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAX_LEVEL, 0);
     } else {
         glTexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0, format, GL_UNSIGNED_BYTE, upload_data);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    GLOG_INFO("Texture uploaded: {}x{}, {} channels", width, height, channels);
+    GLOG_INFO("Texture uploaded: {}x{}, {} channels tex_id={}", width, height, channels, texture_id_);
     return true;
 }
 

@@ -115,6 +115,10 @@
 #endif
 #undef Status // X11 headers are leaking this.
 
+// Gryce-Engine: 引擎使用负 viewport height 来匹配 OpenGL 的 Y 向下约定，
+// 因此需要同时翻转 ImGui 的 viewport 与投影矩阵。
+extern bool g_imgui_vulkan_flip_viewport_y;
+
 // Visual Studio warnings
 #ifdef _MSC_VER
 #pragma warning (disable: 4127) // condition expression is constant
@@ -535,6 +539,16 @@ static void ImGui_ImplVulkan_SetupRenderState(ImDrawData* draw_data, VkPipeline 
         float translate[2];
         translate[0] = -1.0f - draw_data->DisplayPos.x * scale[0];
         translate[1] = -1.0f - draw_data->DisplayPos.y * scale[1];
+
+        // Gryce-Engine: 引擎在 Vulkan 后端使用负 viewport height 来匹配 OpenGL 的
+        // Y 向下约定。ImGui 的 Vulkan 后端默认按正 viewport 生成投影，因此需要
+        // 翻转投影 Y；同时 per-command scissor 也需要沿 framebuffer 高度翻转，
+        // 才能与翻转后的顶点保持对应。
+        if (g_imgui_vulkan_flip_viewport_y) {
+            scale[1] = -scale[1];
+            translate[1] = -translate[1];
+        }
+
         vkCmdPushConstants(command_buffer, bd->PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(float) * 0, sizeof(float) * 2, scale);
         vkCmdPushConstants(command_buffer, bd->PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(float) * 2, sizeof(float) * 2, translate);
     }
@@ -662,10 +676,17 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
                 if (clip_max.x <= clip_min.x || clip_max.y <= clip_min.y)
                     continue;
 
-                // Apply scissor/clipping rectangle
+                // Gryce-Engine: 当全局标志启用时，引擎使用负 viewport 并翻转 ImGui
+                // 投影；此时 per-command scissor 也需要沿 framebuffer 高度翻转，
+                // 才能与翻转后的顶点保持对应。若未启用翻转（ImGui 使用正 viewport
+                // 且不翻转投影），则 scissor 直接采用 IMGUI 的屏幕坐标。
                 VkRect2D scissor;
                 scissor.offset.x = (int32_t)(clip_min.x);
-                scissor.offset.y = (int32_t)(clip_min.y);
+                if (g_imgui_vulkan_flip_viewport_y) {
+                    scissor.offset.y = (int32_t)(fb_height - clip_max.y);
+                } else {
+                    scissor.offset.y = (int32_t)(clip_min.y);
+                }
                 scissor.extent.width = (uint32_t)(clip_max.x - clip_min.x);
                 scissor.extent.height = (uint32_t)(clip_max.y - clip_min.y);
                 vkCmdSetScissor(command_buffer, 0, 1, &scissor);

@@ -25,6 +25,8 @@
 #include "components/2d/shape.h"
 #include "components/2d/label.h"
 #include "components/2d/light_2d.h"
+#include "components/2d/ambient_light_2d.h"
+#include "components/2d/skybox_2d.h"
 #include "components/2d/sprite_2d.h"
 #include "components/2d/tilemap.h"
 #include "components/2d/camera_2d.h"
@@ -112,6 +114,12 @@ void register_builtin_components() {
     });
     ComponentFactory::instance().register_type("Light2D", []() {
         return std::make_unique<d2::light::Light2D>();
+    });
+    ComponentFactory::instance().register_type("AmbientLight2D", []() {
+        return std::make_unique<d2::light::AmbientLight2D>();
+    });
+    ComponentFactory::instance().register_type("Skybox2D", []() {
+        return std::make_unique<d2::skybox::Skybox2D>();
     });
     ComponentFactory::instance().register_type("Sprite2D", []() {
         return std::make_unique<d2::sprite::Sprite2D>();

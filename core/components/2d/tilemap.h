@@ -44,6 +44,9 @@ public:
     // 是否受 2D 光照影响（使用延迟光照渲染）
     bool lit = false;
 
+    // 是否作为 2D 阴影遮挡物
+    bool cast_shadow = false;
+
     // 运行时缓存的 Tileset
     mutable resources::Tileset tileset;
 
@@ -88,6 +91,7 @@ public:
         out["debug_draw_colliders"] = debug_draw_colliders;
         out["use_tileset_texture"] = use_tileset_texture;
         out["lit"] = lit;
+        out["cast_shadow"] = cast_shadow;
         out["tiles"] = tiles;
     }
 
@@ -102,6 +106,7 @@ public:
         debug_draw_colliders = in.value("debug_draw_colliders", false);
         use_tileset_texture = in.value("use_tileset_texture", true);
         lit = in.value("lit", false);
+        cast_shadow = in.value("cast_shadow", false);
         tiles = in.value("tiles", std::vector<int>());
         const size_t expected = static_cast<size_t>(map_width) * static_cast<size_t>(map_height);
         if (tiles.size() != expected) {
@@ -127,6 +132,7 @@ public:
         hash_combine(h, hash_float(cell_height));
         hash_combine(h, static_cast<uint64_t>(use_tileset_texture));
         hash_combine(h, static_cast<uint64_t>(lit));
+        hash_combine(h, static_cast<uint64_t>(cast_shadow));
         // 瓦片内容通常不变，完整哈希保证修改后能检测到
         for (int v : tiles) {
             hash_combine(h, static_cast<uint64_t>(static_cast<uint32_t>(v) + 1));
@@ -141,7 +147,8 @@ private:
     // 按需加载 Tileset JSON 与纹理
     void ensure_tileset_loaded(render::IRenderer2D* renderer) const;
 
-    mutable bool tileset_loaded_ = false;
+    mutable bool tileset_json_loaded_ = false;     // JSON 属性是否已解析
+    mutable bool tileset_texture_loaded_ = false;  // GPU 纹理是否已上传
 };
 
 } // namespace gryce_engine::components::d2::tilemap

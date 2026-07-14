@@ -107,14 +107,14 @@ public:
     }
 
     void deserialize(const nlohmann::json& in) {
-        texture_path = in.value("texture_path", "");
+        texture_path = in.value("texture_path", in.value("texture", ""));
         name = in.value("name", "");
-        tile_width = in.value("tile_width", 32);
-        tile_height = in.value("tile_height", 32);
+        tile_width = in.value("tile_width", in.value("tile_size", 32));
+        tile_height = in.value("tile_height", in.value("tile_size", 32));
         columns = in.value("columns", 1);
         margin = in.value("margin", 0);
         spacing = in.value("spacing", 0);
-        tile_count = in.value("tile_count", 1);
+        tile_count = in.value("tile_count", 0);
 
         tile_properties.clear();
         if (in.contains("tiles") && in["tiles"].is_object()) {

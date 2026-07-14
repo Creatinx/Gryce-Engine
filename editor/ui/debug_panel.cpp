@@ -411,10 +411,18 @@ bool ModelLoaderPanel::show(scene::Scene* scene) {
     if (ImGui::Button("Load Model")) {
         if (scene) {
             scene::Entity* e = scene->create_entity("LoadedModel");
-            e->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+            // 从空中生成并附带完整物理组件：刚体 + 盒碰撞体 + 物理材质，
+            // 加载后即可下落、碰撞、被重力枪拾取。
+            e->transform()->position = math::Vector3f(0.0f, 20.0f, 0.0f);
             auto* mr = e->add_component<components::MeshRenderer>(std::string(path_buffer_));
             if (mr && mr->material) {
                 mr->material->name = "LoadedModelMat";
+            }
+            e->add_component<components::RigidBody>();
+            e->add_component<components::BoxCollider>();
+            auto* pm = e->add_component<components::PhysicalMaterial>();
+            if (pm) {
+                pm->apply_preset("Wood");
             }
             loaded = true;
         }

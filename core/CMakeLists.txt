@@ -33,6 +33,7 @@ target_sources(gryce_core
         components/2d/tilemap.cpp
         components/2d/parallax_background.cpp
         components/2d/particle_emitter.cpp
+        components/2d/skybox_2d.cpp
         components/audio_source.cpp
         components/mesh_renderer.cpp
         components/physical_material.cpp

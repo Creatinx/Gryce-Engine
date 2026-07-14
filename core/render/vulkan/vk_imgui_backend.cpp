@@ -9,6 +9,10 @@
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 
+// 引擎使用负 viewport height 匹配 OpenGL Y 向下；ImGui 自身使用正 viewport 与默认投影，
+// 因此不需要在 imgui_impl_vulkan.cpp 中额外翻转。
+bool g_imgui_vulkan_flip_viewport_y = false;
+
 namespace gryce_engine::render {
 
 VulkanImGuiBackend::VulkanImGuiBackend(IRenderBackend* backend) {

@@ -17,6 +17,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             physics_2d_test.cpp
             fracture_test.cpp
             tilemap_test.cpp
+            render2d_test.cpp
     )
     target_link_libraries(gryce_tests
         PRIVATE

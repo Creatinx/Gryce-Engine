@@ -1,5 +1,6 @@
 #include "renderer2d_impl.h"
 
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -19,6 +20,8 @@
 #include "render/opengl/gl_texture.h"
 #include "render/opengl/gl_framebuffer.h"
 #include "render/opengl/gl_backend.h"
+#include "render/opengl/gl_shader.h"
+#include "render/opengl/gl_utils.h"
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "assets/texture_data.h"
@@ -51,7 +54,9 @@ bool Renderer2D::context_alive() const {
     return ctx_ && ctx_lifetime_ && ctx_lifetime_->alive.load();
 }
 
+// ---------------------------------------------------------------------------
 // 2D Shader 源码
+// ---------------------------------------------------------------------------
 static const char* k_2d_vert = R"(
 #version 330 core
 layout(location = 0) in vec2 aPos;
@@ -88,8 +93,7 @@ void main() {
 }
 )";
 
-// G-buffer shader：输出 albedo 到 attachment 0，法线到 attachment 1
-static const char* k_gbuffer_vert = R"(
+static const char* k_lit_sprite_vert = R"(
 #version 330 core
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec4 aColor;
@@ -98,39 +102,172 @@ layout(location = 3) in vec2 aNormalCoord;
 out vec4 vColor;
 out vec2 vTexCoord;
 out vec2 vNormalCoord;
+out vec2 vWorldPos;
 uniform mat4 uViewProj;
 void main() {
     gl_Position = uViewProj * vec4(aPos, 0.0, 1.0);
     vColor = aColor;
     vTexCoord = aTexCoord;
     vNormalCoord = aNormalCoord;
+    vWorldPos = aPos;
 }
 )";
 
-static const char* k_gbuffer_frag = R"(
+static const char* k_lit_sprite_frag = R"(
 #version 330 core
 in vec4 vColor;
 in vec2 vTexCoord;
 in vec2 vNormalCoord;
-layout(location = 0) out vec4 Albedo;
-layout(location = 1) out vec4 Normal;
+in vec2 vWorldPos;
+out vec4 FragColor;
+
 uniform sampler2D uAlbedo;
-uniform sampler2D uNormal;
-uniform int uHasAlbedo;
-uniform int uHasNormal;
+uniform sampler2D uNormalMap;
+uniform vec3 uAmbientLight;
+uniform int uLightCount;
+
+#define MAX_LIGHTS 32
+uniform int uLightType[MAX_LIGHTS];
+uniform vec2 uLightPos[MAX_LIGHTS];
+uniform vec2 uLightDir[MAX_LIGHTS];
+uniform vec3 uLightColor[MAX_LIGHTS];
+uniform float uLightIntensity[MAX_LIGHTS];
+uniform float uLightRadius[MAX_LIGHTS];
+uniform float uLightRange[MAX_LIGHTS];
+uniform float uLightSpotAngle[MAX_LIGHTS];
+uniform float uLightSpotSoftness[MAX_LIGHTS];
+
+uniform sampler2D uShadowMap;
+uniform mat4 uLightSpaceMatrix;
+uniform int uUseShadowMap;
+uniform int uShadowLightIndex;
+
+float compute_shadow(vec4 light_space_pos) {
+    vec3 proj = light_space_pos.xyz / light_space_pos.w;
+    proj = proj * 0.5 + 0.5;
+    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 0.0;
+    float closest = texture(uShadowMap, proj.xy).r;
+    float current = proj.z;
+    return current > closest + 0.005 ? 0.0 : 1.0;
+}
+
 void main() {
-    vec4 albedo = (uHasAlbedo != 0) ? texture(uAlbedo, vTexCoord) : vec4(1.0);
-    Albedo = albedo * vColor;
-    if (uHasNormal != 0) {
-        Normal = texture(uNormal, vNormalCoord);
-    } else {
-        Normal = vec4(0.5, 0.5, 1.0, 1.0); // 默认平面法线
+    vec4 albedo = texture(uAlbedo, vTexCoord) * vColor;
+    if (albedo.a < 0.01) discard;
+
+    vec3 normal = texture(uNormalMap, vNormalCoord).rgb;
+    normal = normalize(normal * 2.0 - 1.0);
+    if (normal.z < 0.0) normal.z = -normal.z;
+
+    vec3 lit = albedo.rgb * uAmbientLight;
+
+    for (int i = 0; i < uLightCount; ++i) {
+        int type = uLightType[i];
+        vec3 light_color = uLightColor[i] * uLightIntensity[i];
+        vec3 L;
+        float attenuation = 1.0;
+        float spot_factor = 1.0;
+
+        if (type == 0) {
+            vec2 to_light = uLightPos[i] - vWorldPos;
+            float dist = length(to_light);
+            if (dist > uLightRadius[i]) continue;
+            attenuation = 1.0 - dist / uLightRadius[i];
+            attenuation *= attenuation;
+            L = normalize(vec3(to_light, 0.15));
+        } else if (type == 1) {
+            L = normalize(vec3(-uLightDir[i], 0.15));
+        } else {
+            vec2 to_light = uLightPos[i] - vWorldPos;
+            float dist = length(to_light);
+            if (dist > uLightRange[i]) continue;
+            attenuation = 1.0 - dist / uLightRange[i];
+            attenuation *= attenuation;
+            L = normalize(vec3(to_light, 0.15));
+            vec2 spot_dir = normalize(uLightDir[i]);
+            float cos_angle = dot(normalize(-to_light), spot_dir);
+            float outer = cos(radians(uLightSpotAngle[i]));
+            float inner = cos(radians(uLightSpotAngle[i] * (1.0 - uLightSpotSoftness[i])));
+            spot_factor = smoothstep(outer, inner, cos_angle);
+            if (spot_factor <= 0.0) continue;
+        }
+
+        float diff = max(dot(normal, L), 0.0);
+
+        float shadow = 1.0;
+        if (uUseShadowMap == 1 && uShadowLightIndex == i) {
+            vec4 light_space = uLightSpaceMatrix * vec4(vWorldPos, 0.0, 1.0);
+            shadow = compute_shadow(light_space);
+        }
+
+        lit += albedo.rgb * light_color * diff * attenuation * spot_factor * shadow;
     }
+
+    FragColor = vec4(lit, albedo.a);
 }
 )";
 
-// 光照 shader：全屏四边形，采样 albedo + normal，计算环境光 + 点光源
-static const char* k_light_vert = R"(
+static const char* k_shadow_vert = R"(
+#version 330 core
+layout(location = 0) in vec2 aPos;
+uniform mat4 uLightSpaceMatrix;
+void main() {
+    gl_Position = uLightSpaceMatrix * vec4(aPos, 0.0, 1.0);
+}
+)";
+
+static const char* k_shadow_frag = R"(
+#version 330 core
+void main() {
+}
+)";
+
+static const char* k_bloom_threshold_frag = R"(
+#version 330 core
+in vec2 vTexCoord;
+out vec4 FragColor;
+uniform sampler2D uTexture;
+uniform float uThreshold;
+void main() {
+    vec3 color = texture(uTexture, vTexCoord).rgb;
+    float brightness = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    FragColor = brightness > uThreshold ? vec4(color, 1.0) : vec4(0.0);
+}
+)";
+
+static const char* k_bloom_blur_frag = R"(
+#version 330 core
+in vec2 vTexCoord;
+out vec4 FragColor;
+uniform sampler2D uTexture;
+uniform vec2 uDirection;
+uniform vec2 uTexelSize;
+void main() {
+    vec2 off1 = vec2(1.3846153846) * uDirection * uTexelSize;
+    vec2 off2 = vec2(3.2307692308) * uDirection * uTexelSize;
+    FragColor = texture(uTexture, vTexCoord) * 0.2270270270;
+    FragColor += texture(uTexture, vTexCoord + off1) * 0.3162162162;
+    FragColor += texture(uTexture, vTexCoord - off1) * 0.3162162162;
+    FragColor += texture(uTexture, vTexCoord + off2) * 0.0702702703;
+    FragColor += texture(uTexture, vTexCoord - off2) * 0.0702702703;
+}
+)";
+
+static const char* k_bloom_compose_frag = R"(
+#version 330 core
+in vec2 vTexCoord;
+out vec4 FragColor;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uIntensity;
+void main() {
+    vec3 scene = texture(uScene, vTexCoord).rgb;
+    vec3 bloom = texture(uBloom, vTexCoord).rgb;
+    FragColor = vec4(scene + bloom * uIntensity, 1.0);
+}
+)";
+
+static const char* k_fullscreen_vert = R"(
 #version 330 core
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aTexCoord;
@@ -138,50 +275,6 @@ out vec2 vTexCoord;
 void main() {
     gl_Position = vec4(aPos, 0.0, 1.0);
     vTexCoord = aTexCoord;
-}
-)";
-
-static const char* k_light_frag = R"(
-#version 330 core
-in vec2 vTexCoord;
-out vec4 FragColor;
-uniform sampler2D uAlbedo;
-uniform sampler2D uNormal;
-uniform vec2 uScreenSize;
-uniform vec3 uAmbientLight;
-uniform vec2 uLightPos;
-uniform float uLightRadius;
-uniform vec3 uLightColor;
-uniform float uLightIntensity;
-uniform int uPassType; // 0=ambient, 1=point light
-void main() {
-    vec4 albedo_alpha = texture(uAlbedo, vTexCoord);
-    if (albedo_alpha.a < 0.01) {
-        FragColor = vec4(0.0);
-        return;
-    }
-    vec3 albedo = albedo_alpha.rgb;
-    vec3 normal = texture(uNormal, vTexCoord).rgb * 2.0 - 1.0;
-    normal = normalize(normal);
-
-    vec3 lit = albedo * uAmbientLight;
-
-    if (uPassType == 1 && uLightRadius > 0.0) {
-        // OpenGL 纹理/屏幕坐标：vTexCoord.y=0 在底部；而 world_to_screen 返回 y=0 在顶部。
-        // 将 fragment 位置转换到与光源一致的“y=0 在顶部”屏幕坐标系。
-        vec2 fragPos = vec2(vTexCoord.x * uScreenSize.x, (1.0 - vTexCoord.y) * uScreenSize.y);
-        vec2 toLight = uLightPos - fragPos;
-        float dist = length(toLight);
-        if (dist <= uLightRadius) {
-            float attenuation = 1.0 - dist / uLightRadius;
-            attenuation *= attenuation;
-            vec3 lightDir = normalize(vec3(toLight, 0.15));
-            float diff = max(dot(normal, lightDir), 0.0);
-            lit += albedo * uLightColor * diff * attenuation * uLightIntensity;
-        }
-    }
-
-    FragColor = vec4(lit, albedo_alpha.a);
 }
 )";
 
@@ -207,34 +300,68 @@ void Renderer2D::init(RenderContext* ctx) {
         return;
     }
 
-    gbuffer_shader_ = ctx_->create_shader();
-    IShader* gbuffer_ptr = ctx_->shader(gbuffer_shader_);
-    if (!gbuffer_shader_.is_valid() || !gbuffer_ptr || !gbuffer_ptr->compile(k_gbuffer_vert, k_gbuffer_frag)) {
-        GLOG_ERROR("Renderer2D: failed to compile gbuffer shader");
-        if (gbuffer_shader_.is_valid()) {
-            ctx_->destroy_shader(gbuffer_shader_);
-            gbuffer_shader_ = RHIShaderHandle{};
+    lit_sprite_shader_ = ctx_->create_shader();
+    IShader* lit_ptr = ctx_->shader(lit_sprite_shader_);
+    if (!lit_sprite_shader_.is_valid() || !lit_ptr || !lit_ptr->compile(k_lit_sprite_vert, k_lit_sprite_frag)) {
+        GLOG_ERROR("Renderer2D: failed to compile lit sprite shader");
+        if (lit_sprite_shader_.is_valid()) {
+            ctx_->destroy_shader(lit_sprite_shader_);
+            lit_sprite_shader_ = RHIShaderHandle{};
         }
     }
 
-    light_shader_ = ctx_->create_shader();
-    IShader* light_ptr = ctx_->shader(light_shader_);
-    if (!light_shader_.is_valid() || !light_ptr || !light_ptr->compile(k_light_vert, k_light_frag)) {
-        GLOG_ERROR("Renderer2D: failed to compile light shader");
-        if (light_shader_.is_valid()) {
-            ctx_->destroy_shader(light_shader_);
-            light_shader_ = RHIShaderHandle{};
+    shadow_shader_ = ctx_->create_shader();
+    IShader* shadow_ptr = ctx_->shader(shadow_shader_);
+    if (!shadow_shader_.is_valid() || !shadow_ptr || !shadow_ptr->compile(k_shadow_vert, k_shadow_frag)) {
+        GLOG_ERROR("Renderer2D: failed to compile shadow shader");
+        if (shadow_shader_.is_valid()) {
+            ctx_->destroy_shader(shadow_shader_);
+            shadow_shader_ = RHIShaderHandle{};
+        }
+    }
+
+    bloom_threshold_shader_ = ctx_->create_shader();
+    IShader* bloom_threshold_ptr = ctx_->shader(bloom_threshold_shader_);
+    if (!bloom_threshold_shader_.is_valid() || !bloom_threshold_ptr ||
+        !bloom_threshold_ptr->compile(k_fullscreen_vert, k_bloom_threshold_frag)) {
+        GLOG_ERROR("Renderer2D: failed to compile bloom threshold shader");
+        if (bloom_threshold_shader_.is_valid()) {
+            ctx_->destroy_shader(bloom_threshold_shader_);
+            bloom_threshold_shader_ = RHIShaderHandle{};
+        }
+    }
+
+    bloom_blur_shader_ = ctx_->create_shader();
+    IShader* bloom_blur_ptr = ctx_->shader(bloom_blur_shader_);
+    if (!bloom_blur_shader_.is_valid() || !bloom_blur_ptr ||
+        !bloom_blur_ptr->compile(k_fullscreen_vert, k_bloom_blur_frag)) {
+        GLOG_ERROR("Renderer2D: failed to compile bloom blur shader");
+        if (bloom_blur_shader_.is_valid()) {
+            ctx_->destroy_shader(bloom_blur_shader_);
+            bloom_blur_shader_ = RHIShaderHandle{};
+        }
+    }
+
+    bloom_compose_shader_ = ctx_->create_shader();
+    IShader* bloom_compose_ptr = ctx_->shader(bloom_compose_shader_);
+    if (!bloom_compose_shader_.is_valid() || !bloom_compose_ptr ||
+        !bloom_compose_ptr->compile(k_fullscreen_vert, k_bloom_compose_frag)) {
+        GLOG_ERROR("Renderer2D: failed to compile bloom compose shader");
+        if (bloom_compose_shader_.is_valid()) {
+            ctx_->destroy_shader(bloom_compose_shader_);
+            bloom_compose_shader_ = RHIShaderHandle{};
         }
     }
 
     mesh_ = ctx_->create_mesh();
-    lit_mesh_ = ctx_->create_mesh();
-    fullscreen_mesh_ = ctx_->create_mesh();
-    if (!mesh_.is_valid() || !lit_mesh_.is_valid() || !fullscreen_mesh_.is_valid()) {
+    if (!mesh_.is_valid()) {
         GLOG_ERROR("Renderer2D: failed to create mesh");
         shutdown();
         return;
     }
+
+    create_shadow_map();
+    create_bloom_targets();
 
     // 优先使用项目内置 TTF（Roboto），保证跨机器一致性；失败再尝试系统字体
     {
@@ -287,6 +414,7 @@ void Renderer2D::init(RenderContext* ctx) {
     vertices_.reserve(4096);
     text_vertices_.reserve(512);
     lit_batches_.reserve(16);
+    shadow_caster_vertices_.reserve(512);
     initialized_ = true;
     GLOG_INFO("Renderer2D initialized");
 }
@@ -298,61 +426,35 @@ void Renderer2D::shutdown() {
         if (font_atlas_.texture()) {
             font_atlas_.destroy(ctx_);
         }
-        if (albedo_fb_.is_valid()) {
-            ctx_->destroy_framebuffer(albedo_fb_);
-            albedo_fb_ = RHIFramebufferHandle{};
-        }
-        if (normal_fb_.is_valid()) {
-            ctx_->destroy_framebuffer(normal_fb_);
-            normal_fb_ = RHIFramebufferHandle{};
-        }
-        if (albedo_tex_.is_valid()) {
-            ctx_->destroy_texture(albedo_tex_);
-            albedo_tex_ = RHITextureHandle{};
-        }
-        if (normal_tex_.is_valid()) {
-            ctx_->destroy_texture(normal_tex_);
-            normal_tex_ = RHITextureHandle{};
-        }
-        if (gl_albedo_fbo_ != 0) {
-            glDeleteFramebuffers(1, &gl_albedo_fbo_);
-            gl_albedo_fbo_ = 0;
-        }
-        if (gl_normal_fbo_ != 0) {
-            glDeleteFramebuffers(1, &gl_normal_fbo_);
-            gl_normal_fbo_ = 0;
-        }
-        if (gl_albedo_tex_ != 0) {
-            glDeleteTextures(1, &gl_albedo_tex_);
-            gl_albedo_tex_ = 0;
-        }
-        if (gl_normal_tex_ != 0) {
-            glDeleteTextures(1, &gl_normal_tex_);
-            gl_normal_tex_ = 0;
-        }
+        destroy_shadow_map();
+        destroy_bloom_targets();
         if (mesh_.is_valid()) {
             ctx_->destroy_mesh(mesh_);
             mesh_ = RHIMeshHandle{};
-        }
-        if (lit_mesh_.is_valid()) {
-            ctx_->destroy_mesh(lit_mesh_);
-            lit_mesh_ = RHIMeshHandle{};
-        }
-        if (fullscreen_mesh_.is_valid()) {
-            ctx_->destroy_mesh(fullscreen_mesh_);
-            fullscreen_mesh_ = RHIMeshHandle{};
         }
         if (shader_.is_valid()) {
             ctx_->destroy_shader(shader_);
             shader_ = RHIShaderHandle{};
         }
-        if (gbuffer_shader_.is_valid()) {
-            ctx_->destroy_shader(gbuffer_shader_);
-            gbuffer_shader_ = RHIShaderHandle{};
+        if (lit_sprite_shader_.is_valid()) {
+            ctx_->destroy_shader(lit_sprite_shader_);
+            lit_sprite_shader_ = RHIShaderHandle{};
         }
-        if (light_shader_.is_valid()) {
-            ctx_->destroy_shader(light_shader_);
-            light_shader_ = RHIShaderHandle{};
+        if (shadow_shader_.is_valid()) {
+            ctx_->destroy_shader(shadow_shader_);
+            shadow_shader_ = RHIShaderHandle{};
+        }
+        if (bloom_threshold_shader_.is_valid()) {
+            ctx_->destroy_shader(bloom_threshold_shader_);
+            bloom_threshold_shader_ = RHIShaderHandle{};
+        }
+        if (bloom_blur_shader_.is_valid()) {
+            ctx_->destroy_shader(bloom_blur_shader_);
+            bloom_blur_shader_ = RHIShaderHandle{};
+        }
+        if (bloom_compose_shader_.is_valid()) {
+            ctx_->destroy_shader(bloom_compose_shader_);
+            bloom_compose_shader_ = RHIShaderHandle{};
         }
     } else {
         GLOG_WARN("Renderer2D::shutdown: RenderContext already destroyed, skipping resource cleanup");
@@ -363,45 +465,118 @@ void Renderer2D::shutdown() {
     ctx_lifetime_.reset();
 }
 
-void Renderer2D::ensure_lighting_resources() {
-    if (gl_albedo_tex_ == 0) glGenTextures(1, &gl_albedo_tex_);
-    if (gl_normal_tex_ == 0) glGenTextures(1, &gl_normal_tex_);
-    if (gl_albedo_fbo_ == 0) glGenFramebuffers(1, &gl_albedo_fbo_);
-    if (gl_normal_fbo_ == 0) glGenFramebuffers(1, &gl_normal_fbo_);
+bool Renderer2D::create_shadow_map() {
+    if (!ctx_) return false;
+    shadow_map_ = ctx_->create_texture();
+    ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
+    if (!shadow_map_.is_valid() || !shadow_map_ptr ||
+        !shadow_map_ptr->create_depth(k_shadow_map_size, k_shadow_map_size)) {
+        GLOG_ERROR("Renderer2D: failed to create shadow map texture");
+        return false;
+    }
+    shadow_map_ptr->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    shadow_map_ptr->set_wrap(TextureWrap::ClampToBorder, TextureWrap::ClampToBorder);
+
+    // 2D 阴影贴图使用普通 sampler2D 采样，必须关闭深度比较模式。
+    auto* gl_shadow = static_cast<GLTexture*>(shadow_map_ptr);
+    if (gl_shadow && gl_shadow->texture_id()) {
+        if (gl_dsa_available()) {
+            glTextureParameteri(gl_shadow->texture_id(), GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        } else {
+            glBindTexture(GL_TEXTURE_2D, gl_shadow->texture_id());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+    }
+
+    shadow_fbo_ = ctx_->create_framebuffer();
+    IFramebuffer* shadow_fbo_ptr = ctx_->framebuffer(shadow_fbo_);
+    if (!shadow_fbo_.is_valid() || !shadow_fbo_ptr ||
+        !shadow_fbo_ptr->create(k_shadow_map_size, k_shadow_map_size)) {
+        GLOG_ERROR("Renderer2D: failed to create shadow framebuffer");
+        return false;
+    }
+    shadow_fbo_ptr->attach_depth_texture(shadow_map_ptr);
+    if (!shadow_fbo_ptr->is_complete()) {
+        GLOG_ERROR("Renderer2D: shadow framebuffer incomplete");
+        return false;
+    }
+    return true;
 }
 
-void Renderer2D::resize_lighting_targets(int w, int h) {
-    if (!context_alive() || w <= 0 || h <= 0) return;
-    if (w == lighting_width_ && h == lighting_height_) return;
+void Renderer2D::destroy_shadow_map() {
+    if (shadow_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(shadow_fbo_);
+        shadow_fbo_ = RHIFramebufferHandle{};
+    }
+    if (shadow_map_.is_valid()) {
+        ctx_->destroy_texture(shadow_map_);
+        shadow_map_ = RHITextureHandle{};
+    }
+}
 
-    ensure_lighting_resources();
-    lighting_width_ = w;
-    lighting_height_ = h;
+bool Renderer2D::create_bloom_targets() {
+    if (!ctx_ || screen_width_ <= 0.0f || screen_height_ <= 0.0f) {
+        bloom_initialized_ = false;
+        return false;
+    }
 
-    auto setup_tex = [](unsigned int tex, int tw, int th) {
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    int w = static_cast<int>(screen_width_);
+    int h = static_cast<int>(screen_height_);
+
+    auto create_fb = [&](RHIFramebufferHandle& fb, RHITextureHandle& tex, bool hdr) -> bool {
+        tex = ctx_->create_texture();
+        ITexture* tex_ptr = ctx_->texture(tex);
+        if (!tex.is_valid() || !tex_ptr) return false;
+        TextureFormat fmt = hdr ? TextureFormat::RGBA16F : TextureFormat::RGBA8;
+        if (!tex_ptr->create(fmt, w, h, nullptr)) return false;
+        tex_ptr->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+        tex_ptr->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+        fb = ctx_->create_framebuffer();
+        IFramebuffer* fb_ptr = ctx_->framebuffer(fb);
+        if (!fb.is_valid() || !fb_ptr || !fb_ptr->create(w, h)) return false;
+        fb_ptr->attach_color_texture(tex_ptr);
+        return fb_ptr->is_complete();
     };
-    setup_tex(gl_albedo_tex_, w, h);
-    setup_tex(gl_normal_tex_, w, h);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, gl_albedo_fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_albedo_tex_, 0);
+    bool ok = create_fb(scene_fbo_, scene_texture_, true) &&
+              create_fb(bloom_fbo_a_, bloom_texture_a_, false) &&
+              create_fb(bloom_fbo_b_, bloom_texture_b_, false);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, gl_normal_fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl_normal_tex_, 0);
+    if (!ok) {
+        GLOG_ERROR("Renderer2D: failed to create bloom targets");
+        destroy_bloom_targets();
+        bloom_initialized_ = false;
+        return false;
+    }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    bloom_initialized_ = true;
+    return true;
+}
+
+void Renderer2D::destroy_bloom_targets() {
+    auto destroy_fb_tex = [&](RHIFramebufferHandle& fb, RHITextureHandle& tex) {
+        if (fb.is_valid()) {
+            ctx_->destroy_framebuffer(fb);
+            fb = RHIFramebufferHandle{};
+        }
+        if (tex.is_valid()) {
+            ctx_->destroy_texture(tex);
+            tex = RHITextureHandle{};
+        }
+    };
+    destroy_fb_tex(scene_fbo_, scene_texture_);
+    destroy_fb_tex(bloom_fbo_a_, bloom_texture_a_);
+    destroy_fb_tex(bloom_fbo_b_, bloom_texture_b_);
+    bloom_initialized_ = false;
 }
 
 void Renderer2D::begin_frame(float screen_width, float screen_height) {
     vertices_.clear();
     text_vertices_.clear();
     lit_batches_.clear();
+    shadow_caster_vertices_.clear();
     reset_lights();
     screen_width_ = screen_width;
     screen_height_ = screen_height;
@@ -418,11 +593,30 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
         ctx_->set_blend(true);
         ctx_->set_cull_face(false);
     }
+
+    // 窗口尺寸变化时重建 bloom 中间目标
+    if (bloom_params_.enabled && bloom_initialized_) {
+        ITexture* scene_tex = ctx_->texture(scene_texture_);
+        bool need_recreate = !scene_tex ||
+                             static_cast<int>(scene_tex->width()) != static_cast<int>(screen_width_) ||
+                             static_cast<int>(scene_tex->height()) != static_cast<int>(screen_height_);
+        if (need_recreate) {
+            destroy_bloom_targets();
+            create_bloom_targets();
+        }
+    }
 }
 
 void Renderer2D::set_camera(const math::Vector2f& center, float zoom) {
     camera_center_ = center;
     camera_zoom_ = zoom <= 0.0f ? 1.0f : zoom;
+    if (screen_width_ > 0.0f && screen_height_ > 0.0f) {
+        math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
+        math::Matrix4f view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
+                            * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+                            * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+        view_proj_ = ortho_ * view;
+    }
 }
 
 math::Vector2f Renderer2D::world_to_screen(const math::Vector2f& world) const {
@@ -437,21 +631,112 @@ void Renderer2D::end_frame() {
         ctx_->set_cull_face(false);
     }
 
-    // 1. 先渲染不受光照的 2D 几何体到屏幕
+    bool use_bloom = bloom_params_.enabled && bloom_initialized_;
+
+    if (use_bloom) {
+        // 将整个 2D 场景渲染到 HDR 中间纹理
+        ctx_->push_command([this](IRenderBackend* backend) {
+            backend->bind_framebuffer(scene_fbo_);
+            backend->set_viewport(0, 0, static_cast<int>(screen_width_), static_cast<int>(screen_height_));
+            backend->clear(0.0f, 0.0f, 0.0f, 0.0f);
+            backend->set_depth_test(false);
+            backend->set_blend(true);
+            backend->set_cull_face(false);
+        });
+    }
+
+    // 1. 渲染不受光照的 2D 几何体
     flush_batches();
 
-    // 2. 若有受光照精灵，执行延迟光照
-    GLOG_DEBUG("Renderer2D: {} lit batches, gbuffer_valid={} light_valid={}",
-               lit_batches_.size(), gbuffer_shader_.is_valid(), light_shader_.is_valid());
-    if (!lit_batches_.empty() && context_alive() && gbuffer_shader_.is_valid() && light_shader_.is_valid() && fullscreen_mesh_.is_valid()) {
-        render_lit_geometry_to_gbuffer();
+    // 2. 阴影 pass
+    render_shadow_pass();
+
+    // 3. 前向光照
+    if (!lit_batches_.empty() && context_alive() && lit_sprite_shader_.is_valid()) {
+        render_lit_sprites_forward(use_bloom);
+    }
+
+    // 4. Bloom 后处理
+    if (use_bloom) {
+        render_bloom_pass();
     }
 }
 
-void Renderer2D::render_lit_geometry_to_gbuffer() {
+void Renderer2D::render_shadow_pass() {
+    if (!ctx_ || shadow_caster_vertices_.empty() || !shadow_shader_.is_valid() || !shadow_fbo_.is_valid()) {
+        return;
+    }
+
+    // 找到第一个投射阴影的光源（Directional 优先，否则 Spot）
+    const Light2D* shadow_light = nullptr;
+    int shadow_light_index = -1;
+    for (int i = 0; i < static_cast<int>(lights_.size()); ++i) {
+        if (lights_[i].type == LightType2D::Directional || lights_[i].type == LightType2D::Spot) {
+            shadow_light = &lights_[i];
+            shadow_light_index = i;
+            break;
+        }
+    }
+    if (!shadow_light) return;
+
+    math::Vector2f dir = shadow_light->direction.normalized();
+    if (dir.length_sq() < 1e-6f) dir = math::Vector2f(0.0f, -1.0f);
+
+    // 构建光源空间矩阵：以摄像机为中心，沿光源方向观察
+    math::Vector2f center = camera_center_;
+    float view_size = std::max(screen_width_, screen_height_) / camera_zoom_;
+    math::Vector2f eye = center - dir * view_size;
+    math::Vector3f eye3(eye.x, eye.y, 0.0f);
+    math::Vector3f center3(center.x, center.y, 0.0f);
+    math::Vector3f up3(0.0f, 0.0f, 1.0f);
+    math::Matrix4f light_view = math::Matrix4f::look_at(eye3, center3, up3);
+    math::Matrix4f light_proj;
+    if (shadow_light->type == LightType2D::Directional) {
+        light_proj = math::Matrix4f::ortho(-view_size, view_size, -view_size, view_size, 0.1f, view_size * 2.0f);
+    } else {
+        // Spot：简化为正交投影（2D 中透视阴影效果不明显，正交更易稳定）
+        light_proj = math::Matrix4f::ortho(-view_size, view_size, -view_size, view_size, 0.1f, view_size * 2.0f);
+    }
+    math::Matrix4f light_space = light_proj * light_view;
+
+    auto verts_shared = std::make_shared<std::vector<ShadowCasterVertex>>(std::move(shadow_caster_vertices_));
+    shadow_caster_vertices_.clear();
+
+    ctx_->push_command([this, verts_shared, light_space](IRenderBackend* backend) {
+        IMesh* mesh_ptr = ctx_->mesh(mesh_);
+        IShader* shader_ptr = ctx_->shader(shadow_shader_);
+        IFramebuffer* shadow_fbo_ptr = ctx_->framebuffer(shadow_fbo_);
+        if (!mesh_ptr || !shader_ptr || !shadow_fbo_ptr) return;
+
+        backend->bind_framebuffer(shadow_fbo_);
+        backend->set_viewport(0, 0, k_shadow_map_size, k_shadow_map_size);
+        // 阴影 FBO 仅有深度附件，需显式禁用颜色读写。
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+        backend->clear_depth();
+        backend->set_depth_test(true);
+        backend->set_blend(false);
+        backend->set_cull_face(false);
+
+        mesh_ptr->upload_vertices(verts_shared->data(),
+                                  static_cast<uint32_t>(verts_shared->size() * sizeof(ShadowCasterVertex)),
+                                  static_cast<uint32_t>(verts_shared->size()));
+
+        VertexLayout layout;
+        layout.stride = sizeof(ShadowCasterVertex);
+        layout.attributes = {{0, VertexType::Float2, false, 0}};
+        mesh_ptr->set_layout(layout);
+
+        shader_ptr->bind();
+        shader_ptr->set_mat4("uLightSpaceMatrix", light_space);
+        mesh_ptr->draw();
+        shader_ptr->unbind();
+    });
+}
+
+void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
     if (!ctx_ || lit_batches_.empty()) return;
 
-    // 把批次数据拷贝到共享结构，供渲染线程使用
     auto batches_copy = std::make_shared<std::vector<LitBatch>>();
     batches_copy->reserve(lit_batches_.size());
     for (auto& batch : lit_batches_) {
@@ -461,169 +746,246 @@ void Renderer2D::render_lit_geometry_to_gbuffer() {
     lit_batches_.clear();
 
     math::Matrix4f view_proj = view_proj_;
-    int target_w = static_cast<int>(screen_width_);
-    int target_h = static_cast<int>(screen_height_);
     Color ambient = ambient_light_;
-    auto lights_copy = std::make_shared<std::vector<PointLight>>(point_lights_);
+    auto lights_copy = std::make_shared<std::vector<Light2D>>(lights_);
 
-    ctx_->push_command([this, batches_copy, view_proj, target_w, target_h, ambient, lights_copy](IRenderBackend* backend) {
-        if (batches_copy->empty() || !backend) return;
+    // 找到投射阴影的光源索引
+    int shadow_light_index = -1;
+    for (int i = 0; i < static_cast<int>(lights_copy->size()); ++i) {
+        if ((*lights_copy)[i].type == LightType2D::Directional || (*lights_copy)[i].type == LightType2D::Spot) {
+            shadow_light_index = i;
+            break;
+        }
+    }
 
-        // 延迟光照目前只在 OpenGL 后端实现；Vulkan 走简化 forward lighting
-        auto* gl_backend = dynamic_cast<GLBackend*>(backend);
-        if (!gl_backend) {
-            GLOG_WARN("Renderer2D: deferred lighting is only implemented for OpenGL backend");
-            return;
+    // 构建光源空间矩阵（与 shadow pass 一致）
+    math::Matrix4f light_space = math::Matrix4f::identity();
+    bool use_shadow = false;
+    if (shadow_light_index >= 0 && shadow_fbo_.is_valid()) {
+        const Light2D& shadow_light = (*lights_copy)[shadow_light_index];
+        math::Vector2f dir = shadow_light.direction.normalized();
+        if (dir.length_sq() < 1e-6f) dir = math::Vector2f(0.0f, -1.0f);
+        math::Vector2f center = camera_center_;
+        float view_size = std::max(screen_width_, screen_height_) / camera_zoom_;
+        math::Vector2f eye = center - dir * view_size;
+        math::Matrix4f light_view = math::Matrix4f::look_at(
+            math::Vector3f(eye.x, eye.y, 0.0f),
+            math::Vector3f(center.x, center.y, 0.0f),
+            math::Vector3f(0.0f, 0.0f, 1.0f));
+        math::Matrix4f light_proj = math::Matrix4f::ortho(
+            -view_size, view_size, -view_size, view_size, 0.1f, view_size * 2.0f);
+        light_space = light_proj * light_view;
+        use_shadow = true;
+    }
+
+    ctx_->push_command([this, batches_copy, view_proj, ambient, lights_copy,
+                        shadow_light_index, light_space, use_shadow, target_is_scene_fbo](IRenderBackend* backend) {
+        if (batches_copy->empty()) return;
+
+        IMesh* mesh_ptr = ctx_->mesh(mesh_);
+        IShader* shader_ptr = ctx_->shader(lit_sprite_shader_);
+        if (!mesh_ptr || !shader_ptr) return;
+
+        // 阴影 pass 会切换 FBO，光照 pass 需要重新绑定到正确目标（scene FBO 或默认 backbuffer）。
+        backend->bind_framebuffer(target_is_scene_fbo ? scene_fbo_ : RHIFramebufferHandle{});
+        backend->set_viewport(0, 0, static_cast<int>(screen_width_), static_cast<int>(screen_height_));
+        backend->set_depth_test(false);
+        backend->set_blend(true);
+        backend->set_cull_face(false);
+
+        // 创建默认 fallback 纹理
+        static GLuint default_albedo_tex = 0;
+        static GLuint default_normal_tex = 0;
+        if (default_albedo_tex == 0) {
+            glGenTextures(1, &default_albedo_tex);
+            glBindTexture(GL_TEXTURE_2D, default_albedo_tex);
+            unsigned char white[] = {255, 255, 255, 255};
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        if (default_normal_tex == 0) {
+            glGenTextures(1, &default_normal_tex);
+            glBindTexture(GL_TEXTURE_2D, default_normal_tex);
+            unsigned char blue[] = {128, 128, 255, 255};
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
         }
 
-        // OpenGL 光照资源必须在渲染线程创建（GL context 在渲染线程）
-        if (target_w > 0 && target_h > 0 &&
-            (!lighting_resources_ready_ || target_w != lighting_width_ || target_h != lighting_height_)) {
-            ensure_lighting_resources();
-            resize_lighting_targets(target_w, target_h);
-            lighting_resources_ready_ = gl_albedo_fbo_ != 0 && gl_normal_fbo_ != 0 &&
-                                        gl_albedo_tex_ != 0 && gl_normal_tex_ != 0;
+        shader_ptr->bind();
+        shader_ptr->set_mat4("uViewProj", view_proj);
+        shader_ptr->set_vec3("uAmbientLight", math::Vector3f(ambient.r, ambient.g, ambient.b));
+
+        int light_count = static_cast<int>(std::min<size_t>(lights_copy->size(), 32));
+        shader_ptr->set_int("uLightCount", light_count);
+        for (int i = 0; i < light_count; ++i) {
+            const auto& L = (*lights_copy)[i];
+            shader_ptr->set_int(("uLightType[" + std::to_string(i) + "]").c_str(), static_cast<int>(L.type));
+            shader_ptr->set_vec2(("uLightPos[" + std::to_string(i) + "]").c_str(), L.position);
+            shader_ptr->set_vec2(("uLightDir[" + std::to_string(i) + "]").c_str(), L.direction);
+            shader_ptr->set_vec3(("uLightColor[" + std::to_string(i) + "]").c_str(),
+                                 math::Vector3f(L.color.r, L.color.g, L.color.b));
+            shader_ptr->set_float(("uLightIntensity[" + std::to_string(i) + "]").c_str(), L.intensity);
+            shader_ptr->set_float(("uLightRadius[" + std::to_string(i) + "]").c_str(), L.radius);
+            shader_ptr->set_float(("uLightRange[" + std::to_string(i) + "]").c_str(), L.range);
+            shader_ptr->set_float(("uLightSpotAngle[" + std::to_string(i) + "]").c_str(), L.spot_angle);
+            shader_ptr->set_float(("uLightSpotSoftness[" + std::to_string(i) + "]").c_str(), L.spot_softness);
         }
 
-        if (!lighting_resources_ready_) {
-            GLOG_ERROR("Renderer2D: GL lighting resources not created");
-            return;
+        shader_ptr->set_int("uUseShadowMap", use_shadow ? 1 : 0);
+        shader_ptr->set_int("uShadowLightIndex", shadow_light_index);
+        if (use_shadow) {
+            shader_ptr->set_mat4("uLightSpaceMatrix", light_space);
+            ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
+            if (shadow_map_ptr) shadow_map_ptr->bind(2);
+            shader_ptr->set_int("uShadowMap", 2);
         }
 
-        IMesh* lit_mesh_ptr = ctx_->mesh(lit_mesh_);
-        IShader* gbuffer_ptr = ctx_->shader(gbuffer_shader_);
-        IShader* light_ptr = ctx_->shader(light_shader_);
-        IMesh* fullscreen_ptr = ctx_->mesh(fullscreen_mesh_);
-        if (!lit_mesh_ptr || !gbuffer_ptr || !light_ptr || !fullscreen_ptr) return;
+        for (const auto& batch : *batches_copy) {
+            if (batch.verts.empty()) continue;
 
+            if (batch.albedo) {
+                batch.albedo->bind(0);
+            } else {
+                glBindTextureUnit(0, default_albedo_tex);
+            }
+            shader_ptr->set_int("uAlbedo", 0);
+
+            if (batch.normal) {
+                batch.normal->bind(1);
+            } else {
+                glBindTextureUnit(1, default_normal_tex);
+            }
+            shader_ptr->set_int("uNormalMap", 1);
+
+            mesh_ptr->upload_vertices(batch.verts.data(),
+                                      static_cast<uint32_t>(batch.verts.size() * sizeof(LitVertex2D)),
+                                      static_cast<uint32_t>(batch.verts.size()));
+
+            VertexLayout layout;
+            layout.stride = sizeof(LitVertex2D);
+            layout.attributes = {
+                {0, VertexType::Float2, false, 0},
+                {1, VertexType::Float4, false, 2 * sizeof(float)},
+                {2, VertexType::Float2, false, 6 * sizeof(float)},
+                {3, VertexType::Float2, false, 8 * sizeof(float)}
+            };
+            mesh_ptr->set_layout(layout);
+            mesh_ptr->draw();
+        }
+
+        shader_ptr->unbind();
+    });
+}
+
+void Renderer2D::render_bloom_pass() {
+    if (!ctx_ || !bloom_initialized_) return;
+
+    int w = static_cast<int>(screen_width_);
+    int h = static_cast<int>(screen_height_);
+
+    auto do_fullscreen_pass = [&](RHIShaderHandle shader, RHIFramebufferHandle target,
+                                   RHITextureHandle input_tex, auto set_uniforms) {
+        ctx_->push_command([this, shader, target, input_tex, set_uniforms, w, h](IRenderBackend* backend) {
+            IMesh* mesh_ptr = ctx_->mesh(mesh_);
+            IShader* shader_ptr = ctx_->shader(shader);
+            ITexture* input_ptr = ctx_->texture(input_tex);
+            if (!mesh_ptr || !shader_ptr) return;
+
+            backend->bind_framebuffer(target);
+            backend->set_viewport(0, 0, w, h);
+            backend->set_depth_test(false);
+            backend->set_blend(false);
+            backend->set_cull_face(false);
+
+            // 全屏三角形
+            struct FSVertex { float x, y, u, v; };
+            FSVertex verts[] = {
+                {-1.0f, -1.0f, 0.0f, 0.0f},
+                { 3.0f, -1.0f, 2.0f, 0.0f},
+                {-1.0f,  3.0f, 0.0f, 2.0f}
+            };
+            mesh_ptr->upload_vertices(verts, sizeof(verts), 3);
+            VertexLayout layout;
+            layout.stride = sizeof(FSVertex);
+            layout.attributes = {
+                {0, VertexType::Float2, false, 0},
+                {1, VertexType::Float2, false, 2 * sizeof(float)}
+            };
+            mesh_ptr->set_layout(layout);
+
+            shader_ptr->bind();
+            if (input_ptr) input_ptr->bind(0);
+            shader_ptr->set_int("uTexture", 0);
+            set_uniforms(shader_ptr);
+            mesh_ptr->draw();
+            shader_ptr->unbind();
+        });
+    };
+
+    // Threshold
+    do_fullscreen_pass(bloom_threshold_shader_, bloom_fbo_a_, scene_texture_,
+                       [&](IShader* s) { s->set_float("uThreshold", bloom_params_.threshold); });
+
+    // Blur passes
+    RHITextureHandle src = bloom_texture_a_;
+    RHIFramebufferHandle dst = bloom_fbo_b_;
+    for (int i = 0; i < bloom_params_.blur_passes * 2; ++i) {
+        bool horizontal = (i % 2) == 0;
+        do_fullscreen_pass(bloom_blur_shader_, dst, src,
+                           [&](IShader* s) {
+                               s->set_vec2("uDirection", horizontal ? math::Vector2f(1.0f, 0.0f) : math::Vector2f(0.0f, 1.0f));
+                               s->set_vec2("uTexelSize", math::Vector2f(1.0f / w, 1.0f / h));
+                           });
+        std::swap(src, bloom_texture_a_);
+        std::swap(dst, bloom_fbo_a_);
+    }
+    // 最终 bloom 结果在 src 中
+
+    // Compose to backbuffer
+    ctx_->push_command([this, src, w, h](IRenderBackend* backend) {
+        IMesh* mesh_ptr = ctx_->mesh(mesh_);
+        IShader* shader_ptr = ctx_->shader(bloom_compose_shader_);
+        ITexture* scene_ptr = ctx_->texture(scene_texture_);
+        ITexture* bloom_ptr = ctx_->texture(src);
+        if (!mesh_ptr || !shader_ptr) return;
+
+        backend->bind_framebuffer(RHIFramebufferHandle{});
+        backend->set_viewport(0, 0, w, h);
+        backend->set_depth_test(false);
+        backend->set_blend(false);
+        backend->set_cull_face(false);
+
+        struct FSVertex { float x, y, u, v; };
+        FSVertex verts[] = {
+            {-1.0f, -1.0f, 0.0f, 0.0f},
+            { 3.0f, -1.0f, 2.0f, 0.0f},
+            {-1.0f,  3.0f, 0.0f, 2.0f}
+        };
+        mesh_ptr->upload_vertices(verts, sizeof(verts), 3);
         VertexLayout layout;
-        layout.stride = sizeof(LitVertex2D);
+        layout.stride = sizeof(FSVertex);
         layout.attributes = {
-            {0, VertexType::Float2, false, 0},
-            {1, VertexType::Float4, false, 2 * sizeof(float)},
-            {2, VertexType::Float2, false, 6 * sizeof(float)},
-            {3, VertexType::Float2, false, 8 * sizeof(float)}
-        };
-        lit_mesh_ptr->set_layout(layout);
-
-        // 渲染 albedo 到 albedo_fb
-        glBindFramebuffer(GL_FRAMEBUFFER, gl_albedo_fbo_);
-        gl_backend->set_viewport(0, 0, lighting_width_, lighting_height_);
-        gl_backend->set_blend(true);
-        gl_backend->set_blend_func(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
-        gl_backend->clear(0.0f, 0.0f, 0.0f, 0.0f);
-
-        gbuffer_ptr->bind();
-        gbuffer_ptr->set_mat4("uViewProj", view_proj);
-
-        for (const auto& batch : *batches_copy) {
-            if (batch.verts.empty()) continue;
-            bool has_albedo = (batch.albedo != nullptr);
-            bool has_normal = (batch.normal != nullptr);
-
-            lit_mesh_ptr->upload_vertices(batch.verts.data(),
-                                          static_cast<uint32_t>(batch.verts.size() * sizeof(LitVertex2D)),
-                                          static_cast<uint32_t>(batch.verts.size()));
-
-            gbuffer_ptr->set_int("uHasAlbedo", has_albedo ? 1 : 0);
-            gbuffer_ptr->set_int("uHasNormal", has_normal ? 1 : 0);
-            if (has_albedo) batch.albedo->bind(0);
-            gbuffer_ptr->set_int("uAlbedo", 0);
-            if (has_normal) batch.normal->bind(1);
-            gbuffer_ptr->set_int("uNormal", 1);
-            lit_mesh_ptr->draw();
-        }
-        gbuffer_ptr->unbind();
-
-        // 渲染法线到 normal_fb
-        glBindFramebuffer(GL_FRAMEBUFFER, gl_normal_fbo_);
-        gl_backend->clear(0.5f, 0.5f, 1.0f, 1.0f);
-
-        gbuffer_ptr->bind();
-        gbuffer_ptr->set_mat4("uViewProj", view_proj);
-
-        for (const auto& batch : *batches_copy) {
-            if (batch.verts.empty()) continue;
-            bool has_albedo = (batch.albedo != nullptr);
-            bool has_normal = (batch.normal != nullptr);
-
-            lit_mesh_ptr->upload_vertices(batch.verts.data(),
-                                          static_cast<uint32_t>(batch.verts.size() * sizeof(LitVertex2D)),
-                                          static_cast<uint32_t>(batch.verts.size()));
-
-            gbuffer_ptr->set_int("uHasAlbedo", has_albedo ? 1 : 0);
-            gbuffer_ptr->set_int("uHasNormal", has_normal ? 1 : 0);
-            if (has_albedo) batch.albedo->bind(0);
-            gbuffer_ptr->set_int("uAlbedo", 0);
-            if (has_normal) batch.normal->bind(1);
-            gbuffer_ptr->set_int("uNormal", 1);
-            lit_mesh_ptr->draw();
-        }
-        gbuffer_ptr->unbind();
-
-        // 回到默认 framebuffer 进行光照 pass
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        // 光照 pass：全屏四边形混合到屏幕
-        struct FSVertex {
-            float x, y, u, v;
-        };
-        FSVertex fs_quad[6] = {
-            {-1.0f, -1.0f, 0.0f, 0.0f},
-            { 1.0f, -1.0f, 1.0f, 0.0f},
-            { 1.0f,  1.0f, 1.0f, 1.0f},
-            {-1.0f, -1.0f, 0.0f, 0.0f},
-            { 1.0f,  1.0f, 1.0f, 1.0f},
-            {-1.0f,  1.0f, 0.0f, 1.0f}
-        };
-
-        fullscreen_ptr->upload_vertices(fs_quad, sizeof(fs_quad), 6);
-        VertexLayout fs_layout;
-        fs_layout.stride = sizeof(FSVertex);
-        fs_layout.attributes = {
             {0, VertexType::Float2, false, 0},
             {1, VertexType::Float2, false, 2 * sizeof(float)}
         };
-        fullscreen_ptr->set_layout(fs_layout);
+        mesh_ptr->set_layout(layout);
 
-        gl_backend->set_viewport(0, 0, lighting_width_, lighting_height_);
-        gl_backend->set_blend(true);
-        // 环境光底使用 SrcAlpha/OneMinusSrcAlpha 与背后内容混合
-        gl_backend->set_blend_func(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
-
-        math::Vector2f screen_size(screen_width_, screen_height_);
-
-        light_ptr->bind();
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, gl_albedo_tex_);
-        light_ptr->set_int("uAlbedo", 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, gl_normal_tex_);
-        light_ptr->set_int("uNormal", 1);
-        light_ptr->set_vec2("uScreenSize", screen_size);
-        light_ptr->set_vec3("uAmbientLight", math::Vector3f(ambient.r, ambient.g, ambient.b));
-
-        // 环境光底
-        light_ptr->set_int("uPassType", 0);
-        light_ptr->set_float("uLightRadius", 0.0f);
-        fullscreen_ptr->draw();
-
-        // 点光源：加法混合，只叠加光源贡献
-        gl_backend->set_blend_func(BlendFactor::One, BlendFactor::One);
-        light_ptr->set_int("uPassType", 1);
-        for (const auto& light : *lights_copy) {
-            if (light.radius <= 0.0f) continue;
-            light_ptr->set_vec2("uLightPos", light.pos);
-            light_ptr->set_float("uLightRadius", light.radius);
-            light_ptr->set_vec3("uLightColor", math::Vector3f(light.color.r, light.color.g, light.color.b));
-            light_ptr->set_float("uLightIntensity", light.intensity);
-            fullscreen_ptr->draw();
-        }
-        light_ptr->unbind();
-
-        // 恢复默认混合与 viewport
-        gl_backend->set_blend_func(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
-        gl_backend->set_viewport(0, 0, static_cast<int>(screen_width_), static_cast<int>(screen_height_));
+        shader_ptr->bind();
+        if (scene_ptr) scene_ptr->bind(0);
+        shader_ptr->set_int("uScene", 0);
+        if (bloom_ptr) bloom_ptr->bind(1);
+        shader_ptr->set_int("uBloom", 1);
+        shader_ptr->set_float("uIntensity", bloom_params_.intensity);
+        mesh_ptr->draw();
+        shader_ptr->unbind();
     });
 }
 
@@ -635,6 +997,17 @@ void Renderer2D::push_text_vertex(float x, float y, const Color& color, float u,
     text_vertices_.push_back({x, y, color.r, color.g, color.b, color.a, u, v});
 }
 
+void Renderer2D::push_lit_vertex(ITexture* albedo, ITexture* normal,
+                                 float x, float y, const Color& color,
+                                 float u, float v, float nu, float nv) {
+    auto it = find_lit_batch(albedo, normal);
+    it->verts.push_back({x, y, color.r, color.g, color.b, color.a, u, v, nu, nv});
+}
+
+void Renderer2D::push_shadow_caster_vertex(float x, float y) {
+    shadow_caster_vertices_.push_back({x, y});
+}
+
 std::vector<Renderer2D::LitBatch>::iterator Renderer2D::find_lit_batch(ITexture* albedo, ITexture* normal) {
     for (auto it = lit_batches_.begin(); it != lit_batches_.end(); ++it) {
         if (it->albedo == albedo && it->normal == normal) {
@@ -643,13 +1016,6 @@ std::vector<Renderer2D::LitBatch>::iterator Renderer2D::find_lit_batch(ITexture*
     }
     lit_batches_.push_back({albedo, normal, {}});
     return std::prev(lit_batches_.end());
-}
-
-void Renderer2D::push_lit_vertex(ITexture* albedo, ITexture* normal,
-                                 float x, float y, const Color& color,
-                                 float u, float v, float nu, float nv) {
-    auto it = find_lit_batch(albedo, normal);
-    it->verts.push_back({x, y, color.r, color.g, color.b, color.a, u, v, nu, nv});
 }
 
 void Renderer2D::flush_batches() {
@@ -677,7 +1043,9 @@ void Renderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text) {
         IShader* shader_ptr = ctx_->shader(shader_);
         if (!mesh_ptr || !shader_ptr) return;
 
-        mesh_ptr->upload_vertices(verts_shared->data(), static_cast<uint32_t>(verts_shared->size() * sizeof(Vertex2D)), static_cast<uint32_t>(verts_shared->size()));
+        mesh_ptr->upload_vertices(verts_shared->data(),
+                                  static_cast<uint32_t>(verts_shared->size() * sizeof(Vertex2D)),
+                                  static_cast<uint32_t>(verts_shared->size()));
 
         VertexLayout layout;
         layout.stride = sizeof(Vertex2D);
@@ -798,14 +1166,22 @@ void Renderer2D::set_ambient_light(const Color& color) {
     ambient_light_ = color;
 }
 
-void Renderer2D::add_point_light(const math::Vector2f& pos, float radius,
-                                  const Color& color, float intensity) {
-    point_lights_.push_back({pos, radius, color, intensity});
+void Renderer2D::add_light(const Light2D& light) {
+    if (lights_.size() < 32) {
+        lights_.push_back(light);
+    }
 }
 
 void Renderer2D::reset_lights() {
-    point_lights_.clear();
+    lights_.clear();
     ambient_light_ = Color::black();
+}
+
+void Renderer2D::set_bloom(const BloomParams& params) {
+    bloom_params_ = params;
+    if (bloom_params_.enabled && !bloom_initialized_ && screen_width_ > 0.0f && screen_height_ > 0.0f) {
+        create_bloom_targets();
+    }
 }
 
 void Renderer2D::draw_sprite(float x, float y, float w, float h,
@@ -818,7 +1194,6 @@ void Renderer2D::draw_sprite_region(float x, float y, float w, float h,
                                      ITexture* texture, const Color& tint) {
     if (!texture || !context_alive() || !mesh_.is_valid() || !shader_.is_valid()) return;
 
-    // 先提交当前普通批次，避免纹理状态混合
     flush_batch(std::move(vertices_), false);
 
     float x0 = x, y0 = y;
@@ -862,37 +1237,40 @@ void Renderer2D::draw_sprite_region(float x, float y, float w, float h,
 void Renderer2D::draw_lit_sprite(float x, float y, float w, float h,
                                   ITexture* albedo, ITexture* normal_map,
                                   const Color& tint) {
-    draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, albedo, normal_map, tint);
+    draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, albedo, normal_map, tint,
+                           0.0f, 0.0f, 1.0f, 1.0f);
 }
 
 void Renderer2D::draw_lit_sprite_region(float x, float y, float w, float h,
                                          float u0, float v0, float u1, float v1,
                                          ITexture* albedo, ITexture* normal_map,
-                                         const Color& tint) {
+                                         const Color& tint,
+                                         float nu0, float nv0,
+                                         float nu1, float nv1) {
     if (!context_alive()) return;
-    GLOG_DEBUG("draw_lit_sprite_region: x={} y={} w={} h={} albedo={} normal={} tint=({},{},{})",
-               x, y, w, h, (void*)albedo, (void*)normal_map, tint.r, tint.g, tint.b);
 
     float x0 = x, y0 = y;
     float x1 = x + w, y1 = y + h;
 
-    // normal 坐标：无 normal_map 时使用默认平面法线 (0.5,0.5)
-    float nu0 = 0.0f, nv0 = 0.0f;
-    float nu1 = 1.0f, nv1 = 1.0f;
+    push_lit_vertex(albedo, normal_map, x0, y0, tint, u0, v0, nu0, nv0);
+    push_lit_vertex(albedo, normal_map, x1, y0, tint, u1, v0, nu1, nv0);
+    push_lit_vertex(albedo, normal_map, x1, y1, tint, u1, v1, nu1, nv1);
 
-    push_lit_vertex(albedo, normal_map,
-                    x0, y0, tint, u0, v0, nu0, nv0);
-    push_lit_vertex(albedo, normal_map,
-                    x1, y0, tint, u1, v0, nu1, nv0);
-    push_lit_vertex(albedo, normal_map,
-                    x1, y1, tint, u1, v1, nu1, nv1);
+    push_lit_vertex(albedo, normal_map, x0, y0, tint, u0, v0, nu0, nv0);
+    push_lit_vertex(albedo, normal_map, x1, y1, tint, u1, v1, nu1, nv1);
+    push_lit_vertex(albedo, normal_map, x0, y1, tint, u0, v1, nu0, nv1);
+}
 
-    push_lit_vertex(albedo, normal_map,
-                    x0, y0, tint, u0, v0, nu0, nv0);
-    push_lit_vertex(albedo, normal_map,
-                    x1, y1, tint, u1, v1, nu1, nv1);
-    push_lit_vertex(albedo, normal_map,
-                    x0, y1, tint, u0, v1, nu0, nv1);
+void Renderer2D::draw_shadow_caster(float x, float y, float w, float h) {
+    if (!context_alive()) return;
+    float x0 = x, y0 = y;
+    float x1 = x + w, y1 = y + h;
+    push_shadow_caster_vertex(x0, y0);
+    push_shadow_caster_vertex(x1, y0);
+    push_shadow_caster_vertex(x1, y1);
+    push_shadow_caster_vertex(x0, y0);
+    push_shadow_caster_vertex(x1, y1);
+    push_shadow_caster_vertex(x0, y1);
 }
 
 RHITextureHandle Renderer2D::create_texture_from_data(const assets::TextureData* data) {
@@ -901,11 +1279,15 @@ RHITextureHandle Renderer2D::create_texture_from_data(const assets::TextureData*
     RHITextureHandle tex = ctx_->create_texture();
     if (!tex.is_valid()) return RHITextureHandle{};
 
-    // 在渲染线程上传 GPU；主线程只创建对象
-    ctx_->push_command([this, tex, data](IRenderBackend*) {
+    auto pixels_copy = std::make_shared<std::vector<unsigned char>>(data->pixels);
+    int width = data->width;
+    int height = data->height;
+    int channels = data->channels;
+
+    ctx_->push_command([this, tex, pixels_copy, width, height, channels](IRenderBackend*) {
         ITexture* tex_ptr = ctx_->texture(tex);
         if (!tex_ptr) return;
-        tex_ptr->upload_data(data->data(), data->width, data->height, data->channels);
+        tex_ptr->upload_data(pixels_copy->data(), width, height, channels);
         tex_ptr->set_filter(TextureFilter::Nearest, TextureFilter::Nearest);
         tex_ptr->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
     });

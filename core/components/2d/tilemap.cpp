@@ -34,28 +34,28 @@ render::Color Tilemap::tile_color(int index) {
 }
 
 void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
-    if (tileset_loaded_) return;
-    tileset_loaded_ = true;
+    // 1) 按需解析 JSON（物理属性等）
+    if (!tileset_json_loaded_ && !tileset_path.empty()) {
+        tileset_json_loaded_ = true;
 
-    if (tileset_path.empty()) return;
-
-    std::string resolved = resources::ResourcePath::resolve(tileset_path);
-    std::ifstream file(resolved);
-    if (!file.is_open()) {
-        GLOG_WARN("Tilemap: failed to open tileset '{}'", tileset_path);
-        return;
+        std::string resolved = resources::ResourcePath::resolve(tileset_path);
+        std::ifstream file(resolved);
+        if (file.is_open()) {
+            try {
+                nlohmann::json j;
+                file >> j;
+                tileset.deserialize(j);
+            } catch (const std::exception& e) {
+                GLOG_WARN("Tilemap: failed to parse tileset '{}': {}", tileset_path, e.what());
+            }
+        } else {
+            GLOG_WARN("Tilemap: failed to open tileset '{}'", tileset_path);
+        }
     }
 
-    try {
-        nlohmann::json j;
-        file >> j;
-        tileset.deserialize(j);
-    } catch (const std::exception& e) {
-        GLOG_WARN("Tilemap: failed to parse tileset '{}': {}", tileset_path, e.what());
-        return;
-    }
-
-    if (tileset.texture_path.empty()) return;
+    // 2) 按需上传 GPU 纹理
+    if (tileset_texture_loaded_ || tileset.texture_path.empty()) return;
+    tileset_texture_loaded_ = true;
 
     auto tex_data = assets::AssetManager::instance().load<assets::TextureData>(tileset.texture_path);
     if (!tex_data || tex_data->empty()) {
@@ -65,6 +65,19 @@ void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
 
     tileset_texture_width_ = tex_data->width;
     tileset_texture_height_ = tex_data->height;
+
+    // 如果 JSON 没有给出 tile_count，根据纹理尺寸和瓦片尺寸推算
+    if (tileset.tile_count <= 0 && tileset.tile_width > 0 && tileset.tile_height > 0) {
+        int usable_w = tileset_texture_width_ - 2 * tileset.margin;
+        int usable_h = tileset_texture_height_ - 2 * tileset.margin;
+        int cols = (usable_w + tileset.spacing) / (tileset.tile_width + tileset.spacing);
+        int rows = (usable_h + tileset.spacing) / (tileset.tile_height + tileset.spacing);
+        if (cols > 0 && rows > 0) {
+            tileset.tile_count = cols * rows;
+        }
+        GLOG_INFO("Tilemap: computed tile_count={} cols={} rows={} from {}x{} tile={}",
+                  tileset.tile_count, cols, rows, tileset_texture_width_, tileset_texture_height_, tileset.tile_width);
+    }
 
     if (use_tileset_texture && renderer) {
         tileset.texture = renderer->create_texture_from_data(tex_data.get());
@@ -116,6 +129,10 @@ void Tilemap::draw(render::IRenderer2D* renderer) {
                 renderer->draw_rect(wx, wy, cw, ch, tile_color(tile));
             }
 
+            if (cast_shadow) {
+                renderer->draw_shadow_caster(wx, wy, cw, ch);
+            }
+
             if (debug_draw_colliders && generate_colliders) {
                 renderer->draw_rect(wx + cw * 0.45f, wy + ch * 0.45f,
                                     cw * 0.1f, ch * 0.1f, render::Color::red());
@@ -147,8 +164,8 @@ bool load_tileset_json(const std::string& path, resources::Tileset& out) {
 bool Tilemap::is_solid_tile(int x, int y) const {
     int tile = get_tile(x, y);
     if (tile < 0) return false;
-    if (!tileset_loaded_ && !tileset_path.empty()) {
-        tileset_loaded_ = load_tileset_json(tileset_path, tileset);
+    if (!tileset_json_loaded_ && !tileset_path.empty()) {
+        tileset_json_loaded_ = load_tileset_json(tileset_path, tileset);
     }
     // 如果图集没有定义属性，兼容旧行为：所有非空瓦片都视为 solid
     if (tileset.tile_properties.empty()) return true;
@@ -168,8 +185,8 @@ void Tilemap::on_init() {
     if (!generate_colliders || !owner() || map_width <= 0 || map_height <= 0) return;
 
     // 确保 tileset 属性已加载，以便正确判断 solid/outer-ring
-    if (!tileset_loaded_ && !tileset_path.empty()) {
-        tileset_loaded_ = load_tileset_json(tileset_path, tileset);
+    if (!tileset_json_loaded_ && !tileset_path.empty()) {
+        tileset_json_loaded_ = load_tileset_json(tileset_path, tileset);
     }
 
     math::Vector2f pos = position();
@@ -188,7 +205,7 @@ void Tilemap::on_init() {
             int end = x; // [start, end)
 
             int count = end - start;
-            float wx = pos.x + (start + (count - 1) * 0.5f) * cw;
+            float wx = pos.x + (start + count * 0.5f) * cw;
             float wy = pos.y + (y + 0.5f) * ch;
 
             std::string col_name = "TileCollider_" + std::to_string(y) + "_" + std::to_string(start);

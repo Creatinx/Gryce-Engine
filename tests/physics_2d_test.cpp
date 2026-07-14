@@ -8,6 +8,7 @@
 #include "components/static_body_2d.h"
 #include "components/box_collider_2d.h"
 #include "components/circle_collider_2d.h"
+#include "components/2d/tilemap.h"
 #include "ecs/systems/physics_system_2d.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
@@ -159,4 +160,32 @@ TEST(Physics2D, BoxRestsOnBox) {
 
     EXPECT_NEAR(box->transform()->position.y, 1.0f, 0.15f);
     EXPECT_LT(rb->velocity.length(), 0.1f);
+}
+
+TEST(Physics2D, TilemapOuterRingColliderAlignedWithTiles) {
+    scene::Scene scene("test");
+
+    scene::Entity* level = scene.create_entity("Level");
+    level->transform()->position = math::Vector3f(5.0f, 7.0f, 0.0f);
+    auto* tm = level->add_component<components::d2::tilemap::Tilemap>(10, 5, 32.0f, 32.0f);
+    tm->generate_colliders = true;
+    for (int x = 0; x < 10; ++x) {
+        tm->set_tile(x, 4, 0); // single solid row at the bottom
+    }
+    tm->on_init();
+
+    const auto& children = level->children();
+    ASSERT_EQ(children.size(), 1u);
+
+    scene::Entity* col_entity = children.front().get();
+    auto* box = col_entity->get_component<components::BoxCollider2D>();
+    ASSERT_NE(box, nullptr);
+
+    // The merged row spans x=[0,10) and y=[4,5) cells.
+    // Collider center must be at the visual center of that block.
+    const math::Vector3f& pos = col_entity->transform()->position;
+    EXPECT_NEAR(pos.x, 5.0f + (0.0f + 10.0f * 0.5f) * 32.0f, 1e-4f); // 165
+    EXPECT_NEAR(pos.y, 7.0f + (4.0f + 0.5f) * 32.0f, 1e-4f);       // 151
+    EXPECT_NEAR(box->size.x, 10.0f * 32.0f, 1e-4f);
+    EXPECT_NEAR(box->size.y, 32.0f, 1e-4f);
 }

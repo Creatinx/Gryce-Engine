@@ -218,6 +218,13 @@ bool VulkanFramebuffer::create_framebuffer() {
     return true;
 }
 
+void VulkanFramebuffer::set_clear_color(float r, float g, float b, float a) {
+    clear_color_r_ = r;
+    clear_color_g_ = g;
+    clear_color_b_ = b;
+    clear_color_a_ = a;
+}
+
 void VulkanFramebuffer::begin_render_pass(VkCommandBuffer cmd, VkSubpassContents contents) const {
     if (!render_pass_ || !framebuffer_) return;
 
@@ -231,7 +238,7 @@ void VulkanFramebuffer::begin_render_pass(VkCommandBuffer cmd, VkSubpassContents
     std::vector<VkClearValue> clears;
     if (color_texture_) {
         VkClearValue color_clear{};
-        color_clear.color = {{0.15f, 0.15f, 0.18f, 1.0f}};
+        color_clear.color = {{clear_color_r_, clear_color_g_, clear_color_b_, clear_color_a_}};
         clears.push_back(color_clear);
     }
     if (depth_texture_) {

@@ -43,6 +43,8 @@ public:
     void advance_frame();
 
     VkRenderPass render_pass() const { return render_pass_; }
+    // 用于从 shadow map 等 offscreen framebuffer 切回 swapchain 时不清除已有内容
+    VkRenderPass render_pass_load() const { return render_pass_load_; }
     VkFramebuffer framebuffer(uint32_t index) const { return framebuffers_[index]; }
     VkExtent2D extent() const { return extent_; }
     VkFormat format() const { return format_; }
@@ -73,6 +75,7 @@ private:
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
+    VkRenderPass render_pass_load_ = VK_NULL_HANDLE;
     std::vector<VkImage> images_;
     std::vector<VkImageView> image_views_;
     std::vector<VkFramebuffer> framebuffers_;

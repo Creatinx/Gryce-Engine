@@ -101,6 +101,8 @@ void VulkanSwapchain::shutdown() {
 
     if (render_pass_) vkDestroyRenderPass(dev, render_pass_, nullptr);
     render_pass_ = VK_NULL_HANDLE;
+    if (render_pass_load_) vkDestroyRenderPass(dev, render_pass_load_, nullptr);
+    render_pass_load_ = VK_NULL_HANDLE;
 
     for (auto view : depth_views_) {
         if (view) vkDestroyImageView(dev, view, nullptr);
@@ -166,10 +168,29 @@ bool VulkanSwapchain::create_swapchain(uint32_t width, uint32_t height) {
         info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
+    uint32_t format_count = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device_->physical_device(), surface_, &format_count, nullptr);
+    std::vector<VkSurfaceFormatKHR> supported_formats(format_count);
+    if (format_count > 0) {
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device_->physical_device(), surface_, &format_count, supported_formats.data());
+    }
+    {
+        std::string fmt_list;
+        for (size_t i = 0; i < supported_formats.size(); ++i) {
+            if (i > 0) fmt_list += ", ";
+            fmt_list += "(" + std::to_string(supported_formats[i].format) +
+                        "," + std::to_string(supported_formats[i].colorSpace) + ")";
+        }
+        GLOG_INFO("VulkanSwapchain: supported surface formats=[{}]", fmt_list);
+    }
+
     if (vkCreateSwapchainKHR(device_->device(), &info, nullptr, &swapchain_) != VK_SUCCESS) {
         GLOG_ERROR("VulkanSwapchain: failed to create swapchain");
         return false;
     }
+
+    GLOG_INFO("VulkanSwapchain: selected format={} extent={}x{}",
+              static_cast<int>(format_), extent.width, extent.height);
 
     uint32_t count = 0;
     vkGetSwapchainImagesKHR(device_->device(), swapchain_, &count, nullptr);
@@ -254,35 +275,35 @@ bool VulkanSwapchain::create_depth_attachment() {
 }
 
 bool VulkanSwapchain::create_render_pass() {
+    // 通用附件/子通道描述，按 loadOp 不同生成 clear 与 load 两个 render pass。
+    // 注意：所有被 VkRenderPassCreateInfo 引用的局部数组必须存活到 vkCreateRenderPass 返回。
     VkAttachmentDescription color{};
     color.format = format_;
     color.samples = VK_SAMPLE_COUNT_1_BIT;
-    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;  // 占位，创建前按需覆盖
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     color.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-    VkAttachmentReference color_ref{};
-    color_ref.attachment = 0;
-    color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
     VkAttachmentDescription depth{};
     depth.format = depth_format_;
     depth.samples = VK_SAMPLE_COUNT_1_BIT;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;  // 占位
     depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentReference color_ref{};
+    color_ref.attachment = 0;
+    color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     VkAttachmentReference depth_ref{};
     depth_ref.attachment = 1;
     depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentDescription attachments[] = {color, depth};
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -290,16 +311,25 @@ bool VulkanSwapchain::create_render_pass() {
     subpass.pColorAttachments = &color_ref;
     subpass.pDepthStencilAttachment = &depth_ref;
 
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    VkSubpassDependency deps[2]{};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[0].srcAccessMask = 0;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    deps[1].srcSubpass = 0;
+    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    deps[1].dstAccessMask = 0;
+
+    VkAttachmentDescription attachments[2] = {color, depth};
 
     VkRenderPassCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -307,11 +337,22 @@ bool VulkanSwapchain::create_render_pass() {
     info.pAttachments = attachments;
     info.subpassCount = 1;
     info.pSubpasses = &subpass;
-    info.dependencyCount = 1;
-    info.pDependencies = &dep;
+    info.dependencyCount = 2;
+    info.pDependencies = deps;
 
+    // 首屏/每帧开始：清除 color + depth
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     if (vkCreateRenderPass(device_->device(), &info, nullptr, &render_pass_) != VK_SUCCESS) {
-        GLOG_ERROR("VulkanSwapchain: failed to create render pass");
+        GLOG_ERROR("VulkanSwapchain: failed to create clear render pass");
+        return false;
+    }
+
+    // 从 offscreen framebuffer 切回 swapchain 时保留已有内容
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    if (vkCreateRenderPass(device_->device(), &info, nullptr, &render_pass_load_) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanSwapchain: failed to create load render pass");
         return false;
     }
     return true;

@@ -125,6 +125,7 @@ private:
     uint32_t current_image_ = 0;
     bool initialized_ = false;
     bool in_forward_pass_ = false;
+    bool frame_aborted_ = false;
     RHIFramebufferHandle current_framebuffer_;
 
     RHIResourcePool<VulkanMesh> mesh_pool_;
@@ -185,6 +186,8 @@ private:
     uint32_t scissor_count_ = 0;
     uint32_t applied_viewport_count_ = 0;
     uint32_t applied_scissor_count_ = 0;
+    std::array<VkViewport, k_max_viewports> applied_viewports_{};
+    std::array<VkRect2D, k_max_viewports> applied_scissors_{};
 
     // 截图请求
     std::string screenshot_path_;

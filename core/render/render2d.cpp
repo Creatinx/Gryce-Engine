@@ -2,6 +2,15 @@
 
 namespace gryce_engine::render {
 
-// 纯接口文件，实现由后端提供
+void IRenderer2D::add_point_light(const math::Vector2f& pos, float radius,
+                                   const Color& color, float intensity) {
+    Light2D light;
+    light.type = LightType2D::Point;
+    light.position = pos;
+    light.radius = radius;
+    light.color = color;
+    light.intensity = intensity;
+    add_light(light);
+}
 
 } // namespace gryce_engine::render

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "render/render2d.h"
 #include "render/render_context.h"
@@ -23,8 +24,15 @@ struct Vertex2D {
 struct LitVertex2D {
     float x, y;
     float r, g, b, a;
-    float u, v;    // albedo
-    float nu, nv;  // normal
+    float u, v;    // albedo UV
+    float nu, nv;  // normal UV
+};
+
+// ---------------------------------------------------------------------------
+// ShadowCasterVertex — 阴影遮挡物顶点（仅位置）
+// ---------------------------------------------------------------------------
+struct ShadowCasterVertex {
+    float x, y;
 };
 
 // ---------------------------------------------------------------------------
@@ -55,8 +63,7 @@ public:
 
     // 2D 光照接口
     void set_ambient_light(const Color& color) override;
-    void add_point_light(const math::Vector2f& pos, float radius,
-                          const Color& color, float intensity) override;
+    void add_light(const Light2D& light) override;
     void reset_lights() override;
     void draw_sprite(float x, float y, float w, float h,
                       ITexture* texture, const Color& tint = Color::white()) override;
@@ -69,7 +76,15 @@ public:
     void draw_lit_sprite_region(float x, float y, float w, float h,
                                  float u0, float v0, float u1, float v1,
                                  ITexture* albedo, ITexture* normal_map,
-                                 const Color& tint = Color::white()) override;
+                                 const Color& tint = Color::white(),
+                                 float nu0 = 0.0f, float nv0 = 0.0f,
+                                 float nu1 = 1.0f, float nv1 = 1.0f) override;
+
+    // 阴影遮挡物（用于 2D 硬阴影）
+    void draw_shadow_caster(float x, float y, float w, float h) override;
+
+    // Bloom 后处理
+    void set_bloom(const BloomParams& params) override;
 
     RHITextureHandle create_texture_from_data(const assets::TextureData* data) override;
     ITexture* resolve_texture(RHITextureHandle handle) const override;
@@ -82,10 +97,11 @@ private:
     void push_lit_vertex(ITexture* albedo, ITexture* normal,
                          float x, float y, const Color& color,
                          float u, float v, float nu, float nv);
+    void push_shadow_caster_vertex(float x, float y);
     void flush_batches();
     void flush_batch(std::vector<Vertex2D>&& verts, bool is_text);
 
-    // 受光照精灵批次：按 (albedo, normal) 纹理分组，减少 gbuffer 状态切换
+    // 受光照精灵批次：按 (albedo, normal) 纹理分组，减少状态切换
     struct LitBatch {
         ITexture* albedo = nullptr;
         ITexture* normal = nullptr;
@@ -93,22 +109,29 @@ private:
     };
     std::vector<LitBatch>::iterator find_lit_batch(ITexture* albedo, ITexture* normal);
 
-    void ensure_lighting_resources();
-    void resize_lighting_targets(int w, int h);
-    void render_lit_geometry_to_gbuffer();
+    void render_lit_sprites_forward(bool target_is_scene_fbo);
+    void render_shadow_pass();
+    void render_bloom_pass();
+
+    bool create_shadow_map();
+    bool create_bloom_targets();
+    void destroy_shadow_map();
+    void destroy_bloom_targets();
 
     RenderContext* ctx_ = nullptr;
     std::shared_ptr<RenderContext::Lifetime> ctx_lifetime_;
     RHIShaderHandle shader_;
-    RHIShaderHandle gbuffer_shader_;
-    RHIShaderHandle light_shader_;
+    RHIShaderHandle lit_sprite_shader_;
+    RHIShaderHandle shadow_shader_;
+    RHIShaderHandle bloom_threshold_shader_;
+    RHIShaderHandle bloom_blur_shader_;
+    RHIShaderHandle bloom_compose_shader_;
     RHIMeshHandle mesh_;
-    RHIMeshHandle lit_mesh_;
-    RHIMeshHandle fullscreen_mesh_;
     FontAtlas font_atlas_;
     std::vector<Vertex2D> vertices_;       // 普通图形顶点（无纹理）
     std::vector<Vertex2D> text_vertices_;  // 文字顶点（使用字体图集）
     std::vector<LitBatch> lit_batches_;    // 受光照精灵批次（按纹理分组）
+    std::vector<ShadowCasterVertex> shadow_caster_vertices_; // 阴影遮挡物顶点
     math::Matrix4f ortho_;
     math::Matrix4f view_proj_;
     math::Vector2f camera_center_ = math::Vector2f::zero();
@@ -120,27 +143,22 @@ private:
 
     // 2D 光照
     Color ambient_light_ = Color::black();
-    struct PointLight {
-        math::Vector2f pos;
-        float radius = 0.0f;
-        Color color;
-        float intensity = 0.0f;
-    };
-    std::vector<PointLight> point_lights_;
+    std::vector<Light2D> lights_;
 
-    RHIFramebufferHandle albedo_fb_;
-    RHIFramebufferHandle normal_fb_;
-    RHITextureHandle albedo_tex_;
-    RHITextureHandle normal_tex_;
-    int lighting_width_ = 0;
-    int lighting_height_ = 0;
-    bool lighting_resources_ready_ = false;
+    // 2D 阴影
+    RHIFramebufferHandle shadow_fbo_;
+    RHITextureHandle shadow_map_;
+    static constexpr int k_shadow_map_size = 1024;
 
-    // OpenGL 原生光照资源（延迟光照直接操作 GL，避免 RenderContext 命令队列延迟）
-    unsigned int gl_albedo_tex_ = 0;
-    unsigned int gl_normal_tex_ = 0;
-    unsigned int gl_albedo_fbo_ = 0;
-    unsigned int gl_normal_fbo_ = 0;
+    // 2D Bloom
+    BloomParams bloom_params_;
+    bool bloom_initialized_ = false;
+    RHIFramebufferHandle bloom_fbo_a_;
+    RHIFramebufferHandle bloom_fbo_b_;
+    RHITextureHandle bloom_texture_a_;
+    RHITextureHandle bloom_texture_b_;
+    RHITextureHandle scene_texture_;
+    RHIFramebufferHandle scene_fbo_;
 };
 
 } // namespace gryce_engine::render

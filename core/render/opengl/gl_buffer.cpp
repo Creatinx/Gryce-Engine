@@ -32,12 +32,9 @@ void GLMesh::upload_vertices(const void* data, uint32_t size, uint32_t count) {
     if (size == 0) return;
 
     if (gl_dsa_available()) {
-        if (size <= vertex_buffer_size_) {
-            glNamedBufferSubData(vbo_, 0, static_cast<GLsizeiptr>(size), data);
-        } else {
-            glNamedBufferData(vbo_, static_cast<GLsizeiptr>(size), data, GL_DYNAMIC_DRAW);
-            vertex_buffer_size_ = size;
-        }
+        // TEMP: always reallocate to ensure clean data
+        glNamedBufferData(vbo_, static_cast<GLsizeiptr>(size), data, GL_DYNAMIC_DRAW);
+        vertex_buffer_size_ = size;
     } else {
         glBindVertexArray(vao_);
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -80,9 +77,9 @@ void GLMesh::upload_indices(const void* data, uint32_t size, uint32_t count) {
 
 void GLMesh::set_layout(const VertexLayout& layout) {
     if (gl_dsa_available()) {
-        // 先禁用上一轮启用的 vertex attrib array
-        for (const auto& attr : layout_.attributes) {
-            glDisableVertexArrayAttrib(vao_, attr.location);
+        // 先禁用所有 vertex attrib array，避免上一轮布局的残留状态影响当前布局
+        for (GLuint loc = 0; loc < 16; ++loc) {
+            glDisableVertexArrayAttrib(vao_, loc);
         }
 
         layout_ = layout;

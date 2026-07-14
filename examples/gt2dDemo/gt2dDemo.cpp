@@ -29,6 +29,8 @@
 #include "components/2d/label.h"
 #include "components/2d/sprite_2d.h"
 #include "components/2d/light_2d.h"
+#include "components/2d/ambient_light_2d.h"
+#include "components/2d/skybox_2d.h"
 #include "components/2d/camera_2d.h"
 #include "components/2d/parallax_background.h"
 #include "components/2d/particle_emitter.h"
@@ -364,14 +366,32 @@ scene::Scene* create_platformer_scene() {
         scene::Entity* e = scene->create_entity("Starfield");
         auto* bg = e->add_component<components::d2::parallax::ParallaxBackground>();
         bg->layers.push_back({"res:/textures/parallax_stars.png", 0.05f, 1.4f,
-                              render::Color(0.25f, 0.25f, 0.40f, 1.0f)});
+                              render::Color(0.80f, 0.80f, 0.95f, 1.0f)});
         bg->layers.push_back({"res:/textures/parallax_stars.png", 0.15f, 1.0f,
-                              render::Color(0.18f, 0.18f, 0.30f, 1.0f)});
+                              render::Color(0.70f, 0.70f, 0.90f, 1.0f)});
         bg->layers.push_back({"res:/textures/parallax_stars.png", 0.35f, 0.7f,
-                              render::Color(0.10f, 0.10f, 0.18f, 1.0f)});
+                              render::Color(0.55f, 0.55f, 0.80f, 1.0f)});
     }
 
-    // 瓦片地图（受光照）
+    // 环境光（让场景整体可见，不再只靠单点光源）
+    {
+        scene::Entity* e = scene->create_entity("AmbientLight");
+        auto* amb = e->add_component<components::d2::light::AmbientLight2D>(
+            render::Color(0.85f, 0.85f, 0.90f, 1.0f), 0.85f);
+        amb->render_order = -2000;
+    }
+
+    // 天空盒（最底层背景，替代纯黑）
+    {
+        scene::Entity* e = scene->create_entity("Skybox");
+        auto* sky = e->add_component<components::d2::skybox::Skybox2D>("res:/textures/sky.png");
+        sky->tile = true;
+        sky->scroll_factor = 0.02f;
+        sky->color = render::Color::white();
+        sky->render_order = -1500;
+    }
+
+    // 瓦片地图（受光照 + 投射阴影）
     {
         scene::Entity* e = scene->create_entity("Level");
         auto* tm = e->add_component<components::d2::tilemap::Tilemap>(k_map_w, k_map_h, k_tile_size, k_tile_size);
@@ -379,8 +399,20 @@ scene::Scene* create_platformer_scene() {
         tm->generate_colliders = true;
         tm->use_tileset_texture = true;
         tm->lit = true;
+        tm->cast_shadow = true;
         tm->render_order = -100;
         build_level_tilemap(tm);
+    }
+
+    // 方向光（模拟月光/全局光）
+    {
+        scene::Entity* e = scene->create_entity("DirectionalLight");
+        auto* light = e->add_component<components::d2::light::Light2D>();
+        light->light_type = components::d2::light::Light2D::LightType::Directional;
+        light->color = render::Color(0.75f, 0.80f, 0.95f, 1.0f);
+        light->intensity = 0.55f;
+        light->direction = math::Vector2f(0.3f, -1.0f).normalized();
+        light->render_order = -500;
     }
 
     // 玩家
@@ -409,9 +441,14 @@ scene::Scene* create_platformer_scene() {
         auto* col = e->add_component<components::BoxCollider2D>();
         col->size = math::Vector2f(28.0f, 28.0f);
 
-        // 手电筒
+        // 手电筒（聚光灯）
         auto* light = e->add_component<components::d2::light::Light2D>(
             render::Color(1.0f, 0.95f, 0.70f, 1.0f), 1.7f, 260.0f);
+        light->light_type = components::d2::light::Light2D::LightType::Spot;
+        light->spot_angle = 35.0f;
+        light->spot_softness = 0.25f;
+        light->range = 420.0f;
+        light->direction = math::Vector2f(1.0f, 0.0f);
         light->render_order = 100;
     }
 
@@ -614,11 +651,16 @@ void reset_game(scene::Scene* scene, int& score, int& coins, int& lives, bool& g
 int main(int argc, char* argv[]) {
     float auto_close_seconds = 0.0f;
     std::string screenshot_path;
+    render::RenderAPI selected_api = render::RenderAPI::OpenGL;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
         } else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             screenshot_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--vulkan") == 0) {
+            selected_api = render::RenderAPI::Vulkan;
+        } else if (std::strcmp(argv[i], "--opengl") == 0) {
+            selected_api = render::RenderAPI::OpenGL;
         }
     }
 
@@ -635,17 +677,22 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    platform::WindowContextType window_ctx = (selected_api == render::RenderAPI::Vulkan)
+                                                 ? platform::WindowContextType::NoApi
+                                                 : platform::WindowContextType::OpenGL;
     platform::Window window("Gryce Engine - 2D Platformer", 1280, 720,
-                            platform::WindowMode::Windowed,
-                            platform::WindowContextType::OpenGL);
+                            platform::WindowMode::Windowed, window_ctx);
     if (!window.is_valid()) {
         GLOG_ERROR("Failed to create window");
         platform::Window::shutdown_sdk();
         return -1;
     }
+    if (selected_api == render::RenderAPI::OpenGL) {
+        window.set_vsync(false);
+    }
 
     render::RenderContext render_ctx;
-    if (!render_ctx.init(window.native_handle(), render::RenderAPI::OpenGL)) {
+    if (!render_ctx.init(window.native_handle(), selected_api)) {
         GLOG_ERROR("Failed to initialize render context");
         platform::Window::shutdown_sdk();
         return -1;
@@ -757,6 +804,17 @@ int main(int argc, char* argv[]) {
     math::Vector2f mouse_world;
 
     render_ctx.start();
+
+    // 开启 2D Bloom 后处理
+    if (renderer2d) {
+        render::BloomParams bloom;
+        bloom.enabled = false;
+        bloom.threshold = 0.85f;
+        bloom.intensity = 0.65f;
+        bloom.blur_passes = 2;
+        renderer2d->set_bloom(bloom);
+    }
+
     utils::FrameLimiter frame_limiter;
     frame_limiter.set_target_fps(0);
 
@@ -789,6 +847,18 @@ int main(int argc, char* argv[]) {
             float zoom = (main_camera && main_camera->owner()) ? main_camera->zoom : 1.0f;
             math::Vector2f cam_center = (main_camera && main_camera->owner()) ? main_camera->center() : screen_center;
             mouse_world = cam_center + (mouse_screen - screen_center) / zoom;
+        }
+
+        // 更新玩家聚光灯方向指向鼠标
+        if (!game_over && player_entity) {
+            if (auto* light = player_entity->get_component<components::d2::light::Light2D>()) {
+                math::Vector2f dir = mouse_world - math::Vector2f(
+                    player_entity->transform()->position.x,
+                    player_entity->transform()->position.y);
+                if (dir.length_sq() > 1e-6f) {
+                    light->direction = dir.normalized();
+                }
+            }
         }
 
         float dt = static_cast<float>(window.delta_time());
@@ -990,7 +1060,6 @@ int main(int argc, char* argv[]) {
         // 渲染
         if (renderer2d) {
             renderer2d->begin_frame(static_cast<float>(w), static_cast<float>(h));
-            renderer2d->set_ambient_light(render::Color(0.08f, 0.08f, 0.14f, 1.0f));
         }
 
         world.render(render_ctx);

@@ -1083,6 +1083,11 @@ int main(int argc, char* argv[])
 
         if (renderer2d) {
             renderer2d->begin_frame(static_cast<float>(w), static_cast<float>(h));
+            // 让 2D HUD 使用屏幕像素坐标（左上角为原点），与 FPS 标签/背景的
+            // 实体位置 (5,5) / (15,23) 对应。
+            renderer2d->set_camera(math::Vector2f(static_cast<float>(w) * 0.5f,
+                                                  static_cast<float>(h) * 0.5f),
+                                   1.0f);
         }
 
         world.render(render_ctx);

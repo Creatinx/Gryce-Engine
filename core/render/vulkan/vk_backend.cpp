@@ -150,6 +150,22 @@ void VulkanBackend::shutdown() {
         vkDeviceWaitIdle(device_.device());
     }
 
+    // 先释放所有池化 GPU 资源，避免 device_/allocator_ 销毁后还有未释放的
+    // VMA allocation，触发 VMA 断言。
+    inline_secondary_cb_ = VK_NULL_HANDLE;
+    inline_secondary_recording_ = false;
+    if (device_.device() && !per_frame_secondary_cbs_.empty()) {
+        vkFreeCommandBuffers(device_.device(), swapchain_.secondary_command_pool(),
+                             static_cast<uint32_t>(per_frame_secondary_cbs_.size()),
+                             per_frame_secondary_cbs_.data());
+    }
+    per_frame_secondary_cbs_.clear();
+
+    framebuffer_pool_.clear();
+    texture_pool_.clear();
+    shader_pool_.clear();
+    mesh_pool_.clear();
+
     swapchain_.shutdown();
     device_.shutdown();
 
@@ -195,30 +211,36 @@ void VulkanBackend::set_swap_interval(int interval) {
 void VulkanBackend::begin_frame() {
     if (!initialized_) return;
 
+    frame_aborted_ = false;
+
     // 窗口大小变化时重建 swapchain
     int width = 0, height = 0;
     glfwGetFramebufferSize(window_, &width, &height);
-    if (width > 0 && height > 0) {
-        VkExtent2D extent = swapchain_.extent();
-        if (static_cast<uint32_t>(width) != extent.width ||
-            static_cast<uint32_t>(height) != extent.height) {
-            if (!swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
-                GLOG_ERROR("VulkanBackend: failed to recreate swapchain");
-                return;
-            }
-            GLOG_INFO("VulkanBackend: swapchain recreated to {}x{}", width, height);
+    if (width == 0 || height == 0) {
+        frame_aborted_ = true;
+        return;
+    }
+
+    VkExtent2D extent = swapchain_.extent();
+    if (static_cast<uint32_t>(width) != extent.width ||
+        static_cast<uint32_t>(height) != extent.height) {
+        if (!swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
+            GLOG_ERROR("VulkanBackend: failed to recreate swapchain");
+            frame_aborted_ = true;
+            return;
         }
+        GLOG_INFO("VulkanBackend: swapchain recreated to {}x{}", width, height);
     }
 
     VkResult acquire_result = swapchain_.acquire_next_image(&current_image_);
     if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
-        if (width > 0 && height > 0) {
-            swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-            acquire_result = swapchain_.acquire_next_image(&current_image_);
-        }
+        swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        acquire_result = swapchain_.acquire_next_image(&current_image_);
     }
     if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
-        GLOG_ERROR("VulkanBackend: failed to acquire swapchain image");
+        GLOG_ERROR("VulkanBackend: failed to acquire swapchain image, VkResult={}",
+                  static_cast<int>(acquire_result));
+        frame_aborted_ = true;
         return;
     }
 
@@ -267,6 +289,11 @@ void VulkanBackend::begin_frame() {
 
 void VulkanBackend::end_frame() {
     if (!initialized_) return;
+    if (frame_aborted_) {
+        // 当前帧未能获取 swapchain image，跳过 submit/present，避免使用未初始化的命令缓冲。
+        ++frame_count_;
+        return;
+    }
     end_and_execute_inline_secondary();
     end_current_render_pass();
     in_forward_pass_ = false;
@@ -277,7 +304,10 @@ void VulkanBackend::end_frame() {
     if (need_screenshot) {
         // 先提交渲染命令并等待完成，再截图，最后 present
         VkCommandBuffer primary = primary_command_buffer();
-        if (vkEndCommandBuffer(primary) == VK_SUCCESS) {
+        VkResult end_result = vkEndCommandBuffer(primary);
+        GLOG_INFO("VulkanBackend::end_frame screenshot path: primary={} end_result={} image={}",
+                  reinterpret_cast<uintptr_t>(primary), static_cast<int>(end_result), current_image_);
+        if (end_result == VK_SUCCESS) {
             VkSemaphore image_available = swapchain_.current_image_available_semaphore();
             VkSemaphore render_finished = swapchain_.current_render_finished_semaphore();
             VkFence fence = swapchain_.current_fence();
@@ -292,13 +322,17 @@ void VulkanBackend::end_frame() {
             submit.pCommandBuffers = &primary;
             submit.signalSemaphoreCount = 1;
             submit.pSignalSemaphores = &render_finished;
-            vkQueueSubmit(device_.graphics_queue(), 1, &submit, fence);
-            vkWaitForFences(device_.device(), 1, &fence, VK_TRUE, UINT64_MAX);
+            VkResult submit_result = vkQueueSubmit(device_.graphics_queue(), 1, &submit, fence);
+            GLOG_INFO("VulkanBackend::end_frame submit_result={} fence={}",
+                      static_cast<int>(submit_result), reinterpret_cast<uintptr_t>(fence));
+            VkResult wait_result = vkWaitForFences(device_.device(), 1, &fence, VK_TRUE, UINT64_MAX);
+            GLOG_INFO("VulkanBackend::end_frame wait_result={}", static_cast<int>(wait_result));
 
             save_screenshot(screenshot_path_);
             screenshot_path_.clear();
         }
         present_result = swapchain_.present(current_image_, swapchain_.current_render_finished_semaphore());
+        GLOG_INFO("VulkanBackend::end_frame present_result={}", static_cast<int>(present_result));
         swapchain_.advance_frame();
     } else {
         present_result = swapchain_.submit_and_present(current_image_, primary_command_buffer());
@@ -393,9 +427,18 @@ void VulkanBackend::apply_dynamic_state(VkCommandBuffer cmd) {
 
 void VulkanBackend::set_dynamic_state_2d(VkCommandBuffer cmd) {
     if (!supports_dynamic_state_ || cmd == VK_NULL_HANDLE) return;
-    set_cull_mode_cached(cmd, VK_CULL_MODE_NONE);
-    set_depth_test_cached(cmd, VK_FALSE);
-    set_depth_write_cached(cmd, VK_FALSE);
+    // 2D pipelines declare these states dynamic; emit them unconditionally so a
+    // freshly allocated secondary CB always receives valid state (our cache would
+    // otherwise skip the emission because the cached value already matches).
+    vk_cmd_set_cull_mode_(cmd, VK_CULL_MODE_NONE);
+    vk_cmd_set_front_face_(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    vk_cmd_set_depth_test_enable_(cmd, VK_FALSE);
+    vk_cmd_set_depth_write_enable_(cmd, VK_FALSE);
+    // Keep the cache consistent so apply_dynamic_state() later does not re-emit.
+    state_cache_.cull_mode = VK_CULL_MODE_NONE;
+    state_cache_.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    state_cache_.depth_test = VK_FALSE;
+    state_cache_.depth_write = VK_FALSE;
 }
 
 void VulkanBackend::reset_state_cache() {
@@ -421,7 +464,7 @@ VkCommandBuffer VulkanBackend::primary_command_buffer() const {
 }
 
 VkCommandBuffer VulkanBackend::current_command_buffer() {
-    if (!initialized_) return VK_NULL_HANDLE;
+    if (!initialized_ || frame_aborted_) return VK_NULL_HANDLE;
     if (!inline_secondary_recording_) {
         begin_inline_secondary();
     }
@@ -430,10 +473,15 @@ VkCommandBuffer VulkanBackend::current_command_buffer() {
 
 void VulkanBackend::begin_inline_secondary() {
     if (!initialized_ || inline_secondary_recording_) return;
-    inline_secondary_cb_ = swapchain_.secondary_command_buffer(current_image_);
+    inline_secondary_cb_ = allocate_secondary_cb();
     if (inline_secondary_cb_ == VK_NULL_HANDLE) return;
-
-    vkResetCommandBuffer(inline_secondary_cb_, 0);
+    // A freshly allocated secondary CB does not inherit any dynamic state;
+    // reset our binding cache and force viewport/scissor to be re-emitted,
+    // but keep the current viewport/scissor values so draw_mesh and later
+    // state commands can restore them without an explicit set_viewport call.
+    state_cache_ = {};
+    applied_viewport_count_ = 0;
+    applied_scissor_count_ = 0;
 
     VkCommandBufferInheritanceInfo inheritance{};
     inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
@@ -468,8 +516,11 @@ void VulkanBackend::execute_inline_secondary() {
 void VulkanBackend::end_and_execute_inline_secondary() {
     end_inline_secondary();
     execute_inline_secondary();
-    // 主 CB 执行 secondary 后，其状态被隐式重置
-    reset_state_cache();
+    // 主 CB 执行 secondary 后，其状态被隐式重置。保留当前 viewport/scissor
+    // 值以便下一个 inline secondary / draw_mesh secondary 能够恢复它们。
+    state_cache_ = {};
+    applied_viewport_count_ = 0;
+    applied_scissor_count_ = 0;
 }
 
 VkCommandBuffer VulkanBackend::allocate_secondary_cb() {
@@ -557,9 +608,16 @@ void VulkanBackend::set_viewport_cached(VkCommandBuffer cmd, const VkViewport& v
     if (index >= k_max_viewports || cmd == VK_NULL_HANDLE) return;
     viewports_[index] = viewport;
     if (index >= viewport_count_) viewport_count_ = index + 1;
-    if (viewport_count_ != applied_viewport_count_) {
+
+    const VkViewport& applied = applied_viewports_[index];
+    bool dirty = (viewport_count_ != applied_viewport_count_) ||
+                 (applied.x != viewport.x) || (applied.y != viewport.y) ||
+                 (applied.width != viewport.width) || (applied.height != viewport.height) ||
+                 (applied.minDepth != viewport.minDepth) || (applied.maxDepth != viewport.maxDepth);
+    if (dirty) {
         vkCmdSetViewport(cmd, 0, viewport_count_, viewports_.data());
         applied_viewport_count_ = viewport_count_;
+        applied_viewports_ = viewports_;
     }
 }
 
@@ -567,9 +625,15 @@ void VulkanBackend::set_scissor_cached(VkCommandBuffer cmd, const VkRect2D& scis
     if (index >= k_max_viewports || cmd == VK_NULL_HANDLE) return;
     scissors_[index] = scissor;
     if (index >= scissor_count_) scissor_count_ = index + 1;
-    if (scissor_count_ != applied_scissor_count_) {
+
+    const VkRect2D& applied = applied_scissors_[index];
+    bool dirty = (scissor_count_ != applied_scissor_count_) ||
+                 (applied.offset.x != scissor.offset.x) || (applied.offset.y != scissor.offset.y) ||
+                 (applied.extent.width != scissor.extent.width) || (applied.extent.height != scissor.extent.height);
+    if (dirty) {
         vkCmdSetScissor(cmd, 0, scissor_count_, scissors_.data());
         applied_scissor_count_ = scissor_count_;
+        applied_scissors_ = scissors_;
     }
 }
 
@@ -602,7 +666,7 @@ void VulkanBackend::set_depth_write_cached(VkCommandBuffer cmd, VkBool32 enable)
 }
 
 void VulkanBackend::bind_framebuffer(RHIFramebufferHandle fb) {
-    if (!initialized_) return;
+    if (!initialized_ || frame_aborted_) return;
     auto* vk_fb = static_cast<VulkanFramebuffer*>(framebuffer(fb));
     if (!vk_fb) {
         unbind_framebuffer();
@@ -622,7 +686,7 @@ void VulkanBackend::bind_framebuffer(RHIFramebufferHandle fb) {
 }
 
 void VulkanBackend::unbind_framebuffer() {
-    if (!initialized_) return;
+    if (!initialized_ || frame_aborted_) return;
     if (in_forward_pass_) return;
 
     end_and_execute_inline_secondary();
@@ -640,14 +704,17 @@ void VulkanBackend::unbind_framebuffer() {
     }
     in_forward_pass_ = true;
 
+    // 从 offscreen framebuffer 回到 swapchain 时不清除，否则 offscreen 之前
+    // 已经绘制到 swapchain 的内容（如天空盒）会被清掉。
     VkClearValue clears[2]{};
     clears[0].color = {{clear_r_, clear_g_, clear_b_, clear_a_}};
     clears[1].depthStencil = {1.0f, 0};
-    begin_render_pass_secondary(swapchain_.render_pass(), swapchain_.framebuffer(current_image_),
+    begin_render_pass_secondary(swapchain_.render_pass_load(), swapchain_.framebuffer(current_image_),
                                 clears, 2, swapchain_.extent());
 }
 
 void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
+    if (frame_aborted_) return;
     auto* vk_mesh = static_cast<VulkanMesh*>(this->mesh(mesh));
     auto* vk_shader = static_cast<VulkanShader*>(this->shader(shader));
     if (!vk_mesh || !vk_shader || !vk_mesh->vertex_buffer()) return;
@@ -672,12 +739,24 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
     begin_info.pInheritanceInfo = &inheritance;
     vkBeginCommandBuffer(secondary, &begin_info);
 
-    // Secondary CB 必须显式设置动态 viewport/scissor
-    if (applied_viewport_count_ > 0) {
-        vkCmdSetViewport(secondary, 0, applied_viewport_count_, viewports_.data());
+    // Secondary CB 必须显式设置动态 viewport/scissor。
+    // 对后处理全屏 pass 使用正 viewport（Vulkan 纹理原点在左上），避免 offscreen
+    // 纹理在 blit 时被上下翻转；普通几何继续沿用负 viewport 匹配 OpenGL 投影。
+    VkViewport mesh_viewports[k_max_viewports];
+    if (viewport_count_ > 0) {
+        for (uint32_t i = 0; i < viewport_count_; ++i) {
+            mesh_viewports[i] = viewports_[i];
+        }
+        if (vk_shader->is_post_process()) {
+            for (uint32_t i = 0; i < viewport_count_; ++i) {
+                mesh_viewports[i].height = std::abs(mesh_viewports[i].height);
+                mesh_viewports[i].y = 0.0f;
+            }
+        }
+        vkCmdSetViewport(secondary, 0, viewport_count_, mesh_viewports);
     }
-    if (applied_scissor_count_ > 0) {
-        vkCmdSetScissor(secondary, 0, applied_scissor_count_, scissors_.data());
+    if (scissor_count_ > 0) {
+        vkCmdSetScissor(secondary, 0, scissor_count_, scissors_.data());
     }
 
     bind_pipeline(secondary, vk_shader->pipeline());
@@ -814,6 +893,8 @@ void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,
     file.write(reinterpret_cast<char*>(header), 54);
 
     std::vector<unsigned char> row(row_size, 0);
+    // BMP pixel array is stored bottom-up. The Vulkan image buffer is now top-down,
+    // so write rows in reverse order to produce a correctly oriented BMP.
     for (int y = static_cast<int>(height) - 1; y >= 0; --y) {
         const unsigned char* src = bgr_data + static_cast<std::size_t>(y) * width * 4;
         for (uint32_t x = 0; x < width; ++x) {
@@ -840,6 +921,8 @@ void VulkanBackend::save_screenshot(const std::string& path) {
     VkImage src_image = swapchain_.image(current_image_);
     VkExtent2D extent = swapchain_.extent();
     VkDeviceSize size = static_cast<VkDeviceSize>(extent.width * extent.height * 4);
+    GLOG_INFO("VulkanBackend::save_screenshot path={} image_index={} image_handle={} extent={}x{}",
+              path, current_image_, reinterpret_cast<uintptr_t>(src_image), extent.width, extent.height);
 
     VulkanBuffer staging;
     if (!staging.init(&device_, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -915,6 +998,9 @@ void VulkanBackend::save_screenshot(const std::string& path) {
     vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
     vkQueueWaitIdle(queue);
 
+    // The swapchain image is in the selected surface format (BGRA8 on Windows).
+    // save_bgr_bmp expects BGRA-ordered input and writes a 24-bit BGR BMP, so
+    // we can pass the mapped buffer directly.
     save_bgr_bmp(path, static_cast<const unsigned char*>(staging.mapped()),
                  extent.width, extent.height);
 

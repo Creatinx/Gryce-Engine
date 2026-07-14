@@ -19,6 +19,7 @@ public:
     float width = 100.0f;
     float height = 100.0f;
     bool lit = true;                 // 是否受光照影响
+    bool cast_shadow = false;        // 是否作为 2D 阴影遮挡物
 
     // 运行时加载的 GPU 纹理（不序列化）
     mutable render::ITexture* albedo_texture = nullptr;
@@ -40,6 +41,7 @@ public:
         out["width"] = width;
         out["height"] = height;
         out["lit"] = lit;
+        out["cast_shadow"] = cast_shadow;
     }
 
     void deserialize(const nlohmann::json& in) override {
@@ -51,6 +53,7 @@ public:
         width = in.value("width", 100.0f);
         height = in.value("height", 100.0f);
         lit = in.value("lit", true);
+        cast_shadow = in.value("cast_shadow", false);
     }
 
     void draw(render::IRenderer2D* renderer) override;
@@ -66,6 +69,7 @@ public:
         hash_combine(h, hash_float(width));
         hash_combine(h, hash_float(height));
         hash_combine(h, static_cast<uint64_t>(lit));
+        hash_combine(h, static_cast<uint64_t>(cast_shadow));
         return h;
     }
 };

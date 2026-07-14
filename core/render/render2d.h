@@ -41,6 +41,40 @@ class IMesh;
 class ITexture;
 
 // ---------------------------------------------------------------------------
+// LightType2D — 2D 光源类型
+// ---------------------------------------------------------------------------
+enum class LightType2D {
+    Point,
+    Directional,
+    Spot
+};
+
+// ---------------------------------------------------------------------------
+// Light2D — 统一 2D 光源描述
+// ---------------------------------------------------------------------------
+struct Light2D {
+    LightType2D type = LightType2D::Point;
+    math::Vector2f position;     // Point / Spot 的世界位置
+    math::Vector2f direction;    // Directional / Spot 的方向（应归一化）
+    Color color = Color::white();
+    float intensity = 1.0f;
+    float radius = 200.0f;       // Point / Spot 的影响半径
+    float range = 1000.0f;       // Directional / Spot 的有效范围
+    float spot_angle = 45.0f;    // Spot 外锥角（度）
+    float spot_softness = 0.2f;  // Spot 内外锥过渡（0~1，0 为硬边）
+};
+
+// ---------------------------------------------------------------------------
+// BloomParams — 2D Bloom 后处理参数
+// ---------------------------------------------------------------------------
+struct BloomParams {
+    bool enabled = false;
+    float threshold = 1.0f;
+    float intensity = 0.5f;
+    int blur_passes = 2;         // 可分离高斯模糊 pass 数
+};
+
+// ---------------------------------------------------------------------------
 // IRenderer2D — 2D 图形渲染接口
 // 支持：矩形、n 边形、圆形、文字
 // 所有坐标系以屏幕左上角为原点，向右为 +X，向下为 +Y
@@ -95,13 +129,14 @@ public:
     // 设置环境光（默认黑色，即无环境光）
     virtual void set_ambient_light(const Color& color) { (void)color; }
 
-    // 添加一个点光源；所有点光源在 end_frame() 时统一应用到受光精灵。
-    virtual void add_point_light(const math::Vector2f& pos, float radius,
-                                  const Color& color, float intensity) {
-        (void)pos; (void)radius; (void)color; (void)intensity;
-    }
+    // 添加统一 2D 光源（Point / Directional / Spot）
+    virtual void add_light(const Light2D& light) { (void)light; }
 
-    // 清空已收集的点光源（每帧 begin_frame 内部自动调用）
+    // 添加一个点光源；保留旧接口，内部转发到 add_light
+    virtual void add_point_light(const math::Vector2f& pos, float radius,
+                                  const Color& color, float intensity);
+
+    // 清空已收集的光源（每帧 begin_frame 内部自动调用）
     virtual void reset_lights() {}
 
     // 绘制不受光照的贴图精灵
@@ -122,17 +157,30 @@ public:
     virtual void draw_lit_sprite(float x, float y, float w, float h,
                                   ITexture* albedo, ITexture* normal_map,
                                   const Color& tint = Color::white()) {
-        draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, albedo, normal_map, tint);
+        draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f,
+                               albedo, normal_map, tint,
+                               0.0f, 0.0f, 1.0f, 1.0f);
     }
 
     // 绘制受光照的贴图精灵区域（UV 裁剪）
     virtual void draw_lit_sprite_region(float x, float y, float w, float h,
                                          float u0, float v0, float u1, float v1,
                                          ITexture* albedo, ITexture* normal_map,
-                                         const Color& tint = Color::white()) {
+                                         const Color& tint = Color::white(),
+                                         float nu0 = 0.0f, float nv0 = 0.0f,
+                                         float nu1 = 1.0f, float nv1 = 1.0f) {
         (void)x; (void)y; (void)w; (void)h; (void)u0; (void)v0; (void)u1; (void)v1;
         (void)albedo; (void)normal_map; (void)tint;
+        (void)nu0; (void)nv0; (void)nu1; (void)nv1;
     }
+
+    // 绘制阴影遮挡物（用于 2D 硬阴影）
+    virtual void draw_shadow_caster(float x, float y, float w, float h) {
+        (void)x; (void)y; (void)w; (void)h;
+    }
+
+    // 设置 Bloom 后处理参数
+    virtual void set_bloom(const BloomParams& params) { (void)params; }
 
     // 从 CPU 侧 TextureData 创建并上传 GPU 纹理（异步到渲染线程）
     virtual RHITextureHandle create_texture_from_data(const assets::TextureData* data) {

@@ -81,6 +81,10 @@ void Sprite2D::draw(render::IRenderer2D* renderer) {
         renderer->draw_sprite(pos.x - sw * 0.5f, pos.y - sh * 0.5f,
                               sw, sh, albedo_texture, color);
     }
+
+    if (cast_shadow) {
+        renderer->draw_shadow_caster(pos.x - sw * 0.5f, pos.y - sh * 0.5f, sw, sh);
+    }
 }
 
 } // namespace gryce_engine::components::d2::sprite
