@@ -459,15 +459,17 @@ VkResult VulkanSwapchain::acquire_next_image(uint32_t* image_index) {
     // 等待当前 frame 上一帧的 GPU 工作完成，避免信号量/UBO/命令缓冲被复用时还在使用。
     VkFence frame_fence = frame_fences_[current_frame_];
     vkWaitForFences(device_->device(), 1, &frame_fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(device_->device(), 1, &frame_fence);
 
     VkSemaphore signal_semaphore = image_available_semaphores_[current_frame_];
     VkResult result = vkAcquireNextImageKHR(device_->device(), swapchain_, UINT64_MAX,
                                             signal_semaphore, VK_NULL_HANDLE, image_index);
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        // 获取失败时不要 reset fence，否则下一帧 vkWaitForFences 会卡死。
         return result;
     }
 
+    // 只有成功获取 image 后才 reset fence，保证失败时下一帧仍能正常等待。
+    vkResetFences(device_->device(), 1, &frame_fence);
     current_image_ = *image_index;
     return result;
 }

@@ -235,8 +235,15 @@ void VulkanBackend::begin_frame() {
     }
 
     VkResult acquire_result = swapchain_.acquire_next_image(&current_image_);
-    if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
-        swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR || acquire_result == VK_TIMEOUT) {
+        // OUT_OF_DATE 或某些驱动返回的 TIMEOUT 都可通过重建 swapchain 恢复。
+        GLOG_WARN("VulkanBackend: acquire returned VkResult={}, recreating swapchain",
+                  static_cast<int>(acquire_result));
+        if (!swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
+            GLOG_ERROR("VulkanBackend: failed to recreate swapchain after acquire failure");
+            frame_aborted_ = true;
+            return;
+        }
         acquire_result = swapchain_.acquire_next_image(&current_image_);
     }
     if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
