@@ -142,6 +142,8 @@ private:
     // Secondary command buffer management
     VkCommandBuffer inline_secondary_cb_ = VK_NULL_HANDLE;
     bool inline_secondary_recording_ = false;
+    VkCommandBuffer geometry_secondary_cb_ = VK_NULL_HANDLE;
+    bool geometry_secondary_recording_ = false;
     VkRenderPass current_render_pass_ = VK_NULL_HANDLE;
     VkFramebuffer current_framebuffer_vk_ = VK_NULL_HANDLE;
     bool render_pass_contents_secondary_ = false;
@@ -150,6 +152,8 @@ private:
     void end_inline_secondary();
     void execute_inline_secondary();
     void end_and_execute_inline_secondary();
+    void begin_geometry_secondary();
+    void end_geometry_secondary();
     VkCommandBuffer allocate_secondary_cb();
     void free_secondary_cb(VkCommandBuffer cb);
     void execute_secondary(VkCommandBuffer secondary);

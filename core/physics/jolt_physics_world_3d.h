@@ -60,6 +60,9 @@ public:
 
     std::optional<RaycastHit> raycast(const math::Vector3f& origin, const math::Vector3f& direction, float max_distance) const override;
 
+    JointHandle create_joint(const JointDesc3D& desc) override;
+    void destroy_joint(JointHandle handle) override;
+
     void foreach_body(std::function<void(BodyHandle, const math::Vector3f&, const math::Quaternionf&)> callback) const override;
 
     const char* backend_name() const override { return "Jolt"; }
@@ -80,6 +83,8 @@ private:
     // Body 与 Shape 句柄管理（Jolt BodyID 可直接作为 BodyHandle）
     std::vector<JPH::BodyID> bodies_;
     std::vector<JPH::Ref<JPH::Shape>> shapes_;
+    std::vector<JPH::Ref<JPH::Constraint>> joints_;
+    std::unordered_map<BodyHandle, JPH::Body*> body_ptrs_;
 
     JPH::BodyInterface* body_interface() const;
     JPH::BodyID to_jolt_id(BodyHandle h) const;

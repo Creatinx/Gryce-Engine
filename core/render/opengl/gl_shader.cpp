@@ -23,6 +23,9 @@ GLShader::~GLShader() {
 
 namespace {
 
+// 当前绑定的 OpenGL program，用于避免重复的 glUseProgram 调用。
+thread_local GLuint g_current_bound_program = 0;
+
 uint32_t to_gl_shader_stage(ShaderStage stage) {
     switch (stage) {
     case ShaderStage::Vertex:   return GL_VERTEX_SHADER;
@@ -58,6 +61,7 @@ bool GLShader::compile(const std::vector<ShaderStageDesc>& stages) {
         glDeleteProgram(program_id_);
         program_id_ = 0;
     }
+    uniform_cache_.clear();
 
     std::vector<uint32_t> shader_ids;
     shader_ids.reserve(stages.size());
@@ -112,15 +116,19 @@ bool GLShader::compile(const std::vector<ShaderStageDesc>& stages) {
 }
 
 void GLShader::bind() const {
-    if (program_id_) {
+    if (program_id_ && program_id_ != g_current_bound_program) {
         glUseProgram(program_id_);
+        g_current_bound_program = program_id_;
     }
     GL_CHECK_ERROR();
     apply_post_process_params();
 }
 
 void GLShader::unbind() const {
-    glUseProgram(0);
+    if (g_current_bound_program != 0) {
+        glUseProgram(0);
+        g_current_bound_program = 0;
+    }
     GL_CHECK_ERROR();
 }
 
@@ -128,12 +136,23 @@ int GLShader::get_uniform_location(const char* name) const {
     return glGetUniformLocation(program_id_, name);
 }
 
+int GLShader::get_uniform_location_cached(const char* name) const {
+    if (!program_id_) return -1;
+    auto it = uniform_cache_.find(name);
+    if (it != uniform_cache_.end()) {
+        return it->second;
+    }
+    int loc = glGetUniformLocation(program_id_, name);
+    uniform_cache_.emplace(name, loc);
+    return loc;
+}
+
 void GLShader::set_int(const std::string& name, int value) {
     set_int(name.c_str(), value);
 }
 
 void GLShader::set_int(const char* name, int value) {
-    int loc = get_uniform_location(name);
+    int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_int: uniform '{}' not found (location={})", name, loc);
         return;
@@ -147,7 +166,7 @@ void GLShader::set_float(const std::string& name, float value) {
 }
 
 void GLShader::set_float(const char* name, float value) {
-    int loc = get_uniform_location(name);
+    int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_float: uniform '{}' not found (location={})", name, loc);
         return;
@@ -161,7 +180,7 @@ void GLShader::set_vec2(const std::string& name, const gryce_engine::math::Vecto
 }
 
 void GLShader::set_vec2(const char* name, const gryce_engine::math::Vector2f& value) {
-    int loc = get_uniform_location(name);
+    int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_vec2: uniform '{}' not found (location={})", name, loc);
         return;
@@ -175,7 +194,7 @@ void GLShader::set_vec3(const std::string& name, const gryce_engine::math::Vecto
 }
 
 void GLShader::set_vec3(const char* name, const gryce_engine::math::Vector3f& value) {
-    int loc = get_uniform_location(name);
+    int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_vec3: uniform '{}' not found (location={})", name, loc);
         return;
@@ -189,7 +208,7 @@ void GLShader::set_vec4(const std::string& name, const gryce_engine::math::Vecto
 }
 
 void GLShader::set_vec4(const char* name, const gryce_engine::math::Vector4f& value) {
-    int loc = get_uniform_location(name);
+    int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_vec4: uniform '{}' not found (location={})", name, loc);
         return;
@@ -203,7 +222,7 @@ void GLShader::set_mat4(const std::string& name, const gryce_engine::math::Matri
 }
 
 void GLShader::set_mat4(const char* name, const gryce_engine::math::Matrix4f& value) {
-    int loc = get_uniform_location(name);
+    int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_mat4: uniform '{}' not found (location={})", name, loc);
         return;

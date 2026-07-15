@@ -12,6 +12,25 @@
 
 namespace gryce_engine::render {
 
+namespace {
+
+constexpr int k_max_texture_slots = 32;
+
+// 当前已绑定到各 slot 的 2D texture id，避免重复的 glBindTextureUnit/glBindTexture。
+thread_local GLuint g_bound_textures[k_max_texture_slots] = {};
+// 非 DSA 路径下当前激活的 texture unit。
+thread_local int g_active_texture_unit = -1;
+
+void clear_texture_slot_cache(GLuint texture_id) {
+    for (int i = 0; i < k_max_texture_slots; ++i) {
+        if (g_bound_textures[i] == texture_id) {
+            g_bound_textures[i] = 0;
+        }
+    }
+}
+
+} // namespace
+
 // 本地垂直翻转图像，避免修改 stbi_image 全局状态
 static void flip_image_vertical(unsigned char* data, int width, int height, int channels) {
     if (height <= 1 || !data) return;
@@ -30,6 +49,7 @@ GLTexture::GLTexture() : texture_id_(0), width_(0), height_(0), channels_(4) {}
 
 GLTexture::~GLTexture() {
     if (texture_id_) {
+        clear_texture_slot_cache(texture_id_);
         glDeleteTextures(1, &texture_id_);
     }
 }
@@ -300,15 +320,29 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
 }
 
 void GLTexture::bind(uint32_t slot) const {
+    if (slot >= k_max_texture_slots) return;
+    if (texture_id_ == 0) return;
+
     if (gl_dsa_available()) {
+        if (g_bound_textures[slot] == texture_id_) return;
         glBindTextureUnit(slot, texture_id_);
+        g_bound_textures[slot] = texture_id_;
     } else {
-        glActiveTexture(GL_TEXTURE0 + slot);
+        if (g_active_texture_unit != static_cast<int>(slot)) {
+            glActiveTexture(GL_TEXTURE0 + slot);
+            g_active_texture_unit = static_cast<int>(slot);
+        }
+        if (g_bound_textures[slot] == texture_id_) return;
         glBindTexture(GL_TEXTURE_2D, texture_id_);
+        g_bound_textures[slot] = texture_id_;
     }
 }
 
 void GLTexture::unbind() const {
+    // 不维护缓存的精确清除，简单绑定 0 并清空当前 slot。
+    if (g_active_texture_unit >= 0 && g_active_texture_unit < k_max_texture_slots) {
+        g_bound_textures[g_active_texture_unit] = 0;
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 

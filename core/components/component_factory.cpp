@@ -17,6 +17,10 @@
 #include "components/rigid_body_2d.h"
 #include "components/box_collider_2d.h"
 #include "components/circle_collider_2d.h"
+#include "components/character_controller_2d.h"
+#include "components/character_controller_3d.h"
+#include "components/joint_2d.h"
+#include "components/joint_3d.h"
 #include "components/destructible_body.h"
 #include "components/fragment_body.h"
 #include "components/audio_source.h"
@@ -87,6 +91,18 @@ void register_builtin_components() {
     });
     ComponentFactory::instance().register_type("CircleCollider2D", []() {
         return std::make_unique<CircleCollider2D>();
+    });
+    ComponentFactory::instance().register_type("CharacterController2D", []() {
+        return std::make_unique<CharacterController2D>();
+    });
+    ComponentFactory::instance().register_type("CharacterController3D", []() {
+        return std::make_unique<CharacterController3D>();
+    });
+    ComponentFactory::instance().register_type("Joint2D", []() {
+        return std::make_unique<Joint2D>();
+    });
+    ComponentFactory::instance().register_type("Joint3D", []() {
+        return std::make_unique<Joint3D>();
     });
     ComponentFactory::instance().register_type("DestructibleBody", []() {
         return std::make_unique<DestructibleBody>();

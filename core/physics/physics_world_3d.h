@@ -54,6 +54,10 @@ public:
     // 射线检测
     virtual std::optional<RaycastHit> raycast(const math::Vector3f& origin, const math::Vector3f& direction, float max_distance) const = 0;
 
+    // 关节
+    virtual JointHandle create_joint(const JointDesc3D& desc) = 0;
+    virtual void destroy_joint(JointHandle handle) = 0;
+
     // 查询
     virtual void foreach_body(std::function<void(BodyHandle, const math::Vector3f&, const math::Quaternionf&)> callback) const = 0;
 

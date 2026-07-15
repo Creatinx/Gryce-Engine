@@ -108,8 +108,10 @@ bool VulkanDevice::pick_physical_device(VkInstance instance, VkSurfaceKHR surfac
 
             VkPhysicalDeviceProperties props{};
             vkGetPhysicalDeviceProperties(device, &props);
-            GLOG_INFO("VulkanDevice selected GPU: {} (extended_dynamic_state={})",
-                      props.deviceName, supports_extended_dynamic_state_);
+            max_sampler_anisotropy_ = props.limits.maxSamplerAnisotropy;
+            supports_anisotropy_ = max_sampler_anisotropy_ > 1.0f;
+            GLOG_INFO("VulkanDevice selected GPU: {} (extended_dynamic_state={}, anisotropy={})",
+                      props.deviceName, supports_extended_dynamic_state_, supports_anisotropy_);
             return true;
         }
     }
@@ -136,6 +138,7 @@ bool VulkanDevice::create_logical_device() {
     }
 
     VkPhysicalDeviceFeatures features{};
+    features.samplerAnisotropy = supports_anisotropy_ ? VK_TRUE : VK_FALSE;
 
     std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 

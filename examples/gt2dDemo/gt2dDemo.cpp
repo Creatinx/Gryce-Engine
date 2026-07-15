@@ -35,7 +35,12 @@
 #include "components/2d/parallax_background.h"
 #include "components/2d/particle_emitter.h"
 #include "components/2d/tilemap.h"
+#include "components/2d/basic_rect.h"
+#include "components/2d/shape.h"
 #include "components/audio_source.h"
+#include "components/static_body_2d.h"
+#include "components/joint_2d.h"
+#include "components/character_controller_2d.h"
 #include "components/physical_material.h"
 #include "components/rigid_body_2d.h"
 #include "components/box_collider_2d.h"
@@ -358,6 +363,8 @@ void build_level_tilemap(components::d2::tilemap::Tilemap* tm) {
     platform(98, 101, surface_y - 3, 2);
 }
 
+void add_feature_showcase(scene::Scene* scene);
+
 scene::Scene* create_platformer_scene() {
     auto scene = std::make_unique<scene::Scene>("Platformer");
 
@@ -533,7 +540,95 @@ scene::Scene* create_platformer_scene() {
     make_label("GameOverLabel", "", 12.0f, 140.0f, render::Color::red());
     make_label("FPSLabel", "Render FPS: --", 12.0f, 174.0f, render::Color::green());
 
+    // 额外 2D 特性展示：基本图形、关节桥
+    add_feature_showcase(scene.get());
+
     return scene.release();
+}
+
+void add_feature_showcase(scene::Scene* scene) {
+    if (!scene) return;
+
+    // 彩色矩形背景板（UI 风格）
+    {
+        scene::Entity* e = scene->create_entity("ShapePanel");
+        e->transform()->position = math::Vector3f(12.0f, 200.0f, 0.0f);
+        auto* rect = e->add_component<components::d2::basic_rect::ColorRect>(180.0f, 120.0f,
+            render::Color(0.1f, 0.12f, 0.18f, 0.85f));
+        rect->render_order = 1050;
+    }
+
+    // 圆形装饰
+    {
+        scene::Entity* e = scene->create_entity("ShapeCircle");
+        e->transform()->position = math::Vector3f(60.0f, 250.0f, 0.0f);
+        e->add_component<components::d2::shape::Circle>(24.0f, 32, render::Color(1.0f, 0.4f, 0.4f, 1.0f));
+    }
+
+    // 三角形装饰
+    {
+        scene::Entity* e = scene->create_entity("ShapeTriangle");
+        e->transform()->position = math::Vector3f(120.0f, 250.0f, 0.0f);
+        std::vector<math::Vector2f> pts = {
+            math::Vector2f(0.0f, -22.0f),
+            math::Vector2f(20.0f, 18.0f),
+            math::Vector2f(-20.0f, 18.0f)
+        };
+        e->add_component<components::d2::shape::Polygon>(pts, render::Color(0.4f, 1.0f, 0.4f, 1.0f));
+    }
+
+    // 多边形装饰（六边形）
+    {
+        scene::Entity* e = scene->create_entity("ShapeHexagon");
+        e->transform()->position = math::Vector3f(165.0f, 250.0f, 0.0f);
+        std::vector<math::Vector2f> pts;
+        for (int i = 0; i < 6; ++i) {
+            float a = static_cast<float>(i) * k_pi / 3.0f;
+            pts.emplace_back(std::cos(a) * 18.0f, std::sin(a) * 18.0f);
+        }
+        e->add_component<components::d2::shape::Polygon>(pts, render::Color(0.4f, 0.6f, 1.0f, 1.0f));
+    }
+
+    // 标签说明
+    {
+        scene::Entity* e = scene->create_entity("ShapeLabel");
+        e->transform()->position = math::Vector3f(20.0f, 285.0f, 0.0f);
+        auto* lbl = e->add_component<components::d2::text::Label>("Shapes", 16.0f, render::Color::white());
+        lbl->render_order = 1100;
+    }
+
+    // 关节桥：静态锚点 + 多个动态方块用距离关节连接
+    float bridge_x = 75.0f * k_tile_size;
+    float bridge_y = (k_map_h - 8) * k_tile_size;
+    scene::Entity* bridge_anchor = scene->create_entity("BridgeAnchor");
+    bridge_anchor->transform()->position = math::Vector3f(bridge_x, bridge_y, 0.0f);
+    bridge_anchor->add_component<components::StaticBody2D>();
+    bridge_anchor->add_component<components::BoxCollider2D>()->size = math::Vector2f(20.0f, 20.0f);
+    auto* anchor_rect = bridge_anchor->add_component<components::d2::basic_rect::ColorRect>(20.0f, 20.0f, render::Color(0.6f, 0.6f, 0.6f, 1.0f));
+    anchor_rect->render_order = 5;
+
+    scene::Entity* prev = bridge_anchor;
+    for (int i = 0; i < 6; ++i) {
+        scene::Entity* plank = scene->create_entity("BridgePlank" + std::to_string(i));
+        plank->transform()->position = math::Vector3f(bridge_x + static_cast<float>(i + 1) * 34.0f, bridge_y, 0.0f);
+        auto* rb = plank->add_component<components::RigidBody2D>();
+        rb->mass = 0.8f;
+        rb->friction = 0.4f;
+        plank->add_component<components::BoxCollider2D>()->size = math::Vector2f(30.0f, 8.0f);
+        auto* plank_rect = plank->add_component<components::d2::basic_rect::ColorRect>(30.0f, 8.0f, render::Color(0.7f, 0.5f, 0.3f, 1.0f));
+        plank_rect->render_order = 5;
+
+        scene::Entity* joint = scene->create_entity("BridgeJoint" + std::to_string(i));
+        auto* jc = joint->add_component<components::Joint2D>();
+        jc->body_a_uuid = prev->uuid();
+        jc->body_b_uuid = plank->uuid();
+        jc->joint_type = physics::JointType::Distance;
+        jc->length = 34.0f;
+        jc->frequency = 4.0f;
+        jc->damping = 0.5f;
+
+        prev = plank;
+    }
 }
 
 void spawn_coin(scene::Scene* scene, float x, float y) {

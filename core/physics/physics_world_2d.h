@@ -68,6 +68,10 @@ public:
     };
     virtual std::optional<RaycastHit2D> raycast(const math::Vector2f& origin, const math::Vector2f& direction, float max_distance) const = 0;
 
+    // 关节
+    virtual JointHandle create_joint(const JointDesc2D& desc) = 0;
+    virtual void destroy_joint(JointHandle handle) = 0;
+
     virtual const char* backend_name() const = 0;
 };
 

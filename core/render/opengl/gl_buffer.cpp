@@ -9,6 +9,13 @@
 
 namespace gryce_engine::render {
 
+namespace {
+
+// 当前绑定的 VAO，避免重复的 glBindVertexArray 调用。
+thread_local GLuint g_current_bound_vao = 0;
+
+} // namespace
+
 GLMesh::GLMesh() {
     if (gl_dsa_available()) {
         glCreateVertexArrays(1, &vao_);
@@ -32,9 +39,12 @@ void GLMesh::upload_vertices(const void* data, uint32_t size, uint32_t count) {
     if (size == 0) return;
 
     if (gl_dsa_available()) {
-        // TEMP: always reallocate to ensure clean data
-        glNamedBufferData(vbo_, static_cast<GLsizeiptr>(size), data, GL_DYNAMIC_DRAW);
-        vertex_buffer_size_ = size;
+        if (size <= vertex_buffer_size_) {
+            glNamedBufferSubData(vbo_, 0, static_cast<GLsizeiptr>(size), data);
+        } else {
+            glNamedBufferData(vbo_, static_cast<GLsizeiptr>(size), data, GL_DYNAMIC_DRAW);
+            vertex_buffer_size_ = size;
+        }
     } else {
         glBindVertexArray(vao_);
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -76,6 +86,10 @@ void GLMesh::upload_indices(const void* data, uint32_t size, uint32_t count) {
 }
 
 void GLMesh::set_layout(const VertexLayout& layout) {
+    if (layout_ == layout) {
+        return;
+    }
+
     if (gl_dsa_available()) {
         // 先禁用所有 vertex attrib array，避免上一轮布局的残留状态影响当前布局
         for (GLuint loc = 0; loc < 16; ++loc) {
@@ -126,7 +140,10 @@ void GLMesh::set_layout(const VertexLayout& layout) {
 }
 
 void GLMesh::bind() const {
-    glBindVertexArray(vao_);
+    if (vao_ != g_current_bound_vao) {
+        glBindVertexArray(vao_);
+        g_current_bound_vao = vao_;
+    }
 }
 
 void GLMesh::draw() const {

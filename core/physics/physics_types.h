@@ -63,4 +63,39 @@ struct RaycastHit {
     float distance = 0.0f;
 };
 
+enum class JointType {
+    Distance,
+    Fixed,
+    Hinge,
+    Spring
+};
+
+struct JointDesc2D {
+    JointType type = JointType::Fixed;
+    BodyHandle body_a = k_invalid_body;
+    BodyHandle body_b = k_invalid_body;
+    math::Vector2f anchor_a;
+    math::Vector2f anchor_b;
+    float length = 1.0f;
+    float frequency = 0.0f;
+    float damping = 0.0f;
+    float min_length = 0.0f;
+    float max_length = 0.0f;
+    bool collide_connected = false;
+};
+
+struct JointDesc3D {
+    JointType type = JointType::Fixed;
+    BodyHandle body_a = k_invalid_body;
+    BodyHandle body_b = k_invalid_body;
+    math::Vector3f anchor_a;
+    math::Vector3f anchor_b;
+    math::Vector3f axis_a{0.0f, 0.0f, 1.0f};
+    math::Vector3f axis_b{0.0f, 0.0f, 1.0f};
+    float length = 1.0f;
+    float frequency = 0.0f;
+    float damping = 0.0f;
+    bool collide_connected = false;
+};
+
 } // namespace gryce_engine::physics

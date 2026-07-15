@@ -187,6 +187,9 @@ bool VulkanShader::create_pipeline() {
         }
 
         descriptor_sets_.resize(frames, VK_NULL_HANDLE);
+        cached_textures_.resize(frames);
+        for (auto& arr : cached_textures_) arr.fill(nullptr);
+
         std::vector<VkDescriptorSetLayout> layouts(frames, descriptor_set_layout_);
         VkDescriptorSetAllocateInfo alloc{};
         alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -480,6 +483,9 @@ bool VulkanShader::create_descriptor_pool() {
     }
 
     descriptor_sets_.resize(frames, VK_NULL_HANDLE);
+    cached_textures_.resize(frames);
+    for (auto& arr : cached_textures_) arr.fill(nullptr);
+
     std::vector<VkDescriptorSetLayout> layouts(frames, descriptor_set_layout_);
     VkDescriptorSetAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -515,9 +521,16 @@ void VulkanShader::set_texture(int slot, ITexture* texture) {
     // post-process: binding 0 starts at slot 0
     // PBR: slot 0~4 对应 material 贴图，binding 1~5; slot 5 对应 shadow map，binding 6
     int binding = post_process_ ? slot : (slot + 1);
-    if (binding < 0 || binding > 6 || !texture) return;
+    if (binding < 0 || binding >= k_max_texture_bindings || !texture) return;
     auto* vk_tex = dynamic_cast<VulkanTexture*>(texture);
     if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) return;
+
+    int frame = current_frame();
+    if (frame < 0 || frame >= static_cast<int>(cached_textures_.size())) return;
+
+    auto& cached = cached_textures_[frame][binding];
+    if (cached == vk_tex) return;
+    cached = vk_tex;
 
     VkDescriptorImageInfo image_info{};
     image_info.imageLayout = vk_tex->is_depth()
@@ -528,7 +541,7 @@ void VulkanShader::set_texture(int slot, ITexture* texture) {
 
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptor_sets_[current_frame()];
+    write.dstSet = descriptor_sets_[frame];
     write.dstBinding = static_cast<uint32_t>(binding);
     write.dstArrayElement = 0;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

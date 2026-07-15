@@ -154,6 +154,8 @@ void VulkanBackend::shutdown() {
     // VMA allocation，触发 VMA 断言。
     inline_secondary_cb_ = VK_NULL_HANDLE;
     inline_secondary_recording_ = false;
+    geometry_secondary_cb_ = VK_NULL_HANDLE;
+    geometry_secondary_recording_ = false;
     if (device_.device() && !per_frame_secondary_cbs_.empty()) {
         vkFreeCommandBuffers(device_.device(), swapchain_.secondary_command_pool(),
                              static_cast<uint32_t>(per_frame_secondary_cbs_.size()),
@@ -245,14 +247,16 @@ void VulkanBackend::begin_frame() {
     }
 
     reset_state_cache();
-    if (device_.device() != VK_NULL_HANDLE && !per_frame_secondary_cbs_.empty()) {
-        vkFreeCommandBuffers(device_.device(), swapchain_.secondary_command_pool(),
-                             static_cast<uint32_t>(per_frame_secondary_cbs_.size()),
-                             per_frame_secondary_cbs_.data());
+    // 重置 secondary command pool 比逐条 free/allocate 更快；pool 中已有的 CB
+    // 在 reset 后失效，下一帧会重新 allocate。
+    if (device_.device() != VK_NULL_HANDLE && swapchain_.secondary_command_pool() != VK_NULL_HANDLE) {
+        vkResetCommandPool(device_.device(), swapchain_.secondary_command_pool(), 0);
     }
     per_frame_secondary_cbs_.clear();
     inline_secondary_cb_ = VK_NULL_HANDLE;
     inline_secondary_recording_ = false;
+    geometry_secondary_cb_ = VK_NULL_HANDLE;
+    geometry_secondary_recording_ = false;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_vk_ = VK_NULL_HANDLE;
     render_pass_contents_secondary_ = false;
@@ -294,6 +298,7 @@ void VulkanBackend::end_frame() {
         ++frame_count_;
         return;
     }
+    end_geometry_secondary();
     end_and_execute_inline_secondary();
     end_current_render_pass();
     in_forward_pass_ = false;
@@ -427,18 +432,14 @@ void VulkanBackend::apply_dynamic_state(VkCommandBuffer cmd) {
 
 void VulkanBackend::set_dynamic_state_2d(VkCommandBuffer cmd) {
     if (!supports_dynamic_state_ || cmd == VK_NULL_HANDLE) return;
-    // 2D pipelines declare these states dynamic; emit them unconditionally so a
-    // freshly allocated secondary CB always receives valid state (our cache would
-    // otherwise skip the emission because the cached value already matches).
-    vk_cmd_set_cull_mode_(cmd, VK_CULL_MODE_NONE);
-    vk_cmd_set_front_face_(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-    vk_cmd_set_depth_test_enable_(cmd, VK_FALSE);
-    vk_cmd_set_depth_write_enable_(cmd, VK_FALSE);
-    // Keep the cache consistent so apply_dynamic_state() later does not re-emit.
-    state_cache_.cull_mode = VK_CULL_MODE_NONE;
-    state_cache_.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    state_cache_.depth_test = VK_FALSE;
-    state_cache_.depth_write = VK_FALSE;
+    // 2D pipelines declare these states dynamic; use the cached helpers so that
+    // multiple 2D batches within the same inline secondary CB only pay for the
+    // first set of vkCmdSet* calls. The cache is reset when a fresh CB is begun,
+    // guaranteeing the state is still emitted at least once.
+    set_cull_mode_cached(cmd, VK_CULL_MODE_NONE);
+    set_front_face_cached(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    set_depth_test_cached(cmd, VK_FALSE);
+    set_depth_write_cached(cmd, VK_FALSE);
 }
 
 void VulkanBackend::reset_state_cache() {
@@ -473,6 +474,8 @@ VkCommandBuffer VulkanBackend::current_command_buffer() {
 
 void VulkanBackend::begin_inline_secondary() {
     if (!initialized_ || inline_secondary_recording_) return;
+    // 几何 secondary 与 inline secondary 不能同时录制；先 flush 几何命令。
+    end_geometry_secondary();
     inline_secondary_cb_ = allocate_secondary_cb();
     if (inline_secondary_cb_ == VK_NULL_HANDLE) return;
     // A freshly allocated secondary CB does not inherit any dynamic state;
@@ -521,6 +524,43 @@ void VulkanBackend::end_and_execute_inline_secondary() {
     state_cache_ = {};
     applied_viewport_count_ = 0;
     applied_scissor_count_ = 0;
+}
+
+void VulkanBackend::begin_geometry_secondary() {
+    if (!initialized_ || geometry_secondary_recording_) return;
+    // 2D/ImGui/state 命令可能在 inline secondary 中录制，先把它们执行掉。
+    end_and_execute_inline_secondary();
+
+    geometry_secondary_cb_ = allocate_secondary_cb();
+    if (geometry_secondary_cb_ == VK_NULL_HANDLE) return;
+
+    // Secondary CB 不继承动态状态，重置缓存使第一个 draw 重新发 pipeline/dynamic/viewport/scissor。
+    state_cache_ = {};
+    applied_viewport_count_ = 0;
+    applied_scissor_count_ = 0;
+
+    VkCommandBufferInheritanceInfo inheritance{};
+    inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inheritance.renderPass = current_render_pass_;
+    inheritance.subpass = 0;
+    inheritance.framebuffer = current_framebuffer_vk_;
+
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    begin_info.pInheritanceInfo = &inheritance;
+
+    vkBeginCommandBuffer(geometry_secondary_cb_, &begin_info);
+    geometry_secondary_recording_ = true;
+}
+
+void VulkanBackend::end_geometry_secondary() {
+    if (!geometry_secondary_recording_ || geometry_secondary_cb_ == VK_NULL_HANDLE) return;
+    vkEndCommandBuffer(geometry_secondary_cb_);
+    execute_secondary(geometry_secondary_cb_);
+    geometry_secondary_cb_ = VK_NULL_HANDLE;
+    geometry_secondary_recording_ = false;
 }
 
 VkCommandBuffer VulkanBackend::allocate_secondary_cb() {
@@ -673,6 +713,7 @@ void VulkanBackend::bind_framebuffer(RHIFramebufferHandle fb) {
         return;
     }
 
+    end_geometry_secondary();
     end_and_execute_inline_secondary();
     end_current_render_pass();
     in_forward_pass_ = false;
@@ -689,6 +730,7 @@ void VulkanBackend::unbind_framebuffer() {
     if (!initialized_ || frame_aborted_) return;
     if (in_forward_pass_) return;
 
+    end_geometry_secondary();
     end_and_execute_inline_secondary();
     end_current_render_pass();
     if (current_framebuffer_.is_valid()) {
@@ -719,71 +761,57 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
     auto* vk_shader = static_cast<VulkanShader*>(this->shader(shader));
     if (!vk_mesh || !vk_shader || !vk_mesh->vertex_buffer()) return;
 
-    // 结束并执行当前的 inline secondary CB，避免 draw_mesh 与 2D/ImGui 命令交错
-    end_and_execute_inline_secondary();
+    // 使用共享的 geometry secondary CB 连续录制多个 3D draw，减少每 mesh 的
+    // allocate/begin/end/execute 开销以及 inline/secondary 切换。
+    begin_geometry_secondary();
+    if (!geometry_secondary_recording_ || geometry_secondary_cb_ == VK_NULL_HANDLE) return;
 
-    // 为本次 draw_mesh 分配并录制 secondary command buffer
-    VkCommandBuffer secondary = allocate_secondary_cb();
-    if (secondary == VK_NULL_HANDLE) return;
-
-    VkCommandBufferInheritanceInfo inheritance{};
-    inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-    inheritance.renderPass = current_render_pass_;
-    inheritance.subpass = 0;
-    inheritance.framebuffer = current_framebuffer_vk_;
-
-    VkCommandBufferBeginInfo begin_info{};
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
-                       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-    begin_info.pInheritanceInfo = &inheritance;
-    vkBeginCommandBuffer(secondary, &begin_info);
+    VkCommandBuffer cmd = geometry_secondary_cb_;
 
     // Secondary CB 必须显式设置动态 viewport/scissor。
     // 对后处理全屏 pass 使用正 viewport（Vulkan 纹理原点在左上），避免 offscreen
     // 纹理在 blit 时被上下翻转；普通几何继续沿用负 viewport 匹配 OpenGL 投影。
-    VkViewport mesh_viewports[k_max_viewports];
     if (viewport_count_ > 0) {
-        for (uint32_t i = 0; i < viewport_count_; ++i) {
-            mesh_viewports[i] = viewports_[i];
-        }
         if (vk_shader->is_post_process()) {
             for (uint32_t i = 0; i < viewport_count_; ++i) {
-                mesh_viewports[i].height = std::abs(mesh_viewports[i].height);
-                mesh_viewports[i].y = 0.0f;
+                VkViewport vp = viewports_[i];
+                vp.height = std::abs(vp.height);
+                vp.y = 0.0f;
+                vkCmdSetViewport(cmd, i, 1, &vp);
+                applied_viewports_[i] = vp;
+            }
+            applied_viewport_count_ = viewport_count_;
+        } else {
+            for (uint32_t i = 0; i < viewport_count_; ++i) {
+                set_viewport_cached(cmd, viewports_[i], i);
             }
         }
-        vkCmdSetViewport(secondary, 0, viewport_count_, mesh_viewports);
     }
     if (scissor_count_ > 0) {
-        vkCmdSetScissor(secondary, 0, scissor_count_, scissors_.data());
+        for (uint32_t i = 0; i < scissor_count_; ++i) {
+            set_scissor_cached(cmd, scissors_[i], i);
+        }
     }
 
-    bind_pipeline(secondary, vk_shader->pipeline());
+    bind_pipeline(cmd, vk_shader->pipeline());
     // Post-process shader 的 pipeline 未声明动态 cull/depth 状态，跳过 dynamic state。
     if (!vk_shader->is_post_process()) {
-        apply_dynamic_state(secondary);
+        apply_dynamic_state(cmd);
     }
-    bind_descriptor_set(secondary, vk_shader->layout(), vk_shader->descriptor_set());
-    vk_shader->push_constants(secondary);
-    vk_shader->update_ubo(secondary);
+    bind_descriptor_set(cmd, vk_shader->layout(), vk_shader->descriptor_set());
+    vk_shader->push_constants(cmd);
+    vk_shader->update_ubo(cmd);
 
     VkBuffer buffers[] = {vk_mesh->vertex_buffer()};
     VkDeviceSize offsets[] = {0};
-    vkCmdBindVertexBuffers(secondary, 0, 1, buffers, offsets);
+    vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
 
     if (vk_mesh->has_index() && vk_mesh->index_buffer()) {
-        vkCmdBindIndexBuffer(secondary, vk_mesh->index_buffer(), 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(secondary, vk_mesh->index_count(), 1, 0, 0, 0);
+        vkCmdBindIndexBuffer(cmd, vk_mesh->index_buffer(), 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, vk_mesh->index_count(), 1, 0, 0, 0);
     } else {
-        vkCmdDraw(secondary, vk_mesh->vertex_count(), 1, 0, 0);
+        vkCmdDraw(cmd, vk_mesh->vertex_count(), 1, 0, 0);
     }
-
-    vkEndCommandBuffer(secondary);
-    execute_secondary(secondary);
-
-    // 恢复 inline secondary CB 供后续 2D/ImGui/状态命令使用
-    begin_inline_secondary();
 }
 
 void VulkanBackend::draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) {

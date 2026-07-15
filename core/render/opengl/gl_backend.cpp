@@ -78,6 +78,8 @@ void GLBackend::begin_frame() {
     // 帧开始钩子：不再自动 clear。
     // clear 应由应用层通过 RenderContext::clear() 显式提交，
     // 否则保留上一帧内容（标准 OpenGL 行为）。
+    // 每帧重置状态缓存，防止外部或驱动状态变化导致缓存失效。
+    state_cache_valid_ = false;
 }
 
 void GLBackend::flush_gpu() {
@@ -185,11 +187,29 @@ void GLBackend::clear_depth() {
 }
 
 void GLBackend::set_viewport(int x, int y, int w, int h) {
+    if (state_cache_valid_ && viewport_x_ == x && viewport_y_ == y &&
+        viewport_w_ == w && viewport_h_ == h) {
+        return;
+    }
     glViewport(x, y, w, h);
+    viewport_x_ = x;
+    viewport_y_ = y;
+    viewport_w_ = w;
+    viewport_h_ = h;
+    state_cache_valid_ = true;
 }
 
 void GLBackend::set_scissor(int x, int y, int w, int h) {
+    if (state_cache_valid_ && scissor_x_ == x && scissor_y_ == y &&
+        scissor_w_ == w && scissor_h_ == h) {
+        return;
+    }
     glScissor(x, y, w, h);
+    scissor_x_ = x;
+    scissor_y_ = y;
+    scissor_w_ = w;
+    scissor_h_ = h;
+    state_cache_valid_ = true;
 }
 
 void GLBackend::set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {
@@ -216,6 +236,9 @@ void GLBackend::unbind_framebuffer() {
 }
 
 void GLBackend::set_depth_test(bool enabled) {
+    if (state_cache_valid_ && depth_test_enabled_ == enabled) {
+        return;
+    }
     if (enabled) {
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
@@ -223,6 +246,8 @@ void GLBackend::set_depth_test(bool enabled) {
     } else {
         glDisable(GL_DEPTH_TEST);
     }
+    depth_test_enabled_ = enabled;
+    state_cache_valid_ = true;
 }
 
 namespace {
@@ -257,23 +282,47 @@ GLenum blend_equation_to_gl(BlendEquation e) {
 } // namespace
 
 void GLBackend::set_blend(bool enabled) {
+    if (state_cache_valid_ && blend_enabled_ == enabled &&
+        blend_src_ == BlendFactor::SrcAlpha && blend_dst_ == BlendFactor::OneMinusSrcAlpha &&
+        blend_equation_ == BlendEquation::Add) {
+        return;
+    }
     if (enabled) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
         glDisable(GL_BLEND);
     }
+    blend_enabled_ = enabled;
+    blend_src_ = BlendFactor::SrcAlpha;
+    blend_dst_ = BlendFactor::OneMinusSrcAlpha;
+    blend_equation_ = BlendEquation::Add;
+    state_cache_valid_ = true;
 }
 
 void GLBackend::set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {
+    if (state_cache_valid_ && blend_src_ == src_factor && blend_dst_ == dst_factor) {
+        return;
+    }
     glBlendFunc(blend_factor_to_gl(src_factor), blend_factor_to_gl(dst_factor));
+    blend_src_ = src_factor;
+    blend_dst_ = dst_factor;
+    state_cache_valid_ = true;
 }
 
 void GLBackend::set_blend_equation(BlendEquation mode) {
+    if (state_cache_valid_ && blend_equation_ == mode) {
+        return;
+    }
     glBlendEquation(blend_equation_to_gl(mode));
+    blend_equation_ = mode;
+    state_cache_valid_ = true;
 }
 
 void GLBackend::set_cull_face(bool enabled) {
+    if (state_cache_valid_ && cull_face_enabled_ == enabled) {
+        return;
+    }
     if (enabled) {
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
@@ -281,6 +330,8 @@ void GLBackend::set_cull_face(bool enabled) {
     } else {
         glDisable(GL_CULL_FACE);
     }
+    cull_face_enabled_ = enabled;
+    state_cache_valid_ = true;
 }
 
 void GLBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {

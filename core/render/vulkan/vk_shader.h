@@ -4,6 +4,7 @@
 #include "render/vulkan/vk_buffer.h"
 
 #include <vulkan/vulkan.h>
+#include <array>
 #include <memory>
 #include <vector>
 #include <string>
@@ -12,6 +13,7 @@ namespace gryce_engine::render {
 
 class VulkanDevice;
 class VulkanSwapchain;
+class VulkanTexture;
 
 // ---------------------------------------------------------------------------
 // VulkanShader — SPIR-V + pipeline layout + descriptor set layout
@@ -118,6 +120,10 @@ private:
     std::vector<std::unique_ptr<VulkanBuffer>> ubo_buffers_;
     std::vector<VkDescriptorSet> descriptor_sets_;
     static constexpr size_t ubo_size_ = 256;
+    static constexpr int k_max_texture_bindings = 7;
+
+    // 每个 frame / binding 上最后一次更新的纹理，避免重复的 vkUpdateDescriptorSets。
+    mutable std::vector<std::array<VulkanTexture*, k_max_texture_bindings>> cached_textures_;
 
     mutable UBOData ubo_data_{};
     mutable math::Matrix4f model_;

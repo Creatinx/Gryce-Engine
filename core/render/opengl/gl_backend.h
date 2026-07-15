@@ -100,6 +100,17 @@ private:
     RHIResourcePool<GLTexture> texture_pool_;
     RHIResourcePool<GLFramebuffer> framebuffer_pool_;
 
+    // 状态缓存：避免向 driver 下发重复的状态切换命令。
+    bool state_cache_valid_ = false;
+    bool depth_test_enabled_ = false;
+    bool blend_enabled_ = false;
+    bool cull_face_enabled_ = false;
+    BlendFactor blend_src_ = BlendFactor::One;
+    BlendFactor blend_dst_ = BlendFactor::Zero;
+    BlendEquation blend_equation_ = BlendEquation::Add;
+    int viewport_x_ = 0, viewport_y_ = 0, viewport_w_ = 0, viewport_h_ = 0;
+    int scissor_x_ = 0, scissor_y_ = 0, scissor_w_ = 0, scissor_h_ = 0;
+
     void save_screenshot(const std::string& path);
 };
 

@@ -45,6 +45,8 @@
 #include "components/box_collider.h"
 #include "components/sphere_collider.h"
 #include "components/plane_collider.h"
+#include "components/character_controller_3d.h"
+#include "components/joint_3d.h"
 #include "components/audio_source.h"
 #include "components/physical_material.h"
 #include "components/component_factory.h"
@@ -280,6 +282,74 @@ static scene::Entity* create_ground_entity(scene::Scene& scene, const std::strin
     return e;
 }
 
+static scene::Entity* create_joint_chain(scene::Scene& scene, const std::string& name) {
+    if (scene.find_entity_by_name(name + "Anchor")) return nullptr;
+
+    scene::Entity* anchor = scene.create_entity(name + "Anchor");
+    anchor->transform()->position = math::Vector3f(-60.0f, 80.0f, 0.0f);
+    anchor->add_component<components::StaticBody>();
+    anchor->add_component<components::BoxCollider>()->size = math::Vector3f(4.0f, 4.0f, 4.0f);
+    auto* anchor_mr = anchor->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+    if (anchor_mr && anchor_mr->material) {
+        anchor_mr->material->use_albedo_map = false;
+        anchor_mr->material->albedo_color = math::Vector3f(0.7f, 0.7f, 0.7f);
+    }
+
+    scene::Entity* prev = anchor;
+    for (int i = 0; i < 5; ++i) {
+        scene::Entity* link = scene.create_entity(name + "Link" + std::to_string(i));
+        link->transform()->position = math::Vector3f(-60.0f, 70.0f - static_cast<float>(i) * 10.0f, 0.0f);
+        link->transform()->scale = math::Vector3f(3.0f, 3.0f, 3.0f);
+        auto* link_mr = link->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (link_mr && link_mr->material) {
+            link_mr->material->use_albedo_map = false;
+            link_mr->material->albedo_color = math::Vector3f(
+                0.9f - static_cast<float>(i) * 0.12f,
+                0.4f + static_cast<float>(i) * 0.1f,
+                0.4f);
+        }
+        link->add_component<components::RigidBody>();
+        link->add_component<components::BoxCollider>();
+        link->add_component<components::PhysicalMaterial>()->apply_preset("Wood");
+
+        scene::Entity* joint = scene.create_entity(name + "Joint" + std::to_string(i));
+        auto* jc = joint->add_component<components::Joint3D>();
+        jc->body_a_uuid = prev->uuid();
+        jc->body_b_uuid = link->uuid();
+        jc->joint_type = physics::JointType::Hinge;
+        jc->anchor_a = math::Vector3f(0.0f, -2.0f, 0.0f);
+        jc->anchor_b = math::Vector3f(0.0f, 2.0f, 0.0f);
+        jc->axis_a = math::Vector3f(0.0f, 0.0f, 1.0f);
+        jc->axis_b = math::Vector3f(0.0f, 0.0f, 1.0f);
+
+        prev = link;
+    }
+    return anchor;
+}
+
+static scene::Entity* create_character_entity(scene::Scene& scene, const std::string& name) {
+    if (scene.find_entity_by_name(name)) return nullptr;
+
+    scene::Entity* e = scene.create_entity(name);
+    e->transform()->position = math::Vector3f(50.0f, 20.0f, 0.0f);
+    e->transform()->scale = math::Vector3f(4.0f, 8.0f, 4.0f);
+    auto* mr = e->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+    if (mr && mr->material) {
+        mr->material->use_albedo_map = false;
+        mr->material->albedo_color = math::Vector3f(0.2f, 0.8f, 0.4f);
+        mr->material->roughness = 0.5f;
+    }
+    e->add_component<components::RigidBody>();
+    e->add_component<components::BoxCollider>();
+    auto* cc = e->add_component<components::CharacterController3D>();
+    cc->speed = 8.0f;
+    cc->jump_force = 10.0f;
+    cc->ground_check_distance = 0.5f;
+    cc->ground_check_radius = 1.5f;
+    e->add_component<components::PhysicalMaterial>()->apply_preset("Rubber");
+    return e;
+}
+
 static void ensure_physics_demo_entities(scene::Scene& scene) {
     if (!scene.find_entity_by_name("Ground")) {
         create_ground_entity(scene, "Ground");
@@ -308,6 +378,9 @@ static void ensure_physics_demo_entities(scene::Scene& scene) {
             rb->acceleration = math::Vector3f::zero();
         }
     }
+
+    create_joint_chain(scene, "DemoChain");
+    create_character_entity(scene, "DemoCharacter");
 }
 
 // ---------------------------------------------------------------------------
@@ -950,6 +1023,31 @@ int main(int argc, char* argv[])
                     rb->sleep_frames = 0;
                 }
                 GLOG_INFO("F2: Cube reset to fracture drop");
+            }
+        }
+
+        // F3 保存当前场景到 .gesc
+        if (input.is_key_pressed(GLFW_KEY_F3)) {
+            const std::string save_path = "res:/scenes/main.gesc";
+            if (scene::SceneSerializer::save_to_file(*world.scene(), save_path)) {
+                GLOG_INFO("F3: Scene saved to '{}'", save_path);
+            } else {
+                GLOG_ERROR("F3: Failed to save scene to '{}'", save_path);
+            }
+        }
+
+        // DemoCharacter 控制器（方向键移动，右 Shift 跳跃）
+        if (scene::Entity* character = world.scene()->find_entity_by_name("DemoCharacter")) {
+            auto* cc = character->get_component<components::CharacterController3D>();
+            if (cc) {
+                math::Vector3f move(0.0f, 0.0f, 0.0f);
+                if (input.is_key_held(GLFW_KEY_UP)) move.z -= 1.0f;
+                if (input.is_key_held(GLFW_KEY_DOWN)) move.z += 1.0f;
+                if (input.is_key_held(GLFW_KEY_LEFT)) move.x -= 1.0f;
+                if (input.is_key_held(GLFW_KEY_RIGHT)) move.x += 1.0f;
+                if (move.length_sq() > 1.0f) move = move.normalized();
+                cc->move_input = move;
+                cc->jump_requested = input.is_key_pressed(GLFW_KEY_RIGHT_SHIFT);
             }
         }
 

@@ -48,6 +48,34 @@ static std::string get_system_font_dir() {
     return "C:\\Windows\\Fonts\\";
 }
 
+// 预先生成光照 uniform 名称，避免每帧构造字符串。
+struct LightUniformNames {
+    std::array<std::string, 32> type;
+    std::array<std::string, 32> pos;
+    std::array<std::string, 32> dir;
+    std::array<std::string, 32> color;
+    std::array<std::string, 32> intensity;
+    std::array<std::string, 32> radius;
+    std::array<std::string, 32> range;
+    std::array<std::string, 32> spot_angle;
+    std::array<std::string, 32> spot_softness;
+
+    LightUniformNames() {
+        for (int i = 0; i < 32; ++i) {
+            type[i] = "uLightType[" + std::to_string(i) + "]";
+            pos[i] = "uLightPos[" + std::to_string(i) + "]";
+            dir[i] = "uLightDir[" + std::to_string(i) + "]";
+            color[i] = "uLightColor[" + std::to_string(i) + "]";
+            intensity[i] = "uLightIntensity[" + std::to_string(i) + "]";
+            radius[i] = "uLightRadius[" + std::to_string(i) + "]";
+            range[i] = "uLightRange[" + std::to_string(i) + "]";
+            spot_angle[i] = "uLightSpotAngle[" + std::to_string(i) + "]";
+            spot_softness[i] = "uLightSpotSoftness[" + std::to_string(i) + "]";
+        }
+    }
+};
+static const LightUniformNames k_light_uniform_names;
+
 } // namespace
 
 bool Renderer2D::context_alive() const {
@@ -737,13 +765,13 @@ void Renderer2D::render_shadow_pass() {
 void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
     if (!ctx_ || lit_batches_.empty()) return;
 
-    auto batches_copy = std::make_shared<std::vector<LitBatch>>();
-    batches_copy->reserve(lit_batches_.size());
-    for (auto& batch : lit_batches_) {
-        batches_copy->push_back({batch.albedo, batch.normal,
-                                 std::vector<LitVertex2D>(batch.verts)});
+    std::vector<LitBatch> batches_copy;
+    batches_copy.reserve(lit_batches_.size());
+    for (auto& kv : lit_batches_) {
+        batches_copy.push_back({kv.second.albedo, kv.second.normal, std::move(kv.second.verts)});
     }
     lit_batches_.clear();
+    auto batches_shared = std::make_shared<std::vector<LitBatch>>(std::move(batches_copy));
 
     math::Matrix4f view_proj = view_proj_;
     Color ambient = ambient_light_;
@@ -778,9 +806,9 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         use_shadow = true;
     }
 
-    ctx_->push_command([this, batches_copy, view_proj, ambient, lights_copy,
+    ctx_->push_command([this, batches_shared, view_proj, ambient, lights_copy,
                         shadow_light_index, light_space, use_shadow, target_is_scene_fbo](IRenderBackend* backend) {
-        if (batches_copy->empty()) return;
+        if (batches_shared->empty()) return;
 
         IMesh* mesh_ptr = ctx_->mesh(mesh_);
         IShader* shader_ptr = ctx_->shader(lit_sprite_shader_);
@@ -827,16 +855,16 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         shader_ptr->set_int("uLightCount", light_count);
         for (int i = 0; i < light_count; ++i) {
             const auto& L = (*lights_copy)[i];
-            shader_ptr->set_int(("uLightType[" + std::to_string(i) + "]").c_str(), static_cast<int>(L.type));
-            shader_ptr->set_vec2(("uLightPos[" + std::to_string(i) + "]").c_str(), L.position);
-            shader_ptr->set_vec2(("uLightDir[" + std::to_string(i) + "]").c_str(), L.direction);
-            shader_ptr->set_vec3(("uLightColor[" + std::to_string(i) + "]").c_str(),
+            shader_ptr->set_int(k_light_uniform_names.type[i].c_str(), static_cast<int>(L.type));
+            shader_ptr->set_vec2(k_light_uniform_names.pos[i].c_str(), L.position);
+            shader_ptr->set_vec2(k_light_uniform_names.dir[i].c_str(), L.direction);
+            shader_ptr->set_vec3(k_light_uniform_names.color[i].c_str(),
                                  math::Vector3f(L.color.r, L.color.g, L.color.b));
-            shader_ptr->set_float(("uLightIntensity[" + std::to_string(i) + "]").c_str(), L.intensity);
-            shader_ptr->set_float(("uLightRadius[" + std::to_string(i) + "]").c_str(), L.radius);
-            shader_ptr->set_float(("uLightRange[" + std::to_string(i) + "]").c_str(), L.range);
-            shader_ptr->set_float(("uLightSpotAngle[" + std::to_string(i) + "]").c_str(), L.spot_angle);
-            shader_ptr->set_float(("uLightSpotSoftness[" + std::to_string(i) + "]").c_str(), L.spot_softness);
+            shader_ptr->set_float(k_light_uniform_names.intensity[i].c_str(), L.intensity);
+            shader_ptr->set_float(k_light_uniform_names.radius[i].c_str(), L.radius);
+            shader_ptr->set_float(k_light_uniform_names.range[i].c_str(), L.range);
+            shader_ptr->set_float(k_light_uniform_names.spot_angle[i].c_str(), L.spot_angle);
+            shader_ptr->set_float(k_light_uniform_names.spot_softness[i].c_str(), L.spot_softness);
         }
 
         shader_ptr->set_int("uUseShadowMap", use_shadow ? 1 : 0);
@@ -848,7 +876,7 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
             shader_ptr->set_int("uShadowMap", 2);
         }
 
-        for (const auto& batch : *batches_copy) {
+        for (const auto& batch : *batches_shared) {
             if (batch.verts.empty()) continue;
 
             if (batch.albedo) {
@@ -1008,14 +1036,16 @@ void Renderer2D::push_shadow_caster_vertex(float x, float y) {
     shadow_caster_vertices_.push_back({x, y});
 }
 
-std::vector<Renderer2D::LitBatch>::iterator Renderer2D::find_lit_batch(ITexture* albedo, ITexture* normal) {
-    for (auto it = lit_batches_.begin(); it != lit_batches_.end(); ++it) {
-        if (it->albedo == albedo && it->normal == normal) {
-            return it;
-        }
+Renderer2D::LitBatch* Renderer2D::find_lit_batch(ITexture* albedo, ITexture* normal) {
+    LitBatchKey key{albedo, normal};
+    auto it = lit_batches_.find(key);
+    if (it == lit_batches_.end()) {
+        LitBatch batch;
+        batch.albedo = albedo;
+        batch.normal = normal;
+        it = lit_batches_.emplace(key, std::move(batch)).first;
     }
-    lit_batches_.push_back({albedo, normal, {}});
-    return std::prev(lit_batches_.end());
+    return &it->second;
 }
 
 void Renderer2D::flush_batches() {

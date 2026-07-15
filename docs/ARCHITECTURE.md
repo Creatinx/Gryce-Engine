@@ -42,8 +42,24 @@ Gryce-Engine/
 ├── docs/                   # 文档
 ├── editor/                 # 编辑器入口
 ├── examples/               # 示例游戏项目
-│   ├── 3dtest/             # 3D 演示项目
-│   └── gt2dDemo/           # 2D 演示项目
+│   ├── common/             # 示例公共框架（app_launcher、debug_panel）
+│   ├── 3dtest/             # 3D 综合演示项目
+│   ├── gt2dDemo/           # 2D 综合演示项目
+│   ├── demo_sprite2d/      # 2D Sprite2D 演示
+│   ├── demo_shapes2d/      # 2D 形状演示
+│   ├── demo_lighting2d/    # 2D 光照演示
+│   ├── demo_tilemap2d/     # 2D 瓦片地图演示
+│   ├── demo_particles2d/   # 2D 粒子演示
+│   ├── demo_physics2d/     # 2D 物理演示
+│   ├── demo_character2d/   # 2D 角色控制器演示
+│   ├── demo_joints2d/      # 2D 关节演示
+│   ├── demo_physics3d/     # 3D 物理演示
+│   ├── demo_character3d/   # 3D 角色控制器演示
+│   ├── demo_joints3d/      # 3D 关节演示
+│   ├── demo_fracture/      # 3D 碎裂演示
+│   ├── demo_lighting3d/    # 3D 光照演示
+│   ├── demo_audio3d/       # 3D 音频演示
+│   └── demo_scene_serializer/ # 场景序列化演示
 ├── tests/                  # 单元测试
 └── third_party/            # ImGui、nlohmann/json、stb、miniaudio
 ```
@@ -85,8 +101,24 @@ MinGW 下构建后自动复制：
 |---|---|---|
 | `gryce_core` | 静态库 | 引擎核心（默认，可通过 `GRYCE_BUILD_SHARED=ON` 切换为动态库） |
 | `gryce_editor` | 可执行文件 | 编辑器 |
-| `3dtest` | 可执行文件 | 3D 演示 |
-| `gt2dDemo` | 可执行文件 | 2D 演示 |
+| `examples_common` | 静态库 | 示例公共框架（app_launcher、debug_panel） |
+| `3dtest` | 可执行文件 | 3D 综合演示（物理、碎裂、光照、关节、角色控制器、场景保存） |
+| `gt2dDemo` | 可执行文件 | 2D 综合演示（平台跑酷、光照、粒子、瓦片地图、关节桥、形状） |
+| `demo_sprite2d` | 可执行文件 | 2D Sprite2D 演示 |
+| `demo_shapes2d` | 可执行文件 | 2D 形状演示 |
+| `demo_lighting2d` | 可执行文件 | 2D 光照演示 |
+| `demo_tilemap2d` | 可执行文件 | 2D 瓦片地图演示 |
+| `demo_particles2d` | 可执行文件 | 2D 粒子演示 |
+| `demo_physics2d` | 可执行文件 | 2D 物理演示 |
+| `demo_character2d` | 可执行文件 | 2D 角色控制器演示 |
+| `demo_joints2d` | 可执行文件 | 2D 关节演示 |
+| `demo_physics3d` | 可执行文件 | 3D 物理演示 |
+| `demo_character3d` | 可执行文件 | 3D 角色控制器演示 |
+| `demo_joints3d` | 可执行文件 | 3D 关节演示 |
+| `demo_fracture` | 可执行文件 | 3D 碎裂演示 |
+| `demo_lighting3d` | 可执行文件 | 3D 光照演示 |
+| `demo_audio3d` | 可执行文件 | 3D 音频演示 |
+| `demo_scene_serializer` | 可执行文件 | 场景序列化演示 |
 | `gryce_tests` | 可执行文件 | 单元测试（GTest） |
 
 ---
@@ -194,8 +226,8 @@ World::update(dt)
 
 | 系统 | 说明 |
 |---|---|
-| `PhysicsSystem` | 3D 物理积分、碰撞检测、睡眠。 |
-| `PhysicsSystem2D` | 2D 物理。 |
+| `PhysicsSystem3D` | 3D 物理积分、碰撞检测、睡眠、角色控制器、关节。 |
+| `PhysicsSystem2D` | 2D 物理、碰撞检测、角色控制器、关节。 |
 | `FractureSystem` | 检测 `DestructibleBody` 冲量并生成碎片。 |
 | `RenderSystem2D` | 收集 2D 组件并提交到渲染器。 |
 | `RenderSystem3D` | 收集 3D `MeshRenderer` 并提交。 |
@@ -292,7 +324,10 @@ for (int i = 0; i < 10; ++i) {
 |---|---|
 | `RigidBody` | 动态刚体：mass、velocity、acceleration、restitution、friction、damping。 |
 | `StaticBody` | 静态碰撞体。 |
-| `BoxCollider` / `SphereCollider` / `PlaneCollider` | 碰撞形状。 |
+| `BoxCollider` / `SphereCollider` / `PlaneCollider` | 3D 碰撞形状。 |
+| `RigidBody2D` / `StaticBody2D` / `BoxCollider2D` / `CircleCollider2D` | 2D 刚体与碰撞形状。 |
+| `CharacterController3D` / `CharacterController2D` | 平台角色控制器：移动、跳跃、坡度限制、台阶抬升。 |
+| `Joint3D` / `Joint2D` | 关节组件：Fixed、Hinge、Distance、Spring。 |
 | `PhysicalMaterial` | 材质预设（Metal、Concrete、Wood 等）：softness、drag、density。 |
 | `DestructibleBody` | 碎裂配置：threshold、impulse、segments、max_fragments、lifetime。 |
 | `FragmentBody` | 碎片生命周期管理。 |
@@ -334,6 +369,7 @@ for (int i = 0; i < 10; ++i) {
 - 仍缺少连续碰撞检测（CCD）配置，高速小物体可能穿透。
 - 通用 mesh 碎裂（Voronoi / 有限元）未实现，当前只支持立方体网格切分。
 - 物理材质仅通过 `PhysicalMaterial` 组件映射到摩擦/弹性/密度，更复杂的表面属性尚未支持。
+- 关节系统目前仅支持 Box2D/Jolt 原生类型（Fixed/Hinge/Distance/Spring），部分后端约束类型尚未完全映射。
 
 ### 8.3 物理后端抽象
 

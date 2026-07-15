@@ -25,14 +25,32 @@ Gryce-Engine/                  ← 引擎仓库根（不是 res:/）
 ├── core/                      ← 引擎核心源码
 ├── editor/                    ← 编辑器
 ├── examples/                  ← 示例游戏项目集合
-│   ├── 3dtest/                ← 一个完整的游戏项目
+│   ├── common/                ← 示例公共框架（app_launcher、debug_panel）
+│   ├── 3dtest/                ← 3D 综合演示项目
 │   │   ├── scenes/main.gesc   ← res:/scenes/main.gesc
 │   │   ├── models/
+│   │   ├── shaders/
 │   │   └── project.gryce      ← 项目配置文件
-│   └── gt2dDemo/              ← 另一个完整的游戏项目
-│       ├── scenes/main.gesc
-│       ├── tilesets/
-│       └── project.gryce
+│   ├── gt2dDemo/              ← 2D 综合演示项目
+│   │   ├── scenes/main.gesc
+│   │   ├── tilesets/
+│   │   ├── textures/
+│   │   └── project.gryce
+│   ├── demo_sprite2d/         ← 独立功能演示（2D）
+│   ├── demo_shapes2d/
+│   ├── demo_lighting2d/
+│   ├── demo_tilemap2d/
+│   ├── demo_particles2d/
+│   ├── demo_physics2d/
+│   ├── demo_character2d/
+│   ├── demo_joints2d/
+│   ├── demo_physics3d/        ← 独立功能演示（3D）
+│   ├── demo_character3d/
+│   ├── demo_joints3d/
+│   ├── demo_fracture/
+│   ├── demo_lighting3d/
+│   ├── demo_audio3d/
+│   └── demo_scene_serializer/
 ├── docs/
 └── ...
 ```

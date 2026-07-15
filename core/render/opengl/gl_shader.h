@@ -2,6 +2,7 @@
 
 #include <string>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include "render/shader.h"
@@ -54,7 +55,11 @@ private:
     mutable int pp_mode_ = 1;
     mutable bool pp_dirty_ = true;
 
+    // Uniform 位置缓存：避免每帧重复查询 driver。
+    mutable std::unordered_map<std::string, int> uniform_cache_;
+
     int get_uniform_location(const char* name) const;
+    int get_uniform_location_cached(const char* name) const;
     void apply_post_process_params() const;
 };
 

@@ -50,7 +50,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 10,
-          "text": "FPS: 0.0",
+          "text": "FPS: 2607.8",
           "type": "Label"
         }
       ],
@@ -286,10 +286,10 @@
           0.0
         ],
         "rotation": [
-          -0.258819043636322,
-          -1.1313339598473249e-08,
-          0.9659258127212524,
-          -4.222195926217864e-08
+          -0.00784794706851244,
+          0.0003014654212165624,
+          0.9992322325706482,
+          0.038383789360523224
         ],
         "scale": [
           1.0,
@@ -450,12 +450,12 @@
           "type": "MeshRenderer"
         },
         {
-          "density": 0.699999988079071,
-          "drag_coefficient": 0.18000000715255737,
+          "density": 2.299999952316284,
+          "drag_coefficient": 0.25,
           "enabled": true,
-          "friction": 0.550000011920929,
-          "preset_name": "Wood",
-          "softness": 0.25,
+          "friction": 0.5,
+          "preset_name": "BalsaWood",
+          "softness": 1.0,
           "type": "PhysicalMaterial"
         },
         {
@@ -471,7 +471,7 @@
             0.0
           ],
           "enabled": true,
-          "friction": 0.550000011920929,
+          "friction": 0.5,
           "inertia_tensor": [
             1.0,
             0.0,
@@ -491,9 +491,9 @@
             1.0
           ],
           "is_kinematic": false,
-          "linear_damping": 0.18000000715255737,
-          "mass": 44.80000305175781,
-          "restitution": 0.75,
+          "linear_damping": 0.25,
+          "mass": 147.20001220703125,
+          "restitution": 0.0,
           "type": "RigidBody",
           "use_gravity": true,
           "velocity": [

@@ -1,0 +1,14 @@
+{
+  "name": "demo_lighting3d",
+  "version": "0.1.0",
+  "engine_version": ">=0.1.0",
+  "entry_scene": "res:/scenes/main.gesc",
+  "physics": {
+    "backend_3d": "jolt"
+  },
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "title": "Gryce Engine - demo_lighting3d"
+  }
+}

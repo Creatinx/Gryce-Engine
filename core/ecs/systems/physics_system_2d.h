@@ -2,7 +2,9 @@
 
 #include "ecs/system.h"
 #include "math/math.h"
+#include "physics/physics_world_2d.h"
 #include <memory>
+#include <optional>
 
 namespace gryce_engine::ecs {
 
@@ -20,6 +22,11 @@ public:
     Phase phase() const override { return Phase::Update; }
 
     void on_update(scene::Scene& scene, float dt) override;
+
+    // 射线检测：从 origin 沿 direction 发射射线，最大距离 max_distance（单位：米）
+    std::optional<physics::IPhysicsWorld2D::RaycastHit2D> raycast(const math::Vector2f& origin,
+                                                                   const math::Vector2f& direction,
+                                                                   float max_distance) const;
 
     // 全局重力（默认 -9.81 m/s^2，沿 Y 轴向下）
     math::Vector2f gravity = math::Vector2f(0.0f, -9.81f);

@@ -1,0 +1,14 @@
+{
+  "name": "demo_sprite2d",
+  "version": "0.1.0",
+  "engine_version": ">=0.1.0",
+  "entry_scene": "res:/scenes/main.gesc",
+  "physics": {
+    "backend_2d": "box2d"
+  },
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "title": "Gryce Demo - Sprite2D"
+  }
+}

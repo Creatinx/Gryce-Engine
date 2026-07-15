@@ -79,10 +79,10 @@
 | TileMap | 已实现 |
 | ParticleEmitter2D | 已实现 |
 | ParallaxBackground | 已实现 |
-| 2D Point Light、Directional Light、Spot Light | 未实现 |
+| 2D Point Light、Directional Light、Spot Light | 已实现 |
 | 2D 法线贴图 | 未实现 |
-| 2D 阴影/遮挡 | 未实现 |
-| 2D 后处理辉光（Bloom） | 未实现 |
+| 2D 阴影/遮挡 | 已实现 |
+| 2D 后处理辉光（Bloom） | 已实现（OpenGL） |
 
 ### 2.6 材质系统
 
@@ -131,7 +131,9 @@
 | Camera | 已实现 |
 | Light（Directional/Point/Spot） | 已实现 |
 | RigidBody、StaticBody、BoxCollider（3D） | 已实现 |
-| RigidBody2D、StaticBody2D、BoxCollider2D | 已实现 |
+| RigidBody2D、StaticBody2D、BoxCollider2D、CircleCollider2D | 已实现 |
+| CharacterController3D、CharacterController2D | 已实现 |
+| Joint3D、Joint2D | 已实现 |
 | PhysicalMaterial | 已实现 |
 | DestructibleBody、FragmentBody | 已实现 |
 | 2D 渲染组件（ColorRect/Label/Sprite2D/Circle/Polygon/TileMap/ParticleEmitter2D/ParallaxBackground） | 已实现 |
@@ -207,11 +209,11 @@
 | 重力、阻尼、弹力、摩擦力 | 已实现 |
 | 刚体睡眠机制 | 已实现 |
 | 碎裂系统（DestructibleBody/FragmentBody） | 已实现 |
-| 稳定的刚体旋转/角速度 | 未实现 |
+| 稳定的刚体旋转/角速度 | 已实现 |
 | 连续碰撞检测（CCD） | 未实现 |
-| 射线检测（Physics.Raycast） | 未实现 |
-| 角色控制器 | 未实现 |
-| 关节系统（Hinge/Fixed/Spring/Distance） | 未实现 |
+| 射线检测（Physics.Raycast） | 已实现 |
+| 角色控制器 | 已实现（`CharacterController3D`：移动、跳跃、坡度限制、台阶抬升） |
+| 关节系统（Hinge/Fixed/Spring/Distance） | 已实现（`Joint3D`，基于 Jolt） |
 | Jolt Physics 集成 | 已实现（`GRYCE_HAS_JOLT`），默认优先，不可用时 fallback builtin 并告警 |
 
 ### 5.2 2D 物理
@@ -220,9 +222,9 @@
 |---|---|
 | 基础 AABB 碰撞 | 已实现 |
 | 2D 刚体/静态体/碰撞盒 | 已实现 |
-| 2D 圆形/多边形碰撞体 | 未实现 |
-| 2D 关节与平台碰撞 | 未实现 |
-| 2D 角色控制器 | 未实现 |
+| 2D 圆形/多边形碰撞体 | 已实现（`CircleCollider2D`） |
+| 2D 关节与平台碰撞 | 已实现（`Joint2D`：Distance/Spring，基于 Box2D） |
+| 2D 角色控制器 | 已实现（`CharacterController2D`：移动、跳跃、坡度限制、台阶抬升） |
 | Box2D 集成 | 已实现（`GRYCE_HAS_BOX2D=ON`），默认优先 2D 后端 |
 
 ### 5.3 碎裂与破坏
@@ -300,7 +302,7 @@
 
 ## 10. 演示程序
 
-### 10.1 3D 演示（3dtest）
+### 10.1 3D 综合演示（3dtest）
 
 | 功能 | 状态 |
 |---|---|
@@ -309,23 +311,49 @@
 | 重力枪（鼠标左键拖拽） | 已实现 |
 | 场景重置（R 键） | 已实现 |
 | 材质预设与 ImGui 材质面板 | 已实现 |
-| 更多可交互物体 | 未实现 |
-| 碎裂后自动重置 | 未实现 |
-| 导出为独立关卡 `.gesc` | 未实现 |
+| 3D 碎裂（F2） | 已实现 |
+| 场景保存（F3） | 已实现 |
+| Hinge 关节链 | 已实现 |
+| 角色控制器（DemoCharacter，方向键移动，右 Shift 跳跃） | 已实现 |
+| 音频源/监听器 | 已实现 |
 
-### 10.2 2D 演示（gt2dDemo）
+### 10.2 2D 综合演示（gt2dDemo）
 
 | 功能 | 状态 |
 |---|---|
 | 平台跑酷基础 | 已实现 |
-| 完整关卡（平台、坑、敌人、金币、终点） | 未实现 |
-| 玩家角色（移动、跳跃、下蹲、受击、死亡、重生） | 未实现 |
-| 敌人 AI（巡逻、追击、踩踏死亡） | 未实现 |
-| 瓦片地图编辑器支持 | 未实现 |
-| 2D 光照 | 未实现 |
-| 音效 | 未实现 |
-| UI（主菜单、HUD、暂停菜单、游戏结束） | 未实现 |
-| 相机跟随与平滑插值 | 未实现 |
+| 完整关卡（平台、坑、敌人、金币） | 已实现 |
+| 玩家角色（移动、跳跃、射击、受击、死亡、重生） | 已实现 |
+| 敌人 AI（巡逻、踩踏死亡） | 已实现 |
+| 瓦片地图（碰撞、光照、阴影） | 已实现 |
+| 2D 光照（环境光、方向光、聚光灯、点光源） | 已实现 |
+| 粒子特效（跳跃尘土、命中爆炸） | 已实现 |
+| 音效（跳跃、金币、踩踏、受击） | 已实现 |
+| UI（分数、金币、生命、FPS、提示） | 已实现 |
+| 相机跟随与平滑插值 | 已实现 |
+| 2D 形状展示（矩形、圆、三角、六边形） | 已实现 |
+| DistanceJoint 吊桥 | 已实现 |
+| 重力预设切换（8 大行星） | 已实现 |
+
+### 10.3 独立功能演示（examples/）
+
+| 演示 | 覆盖功能 | 状态 |
+|---|---|---|
+| `demo_sprite2d` | Sprite2D 贴图/纯色精灵 | 已实现 |
+| `demo_shapes2d` | Circle、Polygon 形状 | 已实现 |
+| `demo_lighting2d` | 2D 点光源 | 已实现 |
+| `demo_tilemap2d` | 程序化瓦片地图 | 已实现 |
+| `demo_particles2d` | 粒子发射器、爆发模式 | 已实现 |
+| `demo_physics2d` | 2D 刚体、碰撞、堆叠 | 已实现 |
+| `demo_character2d` | 2D 角色控制器 | 已实现 |
+| `demo_joints2d` | 2D 距离关节 | 已实现 |
+| `demo_physics3d` | 3D 刚体、球体、发射 | 已实现 |
+| `demo_character3d` | 3D 角色控制器 | 已实现 |
+| `demo_joints3d` | 3D Hinge 关节链 | 已实现 |
+| `demo_fracture` | 可破坏体碎裂 | 已实现 |
+| `demo_lighting3d` | 3D 方向光、点光源 | 已实现 |
+| `demo_audio3d` | 3D 空间音频 | 已实现 |
+| `demo_scene_serializer` | 场景保存/加载 | 已实现 |
 
 ---
 

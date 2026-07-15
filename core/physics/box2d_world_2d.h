@@ -61,6 +61,9 @@ public:
 
     std::optional<RaycastHit2D> raycast(const math::Vector2f& origin, const math::Vector2f& direction, float max_distance) const override;
 
+    JointHandle create_joint(const JointDesc2D& desc) override;
+    void destroy_joint(JointHandle handle) override;
+
     const char* backend_name() const override { return "Box2D"; }
 
 private:
@@ -75,19 +78,28 @@ private:
         b2ShapeId id = b2_nullShapeId;
         bool used = false;
     };
+    struct JointSlot {
+        b2JointId id = b2_nullJointId;
+        bool used = false;
+    };
 
     std::vector<BodySlot> bodies_;
     std::vector<ShapeSlot> shapes_;
+    std::vector<JointSlot> joints_;
     std::vector<uint32_t> body_free_list_;
     std::vector<uint32_t> shape_free_list_;
+    std::vector<uint32_t> joint_free_list_;
 
     uint32_t alloc_body_slot();
     uint32_t alloc_shape_slot();
+    uint32_t alloc_joint_slot();
     void free_body_slot(uint32_t index);
     void free_shape_slot(uint32_t index);
+    void free_joint_slot(uint32_t index);
 
     b2BodyId get_body_id(BodyHandle handle) const;
     b2ShapeId get_shape_id(ShapeHandle handle) const;
+    b2JointId get_joint_id(JointHandle handle) const;
 };
 
 } // namespace gryce_engine::physics

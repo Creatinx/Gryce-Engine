@@ -10,6 +10,8 @@
 #include "components/static_body_2d.h"
 #include "components/box_collider_2d.h"
 #include "components/circle_collider_2d.h"
+#include "components/character_controller_2d.h"
+#include "components/joint_2d.h"
 #include "components/transform.h"
 #include "ecs/query.h"
 #include "physics/physics_factory.h"
@@ -75,7 +77,15 @@ struct PhysicsSystem2D::Impl {
         bool seen_this_frame = false;
     };
 
+    struct JointSlot {
+        physics::JointHandle handle = physics::k_invalid_joint;
+        scene::UUID body_a_uuid;
+        scene::UUID body_b_uuid;
+        bool seen_this_frame = false;
+    };
+
     std::unordered_map<scene::UUID, Slot> slots;
+    std::unordered_map<scene::UUID, JointSlot> joints;
     bool initialized = false;
     bool create_failed = false;
 
@@ -253,7 +263,10 @@ struct PhysicsSystem2D::Impl {
 
         auto* rb = entity->get_component<components::RigidBody2D>();
         if (rb) {
-            world->set_linear_velocity(slot.body, rb->velocity);
+            auto* cc = entity->get_component<components::CharacterController2D>();
+            if (!cc) {
+                world->set_linear_velocity(slot.body, rb->velocity);
+            }
             world->set_gravity_scale(slot.body, rb->use_gravity ? 1.0f : 0.0f);
             world->wake_up(slot.body);
         }
@@ -262,6 +275,136 @@ struct PhysicsSystem2D::Impl {
             create_shapes(slot);
             slot.last_scale = math::Vector2f(t->scale.x, t->scale.y);
         }
+    }
+
+    struct GroundInfo2D {
+        bool hit = false;
+        math::Vector2f normal = math::Vector2f(0.0f, 1.0f);
+        float distance = 0.0f;
+    };
+
+    GroundInfo2D check_ground_2d(const math::Vector2f& pos, const components::CharacterController2D* cc) const {
+        GroundInfo2D best;
+        math::Vector2f down(0.0f, -1.0f);
+        math::Vector2f base = pos + cc->ground_check_offset;
+        float span = cc->ground_check_span * 0.5f;
+
+        math::Vector2f origins[3] = {
+            base + math::Vector2f(-span, 0.0f),
+            base,
+            base + math::Vector2f(span, 0.0f)
+        };
+
+        for (const auto& origin : origins) {
+            auto hit = world->raycast(origin, down, cc->ground_check_distance);
+            if (hit.has_value()) {
+                float dist = hit->fraction * cc->ground_check_distance;
+                // 取最低命中点（最大距离），避免把台阶顶当作地面
+                if (!best.hit || dist > best.distance) {
+                    best.hit = true;
+                    best.normal = hit->normal;
+                    best.distance = dist;
+                }
+            }
+        }
+        return best;
+    }
+
+    void apply_character_controller(Slot& slot, float dt) {
+        if (!world || slot.body == physics::k_invalid_body) return;
+        scene::Entity* entity = slot.entity;
+        if (!entity) return;
+        auto* rb = entity->get_component<components::RigidBody2D>();
+        auto* cc = entity->get_component<components::CharacterController2D>();
+        if (!rb || !cc) return;
+
+        if (cc->fixed_rotation) {
+            world->set_fixed_rotation(slot.body, true);
+        }
+
+        auto* t = entity->transform();
+        math::Vector2f pos = t ? math::Vector2f(t->position.x, t->position.y) : math::Vector2f::zero();
+
+        // 1. 多射线接地检测
+        GroundInfo2D ground = check_ground_2d(pos, cc);
+        bool grounded_now = ground.hit;
+        cc->is_grounded = cc->is_grounded || grounded_now;
+        if (grounded_now) {
+            cc->ground_normal = ground.normal;
+        }
+
+        // 2. 输入目标速度
+        math::Vector2f target_vel = math::Vector2f::zero();
+        if (cc->move_input.length_sq() > 1e-6f) {
+            target_vel = cc->move_input.normalized() * cc->speed;
+        }
+
+        // 3. 坡度处理：投影到地面切线，陡坡限制向上移动
+        if (grounded_now) {
+            float normal_y = math::clamp(ground.normal.y, -1.0f, 1.0f);
+            float slope_limit_cos = std::cos(cc->slope_limit_degrees * 3.14159265f / 180.0f);
+            if (normal_y < slope_limit_cos) {
+                // 陡坡：禁止向上分量
+                if (target_vel.y > 0.0f) target_vel.y = 0.0f;
+            } else {
+                // 投影到坡面切线
+                math::Vector2f tangent(-ground.normal.y, ground.normal.x);
+                if (tangent.length_sq() < 1e-6f) tangent = math::Vector2f(1.0f, 0.0f);
+                tangent = tangent.normalized();
+                float proj = target_vel.dot(tangent);
+                target_vel = tangent * proj;
+            }
+        }
+
+        // 4. 台阶：从角色前方向下探测地面高度，若出现低矮台阶则抬升角色
+        if (grounded_now && target_vel.length_sq() > 1e-6f && cc->step_height > 0.0f) {
+            math::Vector2f dir = target_vel.normalized();
+            math::Vector2f base = pos + cc->ground_check_offset;
+            float current_ground_y = base.y - ground.distance;
+
+            // 在角色前方（略超碰撞体边缘）向下探测，找到前方地面/台阶顶高度
+            float forward_offset = cc->ground_check_span * 0.5f + 0.52f;
+            math::Vector2f probe_origin = base + dir * forward_offset;
+            probe_origin.y += cc->step_height + 0.02f;
+            auto step_hit = world->raycast(probe_origin, math::Vector2f(0.0f, -1.0f), cc->step_height * 4.0f);
+            if (step_hit.has_value()) {
+                float height_delta = step_hit->point.y - current_ground_y;
+                if (height_delta > 0.01f && height_delta <= cc->step_height) {
+                    // 检查头顶到新位置是否通畅
+                    math::Vector2f head_origin = base + math::Vector2f(0.0f, height_delta + 0.1f);
+                    auto head_hit = world->raycast(head_origin, dir, forward_offset);
+                    if (!head_hit.has_value()) {
+                        math::Vector2f new_pos = pos + dir * 0.05f + math::Vector2f(0.0f, height_delta + 0.02f);
+                        t->position.x = new_pos.x;
+                        t->position.y = new_pos.y;
+                        world->set_transform(slot.body, new_pos, quat_to_z(t->rotation));
+                        slot.last_position = new_pos;
+                    }
+                }
+            }
+        }
+
+        // 5. 推撞保留：无输入时防下滑，有输入时向目标速度混合
+        math::Vector2f current_vel = rb->velocity;
+        if (cc->move_input.length_sq() < 1e-6f && grounded_now) {
+            if (current_vel.length() < 0.2f) {
+                target_vel = math::Vector2f::zero();
+            } else {
+                target_vel = current_vel * std::max(0.0f, 1.0f - dt * cc->push_recovery_speed);
+            }
+        } else {
+            float blend = math::clamp(dt * cc->push_recovery_speed, 0.0f, 1.0f);
+            target_vel = current_vel.lerp(target_vel, blend);
+        }
+
+        // 6. 跳跃
+        if (cc->jump_requested && grounded_now) {
+            target_vel.y = cc->jump_force;
+            cc->jump_requested = false;
+        }
+
+        rb->velocity = target_vel;
+        world->set_linear_velocity(slot.body, target_vel);
     }
 
     void sync_from_backend(Slot& slot) {
@@ -298,6 +441,68 @@ struct PhysicsSystem2D::Impl {
         // acceleration 视为 m/s^2 的持续加速度，本帧每个物理子步都施加
         math::Vector2f force = rb->acceleration * rb->mass;
         world->apply_force_to_center(slot.body, force);
+    }
+
+    void update_joints(scene::Scene& scene) {
+        if (!world) return;
+
+        for (auto& [uuid, jslot] : joints) {
+            jslot.seen_this_frame = false;
+        }
+
+        scene.foreach([&](scene::Entity* entity) {
+            if (!entity || !entity->enabled) return;
+            auto* joint = entity->get_component<components::Joint2D>();
+            if (!joint) return;
+            if (!joint->body_a_uuid.is_valid() || !joint->body_b_uuid.is_valid()) return;
+
+            scene::Entity* body_a = scene.find_entity_by_uuid(joint->body_a_uuid);
+            scene::Entity* body_b = scene.find_entity_by_uuid(joint->body_b_uuid);
+            if (!body_a || !body_b) return;
+
+            auto it_a = slots.find(body_a->uuid());
+            auto it_b = slots.find(body_b->uuid());
+            if (it_a == slots.end() || it_b == slots.end()) return;
+
+            physics::BodyHandle handle_a = it_a->second.body;
+            physics::BodyHandle handle_b = it_b->second.body;
+            if (handle_a == physics::k_invalid_body || handle_b == physics::k_invalid_body) return;
+
+            const scene::UUID& uuid = entity->uuid();
+            auto it = joints.find(uuid);
+            if (it == joints.end()) {
+                physics::JointDesc2D desc;
+                desc.type = joint->joint_type;
+                desc.body_a = handle_a;
+                desc.body_b = handle_b;
+                desc.anchor_a = joint->anchor_a;
+                desc.anchor_b = joint->anchor_b;
+                desc.length = joint->length;
+                desc.frequency = joint->frequency;
+                desc.damping = joint->damping;
+                desc.collide_connected = joint->collide_connected;
+                physics::JointHandle jh = world->create_joint(desc);
+                if (jh != physics::k_invalid_joint) {
+                    JointSlot jslot;
+                    jslot.handle = jh;
+                    jslot.body_a_uuid = body_a->uuid();
+                    jslot.body_b_uuid = body_b->uuid();
+                    jslot.seen_this_frame = true;
+                    joints[uuid] = jslot;
+                }
+            } else {
+                it->second.seen_this_frame = true;
+            }
+        });
+
+        for (auto it = joints.begin(); it != joints.end();) {
+            if (!it->second.seen_this_frame) {
+                world->destroy_joint(it->second.handle);
+                it = joints.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 };
 
@@ -337,8 +542,15 @@ void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
             if (it == impl_->slots.end()) return;
         }
         it->second.seen_this_frame = true;
+        // 每帧开始时重置接地状态，随后各子步会累积“本帧是否曾接地”
+        if (auto* cc = entity->get_component<components::CharacterController2D>()) {
+            cc->is_grounded = false;
+        }
         impl_->sync_to_backend(it->second);
     });
+
+    // 创建/更新关节（必须在 body 创建之后、step 之前）
+    impl_->update_joints(scene);
 
     // Box2D 等外部后端要求每帧使用固定小步长，不能一次性 step 整个 dt
     impl_->time_accumulator += dt;
@@ -352,6 +564,13 @@ void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
     }
 
     for (int i = 0; i < steps; ++i) {
+        // 角色控制器每物理子步更新一次（台阶探测需要紧跟碰撞位置）
+        for (auto& [uuid, slot] : impl_->slots) {
+            if (slot.seen_this_frame) {
+                impl_->apply_character_controller(slot, fixed_dt);
+            }
+        }
+
         // 每步施加组件声明的加速度（作为持续力）
         for (auto& [uuid, slot] : impl_->slots) {
             if (slot.seen_this_frame) {
@@ -387,9 +606,18 @@ void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
         }
     });
 
-    // 清理已销毁的实体对应的 body
+    // 清理已销毁的实体对应的 body，同时级联销毁关联的关节
     for (auto it = impl_->slots.begin(); it != impl_->slots.end();) {
         if (!it->second.seen_this_frame) {
+            const scene::UUID& body_uuid = it->first;
+            for (auto jit = impl_->joints.begin(); jit != impl_->joints.end();) {
+                if (jit->second.body_a_uuid == body_uuid || jit->second.body_b_uuid == body_uuid) {
+                    world->destroy_joint(jit->second.handle);
+                    jit = impl_->joints.erase(jit);
+                } else {
+                    ++jit;
+                }
+            }
             if (it->second.body != physics::k_invalid_body) {
                 world->destroy_body(it->second.body);
             }
@@ -399,6 +627,12 @@ void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
             ++it;
         }
     }
+}
+
+std::optional<physics::IPhysicsWorld2D::RaycastHit2D> PhysicsSystem2D::raycast(
+    const math::Vector2f& origin, const math::Vector2f& direction, float max_distance) const {
+    if (!impl_->world) return std::nullopt;
+    return impl_->world->raycast(origin, direction, max_distance);
 }
 
 } // namespace gryce_engine::ecs

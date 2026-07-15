@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "render/render2d.h"
@@ -90,7 +91,13 @@ private:
         ITexture* normal = nullptr;
         std::vector<LitVertex2D> verts;
     };
-    std::vector<LitBatch>::iterator find_lit_batch(ITexture* albedo, ITexture* normal);
+    using LitBatchKey = std::pair<ITexture*, ITexture*>;
+    struct LitBatchKeyHash {
+        std::size_t operator()(const LitBatchKey& key) const noexcept {
+            return std::hash<void*>{}(key.first) ^ (std::hash<void*>{}(key.second) << 1);
+        }
+    };
+    LitBatch* find_lit_batch(ITexture* albedo, ITexture* normal);
 
     void flush_batches();
     void flush_sprite_batch();
@@ -201,7 +208,7 @@ private:
     std::vector<Vertex2D> text_vertices_;
     std::vector<Vertex2D> sprite_vertices_;
     ITexture* sprite_texture_ = nullptr;
-    std::vector<LitBatch> lit_batches_;
+    std::unordered_map<LitBatchKey, LitBatch, LitBatchKeyHash> lit_batches_;
     std::vector<ShadowCasterVertex> shadow_caster_vertices_;
 
     math::Matrix4f ortho_;

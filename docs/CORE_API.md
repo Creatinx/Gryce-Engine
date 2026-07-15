@@ -129,6 +129,10 @@ components/static_body_2d.h
 components/rigid_body_2d.h
 components/box_collider_2d.h
 components/circle_collider_2d.h
+components/character_controller_3d.h
+components/character_controller_2d.h
+components/joint_3d.h
+components/joint_2d.h
 components/2d/component_2d.h
 components/2d/basic_rect.h
 components/2d/shape.h
@@ -209,8 +213,7 @@ physics/physics_world_2d.h
 physics/physics_world_3d.h
 physics/physics_factory.h
 physics/box2d_world_2d.h
-physics/builtin_physics_world_2d.h
-physics/builtin_physics_world_3d.h
+physics/jolt_world_3d.h       # Jolt Physics 后端（GRYCE_HAS_JOLT）
 ```
 
 ### 工具
@@ -249,7 +252,7 @@ entity->transform()->position = math::Vector3f(1.0f, 2.0f, 3.0f);
 
 ```cpp
 #include "ecs/world.h"
-#include "ecs/systems/physics_system.h"
+#include "ecs/systems/physics_system_3d.h"
 #include "ecs/systems/render_system_3d.h"
 
 using namespace gryce_engine;
@@ -261,7 +264,7 @@ auto scene = scene::Scene::load("res:/scenes/main.gesc");
 world->attach_scene(std::move(scene));
 
 // 注册系统
-world->add_system<ecs::PhysicsSystem>();
+world->add_system<ecs::PhysicsSystem3D>();
 world->add_system<ecs::RenderSystem3D>();
 
 // 初始化

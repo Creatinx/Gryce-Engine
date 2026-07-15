@@ -61,6 +61,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     int channels_ = 4;
+    uint32_t mip_levels_ = 1;
     VkFormat format_ = VK_FORMAT_R8G8B8A8_UNORM;
     TextureFilter min_filter_ = TextureFilter::Linear;
     TextureFilter mag_filter_ = TextureFilter::Linear;

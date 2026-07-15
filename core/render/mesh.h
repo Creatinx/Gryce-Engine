@@ -22,11 +22,26 @@ struct VertexAttribute {
     VertexType type = VertexType::Float3;
     bool normalized = false;
     uint32_t offset = 0;
+
+    bool operator==(const VertexAttribute& other) const noexcept {
+        return location == other.location && type == other.type &&
+               normalized == other.normalized && offset == other.offset;
+    }
+    bool operator!=(const VertexAttribute& other) const noexcept {
+        return !(*this == other);
+    }
 };
 
 struct VertexLayout {
     uint32_t stride = 0;
     std::vector<VertexAttribute> attributes;
+
+    bool operator==(const VertexLayout& other) const noexcept {
+        return stride == other.stride && attributes == other.attributes;
+    }
+    bool operator!=(const VertexLayout& other) const noexcept {
+        return !(*this == other);
+    }
 };
 
 // ---------------------------------------------------------------------------

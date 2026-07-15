@@ -10,12 +10,16 @@
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Constraints/DistanceConstraint.h>
+#include <Jolt/Physics/Constraints/FixedConstraint.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
 
 #include "utils/glog/glog_lib.h"
 
@@ -153,6 +157,7 @@ void JoltPhysicsWorld3D::shutdown() {
     }
     bodies_.clear();
     shapes_.clear();
+    body_ptrs_.clear();
 
     physics_system_.reset();
     job_system_.reset();
@@ -235,8 +240,10 @@ BodyHandle JoltPhysicsWorld3D::create_body(const BodyDesc& desc) {
         bi->ActivateBody(id);
     }
 
+    BodyHandle handle = static_cast<BodyHandle>(id.GetIndexAndSequenceNumber());
     bodies_.push_back(id);
-    return static_cast<BodyHandle>(id.GetIndexAndSequenceNumber());
+    body_ptrs_[handle] = body;
+    return handle;
 }
 
 void JoltPhysicsWorld3D::destroy_body(BodyHandle handle) {
@@ -248,6 +255,7 @@ void JoltPhysicsWorld3D::destroy_body(BodyHandle handle) {
     bi->DestroyBody(id);
     auto it = std::find(bodies_.begin(), bodies_.end(), id);
     if (it != bodies_.end()) bodies_.erase(it);
+    body_ptrs_.erase(handle);
 }
 
 BodyType JoltPhysicsWorld3D::get_body_type(BodyHandle handle) const {
@@ -449,9 +457,15 @@ std::optional<RaycastHit> JoltPhysicsWorld3D::raycast(const math::Vector3f& orig
             RaycastHit result;
             result.body = static_cast<BodyHandle>(hit.mBodyID.GetIndexAndSequenceNumber());
             result.point = from_jolt(ray_origin + hit.mFraction * ray_dir);
-            // Jolt 的 RayCastResult 不直接返回法线，这里用零向量占位
-            result.normal = math::Vector3f::zero();
             result.distance = hit.mFraction * max_distance;
+
+            JPH::BodyLockRead lock(physics_system_->GetBodyLockInterface(), hit.mBodyID);
+            if (lock.Succeeded()) {
+                result.normal = from_jolt(lock.GetBody().GetWorldSpaceSurfaceNormal(
+                    hit.mSubShapeID2, ray.GetPointOnRay(hit.mFraction)));
+            } else {
+                result.normal = math::Vector3f::zero();
+            }
             return result;
         }
     }
@@ -467,6 +481,87 @@ void JoltPhysicsWorld3D::foreach_body(std::function<void(BodyHandle, const math:
                  from_jolt(bi->GetPosition(id)),
                  from_jolt(bi->GetRotation(id)));
     }
+}
+
+JointHandle JoltPhysicsWorld3D::create_joint(const JointDesc3D& desc) {
+    if (!initialized_ || !physics_system_) return k_invalid_joint;
+
+    auto it_a = body_ptrs_.find(desc.body_a);
+    auto it_b = body_ptrs_.find(desc.body_b);
+    if (it_a == body_ptrs_.end() || it_b == body_ptrs_.end()) return k_invalid_joint;
+    JPH::Body* body_a = it_a->second;
+    JPH::Body* body_b = it_b->second;
+    if (!body_a || !body_b) return k_invalid_joint;
+
+    // 将本地锚点转换到世界空间（Jolt 约束默认使用世界空间）
+    auto to_world = [](JPH::Body* body, const math::Vector3f& local) -> JPH::RVec3 {
+        JPH::Vec3 local_jolt = to_jolt(local);
+        return body->GetPosition() + body->GetRotation() * local_jolt;
+    };
+
+    JPH::Ref<JPH::Constraint> constraint;
+    switch (desc.type) {
+        case JointType::Distance: {
+            JPH::DistanceConstraintSettings settings;
+            settings.mPoint1 = to_world(body_a, desc.anchor_a);
+            settings.mPoint2 = to_world(body_b, desc.anchor_b);
+            settings.mMinDistance = desc.length;
+            settings.mMaxDistance = desc.length;
+            constraint = settings.Create(*body_a, *body_b);
+            break;
+        }
+        case JointType::Spring: {
+            JPH::DistanceConstraintSettings settings;
+            settings.mPoint1 = to_world(body_a, desc.anchor_a);
+            settings.mPoint2 = to_world(body_b, desc.anchor_b);
+            settings.mMinDistance = desc.length;
+            settings.mMaxDistance = desc.length;
+            settings.mLimitsSpringSettings.mMode = JPH::ESpringMode::FrequencyAndDamping;
+            settings.mLimitsSpringSettings.mFrequency = desc.frequency;
+            settings.mLimitsSpringSettings.mDamping = desc.damping;
+            constraint = settings.Create(*body_a, *body_b);
+            break;
+        }
+        case JointType::Fixed: {
+            JPH::FixedConstraintSettings settings;
+            settings.mAutoDetectPoint = true;
+            constraint = settings.Create(*body_a, *body_b);
+            break;
+        }
+        case JointType::Hinge: {
+            JPH::HingeConstraintSettings settings;
+            settings.mPoint1 = to_world(body_a, desc.anchor_a);
+            settings.mPoint2 = to_world(body_b, desc.anchor_b);
+            JPH::Vec3 hinge = to_jolt(desc.axis_a).Normalized();
+            JPH::Vec3 normal = hinge.Cross(JPH::Vec3::sAxisY());
+            if (normal.LengthSq() < 1e-6f) {
+                normal = hinge.Cross(JPH::Vec3::sAxisX());
+            }
+            normal = normal.Normalized();
+            settings.mHingeAxis1 = hinge;
+            settings.mHingeAxis2 = hinge;
+            settings.mNormalAxis1 = normal;
+            settings.mNormalAxis2 = normal;
+            constraint = settings.Create(*body_a, *body_b);
+            break;
+        }
+    }
+
+    if (!constraint) return k_invalid_joint;
+    physics_system_->AddConstraint(constraint);
+
+    JointHandle handle = static_cast<JointHandle>(joints_.size());
+    joints_.push_back(constraint);
+    return handle;
+}
+
+void JoltPhysicsWorld3D::destroy_joint(JointHandle handle) {
+    if (handle >= joints_.size()) return;
+    auto& c = joints_[handle];
+    if (c && physics_system_) {
+        physics_system_->RemoveConstraint(c);
+    }
+    c = nullptr;
 }
 
 } // namespace gryce_engine::physics

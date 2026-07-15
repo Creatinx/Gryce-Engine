@@ -8,6 +8,8 @@
 #include "components/static_body_2d.h"
 #include "components/box_collider_2d.h"
 #include "components/circle_collider_2d.h"
+#include "components/character_controller_2d.h"
+#include "components/joint_2d.h"
 #include "components/2d/tilemap.h"
 #include "ecs/systems/physics_system_2d.h"
 #include "scene/scene.h"
@@ -160,6 +162,221 @@ TEST(Physics2D, BoxRestsOnBox) {
 
     EXPECT_NEAR(box->transform()->position.y, 1.0f, 0.15f);
     EXPECT_LT(rb->velocity.length(), 0.1f);
+}
+
+TEST(Physics2D, RaycastHitsStaticBox) {
+    scene::Scene scene("test");
+
+    scene::Entity* ground = scene.create_entity("Ground");
+    ground->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    ground->add_component<components::StaticBody2D>();
+    auto* ground_col = ground->add_component<components::BoxCollider2D>();
+    ground_col->size = math::Vector2f(4.0f, 1.0f);
+
+    ecs::PhysicsSystem2D sys;
+    sys.on_update(scene, 0.01f);
+
+    auto hit = sys.raycast(math::Vector2f(0.0f, 2.0f), math::Vector2f(0.0f, -1.0f), 5.0f);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_NE(hit->body, physics::k_invalid_body);
+    EXPECT_NEAR(hit->point.y, 0.5f, 1e-3f);
+    EXPECT_NEAR(hit->normal.y, 1.0f, 1e-3f);
+}
+
+TEST(Physics2D, CharacterControllerMovesHorizontally) {
+    scene::Scene scene("test");
+
+    scene::Entity* ground = scene.create_entity("Ground");
+    ground->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    ground->add_component<components::StaticBody2D>();
+    auto* ground_col = ground->add_component<components::BoxCollider2D>();
+    ground_col->size = math::Vector2f(10.0f, 1.0f);
+
+    scene::Entity* player = scene.create_entity("Player");
+    player->transform()->position = math::Vector3f(0.0f, 2.0f, 0.0f);
+    player->add_component<components::RigidBody2D>();
+    player->add_component<components::BoxCollider2D>();
+    auto* cc = player->add_component<components::CharacterController2D>();
+    cc->speed = 4.0f;
+    cc->move_input = math::Vector2f(1.0f, 0.0f);
+
+    ecs::PhysicsSystem2D sys;
+    sys.max_steps_per_frame = 120;
+    sys.on_update(scene, 0.5f);
+
+    EXPECT_GT(player->transform()->position.x, 0.5f);
+    EXPECT_LT(player->transform()->position.y, 2.0f);
+}
+
+TEST(Physics2D, DistanceJointConstrainsBodies) {
+    scene::Scene scene("test");
+
+    scene::Entity* anchor = scene.create_entity("Anchor");
+    anchor->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    anchor->add_component<components::StaticBody2D>();
+    anchor->add_component<components::BoxCollider2D>();
+
+    scene::Entity* bob = scene.create_entity("Bob");
+    bob->transform()->position = math::Vector3f(2.0f, 0.0f, 0.0f);
+    bob->add_component<components::RigidBody2D>();
+    bob->add_component<components::BoxCollider2D>();
+
+    scene::Entity* joint_entity = scene.create_entity("Joint");
+    auto* joint = joint_entity->add_component<components::Joint2D>();
+    joint->body_a_uuid = anchor->uuid();
+    joint->body_b_uuid = bob->uuid();
+    joint->joint_type = physics::JointType::Distance;
+    joint->length = 1.5f;
+    joint->anchor_a = math::Vector2f::zero();
+    joint->anchor_b = math::Vector2f::zero();
+
+    ecs::PhysicsSystem2D sys;
+    sys.max_steps_per_frame = 240;
+    sys.on_update(scene, 2.0f);
+
+    math::Vector2f anchor_pos(anchor->transform()->position.x, anchor->transform()->position.y);
+    math::Vector2f bob_pos(bob->transform()->position.x, bob->transform()->position.y);
+    float dist = (bob_pos - anchor_pos).length();
+    EXPECT_NEAR(dist, 1.5f, 0.05f);
+}
+
+TEST(Physics2D, CharacterControllerJumpsWhenGrounded) {
+    scene::Scene scene("test");
+
+    scene::Entity* ground = scene.create_entity("Ground");
+    ground->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    ground->add_component<components::StaticBody2D>();
+    auto* ground_col = ground->add_component<components::BoxCollider2D>();
+    ground_col->size = math::Vector2f(10.0f, 1.0f);
+
+    scene::Entity* player = scene.create_entity("Player");
+    // 盒子尺寸 1x1，中心在 0.5 上方时底部刚好接触地面
+    player->transform()->position = math::Vector3f(0.0f, 1.0f, 0.0f);
+    player->add_component<components::RigidBody2D>();
+    auto* box = player->add_component<components::BoxCollider2D>();
+    box->size = math::Vector2f(1.0f, 1.0f);
+    auto* cc = player->add_component<components::CharacterController2D>();
+    cc->ground_check_distance = 0.55f;
+    cc->ground_check_offset = math::Vector2f(0.0f, 0.0f);
+    cc->jump_force = 6.0f;
+    cc->jump_requested = true;
+
+    ecs::PhysicsSystem2D sys;
+    sys.max_steps_per_frame = 120;
+    sys.on_update(scene, 0.1f);
+
+    EXPECT_TRUE(cc->is_grounded);
+    auto* rb = player->get_component<components::RigidBody2D>();
+    EXPECT_GT(rb->velocity.y, 1.0f);
+}
+
+TEST(Physics2D, RaycastMissReturnsNullopt) {
+    scene::Scene scene("test");
+
+    scene::Entity* ground = scene.create_entity("Ground");
+    ground->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    ground->add_component<components::StaticBody2D>();
+    auto* ground_col = ground->add_component<components::BoxCollider2D>();
+    ground_col->size = math::Vector2f(4.0f, 1.0f);
+
+    ecs::PhysicsSystem2D sys;
+    sys.on_update(scene, 0.01f);
+
+    auto hit = sys.raycast(math::Vector2f(10.0f, 2.0f), math::Vector2f(0.0f, -1.0f), 5.0f);
+    EXPECT_FALSE(hit.has_value());
+}
+
+TEST(Physics2D, CharacterControllerPreservesPushVelocity) {
+    scene::Scene scene("test");
+
+    scene::Entity* ground = scene.create_entity("Ground");
+    ground->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    ground->add_component<components::StaticBody2D>();
+    auto* ground_col = ground->add_component<components::BoxCollider2D>();
+    ground_col->size = math::Vector2f(10.0f, 1.0f);
+
+    scene::Entity* player = scene.create_entity("Player");
+    player->transform()->position = math::Vector3f(0.0f, 1.0f, 0.0f);
+    player->add_component<components::RigidBody2D>();
+    player->add_component<components::BoxCollider2D>();
+    auto* cc = player->add_component<components::CharacterController2D>();
+    cc->ground_check_distance = 0.55f;
+    cc->push_recovery_speed = 2.0f; // 较慢恢复，便于观察保留效果
+
+    ecs::PhysicsSystem2D sys;
+    sys.max_steps_per_frame = 120;
+    sys.on_update(scene, 0.05f); // 先落地并接地
+
+    auto* rb = player->get_component<components::RigidBody2D>();
+    rb->velocity = math::Vector2f(3.0f, 0.0f);
+    sys.on_update(scene, 0.1f);
+
+    // 无输入时，推撞速度应衰减而非立即清零
+    EXPECT_GT(rb->velocity.x, 0.5f);
+}
+
+TEST(Physics2D, CharacterControllerStepsUpStair) {
+    scene::Scene scene("test");
+
+    scene::Entity* ground = scene.create_entity("Ground");
+    ground->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    ground->add_component<components::StaticBody2D>();
+    auto* ground_col = ground->add_component<components::BoxCollider2D>();
+    ground_col->size = math::Vector2f(10.0f, 1.0f);
+
+    scene::Entity* step = scene.create_entity("Step");
+    step->transform()->position = math::Vector3f(1.5f, 0.4f, 0.0f);
+    step->add_component<components::StaticBody2D>();
+    auto* step_col = step->add_component<components::BoxCollider2D>();
+    step_col->size = math::Vector2f(0.6f, 0.3f);
+
+    scene::Entity* player = scene.create_entity("Player");
+    player->transform()->position = math::Vector3f(0.0f, 1.0f, 0.0f);
+    player->add_component<components::RigidBody2D>();
+    player->add_component<components::BoxCollider2D>();
+    auto* cc = player->add_component<components::CharacterController2D>();
+    cc->speed = 3.0f;
+    cc->ground_check_distance = 0.55f;
+    cc->step_height = 0.35f;
+    cc->move_input = math::Vector2f(1.0f, 0.0f);
+
+    ecs::PhysicsSystem2D sys;
+    sys.max_steps_per_frame = 240;
+    sys.on_update(scene, 1.0f);
+
+    // 角色应越过台阶并到达 x > 1.0
+    EXPECT_GT(player->transform()->position.x, 1.0f);
+}
+
+TEST(Physics2D, JointDestroyedWhenBodyRemoved) {
+    scene::Scene scene("test");
+
+    scene::Entity* anchor = scene.create_entity("Anchor");
+    anchor->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    anchor->add_component<components::StaticBody2D>();
+    anchor->add_component<components::BoxCollider2D>();
+
+    scene::Entity* bob = scene.create_entity("Bob");
+    bob->transform()->position = math::Vector3f(2.0f, 0.0f, 0.0f);
+    bob->add_component<components::RigidBody2D>();
+    bob->add_component<components::BoxCollider2D>();
+
+    scene::Entity* joint_entity = scene.create_entity("Joint");
+    auto* joint = joint_entity->add_component<components::Joint2D>();
+    joint->body_a_uuid = anchor->uuid();
+    joint->body_b_uuid = bob->uuid();
+    joint->joint_type = physics::JointType::Distance;
+    joint->length = 1.5f;
+
+    ecs::PhysicsSystem2D sys;
+    sys.max_steps_per_frame = 120;
+    sys.on_update(scene, 0.1f); // 创建关节
+
+    // 销毁 Bob 实体
+    scene.destroy_entity(bob);
+    sys.on_update(scene, 0.1f); // 应级联销毁关节且不崩溃
+
+    SUCCEED();
 }
 
 TEST(Physics2D, TilemapOuterRingColliderAlignedWithTiles) {

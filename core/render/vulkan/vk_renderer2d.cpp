@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <vector>
 
 #ifdef _WIN32
@@ -774,6 +775,14 @@ bool VulkanRenderer2D::create_vertex_buffers() {
                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             return false;
         }
+
+        // 全屏后处理 mesh 是固定的，初始化时直接上传，避免每帧重复 upload。
+        FSVertex fs_verts[3] = {
+            {-1.0f, -1.0f, 0.0f, 0.0f},
+            { 3.0f, -1.0f, 2.0f, 0.0f},
+            {-1.0f,  3.0f, 0.0f, 2.0f}
+        };
+        fs_vertex_buffer_[i].upload(fs_verts, sizeof(fs_verts));
     }
     return true;
 }
@@ -1131,7 +1140,7 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     }
     screen_width_ = screen_width;
     screen_height_ = screen_height;
-    GLOG_INFO("VulkanRenderer2D::begin_frame screen={}x{} cam_center=({}, {}) zoom={}",
+    GLOG_DEBUG("VulkanRenderer2D::begin_frame screen={}x{} cam_center=({}, {}) zoom={}",
               screen_width_, screen_height_, camera_center_.x, camera_center_.y, camera_zoom_);
     ortho_ = math::Matrix4f::ortho(0.0f, screen_width, screen_height, 0.0f, -1.0f, 1.0f);
 
@@ -1356,27 +1365,25 @@ void VulkanRenderer2D::render_lit_sprites_forward(bool offscreen) {
         ubo.light_space_matrix = light_proj * light_view;
     }
 
-    auto batches_copy = std::make_shared<std::vector<LitBatch>>();
-    batches_copy->reserve(lit_batches_.size());
-    for (auto& batch : lit_batches_) {
-        batches_copy->push_back({batch.albedo, batch.normal, std::vector<LitVertex2D>(batch.verts)});
+    std::vector<LitBatch> batches_copy;
+    batches_copy.reserve(lit_batches_.size());
+    for (auto& kv : lit_batches_) {
+        batches_copy.push_back({kv.second.albedo, kv.second.normal, std::move(kv.second.verts)});
     }
     lit_batches_.clear();
 
-    math::Matrix4f view_proj = view_proj_;
-    auto ubo_copy = std::make_shared<LightUBO>(ubo);
-
     // 上传 UBO
-    ctx_->push_command([this, ubo_copy](IRenderBackend*) {
+    auto ubo_shared = std::make_shared<LightUBO>(std::move(ubo));
+    ctx_->push_command([this, ubo_shared](IRenderBackend*) {
         int frame_index = vk_swapchain_->current_frame_index();
         if (frame_index < 0 || frame_index >= static_cast<int>(light_ubo_.size())) return;
-        light_ubo_[frame_index].upload(ubo_copy.get(), sizeof(LightUBO));
+        light_ubo_[frame_index].upload(ubo_shared.get(), sizeof(LightUBO));
     });
 
     // 逐批次绘制
-    for (auto& batch : *batches_copy) {
+    for (auto& batch : batches_copy) {
         auto batch_shared = std::make_shared<LitBatch>(std::move(batch));
-        ctx_->push_command([this, batch_shared, lit_pipeline, view_proj, use_shadow](IRenderBackend*) {
+        ctx_->push_command([this, batch_shared, lit_pipeline, use_shadow](IRenderBackend*) {
             if (batch_shared->verts.empty()) return;
 
             int frame_index = vk_swapchain_->current_frame_index();
@@ -1420,7 +1427,7 @@ void VulkanRenderer2D::render_lit_sprites_forward(bool offscreen) {
 
             vkCmdPushConstants(cmd, lit_pipeline_layout_,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(math::Matrix4f), &view_proj);
+                               0, sizeof(math::Matrix4f), &view_proj_);
 
             VkDescriptorSet set = allocate_descriptor_set(lit_descriptor_layout_);
             if (set == VK_NULL_HANDLE) {
@@ -1509,12 +1516,6 @@ void VulkanRenderer2D::draw_fullscreen_pass(RHIFramebufferHandle fb,
         }
 
         VulkanBuffer* vertex_buffer = &fs_vertex_buffer_[frame_index];
-        FSVertex verts[3] = {
-            {-1.0f, -1.0f, 0.0f, 0.0f},
-            { 3.0f, -1.0f, 2.0f, 0.0f},
-            {-1.0f,  3.0f, 0.0f, 2.0f}
-        };
-        vertex_buffer->upload(verts, sizeof(verts));
 
         VkCommandBuffer cmd = vk_backend_->current_command_buffer();
         if (cmd == VK_NULL_HANDLE) return;
@@ -1536,9 +1537,9 @@ void VulkanRenderer2D::draw_fullscreen_pass(RHIFramebufferHandle fb,
         vk_backend_->bind_pipeline(cmd, pipeline);
         vk_backend_->set_dynamic_state_2d(cmd);
 
-        // 更新 descriptor image bindings
-        std::vector<VkDescriptorImageInfo> image_infos(bindings.size());
-        std::vector<VkWriteDescriptorSet> writes(bindings.size());
+        // 更新 descriptor image bindings（最多 2 个 binding：scene + bloom）
+        std::array<VkDescriptorImageInfo, 2> image_infos{};
+        std::array<VkWriteDescriptorSet, 2> writes{};
         for (size_t i = 0; i < bindings.size(); ++i) {
             ITexture* tex = ctx_->texture(bindings[i].first);
             auto* vk_tex = dynamic_cast<VulkanTexture*>(tex);
@@ -1557,8 +1558,8 @@ void VulkanRenderer2D::draw_fullscreen_pass(RHIFramebufferHandle fb,
             writes[i].descriptorCount = 1;
             writes[i].pImageInfo = &image_infos[i];
         }
-        if (!writes.empty()) {
-            vkUpdateDescriptorSets(vk_device_->device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        if (!bindings.empty()) {
+            vkUpdateDescriptorSets(vk_device_->device(), static_cast<uint32_t>(bindings.size()), writes.data(), 0, nullptr);
         }
 
         vk_backend_->bind_descriptor_set(cmd, layout, set);
@@ -1587,22 +1588,26 @@ void VulkanRenderer2D::push_sprite_vertex(float x, float y, const Color& color, 
 void VulkanRenderer2D::push_lit_vertex(ITexture* albedo, ITexture* normal,
                                         float x, float y, const Color& color,
                                         float u, float v, float nu, float nv) {
-    auto it = find_lit_batch(albedo, normal);
-    it->verts.push_back({x, y, color.r, color.g, color.b, color.a, u, v, nu, nv});
+    LitBatch* batch = find_lit_batch(albedo, normal);
+    if (batch) {
+        batch->verts.push_back({x, y, color.r, color.g, color.b, color.a, u, v, nu, nv});
+    }
 }
 
 void VulkanRenderer2D::push_shadow_caster_vertex(float x, float y) {
     shadow_caster_vertices_.push_back({x, y});
 }
 
-std::vector<VulkanRenderer2D::LitBatch>::iterator VulkanRenderer2D::find_lit_batch(ITexture* albedo, ITexture* normal) {
-    for (auto it = lit_batches_.begin(); it != lit_batches_.end(); ++it) {
-        if (it->albedo == albedo && it->normal == normal) {
-            return it;
-        }
+VulkanRenderer2D::LitBatch* VulkanRenderer2D::find_lit_batch(ITexture* albedo, ITexture* normal) {
+    LitBatchKey key{albedo, normal};
+    auto it = lit_batches_.find(key);
+    if (it == lit_batches_.end()) {
+        LitBatch batch;
+        batch.albedo = albedo;
+        batch.normal = normal;
+        it = lit_batches_.emplace(key, std::move(batch)).first;
     }
-    lit_batches_.push_back({albedo, normal, {}});
-    return std::prev(lit_batches_.end());
+    return &it->second;
 }
 
 void VulkanRenderer2D::flush_batches() {
@@ -1614,7 +1619,7 @@ void VulkanRenderer2D::flush_batches() {
 
 void VulkanRenderer2D::flush_sprite_batch() {
     if (sprite_vertices_.empty() || !sprite_texture_) return;
-    GLOG_INFO("VulkanRenderer2D::flush_sprite_batch: verts={} texture={} format={}",
+    GLOG_DEBUG("VulkanRenderer2D::flush_sprite_batch: verts={} texture={} format={}",
               sprite_vertices_.size(),
               reinterpret_cast<uintptr_t>(sprite_texture_),
               static_cast<int>(dynamic_cast<VulkanTexture*>(sprite_texture_)->format()));
@@ -1631,14 +1636,15 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         return;
     }
 
-    auto verts_shared = std::make_shared<std::vector<Vertex2D>>(std::move(verts));
     math::Matrix4f view_proj = view_proj_;
     ITexture* tex = texture;
     float screen_w = screen_width_;
     float screen_h = screen_height_;
 
+    auto verts_shared = std::make_shared<std::vector<Vertex2D>>(std::move(verts));
+
     ctx_->push_command([this, verts_shared, is_text, is_sprite, tex, pipeline, layout,
-                        screen_w, screen_h, view_proj](IRenderBackend*) {
+                        screen_w, screen_h](IRenderBackend*) {
         int frame_index = vk_swapchain_->current_frame_index();
         if (frame_index < 0 || frame_index >= static_cast<int>(vertex_buffer_rect_.size())) {
             return;
@@ -1681,7 +1687,7 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         viewport.height = -screen_h;
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
-        GLOG_INFO("VulkanRenderer2D::flush_batch viewport={} {} {} {} verts={}",
+        GLOG_DEBUG("VulkanRenderer2D::flush_batch viewport={} {} {} {} verts={}",
                   viewport.x, viewport.y, viewport.width, viewport.height, verts_shared->size());
         vk_backend_->set_viewport_cached(cmd, viewport);
 
@@ -1696,8 +1702,8 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         struct alignas(16) PushConstants {
             math::Matrix4f view_proj;
         } pc;
-        pc.view_proj = view_proj;
-        GLOG_INFO("VulkanRenderer2D::flush_batch view_proj col0=({}, {}, {}, {}) col1=({}, {}, {}, {}) col3=({}, {}, {}, {})",
+        pc.view_proj = view_proj_;
+        GLOG_DEBUG("VulkanRenderer2D::flush_batch view_proj col0=({}, {}, {}, {}) col1=({}, {}, {}, {}) col3=({}, {}, {}, {})",
                   pc.view_proj(0,0), pc.view_proj(1,0), pc.view_proj(2,0), pc.view_proj(3,0),
                   pc.view_proj(0,1), pc.view_proj(1,1), pc.view_proj(2,1), pc.view_proj(3,1),
                   pc.view_proj(0,3), pc.view_proj(1,3), pc.view_proj(2,3), pc.view_proj(3,3));

@@ -8,6 +8,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -148,8 +149,12 @@ bool VulkanTexture::upload_data(const void* data, int width, int height, int cha
     }
     format_ = channels_to_format(channels_, false);
 
-    return create_image(format_, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                        VK_IMAGE_ASPECT_COLOR_BIT, upload_data);
+    // 有实际数据上传时才需要生成 mipmap，因此只有 data != nullptr 时才加 TRANSFER_SRC。
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (upload_data) {
+        usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
+    return create_image(format_, usage, VK_IMAGE_ASPECT_COLOR_BIT, upload_data);
 }
 
 bool VulkanTexture::create_depth(int width, int height) {
@@ -168,17 +173,17 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
     width_ = width;
     height_ = height;
     VkFormat vk_format = VK_FORMAT_R8G8B8A8_UNORM;
-    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     switch (format) {
-        case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8_UNORM; break;
-        case TextureFormat::RGBA8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; break;
-        case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; break;
-        case TextureFormat::R8: vk_format = VK_FORMAT_R8_UNORM; break;
-        case TextureFormat::Depth16: vk_format = VK_FORMAT_D16_UNORM; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; break;
-        case TextureFormat::Depth24: vk_format = VK_FORMAT_X8_D24_UNORM_PACK32; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; break;
-        case TextureFormat::Depth32F: vk_format = VK_FORMAT_D32_SFLOAT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; break;
-        case TextureFormat::Depth24Stencil8: vk_format = VK_FORMAT_D24_UNORM_S8_UINT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; break;
+        case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8_UNORM; channels_ = 3; break;
+        case TextureFormat::RGBA8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; channels_ = 4; break;
+        case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; channels_ = 4; break;
+        case TextureFormat::R8: vk_format = VK_FORMAT_R8_UNORM; channels_ = 1; break;
+        case TextureFormat::Depth16: vk_format = VK_FORMAT_D16_UNORM; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
+        case TextureFormat::Depth24: vk_format = VK_FORMAT_X8_D24_UNORM_PACK32; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
+        case TextureFormat::Depth32F: vk_format = VK_FORMAT_D32_SFLOAT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
+        case TextureFormat::Depth24Stencil8: vk_format = VK_FORMAT_D24_UNORM_S8_UINT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 2; break;
         default: break;
     }
     format_ = vk_format;
@@ -189,13 +194,26 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
                                  const void* data) {
     VkDevice dev = device_->device();
 
+    // 只有带数据上传的颜色可采样纹理才生成 mipmap。
+    bool can_gen_mipmaps = (aspect == VK_IMAGE_ASPECT_COLOR_BIT) &&
+                           (data != nullptr) &&
+                           (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
+                           (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+                           (usage & VK_IMAGE_USAGE_SAMPLED_BIT);
+    mip_levels_ = 1;
+    if (can_gen_mipmaps) {
+        uint32_t dim = static_cast<uint32_t>(std::max(width_, height_));
+        mip_levels_ = static_cast<uint32_t>(std::floor(std::log2(static_cast<float>(dim)))) + 1;
+        mip_levels_ = std::max(mip_levels_, 1u);
+    }
+
     VkImageCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     info.imageType = VK_IMAGE_TYPE_2D;
     info.extent.width = static_cast<uint32_t>(width_);
     info.extent.height = static_cast<uint32_t>(height_);
     info.extent.depth = 1;
-    info.mipLevels = 1;
+    info.mipLevels = mip_levels_;
     info.arrayLayers = 1;
     info.format = format;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -220,7 +238,7 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
     view_info.format = format;
     view_info.subresourceRange.aspectMask = aspect;
     view_info.subresourceRange.baseMipLevel = 0;
-    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.levelCount = mip_levels_;
     view_info.subresourceRange.baseArrayLayer = 0;
     view_info.subresourceRange.layerCount = 1;
     if (vkCreateImageView(dev, &view_info, nullptr, &image_view_) != VK_SUCCESS) {
@@ -230,6 +248,7 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
 
     // sampler
     const bool is_depth = (aspect == VK_IMAGE_ASPECT_DEPTH_BIT);
+    const bool use_aniso = !is_depth && device_ && device_->max_sampler_anisotropy() > 1.0f;
     VkSamplerCreateInfo sampler_info{};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_info.magFilter = to_vk_filter(mag_filter_);
@@ -237,14 +256,14 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
     sampler_info.addressModeU = to_vk_wrap(wrap_s_);
     sampler_info.addressModeV = to_vk_wrap(wrap_t_);
     sampler_info.addressModeW = to_vk_wrap(wrap_s_);
-    sampler_info.anisotropyEnable = VK_FALSE;
-    sampler_info.maxAnisotropy = 1.0f;
+    sampler_info.anisotropyEnable = use_aniso ? VK_TRUE : VK_FALSE;
+    sampler_info.maxAnisotropy = use_aniso ? device_->max_sampler_anisotropy() : 1.0f;
     sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     sampler_info.unnormalizedCoordinates = VK_FALSE;
     sampler_info.compareEnable = is_depth ? VK_TRUE : VK_FALSE;
     sampler_info.compareOp = is_depth ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_NEVER;
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler_info.maxLod = 1.0f;
+    sampler_info.maxLod = static_cast<float>(mip_levels_);
     if (vkCreateSampler(dev, &sampler_info, nullptr, &sampler_) != VK_SUCCESS) {
         GLOG_ERROR("VulkanTexture: failed to create sampler");
         return false;
@@ -288,7 +307,7 @@ bool VulkanTexture::upload_with_staging(const void* data, VkDeviceSize size) {
     barrier.image = image_;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.levelCount = mip_levels_;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
     barrier.srcAccessMask = 0;
@@ -308,12 +327,79 @@ bool VulkanTexture::upload_with_staging(const void* data, VkDeviceSize size) {
     region.imageExtent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
     vkCmdCopyBufferToImage(cmd, staging.buffer(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    // 生成 mipmap chain（颜色可采样纹理且 usage 包含 TRANSFER_SRC）。
+    if (mip_levels_ > 1) {
+        // base level 复制完成后先转到 TRANSFER_SRC，供下一级 blit 读取。
+        barrier.subresourceRange.levelCount = 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        int32_t mip_width = width_;
+        int32_t mip_height = height_;
+        for (uint32_t i = 1; i < mip_levels_; ++i) {
+            // 目标 mip level 先转到 TRANSFER_DST
+            barrier.subresourceRange.baseMipLevel = i;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+            VkImageBlit blit{};
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {mip_width, mip_height, 1};
+            blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.srcSubresource.mipLevel = i - 1;
+            blit.srcSubresource.baseArrayLayer = 0;
+            blit.srcSubresource.layerCount = 1;
+            blit.dstOffsets[0] = {0, 0, 0};
+            blit.dstOffsets[1] = {mip_width > 1 ? mip_width / 2 : 1,
+                                  mip_height > 1 ? mip_height / 2 : 1, 1};
+            blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.dstSubresource.mipLevel = i;
+            blit.dstSubresource.baseArrayLayer = 0;
+            blit.dstSubresource.layerCount = 1;
+            vkCmdBlitImage(cmd, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &blit, VK_FILTER_LINEAR);
+
+            // 该 level 完成后也转到 TRANSFER_SRC，供下一级读取
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+            if (mip_width > 1) mip_width /= 2;
+            if (mip_height > 1) mip_height /= 2;
+        }
+
+        // 全部 mip level 一起转到 SHADER_READ_ONLY_OPTIMAL
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = mip_levels_;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    } else {
+        // 无 mipmap，只转换 base level
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
 
     end_one_time_commands(device_, pool, cmd);
 
@@ -409,6 +495,7 @@ void VulkanTexture::set_filter(TextureFilter min, TextureFilter mag) {
                                format_ == VK_FORMAT_D16_UNORM ||
                                format_ == VK_FORMAT_D24_UNORM_S8_UINT ||
                                format_ == VK_FORMAT_X8_D24_UNORM_PACK32);
+        const bool use_aniso = !is_depth && device_ && device_->max_sampler_anisotropy() > 1.0f;
         VkDevice dev = device_->device();
         vkDestroySampler(dev, sampler_, nullptr);
         VkSamplerCreateInfo info{};
@@ -418,14 +505,14 @@ void VulkanTexture::set_filter(TextureFilter min, TextureFilter mag) {
         info.addressModeU = to_vk_wrap(wrap_s_);
         info.addressModeV = to_vk_wrap(wrap_t_);
         info.addressModeW = to_vk_wrap(wrap_s_);
-        info.anisotropyEnable = VK_FALSE;
-        info.maxAnisotropy = 1.0f;
+        info.anisotropyEnable = use_aniso ? VK_TRUE : VK_FALSE;
+        info.maxAnisotropy = use_aniso ? device_->max_sampler_anisotropy() : 1.0f;
         info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         info.unnormalizedCoordinates = VK_FALSE;
         info.compareEnable = is_depth ? VK_TRUE : VK_FALSE;
         info.compareOp = is_depth ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_NEVER;
         info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        info.maxLod = 1.0f;
+        info.maxLod = static_cast<float>(mip_levels_);
         vkCreateSampler(dev, &info, nullptr, &sampler_);
     }
 }

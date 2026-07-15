@@ -66,8 +66,10 @@ void Box2DPhysicsWorld2D::shutdown() {
     world_ = b2_nullWorldId;
     bodies_.clear();
     shapes_.clear();
+    joints_.clear();
     body_free_list_.clear();
     shape_free_list_.clear();
+    joint_free_list_.clear();
     initialized_ = false;
 }
 
@@ -110,6 +112,19 @@ uint32_t Box2DPhysicsWorld2D::alloc_shape_slot() {
     return index;
 }
 
+uint32_t Box2DPhysicsWorld2D::alloc_joint_slot() {
+    if (!joint_free_list_.empty()) {
+        uint32_t index = joint_free_list_.back();
+        joint_free_list_.pop_back();
+        joints_[index].used = true;
+        return index;
+    }
+    uint32_t index = static_cast<uint32_t>(joints_.size());
+    joints_.push_back({});
+    joints_[index].used = true;
+    return index;
+}
+
 void Box2DPhysicsWorld2D::free_body_slot(uint32_t index) {
     if (index < bodies_.size()) {
         bodies_[index].used = false;
@@ -123,6 +138,14 @@ void Box2DPhysicsWorld2D::free_shape_slot(uint32_t index) {
         shapes_[index].used = false;
         shapes_[index].id = b2_nullShapeId;
         shape_free_list_.push_back(index);
+    }
+}
+
+void Box2DPhysicsWorld2D::free_joint_slot(uint32_t index) {
+    if (index < joints_.size()) {
+        joints_[index].used = false;
+        joints_[index].id = b2_nullJointId;
+        joint_free_list_.push_back(index);
     }
 }
 
@@ -144,6 +167,15 @@ b2ShapeId Box2DPhysicsWorld2D::get_shape_id(ShapeHandle handle) const {
     return shapes_[index].id;
 }
 
+b2JointId Box2DPhysicsWorld2D::get_joint_id(JointHandle handle) const {
+    if (handle == k_invalid_joint) return b2_nullJointId;
+    uint32_t index = handle - 1;
+    if (index >= joints_.size() || !joints_[index].used) {
+        return b2_nullJointId;
+    }
+    return joints_[index].id;
+}
+
 BodyHandle Box2DPhysicsWorld2D::create_body(BodyType type, const math::Vector2f& position, float angle) {
     if (!initialized_) return k_invalid_body;
 
@@ -160,7 +192,9 @@ BodyHandle Box2DPhysicsWorld2D::create_body(BodyType type, const math::Vector2f&
 
     uint32_t index = alloc_body_slot();
     bodies_[index].id = id;
-    return static_cast<BodyHandle>(index + 1);
+    BodyHandle handle = static_cast<BodyHandle>(index + 1);
+    b2Body_SetUserData(id, reinterpret_cast<void*>(static_cast<uintptr_t>(handle)));
+    return handle;
 }
 
 void Box2DPhysicsWorld2D::destroy_body(BodyHandle handle) {
@@ -362,11 +396,89 @@ std::optional<IPhysicsWorld2D::RaycastHit2D> Box2DPhysicsWorld2D::raycast(const 
     if (!result.hit) return std::nullopt;
 
     RaycastHit2D hit;
-    hit.body = k_invalid_body; // TODO: 通过 user data 映射 body
+    b2BodyId body_id = b2Shape_GetBody(result.shapeId);
+    if (b2Body_IsValid(body_id)) {
+        hit.body = static_cast<BodyHandle>(reinterpret_cast<uintptr_t>(b2Body_GetUserData(body_id)));
+    } else {
+        hit.body = k_invalid_body;
+    }
     hit.point = from_b2(result.point);
     hit.normal = from_b2(result.normal);
     hit.fraction = result.fraction;
     return hit;
+}
+
+JointHandle Box2DPhysicsWorld2D::create_joint(const JointDesc2D& desc) {
+    if (!initialized_) return k_invalid_joint;
+    b2BodyId body_a = get_body_id(desc.body_a);
+    b2BodyId body_b = get_body_id(desc.body_b);
+    if (!b2Body_IsValid(body_a) || !b2Body_IsValid(body_b)) {
+        return k_invalid_joint;
+    }
+
+    b2JointId joint_id = b2_nullJointId;
+    switch (desc.type) {
+        case JointType::Distance: {
+            b2DistanceJointDef def = b2DefaultDistanceJointDef();
+            def.bodyIdA = body_a;
+            def.bodyIdB = body_b;
+            def.localAnchorA = to_b2(desc.anchor_a);
+            def.localAnchorB = to_b2(desc.anchor_b);
+            def.length = desc.length;
+            def.collideConnected = desc.collide_connected;
+            joint_id = b2CreateDistanceJoint(world_, &def);
+            break;
+        }
+        case JointType::Spring: {
+            b2DistanceJointDef def = b2DefaultDistanceJointDef();
+            def.bodyIdA = body_a;
+            def.bodyIdB = body_b;
+            def.localAnchorA = to_b2(desc.anchor_a);
+            def.localAnchorB = to_b2(desc.anchor_b);
+            def.length = desc.length;
+            def.enableSpring = true;
+            def.hertz = desc.frequency;
+            def.dampingRatio = desc.damping;
+            def.collideConnected = desc.collide_connected;
+            joint_id = b2CreateDistanceJoint(world_, &def);
+            break;
+        }
+        case JointType::Hinge: {
+            b2RevoluteJointDef def = b2DefaultRevoluteJointDef();
+            def.bodyIdA = body_a;
+            def.bodyIdB = body_b;
+            def.localAnchorA = to_b2(desc.anchor_a);
+            def.localAnchorB = to_b2(desc.anchor_b);
+            def.collideConnected = desc.collide_connected;
+            joint_id = b2CreateRevoluteJoint(world_, &def);
+            break;
+        }
+        case JointType::Fixed: {
+            b2WeldJointDef def = b2DefaultWeldJointDef();
+            def.bodyIdA = body_a;
+            def.bodyIdB = body_b;
+            def.localAnchorA = to_b2(desc.anchor_a);
+            def.localAnchorB = to_b2(desc.anchor_b);
+            def.collideConnected = desc.collide_connected;
+            joint_id = b2CreateWeldJoint(world_, &def);
+            break;
+        }
+    }
+
+    if (!b2Joint_IsValid(joint_id)) return k_invalid_joint;
+
+    uint32_t index = alloc_joint_slot();
+    joints_[index].id = joint_id;
+    return static_cast<JointHandle>(index + 1);
+}
+
+void Box2DPhysicsWorld2D::destroy_joint(JointHandle handle) {
+    b2JointId id = get_joint_id(handle);
+    if (b2Joint_IsValid(id)) {
+        b2DestroyJoint(id);
+    }
+    if (handle == k_invalid_joint) return;
+    free_joint_slot(handle - 1);
 }
 
 } // namespace gryce_engine::physics

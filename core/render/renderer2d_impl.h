@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "render/render2d.h"
@@ -107,7 +108,13 @@ private:
         ITexture* normal = nullptr;
         std::vector<LitVertex2D> verts;
     };
-    std::vector<LitBatch>::iterator find_lit_batch(ITexture* albedo, ITexture* normal);
+    using LitBatchKey = std::pair<ITexture*, ITexture*>;
+    struct LitBatchKeyHash {
+        std::size_t operator()(const LitBatchKey& key) const noexcept {
+            return std::hash<void*>{}(key.first) ^ (std::hash<void*>{}(key.second) << 1);
+        }
+    };
+    LitBatch* find_lit_batch(ITexture* albedo, ITexture* normal);
 
     void render_lit_sprites_forward(bool target_is_scene_fbo);
     void render_shadow_pass();
@@ -130,7 +137,7 @@ private:
     FontAtlas font_atlas_;
     std::vector<Vertex2D> vertices_;       // 普通图形顶点（无纹理）
     std::vector<Vertex2D> text_vertices_;  // 文字顶点（使用字体图集）
-    std::vector<LitBatch> lit_batches_;    // 受光照精灵批次（按纹理分组）
+    std::unordered_map<LitBatchKey, LitBatch, LitBatchKeyHash> lit_batches_; // 受光照精灵批次（按纹理分组）
     std::vector<ShadowCasterVertex> shadow_caster_vertices_; // 阴影遮挡物顶点
     math::Matrix4f ortho_;
     math::Matrix4f view_proj_;
