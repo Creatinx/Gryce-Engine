@@ -157,6 +157,163 @@ bool VulkanTexture::upload_data(const void* data, int width, int height, int cha
     return create_image(format_, usage, VK_IMAGE_ASPECT_COLOR_BIT, upload_data);
 }
 
+bool VulkanTexture::upload_cubemap(const void* faces[6], int width, int height, int channels) {
+    if (!faces || width <= 0 || height <= 0) return false;
+    for (int i = 0; i < 6; ++i) {
+        if (!faces[i]) return false;
+    }
+
+    destroy();
+    width_ = width;
+    height_ = height;
+    is_cubemap_ = true;
+    mip_levels_ = 1;
+
+    // 与 upload_data 一致：3 通道扩展为 4 通道上传
+    std::vector<unsigned char> converted;
+    std::vector<const void*> face_ptrs(6);
+    VkDeviceSize face_size = static_cast<VkDeviceSize>(width) * height * channels;
+    if (channels == 3) {
+        channels_ = 4;
+        const VkDeviceSize out_face_size = static_cast<VkDeviceSize>(width) * height * 4;
+        converted.resize(out_face_size * 6);
+        for (int f = 0; f < 6; ++f) {
+            const unsigned char* src = static_cast<const unsigned char*>(faces[f]);
+            unsigned char* dst = converted.data() + f * out_face_size;
+            for (int i = 0; i < width * height; ++i) {
+                dst[i * 4 + 0] = src[i * 3 + 0];
+                dst[i * 4 + 1] = src[i * 3 + 1];
+                dst[i * 4 + 2] = src[i * 3 + 2];
+                dst[i * 4 + 3] = 255;
+            }
+            face_ptrs[f] = dst;
+        }
+        face_size = out_face_size;
+    } else {
+        channels_ = channels;
+        for (int f = 0; f < 6; ++f) face_ptrs[f] = faces[f];
+    }
+    format_ = channels_to_format(channels_, false);
+
+    VkDevice dev = device_->device();
+
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.extent.width = static_cast<uint32_t>(width_);
+    info.extent.height = static_cast<uint32_t>(height_);
+    info.extent.depth = 1;
+    info.mipLevels = 1;
+    info.arrayLayers = 6;
+    info.format = format_;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo alloc_info{};
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    if (vmaCreateImage(device_->allocator(), &info, &alloc_info, &image_, &allocation_, nullptr) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create cubemap image");
+        return false;
+    }
+
+    VkImageViewCreateInfo view_info{};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = image_;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    view_info.format = format_;
+    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view_info.subresourceRange.baseMipLevel = 0;
+    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.baseArrayLayer = 0;
+    view_info.subresourceRange.layerCount = 6;
+    if (vkCreateImageView(dev, &view_info, nullptr, &image_view_) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create cubemap image view");
+        return false;
+    }
+
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    sampler_info.unnormalizedCoordinates = VK_FALSE;
+    sampler_info.compareEnable = VK_FALSE;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.maxLod = 1.0f;
+    if (vkCreateSampler(dev, &sampler_info, nullptr, &sampler_) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create cubemap sampler");
+        return false;
+    }
+
+    // staging：六个面拼接成一个缓冲区，分 6 个 region 拷贝
+    const VkDeviceSize total = face_size * 6;
+    VulkanBuffer staging;
+    if (!staging.init(device_, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        return false;
+    }
+    for (int f = 0; f < 6; ++f) {
+        staging.upload(face_ptrs[f], face_size, static_cast<VkDeviceSize>(f) * face_size);
+    }
+
+    VkCommandPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = device_->graphics_queue_family();
+    VkCommandPool pool = VK_NULL_HANDLE;
+    vkCreateCommandPool(device_->device(), &pool_info, nullptr, &pool);
+
+    VkCommandBuffer cmd = begin_one_time_commands(device_, pool);
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image_;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 6;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    VkBufferImageCopy regions[6]{};
+    for (int f = 0; f < 6; ++f) {
+        regions[f].bufferOffset = static_cast<VkDeviceSize>(f) * face_size;
+        regions[f].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        regions[f].imageSubresource.mipLevel = 0;
+        regions[f].imageSubresource.baseArrayLayer = static_cast<uint32_t>(f);
+        regions[f].imageSubresource.layerCount = 1;
+        regions[f].imageExtent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
+    }
+    vkCmdCopyBufferToImage(cmd, staging.buffer(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, regions);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    end_one_time_commands(device_, pool, cmd);
+    vkDestroyCommandPool(device_->device(), pool, nullptr);
+
+    layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return true;
+}
+
 bool VulkanTexture::create_depth(int width, int height) {
     destroy();
     width_ = width;
@@ -192,6 +349,7 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
 
 bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
                                  const void* data) {
+    is_cubemap_ = false;
     VkDevice dev = device_->device();
 
     // 只有带数据上传的颜色可采样纹理才生成 mipmap。

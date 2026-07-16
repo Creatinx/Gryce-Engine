@@ -87,6 +87,8 @@ public:
     void set_uniform_float(RHIShaderHandle shader, const char* name, float value);
     void set_uniform_vec3(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector3f& value);
     void set_uniform_vec3(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector3f& value);
+    void set_uniform_vec4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector4f& value);
+    void set_uniform_vec4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector4f& value);
     void set_uniform_mat4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Matrix4f& value);
     void set_uniform_mat4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Matrix4f& value);
     void set_texture(RHIShaderHandle shader, RHITextureHandle texture, int slot,
@@ -97,6 +99,8 @@ public:
     void clear_depth();
     void set_viewport(int x, int y, int w, int h);
     void set_depth_test(bool enabled);
+    // 深度写入开关（默认开；渲染透明物体时关闭、渲染完恢复）
+    void set_depth_write(bool enabled);
     void set_blend(bool enabled);
     void set_cull_face(bool enabled);
     void set_framebuffer(RHIFramebufferHandle fb);
@@ -139,6 +143,7 @@ private:
     std::unique_ptr<RenderThread> render_thread_;
     void* native_window_ = nullptr;
     bool initialized_ = false;
+    bool validation_enabled_ = false;
     bool running_ = false;
 
     std::shared_ptr<Lifetime> lifetime_ = std::make_shared<Lifetime>();

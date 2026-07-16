@@ -52,8 +52,14 @@ public:
     VkImage image(uint32_t index) const { return images_[index]; }
     VkCommandBuffer command_buffer(uint32_t index) const { return command_buffers_[index]; }
     VkCommandPool command_pool() const { return command_pool_; }
-    VkCommandBuffer secondary_command_buffer(uint32_t index) const { return secondary_command_buffers_[index]; }
-    VkCommandPool secondary_command_pool() const { return secondary_pool_; }
+    // secondary command pool 按帧槽独立：begin_frame 只 reset 当前帧槽的池，
+    // 避免把其他帧槽仍在 GPU 上执行的 secondary CB 一并失效（会 device lost）
+    VkCommandPool secondary_command_pool(int frame_index) const {
+        if (frame_index < 0 || frame_index >= static_cast<int>(secondary_pools_.size())) {
+            return VK_NULL_HANDLE;
+        }
+        return secondary_pools_[frame_index];
+    }
     int current_frame_index() const { return current_frame_; }
     VkSemaphore current_image_available_semaphore() const { return image_available_semaphores_[current_frame_]; }
     VkSemaphore current_render_finished_semaphore() const { return render_finished_semaphores_[current_frame_]; }
@@ -92,9 +98,11 @@ private:
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> command_buffers_;
 
-    // secondary command buffers 池：供 inline accumulator 与 per-draw_mesh 使用
-    VkCommandPool secondary_pool_ = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> secondary_command_buffers_;
+    // secondary command pool（每个 frame-in-flight 槽一个）：供 inline
+    // accumulator 与 per-draw_mesh 使用。必须按帧槽隔离——共享一个池时，
+    // begin_frame 的 vkResetCommandPool 会把上一帧槽仍在 pending 的 CB
+    // 一并失效，GPU 执行已失效命令缓冲导致 device lost。
+    std::vector<VkCommandPool> secondary_pools_;
 
     static constexpr int kMaxFramesInFlight = 8;
     int frames_in_flight_ = 2;

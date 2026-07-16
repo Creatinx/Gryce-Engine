@@ -16,6 +16,8 @@ public:
     bool load_from_file(const std::string& path) override;
     bool create_empty(int width, int height, int channels = 4) override;
     bool upload_data(const void* data, int width, int height, int channels = 4) override;
+    bool upload_cubemap(const void* faces[6], int width, int height, int channels = 4) override;
+    bool is_cubemap() const override { return is_cubemap_; }
     bool create_depth(int width, int height) override;
     bool create(TextureFormat format, int width, int height, const void* data = nullptr) override;
 
@@ -36,6 +38,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     int channels_ = 4;
+    bool is_cubemap_ = false;
 
     static uint32_t to_gl_filter(TextureFilter filter);
     static uint32_t to_gl_wrap(TextureWrap wrap);

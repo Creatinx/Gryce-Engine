@@ -61,11 +61,14 @@
 
 | 功能 | 状态 |
 |---|---|
-| PBR 着色（albedo/normal/roughness/metallic/ao） | 已实现 |
-| Shadow map（2048x2048） | 已实现 |
-| HDR + Tonemapping | 已实现 |
+| PBR 着色（albedo/normal/roughness/metallic/ao/emissive） | 已实现 |
+| 多光源（最多 8 盏：方向光/点光/聚光，逐光源 range/cone 参数） | 已实现 |
+| 环境光（ambient） | 已实现 |
+| Shadow map（2048x2048，跟随相机，范围外按全亮处理） | 已实现 |
+| 天空盒（Cubemap，GL+VK，ITexture::upload_cubemap） | 已实现 |
+| 半透明渲染（按相机距离排序，blend + depth write off） | 已实现 |
+| HDR + Tonemapping（None/Reinhard/ACES + exposure） | 已实现 |
 | 级联阴影（Cascaded Shadow Maps） | 未实现 |
-| 天空盒（Cubemap） | 未实现 |
 | IBL（Image-Based Lighting） | 未实现 |
 | SSAO / SSR | 未实现 |
 | GPU particles | 未实现 |
@@ -88,9 +91,10 @@
 
 | 功能 | 状态 |
 |---|---|
-| Material 结构体（albedo/roughness/metallic/ao） | 已实现 |
+| Material（albedo/roughness/metallic/ao + emissive/opacity/blend_mode/two_sided/UV 变换） | 已实现 |
 | OpenGL UBO / Vulkan uniform buffer 上传 | 已实现 |
-| 材质资源文件 `.gmat` | 未实现 |
+| 材质资源文件 `.gmat`（JSON，支持 res:/ 虚拟路径） | 已实现 |
+| OBJ MTL / Assimp 材质导入（随 MeshRenderer 上传时按默认值合并） | 已实现 |
 | 材质编辑器 | 未实现 |
 | Shader Graph | 未实现 |
 
@@ -171,10 +175,10 @@
 
 | 功能 | 状态 |
 |---|---|
-| OBJ 加载器 | 已实现 |
-| FBX 加载器 | 未实现 |
-| glTF 2.0 加载器 | 未实现 |
-| Assimp 集成 | 接口已预留（`GRYCE_HAS_ASSIMP`） |
+| OBJ 加载器（含 MTL：Kd/Ke/d/Tr/Ns/贴图） | 已实现 |
+| FBX 加载器 | 已实现（Assimp） |
+| glTF 2.0 加载器 | 已实现（Assimp） |
+| Assimp 集成（OBJ/FBX/glTF/DAE/PLY/STL + 材质提取） | 已实现 |
 | 骨骼动画 | 未实现 |
 
 ### 4.3 纹理与材质
@@ -182,9 +186,10 @@
 | 功能 | 状态 |
 |---|---|
 | PNG/JPG/BMP 加载（stb_image） | 已实现 |
-| 法线/roughness/metallic/ao 贴图 | 已实现 |
+| 法线/roughness/metallic/ao/emissive 贴图 | 已实现 |
+| 立方体贴图（cubemap，天空盒） | 已实现 |
 | 纹理压缩（BC1~BC7/ASTC/ETC2） | 未实现 |
-| Mipmap 自动生成 | 未实现 |
+| Mipmap 自动生成 | 已实现（2D 纹理，cubemap 暂不支持） |
 | HDR/EXR 环境贴图 | 未实现 |
 | 材质预设库 | 未实现 |
 
@@ -307,6 +312,9 @@
 | 功能 | 状态 |
 |---|---|
 | Cube + 地面 + PBR 材质 | 已实现 |
+| 天空盒（程序化渐变天空 cubemap） | 已实现 |
+| 多光源展示（方向光 + 点光 + 聚光） | 已实现 |
+| 材质展示（自发光、半透明玻璃、UV 平铺） | 已实现 |
 | FPS 相机（WASD、鼠标、Space/Ctrl） | 已实现 |
 | 重力枪（鼠标左键拖拽） | 已实现 |
 | 场景重置（R 键） | 已实现 |

@@ -306,7 +306,28 @@ void DebugPanel::show(platform::Window* window, scene::Scene* scene, math::Camer
         }
     }
     if (ImGui::Checkbox("Use Shadow", &use_shadow)) {
-        // TODO: 开关 shadow map 需要管线支持；目前仅保存状态供后续使用
+        if (pipeline) {
+            pipeline->set_shadow_enabled(use_shadow);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // HDR / Tone Mapping
+    // -----------------------------------------------------------------------
+    ImGui::Separator();
+    ImGui::Text("HDR / Tone Mapping");
+    static float exposure = 1.0f;
+    static int tone_map_mode = 1; // 0: none, 1: Reinhard, 2: ACES
+    if (ImGui::SliderFloat("Exposure", &exposure, 0.1f, 5.0f, "%.2f")) {
+        if (pipeline) {
+            pipeline->set_exposure(exposure);
+        }
+    }
+    const char* k_tone_map_names[] = { "None", "Reinhard", "ACES" };
+    if (ImGui::Combo("Tone Map", &tone_map_mode, k_tone_map_names, 3)) {
+        if (pipeline) {
+            pipeline->set_tone_map_mode(tone_map_mode);
+        }
     }
 
     ImGui::Separator();

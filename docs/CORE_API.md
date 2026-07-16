@@ -319,6 +319,55 @@ std::string real_path = gryce_engine::resources::resolve_path("res:/textures/cur
 // 返回 <project_root>/textures/cursor.png
 ```
 
+### 5.5 材质与 3D 渲染管线
+
+```cpp
+#include "render/material.h"
+#include "render/render_pipeline.h"
+
+using namespace gryce_engine;
+
+// ---- Material ----
+render::Material mat;
+mat.albedo_color = math::Vector3f(0.8f, 0.2f, 0.2f);
+mat.roughness = 0.4f;
+mat.metallic = 0.9f;
+mat.emissive_color = math::Vector3f(4.0f, 1.6f, 0.3f); // HDR，可 >1
+mat.opacity = 0.35f;
+mat.blend_mode = render::Material::BlendMode::Blend;   // Opaque(默认)/Blend
+mat.two_sided = true;
+mat.uv_scale = math::Vector2f(3.0f, 3.0f);
+mat.save_to_file("res:/materials/my.gmat");            // JSON 材质资源
+mat.load_from_file("res:/materials/my.gmat");
+
+// ---- RenderPipeline ----
+render::RenderPipeline pipeline;
+pipeline.init(&render_ctx, "res:/shaders");
+pipeline.set_skybox({ "res:/textures/skybox/px.png", "res:/textures/skybox/nx.png",
+                      "res:/textures/skybox/py.png", "res:/textures/skybox/ny.png",
+                      "res:/textures/skybox/pz.png", "res:/textures/skybox/nz.png" }); // 须在 RenderContext::start() 前
+
+std::vector<render::RenderPipeline::Light> lights;
+render::RenderPipeline::Light sun;                     // 默认 Directional
+sun.direction = math::Vector3f(-0.6f, -0.7f, 0.0f);
+sun.intensity = 3.0f;
+lights.push_back(sun);
+render::RenderPipeline::Light lamp;
+lamp.type = render::RenderPipeline::LightType::Point;  // Directional/Point/Spot
+lamp.position = math::Vector3f(0.0f, 4.0f, 0.0f);
+lamp.range = 30.0f;
+lights.push_back(lamp);                                // 最多 k_max_lights=8 盏
+
+pipeline.set_lights(lights);
+pipeline.set_ambient(math::Vector3f(0.15f, 0.15f, 0.15f));
+pipeline.set_shadow_enabled(true);
+pipeline.set_exposure(1.0f);
+pipeline.set_tone_map_mode(1);                         // 0=None, 1=Reinhard, 2=ACES
+
+pipeline.set_camera(camera);
+pipeline.render_scene(scene, render_ctx);              // shadow -> skybox -> 不透明 -> 透明 -> tonemap
+```
+
 ---
 
 ## 6. 扩展规范

@@ -98,6 +98,7 @@ bool GLTexture::load_from_file(const std::string& path) {
     width_ = w;
     height_ = h;
     channels_ = ch;
+    is_cubemap_ = false;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -144,6 +145,7 @@ bool GLTexture::create_empty(int width, int height, int channels) {
     width_ = width;
     height_ = height;
     channels_ = channels;
+    is_cubemap_ = false;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -181,6 +183,7 @@ bool GLTexture::upload_data(const void* data, int width, int height, int channel
     width_ = width;
     height_ = height;
     channels_ = channels;
+    is_cubemap_ = false;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -240,6 +243,57 @@ bool GLTexture::upload_data(const void* data, int width, int height, int channel
     return true;
 }
 
+bool GLTexture::upload_cubemap(const void* faces[6], int width, int height, int channels) {
+    if (!faces || width <= 0 || height <= 0) return false;
+    for (int i = 0; i < 6; ++i) {
+        if (!faces[i]) return false;
+    }
+
+    if (texture_id_) {
+        clear_texture_slot_cache(texture_id_);
+        glDeleteTextures(1, &texture_id_);
+    }
+
+    width_ = width;
+    height_ = height;
+    channels_ = channels;
+    is_cubemap_ = true;
+
+    GLint internal_format = (channels == 4) ? GL_RGBA8 : (channels == 3) ? GL_RGB8 : GL_R8;
+    GLenum format = (channels == 4) ? GL_RGBA : (channels == 3) ? GL_RGB : GL_RED;
+
+    const bool dsa = gl_dsa_available();
+    if (dsa) {
+        glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &texture_id_);
+        glTextureStorage2D(texture_id_, 1, internal_format, width, height);
+        for (int i = 0; i < 6; ++i) {
+            glTextureSubImage3D(texture_id_, 0, 0, 0, i, width, height, 1,
+                                format, GL_UNSIGNED_BYTE, faces[i]);
+        }
+        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    } else {
+        glGenTextures(1, &texture_id_);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id_);
+        for (int i = 0; i < 6; ++i) {
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, internal_format,
+                         width, height, 0, format, GL_UNSIGNED_BYTE, faces[i]);
+        }
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    }
+
+    GLOG_INFO("Cubemap uploaded: {}x{}, {} channels tex_id={}", width, height, channels, texture_id_);
+    return true;
+}
+
 bool GLTexture::create_depth(int width, int height) {
     return create(TextureFormat::Depth24, width, height, nullptr);
 }
@@ -255,6 +309,7 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
     width_ = width;
     height_ = height;
     channels_ = info.channels;
+    is_cubemap_ = false;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -333,7 +388,7 @@ void GLTexture::bind(uint32_t slot) const {
             g_active_texture_unit = static_cast<int>(slot);
         }
         if (g_bound_textures[slot] == texture_id_) return;
-        glBindTexture(GL_TEXTURE_2D, texture_id_);
+        glBindTexture(is_cubemap_ ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, texture_id_);
         g_bound_textures[slot] = texture_id_;
     }
 }
@@ -343,7 +398,7 @@ void GLTexture::unbind() const {
     if (g_active_texture_unit >= 0 && g_active_texture_unit < k_max_texture_slots) {
         g_bound_textures[g_active_texture_unit] = 0;
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindTexture(is_cubemap_ ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, 0);
 }
 
 void GLTexture::set_filter(TextureFilter min, TextureFilter mag) {
@@ -351,10 +406,11 @@ void GLTexture::set_filter(TextureFilter min, TextureFilter mag) {
         glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(to_gl_filter(min)));
         glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(to_gl_filter(mag)));
     } else {
-        glBindTexture(GL_TEXTURE_2D, texture_id_);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(to_gl_filter(min)));
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(to_gl_filter(mag)));
-        glBindTexture(GL_TEXTURE_2D, 0);
+        const GLenum target = is_cubemap_ ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;
+        glBindTexture(target, texture_id_);
+        glTexParameteri(target, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(to_gl_filter(min)));
+        glTexParameteri(target, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(to_gl_filter(mag)));
+        glBindTexture(target, 0);
     }
 }
 
@@ -362,11 +418,18 @@ void GLTexture::set_wrap(TextureWrap s, TextureWrap t) {
     if (gl_dsa_available()) {
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, static_cast<GLint>(to_gl_wrap(s)));
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, static_cast<GLint>(to_gl_wrap(t)));
+        if (is_cubemap_) {
+            glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_R, static_cast<GLint>(to_gl_wrap(s)));
+        }
     } else {
-        glBindTexture(GL_TEXTURE_2D, texture_id_);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, static_cast<GLint>(to_gl_wrap(s)));
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, static_cast<GLint>(to_gl_wrap(t)));
-        glBindTexture(GL_TEXTURE_2D, 0);
+        const GLenum target = is_cubemap_ ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;
+        glBindTexture(target, texture_id_);
+        glTexParameteri(target, GL_TEXTURE_WRAP_S, static_cast<GLint>(to_gl_wrap(s)));
+        glTexParameteri(target, GL_TEXTURE_WRAP_T, static_cast<GLint>(to_gl_wrap(t)));
+        if (is_cubemap_) {
+            glTexParameteri(target, GL_TEXTURE_WRAP_R, static_cast<GLint>(to_gl_wrap(s)));
+        }
+        glBindTexture(target, 0);
     }
 }
 

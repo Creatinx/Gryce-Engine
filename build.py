@@ -10,6 +10,14 @@ import os
 import urllib.request
 from pathlib import Path
 
+# 编译器输出按 UTF-8 解码（见 run()）；打印到 GBK 控制台时替换不可编码字符，避免崩溃。
+if os.name == 'nt':
+    try:
+        sys.stdout.reconfigure(errors='replace')
+        sys.stderr.reconfigure(errors='replace')
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------------------
 # Colors (disabled on Windows without ANSI support)
 # ---------------------------------------------------------------------------
@@ -203,6 +211,7 @@ def run(cmd, cwd=None, check=False, stream=True):
         if not stream:
             result = subprocess.run(
                 cmd, cwd=cwd, capture_output=True, text=True,
+                encoding='utf-8', errors='replace',
                 shell=(os.name == 'nt')
             )
             output = (result.stdout or '') + (result.stderr or '')
@@ -215,7 +224,8 @@ def run(cmd, cwd=None, check=False, stream=True):
 
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, shell=(os.name == 'nt')
+            text=True, encoding='utf-8', errors='replace',
+            shell=(os.name == 'nt')
         )
         lines = []
         for line in proc.stdout:

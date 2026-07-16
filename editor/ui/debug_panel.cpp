@@ -13,6 +13,7 @@
 #include "components/box_collider.h"
 #include "components/sphere_collider.h"
 #include "components/audio_source.h"
+#include "components/physical_material.h"
 #include "utils/glog/glog_lib.h"
 #include "components/transform.h"
 #include "math/camera.h"

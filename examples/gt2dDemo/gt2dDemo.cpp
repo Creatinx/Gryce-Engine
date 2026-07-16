@@ -747,6 +747,7 @@ int main(int argc, char* argv[]) {
     float auto_close_seconds = 0.0f;
     std::string screenshot_path;
     render::RenderAPI selected_api = render::RenderAPI::OpenGL;
+    bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
@@ -756,6 +757,8 @@ int main(int argc, char* argv[]) {
             selected_api = render::RenderAPI::Vulkan;
         } else if (std::strcmp(argv[i], "--opengl") == 0) {
             selected_api = render::RenderAPI::OpenGL;
+        } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
+            vulkan_validation = true;
         }
     }
 
@@ -787,6 +790,7 @@ int main(int argc, char* argv[]) {
     }
 
     render::RenderContext render_ctx;
+    render_ctx.set_validation_enabled(vulkan_validation);
     if (!render_ctx.init(window.native_handle(), selected_api)) {
         GLOG_ERROR("Failed to initialize render context");
         platform::Window::shutdown_sdk();

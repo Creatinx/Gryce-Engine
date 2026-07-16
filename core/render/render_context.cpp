@@ -27,6 +27,9 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
         case RenderCommandType::SetDepthTest:
             backend->set_depth_test(cmd.depth_test.enabled);
             break;
+        case RenderCommandType::SetDepthWrite:
+            backend->set_depth_write(cmd.depth_write.enabled);
+            break;
         case RenderCommandType::SetBlend:
             backend->set_blend(cmd.blend.enabled);
             break;
@@ -76,6 +79,9 @@ bool RenderContext::init(void* native_window, RenderAPI api) {
         GLOG_ERROR("RenderContext::init: unsupported API");
         return false;
     }
+
+    // 校验层开关必须在 instance 创建之前下发才生效
+    backend_->set_validation_enabled(validation_enabled_);
 
     if (!backend_->init(native_window_)) {
         GLOG_ERROR("RenderContext::init: backend init failed");
@@ -398,6 +404,14 @@ void RenderContext::set_uniform_vec3(RHIShaderHandle shader, const char* name, c
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_vec3(shader, name, value));
 }
 
+void RenderContext::set_uniform_vec4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector4f& value) {
+    set_uniform_vec4(shader, name.c_str(), value);
+}
+
+void RenderContext::set_uniform_vec4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector4f& value) {
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_vec4(shader, name, value));
+}
+
 void RenderContext::set_uniform_mat4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Matrix4f& value) {
     set_uniform_mat4(shader, name.c_str(), value);
 }
@@ -430,6 +444,10 @@ void RenderContext::set_viewport(int x, int y, int w, int h) {
 
 void RenderContext::set_depth_test(bool enabled) {
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_depth_test(enabled));
+}
+
+void RenderContext::set_depth_write(bool enabled) {
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_depth_write(enabled));
 }
 
 void RenderContext::set_blend(bool enabled) {
@@ -527,6 +545,8 @@ std::unique_ptr<IImGuiBackend> RenderContext::create_imgui_backend() {
 }
 
 void RenderContext::set_validation_enabled(bool enabled) {
+    // 记录并在 init 时（instance 创建前）应用；init 之后再调用也直接生效
+    validation_enabled_ = enabled;
     if (backend_) {
         backend_->set_validation_enabled(enabled);
     }

@@ -350,6 +350,79 @@ static scene::Entity* create_character_entity(scene::Scene& scene, const std::st
     return e;
 }
 
+// ---------------------------------------------------------------------------
+// 材质/光照展示：点光、聚光、自发光 cube、半透明玻璃 cube、UV 平铺 cube
+// ---------------------------------------------------------------------------
+static void ensure_material_showcase_entities(scene::Scene& scene) {
+    constexpr float k_ground_top = -1.75f;
+    const float cube_y = k_ground_top + 1.5f; // scale=3 的单位立方体中心
+
+    if (!scene.find_entity_by_name("ShowcaseEmissiveCube")) {
+        scene::Entity* e = scene.create_entity("ShowcaseEmissiveCube");
+        e->transform()->position = math::Vector3f(-8.0f, cube_y, -8.0f);
+        e->transform()->scale = math::Vector3f(3.0f, 3.0f, 3.0f);
+        auto* mr = e->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->name = "ShowcaseEmissive";
+            mr->material->albedo_color = math::Vector3f(0.05f, 0.05f, 0.05f);
+            mr->material->roughness = 0.8f;
+            // HDR 下 >1 的自发光产生辉光感
+            mr->material->emissive_color = math::Vector3f(4.0f, 1.6f, 0.3f);
+        }
+    }
+
+    if (!scene.find_entity_by_name("ShowcaseGlassCube")) {
+        scene::Entity* e = scene.create_entity("ShowcaseGlassCube");
+        e->transform()->position = math::Vector3f(-8.0f, cube_y, 8.0f);
+        e->transform()->scale = math::Vector3f(3.0f, 3.0f, 3.0f);
+        auto* mr = e->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->name = "ShowcaseGlass";
+            mr->material->albedo_color = math::Vector3f(0.55f, 0.8f, 1.0f);
+            mr->material->roughness = 0.05f;
+            mr->material->metallic = 0.0f;
+            mr->material->opacity = 0.35f;
+            mr->material->blend_mode = render::Material::BlendMode::Blend;
+            mr->material->two_sided = true;
+        }
+    }
+
+    if (!scene.find_entity_by_name("ShowcaseTiledCube")) {
+        scene::Entity* e = scene.create_entity("ShowcaseTiledCube");
+        e->transform()->position = math::Vector3f(8.0f, cube_y, 8.0f);
+        e->transform()->scale = math::Vector3f(3.0f, 3.0f, 3.0f);
+        auto* mr = e->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->name = "ShowcaseTiled";
+            mr->material->albedo_map_path = "res:/textures/cube_albedo.png";
+            mr->material->uv_scale = math::Vector2f(3.0f, 3.0f);
+            mr->material->roughness = 0.6f;
+        }
+    }
+
+    if (!scene.find_entity_by_name("ShowcasePointLight")) {
+        scene::Entity* e = scene.create_entity("ShowcasePointLight");
+        e->transform()->position = math::Vector3f(-8.0f, 4.0f, 0.0f);
+        auto* light = e->add_component<components::Light>();
+        light->light_type = components::Light::Type::Point;
+        light->color = math::Vector3f(1.0f, 0.75f, 0.4f);
+        light->intensity = 2.5f;
+        light->range = 30.0f;
+    }
+
+    if (!scene.find_entity_by_name("ShowcaseSpotLight")) {
+        scene::Entity* e = scene.create_entity("ShowcaseSpotLight");
+        e->transform()->position = math::Vector3f(8.0f, 10.0f, 8.0f);
+        auto* light = e->add_component<components::Light>();
+        light->light_type = components::Light::Type::Spot;
+        light->direction = math::Vector3f(0.0f, -1.0f, 0.0f);
+        light->color = math::Vector3f(0.6f, 0.8f, 1.0f);
+        light->intensity = 3.0f;
+        light->range = 25.0f;
+        light->spot_angle = 35.0f;
+    }
+}
+
 static void ensure_physics_demo_entities(scene::Scene& scene) {
     if (!scene.find_entity_by_name("Ground")) {
         create_ground_entity(scene, "Ground");
@@ -381,6 +454,7 @@ static void ensure_physics_demo_entities(scene::Scene& scene) {
 
     create_joint_chain(scene, "DemoChain");
     create_character_entity(scene, "DemoCharacter");
+    ensure_material_showcase_entities(scene);
 }
 
 // ---------------------------------------------------------------------------
@@ -460,15 +534,24 @@ static std::vector<render::RenderPipeline::Light> collect_lights(scene::Scene& s
         auto* light = entity->get_component<components::Light>();
         if (!light || !light->enabled) return;
         render::RenderPipeline::Light out;
+        switch (light->light_type) {
+        case components::Light::Type::Point: out.type = render::RenderPipeline::LightType::Point; break;
+        case components::Light::Type::Spot:  out.type = render::RenderPipeline::LightType::Spot;  break;
+        default:                             out.type = render::RenderPipeline::LightType::Directional; break;
+        }
+        out.position = entity->transform() ? entity->transform()->position : math::Vector3f::zero();
+        out.direction = light->direction.normalized();
         out.color = light->color;
         out.intensity = light->intensity;
-        // 方向光：使用组件显式方向；其他类型暂按方向光处理。
-        out.direction = light->direction.normalized();
+        out.range = light->range;
+        out.spot_angle = light->spot_angle;
         lights.push_back(out);
     });
     if (lights.empty()) {
         // 兜底：保证至少有一个方向光
-        lights.push_back({ math::Vector3f(0.0f, -1.0f, 0.0f), math::Vector3f::one(), 1.0f });
+        render::RenderPipeline::Light fallback;
+        fallback.direction = math::Vector3f(0.0f, -1.0f, 0.0f);
+        lights.push_back(fallback);
     }
     return lights;
 }
@@ -653,10 +736,10 @@ static void reset_3d_scene(scene::Scene& scene, math::Camera& camera) {
         cube = create_cube_entity(scene, "Cube", true);
     }
 
-    // 重置全局 FPS 摄像机：侧视图，从 +X 方向观察 Cube 下落
-    camera.set_position(math::Vector3f(120.0f, 20.0f, 0.0f));
-    camera.set_yaw(180.0f);
-    camera.set_pitch(30.0f);
+    // 重置全局 FPS 摄像机：斜上方俯瞰，能同时看到 Cube 下落与地面材质/光照展示
+    camera.set_position(math::Vector3f(60.0f, 30.0f, 60.0f));
+    camera.set_yaw(225.0f);
+    camera.set_pitch(-18.0f);
 
     // 同步场景中的主摄像机组件
     if (scene::Entity* cam_entity = find_main_camera_entity(scene)) {
@@ -777,6 +860,7 @@ int main(int argc, char* argv[])
     // 解析命令行参数
     render::RenderAPI selected_api = render::RenderAPI::OpenGL;
     bool screenshot_mode = false;
+    float screenshot_delay = 0.0f; // --screenshot-delay N：启动 N 秒后再截图（默认立即）
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
     float auto_close_seconds = 0.0f; // --auto-close N：运行 N 秒后自动关闭，用于 CI/关机测试
     for (int i = 1; i < argc; ++i) {
@@ -784,6 +868,8 @@ int main(int argc, char* argv[])
             selected_api = render::RenderAPI::Vulkan;
         } else if (std::strcmp(argv[i], "--screenshot") == 0) {
             screenshot_mode = true;
+        } else if (std::strcmp(argv[i], "--screenshot-delay") == 0 && i + 1 < argc) {
+            screenshot_delay = static_cast<float>(std::atof(argv[++i]));
         } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
             vulkan_validation = true;
         } else if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
@@ -865,11 +951,10 @@ int main(int argc, char* argv[])
     input.set_mouse_locked(false);  // 启动时不锁定鼠标，按 Tab 进入 FPS 模式，ESC 解锁
 
     math::Camera camera;
-    // 初始摄像机：侧视图，从 +X 方向观察 Cube 从 200m 高处下落。
-    // 距离拉近、高度略升，让 40x40 的 Cube 贴图清晰可见。
-    camera.set_position(math::Vector3f(120.0f, 20.0f, 0.0f));
-    camera.set_yaw(180.0f);
-    camera.set_pitch(30.0f);
+    // 初始摄像机：斜上方俯瞰，能同时看到 Cube 从 200m 下落与地面材质/光照展示。
+    camera.set_position(math::Vector3f(60.0f, 30.0f, 60.0f));
+    camera.set_yaw(225.0f);
+    camera.set_pitch(-18.0f);
 
     // 加载或创建场景（必须在 render_ctx.start() 之前，因为上传网格需要主线程 GL context）
     const std::string scene_path = "res:/scenes/main.gesc";
@@ -913,6 +998,11 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    // 天空盒（同样必须在 start() 之前设置）
+    pipeline.set_skybox({ "res:/textures/skybox/px.png", "res:/textures/skybox/nx.png",
+                          "res:/textures/skybox/py.png", "res:/textures/skybox/ny.png",
+                          "res:/textures/skybox/pz.png", "res:/textures/skybox/nz.png" });
+
     // 创建 ECS World 并注册系统
     ecs::World world;
     if (current_scene) {
@@ -930,7 +1020,7 @@ int main(int argc, char* argv[])
     // 启动渲染线程（此后主线程不再持有 GL context）
     render_ctx.start();
 
-    if (screenshot_mode) {
+    if (screenshot_mode && screenshot_delay <= 0.0f) {
         const std::string screenshot_path = is_vulkan
                                                 ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
                                                 : "D:/Gryce-Engine/screenshot_opengl.bmp";
@@ -965,6 +1055,21 @@ int main(int argc, char* argv[])
                 GLOG_INFO("Auto-close after {} seconds", auto_close_seconds);
                 window.request_close();
                 break;
+            }
+        }
+
+        // 延迟截图：等渲染进入稳态后再抓取，便于验证贴图/光照是否正确
+        if (screenshot_mode && screenshot_delay > 0.0f) {
+            static double screenshot_timer = 0.0;
+            static bool screenshot_sent = false;
+            screenshot_timer += window.delta_time();
+            if (!screenshot_sent && screenshot_timer >= static_cast<double>(screenshot_delay)) {
+                screenshot_sent = true;
+                const std::string screenshot_path = is_vulkan
+                                                        ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
+                                                        : "D:/Gryce-Engine/screenshot_opengl.bmp";
+                render_ctx.request_screenshot(screenshot_path);
+                GLOG_INFO("Delayed screenshot requested: '{}'", screenshot_path);
             }
         }
 
@@ -1275,11 +1380,16 @@ int main(int argc, char* argv[])
     GLOG_INFO("Render loop exited. FPS: {:.1f}", window.fps());
 
     // 退出时保存场景（不保存运行时通过 Model Loader 加载的临时模型，
-    // 也不保存物理运行时的下落状态，避免把 y=200 的出生点覆盖成空中位置）
+    // 也不保存运行时生成的物理演示实体——链条/角色每次启动都会由
+    // ensure_physics_demo_entities 重新创建，保存进去会污染场景文件；
+    // 同样不保存物理运行时的下落状态，避免把 y=200 的出生点覆盖成空中位置）
     if (world.scene()) {
         std::vector<scene::Entity*> runtime_models;
         world.scene()->foreach([&](scene::Entity* entity) {
-            if (entity->name().rfind("LoadedModel", 0) == 0) {
+            const std::string& n = entity->name();
+            if (n.rfind("LoadedModel", 0) == 0 ||
+                n.rfind("DemoChain", 0) == 0 ||
+                n == "DemoCharacter") {
                 runtime_models.push_back(entity);
             }
         });

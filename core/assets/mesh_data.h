@@ -27,12 +27,35 @@ struct MeshVertex {
 };
 
 // ---------------------------------------------------------------------------
+// MeshMaterialData — 模型文件自带的材质数据（OBJ MTL / assimp 提取）
+// MeshRenderer 在上传时把其中仍为默认值的字段合并进组件 Material。
+// ---------------------------------------------------------------------------
+struct MeshMaterialData {
+    bool valid = false;
+
+    math::Vector3f albedo_color = math::Vector3f::one();
+    math::Vector3f emissive_color = math::Vector3f::zero();
+    float opacity = 1.0f;
+    float roughness = 0.5f;
+    float metallic = 0.0f;
+
+    // 贴图路径（相对模型文件目录解析后的完整路径）
+    std::string albedo_map;
+    std::string normal_map;
+    std::string emissive_map;
+    std::string roughness_map;
+    std::string metallic_map;
+    std::string ao_map;
+};
+
+// ---------------------------------------------------------------------------
 // MeshData — 网格资源数据（CPU 侧）
 // ---------------------------------------------------------------------------
 struct MeshData : public Asset {
     std::string name;
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
+    MeshMaterialData material;
 
     const char* type() const override { return "MeshData"; }
 

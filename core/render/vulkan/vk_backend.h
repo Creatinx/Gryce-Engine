@@ -47,6 +47,7 @@ public:
     void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) override;
     void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) override;
     void set_depth_test(bool enabled) override;
+    void set_depth_write(bool enabled) override;
     void set_blend(bool enabled) override;
     void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) override;
     void set_blend_equation(BlendEquation mode) override;
@@ -126,6 +127,9 @@ private:
     bool initialized_ = false;
     bool in_forward_pass_ = false;
     bool frame_aborted_ = false;
+    // acquire 连续返回 NOT_READY/TIMEOUT 的次数；偶发属正常（静默跳帧），
+    // 持续则视为 WSI 状态异常，达到阈值后重建 swapchain 恢复。
+    int acquire_fail_streak_ = 0;
     RHIFramebufferHandle current_framebuffer_;
 
     RHIResourcePool<VulkanMesh> mesh_pool_;
@@ -155,7 +159,6 @@ private:
     void begin_geometry_secondary();
     void end_geometry_secondary();
     VkCommandBuffer allocate_secondary_cb();
-    void free_secondary_cb(VkCommandBuffer cb);
     void execute_secondary(VkCommandBuffer secondary);
     void reset_inline_secondary_state();
     void begin_render_pass_secondary(VkRenderPass rp, VkFramebuffer fb,
@@ -165,21 +168,25 @@ private:
 
     // 当前渲染状态缓存（高层 API 状态）
     bool depth_test_enabled_ = true;
+    bool depth_write_enabled_ = true;
     bool blend_enabled_ = false;
     bool cull_face_enabled_ = true;
     BlendFactor blend_src_factor_ = BlendFactor::SrcAlpha;
     BlendFactor blend_dst_factor_ = BlendFactor::OneMinusSrcAlpha;
     BlendEquation blend_equation_ = BlendEquation::Add;
 
-    // 每帧命令缓冲状态缓存，避免冗余 Vulkan 命令
+    // 每帧命令缓冲状态缓存，避免冗余 Vulkan 命令。
+    // 动态状态必须初始化为非法哨兵值：新 secondary CB 不继承任何动态状态，
+    // 若缓存默认值恰好等于目标值（如 depth_test=false），cached helper 会
+    // 跳过下发，导致该 CB 从未设置过对应动态状态（validation VUID-07843）。
     struct StateCache {
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
         VkCullModeFlags cull_mode = VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
-        VkFrontFace front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        VkBool32 depth_test = VK_FALSE;
-        VkBool32 depth_write = VK_FALSE;
+        VkFrontFace front_face = VK_FRONT_FACE_MAX_ENUM;
+        VkBool32 depth_test = static_cast<VkBool32>(~0u);
+        VkBool32 depth_write = static_cast<VkBool32>(~0u);
     } state_cache_;
 
     // Multi-viewport 支持

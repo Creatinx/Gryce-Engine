@@ -45,6 +45,16 @@ public:
     virtual bool upload_data(const void* data, int width, int height, int channels = 4) = 0;
     virtual bool create_depth(int width, int height) = 0;
 
+    // 上传 cubemap 六个面，顺序固定为 +X,-X,+Y,-Y,+Z,-Z；
+    // 每面 width×height×channels，像素按 top-down 行序，不做翻转。
+    // 不支持 cubemap 的后端返回 false。
+    virtual bool upload_cubemap(const void* faces[6], int width, int height, int channels = 4) {
+        (void)faces; (void)width; (void)height; (void)channels;
+        return false;
+    }
+
+    virtual bool is_cubemap() const { return false; }
+
     // 显式格式创建（PBR、阴影图、HDR 等场景）
     virtual bool create(TextureFormat format, int width, int height, const void* data = nullptr) = 0;
 

@@ -251,7 +251,8 @@ bool GLShader::load_program(const std::string& name,
                             const std::string& shader_dir,
                             IFramebuffer* /*target*/,
                             bool /*color_output*/,
-                            bool /*post_process*/) {
+                            bool /*post_process*/,
+                            bool /*skybox*/) {
     std::string dir = resources::ResourcePath::resolve(shader_dir);
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') {
         dir += '/';

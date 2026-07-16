@@ -45,6 +45,7 @@ public:
     void set_scissor(int x, int y, int w, int h) override;
     void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) override;
     void set_depth_test(bool enabled) override;
+    void set_depth_write(bool enabled) override;
     void set_blend(bool enabled) override;
     void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) override;
     void set_blend_equation(BlendEquation mode) override;
@@ -103,6 +104,7 @@ private:
     // 状态缓存：避免向 driver 下发重复的状态切换命令。
     bool state_cache_valid_ = false;
     bool depth_test_enabled_ = false;
+    bool depth_write_enabled_ = true;
     bool blend_enabled_ = false;
     bool cull_face_enabled_ = false;
     BlendFactor blend_src_ = BlendFactor::One;

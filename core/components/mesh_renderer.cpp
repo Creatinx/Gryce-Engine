@@ -111,6 +111,28 @@ render::IMesh* MeshRenderer::upload_to_gpu(render::RenderContext* ctx, const ass
     };
     mesh_ptr->set_layout(layout);
 
+    // 模型文件自带材质（MTL / assimp）：只合并组件中仍为默认值的字段，
+    // 场景文件或代码显式设置的材质属性优先。
+    if (material && data->material.valid) {
+        const assets::MeshMaterialData& mm = data->material;
+        const math::Vector3f one = math::Vector3f::one();
+        const math::Vector3f zero = math::Vector3f::zero();
+        if (material->albedo_color == one) material->albedo_color = mm.albedo_color;
+        if (material->emissive_color == zero) material->emissive_color = mm.emissive_color;
+        if (material->opacity == 1.0f && mm.opacity < 1.0f) {
+            material->opacity = mm.opacity;
+            material->blend_mode = render::Material::BlendMode::Blend;
+        }
+        if (material->roughness == 0.5f) material->roughness = mm.roughness;
+        if (material->metallic == 0.0f) material->metallic = mm.metallic;
+        if (material->albedo_map_path.empty()) material->albedo_map_path = mm.albedo_map;
+        if (material->normal_map_path.empty()) material->normal_map_path = mm.normal_map;
+        if (material->emissive_map_path.empty()) material->emissive_map_path = mm.emissive_map;
+        if (material->roughness_map_path.empty()) material->roughness_map_path = mm.roughness_map;
+        if (material->metallic_map_path.empty()) material->metallic_map_path = mm.metallic_map;
+        if (material->ao_map_path.empty()) material->ao_map_path = mm.ao_map;
+    }
+
     // 同时上传材质贴图
     if (material) {
         material->upload_to_gpu(ctx);

@@ -239,6 +239,7 @@ void VulkanRenderer2D::shutdown() {
     for (auto& buf : vertex_buffer_shadow_caster_) buf.shutdown();
     for (auto& buf : fs_vertex_buffer_) buf.shutdown();
     for (auto& buf : light_ubo_) buf.shutdown();
+    retired_buffers_.clear();
 
     if (dev != VK_NULL_HANDLE) {
         if (pipeline_rect_) vkDestroyPipeline(dev, pipeline_rect_, nullptr);
@@ -646,7 +647,7 @@ bool VulkanRenderer2D::create_swapchain_pipelines() {
     base_attrs[2].offset = 6 * sizeof(float);
 
     pipeline_rect_ = create_pipeline(vert_module_, frag_rect_module_, pipeline_layout_, swapchain_rp,
-                                     sizeof(Vertex2D), base_attrs, 3, false, false, false);
+                                     sizeof(Vertex2D), base_attrs, 3, false, false, true);
     pipeline_text_ = create_pipeline(vert_module_, frag_text_module_, pipeline_layout_, swapchain_rp,
                                      sizeof(Vertex2D), base_attrs, 3, false, false, true);
     pipeline_sprite_ = create_pipeline(vert_module_, frag_sprite_module_, pipeline_layout_, swapchain_rp,
@@ -731,9 +732,30 @@ VkDescriptorSet VulkanRenderer2D::allocate_descriptor_set(VkDescriptorSetLayout 
     return set;
 }
 
+bool VulkanRenderer2D::grow_vertex_buffer(VulkanBuffer& buffer, VkDeviceSize& capacity,
+                                          VkDeviceSize required, int frame_index, const char* what) {
+    if (required <= capacity) return true;
+    // 旧缓冲可能仍被本帧已录制的 draw 引用：不能立即 shutdown，移入退役
+    // 列表，由 begin_frame 的渲染命令在该帧槽 fence 等待之后统一销毁。
+    if (frame_index >= 0 && frame_index < static_cast<int>(retired_buffers_.size())) {
+        retired_buffers_[frame_index].push_back(std::move(buffer));
+    } else {
+        buffer.shutdown();
+    }
+    capacity = required * 2;
+    if (!buffer.init(vk_device_, capacity,
+                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        GLOG_ERROR("VulkanRenderer2D: failed to resize {}", what);
+        return false;
+    }
+    return true;
+}
+
 bool VulkanRenderer2D::create_vertex_buffers() {
     const int frames = vk_swapchain_ ? vk_swapchain_->frames_in_flight() : 2;
 
+    retired_buffers_.resize(frames);
     vertex_buffer_rect_.resize(frames);
     vertex_buffer_text_.resize(frames);
     vertex_buffer_sprite_.resize(frames);
@@ -956,7 +978,7 @@ bool VulkanRenderer2D::create_bloom_targets() {
     base_attrs[2].offset = 6 * sizeof(float);
 
     pipeline_rect_scene_ = create_pipeline(vert_module_, frag_rect_module_, pipeline_layout_, scene_rp,
-                                           sizeof(Vertex2D), base_attrs, 3, false, false, false);
+                                           sizeof(Vertex2D), base_attrs, 3, false, false, true);
     pipeline_text_scene_ = create_pipeline(vert_module_, frag_text_module_, pipeline_layout_, scene_rp,
                                            sizeof(Vertex2D), base_attrs, 3, false, false, true);
     pipeline_sprite_scene_ = create_pipeline(vert_module_, frag_sprite_module_, pipeline_layout_, scene_rp,
@@ -1084,7 +1106,8 @@ void VulkanRenderer2D::write_lit_descriptor_set(VkDescriptorSet set, int frame_i
     infos[1].imageView = normal_tex->image_view();
     infos[1].sampler = normal_tex->sampler();
 
-    infos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    infos[2].imageLayout = use_shadow && shadow_map_ ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     infos[2].imageView = use_shadow && shadow_map_ ? shadow_map_->image_view() : fallback_albedo_->image_view();
     infos[2].sampler = use_shadow && shadow_map_ ? shadow_map_->sampler() : fallback_albedo_->sampler();
 
@@ -1133,11 +1156,21 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     lit_batches_.clear();
     shadow_caster_vertices_.clear();
     reset_lights();
-    int frame_index = vk_swapchain_ ? vk_swapchain_->current_frame_index() : 0;
-    if (frame_index >= 0 && frame_index < static_cast<int>(descriptor_pools_.size()) &&
-        descriptor_pools_[frame_index] != VK_NULL_HANDLE) {
-        vkResetDescriptorPool(vk_device_->device(), descriptor_pools_[frame_index], 0);
-    }
+    // 描述符池 reset 与退役缓冲销毁必须在渲染线程执行：本函数跑在主线程，
+    // 主线程可能比渲染线程领先最多 3 帧，直接在此 reset 会与渲染线程正在
+    // 进行的 allocate/write 竞争（host 侧数据竞争，描述符损坏导致 GPU
+    // device lost）。推成渲染命令后，它在 backend begin_frame（fence 等待）
+    // 之后执行，时序与安全性都有保证。
+    ctx_->push_command([this](IRenderBackend*) {
+        int frame_index = vk_swapchain_ ? vk_swapchain_->current_frame_index() : 0;
+        if (frame_index >= 0 && frame_index < static_cast<int>(descriptor_pools_.size()) &&
+            descriptor_pools_[frame_index] != VK_NULL_HANDLE) {
+            vkResetDescriptorPool(vk_device_->device(), descriptor_pools_[frame_index], 0);
+        }
+        if (frame_index >= 0 && frame_index < static_cast<int>(retired_buffers_.size())) {
+            retired_buffers_[frame_index].clear();
+        }
+    });
     screen_width_ = screen_width;
     screen_height_ = screen_height;
     GLOG_DEBUG("VulkanRenderer2D::begin_frame screen={}x{} cam_center=({}, {}) zoom={}",
@@ -1263,16 +1296,9 @@ void VulkanRenderer2D::render_shadow_pass() {
         VulkanBuffer* vertex_buffer = &vertex_buffer_shadow_caster_[frame_index];
         VkDeviceSize* capacity = &vertex_buffer_shadow_caster_capacity_[frame_index];
         VkDeviceSize required = verts_shared->size() * sizeof(ShadowCasterVertex);
-        if (required > *capacity) {
-            vertex_buffer->shutdown();
-            *capacity = required * 2;
-            if (!vertex_buffer->init(vk_device_, *capacity,
-                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-                GLOG_ERROR("VulkanRenderer2D: failed to resize shadow caster vertex buffer");
-                return;
-            }
+        if (!grow_vertex_buffer(*vertex_buffer, *capacity, required, frame_index,
+                                "shadow caster vertex buffer")) {
+            return;
         }
         vertex_buffer->upload(verts_shared->data(), required);
 
@@ -1365,12 +1391,29 @@ void VulkanRenderer2D::render_lit_sprites_forward(bool offscreen) {
         ubo.light_space_matrix = light_proj * light_view;
     }
 
-    std::vector<LitBatch> batches_copy;
-    batches_copy.reserve(lit_batches_.size());
+    // 合并所有批次到一个顶点数组。旧实现每个批次都往同一个顶点缓冲的
+    // offset 0 上传：memcpy 发生在命令录制期间，后一批会覆盖前一批的顶点，
+    // 导致所有 draw 实际都读到最后一批的几何（只有最后一个批次可见）。
+    struct BatchSpan {
+        ITexture* albedo;
+        ITexture* normal;
+        uint32_t first_vertex;
+        uint32_t vertex_count;
+    };
+    std::vector<BatchSpan> spans;
+    std::vector<LitVertex2D> all_verts;
+    spans.reserve(lit_batches_.size());
     for (auto& kv : lit_batches_) {
-        batches_copy.push_back({kv.second.albedo, kv.second.normal, std::move(kv.second.verts)});
+        if (kv.second.verts.empty()) continue;
+        spans.push_back({kv.second.albedo, kv.second.normal,
+                         static_cast<uint32_t>(all_verts.size()),
+                         static_cast<uint32_t>(kv.second.verts.size())});
+        all_verts.insert(all_verts.end(),
+                         std::make_move_iterator(kv.second.verts.begin()),
+                         std::make_move_iterator(kv.second.verts.end()));
     }
     lit_batches_.clear();
+    if (all_verts.empty()) return;
 
     // 上传 UBO
     auto ubo_shared = std::make_shared<LightUBO>(std::move(ubo));
@@ -1380,72 +1423,64 @@ void VulkanRenderer2D::render_lit_sprites_forward(bool offscreen) {
         light_ubo_[frame_index].upload(ubo_shared.get(), sizeof(LightUBO));
     });
 
-    // 逐批次绘制
-    for (auto& batch : batches_copy) {
-        auto batch_shared = std::make_shared<LitBatch>(std::move(batch));
-        ctx_->push_command([this, batch_shared, lit_pipeline, use_shadow](IRenderBackend*) {
-            if (batch_shared->verts.empty()) return;
+    // 单次上传顶点缓冲，逐批次用 firstVertex 偏移绘制
+    auto verts_shared = std::make_shared<std::vector<LitVertex2D>>(std::move(all_verts));
+    auto spans_shared = std::make_shared<std::vector<BatchSpan>>(std::move(spans));
+    ctx_->push_command([this, verts_shared, spans_shared, lit_pipeline, use_shadow](IRenderBackend*) {
+        int frame_index = vk_swapchain_->current_frame_index();
+        if (frame_index < 0 || frame_index >= static_cast<int>(vertex_buffer_lit_sprite_.size())) return;
 
-            int frame_index = vk_swapchain_->current_frame_index();
-            if (frame_index < 0 || frame_index >= static_cast<int>(vertex_buffer_lit_sprite_.size())) return;
+        VulkanBuffer* vertex_buffer = &vertex_buffer_lit_sprite_[frame_index];
+        VkDeviceSize* capacity = &vertex_buffer_lit_sprite_capacity_[frame_index];
+        VkDeviceSize required = verts_shared->size() * sizeof(LitVertex2D);
+        if (!grow_vertex_buffer(*vertex_buffer, *capacity, required, frame_index,
+                                "lit sprite vertex buffer")) {
+            return;
+        }
+        vertex_buffer->upload(verts_shared->data(), required);
 
-            VulkanBuffer* vertex_buffer = &vertex_buffer_lit_sprite_[frame_index];
-            VkDeviceSize* capacity = &vertex_buffer_lit_sprite_capacity_[frame_index];
-            VkDeviceSize required = batch_shared->verts.size() * sizeof(LitVertex2D);
-            if (required > *capacity) {
-                vertex_buffer->shutdown();
-                *capacity = required * 2;
-                if (!vertex_buffer->init(vk_device_, *capacity,
-                                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-                    GLOG_ERROR("VulkanRenderer2D: failed to resize lit sprite vertex buffer");
-                    return;
-                }
-            }
-            vertex_buffer->upload(batch_shared->verts.data(), required);
+        VkCommandBuffer cmd = vk_backend_->current_command_buffer();
+        if (cmd == VK_NULL_HANDLE) return;
 
-            VkCommandBuffer cmd = vk_backend_->current_command_buffer();
-            if (cmd == VK_NULL_HANDLE) return;
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = screen_height_;
+        viewport.width = screen_width_;
+        viewport.height = -screen_height_;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vk_backend_->set_viewport_cached(cmd, viewport);
 
-            VkViewport viewport{};
-            viewport.x = 0.0f;
-            viewport.y = screen_height_;
-            viewport.width = screen_width_;
-            viewport.height = -screen_height_;
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            vk_backend_->set_viewport_cached(cmd, viewport);
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = {static_cast<uint32_t>(screen_width_), static_cast<uint32_t>(screen_height_)};
+        vk_backend_->set_scissor_cached(cmd, scissor);
 
-            VkRect2D scissor{};
-            scissor.offset = {0, 0};
-            scissor.extent = {static_cast<uint32_t>(screen_width_), static_cast<uint32_t>(screen_height_)};
-            vk_backend_->set_scissor_cached(cmd, scissor);
+        vk_backend_->bind_pipeline(cmd, lit_pipeline);
+        vk_backend_->set_dynamic_state_2d(cmd);
 
-            vk_backend_->bind_pipeline(cmd, lit_pipeline);
-            vk_backend_->set_dynamic_state_2d(cmd);
+        vkCmdPushConstants(cmd, lit_pipeline_layout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(math::Matrix4f), &view_proj_);
 
-            vkCmdPushConstants(cmd, lit_pipeline_layout_,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(math::Matrix4f), &view_proj_);
+        VkBuffer buffers[] = {vertex_buffer->buffer()};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
 
+        for (const auto& span : *spans_shared) {
             VkDescriptorSet set = allocate_descriptor_set(lit_descriptor_layout_);
             if (set == VK_NULL_HANDLE) {
                 GLOG_ERROR("VulkanRenderer2D::render_lit_sprites_forward failed to allocate descriptor set");
-                return;
+                continue;
             }
             write_lit_descriptor_set(set, frame_index,
-                                     batch_shared->albedo ? dynamic_cast<VulkanTexture*>(batch_shared->albedo) : nullptr,
-                                     batch_shared->normal ? dynamic_cast<VulkanTexture*>(batch_shared->normal) : nullptr,
+                                     span.albedo ? dynamic_cast<VulkanTexture*>(span.albedo) : nullptr,
+                                     span.normal ? dynamic_cast<VulkanTexture*>(span.normal) : nullptr,
                                      use_shadow);
             vk_backend_->bind_descriptor_set(cmd, lit_pipeline_layout_, set);
-
-            VkBuffer buffers[] = {vertex_buffer->buffer()};
-            VkDeviceSize offsets[] = {0};
-            vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
-            vkCmdDraw(cmd, static_cast<uint32_t>(batch_shared->verts.size()), 1, 0, 0);
-        });
-    }
+            vkCmdDraw(cmd, span.vertex_count, 1, span.first_vertex, 0);
+        }
+    });
 }
 
 void VulkanRenderer2D::render_bloom_pass() {
@@ -1664,16 +1699,9 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         }
 
         VkDeviceSize required = verts_shared->size() * sizeof(Vertex2D);
-        if (required > *capacity) {
-            vertex_buffer->shutdown();
-            *capacity = required * 2;
-            if (!vertex_buffer->init(vk_device_, *capacity,
-                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-                GLOG_ERROR("VulkanRenderer2D: failed to resize vertex buffer");
-                return;
-            }
+        if (!grow_vertex_buffer(*vertex_buffer, *capacity, required, frame_index,
+                                "vertex buffer")) {
+            return;
         }
         vertex_buffer->upload(verts_shared->data(), required);
 

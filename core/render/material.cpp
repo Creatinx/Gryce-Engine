@@ -1,5 +1,7 @@
 #include "material.h"
 
+#include <fstream>
+
 #include "assets/asset_manager.h"
 #include "assets/texture_data.h"
 #include "render_context.h"
@@ -16,16 +18,24 @@ void Material::serialize(nlohmann::json& out) const {
     out["roughness"] = roughness;
     out["metallic"] = metallic;
     out["ao"] = ao;
+    out["emissive_color"] = { emissive_color.x, emissive_color.y, emissive_color.z };
+    out["opacity"] = opacity;
+    out["blend_mode"] = static_cast<int>(blend_mode);
+    out["two_sided"] = two_sided;
+    out["uv_scale"] = { uv_scale.x, uv_scale.y };
+    out["uv_offset"] = { uv_offset.x, uv_offset.y };
     out["albedo_map_path"] = albedo_map_path;
     out["normal_map_path"] = normal_map_path;
     out["roughness_map_path"] = roughness_map_path;
     out["metallic_map_path"] = metallic_map_path;
     out["ao_map_path"] = ao_map_path;
+    out["emissive_map_path"] = emissive_map_path;
     out["use_albedo_map"] = use_albedo_map;
     out["use_normal_map"] = use_normal_map;
     out["use_roughness_map"] = use_roughness_map;
     out["use_metallic_map"] = use_metallic_map;
     out["use_ao_map"] = use_ao_map;
+    out["use_emissive_map"] = use_emissive_map;
     out["softness"] = softness;
     out["drag_coefficient"] = drag_coefficient;
     out["density"] = density;
@@ -39,20 +49,60 @@ void Material::deserialize(const nlohmann::json& in) {
     roughness = in.value("roughness", roughness);
     metallic = in.value("metallic", metallic);
     ao = in.value("ao", ao);
+    auto e = in.value("emissive_color", std::vector<float>{0.0f, 0.0f, 0.0f});
+    if (e.size() >= 3) emissive_color = math::Vector3f(e[0], e[1], e[2]);
+    opacity = in.value("opacity", opacity);
+    blend_mode = static_cast<BlendMode>(in.value("blend_mode", 0));
+    two_sided = in.value("two_sided", two_sided);
+    auto us = in.value("uv_scale", std::vector<float>{1.0f, 1.0f});
+    if (us.size() >= 2) uv_scale = math::Vector2f(us[0], us[1]);
+    auto uo = in.value("uv_offset", std::vector<float>{0.0f, 0.0f});
+    if (uo.size() >= 2) uv_offset = math::Vector2f(uo[0], uo[1]);
     albedo_map_path = in.value("albedo_map_path", albedo_map_path);
     normal_map_path = in.value("normal_map_path", normal_map_path);
     roughness_map_path = in.value("roughness_map_path", roughness_map_path);
     metallic_map_path = in.value("metallic_map_path", metallic_map_path);
     ao_map_path = in.value("ao_map_path", ao_map_path);
+    emissive_map_path = in.value("emissive_map_path", emissive_map_path);
     use_albedo_map = in.value("use_albedo_map", use_albedo_map);
     use_normal_map = in.value("use_normal_map", use_normal_map);
     use_roughness_map = in.value("use_roughness_map", use_roughness_map);
     use_metallic_map = in.value("use_metallic_map", use_metallic_map);
     use_ao_map = in.value("use_ao_map", use_ao_map);
+    use_emissive_map = in.value("use_emissive_map", use_emissive_map);
     softness = in.value("softness", softness);
     drag_coefficient = in.value("drag_coefficient", drag_coefficient);
     density = in.value("density", density);
     preset_name = in.value("preset_name", preset_name);
+}
+
+bool Material::save_to_file(const std::string& path) const {
+    nlohmann::json j;
+    serialize(j);
+    std::ofstream file(resources::ResourcePath::resolve(path));
+    if (!file.is_open()) {
+        GLOG_ERROR("Material: failed to save '{}'", path);
+        return false;
+    }
+    file << j.dump(2);
+    return true;
+}
+
+bool Material::load_from_file(const std::string& path) {
+    std::ifstream file(resources::ResourcePath::resolve(path));
+    if (!file.is_open()) {
+        GLOG_ERROR("Material: failed to open '{}'", path);
+        return false;
+    }
+    nlohmann::json j;
+    try {
+        file >> j;
+    } catch (const std::exception& ex) {
+        GLOG_ERROR("Material: failed to parse '{}': {}", path, ex.what());
+        return false;
+    }
+    deserialize(j);
+    return true;
 }
 
 static RHITextureHandle create_fallback_texture(RenderContext* ctx,
@@ -123,6 +173,11 @@ void Material::upload_to_gpu(RenderContext* ctx) {
         ao_map_ = create_fallback_texture(ctx, 255, 255, 255, 255);
     }
 
+    emissive_map_ = load_texture(ctx, emissive_map_path);
+    if (!emissive_map_.is_valid()) {
+        emissive_map_ = create_fallback_texture(ctx, 255, 255, 255, 255);
+    }
+
     GLOG_INFO("Material '{}' uploaded to GPU", name);
 }
 
@@ -133,6 +188,10 @@ void Material::bind(RenderContext* ctx, RHIShaderHandle shader) const {
     ctx->set_uniform_float(shader, "uRoughness", roughness);
     ctx->set_uniform_float(shader, "uMetallic", metallic);
     ctx->set_uniform_float(shader, "uAO", ao);
+    ctx->set_uniform_vec3(shader, "uEmissiveColor", emissive_color);
+    ctx->set_uniform_float(shader, "uOpacity", opacity);
+    ctx->set_uniform_vec4(shader, "uUVTransform",
+                          math::Vector4f(uv_scale.x, uv_scale.y, uv_offset.x, uv_offset.y));
 
     auto bind_tex = [&](RHITextureHandle tex, int slot, bool use, const char* use_flag,
                         const char* uniform) {
@@ -144,6 +203,7 @@ void Material::bind(RenderContext* ctx, RHIShaderHandle shader) const {
         ctx->set_uniform_int(shader, uniform, slot);
     };
 
+    // 贴图槽位约定：0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 shadow, 6 emissive
     bind_tex(albedo_map_, 0, use_albedo_map && !albedo_map_path.empty(),
              "uUseAlbedoMap", "uAlbedoMap");
     bind_tex(normal_map_, 1, use_normal_map && !normal_map_path.empty(),
@@ -154,6 +214,8 @@ void Material::bind(RenderContext* ctx, RHIShaderHandle shader) const {
              "uUseMetallicMap", "uMetallicMap");
     bind_tex(ao_map_, 4, use_ao_map && !ao_map_path.empty(),
              "uUseAOMap", "uAOMap");
+    bind_tex(emissive_map_, 6, use_emissive_map && !emissive_map_path.empty(),
+             "uUseEmissiveMap", "uEmissiveMap");
 }
 
 void Material::destroy_gpu(RenderContext* ctx) {
@@ -169,6 +231,7 @@ void Material::destroy_gpu(RenderContext* ctx) {
     destroy(roughness_map_);
     destroy(metallic_map_);
     destroy(ao_map_);
+    destroy(emissive_map_);
 }
 
 } // namespace gryce_engine::render

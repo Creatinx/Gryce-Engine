@@ -40,6 +40,7 @@ enum class RenderCommandType : uint8_t {
     SetViewport,
     SetScissor,
     SetDepthTest,
+    SetDepthWrite,
     SetBlend,
     SetBlendFunc,
     SetBlendEquation,
@@ -72,6 +73,7 @@ struct RenderCommandTyped {
         struct { int x, y, w, h; } viewport;
         struct { int x, y, w, h; } scissor;
         struct { bool enabled; } depth_test;
+        struct { bool enabled; } depth_write;
         struct { bool enabled; } blend;
         struct { BlendFactor src; BlendFactor dst; } blend_func;
         BlendEquation blend_equation;
@@ -118,6 +120,13 @@ struct RenderCommandTyped {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetDepthTest;
         cmd.depth_test = {enabled};
+        return cmd;
+    }
+
+    static RenderCommandTyped make_set_depth_write(bool enabled) {
+        RenderCommandTyped cmd;
+        cmd.type = RenderCommandType::SetDepthWrite;
+        cmd.depth_write = {enabled};
         return cmd;
     }
 

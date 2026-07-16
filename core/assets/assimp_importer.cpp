@@ -4,6 +4,8 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
+#include <cmath>
+
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::assets {
@@ -18,7 +20,56 @@ math::Vector2f to_vector2f(const aiVector3D& v) {
     return math::Vector2f(v.x, v.y);
 }
 
-MeshData process_mesh(aiMesh* mesh) {
+std::string dir_of(const std::string& path) {
+    const size_t pos = path.find_last_of("/\\");
+    return (pos == std::string::npos) ? std::string() : path.substr(0, pos + 1);
+}
+
+// 从 aiMaterial 提取 PBR 材质字段（贴图路径基于模型文件目录解析）。
+void process_material(const aiScene* scene, aiMesh* mesh, const std::string& base_dir, MeshData& data) {
+    if (!scene->HasMaterials() || mesh->mMaterialIndex >= scene->mNumMaterials) return;
+    const aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
+
+    aiColor3D color;
+    if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS) {
+        data.material.albedo_color = math::Vector3f(color.r, color.g, color.b);
+    }
+    if (mat->Get(AI_MATKEY_COLOR_EMISSIVE, color) == AI_SUCCESS) {
+        data.material.emissive_color = math::Vector3f(color.r, color.g, color.b);
+    }
+    float opacity = 1.0f;
+    if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
+        data.material.opacity = opacity;
+    }
+    float shininess = -1.0f;
+    if (mat->Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS && shininess >= 0.0f) {
+        // Blinn 高光指数转 GGX 粗糙度（常见近似）
+        data.material.roughness = std::sqrt(2.0f / (shininess + 2.0f));
+        if (data.material.roughness > 1.0f) data.material.roughness = 1.0f;
+    }
+    float metallic = 0.0f;
+    if (mat->Get(AI_MATKEY_METALLIC_FACTOR, metallic) == AI_SUCCESS) {
+        data.material.metallic = metallic;
+    }
+
+    auto get_texture = [&](aiTextureType type, std::string& out_path) {
+        if (mat->GetTextureCount(type) == 0) return;
+        aiString tex_path;
+        if (mat->GetTexture(type, 0, &tex_path) == AI_SUCCESS) {
+            out_path = base_dir + tex_path.C_Str();
+        }
+    };
+    get_texture(aiTextureType_DIFFUSE, data.material.albedo_map);
+    get_texture(aiTextureType_NORMALS, data.material.normal_map);
+    get_texture(aiTextureType_EMISSIVE, data.material.emissive_map);
+    get_texture(aiTextureType_DIFFUSE_ROUGHNESS, data.material.roughness_map);
+    get_texture(aiTextureType_METALNESS, data.material.metallic_map);
+    get_texture(aiTextureType_AMBIENT_OCCLUSION, data.material.ao_map);
+
+    data.material.valid = true;
+}
+
+MeshData process_mesh(const aiScene* scene, aiMesh* mesh, const std::string& base_dir) {
     MeshData data;
     data.name = mesh->mName.C_Str();
 
@@ -41,16 +92,17 @@ MeshData process_mesh(aiMesh* mesh) {
         }
     }
 
+    process_material(scene, mesh, base_dir, data);
     return data;
 }
 
-void process_node(aiNode* node, const aiScene* scene, std::vector<MeshData>& out) {
+void process_node(aiNode* node, const aiScene* scene, const std::string& base_dir, std::vector<MeshData>& out) {
     for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-        out.push_back(process_mesh(mesh));
+        out.push_back(process_mesh(scene, mesh, base_dir));
     }
     for (unsigned int i = 0; i < node->mNumChildren; ++i) {
-        process_node(node->mChildren[i], scene, out);
+        process_node(node->mChildren[i], scene, base_dir, out);
     }
 }
 
@@ -71,7 +123,7 @@ std::vector<MeshData> AssimpImporter::import(const std::string& path) const {
         return result;
     }
 
-    process_node(scene->mRootNode, scene, result);
+    process_node(scene->mRootNode, scene, dir_of(path), result);
 
     std::size_t total_vertices = 0;
     for (const auto& m : result) total_vertices += m.vertices.size();

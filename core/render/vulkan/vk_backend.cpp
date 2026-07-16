@@ -156,11 +156,8 @@ void VulkanBackend::shutdown() {
     inline_secondary_recording_ = false;
     geometry_secondary_cb_ = VK_NULL_HANDLE;
     geometry_secondary_recording_ = false;
-    if (device_.device() && !per_frame_secondary_cbs_.empty()) {
-        vkFreeCommandBuffers(device_.device(), swapchain_.secondary_command_pool(),
-                             static_cast<uint32_t>(per_frame_secondary_cbs_.size()),
-                             per_frame_secondary_cbs_.data());
-    }
+    // secondary CB 随各自帧槽的 command pool 一起由 swapchain_.shutdown()
+    // 销毁（vkDestroyCommandPool 隐式释放池中 CB），此处无需逐个 free。
     per_frame_secondary_cbs_.clear();
 
     framebuffer_pool_.clear();
@@ -235,10 +232,9 @@ void VulkanBackend::begin_frame() {
     }
 
     VkResult acquire_result = swapchain_.acquire_next_image(&current_image_);
-    if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR || acquire_result == VK_TIMEOUT) {
-        // OUT_OF_DATE 或某些驱动返回的 TIMEOUT 都可通过重建 swapchain 恢复。
-        GLOG_WARN("VulkanBackend: acquire returned VkResult={}, recreating swapchain",
-                  static_cast<int>(acquire_result));
+    if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+        // OUT_OF_DATE 可通过重建 swapchain 恢复。
+        GLOG_WARN("VulkanBackend: acquire returned VK_ERROR_OUT_OF_DATE_KHR, recreating swapchain");
         if (!swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
             GLOG_ERROR("VulkanBackend: failed to recreate swapchain after acquire failure");
             frame_aborted_ = true;
@@ -246,18 +242,48 @@ void VulkanBackend::begin_frame() {
         }
         acquire_result = swapchain_.acquire_next_image(&current_image_);
     }
+    if (acquire_result == VK_NOT_READY || acquire_result == VK_TIMEOUT) {
+        // 规范中的成功类返回码：本帧暂时没有可用图像（某些驱动在
+        // present mode 切换/窗口状态变化时会偶发返回）。偶发时静默跳过
+        // 本帧即可；持续返回说明 WSI 状态异常，重建 swapchain 恢复。
+        ++acquire_fail_streak_;
+        if (acquire_fail_streak_ >= 30) {
+            GLOG_WARN("VulkanBackend: acquire keeps returning VkResult={}, recreating swapchain",
+                      static_cast<int>(acquire_result));
+            acquire_fail_streak_ = 0;
+            if (width > 0 && height > 0) {
+                swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            }
+        }
+        frame_aborted_ = true;
+        return;
+    }
     if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
         GLOG_ERROR("VulkanBackend: failed to acquire swapchain image, VkResult={}",
                   static_cast<int>(acquire_result));
         frame_aborted_ = true;
         return;
     }
+    acquire_fail_streak_ = 0;
 
     reset_state_cache();
-    // 重置 secondary command pool 比逐条 free/allocate 更快；pool 中已有的 CB
-    // 在 reset 后失效，下一帧会重新 allocate。
-    if (device_.device() != VK_NULL_HANDLE && swapchain_.secondary_command_pool() != VK_NULL_HANDLE) {
-        vkResetCommandPool(device_.device(), swapchain_.secondary_command_pool(), 0);
+    // 通知所有 shader 新帧开始：重置该帧的描述符池与 draw 游标。
+    // 必须在 acquire 成功之后调用，此时 frame fence 已保证该帧上一周期
+    // 的命令缓冲执行完毕，整池 reset 不会触碰 GPU 仍在使用的描述符集。
+    {
+        int frame_index = swapchain_.current_frame_index();
+        for (uint32_t i = 0; i < shader_pool_.size(); ++i) {
+            if (auto* s = shader_pool_.get(i)) {
+                s->on_begin_frame(frame_index);
+            }
+        }
+    }
+    // 只 reset 当前帧槽的 secondary command pool：该帧槽上一周期的提交已被
+    // frame fence 保证完成，而共享池会把其他帧槽仍在 pending 的 CB 一并失效。
+    // pool 中已有的 CB 在 reset 后失效，下一帧会重新 allocate。
+    VkCommandPool secondary_pool = swapchain_.secondary_command_pool(swapchain_.current_frame_index());
+    if (device_.device() != VK_NULL_HANDLE && secondary_pool != VK_NULL_HANDLE) {
+        vkResetCommandPool(device_.device(), secondary_pool, 0);
     }
     per_frame_secondary_cbs_.clear();
     inline_secondary_cb_ = VK_NULL_HANDLE;
@@ -348,6 +374,11 @@ void VulkanBackend::end_frame() {
         swapchain_.advance_frame();
     } else {
         present_result = swapchain_.submit_and_present(current_image_, primary_command_buffer());
+        if (present_result == VK_ERROR_DEVICE_LOST) {
+            // submit 失败时该帧 fence 不会被 signal，后续 acquire 的
+            // vkWaitForFences 可能永久阻塞（整窗卡死），必须大声报错。
+            GLOG_ERROR("VulkanBackend: submit/present failed with VK_ERROR_DEVICE_LOST");
+        }
     }
 
     if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
@@ -408,6 +439,10 @@ void VulkanBackend::set_depth_test(bool enabled) {
     depth_test_enabled_ = enabled;
 }
 
+void VulkanBackend::set_depth_write(bool enabled) {
+    depth_write_enabled_ = enabled;
+}
+
 void VulkanBackend::set_blend(bool enabled) {
     blend_enabled_ = enabled;
 }
@@ -434,7 +469,7 @@ void VulkanBackend::apply_dynamic_state(VkCommandBuffer cmd) {
     set_cull_mode_cached(cmd, cull_face_enabled_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
     set_front_face_cached(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
     set_depth_test_cached(cmd, depth_test_enabled_ ? VK_TRUE : VK_FALSE);
-    set_depth_write_cached(cmd, depth_test_enabled_ ? VK_TRUE : VK_FALSE);
+    set_depth_write_cached(cmd, depth_write_enabled_ ? VK_TRUE : VK_FALSE);
 }
 
 void VulkanBackend::set_dynamic_state_2d(VkCommandBuffer cmd) {
@@ -450,13 +485,8 @@ void VulkanBackend::set_dynamic_state_2d(VkCommandBuffer cmd) {
 }
 
 void VulkanBackend::reset_state_cache() {
-    state_cache_.pipeline = VK_NULL_HANDLE;
-    state_cache_.pipeline_layout = VK_NULL_HANDLE;
-    state_cache_.descriptor_set = VK_NULL_HANDLE;
-    state_cache_.cull_mode = VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
-    state_cache_.front_face = VK_FRONT_FACE_CLOCKWISE;
-    state_cache_.depth_test = VK_FALSE;
-    state_cache_.depth_write = VK_FALSE;
+    // value-init 使用 StateCache 的非法哨兵默认值，保证新 CB 首次必定下发
+    state_cache_ = {};
 
     viewports_.fill(VkViewport{});
     scissors_.fill(VkRect2D{});
@@ -571,9 +601,11 @@ void VulkanBackend::end_geometry_secondary() {
 }
 
 VkCommandBuffer VulkanBackend::allocate_secondary_cb() {
+    VkCommandPool pool = swapchain_.secondary_command_pool(swapchain_.current_frame_index());
+    if (pool == VK_NULL_HANDLE) return VK_NULL_HANDLE;
     VkCommandBufferAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = swapchain_.secondary_command_pool();
+    alloc_info.commandPool = pool;
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
     alloc_info.commandBufferCount = 1;
     VkCommandBuffer cb = VK_NULL_HANDLE;
@@ -582,15 +614,6 @@ VkCommandBuffer VulkanBackend::allocate_secondary_cb() {
         per_frame_secondary_cbs_.push_back(cb);
     }
     return cb;
-}
-
-void VulkanBackend::free_secondary_cb(VkCommandBuffer cb) {
-    if (cb == VK_NULL_HANDLE || device_.device() == VK_NULL_HANDLE) return;
-    auto it = std::find(per_frame_secondary_cbs_.begin(), per_frame_secondary_cbs_.end(), cb);
-    if (it != per_frame_secondary_cbs_.end()) {
-        per_frame_secondary_cbs_.erase(it);
-    }
-    vkFreeCommandBuffers(device_.device(), swapchain_.secondary_command_pool(), 1, &cb);
 }
 
 void VulkanBackend::reset_inline_secondary_state() {
@@ -801,13 +824,19 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
     }
 
     bind_pipeline(cmd, vk_shader->pipeline());
-    // Post-process shader 的 pipeline 未声明动态 cull/depth 状态，跳过 dynamic state。
-    if (!vk_shader->is_post_process()) {
+    // Post-process / skybox shader 使用每帧固定描述符集，直接绑定；
+    // 标准 PBR 路径每 draw 分配独立描述符集 + UBO 偏移，避免同帧不同材质互相覆盖。
+    // Skybox 的 pipeline 声明了动态 cull/depth 状态，同样需要 apply_dynamic_state。
+    if (!vk_shader->uses_fixed_descriptor_sets()) {
         apply_dynamic_state(cmd);
+        vk_shader->prepare_draw(cmd);
+    } else {
+        if (vk_shader->is_skybox()) {
+            apply_dynamic_state(cmd);
+        }
+        bind_descriptor_set(cmd, vk_shader->layout(), vk_shader->descriptor_set());
     }
-    bind_descriptor_set(cmd, vk_shader->layout(), vk_shader->descriptor_set());
     vk_shader->push_constants(cmd);
-    vk_shader->update_ubo(cmd);
 
     VkBuffer buffers[] = {vk_mesh->vertex_buffer()};
     VkDeviceSize offsets[] = {0};

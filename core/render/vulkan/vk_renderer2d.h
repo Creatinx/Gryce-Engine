@@ -114,6 +114,10 @@ private:
     bool create_swapchain_pipelines();
     bool create_descriptor_sets();
     VkDescriptorSet allocate_descriptor_set(VkDescriptorSetLayout layout);
+    // 顶点缓冲扩容：旧缓冲移入 retired_buffers_[frame_index] 延迟销毁，
+    // 避免销毁仍被本帧已录制命令引用的缓冲（GPU 读已释放资源会 device lost）。
+    bool grow_vertex_buffer(VulkanBuffer& buffer, VkDeviceSize& capacity,
+                            VkDeviceSize required, int frame_index, const char* what);
     bool create_vertex_buffers();
     bool create_uniform_buffers();
     bool create_fallback_textures();
@@ -194,6 +198,10 @@ private:
     std::vector<VulkanBuffer> vertex_buffer_shadow_caster_;
     std::vector<VulkanBuffer> fs_vertex_buffer_;
     std::vector<VulkanBuffer> light_ubo_;
+    // 顶点缓冲扩容时被替换下来的旧缓冲（按帧槽存放）。旧缓冲可能仍被
+    // 本帧已录制的命令引用，立即销毁会让 GPU 读已释放资源导致 device
+    // lost；延迟到该帧槽下一次 begin_frame（fence 等待之后）再销毁。
+    std::vector<std::vector<VulkanBuffer>> retired_buffers_;
     std::vector<VkDeviceSize> vertex_buffer_rect_capacity_;
     std::vector<VkDeviceSize> vertex_buffer_text_capacity_;
     std::vector<VkDeviceSize> vertex_buffer_sprite_capacity_;

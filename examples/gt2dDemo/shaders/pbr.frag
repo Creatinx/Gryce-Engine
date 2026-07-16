@@ -15,12 +15,16 @@ uniform vec3 uAlbedoColor;
 uniform float uRoughness;
 uniform float uMetallic;
 uniform float uAO;
+uniform vec3 uEmissiveColor;
+uniform float uOpacity;
+uniform vec4 uUVTransform; // xy=scale, zw=offset
 
 uniform sampler2D uAlbedoMap;
 uniform sampler2D uNormalMap;
 uniform sampler2D uRoughnessMap;
 uniform sampler2D uMetallicMap;
 uniform sampler2D uAOMap;
+uniform sampler2D uEmissiveMap;
 uniform sampler2DShadow uShadowMap;
 
 uniform int uUseAlbedoMap;
@@ -28,17 +32,27 @@ uniform int uUseNormalMap;
 uniform int uUseRoughnessMap;
 uniform int uUseMetallicMap;
 uniform int uUseAOMap;
+uniform int uUseEmissiveMap;
 
 // ---------------------------------------------------------------------------
 // 灯光 / 相机
 // ---------------------------------------------------------------------------
+#define MAX_LIGHTS 8
+
 uniform vec3 uCameraPos;
-uniform vec3 uLightDir;
-uniform vec3 uLightColor;
-uniform float uLightIntensity;
+uniform vec3 uAmbient;
+uniform int uLightCount;
+uniform int uLightType[MAX_LIGHTS];   // 0=方向光 1=点光 2=聚光
+uniform vec3 uLightPos[MAX_LIGHTS];
+uniform vec3 uLightDir[MAX_LIGHTS];
+uniform vec3 uLightColor[MAX_LIGHTS];
+uniform float uLightIntensity[MAX_LIGHTS];
+uniform vec4 uLightParams[MAX_LIGHTS]; // x=range, y=cos(outer), z=cos(inner)
 
 uniform float uShadowBias;
 uniform int uUseShadowMap;
+uniform int uShadowLightIndex; // 产生阴影的方向光下标（-1 表示无）
+uniform int uHDREnabled;       // 1=输出线性 HDR（由 tonemap pass 处理），0=内置 tonemap
 
 const float PI = 3.14159265359;
 
@@ -73,79 +87,117 @@ vec3 fresnel_schlick(float cos_theta, vec3 F0) {
 // Shadow
 // ---------------------------------------------------------------------------
 float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
-    if (uUseShadowMap == 0) return 0.0;
+    if (uUseShadowMap == 0) return 1.0;
 
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
     proj_coords = proj_coords * 0.5 + 0.5;
 
-    if (proj_coords.z > 1.0) return 0.0;
+    if (proj_coords.z > 1.0) return 1.0;
+    // 阴影贴图覆盖范围之外视为全亮（边缘 depth 被 clamp 会误判为阴影）
+    if (proj_coords.x < 0.0 || proj_coords.x > 1.0 ||
+        proj_coords.y < 0.0 || proj_coords.y > 1.0) return 1.0;
 
     float current_depth = proj_coords.z;
     float bias = max(uShadowBias * (1.0 - dot(normal, light_dir)), uShadowBias * 0.1);
 
     // 硬件 PCF：sampler2DShadow + 线性过滤，自动做 2x2 百分比渐近过滤
     vec2 texel_size = 1.0 / textureSize(uShadowMap, 0);
-    float shadow = 0.0;
+    float lit = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
             vec3 coords = vec3(proj_coords.xy + vec2(x, y) * texel_size, current_depth - bias);
-            shadow += texture(uShadowMap, coords);
+            lit += texture(uShadowMap, coords);
         }
     }
-    shadow /= 9.0;
+    lit /= 9.0;
 
-    return shadow;
+    return lit;
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// 光照主函数
 // ---------------------------------------------------------------------------
 void main() {
-    vec3 albedo = uUseAlbedoMap > 0 ? texture(uAlbedoMap, vTexCoord).rgb : uAlbedoColor;
+    vec2 uv = vTexCoord * uUVTransform.xy + uUVTransform.zw;
+
+    vec4 albedo_tex = texture(uAlbedoMap, uv);
+    vec3 albedo = uUseAlbedoMap > 0 ? albedo_tex.rgb : uAlbedoColor;
     albedo *= vColor;
+    float alpha = (uUseAlbedoMap > 0 ? albedo_tex.a : 1.0) * uOpacity;
 
     vec3 normal = uUseNormalMap > 0
-        ? normalize(texture(uNormalMap, vTexCoord).rgb * 2.0 - 1.0)
+        ? normalize(texture(uNormalMap, uv).rgb * 2.0 - 1.0)
         : vec3(0.0, 0.0, 1.0);
     vec3 N = normalize(vTBN * normal);
 
-    float roughness = uUseRoughnessMap > 0 ? texture(uRoughnessMap, vTexCoord).r : uRoughness;
-    float metallic = uUseMetallicMap > 0 ? texture(uMetallicMap, vTexCoord).r : uMetallic;
-    float ao = uUseAOMap > 0 ? texture(uAOMap, vTexCoord).r : uAO;
+    float roughness = uUseRoughnessMap > 0 ? texture(uRoughnessMap, uv).r : uRoughness;
+    float metallic = uUseMetallicMap > 0 ? texture(uMetallicMap, uv).r : uMetallic;
+    float ao = uUseAOMap > 0 ? texture(uAOMap, uv).r : uAO;
 
     vec3 V = normalize(uCameraPos - vFragPos);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    // 单方向光 PBR
-    vec3 L = normalize(-uLightDir);
-    vec3 H = normalize(V + L);
-    vec3 radiance = uLightColor * uLightIntensity;
+    vec3 Lo = vec3(0.0);
+    for (int i = 0; i < uLightCount; ++i) {
+        vec3 L;
+        vec3 radiance;
+        float shadow = 1.0;
 
-    float NDF = distribution_ggx(N, H, roughness);
-    float G = geometry_smith(N, V, L, roughness);
-    vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
+        if (uLightType[i] == 0) {
+            // 方向光
+            L = normalize(-uLightDir[i]);
+            radiance = uLightColor[i] * uLightIntensity[i];
+            if (i == uShadowLightIndex) {
+                shadow = shadow_calculation(vLightSpacePos, N, L);
+            }
+        } else {
+            // 点光 / 聚光
+            vec3 to_light = uLightPos[i] - vFragPos;
+            float dist = length(to_light);
+            float range = uLightParams[i].x;
+            if (dist > range) continue;
+            L = to_light / dist;
+            float attenuation = 1.0 - dist / range;
+            attenuation *= attenuation;
+            radiance = uLightColor[i] * uLightIntensity[i] * attenuation;
 
-    vec3 kS = F;
-    vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+            if (uLightType[i] == 2) {
+                // 聚光锥衰减
+                float cos_angle = dot(-L, normalize(uLightDir[i]));
+                float cos_outer = uLightParams[i].y;
+                float cos_inner = uLightParams[i].z;
+                float spot = smoothstep(cos_outer, cos_inner, cos_angle);
+                if (spot <= 0.0) continue;
+                radiance *= spot;
+            }
+        }
 
-    vec3 numerator = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-    vec3 specular = numerator / denominator;
+        vec3 H = normalize(V + L);
+        float NDF = distribution_ggx(N, H, roughness);
+        float G = geometry_smith(N, V, L, roughness);
+        vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
 
-    float NdotL = max(dot(N, L), 0.0);
-    vec3 Lo = (kD * albedo / PI + specular) * radiance * NdotL;
+        vec3 kS = F;
+        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
-    vec3 ambient = vec3(0.08) * albedo * ao;
-    vec3 color = ambient + Lo * ao;
+        vec3 numerator = NDF * G * F;
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+        vec3 specular = numerator / denominator;
 
-    // Shadow
-    float shadow = shadow_calculation(vLightSpacePos, N, L);
-    // shadow=1 表示被照亮，shadow=0 表示在阴影中
-    color = color * (0.5 + shadow * 0.5);
+        float NdotL = max(dot(N, L), 0.0);
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL * shadow;
+    }
 
-    // Reinhard + gamma
-    color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0 / 2.2));
+    vec3 ambient = uAmbient * albedo * ao;
+    vec3 emissive = uEmissiveColor * (uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
-    FragColor = vec4(color, 1.0);
+    vec3 color = ambient + Lo + emissive;
+
+    if (uHDREnabled == 0) {
+        // LDR 路径：内置 Reinhard + gamma（HDR 开启时由 tonemap pass 统一处理）
+        color = color / (color + vec3(1.0));
+        color = pow(color, vec3(1.0 / 2.2));
+    }
+
+    FragColor = vec4(color, alpha);
 }

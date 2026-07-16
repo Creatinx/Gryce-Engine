@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,15 +24,25 @@ class Material;
 
 // ---------------------------------------------------------------------------
 // RenderPipeline — 前向渲染管线
-// 支持：Shadow Map -> Forward PBR Lighting
+// Shadow Map -> Skybox -> Forward PBR Lighting（多光源：方向光/点光/聚光，
+// 不透明 + 透明两阶段）-> HDR Tone Mapping
 // ---------------------------------------------------------------------------
 class RenderPipeline {
 public:
+    enum class LightType { Directional = 0, Point = 1, Spot = 2 };
+
     struct Light {
-        math::Vector3f direction = math::Vector3f(0.0f, -1.0f, 0.0f);
+        LightType type = LightType::Directional;
+        math::Vector3f position = math::Vector3f::zero();      // 点光/聚光
+        math::Vector3f direction = math::Vector3f(0.0f, -1.0f, 0.0f); // 方向光/聚光
         math::Vector3f color = math::Vector3f::one();
         float intensity = 1.0f;
+        float range = 10.0f;          // 点光/聚光有效半径
+        float spot_angle = 45.0f;     // 聚光外锥角（度）
+        float spot_softness = 0.2f;   // 聚光内外锥过渡比例 0~1
     };
+
+    static constexpr int k_max_lights = 8;
 
     RenderPipeline();
     ~RenderPipeline();
@@ -45,9 +56,24 @@ public:
     void set_lights(const std::vector<Light>& lights);
     void set_viewport(int width, int height);
     void set_shadow_bias(float bias) { shadow_bias_ = bias; }
+    void set_shadow_enabled(bool enabled) { shadow_enabled_ = enabled; }
+    bool shadow_enabled() const { return shadow_enabled_; }
+    // 阴影正交盒半径（世界单位），阴影盒跟随相机焦点
+    void set_shadow_area(float size) { shadow_area_ = size; }
     void set_cull_disabled(bool disabled) { cull_disabled_ = disabled; }
 
-    // 渲染一帧：先 shadow pass，再 forward pass 到 HDR target，最后 tone mapping 到 backbuffer
+    // 环境光（叠加到所有物体的间接光），默认 (0.15, 0.15, 0.15)
+    void set_ambient(const math::Vector3f& color) { ambient_ = color; }
+    math::Vector3f ambient() const { return ambient_; }
+
+    // 天空盒：按 +X,-X,+Y,-Y,+Z,-Z 顺序传入 6 张贴图路径（res:/ 或绝对路径）。
+    // 必须在 RenderContext::start() 之前调用（主线程持有 GPU context）。
+    // 传空数组清除天空盒。
+    bool set_skybox(const std::array<std::string, 6>& face_paths);
+    void clear_skybox();
+    bool has_skybox() const { return skybox_texture_.is_valid(); }
+
+    // 渲染一帧：shadow pass -> skybox -> forward PBR（不透明/透明）-> tone mapping
     void render_scene(scene::Scene& scene, RenderContext& ctx);
 
     // 单独 render 一个 mesh（用于自定义 system）
@@ -77,6 +103,10 @@ private:
 
     void update_light_space_matrix();
     void bind_global_uniforms(RenderContext& ctx);
+    void upload_lights(RenderContext& ctx);
+
+    bool create_skybox_mesh(RenderContext* ctx);
+    void render_skybox(RenderContext& ctx);
 
     RenderContext* ctx_ = nullptr;
     std::string shader_dir_;
@@ -87,9 +117,13 @@ private:
     RHITextureHandle shadow_map_;
     RHIFramebufferHandle shadow_fbo_;
     int shadow_map_size_ = 2048;
+    bool shadow_enabled_ = true;
+    float shadow_area_ = 15.0f;
+    int shadow_light_index_ = -1;
 
     math::Camera* camera_ = nullptr;
     std::vector<Light> lights_;
+    math::Vector3f ambient_ = math::Vector3f(0.15f, 0.15f, 0.15f);
     math::Matrix4f light_space_matrix_ = math::Matrix4f::identity();
 
     int viewport_width_ = 1280;
@@ -99,6 +133,11 @@ private:
     bool initialized_ = false;
     bool owns_shaders_ = false;
     bool cull_disabled_ = false;
+
+    // Skybox
+    RHITextureHandle skybox_texture_;
+    RHIShaderHandle skybox_shader_;
+    RHIMeshHandle skybox_mesh_;
 
     // HDR rendering targets
     bool hdr_enabled_ = true;

@@ -27,6 +27,9 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
         case RenderCommandType::SetDepthTest:
             backend->set_depth_test(cmd.depth_test.enabled);
             break;
+        case RenderCommandType::SetDepthWrite:
+            backend->set_depth_write(cmd.depth_write.enabled);
+            break;
         case RenderCommandType::SetBlend:
             backend->set_blend(cmd.blend.enabled);
             break;

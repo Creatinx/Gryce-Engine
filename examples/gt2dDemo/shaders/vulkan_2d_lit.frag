@@ -17,7 +17,7 @@ struct Light {
     int type;
     vec2 pos;
     vec2 dir;
-    vec3 color;
+    vec4 color;  // std140: vec3+float 会打包进同一 16B 槽，导致 intensity 错位；用 vec4 与 C++ LightData 对齐
     float intensity;
     float radius;
     float range;
@@ -54,7 +54,7 @@ void main() {
 
     for (int i = 0; i < ubo.uLightCount; ++i) {
         Light L = ubo.uLights[i];
-        vec3 light_color = L.color * L.intensity;
+        vec3 light_color = L.color.rgb * L.intensity;
         vec3 Lvec;
         float attenuation = 1.0;
         float spot_factor = 1.0;

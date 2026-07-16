@@ -86,9 +86,10 @@ void VulkanSwapchain::shutdown() {
     }
     image_available_semaphores_.clear();
 
-    if (secondary_pool_) vkDestroyCommandPool(dev, secondary_pool_, nullptr);
-    secondary_pool_ = VK_NULL_HANDLE;
-    secondary_command_buffers_.clear();
+    for (auto pool : secondary_pools_) {
+        if (pool) vkDestroyCommandPool(dev, pool, nullptr);
+    }
+    secondary_pools_.clear();
 
     if (command_pool_) vkDestroyCommandPool(dev, command_pool_, nullptr);
     command_pool_ = VK_NULL_HANDLE;
@@ -196,6 +197,10 @@ bool VulkanSwapchain::create_swapchain(uint32_t width, uint32_t height) {
     vkGetSwapchainImagesKHR(device_->device(), swapchain_, &count, nullptr);
     images_.resize(count);
     vkGetSwapchainImagesKHR(device_->device(), swapchain_, &count, images_.data());
+
+    // frames_in_flight 在这里确定（依赖 image 数量），保证后续
+    // create_secondary_command_buffer / create_sync_objects 使用一致
+    frames_in_flight_ = static_cast<int>(std::min(images_.size(), static_cast<size_t>(kMaxFramesInFlight)));
     return true;
 }
 
@@ -348,9 +353,13 @@ bool VulkanSwapchain::create_render_pass() {
         return false;
     }
 
-    // 从 offscreen framebuffer 切回 swapchain 时保留已有内容
+    // 从 offscreen framebuffer 切回 swapchain 时保留已有内容。
+    // 该 pass 只在每帧 clear pass 之后使用（unbind_framebuffer），此时镜像布局
+    // 已经是 clear pass 的 finalLayout，LOAD 不能再以 UNDEFINED 作为 initialLayout。
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     if (vkCreateRenderPass(device_->device(), &info, nullptr, &render_pass_load_) != VK_SUCCESS) {
         GLOG_ERROR("VulkanSwapchain: failed to create load render pass");
         return false;
@@ -405,26 +414,19 @@ bool VulkanSwapchain::create_command_buffer() {
 }
 
 bool VulkanSwapchain::create_secondary_command_buffer() {
-    VkCommandPoolCreateInfo pool_info{};
-    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool_info.queueFamilyIndex = device_->graphics_queue_family();
+    // 每个 frame-in-flight 槽一个独立池（见头文件注释：跨帧槽 reset 共享池
+    // 会使仍在 pending 的其他帧槽 CB 失效，导致 GPU device lost）。
+    secondary_pools_.assign(frames_in_flight_, VK_NULL_HANDLE);
+    for (int i = 0; i < frames_in_flight_; ++i) {
+        VkCommandPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = device_->graphics_queue_family();
 
-    if (vkCreateCommandPool(device_->device(), &pool_info, nullptr, &secondary_pool_) != VK_SUCCESS) {
-        GLOG_ERROR("VulkanSwapchain: failed to create secondary command pool");
-        return false;
-    }
-
-    secondary_command_buffers_.resize(images_.size(), VK_NULL_HANDLE);
-    VkCommandBufferAllocateInfo alloc_info{};
-    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = secondary_pool_;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-    alloc_info.commandBufferCount = static_cast<uint32_t>(secondary_command_buffers_.size());
-
-    if (vkAllocateCommandBuffers(device_->device(), &alloc_info, secondary_command_buffers_.data()) != VK_SUCCESS) {
-        GLOG_ERROR("VulkanSwapchain: failed to allocate secondary command buffers");
-        return false;
+        if (vkCreateCommandPool(device_->device(), &pool_info, nullptr, &secondary_pools_[i]) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanSwapchain: failed to create secondary command pool {}", i);
+            return false;
+        }
     }
     return true;
 }
@@ -438,7 +440,6 @@ bool VulkanSwapchain::create_sync_objects() {
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
     VkDevice dev = device_->device();
-    frames_in_flight_ = static_cast<int>(std::min(images_.size(), static_cast<size_t>(kMaxFramesInFlight)));
     image_available_semaphores_.resize(frames_in_flight_);
     render_finished_semaphores_.resize(frames_in_flight_);
     frame_fences_.resize(frames_in_flight_, VK_NULL_HANDLE);

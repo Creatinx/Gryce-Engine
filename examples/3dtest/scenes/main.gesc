@@ -50,7 +50,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 10,
-          "text": "FPS: 2607.8",
+          "text": "FPS: 195.5",
           "type": "Label"
         }
       ],
@@ -281,15 +281,15 @@
       "parent": null,
       "transform": {
         "position": [
-          120.0,
-          20.0,
-          0.0
+          60.0,
+          30.0,
+          60.0
         ],
         "rotation": [
-          -0.00784794706851244,
-          0.0003014654212165624,
-          0.9992322325706482,
-          0.038383789360523224
+          0.1445266157388687,
+          0.05986487492918968,
+          0.9125050902366638,
+          -0.37797194719314575
         ],
         "scale": [
           1.0,
@@ -355,21 +355,39 @@
             "albedo_map_path": "",
             "ao": 1.0,
             "ao_map_path": "",
+            "blend_mode": 0,
             "density": 1.0,
             "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
             "metallic": 0.0,
             "metallic_map_path": "",
             "name": "Ground",
             "normal_map_path": "",
+            "opacity": 1.0,
             "preset_name": "",
             "roughness": 0.8999999761581421,
             "roughness_map_path": "",
             "softness": 0.0,
+            "two_sided": false,
             "use_albedo_map": false,
             "use_ao_map": false,
+            "use_emissive_map": true,
             "use_metallic_map": false,
             "use_normal_map": false,
-            "use_roughness_map": false
+            "use_roughness_map": false,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
           },
           "mesh_path": "res:/models/cube_pbr.obj",
           "type": "MeshRenderer"
@@ -430,32 +448,50 @@
             "albedo_map_path": "res:/textures/cube_albedo.png",
             "ao": 1.0,
             "ao_map_path": "res:/textures/cube_ao.png",
+            "blend_mode": 0,
             "density": 1.0,
             "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
             "metallic": 0.0,
             "metallic_map_path": "res:/textures/cube_metallic.png",
             "name": "DynamicCube",
             "normal_map_path": "res:/textures/cube_normal.png",
+            "opacity": 1.0,
             "preset_name": "",
             "roughness": 0.5,
             "roughness_map_path": "res:/textures/cube_roughness.png",
             "softness": 0.0,
+            "two_sided": false,
             "use_albedo_map": true,
             "use_ao_map": true,
+            "use_emissive_map": true,
             "use_metallic_map": true,
             "use_normal_map": true,
-            "use_roughness_map": true
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
           },
           "mesh_path": "res:/models/cube_pbr.obj",
           "type": "MeshRenderer"
         },
         {
-          "density": 2.299999952316284,
+          "density": 0.1599999964237213,
           "drag_coefficient": 0.25,
           "enabled": true,
           "friction": 0.5,
           "preset_name": "BalsaWood",
-          "softness": 1.0,
+          "softness": 0.30000001192092896,
           "type": "PhysicalMaterial"
         },
         {
@@ -492,8 +528,8 @@
           ],
           "is_kinematic": false,
           "linear_damping": 0.25,
-          "mass": 147.20001220703125,
-          "restitution": 0.0,
+          "mass": 10.24000072479248,
+          "restitution": 0.699999988079071,
           "type": "RigidBody",
           "use_gravity": true,
           "velocity": [
@@ -539,6 +575,311 @@
         ]
       },
       "uuid": "f0769d39-5aac-4317-849a-5e58ca5a2b55"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.05000000074505806,
+              0.05000000074505806,
+              0.05000000074505806
+            ],
+            "albedo_map_path": "",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              4.0,
+              1.600000023841858,
+              0.30000001192092896
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "ShowcaseEmissive",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.800000011920929,
+            "roughness_map_path": "",
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        }
+      ],
+      "name": "ShowcaseEmissiveCube",
+      "parent": null,
+      "transform": {
+        "position": [
+          -8.0,
+          -0.25,
+          -8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          3.0,
+          3.0,
+          3.0
+        ]
+      },
+      "uuid": "5748c0dd-153b-4e45-9fae-b025a620072f"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.550000011920929,
+              0.800000011920929,
+              1.0
+            ],
+            "albedo_map_path": "",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "ShowcaseGlass",
+            "normal_map_path": "",
+            "opacity": 0.3499999940395355,
+            "preset_name": "",
+            "roughness": 0.05000000074505806,
+            "roughness_map_path": "",
+            "softness": 0.0,
+            "two_sided": true,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        }
+      ],
+      "name": "ShowcaseGlassCube",
+      "parent": null,
+      "transform": {
+        "position": [
+          -8.0,
+          -0.25,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          3.0,
+          3.0,
+          3.0
+        ]
+      },
+      "uuid": "dd1484d4-8444-4b88-98aa-15324b3e2a91"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "albedo_map_path": "res:/textures/cube_albedo.png",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "ShowcaseTiled",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.6000000238418579,
+            "roughness_map_path": "",
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              3.0,
+              3.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        }
+      ],
+      "name": "ShowcaseTiledCube",
+      "parent": null,
+      "transform": {
+        "position": [
+          8.0,
+          -0.25,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          3.0,
+          3.0,
+          3.0
+        ]
+      },
+      "uuid": "8900ec57-6f6e-4437-ad66-d9f36c2d6800"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            1.0,
+            0.75,
+            0.4000000059604645
+          ],
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "enabled": true,
+          "intensity": 2.5,
+          "light_type": 1,
+          "range": 30.0,
+          "spot_angle": 45.0,
+          "type": "Light"
+        }
+      ],
+      "name": "ShowcasePointLight",
+      "parent": null,
+      "transform": {
+        "position": [
+          -8.0,
+          4.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "e07afaf3-f81b-493d-a480-0b8d908e3441"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            0.6000000238418579,
+            0.800000011920929,
+            1.0
+          ],
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "enabled": true,
+          "intensity": 3.0,
+          "light_type": 2,
+          "range": 25.0,
+          "spot_angle": 35.0,
+          "type": "Light"
+        }
+      ],
+      "name": "ShowcaseSpotLight",
+      "parent": null,
+      "transform": {
+        "position": [
+          8.0,
+          10.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "a607c5f3-324d-462f-b273-e5466942837b"
     }
   ],
   "name": "main",

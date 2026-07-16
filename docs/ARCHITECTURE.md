@@ -171,12 +171,17 @@ IRenderBackend
 ### 4.5 渲染管线（3D）
 
 ```
-1. Shadow Pass        → 渲染 depth map（2048x2048）
-2. Main Pass          → PBR 着色 + shadow sampling
-3. HDR Post-Process   → tone mapping
-4. 2D Overlay         → UI、文字、DebugPanel
-5. Present            → 交换到屏幕
+1. Shadow Pass        → 渲染 depth map（2048x2048，跟随相机，取第一个方向光）
+2. Skybox Pass        → 立方体贴图天空盒（depth test on / write off，可选）
+3. Main Pass (Opaque) → 多光源 PBR 着色（最多 8 盏：方向光/点光/聚光）+ shadow sampling
+4. Main Pass (Blend)  → 半透明物体按相机距离远→近排序（blend on / depth write off）
+5. HDR Post-Process   → exposure + tone mapping（None / Reinhard / ACES）
+6. 2D Overlay         → UI、文字、DebugPanel
+7. Present            → 交换到屏幕
 ```
+
+- 全局环境光 `set_ambient`（默认 0.15）；`set_exposure` / `set_tone_map_mode` / `set_shadow_enabled` 可运行时调节。
+- 材质按 `Material::blend_mode` 自动分到不透明/半透明两个队列。
 
 ---
 
@@ -316,7 +321,7 @@ for (int i = 0; i < 10; ++i) {
 |---|---|
 | `MeshRenderer` | 网格路径 + Material，负责异步上传到 GPU。 |
 | `Camera` | FOV、near/far、is_main。 |
-| `Light` | light_type（directional/point/spot）、color、intensity、range、spot_angle。 |
+| `Light` | light_type（directional/point/spot）、color、intensity、range、spot_angle；三种类型管线全部支持，点光/聚光位置取自 Transform。 |
 
 ### 7.3 物理组件
 
@@ -391,22 +396,23 @@ for (int i = 0; i < 10; ++i) {
 
 ### 9.2 模型加载
 
-- `ObjLoader`：解析 `.obj` + `.mtl`（部分）。
-- `AssimpImporter`：通过 Assimp v5.4.3 加载 OBJ、FBX、gITF、DAE、PLY、STL 等常见格式。
-- 输出 `MeshData`：顶点位置、法线、切线、UV、索引。
+- `ObjLoader`：解析 `.obj` + `.mtl`（Kd/Ke/d/Tr/Ns、map_Kd/map_Ke/map_Bump 等，Ns 按 `sqrt(2/(Ns+2))` 映射为 roughness）。
+- `AssimpImporter`：通过 Assimp v5.4.3 加载 OBJ、FBX、gITF、DAE、PLY、STL 等常见格式，并提取材质（diffuse/emissive 颜色、opacity、shininess/metallic 因子及各类贴图路径）。
+- 输出 `MeshData`：顶点位置、法线、切线、UV、索引 + `MeshMaterialData`（导入的材质随 `MeshRenderer::upload_to_gpu` 按"组件字段仍为默认值才合并"规则并入组件材质）。
 - `MeshData::to_physics_points()` 可将顶点转换为物理质点，方便后续软体/碎裂扩展。
 
 ### 9.3 纹理加载
 
 - `stb_image` 加载 PNG/JPG/BMP。
 - 支持 1/3/4 通道，自动上传到 GPU。
+- 立方体贴图：`ITexture::upload_cubemap(faces[6], ...)`，面顺序 +X,-X,+Y,-Y,+Z,-Z（top-down 行序），OpenGL/Vulkan 双后端实现。
 - FontAtlas 用 `stb_truetype` 生成 512x512 或更大图集。
 
 ### 9.4 材质
 
-- `Material` 结构体：albedo_color、roughness、metallic、ao、各贴图路径与 use_xxx_map 开关。
-- MeshRenderer 上传时同时上传材质到 GPU（OpenGL UBO / Vulkan uniform buffer + descriptor set）。
-- 材质资源文件 `.gmat` 尚未实现。
+- `Material`：albedo/normal/roughness/metallic/ao/emissive 六类贴图与开关，`albedo_color`、`emissive_color`（HDR，可 >1）、`opacity`、`blend_mode`（Opaque/Blend）、`two_sided`、`uv_scale`/`uv_offset`。
+- MeshRenderer 上传时同时上传材质到 GPU（OpenGL UBO / Vulkan uniform buffer + descriptor set，slot 6 = emissive）。
+- 材质资源文件 `.gmat`（JSON）：`Material::save_to_file` / `load_from_file`，支持 `res:/` 虚拟路径。
 
 ---
 

@@ -250,6 +250,15 @@ void GLBackend::set_depth_test(bool enabled) {
     state_cache_valid_ = true;
 }
 
+void GLBackend::set_depth_write(bool enabled) {
+    if (state_cache_valid_ && depth_write_enabled_ == enabled) {
+        return;
+    }
+    glDepthMask(enabled ? GL_TRUE : GL_FALSE);
+    depth_write_enabled_ = enabled;
+    state_cache_valid_ = true;
+}
+
 namespace {
 
 GLenum blend_factor_to_gl(BlendFactor f) {

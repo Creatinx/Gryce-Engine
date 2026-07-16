@@ -71,11 +71,13 @@ public:
     // OpenGL backend loads `{dir}/{name}.vert` and `{dir}/{name}.frag` as GLSL source.
     // Vulkan backend loads `{dir}/spirv/vulkan_{name}.vert.spv` and `{dir}/spirv/vulkan_{name}.frag.spv`.
     // target/color_output/post_process are used by Vulkan to build the pipeline.
+    // skybox=true 时（Vulkan）构建天空盒管线：单 cubemap sampler、深度 LESS_OR_EQUAL、不写深度、不剔除。
     virtual bool load_program(const std::string& name,
                               const std::string& shader_dir,
                               IFramebuffer* target = nullptr,
                               bool color_output = true,
-                              bool post_process = false) { return false; }
+                              bool post_process = false,
+                              bool skybox = false) { (void)skybox; return false; }
 
     // Set post-process parameters (exposure + tone map mode). Used by tonemap shader.
     virtual void set_post_process_params(float exposure, int mode) {}

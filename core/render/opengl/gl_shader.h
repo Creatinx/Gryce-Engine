@@ -43,7 +43,8 @@ public:
                       const std::string& shader_dir,
                       IFramebuffer* target = nullptr,
                       bool color_output = true,
-                      bool post_process = false) override;
+                      bool post_process = false,
+                      bool skybox = false) override;
     void set_post_process_params(float exposure, int mode) override;
 
     uint32_t program_id() const { return program_id_; }

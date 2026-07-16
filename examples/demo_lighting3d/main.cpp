@@ -160,13 +160,23 @@ private:
             auto* light = entity->get_component<components::Light>();
             if (!light || !light->enabled) return;
             render::RenderPipeline::Light out;
+            switch (light->light_type) {
+            case components::Light::Type::Point: out.type = render::RenderPipeline::LightType::Point; break;
+            case components::Light::Type::Spot:  out.type = render::RenderPipeline::LightType::Spot;  break;
+            default:                             out.type = render::RenderPipeline::LightType::Directional; break;
+            }
+            out.position = entity->transform() ? entity->transform()->position : math::Vector3f::zero();
+            out.direction = light->direction.normalized();
             out.color = light->color;
             out.intensity = light->intensity;
-            out.direction = light->direction.normalized();
+            out.range = light->range;
+            out.spot_angle = light->spot_angle;
             lights.push_back(out);
         });
         if (lights.empty()) {
-            lights.push_back({ math::Vector3f(0.0f, -1.0f, 0.0f), math::Vector3f::one(), 1.0f });
+            render::RenderPipeline::Light fallback;
+            fallback.direction = math::Vector3f(0.0f, -1.0f, 0.0f);
+            lights.push_back(fallback);
         }
         return lights;
     }

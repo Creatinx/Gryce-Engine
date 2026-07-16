@@ -79,6 +79,8 @@ public:
     virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
     virtual uint32_t max_viewports() const { return 1; }
     virtual void set_depth_test(bool enabled) = 0;
+    // 深度写入开关（透明物体：测试开、写入关）。默认实现为空。
+    virtual void set_depth_write(bool enabled) { (void)enabled; }
     virtual void set_blend(bool enabled) = 0;
     virtual void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {}
     virtual void set_blend_equation(BlendEquation mode) {}

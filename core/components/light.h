@@ -9,7 +9,7 @@ namespace gryce_engine::components {
 
 // ---------------------------------------------------------------------------
 // Light — 光源组件。
-// 目前支持 Directional / Point / Spot 三种类型（后两者为占位，渲染管线当前只使用 Directional）。
+// 支持 Directional / Point / Spot 三种类型，渲染管线全部使用。
 // ---------------------------------------------------------------------------
 class Light : public Component {
 public:
@@ -22,9 +22,9 @@ public:
     // 方向光：照射方向（由 owner Transform 的旋转也可推导，但保留显式方向便于编辑）。
     math::Vector3f direction = math::Vector3f(0.0f, -1.0f, 0.0f);
 
-    // 点光/聚光：有效范围（占位）。
+    // 点光/聚光：有效范围。
     float range = 10.0f;
-    // 聚光：锥角（度，占位）。
+    // 聚光：外锥角（度）。
     float spot_angle = 45.0f;
 
     Light() = default;
