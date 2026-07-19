@@ -104,15 +104,17 @@ void AsyncLoader::poll() {
     }
 
     for (auto& task : done) {
-        for (auto& cb : task->callbacks) {
-            if (cb) cb();
-        }
-        task->callbacks.clear();
-
-        // 从 tasks_ 中移除已完成任务
+        // 在锁内把待执行回调 swap 到局部 vector、并从 tasks_ 移除后再解锁执行：
+        // submit() 持同一把 tasks_mutex_ push_back 回调，无锁遍历是并发 UB；
+        // 不持锁执行用户回调，避免回调内再次 submit 造成死锁。
+        std::vector<std::function<void()>> callbacks;
         {
             std::lock_guard<std::mutex> lock(tasks_mutex_);
+            callbacks.swap(task->callbacks);
             tasks_.erase(task->path);
+        }
+        for (auto& cb : callbacks) {
+            if (cb) cb();
         }
     }
 }

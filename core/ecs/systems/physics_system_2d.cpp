@@ -552,9 +552,16 @@ void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
     // 创建/更新关节（必须在 body 创建之后、step 之前）
     impl_->update_joints(scene);
 
-    // Box2D 等外部后端要求每帧使用固定小步长，不能一次性 step 整个 dt
+    // Box2D 等外部后端要求每帧使用固定小步长，不能一次性 step 整个 dt。
+    // fixed_dt<=0 时除法为 UB/无穷：跳过本帧步进，但仍执行后续清理。
     impl_->time_accumulator += dt;
-    int steps = static_cast<int>(impl_->time_accumulator / fixed_dt);
+    int steps = 0;
+    if (fixed_dt > 0.0f) {
+        steps = static_cast<int>(impl_->time_accumulator / fixed_dt);
+    } else {
+        GLOG_WARN("PhysicsSystem2D: fixed_dt={} <= 0, skipping physics steps", fixed_dt);
+        impl_->time_accumulator = 0.0f;
+    }
     if (steps > max_steps_per_frame) {
         GLOG_WARN("PhysicsSystem2D: clamping steps from {} to {} (dt={:.4f})", steps, max_steps_per_frame, dt);
         steps = max_steps_per_frame;

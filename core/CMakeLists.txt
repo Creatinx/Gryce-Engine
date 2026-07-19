@@ -26,6 +26,14 @@ target_sources(gryce_core
         assets/async_loader.cpp
         assets/obj_loader.cpp
         assets/stb_image_impl.cpp
+        assets/compressed_image.cpp
+        assets/dds_loader.cpp
+        assets/ktx_loader.cpp
+        assets/tinyexr_impl.cpp
+        animation/skeleton.cpp
+        animation/animation_clip.cpp
+        animation/pose.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/tinyexr/miniz.c
         $<$<BOOL:${GRYCE_HAS_ASSIMP}>:assets/assimp_importer.cpp>
         components/component_factory.cpp
         components/2d/component_2d.cpp
@@ -36,6 +44,8 @@ target_sources(gryce_core
         components/2d/skybox_2d.cpp
         components/audio_source.cpp
         components/mesh_renderer.cpp
+        components/skinned_mesh_renderer.cpp
+        reflection/builtin_reflections.cpp
         components/physical_material.cpp
         audio/audio_engine.cpp
         audio/miniaudio_impl.cpp
@@ -54,6 +64,7 @@ target_sources(gryce_core
         ecs/component_store.cpp
         ecs/systems/render_system_2d.cpp
         ecs/systems/render_system_3d.cpp
+        ecs/systems/animator_system.cpp
         render/render.cpp
         render/mesh.cpp
         render/shader.cpp
@@ -116,6 +127,7 @@ target_sources(gryce_core
             audio/audio_engine.h
             resources/tileset.h
             components/mesh_renderer.h
+            components/skinned_mesh_renderer.h
             resources/project.h
             resources/resource_path.h
             physics/physics_point.h
@@ -132,6 +144,10 @@ target_sources(gryce_core
             assets/async_loader.h
             assets/obj_loader.h
             assets/texture_data.h
+            assets/skinned_mesh_data.h
+            animation/skeleton.h
+            animation/animation_clip.h
+            animation/pose.h
             $<$<BOOL:${GRYCE_HAS_ASSIMP}>:assets/assimp_importer.h>
             scene/uuid.h
             scene/entity.h
@@ -148,6 +164,7 @@ target_sources(gryce_core
             ecs/systems/fracture_system.h
             ecs/systems/render_system_2d.h
             ecs/systems/render_system_3d.h
+            ecs/systems/animator_system.h
             math/math.h
             math/camera.h
             utils/glog/glog_lib.h
@@ -157,7 +174,9 @@ target_sources(gryce_core
             platform/cursor.h
             render/render.h
             render/mesh.h
+            render/skinned_vertex.h
             render/shader.h
+            reflection/reflection.h
             render/texture.h
             render/material.h
             render/framebuffer.h
@@ -224,6 +243,8 @@ endif()
 set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/audio/miniaudio_impl.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/assets/stb_image_impl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/tinyexr_impl.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/tinyexr/miniz.c
     PROPERTIES COMPILE_FLAGS -w
 )
 
@@ -232,6 +253,7 @@ target_include_directories(gryce_core
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/stb>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/tinyexr>
         $<INSTALL_INTERFACE:include>
 )
 

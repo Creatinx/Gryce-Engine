@@ -105,15 +105,16 @@ bool Material::load_from_file(const std::string& path) {
     return true;
 }
 
-static RHITextureHandle create_fallback_texture(RenderContext* ctx,
-                                                 unsigned char r, unsigned char g,
-                                                 unsigned char b, unsigned char a) {
+static RHITextureHandle create_fallback_texture(RenderContext* ctx, TextureFormat format,
+                                                 const void* pixel, size_t pixel_size) {
     if (!ctx) return RHITextureHandle{};
     RHITextureHandle tex = ctx->create_texture();
     ITexture* tex_ptr = ctx->texture(tex);
     if (!tex.is_valid() || !tex_ptr) return RHITextureHandle{};
-    unsigned char pixel[4] = {r, g, b, a};
-    tex_ptr->upload_data(pixel, 1, 1, 4);
+    if (!tex_ptr->create(format, 1, 1, pixel)) {
+        return RHITextureHandle{};
+    }
+    (void)pixel_size;
     return tex;
 }
 
@@ -124,19 +125,44 @@ RHITextureHandle Material::load_texture(RenderContext* ctx, const std::string& p
     auto tex_data = assets::AssetManager::instance().load<assets::TextureData>(path);
     if (!tex_data.valid()) {
         GLOG_WARN("Material: failed to load texture '{}', using empty fallback", path);
-        return create_fallback_texture(ctx, 255, 255, 255, 255);
+        unsigned char white_rgba[4] = {255, 255, 255, 255};
+        return create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
     }
 
-    // 2. 上传到 GPU
+    // 2. 上传到 GPU（按数据形态分派）
     RHITextureHandle tex = ctx->create_texture();
     ITexture* tex_ptr = ctx->texture(tex);
     if (!tex.is_valid() || !tex_ptr) {
-        return create_fallback_texture(ctx, 255, 255, 255, 255);
+        unsigned char white_rgba[4] = {255, 255, 255, 255};
+        return create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
     }
-    if (!tex_ptr->upload_data(tex_data->data(), tex_data->width, tex_data->height, tex_data->channels)) {
-        GLOG_WARN("Material: failed to upload texture '{}' to GPU, using fallback", path);
-        ctx->destroy_texture(tex);
-        return create_fallback_texture(ctx, 255, 255, 255, 255);
+
+    if (tex_data->is_compressed) {
+        std::vector<const void*> mip_data;
+        std::vector<size_t> mip_sizes;
+        tex_data->fill_mip_views(mip_data, mip_sizes);
+        if (!tex_ptr->create_compressed(tex_data->compressed_format, tex_data->width, tex_data->height,
+                                        tex_data->mip_levels, mip_data.data(), mip_sizes.data())) {
+            GLOG_WARN("Material: failed to upload compressed texture '{}' to GPU, using fallback", path);
+            ctx->destroy_texture(tex);
+            unsigned char white_rgba[4] = {255, 255, 255, 255};
+            return create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
+        }
+    } else if (tex_data->is_float) {
+        if (!tex_ptr->create(TextureFormat::RGBA32F, tex_data->width, tex_data->height,
+                             tex_data->float_pixels.data())) {
+            GLOG_WARN("Material: failed to upload float texture '{}' to GPU, using fallback", path);
+            ctx->destroy_texture(tex);
+            unsigned char white_rgba[4] = {255, 255, 255, 255};
+            return create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
+        }
+    } else {
+        if (!tex_ptr->upload_data(tex_data->data(), tex_data->width, tex_data->height, tex_data->channels)) {
+            GLOG_WARN("Material: failed to upload texture '{}' to GPU, using fallback", path);
+            ctx->destroy_texture(tex);
+            unsigned char white_rgba[4] = {255, 255, 255, 255};
+            return create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
+        }
     }
     return tex;
 }
@@ -147,35 +173,43 @@ void Material::upload_to_gpu(RenderContext* ctx) {
     // 贴图槽位约定：0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao
     // 每一张图都保证至少有一个 1x1 fallback 绑定到对应 slot，避免 GLSL sampler
     // 在没有纹理绑定的情况下被未定义读取。
+    // fallback 格式与真实贴图格式保持一致，防止 NVIDIA 驱动因 sampler
+    // 面对的纹理格式/通道数变化而频繁重新编译 shader。
     albedo_map_ = load_texture(ctx, albedo_map_path);
     if (!albedo_map_.is_valid()) {
-        albedo_map_ = create_fallback_texture(ctx, 255, 255, 255, 255);
+        unsigned char white_rgb[3] = {255, 255, 255};
+        albedo_map_ = create_fallback_texture(ctx, TextureFormat::RGB8, white_rgb, sizeof(white_rgb));
     }
 
     normal_map_ = load_texture(ctx, normal_map_path);
     if (!normal_map_.is_valid()) {
         // 法线贴图默认：纯蓝 (0.5, 0.5, 1.0) 表示无扰动
-        normal_map_ = create_fallback_texture(ctx, 128, 128, 255, 255);
+        unsigned char blue_rgb[3] = {128, 128, 255};
+        normal_map_ = create_fallback_texture(ctx, TextureFormat::RGB8, blue_rgb, sizeof(blue_rgb));
     }
 
     roughness_map_ = load_texture(ctx, roughness_map_path);
     if (!roughness_map_.is_valid()) {
-        roughness_map_ = create_fallback_texture(ctx, 255, 255, 255, 255);
+        unsigned char white_rgba[4] = {255, 255, 255, 255};
+        roughness_map_ = create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
     }
 
     metallic_map_ = load_texture(ctx, metallic_map_path);
     if (!metallic_map_.is_valid()) {
-        metallic_map_ = create_fallback_texture(ctx, 255, 255, 255, 255);
+        unsigned char white_rgba[4] = {255, 255, 255, 255};
+        metallic_map_ = create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
     }
 
     ao_map_ = load_texture(ctx, ao_map_path);
     if (!ao_map_.is_valid()) {
-        ao_map_ = create_fallback_texture(ctx, 255, 255, 255, 255);
+        unsigned char white_rgba[4] = {255, 255, 255, 255};
+        ao_map_ = create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
     }
 
     emissive_map_ = load_texture(ctx, emissive_map_path);
     if (!emissive_map_.is_valid()) {
-        emissive_map_ = create_fallback_texture(ctx, 255, 255, 255, 255);
+        unsigned char black_rgba[4] = {0, 0, 0, 255};
+        emissive_map_ = create_fallback_texture(ctx, TextureFormat::RGBA8, black_rgba, sizeof(black_rgba));
     }
 
     GLOG_INFO("Material '{}' uploaded to GPU", name);
@@ -193,28 +227,36 @@ void Material::bind(RenderContext* ctx, RHIShaderHandle shader) const {
     ctx->set_uniform_vec4(shader, "uUVTransform",
                           math::Vector4f(uv_scale.x, uv_scale.y, uv_offset.x, uv_offset.y));
 
-    auto bind_tex = [&](RHITextureHandle tex, int slot, bool use, const char* use_flag,
-                        const char* uniform) {
+    auto bind_tex = [&](RHITextureHandle tex, RHITextureHandle fallback, int slot, bool use,
+                        const char* use_flag, const char* uniform) {
         // 只有当用户启用且确实指定了贴图路径时才采样；否则用标量参数
         bool has = tex.is_valid() && use;
         ctx->set_uniform_int(shader, use_flag, has ? 1 : 0);
-        // 无论是否采样都绑定 fallback，保证 sampler 有合法 texture unit
-        ctx->set_texture(shader, tex.is_valid() ? tex : albedo_map_, slot, "");
+        // 无论是否采样都绑定 fallback，保证 sampler 有合法 texture unit。
+        // 使用对应 slot 的 fallback，确保格式与真实贴图一致，减少驱动 recompile。
+        ctx->set_texture(shader, tex.is_valid() ? tex : fallback, slot, "");
         ctx->set_uniform_int(shader, uniform, slot);
     };
 
-    // 贴图槽位约定：0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 shadow, 6 emissive
-    bind_tex(albedo_map_, 0, use_albedo_map && !albedo_map_path.empty(),
+    // 贴图槽位约定见 TextureSlots；PBR 使用 10-16，与 2D/tonemap/skybox 不重叠，
+    // 避免 NVIDIA 因同一 unit 格式变化而重新编译 shader。
+    bind_tex(albedo_map_, albedo_map_, TextureSlots::kPBRAlbedo,
+             use_albedo_map && !albedo_map_path.empty(),
              "uUseAlbedoMap", "uAlbedoMap");
-    bind_tex(normal_map_, 1, use_normal_map && !normal_map_path.empty(),
+    bind_tex(normal_map_, normal_map_, TextureSlots::kPBRNormal,
+             use_normal_map && !normal_map_path.empty(),
              "uUseNormalMap", "uNormalMap");
-    bind_tex(roughness_map_, 2, use_roughness_map && !roughness_map_path.empty(),
+    bind_tex(roughness_map_, roughness_map_, TextureSlots::kPBRRoughness,
+             use_roughness_map && !roughness_map_path.empty(),
              "uUseRoughnessMap", "uRoughnessMap");
-    bind_tex(metallic_map_, 3, use_metallic_map && !metallic_map_path.empty(),
+    bind_tex(metallic_map_, metallic_map_, TextureSlots::kPBRMetallic,
+             use_metallic_map && !metallic_map_path.empty(),
              "uUseMetallicMap", "uMetallicMap");
-    bind_tex(ao_map_, 4, use_ao_map && !ao_map_path.empty(),
+    bind_tex(ao_map_, ao_map_, TextureSlots::kPBRAO,
+             use_ao_map && !ao_map_path.empty(),
              "uUseAOMap", "uAOMap");
-    bind_tex(emissive_map_, 6, use_emissive_map && !emissive_map_path.empty(),
+    bind_tex(emissive_map_, emissive_map_, TextureSlots::kPBREmissive,
+             use_emissive_map && !emissive_map_path.empty(),
              "uUseEmissiveMap", "uEmissiveMap");
 }
 

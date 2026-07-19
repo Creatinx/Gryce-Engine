@@ -186,6 +186,11 @@ Window::Window(Window&& o) noexcept
     , frame_count_(o.frame_count_)
     , fps_interval_(o.fps_interval_) {
     o.handle_ = nullptr;
+    // move 后 GLFW user pointer 仍指向旧对象，回调会写悬垂对象；
+    // 重新指向新对象（旧对象 handle_ 已置空，不会双重销毁）
+    if (handle_) {
+        glfwSetWindowUserPointer(handle_, this);
+    }
 }
 
 Window& Window::operator=(Window&& o) noexcept {
@@ -204,6 +209,10 @@ Window& Window::operator=(Window&& o) noexcept {
         frame_count_ = o.frame_count_;
         fps_interval_ = o.fps_interval_;
         o.handle_ = nullptr;
+        // move 赋值后 GLFW user pointer 仍指向旧对象，重新指向新对象
+        if (handle_) {
+            glfwSetWindowUserPointer(handle_, this);
+        }
     }
     return *this;
 }

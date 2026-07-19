@@ -111,6 +111,8 @@ void Tilemap::draw(render::IRenderer2D* renderer) {
 
             if (use_texture) {
                 math::Vector4f uv = tileset.tile_uv(tile, tileset_texture_width_, tileset_texture_height_);
+                // 绘制只传纹理句柄（执行时经 generation 校验解析）；
+                // resolve_texture 仅用于主线程判空回退彩色方块
                 render::ITexture* tex_ptr = renderer->resolve_texture(tileset.texture);
                 if (!tex_ptr) {
                     renderer->draw_rect(wx, wy, cw, ch, tile_color(tile));
@@ -119,11 +121,12 @@ void Tilemap::draw(render::IRenderer2D* renderer) {
                 if (lit) {
                     renderer->draw_lit_sprite_region(wx, wy, cw, ch,
                                                      uv.x, uv.y, uv.z, uv.w,
-                                                     tex_ptr, nullptr, render::Color::white());
+                                                     tileset.texture, render::RHITextureHandle{},
+                                                     render::Color::white());
                 } else {
                     renderer->draw_sprite_region(wx, wy, cw, ch,
                                                   uv.x, uv.y, uv.z, uv.w,
-                                                  tex_ptr, render::Color::white());
+                                                  tileset.texture, render::Color::white());
                 }
             } else {
                 renderer->draw_rect(wx, wy, cw, ch, tile_color(tile));

@@ -56,6 +56,16 @@ public:
         free_list_.push_back(index);
     }
 
+    // 带 generation 校验的释放：句柄里的 generation 与槽位当前值不匹配时忽略。
+    // 防止旧句柄被二次销毁时误杀槽位复用后的新资源。
+    void deallocate(uint32_t index, uint32_t generation) {
+        if (index >= slots_.size() || !slots_[index].alive) return;
+        if (slots_[index].generation != generation) return;
+        slots_[index].alive = false;
+        slots_[index].object.reset();
+        free_list_.push_back(index);
+    }
+
     bool is_alive(uint32_t index, uint32_t generation) const {
         return index < slots_.size() && slots_[index].alive && slots_[index].generation == generation;
     }

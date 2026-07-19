@@ -41,6 +41,9 @@ public:
     // 直接让后端渲染 draw data（用于推入渲染线程）
     void render_draw_data(ImDrawData* draw_data);
 
+    // 访问渲染后端（编辑器 Viewport 面板查询纹理 ID 用）
+    IImGuiBackend* backend() const { return backend_.get(); }
+
     bool initialized() const { return initialized_; }
 
 private:

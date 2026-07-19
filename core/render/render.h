@@ -74,16 +74,24 @@ public:
     virtual void clear(float r, float g, float b, float a) = 0;
     virtual void clear_depth() {}
     virtual void set_viewport(int x, int y, int w, int h) = 0;
-    virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {}
-    virtual void set_scissor(int x, int y, int w, int h) {}
-    virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {}
+    virtual void set_viewport(int x, int y, int w, int h, uint32_t viewport_index) {
+        (void)x; (void)y; (void)w; (void)h; (void)viewport_index;
+    }
+    virtual void set_scissor(int x, int y, int w, int h) {
+        (void)x; (void)y; (void)w; (void)h;
+    }
+    virtual void set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {
+        (void)x; (void)y; (void)w; (void)h; (void)viewport_index;
+    }
     virtual uint32_t max_viewports() const { return 1; }
     virtual void set_depth_test(bool enabled) = 0;
     // 深度写入开关（透明物体：测试开、写入关）。默认实现为空。
     virtual void set_depth_write(bool enabled) { (void)enabled; }
     virtual void set_blend(bool enabled) = 0;
-    virtual void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {}
-    virtual void set_blend_equation(BlendEquation mode) {}
+    virtual void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) {
+        (void)src_factor; (void)dst_factor;
+    }
+    virtual void set_blend_equation(BlendEquation mode) { (void)mode; }
     virtual void set_cull_face(bool enabled) = 0;
 
     // 绘制（使用 RHI 句柄）
@@ -113,9 +121,11 @@ public:
     virtual void unbind_framebuffer() {}
 
     // 帧率 / 呈现控制
-    virtual void set_swap_interval(int interval) {}
-    virtual void set_gpu_busy_spin(bool enabled, int iterations) {}
-    virtual void set_nv_delay_before_swap(float seconds) {}
+    virtual void set_swap_interval(int interval) { (void)interval; }
+    virtual void set_gpu_busy_spin(bool enabled, int iterations) {
+        (void)enabled; (void)iterations;
+    }
+    virtual void set_nv_delay_before_swap(float seconds) { (void)seconds; }
     virtual bool supports_nv_delay_before_swap() const { return false; }
 
     // 信息
@@ -126,7 +136,7 @@ public:
     virtual RenderBackendCapabilities get_capabilities() const = 0;
 
     // Screenshot: backend captures current swapchain/frontbuffer to a BMP file.
-    virtual void request_screenshot(const std::string& path) {}
+    virtual void request_screenshot(const std::string& path) { (void)path; }
 
     // Factory for 2D renderer (OpenGL -> Renderer2D, Vulkan -> VulkanRenderer2D).
     virtual std::unique_ptr<IRenderer2D> create_renderer2d() { return nullptr; }
@@ -135,7 +145,7 @@ public:
     virtual std::unique_ptr<IImGuiBackend> create_imgui_backend() { return nullptr; }
 
     // Enable backend validation (Vulkan validation layers). Must be called before init().
-    virtual void set_validation_enabled(bool enabled) {}
+    virtual void set_validation_enabled(bool enabled) { (void)enabled; }
 };
 
 enum class RenderAPI {

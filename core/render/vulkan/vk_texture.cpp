@@ -336,6 +336,7 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
         case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8_UNORM; channels_ = 3; break;
         case TextureFormat::RGBA8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; channels_ = 4; break;
         case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; channels_ = 4; break;
+        case TextureFormat::RGBA32F: vk_format = VK_FORMAT_R32G32B32A32_SFLOAT; channels_ = 4; break;
         case TextureFormat::R8: vk_format = VK_FORMAT_R8_UNORM; channels_ = 1; break;
         case TextureFormat::Depth16: vk_format = VK_FORMAT_D16_UNORM; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
         case TextureFormat::Depth24: vk_format = VK_FORMAT_X8_D24_UNORM_PACK32; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
@@ -345,6 +346,173 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
     }
     format_ = vk_format;
     return create_image(vk_format, usage, aspect, data);
+}
+
+VkFormat texture_format_to_vk(TextureFormat fmt) {
+    switch (fmt) {
+        case TextureFormat::BC1_RGB:  return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+        case TextureFormat::BC1_RGBA: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case TextureFormat::BC2:      return VK_FORMAT_BC2_UNORM_BLOCK;
+        case TextureFormat::BC3:      return VK_FORMAT_BC3_UNORM_BLOCK;
+        case TextureFormat::BC4:      return VK_FORMAT_BC4_UNORM_BLOCK;
+        case TextureFormat::BC5:      return VK_FORMAT_BC5_UNORM_BLOCK;
+        case TextureFormat::BC6H:     return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+        case TextureFormat::BC7:      return VK_FORMAT_BC7_UNORM_BLOCK;
+        case TextureFormat::ETC2_RGB: return VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+        case TextureFormat::ETC2_RGBA:return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+        case TextureFormat::ASTC_4x4: return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+        default: return VK_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
+bool VulkanTexture::create_compressed(TextureFormat format, int width, int height,
+                                      int mip_levels, const void* const* mip_data,
+                                      const size_t* mip_sizes) {
+    if (!device_ || !device_->is_valid()) return false;
+    if (width <= 0 || height <= 0 || mip_levels <= 0 || !mip_data || !mip_sizes) return false;
+    if (!is_compressed_format(format)) return false;
+
+    destroy();
+    width_ = width;
+    height_ = height;
+    channels_ = 4;
+    is_cubemap_ = false;
+    mip_levels_ = static_cast<uint32_t>(mip_levels);
+    format_ = texture_format_to_vk(format);
+
+    VkDevice dev = device_->device();
+
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.extent.width = static_cast<uint32_t>(width_);
+    info.extent.height = static_cast<uint32_t>(height_);
+    info.extent.depth = 1;
+    info.mipLevels = mip_levels_;
+    info.arrayLayers = 1;
+    info.format = format_;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo alloc_info{};
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    if (vmaCreateImage(device_->allocator(), &info, &alloc_info, &image_, &allocation_, nullptr) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create compressed image");
+        return false;
+    }
+
+    VkImageViewCreateInfo view_info{};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = image_;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format_;
+    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view_info.subresourceRange.baseMipLevel = 0;
+    view_info.subresourceRange.levelCount = mip_levels_;
+    view_info.subresourceRange.baseArrayLayer = 0;
+    view_info.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(dev, &view_info, nullptr, &image_view_) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create compressed image view");
+        return false;
+    }
+
+    const bool use_aniso = device_->max_sampler_anisotropy() > 1.0f;
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = to_vk_filter(mag_filter_);
+    sampler_info.minFilter = to_vk_filter(min_filter_);
+    sampler_info.addressModeU = to_vk_wrap(wrap_s_);
+    sampler_info.addressModeV = to_vk_wrap(wrap_t_);
+    sampler_info.addressModeW = to_vk_wrap(wrap_s_);
+    sampler_info.anisotropyEnable = use_aniso ? VK_TRUE : VK_FALSE;
+    sampler_info.maxAnisotropy = use_aniso ? device_->max_sampler_anisotropy() : 1.0f;
+    sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    sampler_info.unnormalizedCoordinates = VK_FALSE;
+    sampler_info.compareEnable = VK_FALSE;
+    sampler_info.compareOp = VK_COMPARE_OP_NEVER;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.maxLod = static_cast<float>(mip_levels_);
+    if (vkCreateSampler(dev, &sampler_info, nullptr, &sampler_) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create compressed sampler");
+        return false;
+    }
+
+    VkDeviceSize total = 0;
+    std::vector<VkDeviceSize> offsets(static_cast<size_t>(mip_levels));
+    for (int i = 0; i < mip_levels; ++i) {
+        offsets[i] = total;
+        total += static_cast<VkDeviceSize>(mip_sizes[i]);
+    }
+
+    VulkanBuffer staging;
+    if (!staging.init(device_, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        return false;
+    }
+    for (int i = 0; i < mip_levels; ++i) {
+        staging.upload(mip_data[i], static_cast<VkDeviceSize>(mip_sizes[i]), offsets[i]);
+    }
+
+    VkCommandPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = device_->graphics_queue_family();
+    VkCommandPool pool = VK_NULL_HANDLE;
+    vkCreateCommandPool(dev, &pool_info, nullptr, &pool);
+
+    VkCommandBuffer cmd = begin_one_time_commands(device_, pool);
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image_;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = mip_levels_;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    std::vector<VkBufferImageCopy> regions(static_cast<size_t>(mip_levels));
+    for (int i = 0; i < mip_levels; ++i) {
+        const int mw = std::max(1, width_ >> i);
+        const int mh = std::max(1, height_ >> i);
+        regions[i].bufferOffset = offsets[i];
+        regions[i].bufferRowLength = static_cast<uint32_t>(mw);
+        regions[i].bufferImageHeight = static_cast<uint32_t>(mh);
+        regions[i].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        regions[i].imageSubresource.mipLevel = static_cast<uint32_t>(i);
+        regions[i].imageSubresource.baseArrayLayer = 0;
+        regions[i].imageSubresource.layerCount = 1;
+        regions[i].imageOffset = {0, 0, 0};
+        regions[i].imageExtent = {static_cast<uint32_t>(mw), static_cast<uint32_t>(mh), 1};
+    }
+    vkCmdCopyBufferToImage(cmd, staging.buffer(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<uint32_t>(mip_levels), regions.data());
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    end_one_time_commands(device_, pool, cmd);
+    vkDestroyCommandPool(dev, pool, nullptr);
+
+    layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    GLOG_INFO("VulkanTexture: compressed texture created {}x{} mips={} format={}",
+              width_, height_, mip_levels_, static_cast<int>(format));
+    return true;
 }
 
 bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,

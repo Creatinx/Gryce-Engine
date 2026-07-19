@@ -64,6 +64,11 @@ public:
     virtual void set_mat4(const std::string& name, const gryce_engine::math::Matrix4f& value) = 0;
     virtual void set_mat4(const char* name, const gryce_engine::math::Matrix4f& value) = 0;
 
+    // mat4 数组 uniform（骨骼 palette 等）。count 超上限时实现侧截断并告警。
+    // 默认 no-op：不支持数组 uniform 的后端/测试 mock 不受影响。
+    virtual void set_mat4_array(const char* /*name*/, const gryce_engine::math::Matrix4f* /*data*/,
+                                uint32_t /*count*/) {}
+
     // 后端相关纹理绑定（OpenGL 可忽略，Vulkan 用于更新 descriptor set）
     virtual void set_texture(int slot, ITexture* texture) { (void)slot; (void)texture; }
 
@@ -72,12 +77,15 @@ public:
     // Vulkan backend loads `{dir}/spirv/vulkan_{name}.vert.spv` and `{dir}/spirv/vulkan_{name}.frag.spv`.
     // target/color_output/post_process are used by Vulkan to build the pipeline.
     // skybox=true 时（Vulkan）构建天空盒管线：单 cubemap sampler、深度 LESS_OR_EQUAL、不写深度、不剔除。
+    // skinned=true 时（Vulkan）构建骨骼蒙皮管线：顶点布局追加 bone ids/weights，
+    // 描述符布局追加 palette UBO（binding 8，vertex stage）。
     virtual bool load_program(const std::string& name,
                               const std::string& shader_dir,
                               IFramebuffer* target = nullptr,
                               bool color_output = true,
                               bool post_process = false,
-                              bool skybox = false) { (void)skybox; return false; }
+                              bool skybox = false,
+                              bool skinned = false) { (void)skybox; (void)skinned; return false; }
 
     // Set post-process parameters (exposure + tone map mode). Used by tonemap shader.
     virtual void set_post_process_params(float exposure, int mode) {}

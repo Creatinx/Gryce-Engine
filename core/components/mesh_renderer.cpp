@@ -14,6 +14,8 @@ MeshRenderer::MeshRenderer(const std::string& path) : mesh_path(path) {
 }
 
 MeshRenderer::~MeshRenderer() {
+    // 使延迟执行的异步上传命令失效，避免渲染线程访问已析构的 this
+    alive_token_->store(false, std::memory_order_release);
     GLOG_INFO("MeshRenderer::~MeshRenderer: destroying '{}', gpu_mesh_handle.index={}", mesh_path, gpu_mesh_handle_.index);
     if (material && ctx_) {
         GLOG_INFO("MeshRenderer::~MeshRenderer: destroying material GPU resources");

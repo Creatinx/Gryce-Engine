@@ -43,10 +43,10 @@ public:
     void draw_circle(float cx, float cy, float r, int segments, const Color& color) override;
     void draw_text(float x, float y, const std::string& text, float font_size, const Color& color) override;
     void draw_sprite(float x, float y, float w, float h,
-                      ITexture* texture, const Color& tint = Color::white()) override;
+                      RHITextureHandle texture, const Color& tint = Color::white()) override;
     void draw_sprite_region(float x, float y, float w, float h,
                              float u0, float v0, float u1, float v1,
-                             ITexture* texture, const Color& tint = Color::white()) override;
+                             RHITextureHandle texture, const Color& tint = Color::white()) override;
 
     // 2D 光照接口
     void set_ambient_light(const Color& color) override;
@@ -55,11 +55,11 @@ public:
                           const Color& color, float intensity) override;
     void reset_lights() override;
     void draw_lit_sprite(float x, float y, float w, float h,
-                          ITexture* albedo, ITexture* normal_map,
+                          RHITextureHandle albedo, RHITextureHandle normal_map,
                           const Color& tint = Color::white()) override;
     void draw_lit_sprite_region(float x, float y, float w, float h,
                                  float u0, float v0, float u1, float v1,
-                                 ITexture* albedo, ITexture* normal_map,
+                                 RHITextureHandle albedo, RHITextureHandle normal_map,
                                  const Color& tint = Color::white(),
                                  float nu0 = 0.0f, float nv0 = 0.0f,
                                  float nu1 = 1.0f, float nv1 = 1.0f) override;
@@ -80,24 +80,28 @@ private:
     void push_vertex(float x, float y, const Color& color, float u, float v);
     void push_text_vertex(float x, float y, const Color& color, float u, float v);
     void push_sprite_vertex(float x, float y, const Color& color, float u, float v);
-    void push_lit_vertex(ITexture* albedo, ITexture* normal,
+    void push_lit_vertex(RHITextureHandle albedo, RHITextureHandle normal,
                          float x, float y, const Color& color,
                          float u, float v, float nu, float nv);
     void push_shadow_caster_vertex(float x, float y);
 
-    // 受光照精灵批次：按 (albedo, normal) 纹理分组
+    // 受光照精灵批次：按 (albedo, normal) 纹理句柄分组。
+    // 批内只存句柄（按值拷贝安全），命令在渲染线程执行时经 generation
+    // 校验解析，纹理已销毁则回退默认纹理，杜绝悬垂 ITexture*。
     struct LitBatch {
-        ITexture* albedo = nullptr;
-        ITexture* normal = nullptr;
+        RHITextureHandle albedo;
+        RHITextureHandle normal;
         std::vector<LitVertex2D> verts;
     };
-    using LitBatchKey = std::pair<ITexture*, ITexture*>;
+    using LitBatchKey = std::pair<RHITextureHandle, RHITextureHandle>;
     struct LitBatchKeyHash {
         std::size_t operator()(const LitBatchKey& key) const noexcept {
-            return std::hash<void*>{}(key.first) ^ (std::hash<void*>{}(key.second) << 1);
+            auto h1 = std::hash<uint32_t>{}(key.first.index) ^ (std::hash<uint32_t>{}(key.first.generation) << 1);
+            auto h2 = std::hash<uint32_t>{}(key.second.index) ^ (std::hash<uint32_t>{}(key.second.generation) << 1);
+            return h1 ^ (h2 << 1);
         }
     };
-    LitBatch* find_lit_batch(ITexture* albedo, ITexture* normal);
+    LitBatch* find_lit_batch(RHITextureHandle albedo, RHITextureHandle normal);
 
     void flush_batches();
     void flush_sprite_batch();
@@ -215,7 +219,8 @@ private:
     std::vector<Vertex2D> vertices_;
     std::vector<Vertex2D> text_vertices_;
     std::vector<Vertex2D> sprite_vertices_;
-    ITexture* sprite_texture_ = nullptr;
+    // 当前精灵批次纹理（句柄按值持有，flush 时经 generation 校验解析）
+    RHITextureHandle sprite_texture_;
     std::unordered_map<LitBatchKey, LitBatch, LitBatchKeyHash> lit_batches_;
     std::vector<ShadowCasterVertex> shadow_caster_vertices_;
 

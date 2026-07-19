@@ -27,6 +27,9 @@ public:
     bool is_cubemap() const override { return is_cubemap_; }
     bool create_depth(int width, int height) override;
     bool create(TextureFormat format, int width, int height, const void* data = nullptr) override;
+    bool create_compressed(TextureFormat format, int width, int height,
+                           int mip_levels, const void* const* mip_data,
+                           const size_t* mip_sizes) override;
 
     void bind(uint32_t slot = 0) const override;
     void unbind() const override;

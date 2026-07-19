@@ -736,9 +736,15 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
     // 创建/更新关节（必须在 body 创建之后、step 之前）
     impl_->update_joints(scene);
 
-    // 固定步长积分
+    // 固定步长积分。fixed_dt<=0 时除法为 UB/无穷：跳过本帧步进，但仍执行后续清理。
     impl_->time_accumulator += dt;
-    int steps = static_cast<int>(impl_->time_accumulator / fixed_dt);
+    int steps = 0;
+    if (fixed_dt > 0.0f) {
+        steps = static_cast<int>(impl_->time_accumulator / fixed_dt);
+    } else {
+        GLOG_WARN("PhysicsSystem3D: fixed_dt={} <= 0, skipping physics steps", fixed_dt);
+        impl_->time_accumulator = 0.0f;
+    }
     if (steps > max_steps_per_frame) {
         GLOG_WARN("PhysicsSystem3D: clamping steps from {} to {} (dt={:.4f})", steps, max_steps_per_frame, dt);
         steps = max_steps_per_frame;

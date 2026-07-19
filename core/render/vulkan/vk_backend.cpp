@@ -875,19 +875,30 @@ RHIFramebufferHandle VulkanBackend::create_framebuffer() {
 }
 
 void VulkanBackend::destroy_mesh(RHIMeshHandle handle) {
-    mesh_pool_.deallocate(handle.index);
+    // 带 generation 校验，防止过期句柄二次销毁误杀复用槽位的新资源
+    mesh_pool_.deallocate(handle.index, handle.generation);
 }
 
 void VulkanBackend::destroy_shader(RHIShaderHandle handle) {
-    shader_pool_.deallocate(handle.index);
+    shader_pool_.deallocate(handle.index, handle.generation);
 }
 
 void VulkanBackend::destroy_texture(RHITextureHandle handle) {
-    texture_pool_.deallocate(handle.index);
+    // deallocate 前先通知所有 shader 清除对该纹理指针的缓存：
+    // 池槽位复用后同一地址可能属于新纹理，裸指针缓存会跳过必需的 descriptor 更新，
+    // 甚至采样已销毁的 image view。
+    if (auto* tex = texture_pool_.get_if_alive(handle.index, handle.generation)) {
+        for (uint32_t i = 0; i < shader_pool_.size(); ++i) {
+            if (auto* s = shader_pool_.get(i)) {
+                s->invalidate_texture_cache(tex);
+            }
+        }
+    }
+    texture_pool_.deallocate(handle.index, handle.generation);
 }
 
 void VulkanBackend::destroy_framebuffer(RHIFramebufferHandle handle) {
-    framebuffer_pool_.deallocate(handle.index);
+    framebuffer_pool_.deallocate(handle.index, handle.generation);
 }
 
 IMesh* VulkanBackend::mesh(RHIMeshHandle handle) {

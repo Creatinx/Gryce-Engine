@@ -5,8 +5,28 @@ add_executable(gryce_engine)
 
 target_sources(gryce_engine PRIVATE
     main.cpp
+    editor_app.cpp
+    editor_camera.cpp
+    panel_manager.cpp
+    panels/hierarchy_panel.cpp
+    panels/inspector_panel.cpp
+    panels/console_panel.cpp
+    panels/viewport_panel.cpp
+    panels/project_panel.cpp
     ui/debug_panel.cpp
+    ui/editor_theme.cpp
 )
+
+# ImGuizmo（M1-E2 Transform Gizmo）：捆绑源码，第三方代码关闭警告
+set(IMGUIZMO_DIR ${CMAKE_SOURCE_DIR}/third_party/imguizmo)
+if(EXISTS ${IMGUIZMO_DIR}/ImGuizmo.cpp)
+    target_sources(gryce_engine PRIVATE ${IMGUIZMO_DIR}/ImGuizmo.cpp)
+    target_include_directories(gryce_engine PRIVATE ${IMGUIZMO_DIR})
+    set_source_files_properties(${IMGUIZMO_DIR}/ImGuizmo.cpp
+        PROPERTIES COMPILE_OPTIONS "-w")
+else()
+    message(FATAL_ERROR "ImGuizmo not found at ${IMGUIZMO_DIR} (expected bundled copy)")
+endif()
 
 target_link_libraries(gryce_engine PRIVATE gryce_core)
 

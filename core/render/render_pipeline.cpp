@@ -20,6 +20,7 @@
 #include "scene/entity.h"
 #include "components/transform.h"
 #include "components/mesh_renderer.h"
+#include "components/skinned_mesh_renderer.h"
 #include "ecs/query.h"
 #include "math/camera.h"
 #include "resources/resource_path.h"
@@ -50,10 +51,25 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         }
     }
 
+    // 编辑器视口离屏输出依赖 HDR 管线（tonemap 结果即 LDR 视口纹理）
+    if (hdr_enabled_ && viewport_output_enabled_) {
+        if (!create_viewport_target(ctx)) {
+            GLOG_WARN("RenderPipeline: viewport output target failed, disabling");
+            viewport_output_enabled_ = false;
+        }
+    }
+
     pbr_shader_ = load_shader("pbr", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
     if (!pbr_shader_.is_valid()) {
         GLOG_ERROR("RenderPipeline: failed to load pbr shader");
         return false;
+    }
+
+    // 蒙皮 PBR shader 为可选项：旧项目 shader 目录没有 skinned_pbr 时
+    // 只告警降级（SkinnedMeshRenderer 不绘制），不影响普通渲染管线。
+    skinned_pbr_shader_ = load_shader("skinned_pbr", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false, true);
+    if (!skinned_pbr_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: skinned_pbr shader unavailable, skinned rendering disabled");
     }
 
     shadow_shader_ = load_shader("shadow_map", shadow_fbo_, false, false);
@@ -66,6 +82,24 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
     if (!tonemap_shader_.is_valid()) {
         GLOG_ERROR("RenderPipeline: failed to load tonemap shader");
         return false;
+    }
+
+    // 预先把 shadow sampler 绑定到固定 PBR shadow slot，避免首次使用 PBR shader
+    // 时 uShadowMap 默认指向 texture unit 0（默认纹理非 depth），触发 NVIDIA undefined
+    // behavior warning。注意 set_uniform_int 前必须先 set_shader，否则 GL 报无 active program。
+    if (shadow_map_.is_valid()) {
+        auto bind_shadow_sampler = [this](RHIShaderHandle shader) {
+            if (!shader.is_valid()) return;
+            ctx_->set_shader(shader);
+            ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
+            if (shadow_map_ptr) {
+                shadow_map_ptr->bind(TextureSlots::kPBRShadow);
+            }
+            ctx_->set_texture(shader, shadow_map_, TextureSlots::kPBRShadow, "");
+            ctx_->set_uniform_int(shader, "uShadowMap", TextureSlots::kPBRShadow);
+        };
+        bind_shadow_sampler(pbr_shader_);
+        bind_shadow_sampler(skinned_pbr_shader_);
     }
 
     if (hdr_enabled_) {
@@ -102,6 +136,14 @@ void RenderPipeline::shutdown() {
         ctx_->destroy_texture(hdr_depth_);
         hdr_depth_ = RHITextureHandle{};
     }
+    if (viewport_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(viewport_fbo_);
+        viewport_fbo_ = RHIFramebufferHandle{};
+    }
+    if (viewport_color_.is_valid()) {
+        ctx_->destroy_texture(viewport_color_);
+        viewport_color_ = RHITextureHandle{};
+    }
     if (owns_shaders_ && tonemap_shader_.is_valid()) {
         ctx_->destroy_shader(tonemap_shader_);
         tonemap_shader_ = RHIShaderHandle{};
@@ -118,18 +160,21 @@ void RenderPipeline::shutdown() {
     if (owns_shaders_) {
         if (pbr_shader_.is_valid()) ctx_->destroy_shader(pbr_shader_);
         if (shadow_shader_.is_valid()) ctx_->destroy_shader(shadow_shader_);
+        if (skinned_pbr_shader_.is_valid()) ctx_->destroy_shader(skinned_pbr_shader_);
     }
     pbr_shader_ = RHIShaderHandle{};
     shadow_shader_ = RHIShaderHandle{};
+    skinned_pbr_shader_ = RHIShaderHandle{};
     ctx_ = nullptr;
     initialized_ = false;
 }
 
-RHIShaderHandle RenderPipeline::load_shader(const std::string& name, RHIFramebufferHandle target, bool color_output, bool post_process) {
+RHIShaderHandle RenderPipeline::load_shader(const std::string& name, RHIFramebufferHandle target, bool color_output, bool post_process,
+                                            bool skinned) {
     RHIShaderHandle shader = ctx_->create_shader();
     IShader* shader_ptr = ctx_->shader(shader);
     IFramebuffer* target_ptr = ctx_->framebuffer(target);
-    if (!shader.is_valid() || !shader_ptr || !shader_ptr->load_program(name, shader_dir_, target_ptr, color_output, post_process)) {
+    if (!shader.is_valid() || !shader_ptr || !shader_ptr->load_program(name, shader_dir_, target_ptr, color_output, post_process, false, skinned)) {
         GLOG_ERROR("RenderPipeline: failed to load shader program '{}'", name);
         if (shader.is_valid()) {
             ctx_->destroy_shader(shader);
@@ -196,8 +241,12 @@ void RenderPipeline::update_light_space_matrix() {
         return;
     }
 
-    // 阴影正交盒跟随相机焦点（相机前方 shadow_area_ 处），避免远处物体出盒失影
-    math::Vector3f light_dir = lights_[shadow_light_index_].direction.normalized();
+    // 阴影正交盒跟随相机焦点（相机前方 shadow_area_ 处），避免远处物体出盒失影。
+    // 方向光方向为零向量时 normalized() 产生 NaN，look_at 会崩坏；先判零再归一化。
+    const math::Vector3f& raw_dir = lights_[shadow_light_index_].direction;
+    math::Vector3f light_dir = raw_dir.length_sq() < 1e-6f
+                               ? math::Vector3f(0.0f, -1.0f, 0.0f)
+                               : raw_dir.normalized();
     math::Vector3f center = math::Vector3f::zero();
     if (camera_) {
         center = camera_->position() + camera_->forward() * shadow_area_;
@@ -354,10 +403,10 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
 
     ITexture* tex_ptr = ctx_->texture(skybox_texture_);
     if (tex_ptr) {
-        tex_ptr->bind(0);
+        tex_ptr->bind(TextureSlots::kSkyboxCube);
     }
-    ctx.set_texture(skybox_shader_, skybox_texture_, 0, "");
-    ctx.set_uniform_int(skybox_shader_, "uSkybox", 0);
+    ctx.set_texture(skybox_shader_, skybox_texture_, TextureSlots::kSkyboxCube, "");
+    ctx.set_uniform_int(skybox_shader_, "uSkybox", TextureSlots::kSkyboxCube);
 
     ctx.draw_mesh(skybox_mesh_, skybox_shader_);
 
@@ -408,8 +457,17 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         math::Matrix4f model;
         float dist_sq;
     };
+    struct SkinnedDrawItem {
+        RHIMeshHandle mesh;
+        const Material* material;
+        math::Matrix4f model;
+        std::shared_ptr<const std::vector<math::Matrix4f>> palette;
+        float dist_sq;
+    };
     std::vector<DrawItem> opaque_items;
     std::vector<DrawItem> transparent_items;
+    std::vector<SkinnedDrawItem> skinned_opaque_items;
+    std::vector<SkinnedDrawItem> skinned_transparent_items;
     const math::Vector3f cam_pos = camera_->position();
     ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
         scene,
@@ -428,21 +486,49 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             }
         });
 
+    // 蒙皮网格：skinned 管线可用且 palette 已就绪才绘制
+    if (skinned_pbr_shader_.is_valid()) {
+        ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+            scene,
+            [&](scene::Entity* entity, components::SkinnedMeshRenderer* mr, components::Transform* /*transform*/) {
+                if (!mr->enabled || !mr->gpu_mesh_handle().is_valid() || !mr->palette()) return;
+                const math::Matrix4f& model = entity->world_transform();
+                const Material* mat = mr->material.get();
+                const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
+                math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
+                float dist_sq = (pos - cam_pos).length_sq();
+                SkinnedDrawItem item{mr->gpu_mesh_handle(), mat, model, mr->palette(), dist_sq};
+                if (transparent) {
+                    skinned_transparent_items.push_back(std::move(item));
+                } else {
+                    skinned_opaque_items.push_back(std::move(item));
+                }
+            });
+    }
+
     // 2c. 不透明物体：blend 关、深度写开
     ctx.set_blend(false);
     ctx.set_depth_write(true);
     for (const auto& item : opaque_items) {
         render_mesh(item.mesh, item.material, item.model, ctx);
     }
+    for (const auto& item : skinned_opaque_items) {
+        render_skinned_mesh(item.mesh, item.material, item.model, item.palette, ctx);
+    }
 
     // 2d. 透明物体：按到相机距离从远到近排序，blend 开、深度写关
-    if (!transparent_items.empty()) {
+    if (!transparent_items.empty() || !skinned_transparent_items.empty()) {
         std::sort(transparent_items.begin(), transparent_items.end(),
                   [](const DrawItem& a, const DrawItem& b) { return a.dist_sq > b.dist_sq; });
+        std::sort(skinned_transparent_items.begin(), skinned_transparent_items.end(),
+                  [](const SkinnedDrawItem& a, const SkinnedDrawItem& b) { return a.dist_sq > b.dist_sq; });
         ctx.set_blend(true);
         ctx.set_depth_write(false);
         for (const auto& item : transparent_items) {
             render_mesh(item.mesh, item.material, item.model, ctx);
+        }
+        for (const auto& item : skinned_transparent_items) {
+            render_skinned_mesh(item.mesh, item.material, item.model, item.palette, ctx);
         }
         ctx.set_blend(false);
         ctx.set_depth_write(true);
@@ -480,15 +566,55 @@ void RenderPipeline::render_mesh(RHIMeshHandle mesh, const Material* material, c
     if (shadow_map_.is_valid()) {
         ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
         if (shadow_map_ptr) {
-            shadow_map_ptr->bind(5);
+            shadow_map_ptr->bind(TextureSlots::kPBRShadow);
         }
-        ctx.set_texture(pbr_shader_, shadow_map_, 5, "");
-        ctx.set_uniform_int(pbr_shader_, "uShadowMap", 5);
+        ctx.set_texture(pbr_shader_, shadow_map_, TextureSlots::kPBRShadow, "");
+        ctx.set_uniform_int(pbr_shader_, "uShadowMap", TextureSlots::kPBRShadow);
     }
     ctx.set_uniform_int(pbr_shader_, "uUseShadowMap", use_shadow ? 1 : 0);
     ctx.set_uniform_float(pbr_shader_, "uShadowBias", shadow_bias_);
 
     ctx.draw_mesh(mesh, pbr_shader_);
+}
+
+void RenderPipeline::render_skinned_mesh(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
+                                         std::shared_ptr<const std::vector<math::Matrix4f>> palette,
+                                         RenderContext& ctx) {
+    if (!mesh.is_valid() || !skinned_pbr_shader_.is_valid() || !camera_) return;
+
+    // 双面材质关闭背面剔除
+    const bool two_sided = material && material->two_sided;
+    ctx.set_cull_face(!cull_disabled_ && !two_sided);
+
+    ctx.set_shader(skinned_pbr_shader_);
+    ctx.set_uniform_mat4(skinned_pbr_shader_, "uModel", model);
+    ctx.set_uniform_mat4(skinned_pbr_shader_, "uView", camera_->get_view_matrix());
+    ctx.set_uniform_mat4(skinned_pbr_shader_, "uProjection", camera_->get_projection_matrix());
+    ctx.set_uniform_mat4(skinned_pbr_shader_, "uLightSpaceMatrix", light_space_matrix_);
+    ctx.set_uniform_vec3(skinned_pbr_shader_, "uCameraPos", camera_->position());
+
+    // palette：shared_ptr 按值捕获进命令队列，渲染线程执行时数据仍有效
+    if (palette && !palette->empty()) {
+        ctx.set_uniform_mat4_array(skinned_pbr_shader_, "uBonePalette", std::move(palette));
+    }
+
+    if (material) {
+        material->bind(&ctx, skinned_pbr_shader_);
+    }
+
+    const bool use_shadow = shadow_enabled_ && shadow_light_index_ >= 0 && shadow_map_.is_valid();
+    if (shadow_map_.is_valid()) {
+        ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
+        if (shadow_map_ptr) {
+            shadow_map_ptr->bind(TextureSlots::kPBRShadow);
+        }
+        ctx.set_texture(skinned_pbr_shader_, shadow_map_, TextureSlots::kPBRShadow, "");
+        ctx.set_uniform_int(skinned_pbr_shader_, "uShadowMap", TextureSlots::kPBRShadow);
+    }
+    ctx.set_uniform_int(skinned_pbr_shader_, "uUseShadowMap", use_shadow ? 1 : 0);
+    ctx.set_uniform_float(skinned_pbr_shader_, "uShadowBias", shadow_bias_);
+
+    ctx.draw_mesh(mesh, skinned_pbr_shader_);
 }
 
 void RenderPipeline::begin_shadow_pass(RenderContext& ctx) {
@@ -589,6 +715,89 @@ bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
     return true;
 }
 
+bool RenderPipeline::create_viewport_target(RenderContext* ctx) {
+    // tonemap 输出为 LDR，RGBA8 足够
+    viewport_color_ = ctx->create_texture();
+    ITexture* color_ptr = ctx->texture(viewport_color_);
+    if (!viewport_color_.is_valid() || !color_ptr ||
+        !color_ptr->create(TextureFormat::RGBA8, viewport_width_, viewport_height_, nullptr)) {
+        return false;
+    }
+    color_ptr->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    color_ptr->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    viewport_fbo_ = ctx->create_framebuffer();
+    IFramebuffer* fbo_ptr = ctx->framebuffer(viewport_fbo_);
+    if (!viewport_fbo_.is_valid() || !fbo_ptr ||
+        !fbo_ptr->create(viewport_width_, viewport_height_)) {
+        return false;
+    }
+    fbo_ptr->attach_color_texture(color_ptr);
+    if (!fbo_ptr->is_complete()) {
+        GLOG_ERROR("RenderPipeline: viewport framebuffer incomplete");
+        return false;
+    }
+    return true;
+}
+
+ITexture* RenderPipeline::viewport_color_texture() const {
+    if (!ctx_ || !viewport_color_.is_valid()) return nullptr;
+    return ctx_->texture(viewport_color_);
+}
+
+bool RenderPipeline::resize_render_targets(int width, int height) {
+    if (!ctx_ || width <= 0 || height <= 0) return false;
+    if (width == viewport_width_ && height == viewport_height_) return true;
+
+    viewport_width_ = width;
+    viewport_height_ = height;
+
+    // 先创建新目标再销毁旧目标：销毁命令经 pending 队列延迟执行，
+    // 若先销毁再创建，句柄槽位可能被立即复用导致悬垂引用。
+    if (hdr_enabled_) {
+        RHITextureHandle old_color = hdr_color_;
+        RHITextureHandle old_depth = hdr_depth_;
+        RHIFramebufferHandle old_fbo = hdr_fbo_;
+        hdr_color_ = RHITextureHandle{};
+        hdr_depth_ = RHITextureHandle{};
+        hdr_fbo_ = RHIFramebufferHandle{};
+
+        if (!create_hdr_target(ctx_)) {
+            GLOG_ERROR("RenderPipeline: resize HDR target failed ({}x{})", width, height);
+            // 回滚：销毁可能创建了一半的新目标，恢复旧目标
+            if (hdr_color_.is_valid()) ctx_->destroy_texture(hdr_color_);
+            if (hdr_depth_.is_valid()) ctx_->destroy_texture(hdr_depth_);
+            if (hdr_fbo_.is_valid()) ctx_->destroy_framebuffer(hdr_fbo_);
+            hdr_color_ = old_color;
+            hdr_depth_ = old_depth;
+            hdr_fbo_ = old_fbo;
+            return false;
+        }
+        if (old_color.is_valid()) ctx_->destroy_texture(old_color);
+        if (old_depth.is_valid()) ctx_->destroy_texture(old_depth);
+        if (old_fbo.is_valid()) ctx_->destroy_framebuffer(old_fbo);
+    }
+
+    if (viewport_output_enabled_) {
+        RHITextureHandle old_color = viewport_color_;
+        RHIFramebufferHandle old_fbo = viewport_fbo_;
+        viewport_color_ = RHITextureHandle{};
+        viewport_fbo_ = RHIFramebufferHandle{};
+
+        if (!create_viewport_target(ctx_)) {
+            GLOG_ERROR("RenderPipeline: resize viewport target failed ({}x{})", width, height);
+            if (viewport_color_.is_valid()) ctx_->destroy_texture(viewport_color_);
+            if (viewport_fbo_.is_valid()) ctx_->destroy_framebuffer(viewport_fbo_);
+            viewport_color_ = old_color;
+            viewport_fbo_ = old_fbo;
+            return false;
+        }
+        if (old_color.is_valid()) ctx_->destroy_texture(old_color);
+        if (old_fbo.is_valid()) ctx_->destroy_framebuffer(old_fbo);
+    }
+    return true;
+}
+
 bool RenderPipeline::create_fullscreen_mesh(RenderContext* ctx) {
     fullscreen_mesh_ = ctx->create_mesh();
     IMesh* mesh_ptr = ctx->mesh(fullscreen_mesh_);
@@ -634,7 +843,10 @@ void RenderPipeline::end_hdr_forward_pass(RenderContext& ctx) {
 void RenderPipeline::render_tonemap(RenderContext& ctx) {
     if (!tonemap_shader_.is_valid() || !hdr_color_.is_valid() || !fullscreen_mesh_.is_valid()) return;
 
-    ctx.set_framebuffer(RHIFramebufferHandle{});
+    // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
+    // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
+    const bool to_viewport = viewport_output_enabled_ && viewport_fbo_.is_valid();
+    ctx.set_framebuffer(to_viewport ? viewport_fbo_ : RHIFramebufferHandle{});
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_depth_test(false);
     ctx.set_cull_face(false);
@@ -647,9 +859,9 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     IMesh* fullscreen_ptr = ctx_->mesh(fullscreen_mesh_);
     if (!hdr_color_ptr || !tonemap_ptr || !fullscreen_ptr) return;
 
-    hdr_color_ptr->bind(0);
-    ctx.set_texture(tonemap_shader_, hdr_color_, 0, "");
-    ctx.set_uniform_int(tonemap_shader_, "uHDRTexture", 0);
+    hdr_color_ptr->bind(TextureSlots::kTonemapHDR);
+    ctx.set_texture(tonemap_shader_, hdr_color_, TextureSlots::kTonemapHDR, "");
+    ctx.set_uniform_int(tonemap_shader_, "uHDRTexture", TextureSlots::kTonemapHDR);
     tonemap_ptr->set_post_process_params(exposure_, tone_map_mode_);
 
     ctx.draw_mesh(fullscreen_mesh_, tonemap_shader_);

@@ -29,6 +29,11 @@ GLMesh::GLMesh() {
 }
 
 GLMesh::~GLMesh() {
+    // 删除前失效 VAO 绑定缓存，避免驱动复用同一 id 后
+    // bind() 误判"已绑定"而跳过 glBindVertexArray。
+    if (g_current_bound_vao == vao_) {
+        g_current_bound_vao = 0;
+    }
     glDeleteVertexArrays(1, &vao_);
     glDeleteBuffers(1, &vbo_);
     glDeleteBuffers(1, &ebo_);
@@ -102,14 +107,25 @@ void GLMesh::set_layout(const VertexLayout& layout) {
 
         for (const auto& attr : layout_.attributes) {
             glEnableVertexArrayAttrib(vao_, attr.location);
-            glVertexArrayAttribFormat(
-                vao_,
-                attr.location,
-                get_component_count(attr.type),
-                get_gl_type(attr.type),
-                attr.normalized ? GL_TRUE : GL_FALSE,
-                static_cast<GLuint>(attr.offset)
-            );
+            if (is_integer_vertex_type(attr.type)) {
+                // 整数属性（bone ids 等）：位模式原样传给 shader 的 ivec/uvec
+                glVertexArrayAttribIFormat(
+                    vao_,
+                    attr.location,
+                    get_component_count(attr.type),
+                    get_gl_type(attr.type),
+                    static_cast<GLuint>(attr.offset)
+                );
+            } else {
+                glVertexArrayAttribFormat(
+                    vao_,
+                    attr.location,
+                    get_component_count(attr.type),
+                    get_gl_type(attr.type),
+                    attr.normalized ? GL_TRUE : GL_FALSE,
+                    static_cast<GLuint>(attr.offset)
+                );
+            }
             glVertexArrayAttribBinding(vao_, attr.location, 0);
         }
     } else {
@@ -124,14 +140,25 @@ void GLMesh::set_layout(const VertexLayout& layout) {
 
         for (const auto& attr : layout_.attributes) {
             glEnableVertexAttribArray(attr.location);
-            glVertexAttribPointer(
-                attr.location,
-                get_component_count(attr.type),
-                get_gl_type(attr.type),
-                attr.normalized ? GL_TRUE : GL_FALSE,
-                static_cast<GLsizei>(layout_.stride),
-                reinterpret_cast<const void*>(static_cast<uintptr_t>(attr.offset))
-            );
+            if (is_integer_vertex_type(attr.type)) {
+                // 整数属性（bone ids 等）：必须用 IPointer 变体
+                glVertexAttribIPointer(
+                    attr.location,
+                    get_component_count(attr.type),
+                    get_gl_type(attr.type),
+                    static_cast<GLsizei>(layout_.stride),
+                    reinterpret_cast<const void*>(static_cast<uintptr_t>(attr.offset))
+                );
+            } else {
+                glVertexAttribPointer(
+                    attr.location,
+                    get_component_count(attr.type),
+                    get_gl_type(attr.type),
+                    attr.normalized ? GL_TRUE : GL_FALSE,
+                    static_cast<GLsizei>(layout_.stride),
+                    reinterpret_cast<const void*>(static_cast<uintptr_t>(attr.offset))
+                );
+            }
         }
 
         glBindVertexArray(0);
@@ -168,8 +195,10 @@ uint32_t GLMesh::get_gl_type(VertexType type) const {
         case VertexType::Float4:
             return GL_FLOAT;
         case VertexType::Int:
+        case VertexType::Int4:
             return GL_INT;
         case VertexType::UInt:
+        case VertexType::UInt4:
             return GL_UNSIGNED_INT;
     }
     return GL_FLOAT;
@@ -183,6 +212,8 @@ int GLMesh::get_component_count(VertexType type) const {
         case VertexType::Float4: return 4;
         case VertexType::Int:    return 1;
         case VertexType::UInt:   return 1;
+        case VertexType::Int4:   return 4;
+        case VertexType::UInt4:  return 4;
     }
     return 3;
 }

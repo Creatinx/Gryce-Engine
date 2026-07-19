@@ -55,10 +55,22 @@ bool FontAtlas::init(RenderContext* ctx, const std::string& font_path, float fon
         return false;
     }
 
-    // 创建纹理（单通道 R8）
+    // 创建纹理（RGBA8，alpha 来自字形覆盖度，颜色设为白色）。
+    // 与 2D sprite 纹理格式保持一致，避免 NVIDIA 因同一 texture unit
+    // 在 R8/RGBA8 之间切换而重新编译 2D shader。
+    std::vector<unsigned char> bitmap_rgba(static_cast<std::size_t>(atlas_size * atlas_size * 4));
+    for (std::size_t i = 0; i < bitmap_rgba.size() / 4; ++i) {
+        unsigned char a = bitmap_r8[i];
+        bitmap_rgba[i * 4 + 0] = 255;
+        bitmap_rgba[i * 4 + 1] = 255;
+        bitmap_rgba[i * 4 + 2] = 255;
+        bitmap_rgba[i * 4 + 3] = a;
+    }
+
     texture_handle_ = ctx->create_texture();
     texture_ = ctx->texture(texture_handle_);
-    if (!texture_handle_.is_valid() || !texture_ || !texture_->upload_data(bitmap_r8.data(), atlas_size, atlas_size, 1)) {
+    if (!texture_handle_.is_valid() || !texture_ ||
+        !texture_->upload_data(bitmap_rgba.data(), atlas_size, atlas_size, 4)) {
         GLOG_ERROR("Failed to upload font atlas texture");
         return false;
     }
@@ -102,8 +114,8 @@ bool FontAtlas::create_fallback_atlas(RenderContext* ctx, float font_size) {
     const int glyph_size = static_cast<int>(font_size * 0.75f);         // ~24
     const int pad = (cell_size - glyph_size) / 2;                       // 4
 
-    // fallback 同样使用单通道 R8 top-down，保持与正常字体一致的采样方式（采样 .r）
-    std::vector<unsigned char> bitmap_r8(static_cast<std::size_t>(atlas_size * atlas_size), 0);
+    // fallback 同样使用 RGBA8 top-down，保持与正常字体一致的采样方式（采样 .a）
+    std::vector<unsigned char> bitmap_rgba(static_cast<std::size_t>(atlas_size * atlas_size * 4), 0);
     for (int i = 0; i < 96; ++i) {
         int cx = i % cell_count_x;
         int cy = i / cell_count_x;
@@ -113,15 +125,19 @@ bool FontAtlas::create_fallback_atlas(RenderContext* ctx, float font_size) {
             for (int x = 0; x < glyph_size; ++x) {
                 int px = base_x + x;
                 int py = base_y + y;
-                std::size_t dst = static_cast<std::size_t>(py * atlas_size + px);
-                bitmap_r8[dst] = 255;
+                std::size_t dst = static_cast<std::size_t>((py * atlas_size + px) * 4);
+                bitmap_rgba[dst + 0] = 255;
+                bitmap_rgba[dst + 1] = 255;
+                bitmap_rgba[dst + 2] = 255;
+                bitmap_rgba[dst + 3] = 255;
             }
         }
     }
 
     texture_handle_ = ctx->create_texture();
     texture_ = ctx->texture(texture_handle_);
-    if (!texture_handle_.is_valid() || !texture_ || !texture_->upload_data(bitmap_r8.data(), atlas_size, atlas_size, 1)) {
+    if (!texture_handle_.is_valid() || !texture_ ||
+        !texture_->upload_data(bitmap_rgba.data(), atlas_size, atlas_size, 4)) {
         GLOG_ERROR("Failed to upload fallback font atlas texture");
         return false;
     }

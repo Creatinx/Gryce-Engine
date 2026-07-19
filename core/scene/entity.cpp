@@ -130,6 +130,11 @@ void Entity::on_render(render::RenderContext& ctx) {
 }
 
 void Entity::on_destroy() {
+    // 幂等保护：层级实体的 on_destroy 可能被调两次
+    // （Scene::destroy() 显式调用一次，之后 ~Entity 析构链再调一次），
+    // 用标志位保证只生效一次。与 AudioSource 等组件的幂等实现兼容。
+    if (destroy_notified_) return;
+    destroy_notified_ = true;
     for (auto& comp : components_) {
         comp->on_destroy();
     }
@@ -141,18 +146,18 @@ void Entity::on_destroy() {
 void Entity::set_parent(Entity* parent) {
     if (parent_ == parent) return;
 
-    // 从旧父级移除
-    if (parent_) {
-        parent_->remove_child(this);
-    }
-
+    // 注意：parent_->remove_child(this) 会 erase 持有 this 的 unique_ptr，
+    // 可能导致本对象立即析构（use-after-free 隐患）。
+    // 因此所有成员写入必须在 remove_child 之前完成，
+    // remove_child 之后不得再访问 this，直接返回。
+    // 需要“重挂父级”的正确路径是 detach_child() + add_child()。
+    Entity* old_parent = parent_;
     parent_ = parent;
-
-    // 加入新父级
-    if (parent_) {
-        // 注意：这里假设当前 Entity 已经由某个 unique_ptr 管理，
-        // 不转移所有权，仅做指针链接。实际使用建议通过 add_child 建立关系。
+    if (old_parent) {
+        old_parent->remove_child(this); // 此后 this 可能已析构
+        return;
     }
+    // 无旧父级（根实体）：仅做指针链接，不转移所有权
 }
 
 Entity* Entity::add_child(std::unique_ptr<Entity> child) {
@@ -178,6 +183,19 @@ bool Entity::remove_child(Entity* child) {
         }
     }
     return false;
+}
+
+std::unique_ptr<Entity> Entity::detach_child(Entity* child) {
+    if (!child) return nullptr;
+    for (auto it = children_.begin(); it != children_.end(); ++it) {
+        if (it->get() == child) {
+            std::unique_ptr<Entity> owned = std::move(*it);
+            children_.erase(it);
+            owned->parent_ = nullptr;
+            return owned;
+        }
+    }
+    return nullptr;
 }
 
 components::Component* Entity::get_component_by_type(const std::string& type) const {
@@ -206,6 +224,7 @@ void Entity::foreach(std::function<void(Entity*)> callback) {
 std::unique_ptr<Entity> Entity::clone() const {
     auto clone_entity = std::make_unique<Entity>(name_);
     clone_entity->enabled = enabled;
+    clone_entity->prefab_template_uuid_ = prefab_template_uuid_;
 
     // 深拷贝所有组件（除 Transform 外，Transform 由构造函数自动创建）
     for (const auto& comp : components_) {

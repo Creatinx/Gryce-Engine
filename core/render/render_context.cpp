@@ -119,6 +119,12 @@ void RenderContext::pause_render_thread() {
     render_thread_->join();
     render_thread_.reset();
 
+    // 渲染线程退出时已 release_context()；必须先把 context 切回主线程，
+    // 后续 wait_gpu_idle / drain / process_pending_destroys 中的 GL 调用才有 current context。
+    if (backend_ && native_window_) {
+        backend_->make_current(native_window_);
+    }
+
     // 渲染线程已退出，但 GPU 可能仍在执行已提交的命令。
     // 等待 GPU 真正 idle 后再执行清理命令，避免销毁正在使用的资源。
     if (backend_) {
@@ -145,11 +151,6 @@ void RenderContext::pause_render_thread() {
     // 渲染线程已退出、GPU 已 idle，可以安全处理所有待销毁资源
     process_pending_destroys(true);
 
-    // 将 context 切回主线程，以便上传 GPU 资源或执行同步清理
-    if (backend_ && native_window_) {
-        backend_->make_current(native_window_);
-    }
-
     running_ = false;
     GLOG_INFO("RenderContext render thread paused (context back on main thread)");
 }
@@ -160,6 +161,12 @@ void RenderContext::pause_render_thread_keep_cmdbuffer() {
     render_thread_->pause();
     render_thread_->join();
     render_thread_.reset();
+
+    // 渲染线程退出时已 release_context()；必须先把 context 切回主线程，
+    // 后续 wait_gpu_idle / drain / process_pending_destroys 中的 GL 调用才有 current context。
+    if (backend_ && native_window_) {
+        backend_->make_current(native_window_);
+    }
 
     // 等待 GPU 真正 idle 后再执行清理命令。
     if (backend_) {
@@ -180,10 +187,6 @@ void RenderContext::pause_render_thread_keep_cmdbuffer() {
 
     // 渲染线程已退出、GPU 已 idle，可以安全处理所有待销毁资源
     process_pending_destroys(true);
-
-    if (backend_ && native_window_) {
-        backend_->make_current(native_window_);
-    }
 
     running_ = false;
     GLOG_INFO("RenderContext render thread paused, cmd buffer kept for synchronous cleanup");
@@ -311,25 +314,45 @@ void RenderContext::enqueue_destroy(std::function<void()>&& deleter) {
 }
 
 void RenderContext::process_pending_destroys(bool force_all) {
-    std::lock_guard<std::mutex> lock(pending_destroys_mutex_);
+    // 渲染线程运行中（非 force_all）时主线程不持有 GL context，
+    // 到期 deleter 必须推给渲染线程执行，否则 glDelete* 在无 current context 下
+    // 被调用（驱动静默忽略 → 资源泄漏，严格说是 UB）。
+    // force_all 只用于 pause/shutdown 路径，彼时渲染线程已退出且
+    // context 已切回主线程，可安全内联执行。
+    const bool defer_to_render_thread = running_ && !force_all && cmd_buffer_;
 
-    uint64_t completed = 0;
-    if (cmd_buffer_) {
-        completed = cmd_buffer_->completed_seq();
-    }
+    std::vector<std::function<void()>> deferred;
+    {
+        std::lock_guard<std::mutex> lock(pending_destroys_mutex_);
 
-    size_t keep = 0;
-    for (size_t i = 0; i < pending_destroys_.size(); ++i) {
-        if (force_all || pending_destroys_[i].safe_seq <= completed) {
-            pending_destroys_[i].deleter();
-        } else {
-            if (i != keep) {
-                pending_destroys_[keep] = std::move(pending_destroys_[i]);
-            }
-            ++keep;
+        uint64_t completed = 0;
+        if (cmd_buffer_) {
+            completed = cmd_buffer_->completed_seq();
         }
+
+        size_t keep = 0;
+        for (size_t i = 0; i < pending_destroys_.size(); ++i) {
+            if (force_all || pending_destroys_[i].safe_seq <= completed) {
+                if (defer_to_render_thread) {
+                    deferred.push_back(std::move(pending_destroys_[i].deleter));
+                } else {
+                    pending_destroys_[i].deleter();
+                }
+            } else {
+                if (i != keep) {
+                    pending_destroys_[keep] = std::move(pending_destroys_[i]);
+                }
+                ++keep;
+            }
+        }
+        pending_destroys_.resize(keep);
     }
-    pending_destroys_.resize(keep);
+
+    // 锁外推送，避免持 pending_destroys_mutex_ 期间再拿 cmd_buffer_ 内部锁。
+    // 命令进入当前写入帧，随下一次 submit 在渲染线程（context current）执行。
+    for (auto& d : deferred) {
+        cmd_buffer_->push([d = std::move(d)](IRenderBackend*) { d(); });
+    }
 }
 
 void RenderContext::destroy_mesh(RHIMeshHandle handle) {
@@ -418,6 +441,19 @@ void RenderContext::set_uniform_mat4(RHIShaderHandle shader, const std::string& 
 
 void RenderContext::set_uniform_mat4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Matrix4f& value) {
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_mat4(shader, name, value));
+}
+
+void RenderContext::set_uniform_mat4_array(RHIShaderHandle shader, const char* name,
+                                           std::shared_ptr<const std::vector<gryce_engine::math::Matrix4f>> values) {
+    if (!values || values->empty()) return;
+    // 句柄 + shared_ptr 全部按值捕获；命令在渲染线程执行时通过 backend 解析 shader。
+    // shader 句柄带 generation 校验：shader 已销毁则 shader(handle) 返回 nullptr，安全跳过。
+    cmd_buffer_->push([shader, name = std::string(name ? name : ""), values = std::move(values)](IRenderBackend* backend) {
+        if (!backend) return;
+        IShader* s = backend->shader(shader);
+        if (!s) return;
+        s->set_mat4_array(name.c_str(), values->data(), static_cast<uint32_t>(values->size()));
+    });
 }
 
 void RenderContext::set_texture(RHIShaderHandle shader, RHITextureHandle texture, int slot,

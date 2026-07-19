@@ -53,7 +53,8 @@ void Skybox2D::draw(render::IRenderer2D* renderer) {
     math::Vector2f screen = renderer->screen_size();
     if (screen.x <= 0.0f || screen.y <= 0.0f) return;
 
-    // 按需加载贴图
+    // 按需加载贴图。texture_ptr 仅用于主线程查询纹理尺寸（平铺计算），
+    // 绘制一律传 texture_handle，由渲染线程执行时经 generation 校验解析。
     if (!texture_path.empty() && !texture_ptr) {
         if (!texture_handle.is_valid()) {
             texture_handle = skybox_texture_cache().get_or_create(renderer, texture_path);
@@ -66,7 +67,7 @@ void Skybox2D::draw(render::IRenderer2D* renderer) {
     math::Vector2f cam = renderer->camera_center();
     math::Vector2f origin = cam * scroll_factor;
 
-    if (texture_ptr && texture_ptr->is_valid()) {
+    if (texture_handle.is_valid() && texture_ptr && texture_ptr->is_valid()) {
         if (tile) {
             float tex_w = static_cast<float>(texture_ptr->width());
             float tex_h = static_cast<float>(texture_ptr->height());
@@ -77,7 +78,7 @@ void Skybox2D::draw(render::IRenderer2D* renderer) {
                 float start_y = std::floor((cam.y - half_h - origin.y) / tex_h) * tex_h + origin.y;
                 for (float y = start_y; y < cam.y + half_h + tex_h; y += tex_h) {
                     for (float x = start_x; x < cam.x + half_w + tex_w; x += tex_w) {
-                        renderer->draw_sprite(x, y, tex_w, tex_h, texture_ptr, color);
+                        renderer->draw_sprite(x, y, tex_w, tex_h, texture_handle, color);
                     }
                 }
                 return;
@@ -88,7 +89,7 @@ void Skybox2D::draw(render::IRenderer2D* renderer) {
         float y = origin.y - screen.y * 0.5f / renderer->camera_zoom();
         float w = screen.x / renderer->camera_zoom();
         float h = screen.y / renderer->camera_zoom();
-        renderer->draw_sprite(x, y, w, h, texture_ptr, color);
+        renderer->draw_sprite(x, y, w, h, texture_handle, color);
     } else {
         // 纯色天空背景
         float x = origin.x - screen.x * 0.5f / renderer->camera_zoom();

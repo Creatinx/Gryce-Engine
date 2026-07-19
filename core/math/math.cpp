@@ -231,6 +231,38 @@ Quaternionf Quaternionf::from_axis_angle(const Vector3f& axis, float angle) {
     return Quaternionf(n.x * s, n.y * s, n.z * s, std::cos(half));
 }
 
+Quaternionf Quaternionf::slerp(const Quaternionf& a, const Quaternionf& b, float t) {
+    float dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+
+    // dot<0：翻转 b 取最短路径（q 与 -q 表示同一旋转，插值应走短弧）
+    Quaternionf b2 = b;
+    if (dot < 0.0f) {
+        dot = -dot;
+        b2 = Quaternionf(-b.x, -b.y, -b.z, -b.w);
+    }
+
+    // 几乎重合：sinθ→0，slerp 公式不稳定，退化为 nlerp
+    if (dot > 0.9995f) {
+        return Quaternionf(
+            a.x + (b2.x - a.x) * t,
+            a.y + (b2.y - a.y) * t,
+            a.z + (b2.z - a.z) * t,
+            a.w + (b2.w - a.w) * t
+        ).normalized();
+    }
+
+    const float theta = std::acos(dot);
+    const float sin_theta = std::sin(theta);
+    const float wa = std::sin((1.0f - t) * theta) / sin_theta;
+    const float wb = std::sin(t * theta) / sin_theta;
+    return Quaternionf(
+        a.x * wa + b2.x * wb,
+        a.y * wa + b2.y * wb,
+        a.z * wa + b2.z * wb,
+        a.w * wa + b2.w * wb
+    );
+}
+
 Quaternionf Quaternionf::from_euler(float pitch, float yaw, float roll) {
     float cr = std::cos(roll * 0.5f),  sr = std::sin(roll * 0.5f);
     float cp = std::cos(pitch * 0.5f), sp = std::sin(pitch * 0.5f);
@@ -261,6 +293,45 @@ Vector3f Quaternionf::rotate_vector(const Vector3f& v) const {
     Quaternionf vq(v.x, v.y, v.z, 0.0f);
     Quaternionf r = (*this) * vq * conjugate();
     return Vector3f(r.x, r.y, r.z);
+}
+
+Quaternionf Quaternionf::from_rotation_matrix(const Matrix4f& m) {
+    // Shepperd 法：按最大对角元分四种路径，数值稳定。
+    // 注意：引擎 to_matrix() 相对标准列向量约定为转置布局
+    //（M*v 等价于 q⁻¹vq，与 rotate_vector 方向相反，既有约定，gizmo 分解依赖它），
+    // 因此这里按转置读取，使 from_rotation_matrix(q.to_matrix()) ≈ q。
+    const float m00 = m(0, 0), m01 = m(1, 0), m02 = m(2, 0);
+    const float m10 = m(0, 1), m11 = m(1, 1), m12 = m(2, 1);
+    const float m20 = m(0, 2), m21 = m(1, 2), m22 = m(2, 2);
+
+    const float trace = m00 + m11 + m22;
+    Quaternionf q;
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f; // s = 4w
+        q.w = 0.25f * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f; // s = 4x
+        q.w = (m21 - m12) / s;
+        q.x = 0.25f * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f; // s = 4y
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25f * s;
+        q.z = (m12 + m21) / s;
+    } else {
+        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f; // s = 4z
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25f * s;
+    }
+    return q.normalized();
 }
 
 } // namespace gryce_engine::math

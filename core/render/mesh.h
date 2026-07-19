@@ -14,8 +14,17 @@ enum class VertexType {
     Float3,
     Float4,
     Int,
-    UInt
+    UInt,
+    Int4,   // 4×int32（整数属性，如 bone ids）
+    UInt4   // 4×uint32（整数属性，如 bone ids）
 };
+
+// 整数类型属性必须用 glVertexAttribIPointer / VK_FORMAT_*_UINT 路径，
+// 不能走 float 属性（否则 shader 中 ivec/uvec 读到未转换的位模式）。
+inline bool is_integer_vertex_type(VertexType type) noexcept {
+    return type == VertexType::Int || type == VertexType::UInt ||
+           type == VertexType::Int4 || type == VertexType::UInt4;
+}
 
 struct VertexAttribute {
     uint32_t location = 0;

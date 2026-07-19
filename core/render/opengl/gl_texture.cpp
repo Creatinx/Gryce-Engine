@@ -3,6 +3,7 @@
 #include "gl_utils.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <algorithm>
 #include <cstring>
 
 // stb_image 声明在 stb_image.h 中，实现集中在 core/assets/stb_image_impl.cpp
@@ -56,6 +57,44 @@ GLTexture::~GLTexture() {
 
 namespace {
 
+// 兼容旧版 GLEW / 部分驱动未声明的压缩格式常量
+#ifndef GL_COMPRESSED_RGB_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGB_S3TC_DXT1_EXT 0x83F0
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT3_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT3_EXT 0x83F2
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_COMPRESSED_RED_RGTC1
+#define GL_COMPRESSED_RED_RGTC1 0x8DBB
+#endif
+#ifndef GL_COMPRESSED_RG_RGTC2
+#define GL_COMPRESSED_RG_RGTC2 0x8DBD
+#endif
+#ifndef GL_COMPRESSED_RGBA_BPTC_UNORM
+#define GL_COMPRESSED_RGBA_BPTC_UNORM 0x8E8C
+#endif
+#ifndef GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT
+#define GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT 0x8E8F
+#endif
+#ifndef GL_COMPRESSED_RGB8_ETC2
+#define GL_COMPRESSED_RGB8_ETC2 0x9274
+#endif
+#ifndef GL_COMPRESSED_RGBA8_ETC2_EAC
+#define GL_COMPRESSED_RGBA8_ETC2_EAC 0x9278
+#endif
+#ifndef GL_COMPRESSED_RGBA_ASTC_4x4_KHR
+#define GL_COMPRESSED_RGBA_ASTC_4x4_KHR 0x93B0
+#endif
+#ifndef GL_RGBA32F
+#define GL_RGBA32F 0x8814
+#endif
+
 struct GLFormatInfo {
     GLint internal_format = 0;
     GLenum format = 0;
@@ -70,10 +109,23 @@ GLFormatInfo to_gl_format(TextureFormat fmt) {
     case TextureFormat::RGB8:           return {GL_RGB8,            GL_RGB,  GL_UNSIGNED_BYTE, 3};
     case TextureFormat::RGBA8:          return {GL_RGBA8,           GL_RGBA, GL_UNSIGNED_BYTE, 4};
     case TextureFormat::RGBA16F:        return {GL_RGBA16F,         GL_RGBA, GL_HALF_FLOAT,    4};
+    case TextureFormat::RGBA32F:        return {GL_RGBA32F,         GL_RGBA, GL_FLOAT,         4};
     case TextureFormat::Depth16:        return {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, 1};
     case TextureFormat::Depth24:        return {GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,   1};
     case TextureFormat::Depth24Stencil8:return {GL_DEPTH24_STENCIL8,  GL_DEPTH_STENCIL,   GL_UNSIGNED_INT_24_8, 2};
     case TextureFormat::Depth32F:       return {GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT, 1};
+    // 压缩格式：format/type 字段不会被使用
+    case TextureFormat::BC1_RGB:        return {GL_COMPRESSED_RGB_S3TC_DXT1_EXT,   GL_RGB,  GL_UNSIGNED_BYTE, 4};
+    case TextureFormat::BC1_RGBA:       return {GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,  GL_RGBA, GL_UNSIGNED_BYTE, 4};
+    case TextureFormat::BC2:            return {GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,  GL_RGBA, GL_UNSIGNED_BYTE, 4};
+    case TextureFormat::BC3:            return {GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,  GL_RGBA, GL_UNSIGNED_BYTE, 4};
+    case TextureFormat::BC4:            return {GL_COMPRESSED_RED_RGTC1,           GL_RED,  GL_UNSIGNED_BYTE, 1};
+    case TextureFormat::BC5:            return {GL_COMPRESSED_RG_RGTC2,            GL_RG,   GL_UNSIGNED_BYTE, 2};
+    case TextureFormat::BC6H:           return {GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT, GL_RGB, GL_FLOAT, 3};
+    case TextureFormat::BC7:            return {GL_COMPRESSED_RGBA_BPTC_UNORM,     GL_RGBA, GL_UNSIGNED_BYTE, 4};
+    case TextureFormat::ETC2_RGB:       return {GL_COMPRESSED_RGB8_ETC2,           GL_RGB,  GL_UNSIGNED_BYTE, 3};
+    case TextureFormat::ETC2_RGBA:      return {GL_COMPRESSED_RGBA8_ETC2_EAC,      GL_RGBA, GL_UNSIGNED_BYTE, 4};
+    case TextureFormat::ASTC_4x4:       return {GL_COMPRESSED_RGBA_ASTC_4x4_KHR,   GL_RGBA, GL_UNSIGNED_BYTE, 4};
     }
     return {GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, 4};
 }
@@ -92,6 +144,9 @@ bool GLTexture::load_from_file(const std::string& path) {
     flip_image_vertical(data, w, h, ch);
 
     if (texture_id_) {
+        // 旧 id 可能仍缓存在 g_bound_textures 槽位中；删除前先失效，
+        // 避免驱动复用同一 id 后 bind() 误判"已绑定"而跳过新纹理的绑定。
+        clear_texture_slot_cache(texture_id_);
         glDeleteTextures(1, &texture_id_);
     }
 
@@ -139,6 +194,9 @@ bool GLTexture::load_from_file(const std::string& path) {
 
 bool GLTexture::create_empty(int width, int height, int channels) {
     if (texture_id_) {
+        // 旧 id 可能仍缓存在 g_bound_textures 槽位中；删除前先失效，
+        // 避免驱动复用同一 id 后 bind() 误判"已绑定"而跳过新纹理的绑定。
+        clear_texture_slot_cache(texture_id_);
         glDeleteTextures(1, &texture_id_);
     }
 
@@ -177,6 +235,9 @@ bool GLTexture::create_empty(int width, int height, int channels) {
 bool GLTexture::upload_data(const void* data, int width, int height, int channels) {
     if (!data) return false;
     if (texture_id_) {
+        // 旧 id 可能仍缓存在 g_bound_textures 槽位中；删除前先失效，
+        // 避免驱动复用同一 id 后 bind() 误判"已绑定"而跳过新纹理的绑定。
+        clear_texture_slot_cache(texture_id_);
         glDeleteTextures(1, &texture_id_);
     }
 
@@ -214,6 +275,25 @@ bool GLTexture::upload_data(const void* data, int width, int height, int channel
                 dst[dst_idx + 1] = v;
                 dst[dst_idx + 2] = v;
                 dst[dst_idx + 3] = v;
+            }
+        }
+        upload_data = upload_buffer.data();
+    } else if (channels == 2 && data) {
+        // channels==2（grayscale+alpha）：源缓冲只有 2 字节/像素，
+        // 若直接按 GL_RGBA/4 字节读取会越界，必须扩展成 RGBA（R=G=B=gray, A=alpha）。
+        upload_buffer.resize(static_cast<std::size_t>(width * height * 4));
+        const unsigned char* src = static_cast<const unsigned char*>(data);
+        unsigned char* dst = upload_buffer.data();
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                std::size_t src_idx = static_cast<std::size_t>((y * width + x) * 2);
+                unsigned char gray = src[src_idx + 0];
+                unsigned char alpha = src[src_idx + 1];
+                std::size_t dst_idx = static_cast<std::size_t>((y * width + x) * 4);
+                dst[dst_idx + 0] = gray;
+                dst[dst_idx + 1] = gray;
+                dst[dst_idx + 2] = gray;
+                dst[dst_idx + 3] = alpha;
             }
         }
         upload_data = upload_buffer.data();
@@ -302,6 +382,9 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
     if (width <= 0 || height <= 0) return false;
 
     if (texture_id_) {
+        // 旧 id 可能仍缓存在 g_bound_textures 槽位中；删除前先失效，
+        // 避免驱动复用同一 id 后 bind() 误判"已绑定"而跳过新纹理的绑定。
+        clear_texture_slot_cache(texture_id_);
         glDeleteTextures(1, &texture_id_);
     }
 
@@ -371,6 +454,67 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
     }
 
     GLOG_INFO("Texture created: {}x{} format={}", width, height, static_cast<int>(format));
+    return true;
+}
+
+bool GLTexture::create_compressed(TextureFormat format, int width, int height,
+                                  int mip_levels, const void* const* mip_data,
+                                  const size_t* mip_sizes) {
+    if (width <= 0 || height <= 0 || mip_levels <= 0 || !mip_data || !mip_sizes) return false;
+    if (!is_compressed_format(format)) return false;
+
+    if (texture_id_) {
+        // 旧 id 可能仍缓存在 g_bound_textures 槽位中；删除前先失效，
+        // 避免驱动复用同一 id 后 bind() 误判"已绑定"而跳过新纹理的绑定。
+        clear_texture_slot_cache(texture_id_);
+        glDeleteTextures(1, &texture_id_);
+    }
+
+    const GLFormatInfo info = to_gl_format(format);
+    width_ = width;
+    height_ = height;
+    channels_ = info.channels;
+    is_cubemap_ = false;
+
+    const bool dsa = gl_dsa_available();
+    if (dsa) {
+        glCreateTextures(GL_TEXTURE_2D, 1, &texture_id_);
+        glTextureStorage2D(texture_id_, mip_levels, info.internal_format, width, height);
+        for (int i = 0; i < mip_levels; ++i) {
+            const int mw = std::max(1, width >> i);
+            const int mh = std::max(1, height >> i);
+            glCompressedTextureSubImage2D(texture_id_, i, 0, 0, mw, mh,
+                                          info.internal_format,
+                                          static_cast<GLsizei>(mip_sizes[i]), mip_data[i]);
+        }
+        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER,
+                            mip_levels > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTextureParameteri(texture_id_, GL_TEXTURE_BASE_LEVEL, 0);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+    } else {
+        glGenTextures(1, &texture_id_);
+        glBindTexture(GL_TEXTURE_2D, texture_id_);
+        for (int i = 0; i < mip_levels; ++i) {
+            const int mw = std::max(1, width >> i);
+            const int mh = std::max(1, height >> i);
+            glCompressedTexImage2D(GL_TEXTURE_2D, i, info.internal_format, mw, mh, 0,
+                                   static_cast<GLsizei>(mip_sizes[i]), mip_data[i]);
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        mip_levels > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    GLOG_INFO("Compressed texture created: {}x{} mips={} format={}",
+              width, height, mip_levels, static_cast<int>(format));
     return true;
 }
 

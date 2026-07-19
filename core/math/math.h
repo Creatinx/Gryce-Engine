@@ -157,7 +157,15 @@ struct Quaternionf;
 // Matrix4f（列主序：m[col * 4 + row]）
 // ---------------------------------------------------------------------------
 struct Matrix4f {
-    float m[16];
+    // 默认构造初始化为 identity（原实现 m 未初始化，为未定义值）。
+    // 渲染类成员大量直接默认构造使用，identity 比全零/垃圾值更安全；
+    // 聚合初始化（identity()/from_diagonal() 等）不受影响。
+    float m[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
 
     constexpr float& operator()(int row, int col) { return m[col * 4 + row]; }
     constexpr const float& operator()(int row, int col) const { return m[col * 4 + row]; }
@@ -257,6 +265,10 @@ struct Quaternionf {
     static Quaternionf from_axis_angle(const Vector3f& axis, float angle);
     static Quaternionf from_euler(float pitch, float yaw, float roll);
 
+    // 球面线性插值（slerp）：dot<0 时翻转取最短路径；
+    // 两四元数几乎重合时退化为归一化线性插值（nlerp），避免 sinθ→0 除零。
+    static Quaternionf slerp(const Quaternionf& a, const Quaternionf& b, float t);
+
     constexpr Quaternionf operator*(const Quaternionf& o) const {
         return Quaternionf(
             w*o.x + x*o.w + y*o.z - z*o.y,
@@ -278,6 +290,10 @@ struct Quaternionf {
 
     Matrix4f to_matrix() const;
     Vector3f rotate_vector(const Vector3f& v) const;
+
+    // 从纯旋转矩阵（3x3 基无缩放）构造四元数。
+    // 用于 gizmo 等场景的矩阵 → TRS 分解；带缩放的矩阵需先归一化基向量。
+    static Quaternionf from_rotation_matrix(const Matrix4f& m);
 };
 
 inline Matrix4f Matrix4f::from_quaternion(const Quaternionf& q) { return q.to_matrix(); }

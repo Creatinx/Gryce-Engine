@@ -69,14 +69,23 @@ public:
     void set_tile(int x, int y, int tile_index) {
         if (x < 0 || x >= map_width || y < 0 || y >= map_height) return;
         size_t index = static_cast<size_t>(y) * static_cast<size_t>(map_width) + static_cast<size_t>(x);
+        // map_width/map_height/tiles 均为公有字段，外部可改到不一致，需防越界写
+        if (index >= tiles.size()) return;
         tiles[index] = tile_index;
     }
 
+    // GCC/Clang 的 -Wnull-dereference 会在调用点（如 e->get_component<Tilemap>()->get_tile(...)）
+    // 把潜在的 null this 传播到成员访问处；此函数本身已做边界防御，局部抑制该误报。
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnull-dereference"
     int get_tile(int x, int y) const {
         if (map_width <= 0 || map_height <= 0 || x < 0 || x >= map_width || y < 0 || y >= map_height) return -1;
         size_t index = static_cast<size_t>(y) * static_cast<size_t>(map_width) + static_cast<size_t>(x);
+        // 公有尺寸字段与 tiles 长度可能不一致，需防越界读
+        if (index >= tiles.size()) return -1;
         return tiles[index];
     }
+#pragma GCC diagnostic pop
 
     const char* type() const override { return "Tilemap"; }
 

@@ -109,7 +109,7 @@ uniform sampler2D uTexture;
 uniform int uUseTexture; // 0=color, 1=font, 2=sprite
 void main() {
     if (uUseTexture == 1) {
-        float alpha = texture(uTexture, vTexCoord).r;
+        float alpha = texture(uTexture, vTexCoord).a;
         float a = smoothstep(0.45, 0.55, alpha);
         if (a < 0.01) discard;
         FragColor = vec4(vColor.rgb, vColor.a * a);
@@ -451,6 +451,36 @@ void Renderer2D::shutdown() {
     if (!initialized_) return;
 
     if (context_alive()) {
+        // 先提交并等待渲染线程执行完所有已排队命令（这些命令大多捕获了 this），
+        // 确保本对象销毁后不会有残留命令在渲染线程访问悬垂的 this。
+        // 仅在渲染线程运行中执行；暂停状态下 cmd_buffer_ 可能已为空指针。
+        if (ctx_->is_running()) {
+            // 默认 albedo/normal 纹理在渲染线程（lit 前向命令内）创建，须在同一线程删除。
+            // 该命令排在所有已排队的 lit 命令之后执行，配合 present+wait_for_idle
+            // 保证执行完毕前本对象不被销毁。
+            ctx_->push_command([this](IRenderBackend*) {
+                if (default_albedo_tex_ != 0) {
+                    glDeleteTextures(1, &default_albedo_tex_);
+                    default_albedo_tex_ = 0;
+                }
+                if (default_normal_tex_ != 0) {
+                    glDeleteTextures(1, &default_normal_tex_);
+                    default_normal_tex_ = 0;
+                }
+            });
+            ctx_->present();
+            ctx_->wait_for_idle();
+        } else {
+            // 渲染线程未运行（暂停中）：context 已切回主线程，可直接删除
+            if (default_albedo_tex_ != 0) {
+                glDeleteTextures(1, &default_albedo_tex_);
+                default_albedo_tex_ = 0;
+            }
+            if (default_normal_tex_ != 0) {
+                glDeleteTextures(1, &default_normal_tex_);
+                default_normal_tex_ = 0;
+            }
+        }
         if (font_atlas_.texture()) {
             font_atlas_.destroy(ctx_);
         }
@@ -629,8 +659,18 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
                              static_cast<int>(scene_tex->width()) != static_cast<int>(screen_width_) ||
                              static_cast<int>(scene_tex->height()) != static_cast<int>(screen_height_);
         if (need_recreate) {
-            destroy_bloom_targets();
-            create_bloom_targets();
+            // 销毁/创建含直接 GL 调用（glCreateTextures/glCreateFramebuffers 等），
+            // 渲染线程运行中主线程无 current context：
+            // 先暂停渲染线程（context 切回主线程）再重建，完成后恢复。
+            if (ctx_->is_running()) {
+                ctx_->pause_render_thread();
+                destroy_bloom_targets();
+                create_bloom_targets();
+                ctx_->resume_render_thread();
+            } else {
+                destroy_bloom_targets();
+                create_bloom_targets();
+            }
         }
     }
 }
@@ -662,10 +702,14 @@ void Renderer2D::end_frame() {
     bool use_bloom = bloom_params_.enabled && bloom_initialized_;
 
     if (use_bloom) {
-        // 将整个 2D 场景渲染到 HDR 中间纹理
-        ctx_->push_command([this](IRenderBackend* backend) {
-            backend->bind_framebuffer(scene_fbo_);
-            backend->set_viewport(0, 0, static_cast<int>(screen_width_), static_cast<int>(screen_height_));
+        // 将整个 2D 场景渲染到 HDR 中间纹理。
+        // 按值拷贝命令所需状态，渲染线程只读命令内的拷贝，避免与主线程成员写竞争。
+        const RHIFramebufferHandle scene_fbo = scene_fbo_;
+        const int sw = static_cast<int>(screen_width_);
+        const int sh = static_cast<int>(screen_height_);
+        ctx_->push_command([scene_fbo, sw, sh](IRenderBackend* backend) {
+            backend->bind_framebuffer(scene_fbo);
+            backend->set_viewport(0, 0, sw, sh);
             backend->clear(0.0f, 0.0f, 0.0f, 0.0f);
             backend->set_depth_test(false);
             backend->set_blend(true);
@@ -707,8 +751,11 @@ void Renderer2D::render_shadow_pass() {
     }
     if (!shadow_light) return;
 
-    math::Vector2f dir = shadow_light->direction.normalized();
-    if (dir.length_sq() < 1e-6f) dir = math::Vector2f(0.0f, -1.0f);
+    // 先判零向量再 normalize：对零向量先 normalized() 会得到 NaN，
+    // 而 NaN 的 length_sq() 比较恒为 false，防护会失效。
+    math::Vector2f dir = shadow_light->direction.length_sq() < 1e-6f
+                         ? math::Vector2f(0.0f, -1.0f)
+                         : shadow_light->direction.normalized();
 
     // 构建光源空间矩阵：以摄像机为中心，沿光源方向观察
     math::Vector2f center = camera_center_;
@@ -791,8 +838,10 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
     bool use_shadow = false;
     if (shadow_light_index >= 0 && shadow_fbo_.is_valid()) {
         const Light2D& shadow_light = (*lights_copy)[shadow_light_index];
-        math::Vector2f dir = shadow_light.direction.normalized();
-        if (dir.length_sq() < 1e-6f) dir = math::Vector2f(0.0f, -1.0f);
+        // 先判零向量再 normalize（NaN 比较恒 false，先 normalized() 防护会失效）
+        math::Vector2f dir = shadow_light.direction.length_sq() < 1e-6f
+                             ? math::Vector2f(0.0f, -1.0f)
+                             : shadow_light.direction.normalized();
         math::Vector2f center = camera_center_;
         float view_size = std::max(screen_width_, screen_height_) / camera_zoom_;
         math::Vector2f eye = center - dir * view_size;
@@ -806,27 +855,36 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         use_shadow = true;
     }
 
+    // 按值拷贝命令所需的成员状态（句柄/尺寸），渲染线程执行时只读命令内拷贝，
+    // 避免与主线程对 screen_width_ / bloom 句柄等成员的写操作构成数据竞争。
+    const RHIFramebufferHandle scene_fbo = scene_fbo_;
+    const RHIMeshHandle mesh = mesh_;
+    const RHIShaderHandle lit_shader = lit_sprite_shader_;
+    const RHITextureHandle shadow_map = shadow_map_;
+    const int sw = static_cast<int>(screen_width_);
+    const int sh = static_cast<int>(screen_height_);
+
     ctx_->push_command([this, batches_shared, view_proj, ambient, lights_copy,
-                        shadow_light_index, light_space, use_shadow, target_is_scene_fbo](IRenderBackend* backend) {
+                        shadow_light_index, light_space, use_shadow, target_is_scene_fbo,
+                        scene_fbo, mesh, lit_shader, shadow_map, sw, sh](IRenderBackend* backend) {
         if (batches_shared->empty()) return;
 
-        IMesh* mesh_ptr = ctx_->mesh(mesh_);
-        IShader* shader_ptr = ctx_->shader(lit_sprite_shader_);
+        IMesh* mesh_ptr = ctx_->mesh(mesh);
+        IShader* shader_ptr = ctx_->shader(lit_shader);
         if (!mesh_ptr || !shader_ptr) return;
 
         // 阴影 pass 会切换 FBO，光照 pass 需要重新绑定到正确目标（scene FBO 或默认 backbuffer）。
-        backend->bind_framebuffer(target_is_scene_fbo ? scene_fbo_ : RHIFramebufferHandle{});
-        backend->set_viewport(0, 0, static_cast<int>(screen_width_), static_cast<int>(screen_height_));
+        backend->bind_framebuffer(target_is_scene_fbo ? scene_fbo : RHIFramebufferHandle{});
+        backend->set_viewport(0, 0, sw, sh);
         backend->set_depth_test(false);
         backend->set_blend(true);
         backend->set_cull_face(false);
 
-        // 创建默认 fallback 纹理
-        static GLuint default_albedo_tex = 0;
-        static GLuint default_normal_tex = 0;
-        if (default_albedo_tex == 0) {
-            glGenTextures(1, &default_albedo_tex);
-            glBindTexture(GL_TEXTURE_2D, default_albedo_tex);
+        // 创建默认 fallback 纹理（成员变量，仅渲染线程访问；
+        // shutdown 时通过命令在同一线程删除，避免函数级 static 造成进程级泄漏）
+        if (default_albedo_tex_ == 0) {
+            glGenTextures(1, &default_albedo_tex_);
+            glBindTexture(GL_TEXTURE_2D, default_albedo_tex_);
             unsigned char white[] = {255, 255, 255, 255};
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -835,9 +893,9 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glBindTexture(GL_TEXTURE_2D, 0);
         }
-        if (default_normal_tex == 0) {
-            glGenTextures(1, &default_normal_tex);
-            glBindTexture(GL_TEXTURE_2D, default_normal_tex);
+        if (default_normal_tex_ == 0) {
+            glGenTextures(1, &default_normal_tex_);
+            glBindTexture(GL_TEXTURE_2D, default_normal_tex_);
             unsigned char blue[] = {128, 128, 255, 255};
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -871,27 +929,30 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         shader_ptr->set_int("uShadowLightIndex", shadow_light_index);
         if (use_shadow) {
             shader_ptr->set_mat4("uLightSpaceMatrix", light_space);
-            ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
-            if (shadow_map_ptr) shadow_map_ptr->bind(2);
-            shader_ptr->set_int("uShadowMap", 2);
+            // 2D shadow map 固定到 TextureSlots::k2DShadow，避免与 3D PBR 的
+            // roughness/metallic/ao 产生 depth-vs-color 纹理类型冲突，触发 NVIDIA shader recompile。
+            ITexture* shadow_map_ptr = ctx_->texture(shadow_map);
+            if (shadow_map_ptr) shadow_map_ptr->bind(TextureSlots::k2DShadow);
+            shader_ptr->set_int("uShadowMap", TextureSlots::k2DShadow);
         }
 
         for (const auto& batch : *batches_shared) {
             if (batch.verts.empty()) continue;
 
-            if (batch.albedo) {
-                batch.albedo->bind(0);
+            // 句柄在执行时经 generation 校验解析；纹理已销毁则回退默认纹理
+            if (ITexture* albedo_ptr = ctx_->texture(batch.albedo)) {
+                albedo_ptr->bind(TextureSlots::k2DAlbedo);
             } else {
-                glBindTextureUnit(0, default_albedo_tex);
+                glBindTextureUnit(TextureSlots::k2DAlbedo, default_albedo_tex_);
             }
-            shader_ptr->set_int("uAlbedo", 0);
+            shader_ptr->set_int("uAlbedo", TextureSlots::k2DAlbedo);
 
-            if (batch.normal) {
-                batch.normal->bind(1);
+            if (ITexture* normal_ptr = ctx_->texture(batch.normal)) {
+                normal_ptr->bind(TextureSlots::k2DNormal);
             } else {
-                glBindTextureUnit(1, default_normal_tex);
+                glBindTextureUnit(TextureSlots::k2DNormal, default_normal_tex_);
             }
-            shader_ptr->set_int("uNormalMap", 1);
+            shader_ptr->set_int("uNormalMap", TextureSlots::k2DNormal);
 
             mesh_ptr->upload_vertices(batch.verts.data(),
                                       static_cast<uint32_t>(batch.verts.size() * sizeof(LitVertex2D)),
@@ -918,11 +979,13 @@ void Renderer2D::render_bloom_pass() {
 
     int w = static_cast<int>(screen_width_);
     int h = static_cast<int>(screen_height_);
+    // 按值拷贝 mesh 句柄，渲染线程只读命令内拷贝
+    const RHIMeshHandle mesh = mesh_;
 
     auto do_fullscreen_pass = [&](RHIShaderHandle shader, RHIFramebufferHandle target,
                                    RHITextureHandle input_tex, auto set_uniforms) {
-        ctx_->push_command([this, shader, target, input_tex, set_uniforms, w, h](IRenderBackend* backend) {
-            IMesh* mesh_ptr = ctx_->mesh(mesh_);
+        ctx_->push_command([this, mesh, shader, target, input_tex, set_uniforms, w, h](IRenderBackend* backend) {
+            IMesh* mesh_ptr = ctx_->mesh(mesh);
             IShader* shader_ptr = ctx_->shader(shader);
             ITexture* input_ptr = ctx_->texture(input_tex);
             if (!mesh_ptr || !shader_ptr) return;
@@ -958,31 +1021,39 @@ void Renderer2D::render_bloom_pass() {
         });
     };
 
-    // Threshold
+    // Threshold（threshold 按值捕获，避免渲染线程读到主线程正在写的 bloom_params_）
+    const float threshold = bloom_params_.threshold;
     do_fullscreen_pass(bloom_threshold_shader_, bloom_fbo_a_, scene_texture_,
-                       [&](IShader* s) { s->set_float("uThreshold", bloom_params_.threshold); });
+                       [threshold](IShader* s) { s->set_float("uThreshold", threshold); });
 
-    // Blur passes
-    RHITextureHandle src = bloom_texture_a_;
-    RHIFramebufferHandle dst = bloom_fbo_b_;
+    // Blur passes：在 a/b 两套目标之间正确 ping-pong（纯局部交替，不交换成员句柄）。
+    // 旧实现 std::swap(src, bloom_texture_a_) 首轮即自交换恒无效果，
+    // 且会产生“向正在采样的纹理写入”的 FBO 反馈回路。
+    // blur_passes*2 恒为偶数，最后一次写入 fbo_a，结果始终落在 bloom_texture_a_。
     for (int i = 0; i < bloom_params_.blur_passes * 2; ++i) {
-        bool horizontal = (i % 2) == 0;
-        do_fullscreen_pass(bloom_blur_shader_, dst, src,
-                           [&](IShader* s) {
+        const bool horizontal = (i % 2) == 0;
+        const bool read_a = (i % 2) == 0;
+        const RHITextureHandle src_tex = read_a ? bloom_texture_a_ : bloom_texture_b_;
+        const RHIFramebufferHandle dst_fb = read_a ? bloom_fbo_b_ : bloom_fbo_a_;
+        do_fullscreen_pass(bloom_blur_shader_, dst_fb, src_tex,
+                           [horizontal, w, h](IShader* s) {
+                               // 按值捕获循环局部变量，命令延迟执行时栈变量已销毁
                                s->set_vec2("uDirection", horizontal ? math::Vector2f(1.0f, 0.0f) : math::Vector2f(0.0f, 1.0f));
                                s->set_vec2("uTexelSize", math::Vector2f(1.0f / w, 1.0f / h));
                            });
-        std::swap(src, bloom_texture_a_);
-        std::swap(dst, bloom_fbo_a_);
     }
-    // 最终 bloom 结果在 src 中
+    // 最终 bloom 结果在 bloom_texture_a_ 中
 
-    // Compose to backbuffer
-    ctx_->push_command([this, src, w, h](IRenderBackend* backend) {
-        IMesh* mesh_ptr = ctx_->mesh(mesh_);
-        IShader* shader_ptr = ctx_->shader(bloom_compose_shader_);
-        ITexture* scene_ptr = ctx_->texture(scene_texture_);
-        ITexture* bloom_ptr = ctx_->texture(src);
+    // Compose to backbuffer（句柄/强度/尺寸全部按值拷进命令）
+    const RHITextureHandle bloom_result = bloom_texture_a_;
+    const RHITextureHandle scene_tex = scene_texture_;
+    const RHIShaderHandle compose_shader = bloom_compose_shader_;
+    const float intensity = bloom_params_.intensity;
+    ctx_->push_command([this, mesh, bloom_result, scene_tex, compose_shader, intensity, w, h](IRenderBackend* backend) {
+        IMesh* mesh_ptr = ctx_->mesh(mesh);
+        IShader* shader_ptr = ctx_->shader(compose_shader);
+        ITexture* scene_ptr = ctx_->texture(scene_tex);
+        ITexture* bloom_ptr = ctx_->texture(bloom_result);
         if (!mesh_ptr || !shader_ptr) return;
 
         backend->bind_framebuffer(RHIFramebufferHandle{});
@@ -1011,7 +1082,7 @@ void Renderer2D::render_bloom_pass() {
         shader_ptr->set_int("uScene", 0);
         if (bloom_ptr) bloom_ptr->bind(1);
         shader_ptr->set_int("uBloom", 1);
-        shader_ptr->set_float("uIntensity", bloom_params_.intensity);
+        shader_ptr->set_float("uIntensity", intensity);
         mesh_ptr->draw();
         shader_ptr->unbind();
     });
@@ -1025,7 +1096,7 @@ void Renderer2D::push_text_vertex(float x, float y, const Color& color, float u,
     text_vertices_.push_back({x, y, color.r, color.g, color.b, color.a, u, v});
 }
 
-void Renderer2D::push_lit_vertex(ITexture* albedo, ITexture* normal,
+void Renderer2D::push_lit_vertex(RHITextureHandle albedo, RHITextureHandle normal,
                                  float x, float y, const Color& color,
                                  float u, float v, float nu, float nv) {
     auto it = find_lit_batch(albedo, normal);
@@ -1036,7 +1107,7 @@ void Renderer2D::push_shadow_caster_vertex(float x, float y) {
     shadow_caster_vertices_.push_back({x, y});
 }
 
-Renderer2D::LitBatch* Renderer2D::find_lit_batch(ITexture* albedo, ITexture* normal) {
+Renderer2D::LitBatch* Renderer2D::find_lit_batch(RHITextureHandle albedo, RHITextureHandle normal) {
     LitBatchKey key{albedo, normal};
     auto it = lit_batches_.find(key);
     if (it == lit_batches_.end()) {
@@ -1064,6 +1135,8 @@ void Renderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text) {
     }
 
     math::Matrix4f view_proj = view_proj_;
+    // 字体图集纹理保留裸指针：FontAtlas 由 Renderer2D 拥有，生命周期与本对象一致，
+    // 且 shutdown() 会先 drain 命令队列再销毁图集，不存在悬垂风险，无需 handle 化。
     ITexture* font_tex = is_text ? font_atlas_.texture() : nullptr;
 
     auto verts_shared = std::make_shared<std::vector<Vertex2D>>(std::move(verts));
@@ -1210,26 +1283,42 @@ void Renderer2D::reset_lights() {
 void Renderer2D::set_bloom(const BloomParams& params) {
     bloom_params_ = params;
     if (bloom_params_.enabled && !bloom_initialized_ && screen_width_ > 0.0f && screen_height_ > 0.0f) {
-        create_bloom_targets();
+        // 同 begin_frame 的重建路径：创建含直接 GL 调用，
+        // 渲染线程运行中需先暂停（context 切回主线程）再创建。
+        if (ctx_->is_running()) {
+            ctx_->pause_render_thread();
+            create_bloom_targets();
+            ctx_->resume_render_thread();
+        } else {
+            create_bloom_targets();
+        }
     }
 }
 
 void Renderer2D::draw_sprite(float x, float y, float w, float h,
-                              ITexture* texture, const Color& tint) {
+                              RHITextureHandle texture, const Color& tint) {
     draw_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, texture, tint);
 }
 
 void Renderer2D::draw_sprite_region(float x, float y, float w, float h,
                                      float u0, float v0, float u1, float v1,
-                                     ITexture* texture, const Color& tint) {
-    if (!texture || !context_alive() || !mesh_.is_valid() || !shader_.is_valid()) return;
+                                     RHITextureHandle texture, const Color& tint) {
+    // 纹理统一传 RHITextureHandle：无效句柄直接跳过，
+    // 有效句柄在渲染线程执行时经 generation 校验解析，纹理已销毁则跳过本次绘制，
+    // 彻底消除悬垂 ITexture* 风险。
+    if (!texture.is_valid() || !context_alive() || !mesh_.is_valid() || !shader_.is_valid()) return;
 
     flush_batch(std::move(vertices_), false);
 
     float x0 = x, y0 = y;
     float x1 = x + w, y1 = y + h;
 
-    ctx_->push_command([this, x0, y0, x1, y1, u0, v0, u1, v1, texture, tint](IRenderBackend* backend) {
+    // 按值拷贝命令所需状态：view_proj_ 由主线程写，渲染线程只能读命令内的拷贝，
+    // 否则构成跨线程数据竞争。句柄按值拷贝安全。
+    const math::Matrix4f view_proj = view_proj_;
+    const RHIMeshHandle mesh = mesh_;
+    const RHIShaderHandle shader = shader_;
+    ctx_->push_command([this, mesh, shader, view_proj, x0, y0, x1, y1, u0, v0, u1, v1, texture, tint](IRenderBackend* backend) {
         (void)backend;
         Vertex2D verts[6] = {
             {x0, y0, tint.r, tint.g, tint.b, tint.a, u0, v0},
@@ -1240,9 +1329,13 @@ void Renderer2D::draw_sprite_region(float x, float y, float w, float h,
             {x0, y1, tint.r, tint.g, tint.b, tint.a, u0, v1},
         };
 
-        IMesh* mesh_ptr = ctx_->mesh(mesh_);
-        IShader* shader_ptr = ctx_->shader(shader_);
+        IMesh* mesh_ptr = ctx_->mesh(mesh);
+        IShader* shader_ptr = ctx_->shader(shader);
         if (!mesh_ptr || !shader_ptr) return;
+
+        // 句柄 → GPU 纹理：带 generation 校验，失效（已销毁/槽位复用）则跳过绘制
+        ITexture* tex_ptr = ctx_->texture(texture);
+        if (!tex_ptr) return;
 
         mesh_ptr->upload_vertices(verts, static_cast<uint32_t>(sizeof(verts)), 6);
         VertexLayout layout;
@@ -1255,8 +1348,8 @@ void Renderer2D::draw_sprite_region(float x, float y, float w, float h,
         mesh_ptr->set_layout(layout);
 
         shader_ptr->bind();
-        shader_ptr->set_mat4("uViewProj", view_proj_);
-        texture->bind(0);
+        shader_ptr->set_mat4("uViewProj", view_proj);
+        tex_ptr->bind(0);
         shader_ptr->set_int("uTexture", 0);
         shader_ptr->set_int("uUseTexture", 2);
         mesh_ptr->draw();
@@ -1265,7 +1358,7 @@ void Renderer2D::draw_sprite_region(float x, float y, float w, float h,
 }
 
 void Renderer2D::draw_lit_sprite(float x, float y, float w, float h,
-                                  ITexture* albedo, ITexture* normal_map,
+                                  RHITextureHandle albedo, RHITextureHandle normal_map,
                                   const Color& tint) {
     draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, albedo, normal_map, tint,
                            0.0f, 0.0f, 1.0f, 1.0f);
@@ -1273,7 +1366,7 @@ void Renderer2D::draw_lit_sprite(float x, float y, float w, float h,
 
 void Renderer2D::draw_lit_sprite_region(float x, float y, float w, float h,
                                          float u0, float v0, float u1, float v1,
-                                         ITexture* albedo, ITexture* normal_map,
+                                         RHITextureHandle albedo, RHITextureHandle normal_map,
                                          const Color& tint,
                                          float nu0, float nv0,
                                          float nu1, float nv1) {
@@ -1282,6 +1375,8 @@ void Renderer2D::draw_lit_sprite_region(float x, float y, float w, float h,
     float x0 = x, y0 = y;
     float x1 = x + w, y1 = y + h;
 
+    // 批内只存句柄；albedo/normal_map 无效时解析会回退默认纹理（白图/平面法线），
+    // 与旧裸指针 nullptr 行为一致
     push_lit_vertex(albedo, normal_map, x0, y0, tint, u0, v0, nu0, nv0);
     push_lit_vertex(albedo, normal_map, x1, y0, tint, u1, v0, nu1, nv0);
     push_lit_vertex(albedo, normal_map, x1, y1, tint, u1, v1, nu1, nv1);

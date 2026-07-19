@@ -42,12 +42,10 @@ void ParallaxBackground::draw(render::IRenderer2D* renderer) {
         float start_x = std::floor((cam.x - half_w - layer_center.x) / tex_w) * tex_w + layer_center.x;
         float start_y = std::floor((cam.y - half_h - layer_center.y) / tex_h) * tex_h + layer_center.y;
 
-        render::ITexture* tex_ptr = renderer->resolve_texture(layer.texture);
-        if (!tex_ptr) continue;
-
         for (float y = start_y; y < cam.y + half_h + tex_h; y += tex_h) {
             for (float x = start_x; x < cam.x + half_w + tex_w; x += tex_w) {
-                renderer->draw_sprite(x, y, tex_w, tex_h, tex_ptr, layer.tint);
+                // 直接传纹理句柄，绘制命令执行时经 generation 校验解析
+                renderer->draw_sprite(x, y, tex_w, tex_h, layer.texture, layer.tint);
             }
         }
     }

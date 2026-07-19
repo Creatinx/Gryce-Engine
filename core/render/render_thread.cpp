@@ -1,5 +1,7 @@
 #include "render_thread.h"
 
+#include <array>
+
 #include "render_command_buffer.h"
 #include "render/render.h"
 #include "render/render_commands.h"
@@ -125,6 +127,11 @@ struct CommandStateCache {
     bool has_framebuffer = false;
     bool initialized = false;
 
+    static constexpr int kMaxTextureSlots = 32;
+    std::array<RHITextureHandle, kMaxTextureSlots> bound_textures;
+    std::array<RHIShaderHandle, kMaxTextureSlots> bound_texture_shaders;
+    bool texture_slots_initialized = false;
+
     bool should_dispatch(const RenderCommandTyped& cmd) {
         switch (cmd.type) {
             case RenderCommandType::SetDepthTest: {
@@ -173,7 +180,21 @@ struct CommandStateCache {
                 has_framebuffer = true;
                 break;
             }
-            // 其他命令（draw, clear, uniform, shader, texture, swap）不做缓存，总是执行
+            case RenderCommandType::SetTexture: {
+                const int slot = cmd.uniform_int;
+                if (slot >= 0 && slot < kMaxTextureSlots) {
+                    if (texture_slots_initialized &&
+                        bound_textures[slot] == cmd.texture &&
+                        bound_texture_shaders[slot] == cmd.shader) {
+                        return false;
+                    }
+                    bound_textures[slot] = cmd.texture;
+                    bound_texture_shaders[slot] = cmd.shader;
+                    texture_slots_initialized = true;
+                }
+                break;
+            }
+            // 其他命令（draw, clear, uniform, shader, swap）不做缓存，总是执行
             default:
                 return true;
         }
@@ -184,6 +205,7 @@ struct CommandStateCache {
     void reset() {
         initialized = false;
         has_framebuffer = false;
+        texture_slots_initialized = false;
     }
 };
 

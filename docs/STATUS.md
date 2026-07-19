@@ -152,8 +152,11 @@
 | `.gesc` 作为 Prefab 加载 | 已实现（`Prefab::load`） |
 | 实例化到任意 Scene | 已实现（`Prefab::instantiate`） |
 | 深拷贝（新 UUID / EntityID、序列化级组件复制） | 已实现（`Entity::clone`） |
+| 实例覆盖参数（`overrides`：transform、components、remove） | 已实现 |
+| 嵌套 Prefab | 已实现（Prefab 文件内可引用其他 Prefab） |
+| 还原模板（`Prefab::revert`） | 已实现 |
+| 场景紧凑序列化（实例写成 prefab 引用） | 已实现 |
 | 运行时变体（Prefab Variant） | 未实现 |
-| 嵌套 Prefab | 未实现 |
 
 ---
 
@@ -188,9 +191,9 @@
 | PNG/JPG/BMP 加载（stb_image） | 已实现 |
 | 法线/roughness/metallic/ao/emissive 贴图 | 已实现 |
 | 立方体贴图（cubemap，天空盒） | 已实现 |
-| 纹理压缩（BC1~BC7/ASTC/ETC2） | 未实现 |
+| 纹理压缩（BC1~BC7/ASTC/ETC2） | 已实现（DDS/KTX 加载 + GL/VK 上传） |
 | Mipmap 自动生成 | 已实现（2D 纹理，cubemap 暂不支持） |
-| HDR/EXR 环境贴图 | 未实现 |
+| HDR/EXR 环境贴图 | 部分实现（AssetManager 已接入 stbi_loadf/tinyexr，尚未用于 IBL） |
 | 材质预设库 | 未实现 |
 
 ### 4.4 字体与文本
@@ -387,6 +390,7 @@
 | 资源路径规范（PROJECT_LAYOUT.md） | 已完成 |
 | 工程状态报告（STATUS.md） | 已完成 |
 | Core API 规范（CORE_API.md） | 已完成 |
+| 路线图（TODO.md） | 已完成 |
 | API 文档（doxygen） | 未生成 |
 | 用户手册 / 快速入门 | 未编写 |
 | 着色器编写指南 | 未编写 |

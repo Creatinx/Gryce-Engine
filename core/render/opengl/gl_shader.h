@@ -36,6 +36,8 @@ public:
     void set_vec4(const char* name, const gryce_engine::math::Vector4f& value) override;
     void set_mat4(const std::string& name, const gryce_engine::math::Matrix4f& value) override;
     void set_mat4(const char* name, const gryce_engine::math::Matrix4f& value) override;
+    void set_mat4_array(const char* name, const gryce_engine::math::Matrix4f* data,
+                        uint32_t count) override;
 
     bool is_valid() const override;
 
@@ -44,7 +46,8 @@ public:
                       IFramebuffer* target = nullptr,
                       bool color_output = true,
                       bool post_process = false,
-                      bool skybox = false) override;
+                      bool skybox = false,
+                      bool skinned = false) override;
     void set_post_process_params(float exposure, int mode) override;
 
     uint32_t program_id() const { return program_id_; }

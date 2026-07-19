@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -67,16 +68,16 @@ public:
     void add_light(const Light2D& light) override;
     void reset_lights() override;
     void draw_sprite(float x, float y, float w, float h,
-                      ITexture* texture, const Color& tint = Color::white()) override;
+                      RHITextureHandle texture, const Color& tint = Color::white()) override;
     void draw_sprite_region(float x, float y, float w, float h,
                              float u0, float v0, float u1, float v1,
-                             ITexture* texture, const Color& tint = Color::white()) override;
+                             RHITextureHandle texture, const Color& tint = Color::white()) override;
     void draw_lit_sprite(float x, float y, float w, float h,
-                          ITexture* albedo, ITexture* normal_map,
+                          RHITextureHandle albedo, RHITextureHandle normal_map,
                           const Color& tint = Color::white()) override;
     void draw_lit_sprite_region(float x, float y, float w, float h,
                                  float u0, float v0, float u1, float v1,
-                                 ITexture* albedo, ITexture* normal_map,
+                                 RHITextureHandle albedo, RHITextureHandle normal_map,
                                  const Color& tint = Color::white(),
                                  float nu0 = 0.0f, float nv0 = 0.0f,
                                  float nu1 = 1.0f, float nv1 = 1.0f) override;
@@ -95,26 +96,30 @@ private:
 
     void push_vertex(float x, float y, const Color& color, float u, float v);
     void push_text_vertex(float x, float y, const Color& color, float u, float v);
-    void push_lit_vertex(ITexture* albedo, ITexture* normal,
+    void push_lit_vertex(RHITextureHandle albedo, RHITextureHandle normal,
                          float x, float y, const Color& color,
                          float u, float v, float nu, float nv);
     void push_shadow_caster_vertex(float x, float y);
     void flush_batches();
     void flush_batch(std::vector<Vertex2D>&& verts, bool is_text);
 
-    // 受光照精灵批次：按 (albedo, normal) 纹理分组，减少状态切换
+    // 受光照精灵批次：按 (albedo, normal) 纹理句柄分组，减少状态切换。
+    // 批内只存句柄（按值拷贝安全），渲染线程执行时经 generation 校验解析，
+    // 纹理已销毁则回退默认纹理，杜绝悬垂 ITexture*。
     struct LitBatch {
-        ITexture* albedo = nullptr;
-        ITexture* normal = nullptr;
+        RHITextureHandle albedo;
+        RHITextureHandle normal;
         std::vector<LitVertex2D> verts;
     };
-    using LitBatchKey = std::pair<ITexture*, ITexture*>;
+    using LitBatchKey = std::pair<RHITextureHandle, RHITextureHandle>;
     struct LitBatchKeyHash {
         std::size_t operator()(const LitBatchKey& key) const noexcept {
-            return std::hash<void*>{}(key.first) ^ (std::hash<void*>{}(key.second) << 1);
+            auto h1 = std::hash<uint32_t>{}(key.first.index) ^ (std::hash<uint32_t>{}(key.first.generation) << 1);
+            auto h2 = std::hash<uint32_t>{}(key.second.index) ^ (std::hash<uint32_t>{}(key.second.generation) << 1);
+            return h1 ^ (h2 << 1);
         }
     };
-    LitBatch* find_lit_batch(ITexture* albedo, ITexture* normal);
+    LitBatch* find_lit_batch(RHITextureHandle albedo, RHITextureHandle normal);
 
     void render_lit_sprites_forward(bool target_is_scene_fbo);
     void render_shadow_pass();
@@ -166,6 +171,12 @@ private:
     RHITextureHandle bloom_texture_b_;
     RHITextureHandle scene_texture_;
     RHIFramebufferHandle scene_fbo_;
+
+    // 受光照 pass 的默认 albedo/normal 纹理（GL object id）。
+    // 仅渲染线程访问：在 lit 前向命令 lambda 内惰性创建，
+    // shutdown 时通过命令在同一线程删除（避免函数级 static 的进程级泄漏）。
+    uint32_t default_albedo_tex_ = 0;
+    uint32_t default_normal_tex_ = 0;
 };
 
 } // namespace gryce_engine::render

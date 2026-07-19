@@ -213,6 +213,14 @@ void VulkanRenderer2D::init(RenderContext* ctx) {
 void VulkanRenderer2D::shutdown() {
     if (!initialized_) return;
 
+    // 先提交并等待渲染线程执行完所有已排队命令（这些命令大多捕获了 this），
+    // 确保本对象销毁后不会有残留命令在渲染线程访问悬垂的 this（对齐 GL 侧）。
+    // 仅在渲染线程运行中执行；暂停状态下 cmd_buffer_ 可能已为空指针。
+    if (context_alive() && ctx_->is_running()) {
+        ctx_->present();
+        ctx_->wait_for_idle();
+    }
+
     VkDevice dev = vk_device_ ? vk_device_->device() : VK_NULL_HANDLE;
     if (dev != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(dev);
@@ -1152,7 +1160,7 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     vertices_.clear();
     text_vertices_.clear();
     sprite_vertices_.clear();
-    sprite_texture_ = nullptr;
+    sprite_texture_ = RHITextureHandle{};
     lit_batches_.clear();
     shadow_caster_vertices_.clear();
     reset_lights();
@@ -1183,8 +1191,18 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
                         * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
     view_proj_ = ortho_ * view;
 
+    // bloom 目标的销毁/创建含直接 vkCreate*/vkDestroy*（pipeline、framebuffer、
+    // VMA image）与资源池访问，渲染线程运行中会与其命令执行并发：
+    // 池数据竞争、销毁渲染线程命令仍在引用的 pipeline、上传路径并发 queue submit。
+    // 先暂停渲染线程（join + vkDeviceWaitIdle + drain）再重建，完成后恢复（对齐 GL 侧）。
     if (bloom_params_.enabled && !bloom_initialized_ && screen_width_ > 0.0f && screen_height_ > 0.0f) {
-        create_bloom_targets();
+        if (ctx_->is_running()) {
+            ctx_->pause_render_thread();
+            create_bloom_targets();
+            ctx_->resume_render_thread();
+        } else {
+            create_bloom_targets();
+        }
     }
     if (bloom_params_.enabled && bloom_initialized_) {
         ITexture* scene_tex = ctx_->texture(scene_texture_);
@@ -1192,8 +1210,15 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
                              static_cast<int>(scene_tex->width()) != static_cast<int>(screen_width_) ||
                              static_cast<int>(scene_tex->height()) != static_cast<int>(screen_height_);
         if (need_recreate) {
-            destroy_bloom_targets();
-            create_bloom_targets();
+            if (ctx_->is_running()) {
+                ctx_->pause_render_thread();
+                destroy_bloom_targets();
+                create_bloom_targets();
+                ctx_->resume_render_thread();
+            } else {
+                destroy_bloom_targets();
+                create_bloom_targets();
+            }
         }
     }
 }
@@ -1395,8 +1420,8 @@ void VulkanRenderer2D::render_lit_sprites_forward(bool offscreen) {
     // offset 0 上传：memcpy 发生在命令录制期间，后一批会覆盖前一批的顶点，
     // 导致所有 draw 实际都读到最后一批的几何（只有最后一个批次可见）。
     struct BatchSpan {
-        ITexture* albedo;
-        ITexture* normal;
+        RHITextureHandle albedo;
+        RHITextureHandle normal;
         uint32_t first_vertex;
         uint32_t vertex_count;
     };
@@ -1473,10 +1498,12 @@ void VulkanRenderer2D::render_lit_sprites_forward(bool offscreen) {
                 GLOG_ERROR("VulkanRenderer2D::render_lit_sprites_forward failed to allocate descriptor set");
                 continue;
             }
-            write_lit_descriptor_set(set, frame_index,
-                                     span.albedo ? dynamic_cast<VulkanTexture*>(span.albedo) : nullptr,
-                                     span.normal ? dynamic_cast<VulkanTexture*>(span.normal) : nullptr,
-                                     use_shadow);
+            // 句柄在执行时经 generation 校验解析；纹理已销毁则回退默认纹理
+            auto* vk_albedo = span.albedo.is_valid()
+                ? dynamic_cast<VulkanTexture*>(ctx_->texture(span.albedo)) : nullptr;
+            auto* vk_normal = span.normal.is_valid()
+                ? dynamic_cast<VulkanTexture*>(ctx_->texture(span.normal)) : nullptr;
+            write_lit_descriptor_set(set, frame_index, vk_albedo, vk_normal, use_shadow);
             vk_backend_->bind_descriptor_set(cmd, lit_pipeline_layout_, set);
             vkCmdDraw(cmd, span.vertex_count, 1, span.first_vertex, 0);
         }
@@ -1620,7 +1647,7 @@ void VulkanRenderer2D::push_sprite_vertex(float x, float y, const Color& color, 
     sprite_vertices_.push_back({x, y, color.r, color.g, color.b, color.a, u, v});
 }
 
-void VulkanRenderer2D::push_lit_vertex(ITexture* albedo, ITexture* normal,
+void VulkanRenderer2D::push_lit_vertex(RHITextureHandle albedo, RHITextureHandle normal,
                                         float x, float y, const Color& color,
                                         float u, float v, float nu, float nv) {
     LitBatch* batch = find_lit_batch(albedo, normal);
@@ -1633,7 +1660,7 @@ void VulkanRenderer2D::push_shadow_caster_vertex(float x, float y) {
     shadow_caster_vertices_.push_back({x, y});
 }
 
-VulkanRenderer2D::LitBatch* VulkanRenderer2D::find_lit_batch(ITexture* albedo, ITexture* normal) {
+VulkanRenderer2D::LitBatch* VulkanRenderer2D::find_lit_batch(RHITextureHandle albedo, RHITextureHandle normal) {
     LitBatchKey key{albedo, normal};
     auto it = lit_batches_.find(key);
     if (it == lit_batches_.end()) {
@@ -1649,18 +1676,29 @@ void VulkanRenderer2D::flush_batches() {
     VkPipeline rect_pipeline = use_bloom_this_frame_ ? pipeline_rect_scene_ : pipeline_rect_;
     VkPipeline text_pipeline = use_bloom_this_frame_ ? pipeline_text_scene_ : pipeline_text_;
     flush_batch(std::move(vertices_), false, nullptr, rect_pipeline, pipeline_layout_);
+    // 字体图集纹理保留裸指针：FontAtlas 由本对象拥有，生命周期一致，
+    // 且 shutdown 时渲染线程已同步，不存在悬垂风险，无需 handle 化。
     flush_batch(std::move(text_vertices_), true, font_atlas_.texture(), text_pipeline, pipeline_layout_);
 }
 
 void VulkanRenderer2D::flush_sprite_batch() {
-    if (sprite_vertices_.empty() || !sprite_texture_) return;
+    if (sprite_vertices_.empty() || !sprite_texture_.is_valid()) return;
+    // 句柄 → GPU 纹理：带 generation 校验，失效（已销毁/槽位复用）则丢弃本批
+    ITexture* tex = ctx_->texture(sprite_texture_);
+    if (!tex) {
+        GLOG_WARN("VulkanRenderer2D::flush_sprite_batch: texture handle expired, dropping {} verts",
+                  sprite_vertices_.size());
+        sprite_vertices_.clear();
+        sprite_texture_ = RHITextureHandle{};
+        return;
+    }
     GLOG_DEBUG("VulkanRenderer2D::flush_sprite_batch: verts={} texture={} format={}",
               sprite_vertices_.size(),
-              reinterpret_cast<uintptr_t>(sprite_texture_),
-              static_cast<int>(dynamic_cast<VulkanTexture*>(sprite_texture_)->format()));
+              reinterpret_cast<uintptr_t>(tex),
+              static_cast<int>(dynamic_cast<VulkanTexture*>(tex)->format()));
     VkPipeline pipeline = use_bloom_this_frame_ ? pipeline_sprite_scene_ : pipeline_sprite_;
-    flush_batch(std::move(sprite_vertices_), false, sprite_texture_, pipeline, pipeline_layout_);
-    sprite_texture_ = nullptr;
+    flush_batch(std::move(sprite_vertices_), false, tex, pipeline, pipeline_layout_);
+    sprite_texture_ = RHITextureHandle{};
 }
 
 void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, ITexture* texture,
@@ -1822,14 +1860,16 @@ void VulkanRenderer2D::draw_circle(float cx, float cy, float r, int segments, co
 }
 
 void VulkanRenderer2D::draw_sprite(float x, float y, float w, float h,
-                                    ITexture* texture, const Color& tint) {
+                                    RHITextureHandle texture, const Color& tint) {
     draw_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, texture, tint);
 }
 
 void VulkanRenderer2D::draw_sprite_region(float x, float y, float w, float h,
                                            float u0, float v0, float u1, float v1,
-                                           ITexture* texture, const Color& tint) {
-    if (!texture || !texture->is_valid()) {
+                                           RHITextureHandle texture, const Color& tint) {
+    // 纹理统一传 RHITextureHandle：无效句柄回退纯色矩形（与旧裸指针空值行为一致）；
+    // 有效句柄在 flush 时经 generation 校验解析，纹理已销毁则丢弃本批。
+    if (!texture.is_valid()) {
         draw_rect(x, y, w, h, tint);
         return;
     }
@@ -1878,7 +1918,7 @@ void VulkanRenderer2D::reset_lights() {
 }
 
 void VulkanRenderer2D::draw_lit_sprite(float x, float y, float w, float h,
-                                        ITexture* albedo, ITexture* normal_map,
+                                        RHITextureHandle albedo, RHITextureHandle normal_map,
                                         const Color& tint) {
     draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f,
                            albedo, normal_map, tint,
@@ -1887,11 +1927,13 @@ void VulkanRenderer2D::draw_lit_sprite(float x, float y, float w, float h,
 
 void VulkanRenderer2D::draw_lit_sprite_region(float x, float y, float w, float h,
                                                float u0, float v0, float u1, float v1,
-                                               ITexture* albedo, ITexture* normal_map,
+                                               RHITextureHandle albedo, RHITextureHandle normal_map,
                                                const Color& tint,
                                                float nu0, float nv0,
                                                float nu1, float nv1) {
-    if (!albedo || !albedo->is_valid()) {
+    // albedo 句柄无效回退纯色矩形（与旧裸指针空值行为一致）；
+    // normal_map 无效时执行期解析回退默认平面法线
+    if (!albedo.is_valid()) {
         draw_rect(x, y, w, h, tint);
         return;
     }
@@ -1922,11 +1964,25 @@ void VulkanRenderer2D::draw_shadow_caster(float x, float y, float w, float h) {
 
 void VulkanRenderer2D::set_bloom(const BloomParams& params) {
     bloom_params_ = params;
+    // 同 begin_frame：创建/销毁含直接 vkCreate*/vkDestroy*，
+    // 渲染线程运行中需先暂停再操作（对齐 GL 侧）。
     if (bloom_params_.enabled && !bloom_initialized_ && screen_width_ > 0.0f && screen_height_ > 0.0f) {
-        create_bloom_targets();
+        if (ctx_->is_running()) {
+            ctx_->pause_render_thread();
+            create_bloom_targets();
+            ctx_->resume_render_thread();
+        } else {
+            create_bloom_targets();
+        }
     }
     if (!bloom_params_.enabled && bloom_initialized_) {
-        destroy_bloom_targets();
+        if (ctx_->is_running()) {
+            ctx_->pause_render_thread();
+            destroy_bloom_targets();
+            ctx_->resume_render_thread();
+        } else {
+            destroy_bloom_targets();
+        }
     }
 }
 
@@ -2000,12 +2056,21 @@ RHITextureHandle VulkanRenderer2D::create_texture_from_data(const assets::Textur
     RHITextureHandle handle = ctx_->create_texture();
     if (!handle.is_valid()) return RHITextureHandle{};
 
-    ITexture* tex = ctx_->texture(handle);
-    auto* vk_tex = dynamic_cast<VulkanTexture*>(tex);
-    if (!vk_tex || !vk_tex->upload_data(data->pixels.data(), data->width, data->height, data->channels)) {
-        ctx_->destroy_texture(handle);
-        return RHITextureHandle{};
-    }
+    // 上传推到渲染线程执行（对齐 GL 侧）：主线程 staging 上传会
+    // 与渲染线程并发 vkQueueSubmit 同一 graphics queue，违反 Vulkan 对
+    // queue 的外部同步要求。像素数据按值拷贝，句柄在执行时经 generation
+    // 校验解析；绘制命令排在上传命令之后提交，时序有保证。
+    auto pixels_copy = std::make_shared<std::vector<unsigned char>>(data->pixels);
+    const int width = data->width;
+    const int height = data->height;
+    const int channels = data->channels;
+
+    ctx_->push_command([this, handle, pixels_copy, width, height, channels](IRenderBackend*) {
+        auto* vk_tex = dynamic_cast<VulkanTexture*>(ctx_->texture(handle));
+        if (!vk_tex) return;
+        vk_tex->upload_data(pixels_copy->data(), width, height, channels);
+    });
+
     return handle;
 }
 

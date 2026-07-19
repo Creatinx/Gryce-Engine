@@ -21,7 +21,8 @@ public:
     float scroll_factor = 0.0f;   // 0=固定背景，1=跟随摄像机
     bool tile = false;            // true=平铺覆盖视野，false=拉伸单张覆盖视野
 
-    // 运行时 GPU 纹理（不序列化）
+    // 运行时 GPU 纹理（不序列化）。绘制只传 texture_handle；
+    // texture_ptr 仅用于主线程查询纹理尺寸（平铺计算），不捕获进渲染命令。
     mutable render::RHITextureHandle texture_handle;
     mutable render::ITexture* texture_ptr = nullptr;
 

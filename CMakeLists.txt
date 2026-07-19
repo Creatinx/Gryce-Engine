@@ -16,21 +16,6 @@ if(WIN32 AND NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
         set(CMAKE_CXX_COMPILER "${GRYCE_MINGW_GXX}" CACHE FILEPATH "C++ compiler" FORCE)
         message(STATUS "[Gryce Engine] Auto-selected MinGW GCC: ${GRYCE_MINGW_GCC}")
     else()
-        message(STATUS "[Gryce Engine] MinGW GCC not found in PATH; CMake will auto-detect compiler (MSVC fallback enabled)")
-    endif()
-endif()
-if(WIN32 AND NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
-    find_program(GRYCE_MINGW_GCC gcc
-        PATHS "$ENV{MSYS2_PREFIX}/bin" "C:/msys64/ucrt64/bin" "C:/msys64/mingw64/bin"
-    )
-    find_program(GRYCE_MINGW_GXX g++
-        PATHS "$ENV{MSYS2_PREFIX}/bin" "C:/msys64/ucrt64/bin" "C:/msys64/mingw64/bin"
-    )
-    if(GRYCE_MINGW_GCC AND GRYCE_MINGW_GXX)
-        set(CMAKE_C_COMPILER "${GRYCE_MINGW_GCC}" CACHE FILEPATH "C compiler" FORCE)
-        set(CMAKE_CXX_COMPILER "${GRYCE_MINGW_GXX}" CACHE FILEPATH "C++ compiler" FORCE)
-        message(STATUS "[Gryce Engine] Auto-selected MinGW GCC: ${GRYCE_MINGW_GCC}")
-    else()
         message(WARNING
             "[Gryce Engine] MinGW GCC not found in PATH.  "
             "This project is primarily developed and tested with MSYS2 UCRT64 MinGW-w64.  "
@@ -42,7 +27,7 @@ endif()
 
 project(GryceEngine
     VERSION 0.1.0
-    LANGUAGES CXX
+    LANGUAGES C CXX
     DESCRIPTION "Gryce Engine — C++ Game Engine"
 )
 
@@ -81,9 +66,17 @@ option(GRYCE_STATIC_RUNTIME       "Use static C++ runtime (/MT) on MSVC" OFF)
 include(cmake/compiler_options.cmake)
 
 # ---------------------------------------------------------------------------
-# 第三方依赖（FetchContent）
+# 第三方依赖
+#
+# 外部依赖（glfw, assimp, box2d, jolt）由 Python 脚本下载到 build/deps/ 下，
+# CMake 通过 add_subdirectory 直接集成，不再使用 FetchContent。
+#
+# 首次配置前，请运行：
+#     python tools/deps_manager.py download
+# 或
+#     python build.py --setup-deps
 # ---------------------------------------------------------------------------
-include(cmake/dependencies.cmake)
+include(cmake/deps_resolver.cmake)
 
 # ---------------------------------------------------------------------------
 # 子目录
@@ -96,6 +89,8 @@ if(GRYCE_BUILD_TESTS)
 endif()
 
 add_subdirectory(examples)
+
+add_subdirectory(editor)
 
 # ---------------------------------------------------------------------------
 # IDE 分组

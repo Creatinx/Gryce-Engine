@@ -36,9 +36,18 @@ Entity* Scene::add_root_entity(std::unique_ptr<Entity> entity) {
 bool Scene::destroy_entity(Entity* entity) {
     if (!entity) return false;
 
-    // 先递归销毁子实体
+    // 先递归销毁子实体。
+    // 注意：子实体析构时会从 entity->children_ 中 erase 自己（remove_child），
+    // 直接 range-for 迭代 children() 会导致迭代器失效（UB）。
+    // 因此先把子实体裸指针收集到局部 vector，再逐个销毁。
+    // erase 的是 parent 的 vector，不影响其他兄弟的 unique_ptr，裸指针保持有效。
+    std::vector<Entity*> children_snapshot;
+    children_snapshot.reserve(entity->children().size());
     for (auto& child : entity->children()) {
-        destroy_entity(child.get());
+        children_snapshot.push_back(child.get());
+    }
+    for (Entity* child : children_snapshot) {
+        destroy_entity(child);
     }
 
     // 从父级移除（如果有）
@@ -59,12 +68,12 @@ bool Scene::destroy_entity(Entity* entity) {
 }
 
 Entity* Scene::create_prefab(const std::string& scene_path) {
-    auto prefab = Prefab::load(scene_path);
-    if (!prefab) {
-        GLOG_ERROR("Scene::create_prefab: failed to load prefab '{}'", scene_path);
-        return nullptr;
+    // 完整实例语义：挂 PrefabInstance 标记，场景保存时写成 prefab 引用
+    Entity* root = Prefab::instantiate(this, scene_path);
+    if (!root) {
+        GLOG_ERROR("Scene::create_prefab: failed to instantiate prefab '{}'", scene_path);
     }
-    return prefab->instantiate(this);
+    return root;
 }
 
 void Scene::set_store_on_entity(Entity* entity) {

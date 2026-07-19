@@ -80,6 +80,15 @@ public:
     void render_mesh(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
                      RenderContext& ctx);
 
+    // 单独 render 一个蒙皮 mesh：使用 skinned PBR 管线，palette 经
+    // set_uniform_mat4_array 推到渲染线程（shared_ptr 按值捕获进命令队列）。
+    void render_skinned_mesh(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
+                             std::shared_ptr<const std::vector<math::Matrix4f>> palette,
+                             RenderContext& ctx);
+
+    // 蒙皮管线是否可用（skinned_pbr shader 加载失败时退化为不可用，不影响普通渲染）
+    bool skinning_available() const { return skinned_pbr_shader_.is_valid(); }
+
     bool is_valid() const { return initialized_; }
     ITexture* shadow_map() const;
 
@@ -91,8 +100,28 @@ public:
     void set_tone_map_mode(int mode) { tone_map_mode_ = mode; }
     int tone_map_mode() const { return tone_map_mode_; }
 
+    // -----------------------------------------------------------------------
+    // 编辑器视口离屏输出（M1-E1）
+    // 开启后 tonemap 结果写入独立 FBO 而非默认 framebuffer，
+    // 供编辑器 Viewport 面板以 ImGui::Image 采样；默认 framebuffer 只画 ImGui。
+    // 必须在 init() 之前调用。
+    // -----------------------------------------------------------------------
+    void set_viewport_output_enabled(bool enabled) { viewport_output_enabled_ = enabled; }
+    bool viewport_output_enabled() const { return viewport_output_enabled_; }
+
+    // 视口输出纹理（tonemap 后的 LDR 结果）；未启用或创建失败返回 nullptr。
+    // 仅读取纹理对象指针/id，主线程调用安全（纹理 id 创建后不可变）。
+    ITexture* viewport_color_texture() const;
+
+    // 重建 HDR / 视口渲染目标（编辑器 Viewport 面板尺寸变化时调用）。
+    // 线程约束：调用前必须 pause_render_thread()，调用后 resume_render_thread()。
+    // 注意：仅 OpenGL 后端使用（Vulkan 下 shader 与 FBO 的 render pass 绑定，
+    // 重建需要额外处理，本轮视口输出只在 GL 端启用）。
+    bool resize_render_targets(int width, int height);
+
 private:
-    RHIShaderHandle load_shader(const std::string& name, RHIFramebufferHandle target, bool color_output, bool post_process);
+    RHIShaderHandle load_shader(const std::string& name, RHIFramebufferHandle target, bool color_output, bool post_process,
+                                bool skinned = false);
     bool create_shadow_map(RenderContext* ctx);
 
     void begin_shadow_pass(RenderContext& ctx);
@@ -113,6 +142,7 @@ private:
 
     RHIShaderHandle pbr_shader_;
     RHIShaderHandle shadow_shader_;
+    RHIShaderHandle skinned_pbr_shader_;   // 可选：加载失败则蒙皮渲染禁用
 
     RHITextureHandle shadow_map_;
     RHIFramebufferHandle shadow_fbo_;
@@ -141,7 +171,7 @@ private:
 
     // HDR rendering targets
     bool hdr_enabled_ = true;
-    float exposure_ = 1.0f;
+    float exposure_ = 2.0f;
     int tone_map_mode_ = 1; // 0: none, 1: reinhard, 2: aces
     RHITextureHandle hdr_color_;
     RHITextureHandle hdr_depth_;
@@ -149,7 +179,13 @@ private:
     RHIShaderHandle tonemap_shader_;
     RHIMeshHandle fullscreen_mesh_;
 
+    // 编辑器视口离屏输出（tonemap 后的 LDR 纹理，供 Viewport 面板采样）
+    bool viewport_output_enabled_ = false;
+    RHITextureHandle viewport_color_;
+    RHIFramebufferHandle viewport_fbo_;
+
     bool create_hdr_target(RenderContext* ctx);
+    bool create_viewport_target(RenderContext* ctx);
     bool create_fullscreen_mesh(RenderContext* ctx);
     void begin_hdr_forward_pass(RenderContext& ctx);
     void end_hdr_forward_pass(RenderContext& ctx);

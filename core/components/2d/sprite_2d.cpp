@@ -56,30 +56,21 @@ void Sprite2D::draw(render::IRenderer2D* renderer) {
     float sw = width * s.x;
     float sh = height * s.y;
 
-    // 按需加载贴图：CPU 数据由 AssetManager 缓存，GPU 纹理按路径共享
-    if (!texture_path.empty() && !albedo_texture) {
-        if (!albedo_handle.is_valid()) {
-            albedo_handle = sprite_texture_cache().get_or_create(renderer, texture_path);
-        }
-        if (albedo_handle.is_valid()) {
-            albedo_texture = renderer->resolve_texture(albedo_handle);
-        }
+    // 按需加载贴图：CPU 数据由 AssetManager 缓存，GPU 纹理按路径共享。
+    // 绘制只传句柄，不再解析/缓存裸指针。
+    if (!texture_path.empty() && !albedo_handle.is_valid()) {
+        albedo_handle = sprite_texture_cache().get_or_create(renderer, texture_path);
     }
-    if (!normal_map_path.empty() && !normal_texture) {
-        if (!normal_handle.is_valid()) {
-            normal_handle = sprite_texture_cache().get_or_create(renderer, normal_map_path);
-        }
-        if (normal_handle.is_valid()) {
-            normal_texture = renderer->resolve_texture(normal_handle);
-        }
+    if (!normal_map_path.empty() && !normal_handle.is_valid()) {
+        normal_handle = sprite_texture_cache().get_or_create(renderer, normal_map_path);
     }
 
     if (lit) {
         renderer->draw_lit_sprite(pos.x - sw * 0.5f, pos.y - sh * 0.5f,
-                                   sw, sh, albedo_texture, normal_texture, color);
+                                   sw, sh, albedo_handle, normal_handle, color);
     } else {
         renderer->draw_sprite(pos.x - sw * 0.5f, pos.y - sh * 0.5f,
-                              sw, sh, albedo_texture, color);
+                              sw, sh, albedo_handle, color);
     }
 
     if (cast_shadow) {

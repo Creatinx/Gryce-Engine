@@ -47,7 +47,6 @@ bool GLBackend::init(void* native_window) {
     GL_CHECK_ERROR();
 
     gl_register_debug_callback();
-    GLOG_INFO("OpenGL debug callback registered");
     GL_CHECK_ERROR();
 
     GLOG_INFO("OpenGL backend initialized");
@@ -386,19 +385,20 @@ RHIFramebufferHandle GLBackend::create_framebuffer() {
 }
 
 void GLBackend::destroy_mesh(RHIMeshHandle handle) {
-    mesh_pool_.deallocate(handle.index);
+    // 带 generation 校验，防止过期句柄二次销毁误杀复用槽位的新资源
+    mesh_pool_.deallocate(handle.index, handle.generation);
 }
 
 void GLBackend::destroy_shader(RHIShaderHandle handle) {
-    shader_pool_.deallocate(handle.index);
+    shader_pool_.deallocate(handle.index, handle.generation);
 }
 
 void GLBackend::destroy_texture(RHITextureHandle handle) {
-    texture_pool_.deallocate(handle.index);
+    texture_pool_.deallocate(handle.index, handle.generation);
 }
 
 void GLBackend::destroy_framebuffer(RHIFramebufferHandle handle) {
-    framebuffer_pool_.deallocate(handle.index);
+    framebuffer_pool_.deallocate(handle.index, handle.generation);
 }
 
 IMesh* GLBackend::mesh(RHIMeshHandle handle) {

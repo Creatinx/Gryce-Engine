@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/shader.h"
+#include "render/skinned_vertex.h"
 #include "render/vulkan/vk_buffer.h"
 
 #include <vulkan/vulkan.h>
@@ -42,6 +43,7 @@ public:
     void set_vec4(const char* name, const math::Vector4f& value) override;
     void set_mat4(const std::string& name, const math::Matrix4f& value) override;
     void set_mat4(const char* name, const math::Matrix4f& value) override;
+    void set_mat4_array(const char* name, const math::Matrix4f* data, uint32_t count) override;
     void set_texture(int slot, ITexture* texture) override;
 
     bool is_valid() const override;
@@ -63,7 +65,8 @@ public:
                       IFramebuffer* target = nullptr,
                       bool color_output = true,
                       bool post_process = false,
-                      bool skybox = false) override;
+                      bool skybox = false,
+                      bool skinned = false) override;
 
     void set_post_process_params(float exposure, int mode) override {
         pp_exposure_ = exposure;
@@ -85,6 +88,11 @@ public:
     // 这样同一帧内不同材质的 draw 互不覆盖——共享一套描述符会导致
     // GPU 执行时所有 draw 读到最后一个写入的材质。
     void prepare_draw(VkCommandBuffer cmd);
+
+    // 纹理销毁时由 backend 调用：清除 current_textures_ / cached_textures_ 中
+    // 对该指针的缓存。池槽位复用后同一地址可能属于新纹理，裸指针相等会误判
+    // "已绑定"而跳过 descriptor 更新；per-draw 路径则会直接用悬垂指针取 image_view。
+    void invalidate_texture_cache(const VulkanTexture* tex);
 
 private:
     bool load_spirv_from_file(const std::string& path, std::vector<uint32_t>& out);
@@ -114,6 +122,9 @@ private:
     bool color_output_enabled_ = true;
     bool post_process_ = false;
     bool skybox_ = false;
+    // 骨骼蒙皮管线：顶点布局追加 bone ids/weights（stride 88），
+    // 描述符布局追加 palette UBO（binding 8，vertex stage）
+    bool skinned_ = false;
 
     // 与 GLSL std140 对齐的单光源结构（64 字节，与 GLSL Light 对应）
     struct LightUBO {
@@ -163,6 +174,15 @@ private:
     std::vector<VkDescriptorPool> descriptor_pools_;              // 每帧一个池
     std::vector<VkDescriptorSet> descriptor_sets_;                // post-process：每帧固定集
     std::vector<uint32_t> draw_counts_;                           // 每帧 draw 游标
+
+    // 骨骼 palette（仅 skinned_ 管线）：每帧一个大 UBO，按 draw 游标切分。
+    // 与主 UBO 共用同一 cursor，保证一次 draw 的 material 与 palette 对齐。
+    static constexpr size_t palette_stride_ = k_max_skinning_bones * sizeof(math::Matrix4f); // 8192
+    static constexpr uint32_t max_skinned_draws_per_frame_ = 256;
+    std::vector<std::unique_ptr<VulkanBuffer>> palette_buffers_;  // 每帧一个 palette UBO
+    // set_mat4_array("uBonePalette") 写入的当前 palette 缓存（渲染线程本地）
+    mutable std::array<math::Matrix4f, k_max_skinning_bones> palette_{};
+    mutable uint32_t palette_count_ = 0;
 
     // 当前各 binding 绑定的贴图（set_texture 记录，prepare_draw 写入新集）
     std::array<VulkanTexture*, k_max_texture_bindings> current_textures_{};

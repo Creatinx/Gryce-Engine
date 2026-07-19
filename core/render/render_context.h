@@ -91,6 +91,10 @@ public:
     void set_uniform_vec4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector4f& value);
     void set_uniform_mat4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Matrix4f& value);
     void set_uniform_mat4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Matrix4f& value);
+    // mat4 数组 uniform（骨骼 palette）。shared_ptr 按值捕获进命令队列，
+    // 渲染线程执行时数据仍有效；调用方随后可安全复用/释放自己的引用。
+    void set_uniform_mat4_array(RHIShaderHandle shader, const char* name,
+                                std::shared_ptr<const std::vector<gryce_engine::math::Matrix4f>> values);
     void set_texture(RHIShaderHandle shader, RHITextureHandle texture, int slot,
                      const std::string& uniform_name = "uTexture");
     void set_texture(RHIShaderHandle shader, RHITextureHandle texture, int slot,

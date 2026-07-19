@@ -102,7 +102,8 @@ bool VulkanShader::load_program(const std::string& name,
                                 IFramebuffer* target,
                                 bool color_output,
                                 bool post_process,
-                                bool skybox) {
+                                bool skybox,
+                                bool skinned) {
     std::string dir = resources::ResourcePath::resolve(shader_dir);
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') {
         dir += '/';
@@ -127,6 +128,7 @@ bool VulkanShader::load_program(const std::string& name,
     set_color_output_enabled(color_output);
     set_post_process(post_process);
     set_skybox(skybox);
+    skinned_ = skinned;
     return create_pipeline();
 }
 
@@ -215,8 +217,8 @@ bool VulkanShader::create_pipeline() {
             return false;
         }
     } else {
-        // 描述符布局：UBO + 6 PBR 贴图 + shadow map
-        VkDescriptorSetLayoutBinding bindings[8]{};
+        // 描述符布局：UBO + 6 PBR 贴图 + shadow map（skinned 追加 binding 8 = palette UBO）
+        VkDescriptorSetLayoutBinding bindings[9]{};
         bindings[0].binding = 0;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         bindings[0].descriptorCount = 1;
@@ -228,10 +230,18 @@ bool VulkanShader::create_pipeline() {
             bindings[i + 1].descriptorCount = 1;
             bindings[i + 1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
+        uint32_t binding_count = 8;
+        if (skinned_) {
+            bindings[8].binding = 8;
+            bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            bindings[8].descriptorCount = 1;
+            bindings[8].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            binding_count = 9;
+        }
 
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 8;
+        layout_info.bindingCount = binding_count;
         layout_info.pBindings = bindings;
         vkCreateDescriptorSetLayout(device_->device(), &layout_info, nullptr, &descriptor_set_layout_);
 
@@ -294,6 +304,15 @@ bool VulkanShader::create_pipeline() {
         vertex_binding.stride = 16; // vec2 pos + vec2 uv
         attrs.push_back({0, 0, VK_FORMAT_R32G32_SFLOAT, 0});   // position
         attrs.push_back({1, 0, VK_FORMAT_R32G32_SFLOAT, 8});   // uv
+    } else if (skinned_) {
+        vertex_binding.stride = 88; // SkinnedVertexGPU（MeshVertex + bone ids + weights）
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});    // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});   // normal
+        attrs.push_back({2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24});   // tangent
+        attrs.push_back({3, 0, VK_FORMAT_R32G32_SFLOAT, 36});      // uv
+        attrs.push_back({4, 0, VK_FORMAT_R32G32B32_SFLOAT, 44});   // color
+        attrs.push_back({5, 0, VK_FORMAT_R32G32B32A32_UINT, 56});  // bone ids
+        attrs.push_back({6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 72});// weights
     } else {
         vertex_binding.stride = 56; // MeshVertex
         attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
@@ -513,6 +532,21 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
 }
 void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) { set_mat4(std::string(name), value); }
 
+void VulkanShader::set_mat4_array(const char* name, const math::Matrix4f* data, uint32_t count) {
+    if (!name || std::strcmp(name, "uBonePalette") != 0) return;
+    if (!data || count == 0) {
+        palette_count_ = 0;
+        return;
+    }
+    if (count > k_max_skinning_bones) {
+        GLOG_WARN("VulkanShader::set_mat4_array: bone count {} exceeds limit {}, truncated",
+                  count, k_max_skinning_bones);
+        count = k_max_skinning_bones;
+    }
+    std::memcpy(palette_.data(), data, count * sizeof(math::Matrix4f));
+    palette_count_ = count;
+}
+
 bool VulkanShader::create_ubo() {
     int frames = swapchain_ ? swapchain_->frames_in_flight() : 1;
     ubo_buffers_.clear();
@@ -530,6 +564,24 @@ bool VulkanShader::create_ubo() {
         }
         ubo_buffers_.push_back(std::move(buffer));
     }
+
+    // 蒙皮 palette UBO：每帧一个，按 draw 游标以 palette_stride_ 切分（与主 UBO 同 cursor）。
+    // skinned draw 上限独立于普通 draw（256/帧），避免 8KB stride 放大主 UBO。
+    palette_buffers_.clear();
+    if (skinned_) {
+        palette_buffers_.reserve(frames);
+        const VkDeviceSize palette_size =
+            static_cast<VkDeviceSize>(palette_stride_) * max_skinned_draws_per_frame_;
+        for (int i = 0; i < frames; ++i) {
+            auto buffer = std::make_unique<VulkanBuffer>();
+            if (!buffer->init(device_, palette_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                GLOG_ERROR("VulkanShader: failed to create palette UBO for frame {}", i);
+                return false;
+            }
+            palette_buffers_.push_back(std::move(buffer));
+        }
+    }
     return true;
 }
 
@@ -542,7 +594,8 @@ bool VulkanShader::create_descriptor_pool() {
     for (int i = 0; i < frames; ++i) {
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        pool_sizes[0].descriptorCount = max_draws_per_frame_;
+        // skinned 管线每 draw 多消耗一个 palette UBO 描述符
+        pool_sizes[0].descriptorCount = max_draws_per_frame_ * (skinned_ ? 2 : 1);
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         pool_sizes[1].descriptorCount = max_draws_per_frame_ * (k_max_texture_bindings - 1);
 
@@ -602,6 +655,18 @@ void VulkanShader::set_texture(int slot, ITexture* texture) {
     vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
 }
 
+void VulkanShader::invalidate_texture_cache(const VulkanTexture* tex) {
+    if (!tex) return;
+    for (auto& t : current_textures_) {
+        if (t == tex) t = nullptr;
+    }
+    for (auto& per_frame : cached_textures_) {
+        for (auto& t : per_frame) {
+            if (t == tex) t = nullptr;
+        }
+    }
+}
+
 bool VulkanShader::is_valid() const {
     return pipeline_ != VK_NULL_HANDLE;
 }
@@ -650,7 +715,7 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
     // 3. 写入 UBO + 贴图。每个贴图 binding 都必须写入：未绑定的用 1x1
     // 回退贴图占位，否则新分配的描述符集对应 binding 是未定义内容，
     // shader 一旦采样（编译器可能提升条件分支外的采样）GPU 读垃圾挂死。
-    VkWriteDescriptorSet writes[k_max_texture_bindings]{};
+    VkWriteDescriptorSet writes[k_max_texture_bindings + 1]{};
     VkDescriptorBufferInfo buffer_info{};
     buffer_info.buffer = ubo_buffers_[frame]->buffer();
     buffer_info.offset = ubo_offset;
@@ -665,6 +730,41 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
     writes[write_count].descriptorCount = 1;
     writes[write_count].pBufferInfo = &buffer_info;
     ++write_count;
+
+    // 蒙皮 palette：与主 UBO 共用 cursor，上传当前 palette 缓存并绑到 binding 8。
+    // palette_count_ == 0（首帧未设置）时上传单位阵，避免顶点被零矩阵压扁。
+    // 超出 skinned draw 上限时 clamp 到最后一格（与主 UBO overflow 策略一致，
+    // 保证 binding 8 永远写入合法描述符）。
+    VkDescriptorBufferInfo palette_info{};
+    if (skinned_ && frame < static_cast<int>(palette_buffers_.size())) {
+        const uint32_t palette_cursor =
+            cursor < max_skinned_draws_per_frame_ ? cursor : max_skinned_draws_per_frame_ - 1;
+        const VkDeviceSize palette_offset = static_cast<VkDeviceSize>(palette_cursor) * palette_stride_;
+        if (palette_count_ > 0) {
+            palette_buffers_[frame]->upload(palette_.data(),
+                                            palette_count_ * sizeof(math::Matrix4f),
+                                            palette_offset);
+        } else {
+            // 全量 128 个单位阵：shader 可能索引任意 bone id，必须全部合法
+            std::array<math::Matrix4f, k_max_skinning_bones> identity;
+            for (auto& m : identity) m = math::Matrix4f::identity();
+            palette_buffers_[frame]->upload(identity.data(),
+                                            k_max_skinning_bones * sizeof(math::Matrix4f),
+                                            palette_offset);
+        }
+        palette_info.buffer = palette_buffers_[frame]->buffer();
+        palette_info.offset = palette_offset;
+        palette_info.range = palette_stride_;
+
+        writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[write_count].dstSet = set;
+        writes[write_count].dstBinding = 8;
+        writes[write_count].dstArrayElement = 0;
+        writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[write_count].descriptorCount = 1;
+        writes[write_count].pBufferInfo = &palette_info;
+        ++write_count;
+    }
 
     VkDescriptorImageInfo image_infos[k_max_texture_bindings]{};
     for (int binding = 1; binding < k_max_texture_bindings; ++binding) {

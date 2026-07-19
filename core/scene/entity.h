@@ -29,6 +29,7 @@ public:
 
     // 关联组件存储池（由 Scene 设置）。设置时会将已存在的组件注册进存储池。
     void set_store(ecs::ComponentStore* store);
+    ecs::ComponentStore* store() const { return store_; }
     ~Entity();
 
     Entity(const Entity&) = delete;
@@ -48,6 +49,12 @@ public:
     const UUID& uuid() const { return uuid_; }
     void set_uuid(const UUID& id) { uuid_ = id; }
 
+    // Prefab 模板成员标记：非空表示本实体是某个 Prefab 实例展开出的模板成员，
+    // 值为该实体在预制体文件中的模板 UUID（实例根本身为空串）。
+    // 场景序列化据此把实例写成紧凑的 prefab 引用形式。
+    const std::string& prefab_template_uuid() const { return prefab_template_uuid_; }
+    void set_prefab_template_uuid(const std::string& id) { prefab_template_uuid_ = id; }
+
     bool enabled = true; // Entity 级开关，影响组件 update/render 及查询
 
     // 层级
@@ -56,6 +63,8 @@ public:
 
     Entity* add_child(std::unique_ptr<Entity> child);
     bool remove_child(Entity* child);
+    // 把子实体从层级中摘下并移交所有权（不销毁，不触发组件反注册）
+    std::unique_ptr<Entity> detach_child(Entity* child);
     const std::vector<std::unique_ptr<Entity>>& children() const { return children_; }
 
     // 组件
@@ -120,6 +129,7 @@ private:
     std::string name_;
     UUID uuid_;
     ecs::EntityID id_ = ecs::k_invalid_entity;
+    std::string prefab_template_uuid_; // 见 prefab_template_uuid() 注释
 
     Entity* parent_ = nullptr;
     std::vector<std::unique_ptr<Entity>> children_;
@@ -130,6 +140,7 @@ private:
     ecs::ComponentStore* store_ = nullptr;
 
     bool dirty_ = false; // 标记自上次保存后是否变更
+    bool destroy_notified_ = false; // on_destroy 幂等保护：析构链与显式调用只生效一次
 };
 
 } // namespace gryce_engine::scene

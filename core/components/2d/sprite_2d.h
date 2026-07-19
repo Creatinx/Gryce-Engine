@@ -3,7 +3,7 @@
 #include <string>
 
 #include "components/2d/component_2d.h"
-#include "render/texture.h"
+#include "render/rhi_handle.h"
 
 namespace gryce_engine::components::d2::sprite {
 
@@ -21,9 +21,8 @@ public:
     bool lit = true;                 // 是否受光照影响
     bool cast_shadow = false;        // 是否作为 2D 阴影遮挡物
 
-    // 运行时加载的 GPU 纹理（不序列化）
-    mutable render::ITexture* albedo_texture = nullptr;
-    mutable render::ITexture* normal_texture = nullptr;
+    // 运行时 GPU 纹理句柄（不序列化）。绘制只传句柄，
+    // 渲染线程执行时经 generation 校验解析，无悬垂裸指针。
     mutable render::RHITextureHandle albedo_handle;
     mutable render::RHITextureHandle normal_handle;
 

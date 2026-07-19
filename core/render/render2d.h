@@ -140,22 +140,24 @@ public:
     virtual void reset_lights() {}
 
     // 绘制不受光照的贴图精灵
+    // 纹理统一使用 RHITextureHandle：命令在渲染线程执行时经 generation 校验
+    // 解析，句柄失效（纹理已销毁/槽位复用）则安全跳过，杜绝悬垂 ITexture*。
     virtual void draw_sprite(float x, float y, float w, float h,
-                              ITexture* texture, const Color& tint = Color::white()) {
+                              RHITextureHandle texture, const Color& tint = Color::white()) {
         draw_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, texture, tint);
     }
 
     // 绘制不受光照的贴图精灵区域（UV 裁剪）
     virtual void draw_sprite_region(float x, float y, float w, float h,
                                      float u0, float v0, float u1, float v1,
-                                     ITexture* texture, const Color& tint = Color::white()) {
+                                     RHITextureHandle texture, const Color& tint = Color::white()) {
         (void)x; (void)y; (void)w; (void)h; (void)u0; (void)v0; (void)u1; (void)v1;
         (void)texture; (void)tint;
     }
 
-    // 绘制受光照的贴图精灵；normal_map 为空时使用默认平面法线
+    // 绘制受光照的贴图精灵；normal_map 句柄无效时使用默认平面法线
     virtual void draw_lit_sprite(float x, float y, float w, float h,
-                                  ITexture* albedo, ITexture* normal_map,
+                                  RHITextureHandle albedo, RHITextureHandle normal_map,
                                   const Color& tint = Color::white()) {
         draw_lit_sprite_region(x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f,
                                albedo, normal_map, tint,
@@ -165,7 +167,7 @@ public:
     // 绘制受光照的贴图精灵区域（UV 裁剪）
     virtual void draw_lit_sprite_region(float x, float y, float w, float h,
                                          float u0, float v0, float u1, float v1,
-                                         ITexture* albedo, ITexture* normal_map,
+                                         RHITextureHandle albedo, RHITextureHandle normal_map,
                                          const Color& tint = Color::white(),
                                          float nu0 = 0.0f, float nv0 = 0.0f,
                                          float nu1 = 1.0f, float nv1 = 1.0f) {
@@ -188,7 +190,9 @@ public:
         return RHITextureHandle{};
     }
 
-    // 将 RHI 纹理句柄解析为实际 GPU 纹理指针（供仍使用 ITexture* 的旧绘制接口使用）
+    // 将 RHI 纹理句柄解析为实际 GPU 纹理指针。
+    // 仅供主线程查询纹理尺寸等元数据使用；绘制路径一律传 handle，
+    // 不要把返回的裸指针捕获进渲染命令（有悬垂风险）。
     virtual ITexture* resolve_texture(RHITextureHandle handle) const {
         (void)handle;
         return nullptr;

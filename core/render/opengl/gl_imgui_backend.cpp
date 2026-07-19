@@ -3,6 +3,7 @@
 #include <imgui.h>
 #include <backends/imgui_impl_opengl3.h>
 
+#include "render/opengl/gl_texture.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render {
@@ -37,6 +38,14 @@ void GLImGuiBackend::render_draw_data(ImDrawData* draw_data) {
     if (draw_data) {
         ImGui_ImplOpenGL3_RenderDrawData(draw_data);
     }
+}
+
+uint64_t GLImGuiBackend::imgui_texture_id(ITexture* texture) const {
+    // OpenGL 端 ImTextureID 语义即 GLuint 纹理对象 id；
+    // 纹理 id 创建后不可变，主线程读取安全。
+    auto* gl_texture = dynamic_cast<GLTexture*>(texture);
+    if (!gl_texture || !gl_texture->is_valid()) return 0;
+    return static_cast<uint64_t>(gl_texture->texture_id());
 }
 
 } // namespace gryce_engine::render

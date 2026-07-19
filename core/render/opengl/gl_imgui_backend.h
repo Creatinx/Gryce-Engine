@@ -16,6 +16,9 @@ public:
     void new_frame() override;
     void render_draw_data(ImDrawData* draw_data) override;
 
+    // OpenGL 端 ImTextureID 即 GLuint，直接返回纹理对象 id
+    uint64_t imgui_texture_id(ITexture* texture) const override;
+
 private:
     bool initialized_ = false;
 };

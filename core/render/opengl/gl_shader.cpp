@@ -13,18 +13,28 @@
 
 namespace gryce_engine::render {
 
+namespace {
+
+// 当前绑定的 OpenGL program，用于避免重复的 glUseProgram 调用。
+// 声明必须在析构之前：~GLShader 需要失效该缓存。
+thread_local GLuint g_current_bound_program = 0;
+
+} // namespace
+
 GLShader::GLShader() : program_id_(0) {}
 
 GLShader::~GLShader() {
     if (program_id_) {
+        // 删除前失效绑定缓存，避免驱动复用同一 program id 后
+        // bind() 误判"已绑定"而跳过 glUseProgram。
+        if (g_current_bound_program == program_id_) {
+            g_current_bound_program = 0;
+        }
         glDeleteProgram(program_id_);
     }
 }
 
 namespace {
-
-// 当前绑定的 OpenGL program，用于避免重复的 glUseProgram 调用。
-thread_local GLuint g_current_bound_program = 0;
 
 uint32_t to_gl_shader_stage(ShaderStage stage) {
     switch (stage) {
@@ -58,6 +68,10 @@ bool GLShader::compile(const std::string& vertex_src,
 
 bool GLShader::compile(const std::vector<ShaderStageDesc>& stages) {
     if (program_id_) {
+        // 重编译删除旧 program 前失效绑定缓存（同析构）
+        if (g_current_bound_program == program_id_) {
+            g_current_bound_program = 0;
+        }
         glDeleteProgram(program_id_);
         program_id_ = 0;
     }
@@ -231,6 +245,19 @@ void GLShader::set_mat4(const char* name, const gryce_engine::math::Matrix4f& va
     GL_CHECK_ERROR();
 }
 
+void GLShader::set_mat4_array(const char* name, const gryce_engine::math::Matrix4f* data,
+                              uint32_t count) {
+    if (!data || count == 0) return;
+    int loc = get_uniform_location_cached(name);
+    if (loc < 0) {
+        GLOG_WARN("GLShader::set_mat4_array: uniform '{}' not found (location={})", name, loc);
+        return;
+    }
+    // Matrix4f::m 为连续 16 float（列主序），数组等价于连续 mat4 块
+    glUniformMatrix4fv(loc, static_cast<GLsizei>(count), GL_FALSE, data[0].m);
+    GL_CHECK_ERROR();
+}
+
 bool GLShader::is_valid() const {
     return program_id_ != 0;
 }
@@ -252,7 +279,8 @@ bool GLShader::load_program(const std::string& name,
                             IFramebuffer* /*target*/,
                             bool /*color_output*/,
                             bool /*post_process*/,
-                            bool /*skybox*/) {
+                            bool /*skybox*/,
+                            bool /*skinned*/) {
     std::string dir = resources::ResourcePath::resolve(shader_dir);
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') {
         dir += '/';

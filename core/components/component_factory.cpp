@@ -1,7 +1,9 @@
 #include "component_factory.h"
 
 #include "components/transform.h"
+#include "components/prefab_instance.h"
 #include "components/mesh_renderer.h"
+#include "components/skinned_mesh_renderer.h"
 #include "components/physical_material.h"
 #include "components/physics_body.h"
 #include "components/node2d.h"
@@ -36,16 +38,26 @@
 #include "components/2d/camera_2d.h"
 #include "components/2d/parallax_background.h"
 #include "components/2d/particle_emitter.h"
+#include "reflection/reflection.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::components {
 
 void register_builtin_components() {
+    // 强制链接反射注册 TU（静态库中无引用符号的 TU 会被丢弃）
+    reflection::register_builtin_reflections();
+
     ComponentFactory::instance().register_type("Transform", []() {
         return std::make_unique<Transform>();
     });
+    ComponentFactory::instance().register_type("PrefabInstance", []() {
+        return std::make_unique<PrefabInstance>();
+    });
     ComponentFactory::instance().register_type("MeshRenderer", []() {
         return std::make_unique<MeshRenderer>();
+    });
+    ComponentFactory::instance().register_type("SkinnedMeshRenderer", []() {
+        return std::make_unique<SkinnedMeshRenderer>();
     });
     ComponentFactory::instance().register_type("PhysicalMaterial", []() {
         return std::make_unique<PhysicalMaterial>();

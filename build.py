@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""Gryce Engine -- one-click build script (Windows, MinGW-w64 / MSVC)"""
+"""Gryce Engine -- one-click build script (Windows, MinGW-w64 / MSVC)
+
+用法:
+    python build.py [config] [选项]
+
+示例:
+    python build.py                    # 编译 Debug
+    python build.py Release            # 编译 Release
+    python build.py --setup-deps       # 仅下载依赖
+    python build.py --clean            # 清理构建产物（保留 deps）
+    python build.py --clean-all        # 完全清理（包括 deps）
+"""
 
 import argparse
-import hashlib
 import shutil
 import subprocess
 import sys
 import os
-import urllib.request
 from pathlib import Path
 
 # 编译器输出按 UTF-8 解码（见 run()）；打印到 GBK 控制台时替换不可编码字符，避免崩溃。
@@ -35,170 +44,6 @@ if supports_color():
     C_RESET = '\033[0m'
 else:
     C_OK = C_WARN = C_ERR = C_INFO = C_RESET = ''
-
-
-# ---------------------------------------------------------------------------
-# Dependency definitions
-# ---------------------------------------------------------------------------
-DEPENDENCIES = {
-    "glfw": {
-        "url": "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz",
-        "filename": "glfw-3.4.tar.gz",
-        "sha256": None,
-        "required": False,
-    },
-    "assimp": {
-        "url": "https://github.com/assimp/assimp/archive/refs/tags/v5.4.3.tar.gz",
-        "filename": "assimp-v5.4.3.tar.gz",
-        "sha256": "66dfbaee288f2bc43172440a55d0235dfc7bf885dda6435c038e8000e79582cb",
-        "required": True,
-    },
-    "box2d": {
-        "url": "https://github.com/erincatto/box2d/archive/refs/tags/v3.0.0.tar.gz",
-        "filename": "box2d-v3.0.0.tar.gz",
-        "sha256": None,
-        "required": False,
-    },
-    "jolt": {
-        "url": "https://github.com/jrouwe/JoltPhysics/archive/refs/tags/v5.2.0.tar.gz",
-        "filename": "jolt-v5.2.0.tar.gz",
-        "sha256": None,
-        "required": False,
-    },
-}
-
-
-# ---------------------------------------------------------------------------
-# Download helpers -- every download shows a progress bar
-# ---------------------------------------------------------------------------
-def _download_simple(url, dest, description=""):
-    """Fallback download with manual percentage progress bar."""
-    import time
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req) as response:
-        total = int(response.headers.get("Content-Length", 0))
-        downloaded = 0
-        chunk_size = 65536
-        start_time = time.time()
-        desc = description or os.path.basename(dest)
-
-        with open(dest, "wb") as f:
-            while True:
-                chunk = response.read(chunk_size)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-                elapsed = time.time() - start_time
-                speed = downloaded / elapsed if elapsed > 0 else 0.0
-
-                if total > 0:
-                    pct = downloaded / total
-                    bar_len = 30
-                    filled = int(bar_len * pct)
-                    bar = "#" * filled + "-" * (bar_len - filled)
-                    eta = (total - downloaded) / speed if speed > 0 else 0
-                    print(
-                        f"\r  {desc} |{bar}| {pct*100:5.1f}% "
-                        f"{downloaded/1024/1024:.1f}/{total/1024/1024:.1f} MB "
-                        f"{speed/1024/1024:.1f} MB/s ETA {eta:.0f}s",
-                        end="", flush=True,
-                    )
-                else:
-                    print(f"\r  {desc} {downloaded/1024/1024:.1f} MB downloaded", end="", flush=True)
-        print()
-
-
-def _download_rich(url, dest, description=""):
-    """Download with rich progress bar."""
-    from rich.progress import (
-        Progress, TextColumn, BarColumn, DownloadColumn, TransferSpeedColumn, TimeRemainingColumn
-    )
-    from rich.console import Console
-
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req) as response:
-        total = int(response.headers.get("Content-Length", 0))
-        console = Console()
-
-        with Progress(
-            TextColumn(f"[bold blue]{description}"),
-            BarColumn(bar_width=40),
-            "[progress.percentage]{task.percentage:>3.0f}%",
-            "*",
-            DownloadColumn(binary_units=True),
-            "*",
-            TransferSpeedColumn(),
-            "*",
-            TimeRemainingColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task(description, total=total)
-            with open(dest, "wb") as f:
-                while True:
-                    chunk = response.read(65536)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    progress.update(task, advance=len(chunk))
-
-
-def download_with_progress(url, dest, description=""):
-    """Download a file with progress bar (rich if available, else manual)."""
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-
-    try:
-        print(f"{C_INFO}[Gryce Engine]{C_RESET} Downloading {description} from {url} ...")
-        _download_rich(url, dest, description)
-        return True
-    except ImportError:
-        print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using manual progress bar (pip install rich for colors)")
-        try:
-            _download_simple(url, dest, description)
-            return True
-        except Exception as e:
-            print(f"{C_ERR}[ERROR]{C_RESET} Download failed: {e}")
-            if os.path.exists(dest):
-                os.remove(dest)
-            return False
-    except Exception as e:
-        print(f"{C_WARN}[WARN]{C_RESET} Download failed: {e}")
-        if os.path.exists(dest):
-            os.remove(dest)
-        return False
-
-
-def prefetch_dependencies(cache_dir):
-    """Pre-download tar.gz dependencies to cache_dir before cmake runs."""
-    cache_path = Path(cache_dir)
-    cache_path.mkdir(parents=True, exist_ok=True)
-
-    for name, info in DEPENDENCIES.items():
-        dest = cache_path / info["filename"]
-        if dest.exists():
-            print(f"{C_OK}[OK]{C_RESET} {name}: cached {dest}")
-            continue
-        dest = cache_path / info["filename"]
-        if dest.exists():
-            if info["sha256"]:
-                with open(dest, "rb") as f:
-                    actual = hashlib.sha256(f.read()).hexdigest()
-                if actual.lower() == info["sha256"].lower():
-                    print(f"{C_OK}[OK]{C_RESET} {name}: cached {dest} (SHA256 verified)")
-                    continue
-                else:
-                    print(f"{C_WARN}[WARN]{C_RESET} {name}: SHA256 mismatch, re-downloading...")
-                    os.remove(dest)
-            else:
-                print(f"{C_OK}[OK]{C_RESET} {name}: cached {dest}")
-                continue
-
-        if not download_with_progress(info["url"], str(dest), f"Downloading {name}"):
-            if info["required"]:
-                print(f"{C_ERR}[ERROR]{C_RESET} Failed to download required dependency: {name}")
-                sys.exit(1)
-            else:
-                print(f"{C_WARN}[WARN]{C_RESET} Failed to download optional dependency: {name}, cmake will try fallback")
 
 
 # ---------------------------------------------------------------------------
@@ -266,22 +111,19 @@ def find_msys2_mingw():
 
 
 def clean_build_artifacts(build_dir, keep_deps=True):
-    """Remove build artifacts but optionally preserve _deps/ cache."""
-    import shutil
+    """Remove build artifacts but optionally preserve deps/ cache."""
     bd = Path(build_dir)
     if not bd.exists():
         return
 
     if not keep_deps:
-        print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (including _deps) ...")
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (including deps) ...")
         shutil.rmtree(bd)
         return
 
-    print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (preserving _deps cache) ...")
-    # Preserve _deps/ directory; remove everything else
-    deps_dir = bd / "_deps"
+    print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (preserving deps cache) ...")
+    deps_dir = bd / "deps"
     if deps_dir.exists():
-        # Move _deps to a temp location, rmtree build_dir, restore _deps
         import tempfile
         tmp = Path(tempfile.gettempdir()) / f"gryce_deps_{os.getpid()}"
         shutil.move(str(deps_dir), str(tmp))
@@ -291,6 +133,21 @@ def clean_build_artifacts(build_dir, keep_deps=True):
         print(f"{C_OK}[OK]{C_RESET} Preserved dependency cache: {deps_dir}")
     else:
         shutil.rmtree(bd)
+
+
+def ensure_deps():
+    """Ensure all dependencies are downloaded via deps_manager.py."""
+    deps_script = Path(__file__).parent / "tools" / "deps_manager.py"
+    if not deps_script.exists():
+        print(f"{C_ERR}[ERROR]{C_RESET} deps_manager.py not found at {deps_script}")
+        sys.exit(1)
+
+    print(f"{C_INFO}[Gryce Engine]{C_RESET} Checking dependencies ...")
+    ok, output = run([sys.executable, str(deps_script), "download"], check=False)
+    if not ok:
+        print(f"{C_ERR}[ERROR]{C_RESET} Dependency download failed:")
+        print(output)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -306,12 +163,16 @@ def main():
         help="CMake build configuration (default: Debug)"
     )
     parser.add_argument(
+        "--setup-deps", action="store_true",
+        help="Only download and extract dependencies, do not build"
+    )
+    parser.add_argument(
         "--clean", action="store_true",
-        help="Clean build artifacts but preserve FetchContent _deps/ cache"
+        help="Clean build artifacts but preserve deps/ cache"
     )
     parser.add_argument(
         "--clean-all", action="store_true",
-        help="Remove entire build directory including _deps/ (forces re-download)"
+        help="Remove entire build directory including deps/ (forces re-download)"
     )
     parser.add_argument(
         "--verbose", action="store_true",
@@ -329,19 +190,19 @@ def main():
         "--no-lock", action="store_true",
         help="Do NOT auto-lock compiler (use CMake default detection)"
     )
-    parser.add_argument(
-        "--cache-dir", default="deps_cache",
-        help="Directory to cache downloaded dependencies (default: deps_cache)"
-    )
-    parser.add_argument(
-        "--no-prefetch", action="store_true",
-        help="Skip pre-downloading dependencies to cache"
-    )
     args = parser.parse_args()
 
     config = args.config
     build_dir = Path(args.build_dir) / config
     project_root = Path(__file__).parent.resolve()
+
+    # -----------------------------------------------------------------------
+    # 0. Setup deps only mode
+    # -----------------------------------------------------------------------
+    if args.setup_deps:
+        ensure_deps()
+        print(f"{C_OK}[Gryce Engine]{C_RESET} Dependencies ready.")
+        sys.exit(0)
 
     print(f"{C_INFO}[Gryce Engine]{C_RESET} Build configuration: {C_OK}{config}{C_RESET}")
 
@@ -376,14 +237,14 @@ def main():
                 "  * MSYS2 UCRT64 MinGW-w64 (recommended)\n"
                 "  * MSVC (Visual Studio 2022+)\n\n"
                 "For MinGW (MSYS2 UCRT64 terminal):\n"
-                "    pacman -S mingw-w64-ucrt-x86_64-gcc \\\n"
-                "              mingw-w64-ucrt-x86_64-cmake \\\n"
-                "              mingw-w64-ucrt-x86_64-ninja \\\n"
-                "              mingw-w64-ucrt-x86_64-glew \\\n"
-                "              mingw-w64-ucrt-x86_64-glfw\n\n"
+                "    pacman -S mingw-w64-ucrt-x86_64-gcc "
+                "mingw-w64-ucrt-x86_64-cmake "
+                "mingw-w64-ucrt-x86_64-ninja "
+                "mingw-w64-ucrt-x86_64-glew "
+                "mingw-w64-ucrt-x86_64-glfw\n\n"
                 "Then either:\n"
                 "    1. Run this script from the MSYS2 UCRT64 terminal.\n"
-                "    2. Add C:\\\\msys64\\\\ucrt64\\\\bin to your system PATH and retry.\n\n"
+                "    2. Add C:\\msys64\\ucrt64\\bin to your system PATH and retry.\n\n"
                 "For MSVC:\n"
                 '    Open "x64 Native Tools Command Prompt for VS 2022" and run:\n'
                 "        python build.py\n"
@@ -414,12 +275,9 @@ def main():
         print(f"{C_OK}[OK]{C_RESET} ninja: {ninja}")
 
     # -----------------------------------------------------------------------
-    # 3. Pre-fetch dependencies
+    # 3. Ensure dependencies
     # -----------------------------------------------------------------------
-    if not args.no_prefetch:
-        prefetch_dependencies(args.cache_dir)
-    else:
-        print(f"{C_INFO}[Gryce Engine]{C_RESET} Skipping dependency prefetch (--no-prefetch)")
+    ensure_deps()
 
     # -----------------------------------------------------------------------
     # 4. Clean if requested
@@ -448,10 +306,6 @@ def main():
                 "-DCMAKE_C_COMPILER=" + gcc_path,
                 "-DCMAKE_CXX_COMPILER=" + gxx_path,
             ]
-
-        configure_cmd += [
-            "-DGRYCE_CACHE_DIR=" + str(Path(args.cache_dir).resolve()),
-        ]
 
         configure_cmd += [str(project_root)]
 

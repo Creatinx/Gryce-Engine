@@ -7,6 +7,7 @@
 #include <sstream>
 #include <iostream>
 #include <mutex>
+#include <vector>
 #include <format>
 
 #if defined(_WIN32)
@@ -59,6 +60,49 @@ private:
     const char* ansi_color(LogLevel level) const;
     static const char* level_str(LogLevel level);
     static std::string timestamp();
+};
+
+// ---------------------------------------------------------------------------
+// LogEntry — 内存日志条目（供编辑器 Console 面板读取）
+// ---------------------------------------------------------------------------
+struct LogEntry {
+    LogLevel level = LogLevel::Info;
+    std::string message;
+    std::string timestamp;
+};
+
+// ---------------------------------------------------------------------------
+// MemoryLogSink — 环形缓冲内存 sink（tee 模式，M1-E1 编辑器 Console 面板）
+// 包装现有后端：日志照常转发到原后端，同时写入固定容量环形缓冲。
+// 线程安全（独立 mutex），snapshot() 拷贝读取，渲染/逻辑线程均可安全写日志。
+// ---------------------------------------------------------------------------
+class MemoryLogSink : public ILogger {
+public:
+    explicit MemoryLogSink(std::unique_ptr<ILogger> inner, size_t capacity = 1000);
+
+    void log(LogLevel level, const std::string& message) override;
+    void flush() override;
+    bool supports_color() const override;
+
+    // 拷贝一份当前缓冲内容（按时间顺序，最旧在前）
+    std::vector<LogEntry> snapshot() const;
+    void clear();
+    size_t size() const;
+    size_t capacity() const { return buffer_.size(); }
+
+    // 从 GLog 当前后端取得 sink（未安装时返回 nullptr）
+    static MemoryLogSink* from_glog();
+
+    static const char* level_str(LogLevel level);
+
+private:
+    static std::string make_timestamp();
+
+    std::unique_ptr<ILogger> inner_;
+    std::vector<LogEntry> buffer_;  // 环形缓冲，容量固定
+    size_t head_ = 0;               // 下一个写入位置
+    size_t count_ = 0;              // 当前条目数（<= capacity）
+    mutable std::mutex mutex_;
 };
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,12 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             fracture_test.cpp
             tilemap_test.cpp
             render2d_test.cpp
+            prefab_test.cpp
+            compressed_texture_test.cpp
+            animation_test.cpp
+            skinned_renderer_test.cpp
+            reflection_test.cpp
+            ray_test.cpp
     )
     target_link_libraries(gryce_tests
         PRIVATE
