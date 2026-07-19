@@ -12,7 +12,7 @@ namespace gryce_engine::editor {
 // ---------------------------------------------------------------------------
 class ConsolePanel : public EditorPanel {
 public:
-    ConsolePanel() : EditorPanel("Console") {}
+    ConsolePanel() : EditorPanel("Console", "panel.console") {}
 
 protected:
     void on_imgui() override;

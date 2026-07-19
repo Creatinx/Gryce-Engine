@@ -22,7 +22,7 @@ namespace gryce_engine::editor {
 // ---------------------------------------------------------------------------
 class HierarchyPanel : public EditorPanel {
 public:
-    HierarchyPanel() : EditorPanel("Hierarchy") {}
+    HierarchyPanel() : EditorPanel("Hierarchy", "panel.hierarchy") {}
 
     // 每帧由 EditorApp 设置当前场景（热重载后场景指针会变化）
     void set_scene(scene::Scene* scene);

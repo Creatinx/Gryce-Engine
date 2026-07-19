@@ -1,17 +1,33 @@
 #include "console_panel.h"
 
+#include <format>
+
+#include "../localization/localization.h"
+
 namespace gryce_engine::editor {
 
 namespace {
 
 ImVec4 level_color(utils::LogLevel level) {
-    switch (level) {
-        case utils::LogLevel::Trace: return ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
-        case utils::LogLevel::Debug: return ImVec4(1.00f, 1.00f, 1.00f, 1.0f);
-        case utils::LogLevel::Info:  return ImVec4(0.90f, 0.90f, 0.90f, 1.0f);
-        case utils::LogLevel::Warn:  return ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
-        case utils::LogLevel::Error: return ImVec4(0.95f, 0.35f, 0.35f, 1.0f);
-        case utils::LogLevel::Fatal: return ImVec4(1.00f, 0.20f, 0.20f, 1.0f);
+    const bool light_theme = Localization::instance().is_light_theme();
+    if (light_theme) {
+        switch (level) {
+            case utils::LogLevel::Trace: return ImVec4(0.35f, 0.35f, 0.35f, 1.0f);
+            case utils::LogLevel::Debug: return ImVec4(0.00f, 0.00f, 0.00f, 1.0f);
+            case utils::LogLevel::Info:  return ImVec4(0.10f, 0.10f, 0.10f, 1.0f);
+            case utils::LogLevel::Warn:  return ImVec4(0.60f, 0.40f, 0.00f, 1.0f);
+            case utils::LogLevel::Error: return ImVec4(0.80f, 0.20f, 0.20f, 1.0f);
+            case utils::LogLevel::Fatal: return ImVec4(0.90f, 0.10f, 0.10f, 1.0f);
+        }
+    } else {
+        switch (level) {
+            case utils::LogLevel::Trace: return ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
+            case utils::LogLevel::Debug: return ImVec4(1.00f, 1.00f, 1.00f, 1.0f);
+            case utils::LogLevel::Info:  return ImVec4(0.90f, 0.90f, 0.90f, 1.0f);
+            case utils::LogLevel::Warn:  return ImVec4(0.95f, 0.80f, 0.30f, 1.0f);
+            case utils::LogLevel::Error: return ImVec4(0.95f, 0.35f, 0.35f, 1.0f);
+            case utils::LogLevel::Fatal: return ImVec4(1.00f, 0.20f, 0.20f, 1.0f);
+        }
     }
     return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 }
@@ -32,21 +48,21 @@ bool ConsolePanel::passes_filter(utils::LogLevel level) const {
 
 void ConsolePanel::on_imgui() {
     // 工具行：级别过滤 + 自动滚动 + 清空
-    ImGui::Checkbox("Trace", &show_trace_);
+    ImGui::Checkbox(tr("console.trace"), &show_trace_);
     ImGui::SameLine();
-    ImGui::Checkbox("Debug", &show_debug_);
+    ImGui::Checkbox(tr("console.debug"), &show_debug_);
     ImGui::SameLine();
-    ImGui::Checkbox("Info", &show_info_);
+    ImGui::Checkbox(tr("console.info"), &show_info_);
     ImGui::SameLine();
-    ImGui::Checkbox("Warn", &show_warn_);
+    ImGui::Checkbox(tr("console.warn"), &show_warn_);
     ImGui::SameLine();
-    ImGui::Checkbox("Error", &show_error_);
+    ImGui::Checkbox(tr("console.error"), &show_error_);
     ImGui::SameLine();
-    ImGui::Checkbox("Auto-scroll", &auto_scroll_);
+    ImGui::Checkbox(tr("console.auto_scroll"), &auto_scroll_);
     ImGui::SameLine();
 
     utils::MemoryLogSink* sink = utils::MemoryLogSink::from_glog();
-    if (ImGui::Button("Clear") && sink) {
+    if (ImGui::Button(tr("console.clear")) && sink) {
         sink->clear();
     }
     ImGui::Separator();
@@ -65,7 +81,7 @@ void ConsolePanel::on_imgui() {
             ImGui::PopStyleColor();
         }
     } else {
-        ImGui::TextDisabled("MemoryLogSink not installed (editor installs it at startup)");
+        ImGui::TextDisabled("%s", tr("console.sink_missing"));
     }
 
     // 已贴底时跟随最新日志

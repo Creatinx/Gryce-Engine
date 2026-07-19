@@ -1,8 +1,8 @@
 {
-    "preset": "dark",
-    "accent_hue": 0.5722,
-    "font_size": 16.0,
+    "accent_hue": 0.5722000002861023,
     "font_path": "",
+    "font_size": 16.0,
+    "preset": "light",
     "rounding": 6.0,
     "shadow": true
 }

@@ -7,6 +7,7 @@
 #include "render/imgui_backend.h"
 #include "render/render_pipeline.h"
 #include "scene/entity.h"
+#include "../localization/localization.h"
 
 namespace gryce_engine::editor {
 
@@ -36,7 +37,7 @@ void decompose_trs(const math::Matrix4f& m,
 
 } // namespace
 
-ViewportPanel::ViewportPanel() : EditorPanel("Viewport"), gizmo_operation_(ImGuizmo::TRANSLATE) {}
+ViewportPanel::ViewportPanel() : EditorPanel("Viewport", "panel.viewport"), gizmo_operation_(ImGuizmo::TRANSLATE) {}
 
 bool ViewportPanel::take_pick_click(ImVec2& out_uv) {
     if (!pick_click_pending_) return false;
@@ -82,9 +83,9 @@ void ViewportPanel::on_imgui() {
             ImGui::EndDragDropTarget();
         }
     } else {
-        ImGui::TextDisabled("Viewport texture unavailable");
-        ImGui::TextDisabled("- Vulkan backend: descriptor registration not implemented yet");
-        ImGui::TextDisabled("- OpenGL backend: check HDR pipeline init");
+        ImGui::TextDisabled("%s", tr("viewport.texture_unavailable"));
+        ImGui::TextDisabled("%s", tr("viewport.vulkan_not_implemented"));
+        ImGui::TextDisabled("%s", tr("viewport.opengl_check_hdr"));
     }
 
     if (editing_enabled_ && image_drawn_) {

@@ -19,7 +19,7 @@ namespace gryce_engine::editor {
 // ---------------------------------------------------------------------------
 class InspectorPanel : public EditorPanel {
 public:
-    InspectorPanel() : EditorPanel("Inspector") {}
+    InspectorPanel() : EditorPanel("Inspector", "panel.inspector") {}
 
     // 每帧由 EditorApp 设置当前选中实体（Hierarchy 面板的选择结果）
     void set_target(scene::Entity* entity) { entity_ = entity; }

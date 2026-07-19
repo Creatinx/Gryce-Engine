@@ -1,11 +1,13 @@
 #include "hierarchy_panel.h"
 
 #include <cstring>
+#include <format>
 
 #include "components/prefab_instance.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "utils/glog/glog_lib.h"
+#include "../localization/localization.h"
 
 namespace gryce_engine::editor {
 
@@ -99,7 +101,7 @@ void HierarchyPanel::execute_pending_op() {
 
 void HierarchyPanel::on_imgui() {
     if (!scene_) {
-        ImGui::TextDisabled("No scene loaded");
+        ImGui::TextDisabled("%s", tr("hierarchy.no_scene"));
         return;
     }
 
@@ -133,8 +135,8 @@ void HierarchyPanel::on_imgui() {
         clear_selection();
     }
     if (ImGui::BeginPopupContextItem("##hierarchy_bg_menu")) {
-        if (ImGui::MenuItem("Create Empty Entity")) {
-            scene::Entity* entity = scene_->create_entity("New Entity");
+        if (ImGui::MenuItem(tr("hierarchy.create_empty_entity"))) {
+            scene::Entity* entity = scene_->create_entity(tr("hierarchy.new_entity_name"));
             select(entity->uuid());
         }
         ImGui::EndPopup();
@@ -183,19 +185,19 @@ void HierarchyPanel::draw_entity(scene::Entity* entity) {
 void HierarchyPanel::draw_entity_context_menu(scene::Entity* entity) {
     if (!ImGui::BeginPopupContextItem("##entity_menu")) return;
 
-    if (ImGui::MenuItem("Create Empty Child")) {
-        auto child = std::make_unique<scene::Entity>("New Entity");
+    if (ImGui::MenuItem(tr("hierarchy.create_empty_child"))) {
+        auto child = std::make_unique<scene::Entity>(tr("hierarchy.new_entity_name"));
         scene::Entity* added = entity->add_child(std::move(child));
         if (added) select(added->uuid());
     }
-    if (ImGui::MenuItem("Rename...")) {
+    if (ImGui::MenuItem(tr("hierarchy.rename"))) {
         rename_uuid_ = entity->uuid();
         std::strncpy(rename_buf_, entity->name().c_str(), sizeof(rename_buf_) - 1);
         rename_buf_[sizeof(rename_buf_) - 1] = '\0';
         rename_open_requested_ = true;
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Delete")) {
+    if (ImGui::MenuItem(tr("hierarchy.delete"))) {
         // 延迟到帧末执行：当前正处于实体树遍历中，直接销毁会使迭代器失效
         pending_op_.kind = PendingOp::Kind::Delete;
         pending_op_.child = entity->uuid();
@@ -205,27 +207,28 @@ void HierarchyPanel::draw_entity_context_menu(scene::Entity* entity) {
 
 void HierarchyPanel::draw_rename_popup() {
     if (rename_open_requested_) {
-        ImGui::OpenPopup("Rename Entity");
+        ImGui::OpenPopup("RenameEntity");
         rename_open_requested_ = false;
     }
-    if (ImGui::BeginPopupModal("Rename Entity", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal((std::string(tr("dialog.rename_entity")) + "###RenameEntity").c_str(),
+                               nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         scene::Entity* entity = scene_ ? scene_->find_entity_by_uuid(rename_uuid_) : nullptr;
         if (!entity) {
             ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
             return;
         }
-        ImGui::Text("Rename '%s'", entity->name().c_str());
+        ImGui::TextUnformatted(std::vformat(tr("hierarchy.rename_title"), std::make_format_args(entity->name())).c_str());
         const bool confirmed = ImGui::InputText("##rename_input", rename_buf_, sizeof(rename_buf_),
                                                 ImGuiInputTextFlags_EnterReturnsTrue);
-        if (confirmed || ImGui::Button("OK")) {
+        if (confirmed || ImGui::Button(tr("hierarchy.rename_ok"))) {
             if (rename_buf_[0] != '\0') {
                 entity->set_name(rename_buf_);
             }
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
+        if (ImGui::Button(tr("hierarchy.rename_cancel"))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -237,7 +240,7 @@ void HierarchyPanel::handle_drag_drop(scene::Entity* entity) {
         // payload 携带 UUID 字符串而非指针：拖拽跨帧时实体指针可能悬垂，UUID 可安全解析
         const std::string& uuid_str = entity->uuid().str();
         ImGui::SetDragDropPayload("GRYCE_ENTITY", uuid_str.c_str(), uuid_str.size() + 1);
-        ImGui::Text("Move '%s'", entity->name().c_str());
+        ImGui::TextUnformatted(std::vformat(tr("hierarchy.move_entity"), std::make_format_args(entity->name())).c_str());
         ImGui::EndDragDropSource();
     }
     if (ImGui::BeginDragDropTarget()) {

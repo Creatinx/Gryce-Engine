@@ -87,9 +87,10 @@
 
 | 任务 | 状态 | 说明 |
 |---|---|---|
-| 编辑器布局/设置持久化 | **部分完成** | `imgui.ini` 已持久化布局；`File > Settings` 窗口已持久化主题与语言到 `editor_theme.json` / `editor_settings.json` |
-| 主题文件与样式统一 | **已完成** | Fluent Design 深色/浅色 + 强调色 + 自定义字体，配置持久化到 `editor_theme.json` |
+| 编辑器布局/设置持久化 | **已完成** | `imgui.ini` 已持久化布局；`File > Settings` 窗口已持久化主题与语言到 `editor_theme.json` / `editor_settings.json` |
+| 主题文件与样式统一 | **已完成** | Fluent Design 深色/浅色 + 强调色 + 自定义字体，配置持久化到 `editor_theme.json`；浅色主题下 Console 日志颜色自动取反为深色文字 |
 | Settings 窗口（File > Settings） | **已完成** | 左侧 Theme / Appliance 栏目；Theme 栏目管理外观；Appliance 栏目管理语言 |
+| 编辑器多语言本地化 | **已完成** | `editor/localization/` 单例 + `locales/{en,zh,ja}.json`；支持中文/英文/日文，运行时热重载，所有面板/菜单/弹窗走 `tr()` 翻译 |
 | 快捷键体系（保存/撤销/删除/聚焦） | 待实现 | Unity 快捷键习惯 |
 | Undo/Redo（命令模式，最小覆盖：属性修改、增删实体、Transform） | 待实现 | 编辑器可用性的关键 |
 

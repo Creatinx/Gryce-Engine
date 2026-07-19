@@ -2,6 +2,8 @@
 
 #include <imgui_internal.h> // DockBuilder API（默认布局构建）
 
+#include "localization/localization.h"
+
 namespace gryce_engine::editor {
 
 void PanelManager::show() {
@@ -41,9 +43,12 @@ void PanelManager::show() {
         if (menu_bar_hook_) {
             menu_bar_hook_();
         }
-        if (ImGui::BeginMenu("Window")) {
+        if (ImGui::BeginMenu(tr("menu.window"))) {
             for (auto& panel : panels_) {
-                ImGui::MenuItem(panel->name().c_str(), nullptr, panel->visible_ptr());
+                const char* display = panel->translation_key().empty()
+                                          ? panel->name().c_str()
+                                          : tr(panel->translation_key().c_str());
+                ImGui::MenuItem(display, nullptr, panel->visible_ptr());
             }
             ImGui::EndMenu();
         }

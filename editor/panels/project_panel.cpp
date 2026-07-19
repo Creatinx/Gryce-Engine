@@ -6,6 +6,7 @@
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
+#include "../localization/localization.h"
 
 namespace gryce_engine::editor {
 
@@ -39,7 +40,7 @@ const char* icon_for(const std::filesystem::path& path, bool is_directory) {
 
 } // namespace
 
-ProjectPanel::ProjectPanel() : EditorPanel("Project") {
+ProjectPanel::ProjectPanel() : EditorPanel("Project", "panel.project") {
     current_dir_ = resources::Project::instance().root();
     if (current_dir_.empty()) {
         current_dir_ = std::filesystem::current_path();
@@ -65,14 +66,14 @@ void ProjectPanel::draw_path_bar() {
             rel = rel.substr(1);
         }
     }
-    if (rel.empty()) rel = "(root)";
+    if (rel.empty()) rel = tr("project.root");
 
-    ImGui::Text("Assets/%s", rel.c_str());
+    ImGui::Text(tr("project.assets_path"), rel.c_str());
 
     ImGui::SameLine();
     const bool can_go_up = !current_dir_.empty() && current_dir_ != std::filesystem::path(root);
     ImGui::BeginDisabled(!can_go_up);
-    if (ImGui::Button("Up")) {
+    if (ImGui::Button(tr("project.up"))) {
         std::filesystem::path parent = current_dir_.parent_path();
         if (!parent.empty()) {
             current_dir_ = parent;
@@ -119,7 +120,7 @@ void ProjectPanel::on_imgui() {
     ImGui::Separator();
 
     if (!std::filesystem::is_directory(current_dir_)) {
-        ImGui::TextDisabled("Project root is not a valid directory");
+        ImGui::TextDisabled("%s", tr("project.root_invalid"));
         return;
     }
 

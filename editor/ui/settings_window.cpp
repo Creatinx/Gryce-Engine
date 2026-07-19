@@ -15,28 +15,20 @@ std::string settings_json_path(const std::string& project_root) {
     return project_root + "/editor_settings.json";
 }
 
-std::string language_to_string(EditorLanguage lang) {
-    switch (lang) {
-        case EditorLanguage::Chinese:  return "zh";
-        case EditorLanguage::Japanese: return "ja";
-        default:                       return "en";
-    }
+std::string language_to_string(Language lang) {
+    return language_code(lang);
 }
 
-EditorLanguage language_from_string(const std::string& s) {
-    if (s == "zh") return EditorLanguage::Chinese;
-    if (s == "ja") return EditorLanguage::Japanese;
-    return EditorLanguage::English;
+Language language_from_string(const std::string& s) {
+    if (s == "zh") return Language::Chinese;
+    if (s == "ja") return Language::Japanese;
+    return Language::English;
 }
 
 } // namespace
 
-const char* language_name(EditorLanguage lang) {
-    switch (lang) {
-        case EditorLanguage::Chinese:  return "Chinese";
-        case EditorLanguage::Japanese: return "Japanese";
-        default:                       return "English";
-    }
+const char* language_name(Language lang) {
+    return language_display_name(lang);
 }
 
 EditorSettings SettingsWindow::load(const std::string& project_root) {
@@ -99,7 +91,7 @@ bool SettingsWindow::draw(const std::string& project_root, EditorSettings& setti
     ImGui::SetNextWindowSize(ImVec2(640.0f, 480.0f), ImGuiCond_Appearing);
 
     bool still_open = true;
-    if (ImGui::Begin("Settings", &still_open, ImGuiWindowFlags_NoDocking)) {
+    if (ImGui::Begin(tr("settings.title"), &still_open, ImGuiWindowFlags_NoDocking)) {
         const float sidebar_width = 140.0f;
         draw_sidebar(sidebar_width);
 
@@ -133,56 +125,56 @@ void SettingsWindow::draw_sidebar(float width) {
         }
     };
 
-    item(Section::Theme, "Theme");
-    item(Section::Appliance, "Appliance");
+    item(Section::Theme, tr("settings.section.theme"));
+    item(Section::Appliance, tr("settings.section.appliance"));
 
     ImGui::EndChild();
 }
 
 void SettingsWindow::draw_theme_section(EditorSettings& settings) {
-    ImGui::Text("Appearance");
+    ImGui::Text("%s", tr("settings.appearance"));
     ImGui::Separator();
 
     int preset = (settings.theme_preset == ThemePreset::Dark) ? 0 : 1;
-    const char* presets[] = {"Dark", "Light"};
-    if (ImGui::Combo("Theme Preset", &preset, presets, IM_ARRAYSIZE(presets))) {
+    const char* presets[] = {tr("menu.view_theme_dark"), tr("menu.view_theme_light")};
+    if (ImGui::Combo(tr("settings.theme_preset"), &preset, presets, IM_ARRAYSIZE(presets))) {
         settings.theme_preset = (preset == 0) ? ThemePreset::Dark : ThemePreset::Light;
         unsaved_changes_ = true;
     }
 
-    if (ImGui::SliderFloat("Accent Hue", &settings.theme.accent_hue, 0.0f, 1.0f, "%.2f")) {
+    if (ImGui::SliderFloat(tr("settings.accent_hue"), &settings.theme.accent_hue, 0.0f, 1.0f, "%.2f")) {
         unsaved_changes_ = true;
     }
 
-    if (ImGui::SliderFloat("Font Size", &settings.theme.font_size, 8.0f, 32.0f, "%.1f")) {
+    if (ImGui::SliderFloat(tr("settings.font_size"), &settings.theme.font_size, 8.0f, 32.0f, "%.1f")) {
         unsaved_changes_ = true;
     }
 
-    if (ImGui::SliderFloat("Rounding", &settings.theme.rounding, 0.0f, 16.0f, "%.1f")) {
+    if (ImGui::SliderFloat(tr("settings.rounding"), &settings.theme.rounding, 0.0f, 16.0f, "%.1f")) {
         unsaved_changes_ = true;
     }
 
-    if (ImGui::Checkbox("Shadow", &settings.theme.shadow)) {
+    if (ImGui::Checkbox(tr("settings.shadow"), &settings.theme.shadow)) {
         unsaved_changes_ = true;
     }
 
     // 字体路径
     char font_buf[512] = {};
     std::strncpy(font_buf, settings.theme.font_path.c_str(), sizeof(font_buf) - 1);
-    if (ImGui::InputText("Custom Font", font_buf, sizeof(font_buf))) {
+    if (ImGui::InputText(tr("settings.custom_font"), font_buf, sizeof(font_buf))) {
         settings.theme.font_path = font_buf;
         unsaved_changes_ = true;
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Leave empty to use bundled Roboto font.\nRestart or click Apply to reload font.");
+        ImGui::SetTooltip(tr("settings.custom_font_tooltip"));
     }
 
     ImGui::Dummy(ImVec2(0.0f, 16.0f));
-    if (ImGui::Button("Apply", ImVec2(100.0f, 0.0f))) {
+    if (ImGui::Button(tr("settings.apply"), ImVec2(100.0f, 0.0f))) {
         apply_and_save(project_root_, settings);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Reset to Defaults", ImVec2(140.0f, 0.0f))) {
+    if (ImGui::Button(tr("settings.reset_defaults"), ImVec2(140.0f, 0.0f))) {
         settings.theme = default_theme_config();
         settings.theme_preset = ThemePreset::Dark;
         unsaved_changes_ = true;
@@ -190,32 +182,36 @@ void SettingsWindow::draw_theme_section(EditorSettings& settings) {
 
     if (unsaved_changes_) {
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.0f, 1.0f), "* unsaved changes");
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.0f, 1.0f), tr("settings.unsaved_changes"));
     }
 }
 
 void SettingsWindow::draw_appliance_section(EditorSettings& settings) {
-    ImGui::Text("Appliance");
+    ImGui::Text("%s", tr("settings.section.appliance"));
     ImGui::Separator();
 
     int lang = static_cast<int>(settings.appliance.language);
-    const char* languages[] = {"English", "Chinese", "Japanese"};
-    if (ImGui::Combo("Language", &lang, languages, IM_ARRAYSIZE(languages))) {
-        settings.appliance.language = static_cast<EditorLanguage>(lang);
+    const char* languages[] = {language_display_name(Language::English),
+                               language_display_name(Language::Chinese),
+                               language_display_name(Language::Japanese)};
+    if (ImGui::Combo(tr("settings.language"), &lang, languages, IM_ARRAYSIZE(languages))) {
+        settings.appliance.language = static_cast<Language>(lang);
         unsaved_changes_ = true;
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Language selection is persisted.\nFull localization will be applied in a future update.");
+        ImGui::SetTooltip(tr("settings.language_tooltip"));
     }
 
     ImGui::Dummy(ImVec2(0.0f, 16.0f));
-    if (ImGui::Button("Apply", ImVec2(100.0f, 0.0f))) {
+    if (ImGui::Button(tr("settings.apply"), ImVec2(100.0f, 0.0f))) {
         apply_and_save(project_root_, settings);
     }
 }
 
 void SettingsWindow::apply_and_save(const std::string& project_root, EditorSettings& settings) {
     apply_theme(settings.theme_preset, settings.theme);
+    Localization::instance().load(settings.appliance.language, project_root);
+    Localization::instance().set_light_theme(settings.theme_preset == ThemePreset::Light);
     save(project_root, settings);
     unsaved_changes_ = false;
 }

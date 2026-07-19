@@ -77,6 +77,7 @@
 #include "panels/project_panel.h"
 #include "ui/editor_theme.h"
 #include "ui/settings_window.h"
+#include "localization/localization.h"
 
 using namespace gryce_engine;
 
@@ -551,6 +552,10 @@ int EditorApp::run(int argc, char* argv[]) {
     editor::ThemePreset& theme_preset = editor_settings.theme_preset;
     editor::apply_theme(theme_preset, theme_config);
 
+    // 多语言本地化（加载语言文件，失败则回退英语）
+    editor::Localization::instance().load(editor_settings.appliance.language, project_root.string());
+    editor::Localization::instance().set_light_theme(theme_preset == editor::ThemePreset::Light);
+
     // 设置窗口
     editor::SettingsWindow settings_window;
 
@@ -934,61 +939,63 @@ int EditorApp::run(int argc, char* argv[]) {
     });
 
     panel_manager.set_menu_bar_hook([&]() {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Save Scene", "Ctrl+S")) {
+        if (ImGui::BeginMenu(editor::tr("menu.file"))) {
+            if (ImGui::MenuItem(editor::tr("menu.save_scene"), "Ctrl+S")) {
                 save_scene(scene_path);
             }
-            if (ImGui::MenuItem("Save Scene As...")) {
+            if (ImGui::MenuItem(editor::tr("menu.save_scene_as"))) {
                 std::strncpy(save_as_buf, scene_path.c_str(), sizeof(save_as_buf) - 1);
                 save_as_buf[sizeof(save_as_buf) - 1] = '\0';
                 save_as_popup_requested = true;
             }
-            if (ImGui::MenuItem("Open Scene...")) {
+            if (ImGui::MenuItem(editor::tr("menu.open_scene"))) {
                 std::strncpy(open_buf, scene_path.c_str(), sizeof(open_buf) - 1);
                 open_buf[sizeof(open_buf) - 1] = '\0';
                 open_popup_requested = true;
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Settings")) {
+            if (ImGui::MenuItem(editor::tr("menu.settings"))) {
                 settings_window.open();
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Play")) {
-            if (ImGui::MenuItem(play_mode_active ? "Stop" : "Play", "Ctrl+P")) {
+        if (ImGui::BeginMenu(editor::tr("menu.play"))) {
+            if (ImGui::MenuItem(play_mode_active ? editor::tr("menu.play_stop") : editor::tr("menu.play_play"), "Ctrl+P")) {
                 toggle_play_mode();
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("View")) {
-            if (ImGui::BeginMenu("Theme")) {
+        if (ImGui::BeginMenu(editor::tr("menu.view"))) {
+            if (ImGui::BeginMenu(editor::tr("menu.view_theme"))) {
                 bool is_dark = (theme_preset == editor::ThemePreset::Dark);
-                if (ImGui::MenuItem("Dark", nullptr, &is_dark)) {
+                if (ImGui::MenuItem(editor::tr("menu.view_theme_dark"), nullptr, &is_dark)) {
                     theme_preset = editor::ThemePreset::Dark;
                     editor::apply_theme(theme_preset, theme_config);
+                    editor::Localization::instance().set_light_theme(false);
                     editor::SettingsWindow::save(project_root.string(), editor_settings);
                 }
                 bool is_light = (theme_preset == editor::ThemePreset::Light);
-                if (ImGui::MenuItem("Light", nullptr, &is_light)) {
+                if (ImGui::MenuItem(editor::tr("menu.view_theme_light"), nullptr, &is_light)) {
                     theme_preset = editor::ThemePreset::Light;
                     editor::apply_theme(theme_preset, theme_config);
+                    editor::Localization::instance().set_light_theme(true);
                     editor::SettingsWindow::save(project_root.string(), editor_settings);
                 }
                 ImGui::EndMenu();
             }
-            if (ImGui::DragFloat("Accent Hue", &theme_config.accent_hue, 0.01f, 0.0f, 1.0f)) {
+            if (ImGui::DragFloat(editor::tr("menu.view_accent_hue"), &theme_config.accent_hue, 0.01f, 0.0f, 1.0f)) {
                 editor::apply_theme(theme_preset, theme_config);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
-            if (ImGui::DragFloat("Font Size", &theme_config.font_size, 0.5f, 8.0f, 32.0f)) {
+            if (ImGui::DragFloat(editor::tr("menu.view_font_size"), &theme_config.font_size, 0.5f, 8.0f, 32.0f)) {
                 editor::apply_theme(theme_preset, theme_config);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
-            if (ImGui::DragFloat("Rounding", &theme_config.rounding, 0.5f, 0.0f, 16.0f)) {
+            if (ImGui::DragFloat(editor::tr("menu.view_rounding"), &theme_config.rounding, 0.5f, 0.0f, 16.0f)) {
                 editor::apply_theme(theme_preset, theme_config);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
-            if (ImGui::Checkbox("Shadow", &theme_config.shadow)) {
+            if (ImGui::Checkbox(editor::tr("menu.view_shadow"), &theme_config.shadow)) {
                 editor::apply_theme(theme_preset, theme_config);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
@@ -1171,19 +1178,20 @@ int EditorApp::run(int argc, char* argv[]) {
 
         // Save Scene As 弹窗
         if (save_as_popup_requested) {
-            ImGui::OpenPopup("Save Scene As");
+            ImGui::OpenPopup("SaveSceneAs");
             save_as_popup_requested = false;
         }
-        if (ImGui::BeginPopupModal("Save Scene As", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Save scene to:");
+        if (ImGui::BeginPopupModal((std::string(editor::tr("dialog.save_scene_as")) + "###SaveSceneAs").c_str(),
+                                   nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%s", editor::tr("dialog.save_scene_to"));
             ImGui::InputText("##save_as_path", save_as_buf, sizeof(save_as_buf));
-            if (ImGui::Button("Save") ||
+            if (ImGui::Button(editor::tr("dialog.save")) ||
                 (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false))) {
                 save_scene(save_as_buf);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) {
+            if (ImGui::Button(editor::tr("dialog.cancel"))) {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();
@@ -1191,19 +1199,20 @@ int EditorApp::run(int argc, char* argv[]) {
 
         // Open Scene 弹窗
         if (open_popup_requested) {
-            ImGui::OpenPopup("Open Scene");
+            ImGui::OpenPopup("OpenScene");
             open_popup_requested = false;
         }
-        if (ImGui::BeginPopupModal("Open Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Open scene from:");
+        if (ImGui::BeginPopupModal((std::string(editor::tr("dialog.open_scene")) + "###OpenScene").c_str(),
+                                   nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%s", editor::tr("dialog.open_scene_from"));
             ImGui::InputText("##open_path", open_buf, sizeof(open_buf));
-            if (ImGui::Button("Open") ||
+            if (ImGui::Button(editor::tr("dialog.open")) ||
                 (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false))) {
                 open_scene(open_buf);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) {
+            if (ImGui::Button(editor::tr("dialog.cancel"))) {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();

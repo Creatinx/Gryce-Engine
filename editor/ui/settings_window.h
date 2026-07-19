@@ -5,6 +5,7 @@
 #include <imgui.h>
 
 #include "editor_theme.h"
+#include "../localization/localization.h"
 
 namespace gryce_engine::editor {
 
@@ -16,10 +17,8 @@ namespace gryce_engine::editor {
 //   - Appliance：语言、（后续可扩展自动保存、启动行为等）
 // ---------------------------------------------------------------------------
 
-enum class EditorLanguage { English = 0, Chinese, Japanese };
-
 struct ApplianceSettings {
-    EditorLanguage language = EditorLanguage::English;
+    Language language = Language::English;
 };
 
 struct EditorSettings {
@@ -57,6 +56,6 @@ private:
     std::string project_root_;
 };
 
-const char* language_name(EditorLanguage lang);
+const char* language_name(Language lang);
 
 } // namespace gryce_engine::editor

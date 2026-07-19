@@ -5,12 +5,13 @@
 #include "components/component.h"
 #include "reflection/reflection.h"
 #include "scene/entity.h"
+#include "../localization/localization.h"
 
 namespace gryce_engine::editor {
 
 void InspectorPanel::on_imgui() {
     if (!entity_) {
-        ImGui::TextDisabled("No entity selected");
+        ImGui::TextDisabled("%s", tr("inspector.no_entity"));
         return;
     }
 
@@ -32,7 +33,7 @@ void InspectorPanel::on_imgui() {
     // 实体名（可直接编辑）
     char name_buf[128] = {};
     std::strncpy(name_buf, entity_->name().c_str(), sizeof(name_buf) - 1);
-    if (ImGui::InputText("Name", name_buf, sizeof(name_buf))) {
+    if (ImGui::InputText(tr("inspector.name"), name_buf, sizeof(name_buf))) {
         entity_->set_name(name_buf);
     }
 
@@ -53,7 +54,7 @@ void InspectorPanel::draw_component(components::Component* component) {
     if (ImGui::CollapsingHeader(type_name, ImGuiTreeNodeFlags_DefaultOpen)) {
         const auto fields = reflection::Registry::instance().all_fields(type_name);
         if (fields.empty()) {
-            ImGui::TextDisabled("(no reflected fields)");
+            ImGui::TextDisabled("%s", tr("inspector.no_fields"));
         }
         for (const reflection::FieldInfo* field : fields) {
             if (field) draw_field(component, *field);

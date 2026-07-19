@@ -5,6 +5,8 @@
 
 #include <imgui.h>
 
+#include "localization/localization.h"
+
 namespace gryce_engine::editor {
 
 // ---------------------------------------------------------------------------
@@ -14,13 +16,15 @@ namespace gryce_engine::editor {
 // ---------------------------------------------------------------------------
 class EditorPanel {
 public:
-    explicit EditorPanel(std::string name) : name_(std::move(name)) {}
+    explicit EditorPanel(std::string name, std::string translation_key = {})
+        : name_(std::move(name)), translation_key_(std::move(translation_key)) {}
     virtual ~EditorPanel() = default;
 
     EditorPanel(const EditorPanel&) = delete;
     EditorPanel& operator=(const EditorPanel&) = delete;
 
     const std::string& name() const { return name_; }
+    const std::string& translation_key() const { return translation_key_; }
     bool visible() const { return visible_; }
     void set_visible(bool visible) { visible_ = visible; }
 
@@ -28,9 +32,12 @@ public:
     bool* visible_ptr() { return &visible_; }
 
     // 每帧绘制：不可见时直接跳过
+    // 窗口 ID 保持英文 name_（避免 dock 状态丢失），显示标题走本地化
     void show() {
         if (!visible_) return;
-        if (ImGui::Begin(name_.c_str(), &visible_)) {
+        const char* display = translation_key_.empty() ? name_.c_str() : tr(translation_key_.c_str());
+        std::string window_label = std::string(display) + "###" + name_;
+        if (ImGui::Begin(window_label.c_str(), &visible_)) {
             on_imgui();
         }
         ImGui::End();
@@ -41,6 +48,7 @@ protected:
 
 private:
     std::string name_;
+    std::string translation_key_;
     bool visible_ = true;
 };
 
