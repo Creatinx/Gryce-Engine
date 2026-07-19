@@ -1,0 +1,62 @@
+#pragma once
+
+#include <string>
+
+#include <imgui.h>
+
+#include "editor_theme.h"
+
+namespace gryce_engine::editor {
+
+// ---------------------------------------------------------------------------
+// SettingsWindow — 编辑器设置窗口（File > Settings）
+// ---------------------------------------------------------------------------
+// 左侧栏目列表，右侧内容区。当前栏目：
+//   - Theme：主题、强调色、字体、圆角、阴影
+//   - Appliance：语言、（后续可扩展自动保存、启动行为等）
+// ---------------------------------------------------------------------------
+
+enum class EditorLanguage { English = 0, Chinese, Japanese };
+
+struct ApplianceSettings {
+    EditorLanguage language = EditorLanguage::English;
+};
+
+struct EditorSettings {
+    ThemeConfig theme;
+    ThemePreset theme_preset = ThemePreset::Dark;
+    ApplianceSettings appliance;
+};
+
+class SettingsWindow {
+public:
+    // 尝试从项目根目录加载 editor_settings.json 与 editor_theme.json；
+    // 失败则返回默认设置。
+    static EditorSettings load(const std::string& project_root);
+
+    // 保存当前设置到项目根目录。
+    static void save(const std::string& project_root, const EditorSettings& settings);
+
+    // 绘制窗口。若窗口仍打开返回 true，关闭后返回 false。
+    bool draw(const std::string& project_root, EditorSettings& settings);
+
+    void open() { open_ = true; }
+    bool is_open() const { return open_; }
+
+private:
+    enum class Section { Theme, Appliance };
+
+    void draw_sidebar(float width);
+    void draw_theme_section(EditorSettings& settings);
+    void draw_appliance_section(EditorSettings& settings);
+    void apply_and_save(const std::string& project_root, EditorSettings& settings);
+
+    bool open_ = false;
+    Section current_section_ = Section::Theme;
+    bool unsaved_changes_ = false;
+    std::string project_root_;
+};
+
+const char* language_name(EditorLanguage lang);
+
+} // namespace gryce_engine::editor

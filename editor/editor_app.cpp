@@ -76,6 +76,7 @@
 #include "panels/viewport_panel.h"
 #include "panels/project_panel.h"
 #include "ui/editor_theme.h"
+#include "ui/settings_window.h"
 
 using namespace gryce_engine;
 
@@ -545,12 +546,13 @@ int EditorApp::run(int argc, char* argv[]) {
     ImGui::GetIO().IniFilename = imgui_ini_path.c_str();
 
     // Fluent Design 主题与字体（加载持久化配置，失败则使用默认深色主题）
-    editor::ThemeConfig theme_config = editor::default_theme_config();
-    editor::ThemePreset theme_preset = editor::ThemePreset::Dark;
-    if (!editor::load_theme_config(project_root.string(), theme_config, theme_preset)) {
-        GLOG_INFO("EditorTheme: using default dark theme");
-    }
+    editor::EditorSettings editor_settings = editor::SettingsWindow::load(project_root.string());
+    editor::ThemeConfig& theme_config = editor_settings.theme;
+    editor::ThemePreset& theme_preset = editor_settings.theme_preset;
     editor::apply_theme(theme_preset, theme_config);
+
+    // 设置窗口
+    editor::SettingsWindow settings_window;
 
     // 编辑器面板框架
     PanelManager panel_manager;
@@ -946,6 +948,10 @@ int EditorApp::run(int argc, char* argv[]) {
                 open_buf[sizeof(open_buf) - 1] = '\0';
                 open_popup_requested = true;
             }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Settings")) {
+                settings_window.open();
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Play")) {
@@ -960,31 +966,31 @@ int EditorApp::run(int argc, char* argv[]) {
                 if (ImGui::MenuItem("Dark", nullptr, &is_dark)) {
                     theme_preset = editor::ThemePreset::Dark;
                     editor::apply_theme(theme_preset, theme_config);
-                    editor::save_theme_config(project_root.string(), theme_config, theme_preset);
+                    editor::SettingsWindow::save(project_root.string(), editor_settings);
                 }
                 bool is_light = (theme_preset == editor::ThemePreset::Light);
                 if (ImGui::MenuItem("Light", nullptr, &is_light)) {
                     theme_preset = editor::ThemePreset::Light;
                     editor::apply_theme(theme_preset, theme_config);
-                    editor::save_theme_config(project_root.string(), theme_config, theme_preset);
+                    editor::SettingsWindow::save(project_root.string(), editor_settings);
                 }
                 ImGui::EndMenu();
             }
             if (ImGui::DragFloat("Accent Hue", &theme_config.accent_hue, 0.01f, 0.0f, 1.0f)) {
                 editor::apply_theme(theme_preset, theme_config);
-                editor::save_theme_config(project_root.string(), theme_config, theme_preset);
+                editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
             if (ImGui::DragFloat("Font Size", &theme_config.font_size, 0.5f, 8.0f, 32.0f)) {
                 editor::apply_theme(theme_preset, theme_config);
-                editor::save_theme_config(project_root.string(), theme_config, theme_preset);
+                editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
             if (ImGui::DragFloat("Rounding", &theme_config.rounding, 0.5f, 0.0f, 16.0f)) {
                 editor::apply_theme(theme_preset, theme_config);
-                editor::save_theme_config(project_root.string(), theme_config, theme_preset);
+                editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
             if (ImGui::Checkbox("Shadow", &theme_config.shadow)) {
                 editor::apply_theme(theme_preset, theme_config);
-                editor::save_theme_config(project_root.string(), theme_config, theme_preset);
+                editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
             ImGui::EndMenu();
         }
@@ -1149,6 +1155,9 @@ int EditorApp::run(int argc, char* argv[]) {
         ImGuizmo::BeginFrame();
 
         panel_manager.show();
+
+        // 设置窗口（File > Settings）
+        settings_window.draw(project_root.string(), editor_settings);
 
         // Ctrl+S 保存 / Ctrl+P 切换 Play Mode（ImGui 正处理键盘输入时不抢快捷键）
         if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantCaptureKeyboard) {

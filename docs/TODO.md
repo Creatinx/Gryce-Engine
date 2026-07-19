@@ -87,8 +87,9 @@
 
 | 任务 | 状态 | 说明 |
 |---|---|---|
-| 编辑器布局/设置持久化 | 待实现 | imgui.ini + 自定义配置 |
+| 编辑器布局/设置持久化 | **部分完成** | `imgui.ini` 已持久化布局；`File > Settings` 窗口已持久化主题与语言到 `editor_theme.json` / `editor_settings.json` |
 | 主题文件与样式统一 | **已完成** | Fluent Design 深色/浅色 + 强调色 + 自定义字体，配置持久化到 `editor_theme.json` |
+| Settings 窗口（File > Settings） | **已完成** | 左侧 Theme / Appliance 栏目；Theme 栏目管理外观；Appliance 栏目管理语言 |
 | 快捷键体系（保存/撤销/删除/聚焦） | 待实现 | Unity 快捷键习惯 |
 | Undo/Redo（命令模式，最小覆盖：属性修改、增删实体、Transform） | 待实现 | 编辑器可用性的关键 |
 
@@ -330,6 +331,7 @@
 5. ~~E3 资源面板 + 拖放~~（已完成：Project 面板资源浏览 + 路径导航 + Hierarchy/Viewport/Inspector 拖放，支持模型/纹理/场景，143/143 测试通过）。
 6. ~~E4 Play Mode~~（已完成：场景快照/恢复 + Play/Stop UI + 编辑状态切换 + CI 测试模式，运行验证通过）。
 7. ~~E5 Fluent Design 主题系统~~（已完成：深色/浅色主题、强调色、圆角、阴影、自定义字体加载、View 菜单实时切换、配置持久化到 `editor_theme.json`，143/143 测试通过）。
-8. **E4 Game View + Console 点击定位**，**E5 布局/设置持久化 + 快捷键体系 + Undo/Redo**。
-9. 之后进入 M2（编辑器完全体 + 内容管线）与 M3（渲染补完），
+8. ~~E5 Settings 窗口~~（已完成：`File > Settings` 入口、左侧 Theme / Appliance 栏目、Theme 管理外观、Appliance 管理语言、配置持久化到 `editor_settings.json`，143/143 测试通过）。
+9. **E4 Game View + Console 点击定位**，**E5 布局完全持久化 + 快捷键体系 + Undo/Redo**。
+10. 之后进入 M2（编辑器完全体 + 内容管线）与 M3（渲染补完），
    渲染新特性（IBL、后处理）直接在编辑器里做预览面板，边开发边验证。
