@@ -15,7 +15,7 @@ namespace gryce_engine::editor {
 // PanelManager — 编辑器面板管理（M1-E1）
 // 负责：全屏 DockSpace（DockSpace over viewport）、首跑默认布局
 // （DockBuilder 构建；此后布局由 imgui.ini 持久化）、Window 菜单可见性切换。
-// 默认布局：左 Hierarchy、右 Inspector、下 Console + Project、中间 Viewport。
+// 默认布局：Unity Editor 风格，左 Hierarchy、右 Inspector、下 Project/Console 标签页、中间 Viewport。
 // File 等应用菜单通过 set_menu_bar_hook 注入（M1-E2 场景保存/加载）。
 // ---------------------------------------------------------------------------
 class PanelManager {

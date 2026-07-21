@@ -5,10 +5,12 @@
 #include "../editor_panel.h"
 
 #include "math/math.h"
+#include "scene/uuid.h"
+#include "../undo/command_stack.h"
 
 namespace gryce_engine {
 namespace math { class Camera; }
-namespace scene { class Entity; }
+namespace scene { class Entity; class Scene; }
 namespace render { class RenderPipeline; class IImGuiBackend; }
 } // namespace gryce_engine
 
@@ -27,6 +29,9 @@ public:
     void set_pipeline(render::RenderPipeline* pipeline) { pipeline_ = pipeline; }
     void set_imgui_backend(render::IImGuiBackend* backend) { backend_ = backend; }
     void set_camera(math::Camera* camera) { camera_ = camera; }
+    void set_scene(scene::Scene* scene) { scene_ = scene; }
+    void set_undo_stack(CommandStack* stack) { undo_stack_ = stack; }
+
     // 选中实体提供者（Hierarchy 的 UUID 弱引用解析结果）
     void set_selection_provider(std::function<scene::Entity*()> provider) {
         selection_provider_ = std::move(provider);
@@ -61,6 +66,8 @@ private:
     render::RenderPipeline* pipeline_ = nullptr;
     render::IImGuiBackend* backend_ = nullptr;
     math::Camera* camera_ = nullptr;
+    scene::Scene* scene_ = nullptr;
+    CommandStack* undo_stack_ = nullptr;
     std::function<scene::Entity*()> selection_provider_;
     std::function<void(const std::string&)> drop_handler_;
 
@@ -75,6 +82,13 @@ private:
     ImVec2 pick_click_uv_ = ImVec2(0.0f, 0.0f);
 
     int gizmo_operation_; // ImGuizmo::OPERATION，构造时初始化（避免头文件依赖 ImGuizmo）
+
+    // gizmo 拖拽期间记录旧值，松开后生成 Undo 命令
+    bool gizmo_was_using_ = false;
+    scene::UUID gizmo_entity_uuid_;
+    math::Vector3f gizmo_start_pos_;
+    math::Quaternionf gizmo_start_rot_;
+    math::Vector3f gizmo_start_scale_;
 };
 
 } // namespace gryce_engine::editor

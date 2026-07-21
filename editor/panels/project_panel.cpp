@@ -6,6 +6,7 @@
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
+#include "../asset/asset_database.h"
 #include "../localization/localization.h"
 
 namespace gryce_engine::editor {
@@ -28,6 +29,7 @@ const char* icon_for(const std::filesystem::path& path, bool is_directory) {
 
     const std::string ext = extension_of(path);
     if (ext == ".gesc") return "[S]";
+    if (ext == ".gimport") return "[I]";
     if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb") return "[M]";
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
         ext == ".tga" || ext == ".dds" || ext == ".ktx" || ext == ".hdr") return "[T]";
@@ -104,6 +106,18 @@ void ProjectPanel::draw_entry(const std::filesystem::directory_entry& entry) {
         } else if (on_activate_file) {
             on_activate_file(to_res_path(entry.path()));
         }
+    }
+
+    // 资源信息 tooltip
+    if (!is_dir && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        std::string guid = AssetDatabase::instance().guid_for_path(entry.path());
+        std::string type = AssetDatabase::instance().infer_type(entry.path());
+        ImGui::BeginTooltip();
+        ImGui::Text("Type: %s", type.c_str());
+        if (!guid.empty()) {
+            ImGui::Text("GUID: %s", guid.c_str());
+        }
+        ImGui::EndTooltip();
     }
 
     // 拖拽源

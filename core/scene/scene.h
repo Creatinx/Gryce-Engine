@@ -80,9 +80,12 @@ public:
     void render(render::RenderContext& ctx);
     void destroy();
 
+    // 为当前场景根实体及其全部子树设置组件存储池
+    //（Undo/Redo 等外部命令恢复实体后需要重新注册到 ECS store）
+    void set_store_on_entity_for_all();
+
 private:
     void set_store_on_entity(Entity* entity);
-    void set_store_on_entity_for_all();
     void clear_all_dirty();
     bool apply_hot_reload_entity(Entity* existing, const nlohmann::json& e_json);
 

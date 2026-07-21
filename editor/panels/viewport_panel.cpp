@@ -7,7 +7,9 @@
 #include "render/imgui_backend.h"
 #include "render/render_pipeline.h"
 #include "scene/entity.h"
+#include "scene/scene.h"
 #include "../localization/localization.h"
+#include "../undo/commands.h"
 
 namespace gryce_engine::editor {
 
@@ -84,7 +86,6 @@ void ViewportPanel::on_imgui() {
         }
     } else {
         ImGui::TextDisabled("%s", tr("viewport.texture_unavailable"));
-        ImGui::TextDisabled("%s", tr("viewport.vulkan_not_implemented"));
         ImGui::TextDisabled("%s", tr("viewport.opengl_check_hdr"));
     }
 
@@ -125,6 +126,15 @@ void ViewportPanel::draw_gizmo() {
     gizmo_active_ = ImGuizmo::IsUsing() || ImGuizmo::IsOver();
 
     if (ImGuizmo::IsUsing()) {
+        if (!gizmo_was_using_) {
+            // 拖拽开始：记录旧值
+            gizmo_was_using_ = true;
+            gizmo_entity_uuid_ = entity->uuid();
+            gizmo_start_pos_ = entity->transform()->position;
+            gizmo_start_rot_ = entity->transform()->rotation;
+            gizmo_start_scale_ = entity->transform()->scale;
+        }
+
         // 写回 local transform：local = parent_world^-1 * new_world
         math::Matrix4f parent_world = math::Matrix4f::identity();
         if (scene::Entity* parent = entity->parent()) {
@@ -141,6 +151,30 @@ void ViewportPanel::draw_gizmo() {
         tr->position = t;
         tr->rotation = r;
         tr->scale = s;
+    } else if (gizmo_was_using_) {
+        // 拖拽结束：生成 Undo 命令
+        gizmo_was_using_ = false;
+        if (scene_ && undo_stack_ && gizmo_entity_uuid_.is_valid()) {
+            scene::Entity* e = scene_->find_entity_by_uuid(gizmo_entity_uuid_);
+            if (e) {
+                components::Transform* tr = e->transform();
+                if (tr->position != gizmo_start_pos_) {
+                    undo_stack_->push(std::make_unique<ComponentFieldCommand>(
+                        *scene_, gizmo_entity_uuid_, "Transform", "position",
+                        gizmo_start_pos_, tr->position));
+                }
+                if (tr->rotation != gizmo_start_rot_) {
+                    undo_stack_->push(std::make_unique<ComponentFieldCommand>(
+                        *scene_, gizmo_entity_uuid_, "Transform", "rotation",
+                        gizmo_start_rot_, tr->rotation));
+                }
+                if (tr->scale != gizmo_start_scale_) {
+                    undo_stack_->push(std::make_unique<ComponentFieldCommand>(
+                        *scene_, gizmo_entity_uuid_, "Transform", "scale",
+                        gizmo_start_scale_, tr->scale));
+                }
+            }
+        }
     }
 }
 

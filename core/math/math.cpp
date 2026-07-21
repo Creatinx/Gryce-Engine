@@ -276,6 +276,27 @@ Quaternionf Quaternionf::from_euler(float pitch, float yaw, float roll) {
     );
 }
 
+Vector3f Quaternionf::to_euler() const {
+    Matrix4f m = to_matrix();
+    const float m00 = m(0, 0), m01 = m(0, 1), m02 = m(0, 2);
+    const float m10 = m(1, 0), m11 = m(1, 1), m12 = m(1, 2);
+    const float m20 = m(2, 0), m21 = m(2, 1), m22 = m(2, 2);
+
+    float pitch, yaw, roll;
+    if (std::abs(m02) > 0.999999f) {
+        // 万向节锁：pitch = ±90°
+        pitch = (m02 > 0.0f) ? math::to_radians(90.0f) : math::to_radians(-90.0f);
+        yaw = std::atan2(-m10, m11);
+        roll = 0.0f;
+    } else {
+        pitch = std::asin(std::clamp(m02, -1.0f, 1.0f));
+        yaw = std::atan2(-m01, m00);
+        roll = std::atan2(-m12, m22);
+    }
+
+    return Vector3f(math::to_degrees(pitch), math::to_degrees(yaw), math::to_degrees(roll));
+}
+
 Matrix4f Quaternionf::to_matrix() const {
     float xx = x * x, yy = y * y, zz = z * z;
     float xy = x * y, xz = x * z, yz = y * z;

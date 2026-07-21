@@ -19,13 +19,13 @@ struct ThemeConfig {
     // 强调色色相 [0,1]，默认 Fluent 蓝 (~206°/360°)
     float accent_hue = 206.0f / 360.0f;
     // 全局字体大小
-    float font_size = 16.0f;
+    float font_size = 18.0f;
     // 自定义字体路径；空字符串时使用项目内置 Roboto
     std::string font_path;
-    // 全局圆角半径
-    float rounding = 6.0f;
-    // 是否启用轻微阴影/深度效果（通过 Border/Alpha 模拟）
-    bool shadow = true;
+    // 全局圆角半径（参考 macOS 设计：轻微圆角但保持专业感）
+    float rounding = 3.0f;
+    // 是否启用轻微阴影/深度效果
+    bool shadow = false;
 };
 
 ThemeConfig default_theme_config();

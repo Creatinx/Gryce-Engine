@@ -1,9 +1,11 @@
 #include "vk_imgui_backend.h"
 
 #include "render/render.h"
+#include "render/texture.h"
 #include "vk_backend.h"
 #include "vk_device.h"
 #include "vk_swapchain.h"
+#include "vk_texture.h"
 #include "utils/glog/glog_lib.h"
 
 #include <imgui.h>
@@ -17,10 +19,16 @@ namespace gryce_engine::render {
 
 VulkanImGuiBackend::VulkanImGuiBackend(IRenderBackend* backend) {
     backend_ = dynamic_cast<VulkanBackend*>(backend);
+    if (backend_) {
+        backend_->set_imgui_backend(this);
+    }
 }
 
 VulkanImGuiBackend::~VulkanImGuiBackend() {
     shutdown();
+    if (backend_) {
+        backend_->set_imgui_backend(nullptr);
+    }
 }
 
 bool VulkanImGuiBackend::init() {
@@ -58,6 +66,7 @@ void VulkanImGuiBackend::shutdown() {
     if (dev != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(dev);
     }
+    clear_cache();
     ImGui_ImplVulkan_Shutdown();
     initialized_ = false;
 }
@@ -71,6 +80,84 @@ void VulkanImGuiBackend::render_draw_data(ImDrawData* draw_data) {
     VkCommandBuffer cmd = backend_->current_command_buffer();
     if (cmd == VK_NULL_HANDLE) return;
     ImGui_ImplVulkan_RenderDrawData(draw_data, cmd);
+}
+
+void VulkanImGuiBackend::rebuild_fonts() {
+    if (!initialized_ || !backend_) return;
+    VkDevice dev = backend_->device()->device();
+    if (dev != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(dev);
+    }
+    // 新版 ImGui 使用动态纹理机制：手动触发字体 atlas 纹理上传。
+    ImTextureData* font_tex = ImGui::GetIO().Fonts->TexRef._TexData;
+    if (font_tex) {
+        ImGui_ImplVulkan_UpdateTexture(font_tex);
+    }
+}
+
+uint64_t VulkanImGuiBackend::imgui_texture_id(ITexture* texture) const {
+    if (!texture || !texture->is_valid() || !initialized_) return 0;
+
+    auto* vk_tex = dynamic_cast<VulkanTexture*>(texture);
+    if (!vk_tex) return 0;
+
+    // 缓存命中且纹理仍有效：移到 LRU 前端并返回。
+    auto it = cache_map_.find(texture);
+    if (it != cache_map_.end()) {
+        if (it->second->texture->is_valid()) {
+            cache_lru_.splice(cache_lru_.begin(), cache_lru_, it->second);
+            return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->second->set));
+        }
+        // 纹理已失效：移除旧缓存项，后续重新创建。
+        cache_lru_.erase(it->second);
+        cache_map_.erase(it);
+    }
+
+    VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(
+        vk_tex->sampler(), vk_tex->image_view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (set == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanImGuiBackend: failed to create descriptor set for texture");
+        return 0;
+    }
+
+    CacheEntry entry;
+    entry.texture = texture;
+    entry.set = set;
+    cache_lru_.push_front(entry);
+    cache_map_[texture] = cache_lru_.begin();
+
+    // 限制缓存大小，避免 descriptor set 无限增长。
+    while (cache_lru_.size() > k_max_cache_size) {
+        const CacheEntry& oldest = cache_lru_.back();
+        if (oldest.set != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(oldest.set);
+        }
+        cache_map_.erase(oldest.texture);
+        cache_lru_.pop_back();
+    }
+
+    return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(set));
+}
+
+void VulkanImGuiBackend::invalidate_texture(ITexture* tex) {
+    if (!tex) return;
+    auto it = cache_map_.find(tex);
+    if (it == cache_map_.end()) return;
+    if (it->second->set != VK_NULL_HANDLE) {
+        ImGui_ImplVulkan_RemoveTexture(it->second->set);
+    }
+    cache_lru_.erase(it->second);
+    cache_map_.erase(it);
+}
+
+void VulkanImGuiBackend::clear_cache() {
+    for (const auto& entry : cache_lru_) {
+        if (entry.set != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(entry.set);
+        }
+    }
+    cache_lru_.clear();
+    cache_map_.clear();
 }
 
 } // namespace gryce_engine::render

@@ -884,7 +884,7 @@ void VulkanBackend::destroy_shader(RHIShaderHandle handle) {
 }
 
 void VulkanBackend::destroy_texture(RHITextureHandle handle) {
-    // deallocate 前先通知所有 shader 清除对该纹理指针的缓存：
+    // deallocate 前先通知所有 shader 与 ImGui 后端清除对该纹理指针的缓存：
     // 池槽位复用后同一地址可能属于新纹理，裸指针缓存会跳过必需的 descriptor 更新，
     // 甚至采样已销毁的 image view。
     if (auto* tex = texture_pool_.get_if_alive(handle.index, handle.generation)) {
@@ -892,6 +892,9 @@ void VulkanBackend::destroy_texture(RHITextureHandle handle) {
             if (auto* s = shader_pool_.get(i)) {
                 s->invalidate_texture_cache(tex);
             }
+        }
+        if (imgui_backend_) {
+            imgui_backend_->invalidate_texture(tex);
         }
     }
     texture_pool_.deallocate(handle.index, handle.generation);

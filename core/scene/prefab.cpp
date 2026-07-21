@@ -181,18 +181,51 @@ std::unique_ptr<Entity> Prefab::instantiate_tree(const std::string& prefab_path,
                                                  const nlohmann::json& overrides) {
     const std::string resolved = resources::ResourcePath::resolve(prefab_path);
 
-    // 循环引用检测
-    for (const auto& active : g_instantiate_stack) {
-        if (active == resolved) {
-            GLOG_ERROR("Prefab: cyclic prefab reference detected at '{}'", prefab_path);
+    // 处理 Prefab Variant 文件：它只保存 base prefab 路径与覆盖参数
+    std::string variant_of_path;
+    std::string base_prefab_path = prefab_path;
+    nlohmann::json variant_overrides = overrides.is_object() ? overrides : nlohmann::json::object();
+
+    if (resolved.ends_with(".geprefabvariant")) {
+        std::ifstream ifs(resolved);
+        if (!ifs) {
+            GLOG_ERROR("Prefab::instantiate_tree: failed to open variant '{}'", prefab_path);
+            return nullptr;
+        }
+        try {
+            nlohmann::json variant_json = nlohmann::json::parse(ifs);
+            std::string base = variant_json.value("base_prefab", "");
+            if (base.empty()) {
+                GLOG_ERROR("Prefab::instantiate_tree: variant '{}' missing base_prefab", prefab_path);
+                return nullptr;
+            }
+            variant_of_path = prefab_path;
+            base_prefab_path = base;
+            if (variant_json.contains("overrides") && variant_json["overrides"].is_object()) {
+                // 调用方传入的 overrides 优先级高于 variant 文件内的 overrides
+                nlohmann::json file_overrides = variant_json["overrides"];
+                file_overrides.update(variant_overrides);
+                variant_overrides = std::move(file_overrides);
+            }
+        } catch (const std::exception& e) {
+            GLOG_ERROR("Prefab::instantiate_tree: failed to parse variant '{}': {}", prefab_path, e.what());
             return nullptr;
         }
     }
-    InstantiateGuard guard(resolved);
 
-    auto prefab = load_cached(prefab_path);
+    // 循环引用检测（基于最终解析的 base prefab）
+    const std::string base_resolved = resources::ResourcePath::resolve(base_prefab_path);
+    for (const auto& active : g_instantiate_stack) {
+        if (active == base_resolved) {
+            GLOG_ERROR("Prefab: cyclic prefab reference detected at '{}'", base_prefab_path);
+            return nullptr;
+        }
+    }
+    InstantiateGuard guard(base_resolved);
+
+    auto prefab = load_cached(base_prefab_path);
     if (!prefab || prefab->roots_.empty()) {
-        GLOG_ERROR("Prefab::instantiate_tree: failed to load '{}'", prefab_path);
+        GLOG_ERROR("Prefab::instantiate_tree: failed to load '{}'", base_prefab_path);
         return nullptr;
     }
 
@@ -216,14 +249,15 @@ std::unique_ptr<Entity> Prefab::instantiate_tree(const std::string& prefab_path,
 
     // 挂实例标记组件
     auto instance = std::make_unique<components::PrefabInstance>(prefab_path);
-    instance->overrides = overrides.is_object() ? overrides : nlohmann::json::object();
+    instance->overrides = variant_overrides.is_object() ? variant_overrides : nlohmann::json::object();
     instance->members = std::move(members);
     instance->root_template_uuid = std::move(root_template_uuid);
+    instance->variant_of = std::move(variant_of_path);
     root->add_component(std::move(instance));
 
     // 应用覆盖参数
-    if (overrides.is_object() && !overrides.empty()) {
-        apply_overrides(root.get(), overrides);
+    if (variant_overrides.is_object() && !variant_overrides.empty()) {
+        apply_overrides(root.get(), variant_overrides);
     }
 
     return root;

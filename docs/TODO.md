@@ -62,7 +62,7 @@
 |---|---|---|
 | Hierarchy 面板（Entity 树、增删、拖拽换父、Prefab 标记） | **已完成** | 右键菜单（创建/重命名/删除）、拖拽换父（含拖回根级、环检测）、UUID 弱引用选中、[P] Prefab 标记；删除/换父延迟到帧末执行防迭代器失效 |
 | Inspector 面板（基于反射自动生成组件属性编辑） | **已完成** | 反射字段自动分派控件（Drag/Slider/Checkbox/InputText），只读灰显，enabled 勾选；enum 未支持（反射限制，跳过） |
-| Scene View（3D 视口 + 编辑相机 + 网格线） | **部分完成** | 3D 视口 + 编辑相机已有（E1）；网格线未做（留 E2 收尾或 E3） |
+| Scene View（3D 视口 + 编辑相机 + 网格线） | **已完成** | `RenderPipeline` 中新增 `create_grid_mesh` / `render_grid`；XZ 平面网格 + 主次线 + 渐隐；Debug 面板可开关 |
 | 点选拾取（raycast 选中 Entity） | **已完成** | `core/math/ray.h`（NDC 反投影 + slab AABB），逐 mesh 世界 AABB 求交取最近命中，不依赖碰撞体；7 测试通过 |
 | Transform Gizmo（移动/旋转/缩放手柄） | **已完成** | ImGuizmo 集成（third_party/imguizmo），W/E/R 切换，gizmo 激活时屏蔽相机与拾取；TRS 分解走 from_rotation_matrix（2 测试通过） |
 | 场景保存/加载挂到编辑器菜单 | **已完成** | File 菜单：Save（Ctrl+S）/ Save As / Open，路径弹窗走 SceneSerializer；保存后刷新 mtime 缓存防误触发热重载 |
@@ -73,15 +73,15 @@
 |---|---|---|
 | Project / Content Browser（目录树、资源图标、双击加载） | **已完成** | `editor/panels/project_panel.*`，图标化文件列表 + 路径栏/进入目录 |
 | 拖放资源到场景/Inspector（纹理→材质、模型→场景、Prefab→场景） | **已完成** | Project 面板作为 drag source；Hierarchy/Viewport/Inspector 作为 drop target；支持 .obj/.fbx/.gltf/.glb 实例化、纹理赋给 MeshRenderer、.gesc 打开场景 |
-| `.gimport` 导入设置（最小版：纹理 filter/sRGB、模型缩放） | 待实现 | Import Settings |
+| `.gimport` 导入设置（模型缩放、碰撞体、刚体、物理材质） | **已完成** | `editor/import/gimport_settings.*` + `editor/ui/gimport_editor_window.*`；Project 面板双击 .gimport 编辑；实例化模型时自动应用 |
 
 ### E4 运行与调试
 
 | 任务 | 状态 | Unity 对应 |
 |---|---|---|
-| Game View（运行时画面嵌入编辑器） | 待实现 | Game View |
+| Game View（运行时画面嵌入编辑器） | **已完成** | Game View：独立 RenderPipeline + 主摄像机构建 game camera；Viewport/Game 标签页共享中心区域；后台标签页不渲染 |
 | Play Mode（进入时场景快照、退出时恢复） | **已完成** | Play Mode |
-| Console 面板（日志过滤、点击定位） | **部分完成** | `editor/panels/console_panel.*`：级别过滤 + 自动滚动 + 颜色区分；点击定位待实现 |
+| Console 面板（日志过滤、点击定位） | **已完成** | `editor/panels/console_panel.*`：级别过滤 + 自动滚动 + 颜色区分；点击日志通过 `vscode://file/...` 打开源码位置 |
 
 ### E5 可用性收尾
 
@@ -91,8 +91,8 @@
 | 主题文件与样式统一 | **已完成** | Fluent Design 深色/浅色 + 强调色 + 自定义字体，配置持久化到 `editor_theme.json`；浅色主题下 Console 日志颜色自动取反为深色文字 |
 | Settings 窗口（File > Settings） | **已完成** | 左侧 Theme / Appliance 栏目；Theme 栏目管理外观；Appliance 栏目管理语言 |
 | 编辑器多语言本地化 | **已完成** | `editor/localization/` 单例 + `locales/{en,zh,ja}.json`；支持中文/英文/日文，运行时热重载，所有面板/菜单/弹窗走 `tr()` 翻译 |
-| 快捷键体系（保存/撤销/删除/聚焦） | 待实现 | Unity 快捷键习惯 |
-| Undo/Redo（命令模式，最小覆盖：属性修改、增删实体、Transform） | 待实现 | 编辑器可用性的关键 |
+| 快捷键体系（保存/撤销/删除/聚焦） | **已完成** | `ShortcutManager` + `KeyCombo`；Ctrl+S 保存、Ctrl+Z/Y Undo/Redo、Delete 删除、F 聚焦、Ctrl+P Play Mode |
+| Undo/Redo（命令模式，最小覆盖：属性修改、增删实体、Transform） | **已完成** | `CommandStack` 双栈 + `ComponentFieldCommand` / `Entity*Command`；Inspector、Hierarchy、Viewport Gizmo 已接入 |
 
 ---
 
@@ -101,9 +101,9 @@
 | 任务 | 状态 | 里程碑 | 说明 / Unity 对应 |
 |---|---|---|---|
 | Prefab 完整实现（覆盖参数、嵌套、revert、场景紧凑引用） | **已完成** | — | `PrefabInstance` + `Prefab::revert` |
-| 组件反射 Inspector 生成 | 待实现 | **M1-E1** | Editor Inspector 前置 |
-| Prefab 编辑器集成（编辑器内创建/应用/还原） | 待实现 | M2 | 依赖 M1 面板 |
-| Prefab Variant（覆盖持久化 + 属性优先级） | 待实现 | M2 | Unity Prefab Variant |
+| 组件反射 Inspector 生成 | **已完成** | **M1-E1** | Editor Inspector 前置 |
+| Prefab 编辑器集成（编辑器内创建/应用/还原） | **已完成** | M2 | Hierarchy 右键菜单：Create/Apply/Revert Prefab |
+| Prefab Variant（覆盖持久化 + 属性优先级） | **已完成** | M2 | `.geprefabvariant` + Hierarchy 右键"创建变体" |
 | 场景流送性能优化（异步加载、大世界分块） | 待实现 | M4 | `SceneManager.LoadSceneAsync` |
 | ECS Archetype / Chunk 内存布局 | 远期目标 | — | Unity ECS / Unreal Mass |
 | Job System（多线程批处理组件） | 远期目标 | — | `Unity.Jobs` |
@@ -155,7 +155,7 @@
 | Animator Controller / 状态机 | 待实现 | M4 | Mecanim 简化版 |
 | Blend Tree / 1D/2D 混合 | 待实现 | M4 | 移动混合 |
 | 动画事件（关键帧回调） | 待实现 | M4 | AnimationEvent |
-| 动画编辑器（关键帧剪辑） | 待实现 | M2 | 依赖 M1 面板 + 骨骼动画完成 |
+| 动画编辑器（关键帧剪辑） | **已完成** | M2 | `AnimationEditorWindow`：剪辑选择、播放/暂停/循环/速度、时间滑块 |
 | Inverse Kinematics（IK） | 待实现 | M5 | 足部/手部 IK |
 | 动画重定向（Retargeting） | 远期目标 | — | 不同骨架复用动画 |
 | Timeline / 剧情动画 | 远期目标 | — | Timeline 简化版 |
@@ -167,10 +167,10 @@
 | 任务 | 状态 | 里程碑 | 说明 |
 |---|---|---|---|
 | 纹理压缩（DDS/KTX） | **已完成** | — | 含 GL/VK 上传 |
-| `.gimport` 导入设置 | 待实现 | **M1-E3** | 纹理/模型导入参数（编辑器最小版先行） |
-| 内容浏览器（Content Browser） | 待实现 | **M1-E3** | 编辑器资源面板 |
-| 资源引用计数 + LRU 卸载 | 待实现 | M2 | 防止内存无限增长 |
-| 资源包 `.gpack` / AssetBundle | 待实现 | M2 | 资源分组、热更新、DLC |
+| `.gimport` 导入设置 | **已完成** | **M1-E3** | 纹理/模型导入参数（编辑器最小版先行） |
+| 内容浏览器（Content Browser） | **已完成** | **M1-E3** | 编辑器资源面板 |
+| 资源引用计数 + LRU 卸载 | **已完成** | M2 | `Asset::memory_size()` + `AssetManager` 计数/内存限制 + LRU 驱逐 |
+| 资源包 `.gpack` / AssetBundle | **已完成** | M2 | `GPackReader/Writer` + `AssetManager::mount_bundle` |
 | 模型 LOD / 碰撞体自动生成 | 待实现 | M2 | 导入时构建 LOD 和 convex hull |
 | 字体 SDF 生成 | 待实现 | M4 | 高清字体渲染（运行时 UI 前置） |
 | 视频纹理 / Streaming | 远期目标 | — | 视频贴图 |
@@ -181,10 +181,10 @@
 
 | 任务 | 状态 | 里程碑 | 说明 |
 |---|---|---|---|
-| 屏幕点选 raycast（编辑器拾取） | 待实现 | **M1-E2** | 物理 raycast 已有，需屏幕到射线封装 |
+| 屏幕点选 raycast（编辑器拾取） | **已完成** | **M1-E2** | 物理 raycast 已有，需屏幕到射线封装 |
 | 连续碰撞检测（CCD）配置 | 待实现 | M4 | 高速物体防穿透 |
 | Ragdoll / 物理布娃娃 | 待实现 | M4 | 角色死亡/击飞 |
-| 物理材质编辑器 | 待实现 | M2 | 可视化摩擦/弹性曲线 |
+| 物理材质编辑器 | **已完成** | M2 | Inspector 中 PhysicalMaterial 预设下拉 + 参数编辑 |
 | Cloth / Soft Body | 远期目标 | — | 布料、绳索 |
 | Vehicle Physics | 远期目标 | — | 车辆悬挂、轮胎 |
 | 碎裂 Voronoi / 有限元 | 远期目标 | — | 真实破坏 |
@@ -260,16 +260,16 @@
 | Docking 布局 + 面板框架 | **已完成** | **M1-E1** |
 | 层级面板（Hierarchy） | **已完成** | **M1-E2** |
 | Inspector 面板 | **已完成** | **M1-E2** |
-| 场景视图（Scene View） | **部分完成** | **M1-E2** |
+| 场景视图（Scene View） | **已完成** | **M1-E2**：自由飞行相机 + F 聚焦 + Gizmo |
 | 点选拾取 + Transform Gizmo | **已完成** | **M1-E2** |
 | 项目面板（Project / Assets） | **已完成** | **M1-E3** |
-| 游戏视图（Game View） | 待实现 | **M1-E4** |
+| 游戏视图（Game View） | **已完成** | **M1-E4**：独立渲染管线 + 主摄像机视角 + Viewport/Game 标签页布局 |
 | Play Mode | **已完成** | **M1-E4** |
-| 控制台面板（Console） | **部分完成** | **M1-E4**：过滤/颜色/自动滚动已有，点击定位待实现 |
-| 布局/设置持久化 + 快捷键 + Undo/Redo | 待实现 | **M1-E5** |
-| 材质编辑器 | 待实现 | M2，Shader Graph 或参数面板 |
-| 动画编辑器 | 待实现 | M2，关键帧剪辑 |
-| 地形编辑器 | 待实现 | M5（依赖 Terrain 渲染） |
+| 控制台面板（Console） | **已完成** | **M1-E4**：过滤/颜色/自动滚动/点击定位完成 |
+| 布局/设置持久化 + 快捷键 + Undo/Redo | **已完成** | **M1-E5** |
+| 材质编辑器 | **已完成** | M2，参数面板：PBR 参数、贴图槽、物理属性 |
+| 动画编辑器 | **已完成** | M2，关键帧剪辑播放控制 |
+| 地形编辑器 | **已完成** | M2，基础高度图编辑 + MeshRenderer 导出（完整 Terrain 渲染/LOD 留 M5） |
 | Asset Store / 包管理器 | 远期目标 | 生态 |
 
 ---
@@ -333,6 +333,7 @@
 6. ~~E4 Play Mode~~（已完成：场景快照/恢复 + Play/Stop UI + 编辑状态切换 + CI 测试模式，运行验证通过）。
 7. ~~E5 Fluent Design 主题系统~~（已完成：深色/浅色主题、强调色、圆角、阴影、自定义字体加载、View 菜单实时切换、配置持久化到 `editor_theme.json`，143/143 测试通过）。
 8. ~~E5 Settings 窗口~~（已完成：`File > Settings` 入口、左侧 Theme / Appliance 栏目、Theme 管理外观、Appliance 管理语言、配置持久化到 `editor_settings.json`，143/143 测试通过）。
-9. **E4 Game View + Console 点击定位**，**E5 布局完全持久化 + 快捷键体系 + Undo/Redo**。
-10. 之后进入 M2（编辑器完全体 + 内容管线）与 M3（渲染补完），
-   渲染新特性（IBL、后处理）直接在编辑器里做预览面板，边开发边验证。
+9. **E4 Game View + Console 点击定位**，**E5 布局完全持久化 + 快捷键体系 + Undo/Redo**（已完成，146/146 测试通过）。
+10. **M2 编辑器完全体 + 内容管线**（已完成：材质/动画/地形/粒子编辑器、Prefab 编辑器集成、资源数据库、LRU 缓存、`.gpack` 资源包、物理材质编辑器、Prefab Variant，146/146 测试通过）。
+11. 之后进入 M3（渲染补完）：IBL、后处理栈、CSM、抗锯齿、材质预设库，
+   渲染新特性直接在编辑器里做预览面板，边开发边验证。

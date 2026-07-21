@@ -35,6 +35,15 @@ struct TextureData : public Asset {
 
     const char* type() const override { return "TextureData"; }
 
+    size_t memory_size() const override {
+        size_t size = pixels.size() +
+                      float_pixels.size() * sizeof(float);
+        for (const auto& mip : mips) {
+            size += mip.size();
+        }
+        return size;
+    }
+
     bool empty() const {
         return pixels.empty() && float_pixels.empty() && mips.empty();
     }

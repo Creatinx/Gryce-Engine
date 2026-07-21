@@ -25,6 +25,7 @@ public:
     nlohmann::json overrides = nlohmann::json::object();
     nlohmann::json members = nlohmann::json::object();
     std::string root_template_uuid; // 实例根在预制体文件中的模板 UUID
+    std::string variant_of;         // 若来源于 .geprefabvariant 文件，记录 variant 文件路径
 
     PrefabInstance() = default;
     explicit PrefabInstance(const std::string& path) : prefab_path(path) {}
@@ -36,6 +37,7 @@ public:
         out["overrides"] = overrides;
         out["members"] = members;
         out["root_template"] = root_template_uuid;
+        out["variant_of"] = variant_of;
     }
 
     void deserialize(const nlohmann::json& in) override {
@@ -43,6 +45,7 @@ public:
         overrides = in.value("overrides", nlohmann::json::object());
         members = in.value("members", nlohmann::json::object());
         root_template_uuid = in.value("root_template", "");
+        variant_of = in.value("variant_of", "");
         if (overrides.is_null()) overrides = nlohmann::json::object();
         if (members.is_null()) members = nlohmann::json::object();
     }

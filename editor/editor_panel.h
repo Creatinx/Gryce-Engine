@@ -28,16 +28,21 @@ public:
     bool visible() const { return visible_; }
     void set_visible(bool visible) { visible_ = visible; }
 
-    // 供 PanelManager 的 Window 菜单切换可见性
+    // 本帧是否真正绘制（窗口未折叠且是当前活动标签页）
+    bool is_active() const { return drawn_this_frame_; }
+
+    // 供 PanelManager 的 Window 菜单切换面板可见性
     bool* visible_ptr() { return &visible_; }
 
     // 每帧绘制：不可见时直接跳过
     // 窗口 ID 保持英文 name_（避免 dock 状态丢失），显示标题走本地化
     void show() {
+        drawn_this_frame_ = false;
         if (!visible_) return;
         const char* display = translation_key_.empty() ? name_.c_str() : tr(translation_key_.c_str());
         std::string window_label = std::string(display) + "###" + name_;
         if (ImGui::Begin(window_label.c_str(), &visible_)) {
+            drawn_this_frame_ = true;
             on_imgui();
         }
         ImGui::End();
@@ -50,6 +55,7 @@ private:
     std::string name_;
     std::string translation_key_;
     bool visible_ = true;
+    bool drawn_this_frame_ = false;
 };
 
 } // namespace gryce_engine::editor

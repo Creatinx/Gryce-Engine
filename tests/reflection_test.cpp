@@ -63,12 +63,12 @@ TEST(ReflectionTest, UnregisteredTypeReturnsEmpty) {
 }
 
 TEST(ReflectionTest, FieldMetadataRangeAndReadOnly) {
-    const auto* speed = find_field("Camera", "fov");
-    ASSERT_NE(speed, nullptr);
-    EXPECT_TRUE(speed->has_range);
-    EXPECT_FLOAT_EQ(speed->range_min, 1.0f);
-    EXPECT_FLOAT_EQ(speed->range_max, 179.0f);
-    EXPECT_FALSE(speed->read_only);
+    const auto* fov = find_field("Camera", "fov");
+    ASSERT_NE(fov, nullptr);
+    EXPECT_TRUE(fov->has_range);
+    EXPECT_FLOAT_EQ(fov->range_min, 1.0f);
+    EXPECT_FLOAT_EQ(fov->range_max, 179.0f);
+    EXPECT_FALSE(fov->read_only);
 
     const auto* time = find_field("SkinnedMeshRenderer", "time");
     ASSERT_NE(time, nullptr);

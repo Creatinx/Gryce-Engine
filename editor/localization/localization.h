@@ -16,7 +16,6 @@ namespace gryce_engine::editor {
 enum class Language {
     English = 0,
     Chinese,
-    Japanese,
 };
 
 const char* language_code(Language lang);

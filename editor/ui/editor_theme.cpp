@@ -4,9 +4,11 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "../localization/localization.h"
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
@@ -19,6 +21,15 @@ namespace {
 // HSL / RGB 转换：用于从单一 hue 生成整套强调色梯度
 // ---------------------------------------------------------------------------
 struct Rgb { float r, g, b; };
+
+// 把 overlay（含 alpha）按 alpha 混合到 base 上，避免直接相加导致黑/白纯色。
+ImVec4 blend_overlay(ImVec4 base, ImVec4 overlay) {
+    const float a = std::clamp(overlay.w, 0.0f, 1.0f);
+    return ImVec4(base.x + (overlay.x - base.x) * a,
+                  base.y + (overlay.y - base.y) * a,
+                  base.z + (overlay.z - base.z) * a,
+                  base.w);
+}
 
 Rgb hsl_to_rgb(float h, float s, float l) {
     float c = (1.0f - std::abs(2.0f * l - 1.0f)) * s;
@@ -93,15 +104,15 @@ void set_common_style(ImGuiStyle& style, const ThemeConfig& config) {
     style.ItemInnerSpacing  = ImVec2(6.0f, 4.0f);
     style.CellPadding       = ImVec2(6.0f, 4.0f);
     style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
-    style.IndentSpacing     = 20.0f;
-    style.ScrollbarSize     = 12.0f;
-    style.GrabMinSize       = 14.0f;
+    style.IndentSpacing     = 16.0f; // Unity 风格层级缩进
+    style.ScrollbarSize     = 16.0f;
+    style.GrabMinSize       = 12.0f;
 
     style.WindowBorderSize  = 1.0f;
     style.ChildBorderSize   = 1.0f;
     style.PopupBorderSize   = 1.0f;
-    style.FrameBorderSize   = 0.0f;
-    style.TabBorderSize     = 0.0f;
+    style.FrameBorderSize   = 1.0f;
+    style.TabBorderSize     = 1.0f;
 
     const float r = std::max(0.0f, config.rounding);
     style.WindowRounding    = r;
@@ -131,8 +142,8 @@ void apply_palette(ImGuiStyle& style, const FluentPalette& p, float hue, bool sh
     c[ImGuiCol_BorderShadow]         = shadow ? ImVec4(0.0f, 0.0f, 0.0f, 0.10f) : ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
 
     c[ImGuiCol_FrameBg]              = p.card;
-    c[ImGuiCol_FrameBgHovered]       = ImVec4(p.hover.x, p.hover.y, p.hover.z, p.hover.w + p.card.w);
-    c[ImGuiCol_FrameBgActive]        = ImVec4(p.pressed.x, p.pressed.y, p.pressed.z, p.pressed.w + p.card.w);
+    c[ImGuiCol_FrameBgHovered]       = blend_overlay(p.card, p.hover);
+    c[ImGuiCol_FrameBgActive]        = blend_overlay(p.card, p.pressed);
 
     c[ImGuiCol_TitleBg]              = p.surface;
     c[ImGuiCol_TitleBgActive]        = p.card;
@@ -140,9 +151,9 @@ void apply_palette(ImGuiStyle& style, const FluentPalette& p, float hue, bool sh
     c[ImGuiCol_MenuBarBg]            = p.surface;
 
     c[ImGuiCol_ScrollbarBg]          = p.bg_layer;
-    c[ImGuiCol_ScrollbarGrab]        = ImVec4(p.text_secondary.x, p.text_secondary.y, p.text_secondary.z, 0.35f);
-    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(p.text_secondary.x, p.text_secondary.y, p.text_secondary.z, 0.50f);
-    c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(p.text_secondary.x, p.text_secondary.y, p.text_secondary.z, 0.65f);
+    c[ImGuiCol_ScrollbarGrab]        = ImVec4(p.text_secondary.x, p.text_secondary.y, p.text_secondary.z, 0.55f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(p.text_secondary.x, p.text_secondary.y, p.text_secondary.z, 0.75f);
+    c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(p.text_secondary.x, p.text_secondary.y, p.text_secondary.z, 0.90f);
 
     c[ImGuiCol_CheckMark]            = accent;
     c[ImGuiCol_SliderGrab]           = accent;
@@ -153,7 +164,7 @@ void apply_palette(ImGuiStyle& style, const FluentPalette& p, float hue, bool sh
     c[ImGuiCol_ButtonActive]         = accent_dark;
 
     c[ImGuiCol_Header]               = accent_sub;
-    c[ImGuiCol_HeaderHovered]        = ImVec4(p.hover.x, p.hover.y, p.hover.z, p.hover.w + accent_sub.w);
+    c[ImGuiCol_HeaderHovered]        = blend_overlay(accent_sub, p.hover);
     c[ImGuiCol_HeaderActive]         = ImVec4(accent.x, accent.y, accent.z, 0.35f);
 
     c[ImGuiCol_Separator]            = p.border;
@@ -206,6 +217,39 @@ std::string default_font_path() {
     return std::string{};
 }
 
+std::string system_cjk_font_path(Language lang) {
+    // 按优先级尝试系统 CJK 字体；中文优先微软雅黑族，其余回退通用中文字体
+    std::vector<std::string> candidates;
+#ifdef _WIN32
+    if (lang == Language::Chinese) {
+        candidates = {
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/msyhl.ttc",
+            "C:/Windows/Fonts/simsun.ttc",
+            "C:/Windows/Fonts/NotoSansSC-VF.ttf",
+        };
+    } else {
+        candidates = {
+            "C:/Windows/Fonts/NotoSansSC-VF.ttf",
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/simsun.ttc",
+        };
+    }
+#else
+    (void)lang;
+    candidates = {
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+    };
+#endif
+    for (const auto& p : candidates) {
+        if (std::filesystem::exists(p)) return p;
+    }
+    return std::string{};
+}
+
 std::string theme_config_path(const std::string& project_root) {
     return project_root + "/editor_theme.json";
 }
@@ -218,6 +262,8 @@ ThemeConfig default_theme_config() {
 
 bool load_editor_font(const ThemeConfig& config) {
     ImGuiIO& io = ImGui::GetIO();
+    ImFontAtlas* atlas = io.Fonts;
+
     std::string path = config.font_path;
     if (path.empty()) {
         path = default_font_path();
@@ -228,27 +274,84 @@ bool load_editor_font(const ThemeConfig& config) {
         return false;
     }
 
+    // 若字体配置与当前语言均未变化，跳过重建，避免色调/圆角调整时重复 Build atlas。
+    static ThemeConfig s_last_config{};
+    static Language s_last_lang = Language::English;
+    static bool s_has_last = false;
+    const Language lang = Localization::instance().current_language();
+    if (s_has_last &&
+        std::abs(s_last_config.font_size - config.font_size) < 0.001f &&
+        s_last_config.font_path == config.font_path &&
+        s_last_lang == lang) {
+        return true;
+    }
+
+    // 运行时热重载：先清除旧字体数据，再重新构建 atlas。
+    // 注意：此函数应在上一帧渲染完成后、下一帧 NewFrame 之前调用。
+    atlas->Clear();
+
     ImFontConfig font_cfg{};
     font_cfg.FontDataOwnedByAtlas = false;
-    // 设置字形范围：基本拉丁 + 扩展拉丁 + CJK 常用字（可选，按需加载）
-    static const ImWchar ranges[] = {
+    font_cfg.MergeMode = false;
+
+    // 主字体负责拉丁、西里尔和通用标点
+    static const ImWchar latin_ranges[] = {
         0x0020, 0x00FF, // Basic Latin + Latin Supplement
         0x0100, 0x017F, // Latin Extended-A
         0x0400, 0x04FF, // Cyrillic
         0x2000, 0x206F, // General Punctuation
-        0x3000, 0x30FF, // CJK Symbols / Kana
-        0x4E00, 0x9FFF, // CJK Unified Ideographs
-        0xFF00, 0xFFEF, // Halfwidth/Fullwidth forms
         0,
     };
 
-    ImFont* font = io.Fonts->AddFontFromFileTTF(path.c_str(), config.font_size, &font_cfg, ranges);
-    if (!font) {
-        GLOG_ERROR("EditorTheme: failed to load font '{}'", path);
+    ImFont* primary = atlas->AddFontFromFileTTF(path.c_str(), config.font_size, &font_cfg, latin_ranges);
+    if (!primary) {
+        GLOG_ERROR("EditorTheme: failed to load primary font '{}'", path);
         return false;
     }
-    io.FontDefault = font;
-    GLOG_INFO("EditorTheme: loaded font '{}' size={:.1f}", path, config.font_size);
+    GLOG_INFO("EditorTheme: loaded primary font '{}' size={:.1f}", path, config.font_size);
+
+    // 若当前语言为中文，合并系统 CJK 字体以正确显示汉字
+    if (lang == Language::Chinese) {
+        std::string cjk_path = system_cjk_font_path(lang);
+        if (!cjk_path.empty()) {
+            ImFontConfig cjk_cfg{};
+            cjk_cfg.FontDataOwnedByAtlas = false;
+            cjk_cfg.MergeMode = true;
+            // CJK 字形通常更大，给 atlas 留些边距
+            cjk_cfg.PixelSnapH = true;
+
+            static const ImWchar cjk_ranges[] = {
+                0x3000, 0x30FF, // CJK Symbols / Punctuation / Kana
+                0x31F0, 0x31FF, // Kana Phonetic Extensions
+                0x3400, 0x4DBF, // CJK Unified Ideographs Extension A
+                0x4E00, 0x9FFF, // CJK Unified Ideographs
+                0xFF00, 0xFFEF, // Halfwidth/Fullwidth forms
+                0,
+            };
+
+            ImFont* cjk_font = atlas->AddFontFromFileTTF(cjk_path.c_str(), config.font_size, &cjk_cfg, cjk_ranges);
+            if (cjk_font) {
+                GLOG_INFO("EditorTheme: merged CJK font '{}' for language '{}'", cjk_path, language_code(lang));
+            } else {
+                GLOG_WARN("EditorTheme: failed to merge CJK font '{}'", cjk_path);
+            }
+        } else {
+            GLOG_WARN("EditorTheme: no system CJK font found for language '{}'", language_code(lang));
+        }
+    }
+
+    // 重建字体 atlas；失败时回退到 ImGui 默认字体，避免无字体可用。
+    if (!atlas->Build()) {
+        GLOG_ERROR("EditorTheme: failed to build font atlas");
+        atlas->Clear();
+        return false;
+    }
+
+    io.FontDefault = primary;
+
+    s_last_config = config;
+    s_last_lang = lang;
+    s_has_last = true;
     return true;
 }
 
@@ -261,7 +364,8 @@ void apply_theme(ThemePreset preset, const ThemeConfig& config) {
         apply_palette(style, make_dark_palette(), config.accent_hue, config.shadow);
     } else {
         ImGui::StyleColorsLight();
-        apply_palette(style, make_light_palette(), config.accent_hue, config.shadow);
+        // 浅色模式下黑色阴影与浅色背景不协调，强制禁用
+        apply_palette(style, make_light_palette(), config.accent_hue, false);
     }
 
     // 加载字体仅在上下文存在时执行；失败不影响主题应用

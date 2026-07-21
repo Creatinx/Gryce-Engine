@@ -59,6 +59,8 @@ else()
         -Wnull-dereference
         -Wdouble-promotion
         -Wformat=2
+        -finput-charset=UTF-8
+        -fexec-charset=UTF-8
     )
 
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

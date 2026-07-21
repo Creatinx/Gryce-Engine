@@ -42,18 +42,28 @@ public:
     void open() { open_ = true; }
     bool is_open() const { return open_; }
 
+    // 若字体大小已停止变化并需要重建 atlas，返回 true 并消费该请求。
+    // 由 editor_app.cpp 在合适的时机（渲染线程暂停、持有 GPU context）处理。
+    bool consume_font_rebuild_ready();
+
 private:
     enum class Section { Theme, Appliance };
 
     void draw_sidebar(float width);
     void draw_theme_section(EditorSettings& settings);
     void draw_appliance_section(EditorSettings& settings);
+    void apply_theme_live(const EditorSettings& settings);
     void apply_and_save(const std::string& project_root, EditorSettings& settings);
+    void flush_save(const std::string& project_root, EditorSettings& settings);
 
     bool open_ = false;
     Section current_section_ = Section::Theme;
     bool unsaved_changes_ = false;
     std::string project_root_;
+    float save_debounce_ = 0.0f;
+    float last_font_size_ = 0.0f;
+    bool font_rebuild_pending_ = false;
+    bool font_rebuild_ready_ = false;
 };
 
 const char* language_name(Language lang);

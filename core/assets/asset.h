@@ -26,6 +26,9 @@ public:
         return static_cast<uint64_t>(shared_from_this().use_count());
     }
 
+    // 估算 CPU 侧占用内存（字节）
+    virtual size_t memory_size() const = 0;
+
 protected:
     Asset() = default;
 

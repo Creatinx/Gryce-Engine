@@ -59,6 +59,18 @@ struct MeshData : public Asset {
 
     const char* type() const override { return "MeshData"; }
 
+    size_t memory_size() const override {
+        return vertices.size() * sizeof(MeshVertex) +
+               indices.size() * sizeof(uint32_t) +
+               name.capacity() * sizeof(char) +
+               material.albedo_map.capacity() * sizeof(char) +
+               material.normal_map.capacity() * sizeof(char) +
+               material.emissive_map.capacity() * sizeof(char) +
+               material.roughness_map.capacity() * sizeof(char) +
+               material.metallic_map.capacity() * sizeof(char) +
+               material.ao_map.capacity() * sizeof(char);
+    }
+
     bool empty() const { return vertices.empty(); }
 
     // 导出为物理点位（预留接口）

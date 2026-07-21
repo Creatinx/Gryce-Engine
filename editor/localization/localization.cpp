@@ -12,7 +12,6 @@ namespace gryce_engine::editor {
 const char* language_code(Language lang) {
     switch (lang) {
         case Language::Chinese:  return "zh";
-        case Language::Japanese: return "ja";
         default:                 return "en";
     }
 }
@@ -20,7 +19,6 @@ const char* language_code(Language lang) {
 const char* language_display_name(Language lang) {
     switch (lang) {
         case Language::Chinese:  return "\u4e2d\u6587";   // 中文
-        case Language::Japanese: return "\u65e5\u672c\u8a9e"; // 日本語
         default:                 return "English";
     }
 }

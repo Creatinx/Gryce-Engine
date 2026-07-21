@@ -68,18 +68,21 @@ void PanelManager::build_default_layout(ImGuiID dockspace_id) {
     ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
-    // 左 Hierarchy | 右 Inspector | 下 Console + Project | 中 Viewport
+    // Unity Editor 风格默认布局：
+    // 左 Hierarchy | 右 Inspector | 下 Project/Console 标签页 | 中 Viewport
     ImGuiID dock_main = dockspace_id;
-    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.20f, nullptr, &dock_main);
-    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.25f, nullptr, &dock_main);
-    ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.28f, nullptr, &dock_main);
-    ImGuiID dock_bottom_right = ImGui::DockBuilderSplitNode(dock_bottom, ImGuiDir_Right, 0.40f, nullptr, &dock_bottom);
+    ImGuiID dock_left = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.18f, nullptr, &dock_main);
+    ImGuiID dock_right = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.22f, nullptr, &dock_main);
+    ImGuiID dock_bottom = ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.25f, nullptr, &dock_main);
 
     ImGui::DockBuilderDockWindow("Hierarchy", dock_left);
     ImGui::DockBuilderDockWindow("Inspector", dock_right);
+    // Project 与 Console 放在同一 dock 节点，以标签页形式并列（Unity 默认风格）
+    ImGui::DockBuilderDockWindow("Project", dock_bottom);
     ImGui::DockBuilderDockWindow("Console", dock_bottom);
-    ImGui::DockBuilderDockWindow("Project", dock_bottom_right);
+    // Viewport 与 Game View 以标签页形式共享中间区域
     ImGui::DockBuilderDockWindow("Viewport", dock_main);
+    ImGui::DockBuilderDockWindow("Game", dock_main);
 
     ImGui::DockBuilderFinish(dockspace_id);
 }

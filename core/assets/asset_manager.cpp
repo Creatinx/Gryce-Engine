@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 #include "assets/obj_loader.h"
 #include "assets/compressed_image.h"
@@ -45,7 +47,13 @@ AssetManager& AssetManager::instance() {
 // ---------------------------------------------------------------------------
 template<>
 AssetHandle<MeshData> AssetManager::load<MeshData>(const std::string& path) {
-    return AssetHandle<MeshData>(load_mesh_internal(path));
+    auto shared = load_mesh_internal(path);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        touch_unlocked(path);
+        maybe_evict_unlocked();
+    }
+    return AssetHandle<MeshData>(std::move(shared));
 }
 
 template<>
@@ -60,10 +68,17 @@ std::shared_ptr<MeshData> AssetManager::load_mesh_internal(const std::string& pa
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = assets_.find(path);
     if (it != assets_.end()) {
-        return std::dynamic_pointer_cast<MeshData>(it->second);
+        touch_unlocked(path);
+        return std::dynamic_pointer_cast<MeshData>(it->second.asset);
     }
 
     std::string resolved = resources::ResourcePath::resolve(path);
+    if (!std::filesystem::exists(resolved)) {
+        std::string temp_path = extract_from_bundle_unlocked(path);
+        if (!temp_path.empty()) {
+            resolved = std::move(temp_path);
+        }
+    }
 
     std::vector<MeshData> meshes;
 
@@ -91,13 +106,17 @@ std::shared_ptr<MeshData> AssetManager::load_mesh_internal(const std::string& pa
 
     auto data = std::make_shared<MeshData>(std::move(meshes[0]));
     data->set_path(path);
-    assets_[path] = data;
+    CacheEntry entry;
+    entry.asset = data;
+    entry.memory_size = data->memory_size();
+    entry.last_access = std::chrono::steady_clock::now();
+    assets_[path] = std::move(entry);
     GLOG_INFO("AssetManager: cached mesh '{}' ({} vertices)", path, data->vertices.size());
     return data;
 }
 
 // ---------------------------------------------------------------------------
-// SkinnedModelData 加载（骨骼 + 蒙皮 + 动画）
+// Texture 加载
 // ---------------------------------------------------------------------------
 std::shared_ptr<SkinnedModelData> AssetManager::load_skinned_model_internal(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -166,10 +185,17 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = assets_.find(path);
     if (it != assets_.end()) {
-        return std::dynamic_pointer_cast<TextureData>(it->second);
+        touch_unlocked(path);
+        return std::dynamic_pointer_cast<TextureData>(it->second.asset);
     }
 
-    const std::string resolved = resources::ResourcePath::resolve(path);
+    std::string resolved = resources::ResourcePath::resolve(path);
+    if (!std::filesystem::exists(resolved)) {
+        std::string temp_path = extract_from_bundle_unlocked(path);
+        if (!temp_path.empty()) {
+            resolved = std::move(temp_path);
+        }
+    }
 
     // --- 压缩纹理：DDS / KTX ---
     if (ends_with_ci(path, ".dds") || ends_with_ci(path, ".ktx")) {
@@ -186,7 +212,12 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
         tex->mip_levels = comp.mip_levels;
         tex->compressed_format = comp.format;
         tex->mips = std::move(comp.mips);
-        assets_[path] = tex;
+            CacheEntry entry;
+    entry.asset = tex;
+    entry.memory_size = tex->memory_size();
+    entry.last_access = std::chrono::steady_clock::now();
+    assets_[path] = std::move(entry);
+    maybe_evict_unlocked();
         GLOG_INFO("AssetManager: cached compressed texture '{}' ({}x{}, mips={})",
                   path, tex->width, tex->height, tex->mip_levels);
         return tex;
@@ -211,7 +242,12 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
         tex->channels = 4;
         tex->float_pixels.assign(rgba, rgba + static_cast<size_t>(w) * h * 4);
         std::free(rgba);
-        assets_[path] = tex;
+            CacheEntry entry;
+    entry.asset = tex;
+    entry.memory_size = tex->memory_size();
+    entry.last_access = std::chrono::steady_clock::now();
+    assets_[path] = std::move(entry);
+    maybe_evict_unlocked();
         GLOG_INFO("AssetManager: cached EXR '{}' ({}x{}, RGBA32F)", path, w, h);
         return tex;
     }
@@ -234,7 +270,12 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
         tex->channels = 4;
         tex->float_pixels.assign(data, data + static_cast<size_t>(width) * height * 4);
         stbi_image_free(data);
-        assets_[path] = tex;
+            CacheEntry entry;
+    entry.asset = tex;
+    entry.memory_size = tex->memory_size();
+    entry.last_access = std::chrono::steady_clock::now();
+    assets_[path] = std::move(entry);
+    maybe_evict_unlocked();
         GLOG_INFO("AssetManager: cached HDR texture '{}' ({}x{}, RGBA32F)", path, width, height);
         return tex;
     }
@@ -254,7 +295,12 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
     tex->pixels.assign(data, data + static_cast<std::size_t>(width * height * channels));
     stbi_image_free(data);
 
-    assets_[path] = tex;
+        CacheEntry entry;
+    entry.asset = tex;
+    entry.memory_size = tex->memory_size();
+    entry.last_access = std::chrono::steady_clock::now();
+    assets_[path] = std::move(entry);
+    maybe_evict_unlocked();
     GLOG_INFO("AssetManager: cached texture '{}' ({}x{}, {} channels)", path, width, height, channels);
     return tex;
 }
@@ -264,11 +310,24 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
 // ---------------------------------------------------------------------------
 const MeshData* AssetManager::load_mesh(const std::string& path) {
     auto shared = load_mesh_internal(path);
-    return shared.get();
+    const MeshData* raw = shared ? shared.get() : nullptr;
+    shared.reset();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        touch_unlocked(path);
+        maybe_evict_unlocked();
+    }
+    return raw;
 }
 
 std::shared_ptr<const MeshData> AssetManager::load_mesh_shared(const std::string& path) {
-    return load_mesh_internal(path);
+    auto shared = load_mesh_internal(path);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        touch_unlocked(path);
+        maybe_evict_unlocked();
+    }
+    return shared;
 }
 
 void AssetManager::unload(const std::string& path) {
@@ -290,6 +349,150 @@ void AssetManager::clear() {
 bool AssetManager::has(const std::string& path) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return assets_.find(path) != assets_.end();
+}
+
+void AssetManager::set_max_cache_count(size_t count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    max_count_ = count;
+    maybe_evict_unlocked();
+}
+
+void AssetManager::set_max_cache_memory_mb(float mb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    max_memory_bytes_ = static_cast<size_t>(mb * 1024.0 * 1024.0);
+    maybe_evict_unlocked();
+}
+
+size_t AssetManager::max_cache_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return max_count_;
+}
+
+float AssetManager::max_cache_memory_mb() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<float>(max_memory_bytes_) / (1024.0f * 1024.0f);
+}
+
+size_t AssetManager::resident_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return assets_.size();
+}
+
+size_t AssetManager::resident_memory_bytes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t total = 0;
+    for (const auto& [path, entry] : assets_) {
+        (void)path;
+        total += entry.memory_size;
+    }
+    return total;
+}
+
+void AssetManager::touch_unlocked(const std::string& path) {
+    auto it = assets_.find(path);
+    if (it != assets_.end()) {
+        it->second.last_access = std::chrono::steady_clock::now();
+    }
+}
+
+void AssetManager::maybe_evict_unlocked() {
+    // 无限制时不驱逐
+    if (max_count_ == 0 && max_memory_bytes_ == 0) return;
+
+    while (!assets_.empty()) {
+        const bool count_overflow = (max_count_ > 0 && assets_.size() > max_count_);
+        size_t total_memory = 0;
+        for (const auto& [p, e] : assets_) {
+            (void)p;
+            total_memory += e.memory_size;
+        }
+        const bool memory_overflow = (max_memory_bytes_ > 0 && total_memory > max_memory_bytes_);
+
+        if (!count_overflow && !memory_overflow) break;
+
+        // 找最久未访问的条目
+        auto oldest = assets_.end();
+        for (auto it = assets_.begin(); it != assets_.end(); ++it) {
+            if (oldest == assets_.end() ||
+                it->second.last_access < oldest->second.last_access) {
+                oldest = it;
+            }
+        }
+        if (oldest == assets_.end()) break;
+
+        // 只有最久未访问且仅被缓存持有的条目才会被驱逐；
+        // 若最久条目仍被外部引用，则宁可暂时超出限制也不驱逐其他较新资源。
+        if (oldest->second.asset.use_count() > 1) break;
+
+        GLOG_INFO("AssetManager: evicted '{}' from cache ({} bytes)",
+                  oldest->first, oldest->second.memory_size);
+        assets_.erase(oldest);
+    }
+}
+
+int AssetManager::mount_bundle(const std::string& pack_path) {
+    auto reader = std::make_unique<resources::GPackReader>();
+    if (!reader->open(pack_path)) return -1;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    int id = next_bundle_id_++;
+    MountedBundle bundle;
+    bundle.id = id;
+    bundle.reader = std::move(reader);
+    bundles_[id] = std::move(bundle);
+    GLOG_INFO("AssetManager: mounted bundle '{}' (id={})", pack_path, id);
+    return id;
+}
+
+void AssetManager::unmount_bundle(int id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = bundles_.find(id);
+    if (it == bundles_.end()) return;
+
+    std::error_code ec;
+    for (const auto& [internal_path, temp_path] : it->second.extracted_temp_paths) {
+        (void)internal_path;
+        std::filesystem::remove(temp_path, ec);
+    }
+    bundles_.erase(it);
+}
+
+std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) {
+    std::string internal_path = path;
+    if (internal_path.rfind("res:/", 0) == 0) {
+        internal_path = internal_path.substr(5);
+    }
+    if (internal_path.empty()) return "";
+
+    for (auto& [id, bundle] : bundles_) {
+        (void)id;
+        if (!bundle.reader->contains(internal_path)) continue;
+
+        auto it = bundle.extracted_temp_paths.find(internal_path);
+        if (it != bundle.extracted_temp_paths.end()) {
+            return it->second;
+        }
+
+        auto data = bundle.reader->read(internal_path);
+        if (data.empty()) continue;
+
+        std::string filename = std::filesystem::path(internal_path).filename().string();
+        if (filename.empty()) filename = "bundle_data";
+        std::filesystem::path temp_dir = std::filesystem::temp_directory_path() / "gryce_bundle";
+        std::error_code ec;
+        std::filesystem::create_directories(temp_dir, ec);
+        std::string temp_path = (temp_dir / (std::to_string(bundle.id) + "_" + filename)).string();
+
+        std::ofstream ofs(temp_path, std::ios::binary);
+        if (!ofs) continue;
+        ofs.write(reinterpret_cast<const char*>(data.data()),
+                  static_cast<std::streamsize>(data.size()));
+        if (!ofs.good()) continue;
+
+        bundle.extracted_temp_paths[internal_path] = temp_path;
+        return temp_path;
+    }
+    return "";
 }
 
 bool AssetManager::has_mesh(const std::string& path) const {

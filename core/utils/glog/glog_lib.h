@@ -9,6 +9,7 @@
 #include <mutex>
 #include <vector>
 #include <format>
+#include <source_location>
 
 #if defined(_WIN32)
     #include <windows.h>
@@ -38,6 +39,12 @@ public:
     // 核心输出接口
     virtual void log(LogLevel level, const std::string& message) = 0;
 
+    // 带源码位置的重载（默认实现忽略位置，仅转发到无位置版本）
+    virtual void log(LogLevel level, const std::string& message, std::source_location loc) {
+        (void)loc;
+        log(level, message);
+    }
+
     // 强制刷新缓冲区
     virtual void flush() {}
 
@@ -52,6 +59,7 @@ class ConsoleLogger : public ILogger {
 public:
     ConsoleLogger();
     void log(LogLevel level, const std::string& message) override;
+    void log(LogLevel level, const std::string& message, std::source_location loc) override;
     void flush() override;
     bool supports_color() const override { return ansi_enabled_; }
 
@@ -69,6 +77,8 @@ struct LogEntry {
     LogLevel level = LogLevel::Info;
     std::string message;
     std::string timestamp;
+    std::string source_file;
+    int source_line = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -81,6 +91,7 @@ public:
     explicit MemoryLogSink(std::unique_ptr<ILogger> inner, size_t capacity = 1000);
 
     void log(LogLevel level, const std::string& message) override;
+    void log(LogLevel level, const std::string& message, std::source_location loc) override;
     void flush() override;
     bool supports_color() const override;
 
@@ -130,42 +141,66 @@ public:
     // 模板化日志接口（支持 std::format 风格）
     // -----------------------------------------------------------------------
     template<typename... Args>
-    void log(LogLevel level, std::format_string<Args...> fmt, Args&&... args) {
+    void log(LogLevel level, std::source_location loc, std::format_string<Args...> fmt, Args&&... args) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!logger_ || static_cast<int>(level) < static_cast<int>(min_level_)) return;
         std::string msg = std::format(fmt, std::forward<Args>(args)...);
-        logger_->log(level, msg);
+        logger_->log(level, msg, loc);
     }
 
-    // 静态便捷方法（直接调用单例）
+    // 静态便捷方法（直接调用单例）——无源码位置版本保留兼容性
     template<typename... Args>
     static void trace(std::format_string<Args...> fmt, Args&&... args) {
-        instance().log(LogLevel::Trace, fmt, std::forward<Args>(args)...);
+        instance().log(LogLevel::Trace, std::source_location{}, fmt, std::forward<Args>(args)...);
+    }
+    template<typename... Args>
+    static void trace(std::source_location loc, std::format_string<Args...> fmt, Args&&... args) {
+        instance().log(LogLevel::Trace, loc, fmt, std::forward<Args>(args)...);
     }
 
     template<typename... Args>
     static void debug(std::format_string<Args...> fmt, Args&&... args) {
-        instance().log(LogLevel::Debug, fmt, std::forward<Args>(args)...);
+        instance().log(LogLevel::Debug, std::source_location{}, fmt, std::forward<Args>(args)...);
+    }
+    template<typename... Args>
+    static void debug(std::source_location loc, std::format_string<Args...> fmt, Args&&... args) {
+        instance().log(LogLevel::Debug, loc, fmt, std::forward<Args>(args)...);
     }
 
     template<typename... Args>
     static void info(std::format_string<Args...> fmt, Args&&... args) {
-        instance().log(LogLevel::Info, fmt, std::forward<Args>(args)...);
+        instance().log(LogLevel::Info, std::source_location{}, fmt, std::forward<Args>(args)...);
+    }
+    template<typename... Args>
+    static void info(std::source_location loc, std::format_string<Args...> fmt, Args&&... args) {
+        instance().log(LogLevel::Info, loc, fmt, std::forward<Args>(args)...);
     }
 
     template<typename... Args>
     static void warn(std::format_string<Args...> fmt, Args&&... args) {
-        instance().log(LogLevel::Warn, fmt, std::forward<Args>(args)...);
+        instance().log(LogLevel::Warn, std::source_location{}, fmt, std::forward<Args>(args)...);
+    }
+    template<typename... Args>
+    static void warn(std::source_location loc, std::format_string<Args...> fmt, Args&&... args) {
+        instance().log(LogLevel::Warn, loc, fmt, std::forward<Args>(args)...);
     }
 
     template<typename... Args>
     static void error(std::format_string<Args...> fmt, Args&&... args) {
-        instance().log(LogLevel::Error, fmt, std::forward<Args>(args)...);
+        instance().log(LogLevel::Error, std::source_location{}, fmt, std::forward<Args>(args)...);
+    }
+    template<typename... Args>
+    static void error(std::source_location loc, std::format_string<Args...> fmt, Args&&... args) {
+        instance().log(LogLevel::Error, loc, fmt, std::forward<Args>(args)...);
     }
 
     template<typename... Args>
     static void fatal(std::format_string<Args...> fmt, Args&&... args) {
-        instance().log(LogLevel::Fatal, fmt, std::forward<Args>(args)...);
+        instance().log(LogLevel::Fatal, std::source_location{}, fmt, std::forward<Args>(args)...);
+    }
+    template<typename... Args>
+    static void fatal(std::source_location loc, std::format_string<Args...> fmt, Args&&... args) {
+        instance().log(LogLevel::Fatal, loc, fmt, std::forward<Args>(args)...);
     }
 
 private:
@@ -189,9 +224,9 @@ void glog_shutdown();
 // ---------------------------------------------------------------------------
 // 宏封装（__VA_OPT__ 用于零参数兼容）
 // ---------------------------------------------------------------------------
-#define GLOG_TRACE(fmt, ...) gryce_engine::utils::GLog::trace(fmt __VA_OPT__(,) __VA_ARGS__)
-#define GLOG_DEBUG(fmt, ...) gryce_engine::utils::GLog::debug(fmt __VA_OPT__(,) __VA_ARGS__)
-#define GLOG_INFO(fmt, ...)  gryce_engine::utils::GLog::info(fmt __VA_OPT__(,) __VA_ARGS__)
-#define GLOG_WARN(fmt, ...)  gryce_engine::utils::GLog::warn(fmt __VA_OPT__(,) __VA_ARGS__)
-#define GLOG_ERROR(fmt, ...) gryce_engine::utils::GLog::error(fmt __VA_OPT__(,) __VA_ARGS__)
-#define GLOG_FATAL(fmt, ...) gryce_engine::utils::GLog::fatal(fmt __VA_OPT__(,) __VA_ARGS__)
+#define GLOG_TRACE(fmt, ...) gryce_engine::utils::GLog::trace(std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
+#define GLOG_DEBUG(fmt, ...) gryce_engine::utils::GLog::debug(std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
+#define GLOG_INFO(fmt, ...)  gryce_engine::utils::GLog::info(std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
+#define GLOG_WARN(fmt, ...)  gryce_engine::utils::GLog::warn(std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
+#define GLOG_ERROR(fmt, ...) gryce_engine::utils::GLog::error(std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
+#define GLOG_FATAL(fmt, ...) gryce_engine::utils::GLog::fatal(std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)

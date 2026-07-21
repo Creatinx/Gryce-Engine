@@ -1,12 +1,34 @@
 #include "console_panel.h"
 
+#include <filesystem>
 #include <format>
+#include <string>
+#include <system_error>
+
+#ifdef _WIN32
+    #include <windows.h>
+    #include <shellapi.h>
+#endif
 
 #include "../localization/localization.h"
 
 namespace gryce_engine::editor {
 
 namespace {
+
+void open_source_location(const std::string& file, int line) {
+    if (file.empty() || line <= 0) return;
+#ifdef _WIN32
+    std::error_code ec;
+    const auto normalized = std::filesystem::canonical(file, ec);
+    const std::string path = ec ? file : normalized.string();
+    const std::string url = std::format("vscode://file/{}:{}", path, line);
+    ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    (void)file;
+    (void)line;
+#endif
+}
 
 ImVec4 level_color(utils::LogLevel level) {
     const bool light_theme = Localization::instance().is_light_theme();
@@ -74,10 +96,23 @@ void ConsolePanel::on_imgui() {
         for (const auto& entry : entries) {
             if (!passes_filter(entry.level)) continue;
             ImGui::PushStyleColor(ImGuiCol_Text, level_color(entry.level));
-            ImGui::TextUnformatted(
-                std::format("[{}] [{}] {}", entry.timestamp,
-                            utils::MemoryLogSink::level_str(entry.level), entry.message)
-                    .c_str());
+
+            std::string label = std::format("[{}] [{}] {}", entry.timestamp,
+                                            utils::MemoryLogSink::level_str(entry.level),
+                                            entry.message);
+            if (!entry.source_file.empty() && entry.source_line > 0) {
+                label += std::format("  @ {}:{}", entry.source_file, entry.source_line);
+            }
+
+            ImGui::PushID(&entry);
+            if (ImGui::Selectable(label.c_str(), false,
+                                  ImGuiSelectableFlags_AllowDoubleClick)) {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                    ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    open_source_location(entry.source_file, entry.source_line);
+                }
+            }
+            ImGui::PopID();
             ImGui::PopStyleColor();
         }
     } else {

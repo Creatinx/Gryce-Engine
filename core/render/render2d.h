@@ -33,6 +33,8 @@ struct Color {
     static constexpr Color magenta() { return Color(1.0f, 0.0f, 1.0f, 1.0f); }
     static constexpr Color gray(float v) { return Color(v, v, v, 1.0f); }
     static constexpr Color orange()  { return Color(1.0f, 0.65f, 0.0f, 1.0f); }
+
+    bool operator==(const Color& other) const = default;
 };
 
 class RenderContext;

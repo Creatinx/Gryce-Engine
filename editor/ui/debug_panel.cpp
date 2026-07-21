@@ -295,6 +295,12 @@ void DebugPanel::show(platform::Window* window, scene::Scene* scene, math::Camer
     ImGui::Checkbox(tr("debug.invert_mouse_y"), &invert_mouse_y_);
     ImGui::Checkbox(tr("debug.swap_space_ctrl"), &swap_space_ctrl_);
     ImGui::Checkbox(tr("debug.disable_cull"), &disable_cull_);
+    if (pipeline) {
+        bool grid_enabled = pipeline->grid_enabled();
+        if (ImGui::Checkbox(tr("debug.grid"), &grid_enabled)) {
+            pipeline->set_grid_enabled(grid_enabled);
+        }
+    }
     if (ImGui::Button(tr("debug.reset_input_defaults"))) {
         invert_mouse_y_ = false;
         swap_space_ctrl_ = false;

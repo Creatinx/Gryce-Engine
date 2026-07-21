@@ -65,6 +65,8 @@ struct Vector3i {
 
     constexpr Vector3i() = default;
     constexpr Vector3i(int x_, int y_, int z_) : x(x_), y(y_), z(z_) {}
+
+    [[nodiscard]] constexpr bool operator==(const Vector3i& o) const = default;
 };
 
 // ---------------------------------------------------------------------------
@@ -264,6 +266,8 @@ struct Quaternionf {
 
     static Quaternionf from_axis_angle(const Vector3f& axis, float angle);
     static Quaternionf from_euler(float pitch, float yaw, float roll);
+    // 返回 (pitch, yaw, roll) 欧拉角（度），与 from_euler 同序。
+    Vector3f to_euler() const;
 
     // 球面线性插值（slerp）：dot<0 时翻转取最短路径；
     // 两四元数几乎重合时退化为归一化线性插值（nlerp），避免 sinθ→0 除零。

@@ -12,11 +12,24 @@ target_sources(gryce_engine PRIVATE
     panels/inspector_panel.cpp
     panels/console_panel.cpp
     panels/viewport_panel.cpp
+    panels/game_view_panel.cpp
     panels/project_panel.cpp
     ui/debug_panel.cpp
     ui/editor_theme.cpp
     ui/settings_window.cpp
+    ui/project_settings_window.cpp
+    ui/gimport_editor_window.cpp
+    ui/material_editor_window.cpp
+    ui/animation_editor_window.cpp
+    ui/terrain_editor_window.cpp
+    ui/particle_editor_window.cpp
+    project/project_settings.cpp
+    import/gimport_settings.cpp
+    asset/asset_database.cpp
     localization/localization.cpp
+    shortcuts/shortcut_manager.cpp
+    undo/command_stack.cpp
+    undo/commands.cpp
 )
 
 # ImGuizmo（M1-E2 Transform Gizmo）：捆绑源码，第三方代码关闭警告

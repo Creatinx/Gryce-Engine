@@ -48,6 +48,7 @@
 #include "components/rigid_body.h"
 #include "components/box_collider.h"
 #include "components/sphere_collider.h"
+#include "components/physical_material.h"
 #include "components/audio_source.h"
 #include "components/component_factory.h"
 #include "assets/asset_manager.h"
@@ -57,6 +58,7 @@
 #include "scene/scene.h"
 #include "scene/scene_serializer.h"
 #include "scene/entity.h"
+#include "scene/prefab.h"
 #include "math/math.h"
 #include "math/ray.h"
 #include "math/camera.h"
@@ -70,14 +72,23 @@
 
 #include "editor_camera.h"
 #include "panel_manager.h"
+#include "project/project_settings.h"
 #include "panels/hierarchy_panel.h"
 #include "panels/inspector_panel.h"
 #include "panels/console_panel.h"
 #include "panels/viewport_panel.h"
+#include "panels/game_view_panel.h"
 #include "panels/project_panel.h"
 #include "ui/editor_theme.h"
 #include "ui/settings_window.h"
+#include "ui/project_settings_window.h"
+#include "ui/gimport_editor_window.h"
+#include "import/gimport_settings.h"
+#include "asset/asset_database.h"
 #include "localization/localization.h"
+#include "shortcuts/shortcut_manager.h"
+#include "undo/command_stack.h"
+#include "undo/commands.h"
 
 using namespace gryce_engine;
 
@@ -371,16 +382,47 @@ static void apply_camera_component_to_global(scene::Scene& scene, math::Camera& 
     camera.set_near_far(cam->near_plane, cam->far_plane);
 }
 
+// 从场景主摄像机构建 Game View 用的 math::Camera
+static void build_game_camera(scene::Scene& scene, math::Camera& camera) {
+    scene::Entity* cam_entity = find_main_camera_entity(scene);
+    if (!cam_entity) return;
+    auto* cam = cam_entity->get_component<components::Camera>();
+    if (!cam) return;
+
+    camera.set_fov(cam->fov);
+    camera.set_near_far(cam->near_plane, cam->far_plane);
+    camera.set_position(cam_entity->transform()->position);
+
+    const math::Vector3f euler = cam_entity->transform()->rotation.to_euler();
+    camera.set_pitch(euler.x);
+    camera.set_yaw(euler.y);
+}
+
 static std::vector<render::RenderPipeline::Light> collect_lights(scene::Scene& scene) {
     std::vector<render::RenderPipeline::Light> lights;
     scene.foreach([&](scene::Entity* entity) {
         auto* light = entity->get_component<components::Light>();
         if (!light || !light->enabled) return;
+
         render::RenderPipeline::Light out;
+        out.type = static_cast<render::RenderPipeline::LightType>(light->light_type);
         out.color = light->color;
         out.intensity = light->intensity;
-        // 方向光：使用组件显式方向；其他类型暂按方向光处理。
-        out.direction = light->direction.normalized();
+        out.range = light->range;
+        out.spot_angle = light->spot_angle;
+        out.spot_softness = light->spot_softness;
+
+        // 位置来自 Transform；方向光可忽略位置，点光/聚光必需。
+        components::Transform* transform = entity->transform();
+        out.position = transform ? transform->position : math::Vector3f::zero();
+
+        // 方向由 Transform 旋转 + 组件局部方向共同决定。
+        math::Vector3f local_dir = light->direction.normalized();
+        if (local_dir.length_sq() < 1e-6f) {
+            local_dir = math::Vector3f(0.0f, -1.0f, 0.0f);
+        }
+        out.direction = (transform ? transform->rotation.rotate_vector(local_dir) : local_dir).normalized();
+
         lights.push_back(out);
     });
     if (lights.empty()) {
@@ -464,6 +506,7 @@ int EditorApp::run(int argc, char* argv[]) {
     std::cout << "Gryce Engine Editor v0.1.0" << std::endl;
 
     // 解析命令行参数
+    bool api_override_by_cli = false;
     render::RenderAPI selected_api = render::RenderAPI::OpenGL;
     bool screenshot_mode = false;
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
@@ -472,6 +515,7 @@ int EditorApp::run(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
             selected_api = render::RenderAPI::Vulkan;
+            api_override_by_cli = true;
         } else if (std::strcmp(argv[i], "--screenshot") == 0) {
             screenshot_mode = true;
         } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
@@ -494,6 +538,15 @@ int EditorApp::run(int argc, char* argv[]) {
     resources::Project::instance().set_root(project_root.string());
     components::register_builtin_components();
 
+    // 初始化编辑器资源数据库（为资源生成 GUID .meta 文件）
+    editor::AssetDatabase::instance().scan(project_root);
+
+    // 加载项目设置：命令行未指定后端时，使用项目设置中的默认后端。
+    editor::ProjectSettings project_settings = editor::ProjectSettingsWindow::load(project_root.string());
+    if (!api_override_by_cli) {
+        selected_api = project_settings.render_api;
+    }
+
     // 初始化 GLFW
     if (!platform::Window::init_sdk()) {
         GLOG_ERROR("Failed to initialize GLFW");
@@ -504,7 +557,7 @@ int EditorApp::run(int argc, char* argv[]) {
     platform::WindowContextType window_ctx = (selected_api == render::RenderAPI::Vulkan)
                                                  ? platform::WindowContextType::NoApi
                                                  : platform::WindowContextType::OpenGL;
-    platform::Window window("Gryce Engine Editor", 1600, 900,
+    platform::Window window("Gryce Engine Editor", 1920, 1080,
                             platform::WindowMode::Windowed, window_ctx);
     if (!window.is_valid()) {
         GLOG_ERROR("Failed to create window");
@@ -526,10 +579,7 @@ int EditorApp::run(int argc, char* argv[]) {
         return -1;
     }
 
-    // 窗口大小变化时立即更新 viewport
-    window.set_resize_callback([&](int w, int h) {
-        render_ctx.set_viewport(0, 0, w, h);
-    });
+
 
     // 创建 2D 渲染器（OpenGL / Vulkan 各自后端）
     auto renderer2d = render_ctx.create_renderer2d();
@@ -550,23 +600,37 @@ int EditorApp::run(int argc, char* argv[]) {
     editor::EditorSettings editor_settings = editor::SettingsWindow::load(project_root.string());
     editor::ThemeConfig& theme_config = editor_settings.theme;
     editor::ThemePreset& theme_preset = editor_settings.theme_preset;
-    editor::apply_theme(theme_preset, theme_config);
 
-    // 多语言本地化（加载语言文件，失败则回退英语）
+    // 多语言本地化必须先加载，这样 apply_theme 加载字体时才能按语言合并 CJK 字体
     editor::Localization::instance().load(editor_settings.appliance.language, project_root.string());
     editor::Localization::instance().set_light_theme(theme_preset == editor::ThemePreset::Light);
+    editor::apply_theme(theme_preset, theme_config);
 
     // 设置窗口
     editor::SettingsWindow settings_window;
+    editor::ProjectSettingsWindow project_settings_window;
+    editor::GImportEditorWindow gimport_editor_window;
 
     // 编辑器面板框架
     PanelManager panel_manager;
     auto* hierarchy_panel = panel_manager.add_panel<HierarchyPanel>();
     auto* inspector_panel = panel_manager.add_panel<InspectorPanel>();
     auto* viewport_panel = panel_manager.add_panel<ViewportPanel>();
+    auto* game_view_panel = panel_manager.add_panel<GameViewPanel>();
     panel_manager.add_panel<ConsolePanel>();
     auto* project_panel = panel_manager.add_panel<ProjectPanel>();
     viewport_panel->set_imgui_backend(imgui.backend());
+    game_view_panel->set_imgui_backend(imgui.backend());
+
+    // Undo/Redo 命令栈与快捷键管理
+    CommandStack undo_stack;
+    ShortcutManager shortcuts;
+    shortcuts.register_shortcut("Undo", {ImGuiKey_Z, true, false, false},
+                                [&]() { undo_stack.undo(); });
+    shortcuts.register_shortcut("Redo", {ImGuiKey_Y, true, false, false},
+                                [&]() { undo_stack.redo(); });
+    hierarchy_panel->set_undo_stack(&undo_stack);
+    inspector_panel->set_undo_stack(&undo_stack);
 
     // Play Mode（M1-E4）：运行时预览，退出时从快照恢复场景
     bool play_mode_active = false;
@@ -581,17 +645,21 @@ int EditorApp::run(int argc, char* argv[]) {
     EditorCamera editor_camera;
     math::Camera& camera = editor_camera.camera();
 
+    // Game View 独立相机：从场景主摄像机构建
+    math::Camera game_camera;
+
     // 视口面板接线：相机 + 选中实体（Hierarchy UUID 弱引用解析）
     viewport_panel->set_camera(&camera);
     viewport_panel->set_selection_provider(
         [hierarchy_panel]() { return hierarchy_panel->selected_entity(); });
+    viewport_panel->set_undo_stack(&undo_stack);
 
     // 加载或创建场景（必须在 render_ctx.start() 之前，因为上传网格需要主线程 GL context）
     std::string scene_path = "res:/scenes/main.gesc";
     std::unique_ptr<scene::Scene> current_scene = scene::SceneSerializer::load_from_file(scene_path);
     if (!current_scene) {
         GLOG_INFO("No existing scene found at '{}', creating demo scene", scene_path);
-        current_scene = create_demo_scene(1600.0f, 900.0f);
+        current_scene = create_demo_scene(1920.0f, 1080.0f);
         scene::SceneSerializer::save_to_file(*current_scene, scene_path);
     } else {
         GLOG_INFO("Scene loaded from '{}'", scene_path);
@@ -620,10 +688,9 @@ int EditorApp::run(int argc, char* argv[]) {
     double scene_reload_timer = 0.0;
 
     // 创建渲染管线（必须在 start() 之前，主线程持有 GL context）。
-    // OpenGL 端开启视口离屏输出：tonemap 结果写入独立 FBO 供 Viewport 面板采样；
-    // Vulkan 端 descriptor 注册未实现，本轮仍直接渲染到屏幕、Viewport 显示占位。
+    // 视口离屏输出：tonemap 结果写入独立 FBO 供 Viewport / Game View 面板采样。
     render::RenderPipeline pipeline;
-    pipeline.set_viewport_output_enabled(!is_vulkan);
+    pipeline.set_viewport_output_enabled(true);
     if (!pipeline.init(&render_ctx, "res:/shaders")) {
         GLOG_ERROR("Failed to initialize render pipeline");
         render_ctx.shutdown();
@@ -631,6 +698,29 @@ int EditorApp::run(int argc, char* argv[]) {
         return -1;
     }
     viewport_panel->set_pipeline(&pipeline);
+
+    // Game View 独立渲染管线：使用场景主摄像机，渲染到独立 FBO
+    render::RenderPipeline game_pipeline;
+    game_pipeline.set_viewport_output_enabled(true);
+    if (!game_pipeline.init(&render_ctx, "res:/shaders")) {
+        GLOG_WARN("Failed to initialize game view pipeline; Game View will be unavailable");
+    }
+    game_view_panel->set_pipeline(&game_pipeline);
+
+    // 窗口大小变化时先记录尺寸，主循环中安全同步渲染目标
+    struct WindowResizeState {
+        std::atomic<int> width{0};
+        std::atomic<int> height{0};
+        std::atomic<bool> pending{false};
+    } window_resize_state;
+
+    window.set_resize_callback([&](int w, int h) {
+        if (w <= 0 || h <= 0) return;
+        render_ctx.set_viewport(0, 0, w, h);
+        window_resize_state.width.store(w);
+        window_resize_state.height.store(h);
+        window_resize_state.pending.store(true);
+    });
 
     // 创建 ECS World 并注册系统
     ecs::World world;
@@ -642,6 +732,7 @@ int EditorApp::run(int argc, char* argv[]) {
             world.add_system<ecs::RenderSystem2D>(renderer2d.get());
         }
         world.init();
+        inspector_panel->set_scene(world.scene());
     }
 
     // -------------------------------------------------------------------
@@ -712,6 +803,7 @@ int EditorApp::run(int argc, char* argv[]) {
             restore_scene_from_snapshot(play_mode_snapshot);
             play_mode_snapshot.clear();
         }
+        ImGui::SetWindowFocus("Viewport");
         GLOG_INFO("Play Mode: exited");
     };
 
@@ -722,6 +814,7 @@ int EditorApp::run(int argc, char* argv[]) {
         viewport_panel->set_editing_enabled(false);
         hierarchy_panel->set_drag_enabled(false);
         inspector_panel->set_read_only(true);
+        ImGui::SetWindowFocus("Game");
         GLOG_INFO("Play Mode: entered");
     };
 
@@ -732,6 +825,24 @@ int EditorApp::run(int argc, char* argv[]) {
             enter_play_mode();
         }
     };
+
+    // 注册全局快捷键（Ctrl+Z/Y 已在前面注册）
+    shortcuts.register_shortcut("Save Scene", {ImGuiKey_S, true, false, false},
+                                [&]() { save_scene(scene_path); });
+    shortcuts.register_shortcut("Toggle Play Mode", {ImGuiKey_P, true, false, false},
+                                [&]() { toggle_play_mode(); });
+    shortcuts.register_shortcut("Delete Entity", {ImGuiKey_Delete, false, false, false}, [&]() {
+        if (auto* e = hierarchy_panel->selected_entity()) {
+            undo_stack.push(std::make_unique<EntityDeleteCommand>(*world.scene(), e->uuid()));
+            hierarchy_panel->clear_selection();
+        }
+    });
+    shortcuts.register_shortcut("Focus Selected", {ImGuiKey_F, false, false, false}, [&]() {
+        if (!viewport_panel->hovered()) return;
+        auto* e = hierarchy_panel->selected_entity();
+        if (!e) return;
+        editor_camera.focus_on(e->transform()->position);
+    });
 
     auto open_scene = [&](const std::string& path) {
         // 打开新场景前若处于 Play Mode，先退出并丢弃快照
@@ -781,6 +892,13 @@ int EditorApp::run(int argc, char* argv[]) {
         const std::string ext = extension_of(path);
         return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
                ext == ".tga" || ext == ".dds" || ext == ".ktx" || ext == ".hdr";
+    };
+    auto is_gimport_file = [&](const std::string& path) {
+        return extension_of(path) == ".gimport";
+    };
+    auto is_prefab_file = [&](const std::string& path) {
+        const std::string ext = extension_of(path);
+        return ext == ".geprefab" || ext == ".geprefabvariant";
     };
     auto file_stem = [&](const std::string& path) {
         return std::filesystem::path(path).stem().string();
@@ -833,12 +951,31 @@ int EditorApp::run(int argc, char* argv[]) {
         }
         if (!entity) return nullptr;
 
+        editor::GImportSettings import_settings = editor::ensure_gimport_settings(mesh_path);
+
         auto* mr = entity->add_component<components::MeshRenderer>(mesh_path);
         if (mr && mr->material) {
             mr->material->name = name;
         }
+
+        entity->transform()->scale = math::Vector3f::one() * import_settings.scale;
+
+        if (import_settings.generate_collider) {
+            entity->add_component<components::BoxCollider>();
+        }
+        if (import_settings.add_rigidbody) {
+            auto* rb = entity->add_component<components::RigidBody>();
+            if (rb && !import_settings.physics_material.empty()) {
+                if (auto* pm = entity->add_component<components::PhysicalMaterial>()) {
+                    pm->apply_preset(import_settings.physics_material);
+                }
+            }
+        }
+
         hierarchy_panel->select(entity->uuid());
-        GLOG_INFO("Project: instantiated mesh '{}' as entity '{}'", mesh_path, name);
+        GLOG_INFO("Project: instantiated mesh '{}' as entity '{}' (scale={:.2f}, collider={}, rigidbody={})",
+                  mesh_path, name, import_settings.scale,
+                  import_settings.generate_collider, import_settings.add_rigidbody);
         return entity;
     };
 
@@ -851,6 +988,28 @@ int EditorApp::run(int argc, char* argv[]) {
             apply_texture_to_material(mr, tex_path);
         }
         return entity;
+    };
+
+    auto instantiate_prefab_entity = [&](scene::Entity* parent, const std::string& prefab_path) -> scene::Entity* {
+        scene::Scene* scene = world.scene();
+        if (!scene) return nullptr;
+
+        auto tree = scene::Prefab::instantiate_tree(prefab_path);
+        if (!tree) {
+            GLOG_ERROR("Project: failed to instantiate prefab '{}'", prefab_path);
+            return nullptr;
+        }
+
+        scene::Entity* root = tree.get();
+        if (parent) {
+            parent->add_child(std::move(tree));
+        } else {
+            scene->add_root_entity(std::move(tree));
+        }
+
+        hierarchy_panel->select(root->uuid());
+        GLOG_INFO("Project: instantiated prefab '{}' as entity '{}'", prefab_path, root->name());
+        return root;
     };
 
     auto apply_file_to_entity = [&](scene::Entity* entity, const std::string& path) {
@@ -891,6 +1050,16 @@ int EditorApp::run(int argc, char* argv[]) {
             instantiate_mesh_entity(nullptr, path);
         } else if (is_texture_file(path)) {
             create_textured_cube(nullptr, path);
+        } else if (is_gimport_file(path)) {
+            // .gimport 文件记录的是对应源资源的导入设置
+            std::string source_path = std::filesystem::path(path).replace_extension().string();
+            // 若源资源路径带有两层扩展名（如 .obj.gimport），需要进一步还原
+            if (std::filesystem::path(source_path).extension().empty()) {
+                source_path = std::filesystem::path(source_path).replace_extension().string();
+            }
+            gimport_editor_window.open(source_path);
+        } else if (is_prefab_file(path)) {
+            instantiate_prefab_entity(nullptr, path);
         } else {
             GLOG_WARN("Project: double-click on '{}' is not supported", path);
         }
@@ -909,6 +1078,8 @@ int EditorApp::run(int argc, char* argv[]) {
             instantiate_mesh_entity(nullptr, path);
         } else if (is_texture_file(path)) {
             create_textured_cube(nullptr, path);
+        } else if (is_prefab_file(path)) {
+            instantiate_prefab_entity(nullptr, path);
         }
     });
 
@@ -927,6 +1098,8 @@ int EditorApp::run(int argc, char* argv[]) {
             } else {
                 create_textured_cube(nullptr, path);
             }
+        } else if (is_prefab_file(path)) {
+            instantiate_prefab_entity(target, path);
         }
     });
 
@@ -954,6 +1127,9 @@ int EditorApp::run(int argc, char* argv[]) {
                 open_popup_requested = true;
             }
             ImGui::Separator();
+            if (ImGui::MenuItem(editor::tr("menu.project_settings"))) {
+                project_settings_window.open();
+            }
             if (ImGui::MenuItem(editor::tr("menu.settings"))) {
                 settings_window.open();
             }
@@ -966,37 +1142,19 @@ int EditorApp::run(int argc, char* argv[]) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(editor::tr("menu.view"))) {
-            if (ImGui::BeginMenu(editor::tr("menu.view_theme"))) {
-                bool is_dark = (theme_preset == editor::ThemePreset::Dark);
-                if (ImGui::MenuItem(editor::tr("menu.view_theme_dark"), nullptr, &is_dark)) {
-                    theme_preset = editor::ThemePreset::Dark;
-                    editor::apply_theme(theme_preset, theme_config);
-                    editor::Localization::instance().set_light_theme(false);
-                    editor::SettingsWindow::save(project_root.string(), editor_settings);
-                }
-                bool is_light = (theme_preset == editor::ThemePreset::Light);
-                if (ImGui::MenuItem(editor::tr("menu.view_theme_light"), nullptr, &is_light)) {
-                    theme_preset = editor::ThemePreset::Light;
-                    editor::apply_theme(theme_preset, theme_config);
-                    editor::Localization::instance().set_light_theme(true);
-                    editor::SettingsWindow::save(project_root.string(), editor_settings);
-                }
-                ImGui::EndMenu();
-            }
-            if (ImGui::DragFloat(editor::tr("menu.view_accent_hue"), &theme_config.accent_hue, 0.01f, 0.0f, 1.0f)) {
+            // 主题详细设置统一放到 File > Settings；这里只保留明暗快速切换。
+            bool is_dark = (theme_preset == editor::ThemePreset::Dark);
+            if (ImGui::MenuItem(editor::tr("menu.view_theme_dark"), nullptr, &is_dark)) {
+                theme_preset = editor::ThemePreset::Dark;
                 editor::apply_theme(theme_preset, theme_config);
+                editor::Localization::instance().set_light_theme(false);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
-            if (ImGui::DragFloat(editor::tr("menu.view_font_size"), &theme_config.font_size, 0.5f, 8.0f, 32.0f)) {
+            bool is_light = (theme_preset == editor::ThemePreset::Light);
+            if (ImGui::MenuItem(editor::tr("menu.view_theme_light"), nullptr, &is_light)) {
+                theme_preset = editor::ThemePreset::Light;
                 editor::apply_theme(theme_preset, theme_config);
-                editor::SettingsWindow::save(project_root.string(), editor_settings);
-            }
-            if (ImGui::DragFloat(editor::tr("menu.view_rounding"), &theme_config.rounding, 0.5f, 0.0f, 16.0f)) {
-                editor::apply_theme(theme_preset, theme_config);
-                editor::SettingsWindow::save(project_root.string(), editor_settings);
-            }
-            if (ImGui::Checkbox(editor::tr("menu.view_shadow"), &theme_config.shadow)) {
-                editor::apply_theme(theme_preset, theme_config);
+                editor::Localization::instance().set_light_theme(true);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
             ImGui::EndMenu();
@@ -1015,7 +1173,7 @@ int EditorApp::run(int argc, char* argv[]) {
     }
 
     GLOG_INFO("Entering editor main loop...");
-    GLOG_INFO("Viewport controls: RMB drag look | WASD+QE move (hold RMB) | Shift sprint | Wheel speed | Close window to exit");
+    GLOG_INFO("Viewport controls: RMB drag look | WASD+QE move (hold RMB) | Shift sprint | Wheel zoom | Close window to exit");
 
     utils::FrameLimiter frame_limiter;
     frame_limiter.set_target_fps(0); // 默认不限制帧率，让 GPU 全力跑
@@ -1031,6 +1189,11 @@ int EditorApp::run(int argc, char* argv[]) {
     int applied_vw = 0, applied_vh = 0;
     float viewport_resize_timer = 0.0f;
     constexpr float k_resize_debounce = 0.15f;
+
+    // Game View 面板尺寸 → 独立渲染目标尺寸：同样做防抖
+    int pending_gw = 0, pending_gh = 0;
+    int applied_gw = 0, applied_gh = 0;
+    float game_view_resize_timer = 0.0f;
 
     while (!window.should_close()) {
         frame_limiter.begin_frame();
@@ -1081,6 +1244,32 @@ int EditorApp::run(int argc, char* argv[]) {
         world.update(dt);
 
         // -------------------------------------------------------------------
+        // 窗口整体尺寸变化时强制同步渲染目标：解决全屏/最大化后画面消失
+        // -------------------------------------------------------------------
+        if (window_resize_state.pending.exchange(false)) {
+            const int ww = window_resize_state.width.load();
+            const int wh = window_resize_state.height.load();
+            if (ww >= 4 && wh >= 4) {
+                render_ctx.pause_render_thread();
+                if (pipeline.resize_render_targets(ww, wh)) {
+                    applied_vw = ww;
+                    applied_vh = wh;
+                    pending_vw = ww;
+                    pending_vh = wh;
+                }
+                if (game_pipeline.is_valid() && game_pipeline.resize_render_targets(ww, wh)) {
+                    applied_gw = ww;
+                    applied_gh = wh;
+                    pending_gw = ww;
+                    pending_gh = wh;
+                }
+                render_ctx.resume_render_thread();
+                viewport_resize_timer = k_resize_debounce;
+                game_view_resize_timer = k_resize_debounce;
+            }
+        }
+
+        // -------------------------------------------------------------------
         // Viewport 尺寸同步（上一帧面板尺寸，防抖后应用）
         // -------------------------------------------------------------------
         {
@@ -1092,7 +1281,7 @@ int EditorApp::run(int argc, char* argv[]) {
                 viewport_resize_timer = 0.0f;
             }
             viewport_resize_timer += dt;
-            if (!is_vulkan && pending_vw >= 4 && pending_vh >= 4 &&
+            if (pending_vw >= 4 && pending_vh >= 4 &&
                 (pending_vw != applied_vw || pending_vh != applied_vh) &&
                 viewport_resize_timer >= k_resize_debounce) {
                 render_ctx.pause_render_thread();
@@ -1104,24 +1293,60 @@ int EditorApp::run(int argc, char* argv[]) {
             }
         }
 
+        // -------------------------------------------------------------------
+        // Game View 尺寸同步（上一帧面板尺寸，防抖后应用）
+        // 只在 Game View 为当前活动标签页时渲染，避免后台标签页浪费 GPU。
+        // -------------------------------------------------------------------
+        if (game_view_panel->is_active()) {
+            const int cur_gw = static_cast<int>(game_view_panel->content_width());
+            const int cur_gh = static_cast<int>(game_view_panel->content_height());
+            if (cur_gw != pending_gw || cur_gh != pending_gh) {
+                pending_gw = cur_gw;
+                pending_gh = cur_gh;
+                game_view_resize_timer = 0.0f;
+            }
+            game_view_resize_timer += dt;
+            if (pending_gw >= 4 && pending_gh >= 4 &&
+                (pending_gw != applied_gw || pending_gh != applied_gh) &&
+                game_view_resize_timer >= k_resize_debounce) {
+                render_ctx.pause_render_thread();
+                if (game_pipeline.resize_render_targets(pending_gw, pending_gh)) {
+                    applied_gw = pending_gw;
+                    applied_gh = pending_gh;
+                }
+                render_ctx.resume_render_thread();
+            }
+        }
+
         int w = 0, h = 0;
         window.get_size(w, h);
 
-        // 场景渲染分辨率：OpenGL 跟随 Viewport 面板，Vulkan 跟随窗口
-        const int render_w = (!is_vulkan && applied_vw >= 4) ? applied_vw : w;
-        const int render_h = (!is_vulkan && applied_vh >= 4) ? applied_vh : h;
+        // 场景渲染分辨率：跟随 Viewport 面板尺寸
+        const int render_w = (applied_vw >= 4) ? applied_vw : w;
+        const int render_h = (applied_vh >= 4) ? applied_vh : h;
         const float aspect = (render_w > 0 && render_h > 0)
                                  ? static_cast<float>(render_w) / static_cast<float>(render_h)
                                  : 1.0f;
         camera.set_aspect(aspect);
 
+        // Game View 渲染分辨率与宽高比
+        const int game_render_w = (!is_vulkan && applied_gw >= 4) ? applied_gw : w;
+        const int game_render_h = (!is_vulkan && applied_gh >= 4) ? applied_gh : h;
+        const float game_aspect = (game_render_w > 0 && game_render_h > 0)
+                                      ? static_cast<float>(game_render_w) / static_cast<float>(game_render_h)
+                                      : 1.0f;
+        game_camera.set_aspect(game_aspect);
+
         render_ctx.set_viewport(0, 0, w, h);
 
-        // 将 Camera 组件参数（fov/near/far）同步到编辑器相机，
-        // 并把编辑器相机的位置/朝向写回 MainCamera 组件
+        // 将 Camera 组件参数（fov/near/far）同步到编辑器相机。
+        // Play Mode 下不要把编辑器相机位置写回 MainCamera，否则游戏逻辑控制的相机会被覆盖，
+        // Game View 也就无法显示真正的运行时视角。
         if (world.scene()) {
             apply_camera_component_to_global(*world.scene(), camera);
-            sync_active_camera_to_scene(*world.scene(), camera);
+            if (!play_mode_active) {
+                sync_active_camera_to_scene(*world.scene(), camera);
+            }
         }
 
         // 设置渲染管线相机、灯光与视口
@@ -1129,6 +1354,15 @@ int EditorApp::run(int argc, char* argv[]) {
         pipeline.set_lights(world.scene() ? collect_lights(*world.scene())
                                           : std::vector<render::RenderPipeline::Light>{});
         pipeline.set_viewport(render_w, render_h);
+
+        // 从场景主摄像机构建 Game View 相机
+        if (world.scene()) {
+            build_game_camera(*world.scene(), game_camera);
+        }
+        game_pipeline.set_camera(game_camera);
+        game_pipeline.set_lights(world.scene() ? collect_lights(*world.scene())
+                                               : std::vector<render::RenderPipeline::Light>{});
+        game_pipeline.set_viewport(game_render_w, game_render_h);
 
         // -------------------------------------------------------------------
         // 3D + 2D 场景渲染由 ECS World 驱动
@@ -1147,34 +1381,52 @@ int EditorApp::run(int argc, char* argv[]) {
             renderer2d->end_frame();
         }
 
-        // 3D/2D 场景已写入视口离屏 FBO，ImGui 必须回到默认 framebuffer 绘制，
-        // 否则 swap buffers 时屏幕显示的是未初始化的默认 framebuffer（全黑）。
-        render_ctx.set_framebuffer(render::RHIFramebufferHandle{});
-        render_ctx.clear(0.1f, 0.1f, 0.1f, 1.0f);
-
         // -------------------------------------------------------------------
         // 编辑器 ImGui UI：DockSpace + 面板 + File 菜单弹窗 + 点选拾取
         // -------------------------------------------------------------------
         hierarchy_panel->set_scene(world.scene());
+        inspector_panel->set_scene(world.scene());
+        viewport_panel->set_scene(world.scene());
         inspector_panel->set_target(hierarchy_panel->selected_entity());
+
+        // -------------------------------------------------------------------
+        // 字体大小热重载：在 NewFrame 之前、上一帧渲染完成后重建 atlas/GPU 纹理，
+        // 避免在帧中间操作 ImGui 字体数据造成竞争。
+        // -------------------------------------------------------------------
+        if (settings_window.consume_font_rebuild_ready()) {
+            render_ctx.pause_render_thread();
+            editor::apply_theme(theme_preset, theme_config);
+            if (imgui.backend()) {
+                imgui.backend()->rebuild_fonts();
+            }
+            render_ctx.resume_render_thread();
+            editor::SettingsWindow::save(project_root.string(), editor_settings);
+        }
 
         imgui.begin_frame();
         ImGuizmo::BeginFrame();
 
+        // 全局快捷键（跳过文本输入框获焦时）
+        shortcuts.process();
+
         panel_manager.show();
 
-        // 设置窗口（File > Settings）
-        settings_window.draw(project_root.string(), editor_settings);
-
-        // Ctrl+S 保存 / Ctrl+P 切换 Play Mode（ImGui 正处理键盘输入时不抢快捷键）
-        if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantCaptureKeyboard) {
-            if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-                save_scene(scene_path);
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_P, false)) {
-                toggle_play_mode();
-            }
+        // Game View 独立渲染：在面板可见性/尺寸确定后再执行，避免为后台标签页浪费 GPU。
+        // 渲染到自己的 FBO，随后显式切回默认 framebuffer 供 ImGui 绘制。
+        if (game_view_panel->is_active() && game_pipeline.is_valid() && world.scene() &&
+            game_render_w >= 4 && game_render_h >= 4) {
+            game_pipeline.render_scene(*world.scene(), render_ctx);
         }
+
+        // 3D/2D 场景（含 Game View）已写入各自离屏 FBO，ImGui 必须回到默认 framebuffer 绘制，
+        // 否则 swap buffers 时屏幕显示的是未初始化的默认 framebuffer（全黑）。
+        render_ctx.set_framebuffer(render::RHIFramebufferHandle{});
+        render_ctx.clear(0.1f, 0.1f, 0.1f, 1.0f);
+
+        // 设置窗口（File > Settings / File > Project Settings）
+        settings_window.draw(project_root.string(), editor_settings);
+        project_settings_window.draw(project_root.string(), project_settings);
+        gimport_editor_window.draw();
 
         // Save Scene As 弹窗
         if (save_as_popup_requested) {
@@ -1244,6 +1496,10 @@ int EditorApp::run(int argc, char* argv[]) {
         });
 
         render_ctx.present();
+
+        // 在 present 之后执行 hierarchy 的删除/换父等延迟操作，确保渲染线程已完成
+        // 本帧所有引用这些实体的绘制命令，避免删除节点时访问已释放资源而崩溃。
+        hierarchy_panel->flush_deferred_ops();
 
         // -------------------------------------------------------------------
         // 场景热重载：必须在 present 之后执行，

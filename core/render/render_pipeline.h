@@ -62,6 +62,10 @@ public:
     void set_shadow_area(float size) { shadow_area_ = size; }
     void set_cull_disabled(bool disabled) { cull_disabled_ = disabled; }
 
+    // Scene View 网格线开关
+    void set_grid_enabled(bool enabled) { grid_enabled_ = enabled; }
+    bool grid_enabled() const { return grid_enabled_; }
+
     // 环境光（叠加到所有物体的间接光），默认 (0.15, 0.15, 0.15)
     void set_ambient(const math::Vector3f& color) { ambient_ = color; }
     math::Vector3f ambient() const { return ambient_; }
@@ -132,7 +136,7 @@ private:
 
     void update_light_space_matrix();
     void bind_global_uniforms(RenderContext& ctx);
-    void upload_lights(RenderContext& ctx);
+    void upload_lights(RenderContext& ctx, RHIShaderHandle shader);
 
     bool create_skybox_mesh(RenderContext* ctx);
     void render_skybox(RenderContext& ctx);
@@ -143,6 +147,7 @@ private:
     RHIShaderHandle pbr_shader_;
     RHIShaderHandle shadow_shader_;
     RHIShaderHandle skinned_pbr_shader_;   // 可选：加载失败则蒙皮渲染禁用
+    RHIShaderHandle grid_shader_;          // 可选：加载失败则 Scene View 网格线禁用
 
     RHITextureHandle shadow_map_;
     RHIFramebufferHandle shadow_fbo_;
@@ -163,6 +168,16 @@ private:
     bool initialized_ = false;
     bool owns_shaders_ = false;
     bool cull_disabled_ = false;
+    bool grid_enabled_ = true;
+
+    // Scene View 网格线
+    RHIMeshHandle grid_mesh_;
+    bool create_grid_mesh(RenderContext* ctx);
+    void render_grid(RenderContext& ctx);
+    static constexpr float k_grid_size = 1.0f;
+    static constexpr float k_grid_major_every = 10.0f;
+    static constexpr float k_grid_fade_start = 30.0f;
+    static constexpr float k_grid_fade_end = 100.0f;
 
     // Skybox
     RHITextureHandle skybox_texture_;

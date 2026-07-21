@@ -11,7 +11,9 @@ namespace gryce_engine::editor {
 namespace {
 constexpr float k_min_speed = 0.1f;
 constexpr float k_max_speed = 100.0f;
-constexpr float k_wheel_step = 1.15f; // 滚轮每格速度倍率
+constexpr float k_zoom_step = 2.0f;   // 滚轮每格缩放移动距离
+constexpr float k_min_distance = 0.1f; // 距离原点最近限制，防止穿到另一侧
+constexpr float k_max_distance = 500.0f;
 } // namespace
 
 EditorCamera::EditorCamera() {
@@ -22,20 +24,22 @@ void EditorCamera::set_move_speed(float speed) {
     move_speed_ = std::clamp(speed, k_min_speed, k_max_speed);
 }
 
+void EditorCamera::focus_on(const math::Vector3f& target, float distance) {
+    camera_.set_position(target - camera_.forward() * distance);
+}
+
 void EditorCamera::update(float dt, bool viewport_hovered) {
     if (!viewport_hovered) return;
 
     ImGuiIO& io = ImGui::GetIO();
 
-    // 滚轮调速（不要求右键按住）
+    // 滚轮缩放（不要求右键按住）：沿相机前方向推进/拉远
     if (io.MouseWheel != 0.0f) {
-        const float factor = io.MouseWheel > 0.0f ? k_wheel_step : 1.0f / k_wheel_step;
-        set_move_speed(move_speed_ * factor);
-    }
-
-    // F 聚焦（占位）：后续接入选中实体的包围盒，把相机移到合适距离
-    if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
-        GLOG_DEBUG("EditorCamera: focus (F) pressed - placeholder, not implemented yet");
+        const math::Vector3f new_pos = camera_.position() + camera_.forward() * io.MouseWheel * k_zoom_step;
+        const float dist = new_pos.length();
+        if (dist >= k_min_distance && dist <= k_max_distance) {
+            camera_.set_position(new_pos);
+        }
     }
 
     // 视角旋转 + 平移只在右键按住时生效（类 Unity 编辑器交互）

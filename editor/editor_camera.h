@@ -10,7 +10,7 @@ namespace gryce_engine::editor {
 // 输入走 ImGui IO，只在 Viewport 面板悬停时响应：
 //   右键按住拖动   —— 旋转视角（yaw/pitch）
 //   W/A/S/D + Q/E  —— 平移（需右键按住，Q 降 E 升），Shift 加速
-//   滚轮           —— 调节移动速度
+//   滚轮           —— 沿视线方向缩放（推进/拉远）
 //   F              —— 聚焦选中实体（占位，待接入场景边界盒）
 // ---------------------------------------------------------------------------
 class EditorCamera {
@@ -19,6 +19,9 @@ public:
 
     // 每帧更新；viewport_hovered 为 Viewport 面板悬停状态
     void update(float dt, bool viewport_hovered);
+
+    // 聚焦目标：把相机移到目标前方固定距离，保持当前朝向
+    void focus_on(const math::Vector3f& target, float distance = 10.0f);
 
     math::Camera& camera() { return camera_; }
     const math::Camera& camera() const { return camera_; }

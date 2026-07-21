@@ -4,6 +4,7 @@
 #include "components/prefab_instance.h"
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
+#include "components/terrain.h"
 #include "components/physical_material.h"
 #include "components/physics_body.h"
 #include "components/node2d.h"
@@ -58,6 +59,9 @@ void register_builtin_components() {
     });
     ComponentFactory::instance().register_type("SkinnedMeshRenderer", []() {
         return std::make_unique<SkinnedMeshRenderer>();
+    });
+    ComponentFactory::instance().register_type("Terrain", []() {
+        return std::make_unique<Terrain>();
     });
     ComponentFactory::instance().register_type("PhysicalMaterial", []() {
         return std::make_unique<PhysicalMaterial>();

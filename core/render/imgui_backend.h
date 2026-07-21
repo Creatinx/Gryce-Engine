@@ -37,6 +37,10 @@ public:
         (void)texture;
         return 0;
     }
+
+    // 运行时重建 ImGui 字体 GPU 纹理（如字体大小变化后）。
+    // 调用方需保证当前线程持有正确的 GPU context / device。
+    virtual void rebuild_fonts() {}
 };
 
 } // namespace gryce_engine::render

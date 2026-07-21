@@ -170,17 +170,20 @@ void ImGuiRenderer::apply_engine_style() {
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
 
-    // 圆角 + 间距
-    style.WindowRounding = 6.0f;
-    style.FrameRounding = 4.0f;
-    style.PopupRounding = 4.0f;
-    style.ScrollbarRounding = 6.0f;
-    style.GrabRounding = 4.0f;
-    style.TabRounding = 4.0f;
+    // 圆角 + 间距（参考 macOS：轻微圆角，更专业的边框）
+    style.WindowRounding = 3.0f;
+    style.FrameRounding = 3.0f;
+    style.PopupRounding = 3.0f;
+    style.ScrollbarRounding = 3.0f;
+    style.GrabRounding = 3.0f;
+    style.TabRounding = 3.0f;
+    style.ScrollbarSize = 16.0f;
     style.FramePadding = ImVec2(8.0f, 4.0f);
     style.ItemSpacing = ImVec2(8.0f, 6.0f);
-    style.WindowBorderSize = 0.0f;
-    style.PopupBorderSize = 0.0f;
+    style.WindowBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.FrameBorderSize = 1.0f;
+    style.TabBorderSize = 1.0f;
 
     // 引擎暗色主题
     ImVec4* colors = style.Colors;

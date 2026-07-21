@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "math/math.h"
+#include "render/render2d.h"
 
 // ---------------------------------------------------------------------------
 // 组件反射系统（M1-E1）
@@ -41,8 +42,11 @@ enum class FieldType {
     String,
     Vector2f,
     Vector3f,
+    Vector3i,
     Vector4f,
-    Quaternionf
+    Quaternionf,
+    Color,
+    Enum,
 };
 
 // C++ 类型 → FieldType 映射。未特化的类型触发 static_assert，
@@ -64,10 +68,14 @@ constexpr FieldType field_type_of() {
         return FieldType::Vector2f;
     } else if constexpr (std::is_same_v<T, math::Vector3f>) {
         return FieldType::Vector3f;
+    } else if constexpr (std::is_same_v<T, math::Vector3i>) {
+        return FieldType::Vector3i;
     } else if constexpr (std::is_same_v<T, math::Vector4f>) {
         return FieldType::Vector4f;
     } else if constexpr (std::is_same_v<T, math::Quaternionf>) {
         return FieldType::Quaternionf;
+    } else if constexpr (std::is_same_v<T, render::Color>) {
+        return FieldType::Color;
     } else {
         static_assert(!sizeof(T*), "field_type_of: 未映射的字段类型（嵌套结构/容器/enum 本轮不支持）");
     }
@@ -187,6 +195,25 @@ public:
         return *this;
     }
 
+    // 枚举字段：在 Inspector 中以整型下拉框编辑。
+    template<typename M>
+    TypeBuilder& add_field_enum(const char* name, M C::* mp) {
+        static_assert(std::is_enum_v<M>, "add_field_enum requires enum type");
+        FieldInfo f;
+        f.name = name;
+        f.display_name = name;
+        f.type = FieldType::Enum;
+        f.read = [mp](const void* obj, void* dst) {
+            *static_cast<int*>(dst) = static_cast<int>(static_cast<const C*>(obj)->*mp);
+        };
+        f.write = [mp](void* obj, const void* src) {
+            static_cast<C*>(obj)->*mp = static_cast<M>(*static_cast<const int*>(src));
+            return true;
+        };
+        info_->fields.push_back(std::move(f));
+        return *this;
+    }
+
     bool commit() const { return info_ != nullptr; }
 
 private:
@@ -254,6 +281,9 @@ void register_builtin_reflections();
 
 #define GRYCE_REFLECT_FIELD_RANGE(field, min_val, max_val) \
         .add_field_ranged(#field, &GRYCE_ReflectCurrent::field, min_val, max_val)
+
+#define GRYCE_REFLECT_FIELD_ENUM(field) \
+        .add_field_enum(#field, &GRYCE_ReflectCurrent::field)
 
 #define GRYCE_REFLECT_END() \
         .commit(); \

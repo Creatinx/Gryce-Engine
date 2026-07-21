@@ -18,6 +18,7 @@ struct GLFWwindow;
 namespace gryce_engine::render {
 
 class VulkanFramebuffer;
+class VulkanImGuiBackend;
 
 // ---------------------------------------------------------------------------
 // VulkanBackend — Vulkan 渲染后端实现
@@ -95,6 +96,9 @@ public:
 
     bool supports_dynamic_state() const { return supports_dynamic_state_; }
 
+    // ImGui 后端注册：纹理销毁时需要通知其移除缓存的 descriptor set。
+    void set_imgui_backend(VulkanImGuiBackend* backend) { imgui_backend_ = backend; }
+
     // 2D 渲染前重置可能被 3D 管线改掉的动态状态
     void set_dynamic_state_2d(VkCommandBuffer cmd);
 
@@ -118,6 +122,7 @@ private:
     VulkanInstance instance_;
     VulkanDevice device_;
     VulkanSwapchain swapchain_;
+    VulkanImGuiBackend* imgui_backend_ = nullptr;
 
     float clear_r_ = 0.0f;
     float clear_g_ = 0.0f;

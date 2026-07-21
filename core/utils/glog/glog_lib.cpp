@@ -85,6 +85,11 @@ void ConsoleLogger::log(LogLevel level, const std::string& message) {
               << '\n';
 }
 
+void ConsoleLogger::log(LogLevel level, const std::string& message, std::source_location loc) {
+    (void)loc;
+    log(level, message);
+}
+
 void ConsoleLogger::flush() {
     std::cerr.flush();
 }
@@ -96,14 +101,20 @@ MemoryLogSink::MemoryLogSink(std::unique_ptr<ILogger> inner, size_t capacity)
     : inner_(std::move(inner)), buffer_(capacity > 0 ? capacity : 1) {}
 
 void MemoryLogSink::log(LogLevel level, const std::string& message) {
+    log(level, message, std::source_location{});
+}
+
+void MemoryLogSink::log(LogLevel level, const std::string& message, std::source_location loc) {
     // 先转发给原后端，保持控制台/文件输出行为不变
-    if (inner_) inner_->log(level, message);
+    if (inner_) inner_->log(level, message, loc);
 
     std::lock_guard<std::mutex> lock(mutex_);
     LogEntry& slot = buffer_[head_];
     slot.level = level;
     slot.message = message;
     slot.timestamp = make_timestamp();
+    slot.source_file = loc.file_name() ? loc.file_name() : "";
+    slot.source_line = loc.line();
     head_ = (head_ + 1) % buffer_.size();
     if (count_ < buffer_.size()) ++count_;
 }

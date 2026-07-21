@@ -48,4 +48,10 @@ uint64_t GLImGuiBackend::imgui_texture_id(ITexture* texture) const {
     return static_cast<uint64_t>(gl_texture->texture_id());
 }
 
+void GLImGuiBackend::rebuild_fonts() {
+    // 销毁并重新创建所有 ImGui 设备对象，使新构建的字体 atlas 上传到 GPU。
+    ImGui_ImplOpenGL3_DestroyDeviceObjects();
+    ImGui_ImplOpenGL3_CreateDeviceObjects();
+}
+
 } // namespace gryce_engine::render

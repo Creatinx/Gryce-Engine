@@ -26,6 +26,8 @@ public:
     float range = 10.0f;
     // 聚光：外锥角（度）。
     float spot_angle = 45.0f;
+    // 聚光：内外锥过渡柔和度（0~1）。
+    float spot_softness = 0.2f;
 
     Light() = default;
 
@@ -38,6 +40,7 @@ public:
         out["direction"] = { direction.x, direction.y, direction.z };
         out["range"] = range;
         out["spot_angle"] = spot_angle;
+        out["spot_softness"] = spot_softness;
     }
 
     void deserialize(const nlohmann::json& in) override {
@@ -49,6 +52,7 @@ public:
         if (d.size() >= 3) direction = math::Vector3f(d[0], d[1], d[2]);
         range = in.value("range", 10.0f);
         spot_angle = in.value("spot_angle", 45.0f);
+        spot_softness = in.value("spot_softness", 0.2f);
     }
 };
 

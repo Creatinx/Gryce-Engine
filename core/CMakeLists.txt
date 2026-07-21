@@ -22,6 +22,7 @@ target_sources(gryce_core
         platform/cursor.cpp
         resources/project.cpp
         resources/resource_path.cpp
+        resources/gpack_bundle.cpp
         assets/asset_manager.cpp
         assets/async_loader.cpp
         assets/obj_loader.cpp
@@ -45,6 +46,7 @@ target_sources(gryce_core
         components/audio_source.cpp
         components/mesh_renderer.cpp
         components/skinned_mesh_renderer.cpp
+        components/terrain.cpp
         reflection/builtin_reflections.cpp
         components/physical_material.cpp
         audio/audio_engine.cpp
@@ -128,8 +130,10 @@ target_sources(gryce_core
             resources/tileset.h
             components/mesh_renderer.h
             components/skinned_mesh_renderer.h
+            components/terrain.h
             resources/project.h
             resources/resource_path.h
+            resources/gpack_bundle.h
             physics/physics_point.h
             physics/physics_types.h
             physics/physics_world_2d.h

@@ -72,6 +72,15 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         GLOG_WARN("RenderPipeline: skinned_pbr shader unavailable, skinned rendering disabled");
     }
 
+    // Scene View 网格线 shader：可选，加载失败仅禁用网格线。
+    grid_shader_ = load_shader("grid", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!grid_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: grid shader unavailable, viewport grid disabled");
+    } else if (!create_grid_mesh(ctx)) {
+        GLOG_WARN("RenderPipeline: grid mesh creation failed, viewport grid disabled");
+        grid_shader_ = RHIShaderHandle{};
+    }
+
     shadow_shader_ = load_shader("shadow_map", shadow_fbo_, false, false);
     if (!shadow_shader_.is_valid()) {
         GLOG_ERROR("RenderPipeline: failed to load shadow shader");
@@ -147,6 +156,15 @@ void RenderPipeline::shutdown() {
     if (owns_shaders_ && tonemap_shader_.is_valid()) {
         ctx_->destroy_shader(tonemap_shader_);
         tonemap_shader_ = RHIShaderHandle{};
+    }
+
+    if (grid_mesh_.is_valid()) {
+        ctx_->destroy_mesh(grid_mesh_);
+        grid_mesh_ = RHIMeshHandle{};
+    }
+    if (owns_shaders_ && grid_shader_.is_valid()) {
+        ctx_->destroy_shader(grid_shader_);
+        grid_shader_ = RHIShaderHandle{};
     }
 
     if (shadow_fbo_.is_valid()) {
@@ -448,6 +466,9 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     // 2a. Skybox（最先绘制，作为背景）
     render_skybox(ctx);
 
+    // 2a'. Scene View 网格线（skybox 之后，场景物体之前）
+    render_grid(ctx);
+
     bind_global_uniforms(ctx);
 
     // 2b. 收集绘制项并拆分不透明 / 透明
@@ -558,6 +579,11 @@ void RenderPipeline::render_mesh(RHIMeshHandle mesh, const Material* material, c
     ctx.set_uniform_mat4(pbr_shader_, "uLightSpaceMatrix", light_space_matrix_);
     ctx.set_uniform_vec3(pbr_shader_, "uCameraPos", camera_->position());
 
+    // 单独 render mesh 时也确保全局光照参数正确
+    ctx.set_uniform_vec3(pbr_shader_, "uAmbient", ambient_);
+    ctx.set_uniform_int(pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
+    upload_lights(ctx, pbr_shader_);
+
     if (material) {
         material->bind(&ctx, pbr_shader_);
     }
@@ -592,6 +618,11 @@ void RenderPipeline::render_skinned_mesh(RHIMeshHandle mesh, const Material* mat
     ctx.set_uniform_mat4(skinned_pbr_shader_, "uProjection", camera_->get_projection_matrix());
     ctx.set_uniform_mat4(skinned_pbr_shader_, "uLightSpaceMatrix", light_space_matrix_);
     ctx.set_uniform_vec3(skinned_pbr_shader_, "uCameraPos", camera_->position());
+
+    // 蒙皮管线与标准 PBR 不共享 program/UBO，必须单独上传全局光照参数
+    ctx.set_uniform_vec3(skinned_pbr_shader_, "uAmbient", ambient_);
+    ctx.set_uniform_int(skinned_pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
+    upload_lights(ctx, skinned_pbr_shader_);
 
     // palette：shared_ptr 按值捕获进命令队列，渲染线程执行时数据仍有效
     if (palette && !palette->empty()) {
@@ -650,38 +681,39 @@ void RenderPipeline::bind_global_uniforms(RenderContext& ctx) {
     ctx.set_shader(pbr_shader_);
     ctx.set_uniform_vec3(pbr_shader_, "uAmbient", ambient_);
     ctx.set_uniform_int(pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
-    upload_lights(ctx);
+    upload_lights(ctx, pbr_shader_);
 }
 
-void RenderPipeline::upload_lights(RenderContext& ctx) {
+void RenderPipeline::upload_lights(RenderContext& ctx, RHIShaderHandle shader) {
+    if (!shader.is_valid()) return;
     const int count = static_cast<int>(std::min(lights_.size(), static_cast<size_t>(k_max_lights)));
-    ctx.set_uniform_int(pbr_shader_, "uLightCount", count);
-    ctx.set_uniform_int(pbr_shader_, "uShadowLightIndex", shadow_light_index_);
+    ctx.set_uniform_int(shader, "uLightCount", count);
+    ctx.set_uniform_int(shader, "uShadowLightIndex", shadow_light_index_);
 
     char name[48];
     for (int i = 0; i < count; ++i) {
         const Light& light = lights_[i];
 
         std::snprintf(name, sizeof(name), "uLightType[%d]", i);
-        ctx.set_uniform_int(pbr_shader_, name, static_cast<int>(light.type));
+        ctx.set_uniform_int(shader, name, static_cast<int>(light.type));
 
         std::snprintf(name, sizeof(name), "uLightPos[%d]", i);
-        ctx.set_uniform_vec3(pbr_shader_, name, light.position);
+        ctx.set_uniform_vec3(shader, name, light.position);
 
         std::snprintf(name, sizeof(name), "uLightDir[%d]", i);
-        ctx.set_uniform_vec3(pbr_shader_, name, light.direction);
+        ctx.set_uniform_vec3(shader, name, light.direction);
 
         std::snprintf(name, sizeof(name), "uLightColor[%d]", i);
-        ctx.set_uniform_vec3(pbr_shader_, name, light.color);
+        ctx.set_uniform_vec3(shader, name, light.color);
 
         std::snprintf(name, sizeof(name), "uLightIntensity[%d]", i);
-        ctx.set_uniform_float(pbr_shader_, name, light.intensity);
+        ctx.set_uniform_float(shader, name, light.intensity);
 
         // x=range, y=cos(outer), z=cos(inner)
         const float outer = light.spot_angle * 3.14159265f / 180.0f;
         const float inner = light.spot_angle * (1.0f - light.spot_softness) * 3.14159265f / 180.0f;
         std::snprintf(name, sizeof(name), "uLightParams[%d]", i);
-        ctx.set_uniform_vec4(pbr_shader_, name,
+        ctx.set_uniform_vec4(shader, name,
                              math::Vector4f(light.range, std::cos(outer), std::cos(inner), 0.0f));
     }
 }
@@ -865,6 +897,74 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     tonemap_ptr->set_post_process_params(exposure_, tone_map_mode_);
 
     ctx.draw_mesh(fullscreen_mesh_, tonemap_shader_);
+}
+
+// ---------------------------------------------------------------------------
+// Scene View 网格线
+// ---------------------------------------------------------------------------
+bool RenderPipeline::create_grid_mesh(RenderContext* ctx) {
+    // 大平面覆盖 XZ 平面，使用 MeshVertex 布局（position 有效，其余填 0）。
+    struct VertexGPU {
+        float x, y, z;
+        float nx, ny, nz;
+        float tx, ty, tz;
+        float u, v;
+        float r, g, b;
+    };
+
+    const float half = 500.0f;
+    VertexGPU verts[] = {
+        {-half, 0.0f, -half, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1},
+        { half, 0.0f, -half, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1},
+        { half, 0.0f,  half, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1},
+        {-half, 0.0f,  half, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1},
+    };
+    const uint32_t indices[] = {0, 1, 2, 0, 2, 3};
+
+    grid_mesh_ = ctx->create_mesh();
+    IMesh* mesh_ptr = ctx->mesh(grid_mesh_);
+    if (!grid_mesh_.is_valid() || !mesh_ptr) return false;
+    mesh_ptr->upload_vertices(verts, sizeof(verts), 4);
+    mesh_ptr->upload_indices(indices, sizeof(indices), 6);
+
+    VertexLayout layout;
+    layout.stride = sizeof(VertexGPU);
+    layout.attributes = {
+        {0, VertexType::Float3, false, 0},
+        {1, VertexType::Float3, false, 3 * sizeof(float)},
+        {2, VertexType::Float3, false, 6 * sizeof(float)},
+        {3, VertexType::Float2, false, 9 * sizeof(float)},
+        {4, VertexType::Float3, false, 11 * sizeof(float)}
+    };
+    mesh_ptr->set_layout(layout);
+    return true;
+}
+
+void RenderPipeline::render_grid(RenderContext& ctx) {
+    if (!grid_enabled_ || !grid_shader_.is_valid() || !grid_mesh_.is_valid() || !camera_) return;
+
+    // 网格透明混合，深度测试开启但深度写入关闭，避免遮挡场景物体。
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(false);
+    ctx.set_blend(true);
+
+    ctx.set_shader(grid_shader_);
+    ctx.set_uniform_mat4(grid_shader_, "uModel", math::Matrix4f::identity());
+    ctx.set_uniform_mat4(grid_shader_, "uView", camera_->get_view_matrix());
+    ctx.set_uniform_mat4(grid_shader_, "uProjection", camera_->get_projection_matrix());
+    ctx.set_uniform_vec3(grid_shader_, "uGridColor", math::Vector3f(0.5f, 0.5f, 0.5f));
+    ctx.set_uniform_float(grid_shader_, "uGridSize", k_grid_size);
+    ctx.set_uniform_float(grid_shader_, "uMajorLineEvery", k_grid_major_every);
+    ctx.set_uniform_float(grid_shader_, "uFadeStart", k_grid_fade_start);
+    ctx.set_uniform_float(grid_shader_, "uFadeEnd", k_grid_fade_end);
+
+    ctx.draw_mesh(grid_mesh_, grid_shader_);
+
+    // 恢复默认状态（不透明物体需要这些状态）
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(!cull_disabled_);
+    ctx.set_blend(false);
 }
 
 } // namespace gryce_engine::render

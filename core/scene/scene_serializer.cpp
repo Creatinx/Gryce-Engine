@@ -79,6 +79,9 @@ nlohmann::json SceneSerializer::serialize_entity(const Entity& entity) {
         out["overrides"] = inst->overrides;
         out["members"] = inst->members;
         out["root_template"] = inst->root_template_uuid;
+        if (!inst->variant_of.empty()) {
+            out["variant_of"] = inst->variant_of;
+        }
 
         nlohmann::json children = nlohmann::json::array();
         for (const auto& child : entity.children()) {
@@ -222,6 +225,7 @@ std::unique_ptr<Entity> SceneSerializer::deserialize_entity(
                 // 实例根 UUID 以节点 "uuid" 字段为准
                 root->set_uuid(UUID(e_json.value("uuid", root->uuid().str())));
             }
+            inst->variant_of = e_json.value("variant_of", "");
             Prefab::refresh_members(root.get());
         }
 
