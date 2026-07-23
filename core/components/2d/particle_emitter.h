@@ -71,7 +71,7 @@ public:
     // 可选贴图（空表示纯色矩形）
     std::string texture_path;
 
-    // 是否使用相加混合（TODO：等 RHI 暴露 blend mode 后实现）
+    // 是否使用相加混合
     bool additive = false;
 
     // 发射原点偏移（相对于 owner 的 Transform）
@@ -121,8 +121,8 @@ private:
     std::vector<Particle> particles_;
     float emission_accumulator_ = 0.0f;
 
-    // 运行时加载的贴图（不序列化）
-    mutable render::ITexture* texture_ = nullptr;
+    // 运行时加载的贴图句柄（不序列化）
+    mutable render::RHITextureHandle texture_handle_;
 
     static std::mt19937& rng();
     static float random_float(float min, float max);

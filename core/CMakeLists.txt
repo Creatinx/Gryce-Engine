@@ -80,6 +80,7 @@ target_sources(gryce_core
         render/render2d.cpp
         render/font_atlas.cpp
         render/renderer2d_impl.cpp
+        render/ibl_generator.cpp
         render/opengl/gl_backend.cpp
         render/opengl/gl_frame_pacing.cpp
         render/opengl/gl_buffer.cpp

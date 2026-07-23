@@ -320,7 +320,9 @@ void DebugPanel::show(platform::Window* window, scene::Scene* scene, math::Camer
         }
     }
     if (ImGui::Checkbox(tr("debug.use_shadow"), &use_shadow)) {
-        // TODO: 开关 shadow map 需要管线支持；目前仅保存状态供后续使用
+        if (pipeline) {
+            pipeline->set_shadow_enabled(use_shadow);
+        }
     }
 
     ImGui::Separator();

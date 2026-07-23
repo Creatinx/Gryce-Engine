@@ -31,6 +31,7 @@ public:
 
     void begin_frame(float screen_width, float screen_height) override;
     void end_frame() override;
+    void set_blend_mode(BlendMode mode) override;
 
     void set_camera(const math::Vector2f& center, float zoom) override;
     math::Vector2f camera_center() const override { return camera_center_; }
@@ -47,6 +48,8 @@ public:
     void draw_sprite_region(float x, float y, float w, float h,
                              float u0, float v0, float u1, float v1,
                              RHITextureHandle texture, const Color& tint = Color::white()) override;
+    void draw_sprite_rotated(float x, float y, float w, float h, float rotation,
+                              RHITextureHandle texture, const Color& tint = Color::white()) override;
 
     // 2D 光照接口
     void set_ambient_light(const Color& color) override;
@@ -136,7 +139,7 @@ private:
                                uint32_t vertex_stride,
                                const VkVertexInputAttributeDescription* attrs,
                                uint32_t attr_count,
-                               bool depth_test, bool depth_write, bool blend,
+                               bool depth_test, bool depth_write, BlendMode blend_mode,
                                bool color_output = true);
 
     void write_lit_descriptor_set(VkDescriptorSet set, int frame_index,
@@ -181,14 +184,16 @@ private:
     VkPipeline pipeline_rect_ = VK_NULL_HANDLE;
     VkPipeline pipeline_text_ = VK_NULL_HANDLE;
     VkPipeline pipeline_sprite_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_sprite_additive_ = VK_NULL_HANDLE;
     VkPipeline pipeline_lit_sprite_ = VK_NULL_HANDLE;
 
     // pipelines (shadow / offscreen / bloom)
     VkPipeline pipeline_shadow_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_lit_sprite_scene_ = VK_NULL_HANDLE;
     VkPipeline pipeline_rect_scene_ = VK_NULL_HANDLE;
     VkPipeline pipeline_text_scene_ = VK_NULL_HANDLE;
     VkPipeline pipeline_sprite_scene_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_sprite_scene_additive_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_lit_sprite_scene_ = VK_NULL_HANDLE;
     VkPipeline pipeline_bloom_threshold_ = VK_NULL_HANDLE;
     VkPipeline pipeline_bloom_blur_ = VK_NULL_HANDLE;
     VkPipeline pipeline_bloom_compose_ = VK_NULL_HANDLE;
@@ -232,6 +237,7 @@ private:
     float screen_height_ = 0.0f;
     bool initialized_ = false;
     bool use_bloom_this_frame_ = false;
+    BlendMode blend_mode_ = BlendMode::Alpha;
 
     // 2D 光照
     Color ambient_light_ = Color::black();

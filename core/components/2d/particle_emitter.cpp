@@ -2,11 +2,18 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <random>
+#include <unordered_map>
 
 #include "components/transform.h"
 #include "scene/entity.h"
+#include "assets/asset_manager.h"
+#include "assets/texture_data.h"
 #include "utils/glog/glog_lib.h"
+
+using gryce_engine::assets::AssetManager;
+using gryce_engine::assets::TextureData;
 
 namespace gryce_engine::components::d2 {
 
@@ -14,6 +21,36 @@ namespace {
 
 constexpr float k_pi = 3.14159265358979323846f;
 constexpr float k_deg2rad = k_pi / 180.0f;
+
+// 粒子贴图共享缓存：同一路径的贴图只上传一次 GPU，按 RHITextureHandle 持有。
+struct ParticleTextureCache {
+    std::mutex mutex;
+    std::unordered_map<std::string, render::RHITextureHandle> handles;
+
+    render::RHITextureHandle get_or_create(render::IRenderer2D* renderer, const std::string& path) {
+        if (path.empty() || !renderer) return render::RHITextureHandle{};
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto it = handles.find(path);
+            if (it != handles.end() && it->second.is_valid()) {
+                return it->second;
+            }
+        }
+        auto data = AssetManager::instance().load<TextureData>(path);
+        if (!data) return render::RHITextureHandle{};
+        render::RHITextureHandle handle = renderer->create_texture_from_data(data.get());
+        if (handle.is_valid()) {
+            std::lock_guard<std::mutex> lock(mutex);
+            handles[path] = handle;
+        }
+        return handle;
+    }
+};
+
+ParticleTextureCache& particle_texture_cache() {
+    static ParticleTextureCache cache;
+    return cache;
+}
 
 render::Color lerp_color(const render::Color& a, const render::Color& b, float t) {
     return render::Color(
@@ -146,10 +183,14 @@ void ParticleEmitter2D::on_update(float dt) {
 void ParticleEmitter2D::draw(render::IRenderer2D* renderer) {
     if (!enabled || !renderer) return;
 
-    // TODO: 贴图加载与按贴图绘制；目前粒子使用纯色矩形，性能更好且足够演示。
-    (void)texture_path;
-    (void)texture_;
-    (void)additive;
+    if (additive) {
+        renderer->set_blend_mode(render::BlendMode::Additive);
+    }
+
+    // 按需加载贴图：只缓存句柄，不保存裸指针。
+    if (!texture_path.empty() && !texture_handle_.is_valid()) {
+        texture_handle_ = particle_texture_cache().get_or_create(renderer, texture_path);
+    }
 
     for (const auto& p : particles_) {
         if (!p.active) continue;
@@ -159,7 +200,10 @@ void ParticleEmitter2D::draw(render::IRenderer2D* renderer) {
         float size = p.start_size + (p.end_size - p.start_size) * t;
         float half = size * 0.5f;
 
-        if (std::abs(p.rotation) < 0.001f) {
+        if (texture_handle_.is_valid()) {
+            renderer->draw_sprite_rotated(p.position.x - half, p.position.y - half,
+                                          size, size, p.rotation, texture_handle_, color);
+        } else if (std::abs(p.rotation) < 0.001f) {
             renderer->draw_rect(p.position.x - half, p.position.y - half,
                                 size, size, color);
         } else {
@@ -178,6 +222,10 @@ void ParticleEmitter2D::draw(render::IRenderer2D* renderer) {
             }
             renderer->draw_polygon(poly, color);
         }
+    }
+
+    if (additive) {
+        renderer->set_blend_mode(render::BlendMode::Alpha);
     }
 }
 

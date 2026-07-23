@@ -38,8 +38,8 @@ layout(set = 0, binding = 0) uniform MaterialLightUBO {
     int uHDREnabled;       // 1=输出线性 HDR，0=内置 tonemap
     int uLightCount;
     int uShadowLightIndex; // 产生阴影的方向光下标（-1 表示无）
-    int pad0;
-    int pad1;
+    int uUseIBL;
+    float uIBLIntensity;
     Light uLights[MAX_LIGHTS];
 } ubo;
 
@@ -50,6 +50,10 @@ layout(set = 0, binding = 4) uniform sampler2D uMetallicMap;
 layout(set = 0, binding = 5) uniform sampler2D uAOMap;
 layout(set = 0, binding = 6) uniform sampler2DShadow uShadowMap;
 layout(set = 0, binding = 7) uniform sampler2D uEmissiveMap;
+
+layout(set = 0, binding = 9) uniform samplerCube uIrradianceMap;
+layout(set = 0, binding = 10) uniform samplerCube uPrefilterMap;
+layout(set = 0, binding = 11) uniform sampler2D uBRDFLUT;
 
 const float PI = 3.14159265359;
 
@@ -175,6 +179,20 @@ void main() {
     }
 
     vec3 ambient = ubo.uAmbient.rgb * albedo * ao;
+    if (ubo.uUseIBL > 0) {
+        vec3 Nsafe = N;
+        vec3 irradiance = texture(uIrradianceMap, Nsafe).rgb;
+        vec3 diffuse = irradiance * albedo;
+
+        vec3 R = reflect(-V, Nsafe);
+        vec3 prefiltered = texture(uPrefilterMap, R).rgb;
+        vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
+        vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
+        vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+
+        vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
+        ambient = (kD * diffuse + specular) * ao * ubo.uIBLIntensity;
+    }
     vec3 emissive = ubo.uEmissiveOpacity.xyz * (ubo.uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
     vec3 color = ambient + Lo + emissive;

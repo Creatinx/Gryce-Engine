@@ -16,6 +16,7 @@
 #include "../undo/field_value.h"
 
 namespace gryce_engine {
+namespace render { class RenderContext; }
 namespace scene { class Entity; class Scene; class UUID; }
 namespace components { class Component; }
 namespace reflection { struct FieldInfo; }
@@ -51,6 +52,9 @@ public:
     // 绑定 Undo/Redo 命令栈
     void set_undo_stack(CommandStack* stack) { undo_stack_ = stack; }
 
+    // 绑定渲染上下文，供材质编辑器等需要即时上传 GPU 资源的面板使用
+    void set_render_context(render::RenderContext* ctx) { render_ctx_ = ctx; }
+
 protected:
     void on_imgui() override;
 
@@ -77,6 +81,7 @@ private:
 
     scene::UUID selected_uuid_;
     scene::Scene* scene_ = nullptr;
+    render::RenderContext* render_ctx_ = nullptr;
     std::function<void(scene::Entity*, const std::string&)> drop_handler_;
     bool read_only_ = false;
     CommandStack* undo_stack_ = nullptr;

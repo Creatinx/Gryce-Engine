@@ -13,6 +13,7 @@
 #endif
 
 #include "render/render_context.h"
+#include "render/render_commands.h"
 #include "render/mesh.h"
 #include "render/shader.h"
 #include "render/texture.h"
@@ -650,6 +651,7 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
         ctx_->set_depth_test(false);
         ctx_->set_blend(true);
         ctx_->set_cull_face(false);
+        set_blend_mode(BlendMode::Alpha);
     }
 
     // 窗口尺寸变化时重建 bloom 中间目标
@@ -732,6 +734,31 @@ void Renderer2D::end_frame() {
     if (use_bloom) {
         render_bloom_pass();
     }
+}
+
+void Renderer2D::set_blend_mode(BlendMode mode) {
+    if (mode == blend_mode_) return;
+
+    // 先提交当前按旧混合模式收集的批次，避免同批顶点被错误混合。
+    flush_batch(std::move(vertices_), false);
+
+    if (context_alive()) {
+        if (mode == BlendMode::Alpha) {
+            ctx_->push_command([](IRenderBackend* backend) {
+                backend->set_blend(true);
+                backend->set_blend_func(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
+                backend->set_blend_equation(BlendEquation::Add);
+            });
+        } else {
+            ctx_->push_command([](IRenderBackend* backend) {
+                backend->set_blend(true);
+                backend->set_blend_func(BlendFactor::SrcAlpha, BlendFactor::One);
+                backend->set_blend_equation(BlendEquation::Add);
+            });
+        }
+    }
+
+    blend_mode_ = mode;
 }
 
 void Renderer2D::render_shadow_pass() {
@@ -1334,6 +1361,81 @@ void Renderer2D::draw_sprite_region(float x, float y, float w, float h,
         if (!mesh_ptr || !shader_ptr) return;
 
         // 句柄 → GPU 纹理：带 generation 校验，失效（已销毁/槽位复用）则跳过绘制
+        ITexture* tex_ptr = ctx_->texture(texture);
+        if (!tex_ptr) return;
+
+        mesh_ptr->upload_vertices(verts, static_cast<uint32_t>(sizeof(verts)), 6);
+        VertexLayout layout;
+        layout.stride = sizeof(Vertex2D);
+        layout.attributes = {
+            {0, VertexType::Float2, false, 0},
+            {1, VertexType::Float4, false, 2 * sizeof(float)},
+            {2, VertexType::Float2, false, 6 * sizeof(float)}
+        };
+        mesh_ptr->set_layout(layout);
+
+        shader_ptr->bind();
+        shader_ptr->set_mat4("uViewProj", view_proj);
+        tex_ptr->bind(0);
+        shader_ptr->set_int("uTexture", 0);
+        shader_ptr->set_int("uUseTexture", 2);
+        mesh_ptr->draw();
+        shader_ptr->unbind();
+    });
+}
+
+void Renderer2D::draw_sprite_rotated(float x, float y, float w, float h, float rotation,
+                                      RHITextureHandle texture, const Color& tint) {
+    if (!texture.is_valid() || !context_alive() || !mesh_.is_valid() || !shader_.is_valid()) return;
+
+    flush_batch(std::move(vertices_), false);
+
+    const float cx = x + w * 0.5f;
+    const float cy = y + h * 0.5f;
+    const float hw = w * 0.5f;
+    const float hh = h * 0.5f;
+    const float c = std::cos(rotation);
+    const float s = std::sin(rotation);
+
+    // 局部角点（顺时针）及其 UV，绕中心旋转后推入渲染命令。
+    const math::Vector2f local[4] = {
+        math::Vector2f(-hw, -hh),
+        math::Vector2f( hw, -hh),
+        math::Vector2f( hw,  hh),
+        math::Vector2f(-hw,  hh)
+    };
+    const math::Vector2f uv[4] = {
+        math::Vector2f(0.0f, 0.0f),
+        math::Vector2f(1.0f, 0.0f),
+        math::Vector2f(1.0f, 1.0f),
+        math::Vector2f(0.0f, 1.0f)
+    };
+    math::Vector2f world[4];
+    for (int i = 0; i < 4; ++i) {
+        world[i] = math::Vector2f(
+            cx + local[i].x * c - local[i].y * s,
+            cy + local[i].x * s + local[i].y * c
+        );
+    }
+
+    const math::Matrix4f view_proj = view_proj_;
+    const RHIMeshHandle mesh = mesh_;
+    const RHIShaderHandle shader = shader_;
+    ctx_->push_command([this, mesh, shader, view_proj, world, uv, texture, tint](IRenderBackend* backend) {
+        (void)backend;
+        Vertex2D verts[6] = {
+            {world[0].x, world[0].y, tint.r, tint.g, tint.b, tint.a, uv[0].x, uv[0].y},
+            {world[1].x, world[1].y, tint.r, tint.g, tint.b, tint.a, uv[1].x, uv[1].y},
+            {world[2].x, world[2].y, tint.r, tint.g, tint.b, tint.a, uv[2].x, uv[2].y},
+            {world[0].x, world[0].y, tint.r, tint.g, tint.b, tint.a, uv[0].x, uv[0].y},
+            {world[2].x, world[2].y, tint.r, tint.g, tint.b, tint.a, uv[2].x, uv[2].y},
+            {world[3].x, world[3].y, tint.r, tint.g, tint.b, tint.a, uv[3].x, uv[3].y},
+        };
+
+        IMesh* mesh_ptr = ctx_->mesh(mesh);
+        IShader* shader_ptr = ctx_->shader(shader);
+        if (!mesh_ptr || !shader_ptr) return;
+
         ITexture* tex_ptr = ctx_->texture(texture);
         if (!tex_ptr) return;
 

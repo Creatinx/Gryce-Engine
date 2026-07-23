@@ -27,12 +27,18 @@ uniform sampler2D uAOMap;
 uniform sampler2D uEmissiveMap;
 uniform sampler2DShadow uShadowMap;
 
+uniform samplerCube uIrradianceMap;
+uniform samplerCube uPrefilterMap;
+uniform sampler2D uBRDFLUT;
+
 uniform int uUseAlbedoMap;
 uniform int uUseNormalMap;
 uniform int uUseRoughnessMap;
 uniform int uUseMetallicMap;
 uniform int uUseAOMap;
 uniform int uUseEmissiveMap;
+uniform int uUseIBL;
+uniform float uIBLIntensity;
 
 // ---------------------------------------------------------------------------
 // 灯光 / 相机
@@ -189,6 +195,20 @@ void main() {
     }
 
     vec3 ambient = uAmbient * albedo * ao;
+    if (uUseIBL > 0) {
+        vec3 Nsafe = N;
+        vec3 irradiance = texture(uIrradianceMap, Nsafe).rgb;
+        vec3 diffuse = irradiance * albedo;
+
+        vec3 R = reflect(-V, Nsafe);
+        vec3 prefiltered = texture(uPrefilterMap, R).rgb;
+        vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
+        vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
+        vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+
+        vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
+        ambient = (kD * diffuse + specular) * ao * uIBLIntensity;
+    }
     vec3 emissive = uEmissiveColor * (uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
     vec3 color = ambient + Lo + emissive;

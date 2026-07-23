@@ -157,8 +157,8 @@ private:
         int hdr_enabled;
         int light_count;
         int shadow_light_index;
-        int pad0;
-        int pad1;
+        int use_ibl;
+        float ibl_intensity;
         LightUBO lights[k_max_lights];
     };
 
@@ -168,7 +168,7 @@ private:
     // stride 按 256 对齐（>= minUniformBufferOffsetAlignment 常见最大值）。
     static constexpr size_t ubo_stride_ = (sizeof(UBOData) + 255) / 256 * 256;
     static constexpr uint32_t max_draws_per_frame_ = 2048;
-    static constexpr int k_max_texture_bindings = 8;
+    static constexpr int k_max_texture_bindings = 12;
 
     std::vector<std::unique_ptr<VulkanBuffer>> ubo_buffers_;      // 每帧一个大 UBO
     std::vector<VkDescriptorPool> descriptor_pools_;              // 每帧一个池

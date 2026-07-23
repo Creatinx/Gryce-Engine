@@ -17,6 +17,26 @@
 
 namespace gryce_engine::render {
 
+namespace {
+// 将全局 texture slot 映射到 Vulkan PBR shader 的 descriptor binding。
+// 必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 中的 layout(binding=...) 一致。
+int slot_to_binding(int slot) {
+    switch (slot) {
+        case TextureSlots::kPBRAlbedo:    return 1;
+        case TextureSlots::kPBRNormal:    return 2;
+        case TextureSlots::kPBRRoughness: return 3;
+        case TextureSlots::kPBRMetallic:  return 4;
+        case TextureSlots::kPBRAO:        return 5;
+        case TextureSlots::kPBRShadow:    return 6;
+        case TextureSlots::kPBREmissive:  return 7;
+        case TextureSlots::kIBLIrradiance: return 9;
+        case TextureSlots::kIBLPrefilter:  return 10;
+        case TextureSlots::kIBLBRDF:       return 11;
+        default: return slot + 1;
+    }
+}
+} // namespace
+
 VulkanShader::VulkanShader(VulkanDevice* device, VulkanSwapchain* swapchain)
     : device_(device), swapchain_(swapchain) {}
 
@@ -217,32 +237,48 @@ bool VulkanShader::create_pipeline() {
             return false;
         }
     } else {
-        // 描述符布局：UBO + 6 PBR 贴图 + shadow map（skinned 追加 binding 8 = palette UBO）
-        VkDescriptorSetLayoutBinding bindings[9]{};
-        bindings[0].binding = 0;
-        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // 描述符布局：UBO(0) + PBR 贴图(1-7) + IBL 贴图(9-11) + palette UBO(8, skinned)
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
+        bindings.reserve(skinned_ ? 12 : 11);
 
-        for (uint32_t i = 0; i < 7; ++i) {
-            bindings[i + 1].binding = i + 1;
-            bindings[i + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[i + 1].descriptorCount = 1;
-            bindings[i + 1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutBinding ubo_binding{};
+        ubo_binding.binding = 0;
+        ubo_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        ubo_binding.descriptorCount = 1;
+        ubo_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings.push_back(ubo_binding);
+
+        for (int i = 1; i <= 7; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
         }
-        uint32_t binding_count = 8;
+
+        for (int i = 9; i <= 11; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
+        }
+
         if (skinned_) {
-            bindings[8].binding = 8;
-            bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            bindings[8].descriptorCount = 1;
-            bindings[8].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-            binding_count = 9;
+            VkDescriptorSetLayoutBinding palette_binding{};
+            palette_binding.binding = 8;
+            palette_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            palette_binding.descriptorCount = 1;
+            palette_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            bindings.push_back(palette_binding);
         }
 
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = binding_count;
-        layout_info.pBindings = bindings;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
         vkCreateDescriptorSetLayout(device_->device(), &layout_info, nullptr, &descriptor_set_layout_);
 
         VkPipelineLayoutCreateInfo pl_info{};
@@ -447,6 +483,7 @@ void VulkanShader::set_int(const std::string& name, int value) {
     else if (name == "uHDREnabled") ubo_data_.hdr_enabled = value;
     else if (name == "uLightCount") ubo_data_.light_count = value;
     else if (name == "uShadowLightIndex") ubo_data_.shadow_light_index = value;
+    else if (name == "uUseIBL") ubo_data_.use_ibl = value;
     else if (parse_light_index(name, "uLightType", light_index)) {
         ubo_data_.lights[light_index].pos_type.w = static_cast<float>(value);
     }
@@ -461,6 +498,7 @@ void VulkanShader::set_float(const std::string& name, float value) {
     else if (name == "uAO") ubo_data_.ao = value;
     else if (name == "uOpacity") ubo_data_.emissive_opacity.w = value;
     else if (name == "uShadowBias") ubo_data_.shadow_bias = value;
+    else if (name == "uIBLIntensity") ubo_data_.ibl_intensity = value;
     else if (name == "uLightIntensity") ubo_data_.lights[0].color_intensity.w = value; // 旧版单光 API
     else if (parse_light_index(name, "uLightIntensity", light_index)) {
         ubo_data_.lights[light_index].color_intensity.w = value;
@@ -597,7 +635,8 @@ bool VulkanShader::create_descriptor_pool() {
         // skinned 管线每 draw 多消耗一个 palette UBO 描述符
         pool_sizes[0].descriptorCount = max_draws_per_frame_ * (skinned_ ? 2 : 1);
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[1].descriptorCount = max_draws_per_frame_ * (k_max_texture_bindings - 1);
+        // 每 draw 最多 10 张采样器：PBR(1-7) + IBL(9-11)
+        pool_sizes[1].descriptorCount = max_draws_per_frame_ * 10;
 
         VkDescriptorPoolCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -614,10 +653,9 @@ bool VulkanShader::create_descriptor_pool() {
 }
 
 void VulkanShader::set_texture(int slot, ITexture* texture) {
-    // post-process / skybox: binding 0 starts at slot 0
-    // PBR: slot 0~4 对应 material 贴图，binding 1~5; slot 5 对应 shadow map，binding 6;
-    //      slot 6 对应 emissive map，binding 7
-    int binding = uses_fixed_descriptor_sets() ? slot : (slot + 1);
+    // post-process / skybox: 只有一个 combined image sampler，固定 binding 0。
+    // PBR/IBL: 经 slot_to_binding 映射到与 GLSL layout(binding=...) 一致的 binding。
+    int binding = uses_fixed_descriptor_sets() ? 0 : slot_to_binding(slot);
     if (binding < 0 || binding >= k_max_texture_bindings || !texture) return;
     auto* vk_tex = dynamic_cast<VulkanTexture*>(texture);
     if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) return;
@@ -768,6 +806,8 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
 
     VkDescriptorImageInfo image_infos[k_max_texture_bindings]{};
     for (int binding = 1; binding < k_max_texture_bindings; ++binding) {
+        // binding 8 是 skinned palette UBO，不是采样器；跳过避免误写成 image。
+        if (binding == 8) continue;
         VulkanTexture* vk_tex = current_textures_[binding];
         if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) {
             vk_tex = fallback_texture_.get();

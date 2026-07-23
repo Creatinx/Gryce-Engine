@@ -77,6 +77,15 @@ struct BloomParams {
 };
 
 // ---------------------------------------------------------------------------
+// BlendMode — 2D 渲染混合模式
+// ---------------------------------------------------------------------------
+enum class BlendMode {
+    Opaque,   // 不混合
+    Alpha,    // SrcAlpha / OneMinusSrcAlpha
+    Additive  // SrcAlpha / One
+};
+
+// ---------------------------------------------------------------------------
 // IRenderer2D — 2D 图形渲染接口
 // 支持：矩形、n 边形、圆形、文字
 // 所有坐标系以屏幕左上角为原点，向右为 +X，向下为 +Y
@@ -93,6 +102,9 @@ public:
     virtual void begin_frame(float screen_width, float screen_height) = 0;
     // 每帧结束：提交所有顶点并绘制
     virtual void end_frame() = 0;
+
+    // 设置当前混合模式（默认 Alpha；影响后续 2D 绘制）
+    virtual void set_blend_mode(BlendMode mode) { (void)mode; }
 
     // -----------------------------------------------------------------------
     // 2D 摄像机（可选）
@@ -155,6 +167,12 @@ public:
                                      RHITextureHandle texture, const Color& tint = Color::white()) {
         (void)x; (void)y; (void)w; (void)h; (void)u0; (void)v0; (void)u1; (void)v1;
         (void)texture; (void)tint;
+    }
+
+    // 绘制绕中心旋转的不受光照贴图精灵
+    virtual void draw_sprite_rotated(float x, float y, float w, float h, float rotation,
+                                      RHITextureHandle texture, const Color& tint = Color::white()) {
+        (void)x; (void)y; (void)w; (void)h; (void)rotation; (void)texture; (void)tint;
     }
 
     // 绘制受光照的贴图精灵；normal_map 句柄无效时使用默认平面法线

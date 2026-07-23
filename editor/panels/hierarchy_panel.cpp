@@ -318,6 +318,14 @@ void HierarchyPanel::flush_deferred_ops() {
     deferred_ops_.clear();
 }
 
+void HierarchyPanel::queue_delete(const scene::UUID& uuid) {
+    if (!scene_ || !uuid.is_valid()) return;
+    if (uuid == selected_uuid_) {
+        clear_selection();
+    }
+    deferred_ops_.push_back(PendingOp{PendingOp::Kind::Delete, uuid, scene::UUID::nil(), ""});
+}
+
 bool HierarchyPanel::is_collapsed(const scene::UUID& uuid) const {
     return collapsed_uuids_.find(uuid.str()) != collapsed_uuids_.end();
 }

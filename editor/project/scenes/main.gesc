@@ -12,7 +12,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 10,
-          "text": "FPS: 166.3",
+          "text": "FPS: 186.2",
           "type": "Label"
         }
       ],
@@ -120,294 +120,6 @@
     {
       "components": [
         {
-          "color": [
-            0.0,
-            1.0,
-            1.0,
-            1.0
-          ],
-          "enabled": true,
-          "points": [
-            [
-              -70.0,
-              70.0
-            ],
-            [
-              0.0,
-              -70.0
-            ],
-            [
-              70.0,
-              70.0
-            ]
-          ],
-          "render_order": 0,
-          "type": "Polygon"
-        }
-      ],
-      "enabled": true,
-      "name": "Triangle",
-      "parent": null,
-      "transform": {
-        "position": [
-          1160.0,
-          600.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "63bfe95c-3e69-4811-82f0-ae9c96f1b277"
-    },
-    {
-      "components": [
-        {
-          "color": [
-            1.0,
-            0.0,
-            1.0,
-            1.0
-          ],
-          "enabled": true,
-          "points": [
-            [
-              -1.3113416343912832e-06,
-              -30.0
-            ],
-            [
-              17.633556365966797,
-              24.270509719848633
-            ],
-            [
-              -28.531696319580078,
-              -9.270508766174316
-            ],
-            [
-              28.531696319580078,
-              -9.2705078125
-            ],
-            [
-              -17.63357162475586,
-              24.27050018310547
-            ]
-          ],
-          "render_order": 0,
-          "type": "Polygon"
-        }
-      ],
-      "enabled": true,
-      "name": "Pentagon",
-      "parent": null,
-      "transform": {
-        "position": [
-          1160.0,
-          600.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "84c72fae-f0d4-46b3-9da2-67b402394bdb"
-    },
-    {
-      "components": [
-        {
-          "background_color": [
-            0.15000000596046448,
-            0.15000000596046448,
-            0.18000000715255737,
-            1.0
-          ],
-          "enabled": true,
-          "far_plane": 500.0,
-          "fov": 60.0,
-          "is_main": true,
-          "near_plane": 0.10000000149011612,
-          "type": "Camera"
-        }
-      ],
-      "enabled": true,
-      "name": "MainCamera",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          5.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          -0.7071067690849304,
-          0.7071067690849304
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "fe5c1c83-a9c9-4e52-93fe-7ebe7e06540f"
-    },
-    {
-      "components": [
-        {
-          "color": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "direction": [
-            -0.6507914066314697,
-            -0.7592566013336182,
-            0.0
-          ],
-          "enabled": true,
-          "intensity": 3.0,
-          "light_type": 0,
-          "range": 10.0,
-          "spot_angle": 45.0,
-          "type": "Light"
-        }
-      ],
-      "enabled": true,
-      "name": "MainLight",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          -0.0990457683801651,
-          -0.2391176074743271,
-          -0.36964383721351624,
-          0.8923990726470947
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "460ae209-c056-4cd0-a2e7-e4f13151099b"
-    },
-    {
-      "components": [
-        {
-          "enabled": true,
-          "material": {
-            "albedo_color": [
-              0.20000000298023224,
-              0.5,
-              0.20000000298023224
-            ],
-            "albedo_map_path": "",
-            "ao": 1.0,
-            "ao_map_path": "",
-            "blend_mode": 1,
-            "density": 1.0,
-            "drag_coefficient": 0.0,
-            "emissive_color": [
-              0.0,
-              0.0,
-              0.0
-            ],
-            "emissive_map_path": "",
-            "metallic": 0.0,
-            "metallic_map_path": "",
-            "name": "Ground",
-            "normal_map_path": "",
-            "opacity": 1.0,
-            "preset_name": "",
-            "roughness": 0.6949999928474426,
-            "roughness_map_path": "",
-            "softness": 0.0,
-            "two_sided": true,
-            "use_albedo_map": false,
-            "use_ao_map": false,
-            "use_emissive_map": true,
-            "use_metallic_map": false,
-            "use_normal_map": true,
-            "use_roughness_map": false,
-            "uv_offset": [
-              0.0,
-              0.0
-            ],
-            "uv_scale": [
-              1.0,
-              1.0
-            ]
-          },
-          "mesh_path": "res:/models/cube_pbr.obj",
-          "type": "MeshRenderer"
-        },
-        {
-          "enabled": true,
-          "kinematic": false,
-          "type": "StaticBody"
-        },
-        {
-          "center": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "enabled": true,
-          "is_trigger": false,
-          "size": [
-            1.0,
-            1.0,
-            1.0
-          ],
-          "type": "BoxCollider"
-        }
-      ],
-      "enabled": true,
-      "name": "Ground",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          -1.9683640003204346,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          60.0,
-          0.5,
-          60.0
-        ]
-      },
-      "uuid": "bc45703e-95bd-46b8-ade6-f388033f8a64"
-    },
-    {
-      "components": [
-        {
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -472,9 +184,9 @@
           ],
           "angular_damping": 0.0,
           "angular_velocity": [
-            0.0,
-            3.2514435588382185e-11,
-            0.0
+            5.723403228330426e-05,
+            3.2745039318937685e-11,
+            5.721319030271843e-05
           ],
           "enabled": true,
           "friction": 0.8999999761581421,
@@ -503,9 +215,9 @@
           "type": "RigidBody",
           "use_gravity": true,
           "velocity": [
-            1.1723955140041653e-13,
             0.0,
-            -2.6716406864579767e-11
+            -7.534846782684326,
+            0.0
           ]
         },
         {
@@ -529,14 +241,14 @@
       "parent": null,
       "transform": {
         "position": [
-          -0.0003195486788172275,
-          -1.2183641195297241,
-          0.001496724085882306
+          0.0,
+          -1.1271274089813232,
+          0.0
         ],
         "rotation": [
-          1.8701055637393438e-07,
-          9.092492837226018e-05,
-          -1.0745634426712058e-07,
+          0.0,
+          0.0,
+          0.0,
           1.0
         ],
         "scale": [
@@ -773,94 +485,6 @@
       "components": [
         {
           "color": [
-            1.0,
-            0.75,
-            0.4000000059604645
-          ],
-          "direction": [
-            0.0,
-            -1.0,
-            0.0
-          ],
-          "enabled": true,
-          "intensity": 2.5,
-          "light_type": 1,
-          "range": 30.0,
-          "spot_angle": 45.0,
-          "type": "Light"
-        }
-      ],
-      "enabled": true,
-      "name": "ShowcasePointLight",
-      "parent": null,
-      "transform": {
-        "position": [
-          -8.0,
-          4.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "e07afaf3-f81b-493d-a480-0b8d908e3441"
-    },
-    {
-      "components": [
-        {
-          "color": [
-            0.6000000238418579,
-            0.800000011920929,
-            1.0
-          ],
-          "direction": [
-            0.0,
-            -1.0,
-            0.0
-          ],
-          "enabled": true,
-          "intensity": 3.0,
-          "light_type": 2,
-          "range": 25.0,
-          "spot_angle": 35.0,
-          "type": "Light"
-        }
-      ],
-      "enabled": true,
-      "name": "ShowcaseSpotLight",
-      "parent": null,
-      "transform": {
-        "position": [
-          8.0,
-          10.0,
-          8.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "a607c5f3-324d-462f-b273-e5466942837b"
-    },
-    {
-      "components": [
-        {
-          "color": [
             0.15000000596046448,
             0.15000000596046448,
             0.15000000596046448,
@@ -919,31 +543,6 @@
           1.0
         ]
       },
-      "uuid": "a96d9b4e-16dc-4272-b5dd-42b45ae84a85"
-    },
-    {
-      "components": [],
-      "enabled": true,
-      "name": "新实体",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
       "uuid": "3197859a-9c67-44a7-8731-8b042f63168d"
     },
     {
@@ -970,6 +569,260 @@
         ]
       },
       "uuid": "8b33c2cf-179a-4225-bfc4-bb87ee4847fe"
+    },
+    {
+      "components": [],
+      "enabled": true,
+      "name": "新实体",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "fa4c38fd-af2f-4f71-a883-8d4dfbde41cd"
+    },
+    {
+      "components": [],
+      "enabled": true,
+      "name": "新实体",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "54ca17f4-ae83-447f-baad-251ac4ce504b"
+    },
+    {
+      "components": [],
+      "enabled": true,
+      "name": "新实体",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "24ee50b3-8507-47de-8967-0290da1847e2"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.20000000298023224,
+              0.5,
+              0.20000000298023224
+            ],
+            "albedo_map_path": "",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Ground",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.8999999761581421,
+            "roughness_map_path": "",
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": true,
+            "use_metallic_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "type": "BoxCollider"
+        }
+      ],
+      "enabled": true,
+      "name": "Ground",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          -2.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          10.0,
+          0.5,
+          10.0
+        ]
+      },
+      "uuid": "4fb969a4-9144-4e31-be85-0fd3494ff6d5"
+    },
+    {
+      "components": [
+        {
+          "background_color": [
+            0.15000000596046448,
+            0.15000000596046448,
+            0.18000000715255737,
+            1.0
+          ],
+          "enabled": true,
+          "far_plane": 100.0,
+          "fov": 60.0,
+          "is_main": true,
+          "near_plane": 0.10000000149011612,
+          "type": "Camera"
+        }
+      ],
+      "enabled": true,
+      "name": "MainCamera",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          5.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          -0.7071067690849304,
+          0.7071067690849304
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "c3df1249-1da9-4a09-ab57-365465c6a42b"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "direction": [
+            -0.3094263970851898,
+            -0.7219948768615723,
+            -0.6188527941703796
+          ],
+          "enabled": true,
+          "intensity": 3.0,
+          "light_type": 0,
+          "range": 10.0,
+          "spot_angle": 45.0,
+          "spot_softness": 0.20000000298023224,
+          "type": "Light"
+        }
+      ],
+      "enabled": true,
+      "name": "MainLight",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          -0.0990457683801651,
+          -0.2391176074743271,
+          -0.36964383721351624,
+          0.8923990726470947
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "4c61481c-c8a1-406c-af84-49ee66e57dc0"
     }
   ],
   "name": "main",

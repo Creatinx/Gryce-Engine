@@ -52,16 +52,16 @@
 |---|---|---|
 | 组件反射系统（字段注册 / 类型信息 / 读写访问） | **已完成** | `core/reflection/`，宏注册 + 类型擦除读写，12 类型已注册，9 测试通过 |
 | ImGui Docking 布局 + 面板管理框架 | **已完成** | `editor/`：EditorPanel 基类 + PanelManager（DockSpace over viewport + DockBuilder 默认布局），布局持久化到 `editor/project/editor_imgui.ini` |
-| 编辑器摄像机（Scene View 自由飞行相机） | **已完成** | `editor/editor_camera.*`：右键视角 + WASD/QE + 滚轮调速 + Shift 加速，F 聚焦占位；仅 Viewport 悬停时响应 |
+| 编辑器摄像机（Scene View 自由飞行相机） | **已完成** | `editor/editor_camera.*`：右键视角 + WASD/QE + 滚轮调速 + Shift 加速，F 按选中实体包围球聚焦；仅 Viewport 悬停时响应 |
 | GLOG 捕获到内存 buffer | **已完成** | `core/utils/glog/`：MemoryLogSink（tee 模式环形缓冲，容量 1000，线程安全），Console 面板级别过滤 + 自动滚动 |
-| 渲染到纹理 + 视口嵌入 ImGui | **已完成（OpenGL）** | RenderPipeline 视口离屏输出（tonemap → 独立 FBO），Viewport 面板 ImGui::Image 嵌入；面板尺寸防抖同步渲染目标；Vulkan 端 descriptor 注册留待后续 |
+| 渲染到纹理 + 视口嵌入 ImGui | **已完成** | RenderPipeline 视口离屏输出（tonemap → 独立 FBO），Viewport 面板 ImGui::Image 嵌入；面板尺寸防抖同步渲染目标；OpenGL/Vulkan 双后端均支持纹理 ID 转换 |
 
 ### E2 场景编辑核心（MVP 闭环）
 
 | 任务 | 状态 | Unity 对应 |
 |---|---|---|
 | Hierarchy 面板（Entity 树、增删、拖拽换父、Prefab 标记） | **已完成** | 右键菜单（创建/重命名/删除）、拖拽换父（含拖回根级、环检测）、UUID 弱引用选中、[P] Prefab 标记；删除/换父延迟到帧末执行防迭代器失效 |
-| Inspector 面板（基于反射自动生成组件属性编辑） | **已完成** | 反射字段自动分派控件（Drag/Slider/Checkbox/InputText），只读灰显，enabled 勾选；enum 未支持（反射限制，跳过） |
+| Inspector 面板（基于反射自动生成组件属性编辑） | **已完成** | 反射字段自动分派控件（Drag/Slider/Checkbox/InputText/ColorEdit/Combo），只读灰显，enabled 勾选；enum 字段走 `GRYCE_REFLECT_FIELD_ENUM` + `ImGui::Combo` 下拉编辑，标签由 `locales/*.json` 的 `inspector.enum.{Type}.{field}` 提供 |
 | Scene View（3D 视口 + 编辑相机 + 网格线） | **已完成** | `RenderPipeline` 中新增 `create_grid_mesh` / `render_grid`；XZ 平面网格 + 主次线 + 渐隐；Debug 面板可开关 |
 | 点选拾取（raycast 选中 Entity） | **已完成** | `core/math/ray.h`（NDC 反投影 + slab AABB），逐 mesh 世界 AABB 求交取最近命中，不依赖碰撞体；7 测试通过 |
 | Transform Gizmo（移动/旋转/缩放手柄） | **已完成** | ImGuizmo 集成（third_party/imguizmo），W/E/R 切换，gizmo 激活时屏蔽相机与拾取；TRS 分解走 from_rotation_matrix（2 测试通过） |
@@ -118,11 +118,11 @@
 | 任务 | 状态 | 里程碑 | 说明 |
 |---|---|---|---|
 | DDS/KTX 压缩纹理（BC1~BC7 / ETC2 / ASTC） | **已完成** | — | GL + VK 双后端 |
-| HDR/EXR 环境贴图加载 | 待实现 | M3 | `.hdr` / `.exr` 已接入 AssetManager，需做 IBL |
-| IBL（Image-Based Lighting） | 待实现 | M3 | irradiance + prefilter + BRDF LUT |
+| HDR/EXR 环境贴图加载 | **已完成** | — | `RenderPipeline::set_environment_hdr`，CPU 端生成 IBL |
+| IBL（Image-Based Lighting） | **已完成** | — | irradiance + prefilter + BRDF LUT；OpenGL/Vulkan PBR 与 Skinned PBR |
 | Cubemap Mipmap 生成 | 待实现 | M3 | 当前 cubemap 强制 1 mip |
 | 材质预设库（MaterialLibrary） | 待实现 | M3 | 内置 metal/plastic/glass/wood，编辑器一键应用 |
-| 后处理栈（Bloom 补全 / Color Grading LUT / Volume 配置） | 待实现 | M3 | Vulkan 2D bloom shader 缺失；Unity Post-Processing Volume |
+| 后处理栈（Bloom / Color Grading LUT / Volume 配置） | 部分完成 | M3 | Bloom 已实现（OpenGL / Vulkan 2D）；Color Grading LUT、Volume 配置待实现 |
 | 屏幕空间雾 / Volumetric Fog | 待实现 | M3 | 氛围渲染 |
 | 色调映射扩展（Filmic、Uncharted2） | 待实现 | M3 | 当前 ACES/Reinhard |
 | 级联阴影（CSM） | 待实现 | M3 | Cascaded Shadow Maps |

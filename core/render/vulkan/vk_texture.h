@@ -24,6 +24,7 @@ public:
     bool create_empty(int width, int height, int channels = 4) override;
     bool upload_data(const void* data, int width, int height, int channels = 4) override;
     bool upload_cubemap(const void* faces[6], int width, int height, int channels = 4) override;
+    bool upload_cubemap_hdr(const void* faces[6], int width, int height) override;
     bool is_cubemap() const override { return is_cubemap_; }
     bool create_depth(int width, int height) override;
     bool create(TextureFormat format, int width, int height, const void* data = nullptr) override;

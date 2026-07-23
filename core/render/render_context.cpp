@@ -512,6 +512,8 @@ void RenderContext::push_command(std::function<void(IRenderBackend*)>&& cmd) {
 
 void RenderContext::present() {
     cmd_buffer_->submit();
+    // 等待渲染线程完成本帧所有已提交命令，避免 CPU 侧在 GPU 仍在引用资源时释放实体/材质。
+    wait_for_idle();
     process_pending_destroys();
 }
 

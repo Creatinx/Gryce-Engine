@@ -6,6 +6,23 @@
 
 namespace gryce_engine::editor {
 
+namespace {
+
+// 在 DockSpace 节点树中递归定位中央节点（Viewport/Game 所在标签页）
+ImGuiDockNode* find_central_node(ImGuiDockNode* node) {
+    if (!node) return nullptr;
+    if (node->IsCentralNode()) return node;
+    if (node->ChildNodes[0]) {
+        if (ImGuiDockNode* found = find_central_node(node->ChildNodes[0])) return found;
+    }
+    if (node->ChildNodes[1]) {
+        if (ImGuiDockNode* found = find_central_node(node->ChildNodes[1])) return found;
+    }
+    return nullptr;
+}
+
+} // namespace
+
 void PanelManager::show() {
     // 全屏宿主窗口：仅承载 DockSpace 与菜单栏
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -37,6 +54,14 @@ void PanelManager::show() {
         }
     }
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
+
+    // 首帧强制激活 Scene View（Viewport），避免从 imgui.ini 恢复时 Game View 抢占焦点
+    if (first_frame_) {
+        first_frame_ = false;
+        if (ImGuiDockNode* central = find_central_node(ImGui::DockBuilderGetNode(dockspace_id))) {
+            central->SelectedTabId = ImGui::GetID("Viewport");
+        }
+    }
 
     // 菜单栏：应用菜单钩子（File 等） + Window 菜单切换面板可见性
     if (ImGui::BeginMenuBar()) {
@@ -83,6 +108,10 @@ void PanelManager::build_default_layout(ImGuiID dockspace_id) {
     // Viewport 与 Game View 以标签页形式共享中间区域
     ImGui::DockBuilderDockWindow("Viewport", dock_main);
     ImGui::DockBuilderDockWindow("Game", dock_main);
+    // 强制默认激活 Scene View（Viewport）
+    if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock_main)) {
+        node->SelectedTabId = ImGui::GetID("Viewport");
+    }
 
     ImGui::DockBuilderFinish(dockspace_id);
 }

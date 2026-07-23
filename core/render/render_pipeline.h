@@ -77,6 +77,15 @@ public:
     void clear_skybox();
     bool has_skybox() const { return skybox_texture_.is_valid(); }
 
+    // 环境 HDR/EXR：传入 equirectangular 全景图路径，自动生成 cubemap 与 IBL 资源。
+    // 必须在 RenderContext::start() 之前调用（主线程持有 GPU context）。
+    // 传空字符串清除。
+    bool set_environment_hdr(const std::string& hdr_path);
+    void clear_environment();
+    bool has_environment() const { return ibl_radiance_texture_.is_valid(); }
+    void set_ibl_intensity(float intensity) { ibl_intensity_ = intensity; }
+    float ibl_intensity() const { return ibl_intensity_; }
+
     // 渲染一帧：shadow pass -> skybox -> forward PBR（不透明/透明）-> tone mapping
     void render_scene(scene::Scene& scene, RenderContext& ctx);
 
@@ -141,6 +150,8 @@ private:
     bool create_skybox_mesh(RenderContext* ctx);
     void render_skybox(RenderContext& ctx);
 
+    void upload_ibl_textures(RenderContext& ctx, RHIShaderHandle shader);
+
     RenderContext* ctx_ = nullptr;
     std::string shader_dir_;
 
@@ -183,6 +194,13 @@ private:
     RHITextureHandle skybox_texture_;
     RHIShaderHandle skybox_shader_;
     RHIMeshHandle skybox_mesh_;
+
+    // IBL (Image-Based Lighting)
+    RHITextureHandle ibl_radiance_texture_;
+    RHITextureHandle ibl_irradiance_texture_;
+    RHITextureHandle ibl_prefilter_texture_;
+    RHITextureHandle ibl_brdf_lut_texture_;
+    float ibl_intensity_ = 1.0f;
 
     // HDR rendering targets
     bool hdr_enabled_ = true;

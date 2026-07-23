@@ -60,9 +60,11 @@ void ViewportPanel::on_imgui() {
 
     if (tex_id != 0 && size_.x >= 1.0f && size_.y >= 1.0f) {
         image_min_ = ImGui::GetCursorScreenPos();
-        // OpenGL FBO 颜色附件原点在左下，ImGui 图像原点在左上，翻转 V 轴
-        ImGui::Image(ImTextureRef(static_cast<ImTextureID>(tex_id)), size_,
-                     ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+        // OpenGL FBO 原点在左下，需要翻转 V；Vulkan FBO 原点在左上，不需要翻转。
+        const bool is_vulkan = backend_ && backend_->is_vulkan();
+        const ImVec2 uv0 = is_vulkan ? ImVec2(0.0f, 0.0f) : ImVec2(0.0f, 1.0f);
+        const ImVec2 uv1 = is_vulkan ? ImVec2(1.0f, 1.0f) : ImVec2(1.0f, 0.0f);
+        ImGui::Image(ImTextureRef(static_cast<ImTextureID>(tex_id)), size_, uv0, uv1);
         image_drawn_ = true;
 
         // 左击：记录拾取 UV（gizmo 交互中不上报，避免误拾取）

@@ -6,6 +6,7 @@
 #include "render/material.h"
 
 namespace gryce_engine {
+namespace render { class RenderContext; }
 namespace scene { class Entity; }
 namespace editor {
 
@@ -24,9 +25,11 @@ public:
 
     MaterialEditorWindow() = default;
 
-    // 打开并编辑指定材质；on_save 在点击 Save 时被调用
+    // 打开并编辑指定材质；on_save 在点击 Save 时被调用。
+    // ctx 用于实体材质保存后即时重新上传 GPU 纹理；独立 .gmat 资源可传 nullptr。
     void open(render::Material* material, scene::Entity* owner = nullptr,
-              const std::string& asset_path = "", SaveCallback on_save = nullptr);
+              const std::string& asset_path = "", SaveCallback on_save = nullptr,
+              render::RenderContext* ctx = nullptr);
 
     void draw();
     bool is_open() const { return open_; }
@@ -40,6 +43,7 @@ private:
     scene::Entity* owner_ = nullptr;
     std::string asset_path_;
     SaveCallback on_save_;
+    render::RenderContext* ctx_ = nullptr;
 
     // 临时缓冲区（避免每帧重新分配）
     char name_buf_[128] = {};

@@ -265,7 +265,7 @@ void InspectorPanel::draw_material_section(scene::Entity* entity, components::Co
     ImGui::Text("%s: %s", tr("inspector.material"), material->name.c_str());
     ImGui::SameLine();
     if (ImGui::Button(tr("inspector.edit_material"))) {
-        material_editor_.open(material, entity);
+        material_editor_.open(material, entity, "", nullptr, render_ctx_);
     }
     ImGui::Separator();
 }

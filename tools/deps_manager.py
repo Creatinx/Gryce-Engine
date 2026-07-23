@@ -215,9 +215,12 @@ def extract_tarball(tarball: Path, dest: Path, extracted_dir: str) -> bool:
 
     try:
         with tarfile.open(tarball, "r:gz") as tar:
-            # GitHub 发布的 tar.gz 是可信任源，使用 fully_trusted 避免警告
-            tar.extractall(path=tmpdir, filter='fully_trusted')
-        
+            # GitHub 发布的 tar.gz 是可信任源；Python 3.12+ 使用 filter 避免警告
+            if sys.version_info >= (3, 12):
+                tar.extractall(path=tmpdir, filter='fully_trusted')
+            else:
+                tar.extractall(path=tmpdir)
+
         # Find the extracted top-level directory
         extracted = tmpdir / extracted_dir
         if not extracted.exists():

@@ -39,6 +39,7 @@
 #include "components/2d/shape.h"
 #include "components/2d/label.h"
 #include "components/mesh_renderer.h"
+#include "components/skinned_mesh_renderer.h"
 #include "components/physics_body.h"
 #include "components/node2d.h"
 #include "components/node3d.h"
@@ -474,6 +475,63 @@ static bool compute_world_aabb(const assets::MeshData& mesh, const math::Matrix4
     return true;
 }
 
+// 计算单个实体的世界空间包围盒中心与包围球半径。
+// 优先使用 MeshRenderer / SkinnedMeshRenderer 的网格数据；没有网格时返回 false，
+// 调用方可退回到 Transform.position。
+static bool compute_entity_world_bounds(scene::Entity* entity, math::Vector3f& out_center,
+                                        float& out_radius) {
+    if (!entity) return false;
+
+    math::Vector3f bmin(1e30f, 1e30f, 1e30f);
+    math::Vector3f bmax(-1e30f, -1e30f, -1e30f);
+    bool has_bounds = false;
+
+    if (auto* mr = entity->get_component<components::MeshRenderer>()) {
+        if (mr->enabled && !mr->mesh_path.empty()) {
+            const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            if (mesh && compute_world_aabb(*mesh, entity->world_transform(), bmin, bmax)) {
+                has_bounds = true;
+            }
+        }
+    }
+
+    if (auto* smr = entity->get_component<components::SkinnedMeshRenderer>()) {
+        if (smr->enabled && smr->model() && !smr->model()->meshes.empty()) {
+            math::Vector3f smin(1e30f, 1e30f, 1e30f);
+            math::Vector3f smax(-1e30f, -1e30f, -1e30f);
+            bool has_sub_bounds = false;
+            for (const auto& mesh : smr->model()->meshes) {
+                math::Vector3f sub_min, sub_max;
+                if (!compute_world_aabb(mesh, entity->world_transform(), sub_min, sub_max)) continue;
+                smin = math::Vector3f(std::min(smin.x, sub_min.x), std::min(smin.y, sub_min.y),
+                                      std::min(smin.z, sub_min.z));
+                smax = math::Vector3f(std::max(smax.x, sub_max.x), std::max(smax.y, sub_max.y),
+                                      std::max(smax.z, sub_max.z));
+                has_sub_bounds = true;
+            }
+            if (has_sub_bounds) {
+                if (has_bounds) {
+                    bmin = math::Vector3f(std::min(bmin.x, smin.x), std::min(bmin.y, smin.y),
+                                          std::min(bmin.z, smin.z));
+                    bmax = math::Vector3f(std::max(bmax.x, smax.x), std::max(bmax.y, smax.y),
+                                          std::max(bmax.z, smax.z));
+                } else {
+                    bmin = smin;
+                    bmax = smax;
+                    has_bounds = true;
+                }
+            }
+        }
+    }
+
+    if (!has_bounds) return false;
+
+    out_center = (bmin + bmax) * 0.5f;
+    const math::Vector3f extent = bmax - out_center;
+    out_radius = extent.length();
+    return true;
+}
+
 static scene::Entity* pick_entity(scene::Scene& scene, const math::Ray& ray) {
     scene::Entity* best_entity = nullptr;
     float best_t = 1e30f;
@@ -631,6 +689,7 @@ int EditorApp::run(int argc, char* argv[]) {
                                 [&]() { undo_stack.redo(); });
     hierarchy_panel->set_undo_stack(&undo_stack);
     inspector_panel->set_undo_stack(&undo_stack);
+    inspector_panel->set_render_context(&render_ctx);
 
     // Play Mode（M1-E4）：运行时预览，退出时从快照恢复场景
     bool play_mode_active = false;
@@ -833,15 +892,21 @@ int EditorApp::run(int argc, char* argv[]) {
                                 [&]() { toggle_play_mode(); });
     shortcuts.register_shortcut("Delete Entity", {ImGuiKey_Delete, false, false, false}, [&]() {
         if (auto* e = hierarchy_panel->selected_entity()) {
-            undo_stack.push(std::make_unique<EntityDeleteCommand>(*world.scene(), e->uuid()));
-            hierarchy_panel->clear_selection();
+            hierarchy_panel->queue_delete(e->uuid());
         }
     });
     shortcuts.register_shortcut("Focus Selected", {ImGuiKey_F, false, false, false}, [&]() {
         if (!viewport_panel->hovered()) return;
         auto* e = hierarchy_panel->selected_entity();
         if (!e) return;
-        editor_camera.focus_on(e->transform()->position);
+
+        math::Vector3f center;
+        float radius = 0.0f;
+        if (compute_entity_world_bounds(e, center, radius)) {
+            editor_camera.focus_on_bounds(center, radius);
+        } else if (e->transform()) {
+            editor_camera.focus_on(e->transform()->position);
+        }
     });
 
     auto open_scene = [&](const std::string& path) {
@@ -1164,14 +1229,6 @@ int EditorApp::run(int argc, char* argv[]) {
     // 启动渲染线程（此后主线程不再持有 GL context）
     render_ctx.start();
 
-    if (screenshot_mode) {
-        const std::string screenshot_path = is_vulkan
-                                                ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
-                                                : "D:/Gryce-Engine/screenshot_opengl.bmp";
-        render_ctx.request_screenshot(screenshot_path);
-        GLOG_INFO("Screenshot requested on next frame: '{}'", screenshot_path);
-    }
-
     GLOG_INFO("Entering editor main loop...");
     GLOG_INFO("Viewport controls: RMB drag look | WASD+QE move (hold RMB) | Shift sprint | Wheel zoom | Close window to exit");
 
@@ -1182,6 +1239,8 @@ int EditorApp::run(int argc, char* argv[]) {
     double auto_close_timer = 0.0;
     double play_mode_test_timer = 0.0;
     bool play_mode_test_entered = false;
+    bool screenshot_requested = false;
+    double screenshot_delay_timer = 0.0;
 
     // Viewport 面板尺寸 → 渲染目标尺寸：防抖 0.15s，避免拖动 dock 分隔条时
     // 每帧 pause/resume 渲染线程造成的卡顿。
@@ -1239,6 +1298,19 @@ int EditorApp::run(int argc, char* argv[]) {
 
         // 编辑器相机：只在 Viewport 面板悬停且 gizmo 未激活时响应输入
         editor_camera.update(dt, viewport_panel->hovered() && !viewport_panel->gizmo_active());
+
+        // 截图模式：等待 1.0s，让 Viewport 尺寸防抖和布局稳定后再截图
+        if (screenshot_mode) {
+            screenshot_delay_timer += dt;
+            if (!screenshot_requested && screenshot_delay_timer >= 1.0) {
+                screenshot_requested = true;
+                const std::string screenshot_path = is_vulkan
+                                                        ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
+                                                        : "D:/Gryce-Engine/screenshot_opengl.bmp";
+                render_ctx.request_screenshot(screenshot_path);
+                GLOG_INFO("Screenshot requested after startup delay: '{}'", screenshot_path);
+            }
+        }
 
         // 驱动 ECS 系统（物理、动画、游戏逻辑等）
         world.update(dt);

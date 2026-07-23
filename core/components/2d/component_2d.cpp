@@ -30,7 +30,7 @@ float Component2D::rotation() const {
     if (!owner_) return 0.0f;
     auto* t = owner_->transform();
     if (!t) return 0.0f;
-    return 0.0f; // TODO: 从 Quaternion 提取 Z 轴旋转
+    return t->rotation.to_euler().z;
 }
 
 math::Vector2f Component2D::scale() const {

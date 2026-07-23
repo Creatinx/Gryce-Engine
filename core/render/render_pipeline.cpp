@@ -14,6 +14,7 @@
 #include "render/framebuffer.h"
 #include "render/mesh.h"
 #include "render/material.h"
+#include "render/ibl_generator.h"
 #include "assets/asset_manager.h"
 #include "assets/texture_data.h"
 #include "scene/scene.h"
@@ -128,6 +129,7 @@ void RenderPipeline::shutdown() {
     if (!ctx_) return;
 
     clear_skybox();
+    clear_environment();
 
     if (fullscreen_mesh_.is_valid()) {
         ctx_->destroy_mesh(fullscreen_mesh_);
@@ -352,6 +354,125 @@ void RenderPipeline::clear_skybox() {
     }
 }
 
+bool RenderPipeline::set_environment_hdr(const std::string& hdr_path) {
+    if (!ctx_) return false;
+
+    clear_environment();
+    if (hdr_path.empty()) {
+        return true;
+    }
+
+    auto tex_data = assets::AssetManager::instance().load<assets::TextureData>(hdr_path);
+    if (!tex_data.valid() || !tex_data.get()) {
+        GLOG_ERROR("RenderPipeline: failed to load HDR environment '{}'", hdr_path);
+        return false;
+    }
+
+    const assets::TextureData* data = tex_data.get();
+    if (!data->is_float || data->float_pixels.empty()) {
+        GLOG_ERROR("RenderPipeline: environment '{}' is not HDR float data", hdr_path);
+        return false;
+    }
+
+    // 生成 IBL 数据（CPU 端）
+    auto ibl = IBLGenerator::generate(data, 512, 32, 128, 256);
+    if (!ibl || !ibl->valid()) {
+        GLOG_ERROR("RenderPipeline: failed to generate IBL from '{}'", hdr_path);
+        return false;
+    }
+
+    // 上传 radiance cubemap（同时用作天空盒）
+    {
+        const void* faces[6] = {};
+        for (int i = 0; i < 6; ++i) faces[i] = ibl->radiance_faces[i].data();
+        ibl_radiance_texture_ = ctx_->create_texture();
+        ITexture* tex = ctx_->texture(ibl_radiance_texture_);
+        if (!ibl_radiance_texture_.is_valid() || !tex ||
+            !tex->upload_cubemap_hdr(faces, ibl->cubemap_size, ibl->cubemap_size)) {
+            GLOG_ERROR("RenderPipeline: failed to upload radiance cubemap");
+            clear_environment();
+            return false;
+        }
+    }
+
+    // 上传 irradiance cubemap
+    {
+        const void* faces[6] = {};
+        for (int i = 0; i < 6; ++i) faces[i] = ibl->irradiance_faces[i].data();
+        ibl_irradiance_texture_ = ctx_->create_texture();
+        ITexture* tex = ctx_->texture(ibl_irradiance_texture_);
+        if (!ibl_irradiance_texture_.is_valid() || !tex ||
+            !tex->upload_cubemap_hdr(faces, ibl->irradiance_size, ibl->irradiance_size)) {
+            GLOG_ERROR("RenderPipeline: failed to upload irradiance cubemap");
+            clear_environment();
+            return false;
+        }
+    }
+
+    // 上传 prefilter cubemap
+    {
+        const void* faces[6] = {};
+        for (int i = 0; i < 6; ++i) faces[i] = ibl->prefilter_faces[i].data();
+        ibl_prefilter_texture_ = ctx_->create_texture();
+        ITexture* tex = ctx_->texture(ibl_prefilter_texture_);
+        if (!ibl_prefilter_texture_.is_valid() || !tex ||
+            !tex->upload_cubemap_hdr(faces, ibl->prefilter_size, ibl->prefilter_size)) {
+            GLOG_ERROR("RenderPipeline: failed to upload prefilter cubemap");
+            clear_environment();
+            return false;
+        }
+    }
+
+    // 上传 BRDF LUT（2D，RG 扩展为 RGBA16F）
+    {
+        std::vector<float> rgba_lut;
+        rgba_lut.resize(static_cast<size_t>(ibl->brdf_size) * ibl->brdf_size * 4);
+        for (int y = 0; y < ibl->brdf_size; ++y) {
+            for (int x = 0; x < ibl->brdf_size; ++x) {
+                size_t src = (static_cast<size_t>(y) * ibl->brdf_size + x) * 2;
+                size_t dst = (static_cast<size_t>(y) * ibl->brdf_size + x) * 4;
+                rgba_lut[dst + 0] = ibl->brdf_lut[src + 0];
+                rgba_lut[dst + 1] = ibl->brdf_lut[src + 1];
+                rgba_lut[dst + 2] = 0.0f;
+                rgba_lut[dst + 3] = 1.0f;
+            }
+        }
+        ibl_brdf_lut_texture_ = ctx_->create_texture();
+        ITexture* tex = ctx_->texture(ibl_brdf_lut_texture_);
+        if (!ibl_brdf_lut_texture_.is_valid() || !tex ||
+            !tex->upload_data(rgba_lut.data(), ibl->brdf_size, ibl->brdf_size, 4)) {
+            GLOG_ERROR("RenderPipeline: failed to upload BRDF LUT");
+            clear_environment();
+            return false;
+        }
+        tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+        tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+    }
+
+    GLOG_INFO("RenderPipeline: HDR environment set '{}' ({}x{})", hdr_path, data->width, data->height);
+    return true;
+}
+
+void RenderPipeline::clear_environment() {
+    if (!ctx_) return;
+    if (ibl_radiance_texture_.is_valid()) {
+        ctx_->destroy_texture(ibl_radiance_texture_);
+        ibl_radiance_texture_ = RHITextureHandle{};
+    }
+    if (ibl_irradiance_texture_.is_valid()) {
+        ctx_->destroy_texture(ibl_irradiance_texture_);
+        ibl_irradiance_texture_ = RHITextureHandle{};
+    }
+    if (ibl_prefilter_texture_.is_valid()) {
+        ctx_->destroy_texture(ibl_prefilter_texture_);
+        ibl_prefilter_texture_ = RHITextureHandle{};
+    }
+    if (ibl_brdf_lut_texture_.is_valid()) {
+        ctx_->destroy_texture(ibl_brdf_lut_texture_);
+        ibl_brdf_lut_texture_ = RHITextureHandle{};
+    }
+}
+
 bool RenderPipeline::create_skybox_mesh(RenderContext* ctx) {
     // 单位立方体（36 顶点），顶点布局与 MeshRenderer 一致（56 字节），
     // 只有 position 有意义，skybox shader 采样方向即顶点坐标。
@@ -399,7 +520,9 @@ bool RenderPipeline::create_skybox_mesh(RenderContext* ctx) {
 }
 
 void RenderPipeline::render_skybox(RenderContext& ctx) {
-    if (!skybox_texture_.is_valid() || !skybox_shader_.is_valid() || !skybox_mesh_.is_valid() || !camera_) {
+    if (!camera_) return;
+    RHITextureHandle skybox_tex = skybox_texture_.is_valid() ? skybox_texture_ : ibl_radiance_texture_;
+    if (!skybox_tex.is_valid() || !skybox_shader_.is_valid() || !skybox_mesh_.is_valid()) {
         return;
     }
 
@@ -419,11 +542,11 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
     ctx.set_uniform_mat4(skybox_shader_, "uView", view);
     ctx.set_uniform_mat4(skybox_shader_, "uProjection", camera_->get_projection_matrix());
 
-    ITexture* tex_ptr = ctx_->texture(skybox_texture_);
+    ITexture* tex_ptr = ctx_->texture(skybox_tex);
     if (tex_ptr) {
         tex_ptr->bind(TextureSlots::kSkyboxCube);
     }
-    ctx.set_texture(skybox_shader_, skybox_texture_, TextureSlots::kSkyboxCube, "");
+    ctx.set_texture(skybox_shader_, skybox_tex, TextureSlots::kSkyboxCube, "");
     ctx.set_uniform_int(skybox_shader_, "uSkybox", TextureSlots::kSkyboxCube);
 
     ctx.draw_mesh(skybox_mesh_, skybox_shader_);
@@ -583,6 +706,7 @@ void RenderPipeline::render_mesh(RHIMeshHandle mesh, const Material* material, c
     ctx.set_uniform_vec3(pbr_shader_, "uAmbient", ambient_);
     ctx.set_uniform_int(pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
     upload_lights(ctx, pbr_shader_);
+    upload_ibl_textures(ctx, pbr_shader_);
 
     if (material) {
         material->bind(&ctx, pbr_shader_);
@@ -623,6 +747,7 @@ void RenderPipeline::render_skinned_mesh(RHIMeshHandle mesh, const Material* mat
     ctx.set_uniform_vec3(skinned_pbr_shader_, "uAmbient", ambient_);
     ctx.set_uniform_int(skinned_pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
     upload_lights(ctx, skinned_pbr_shader_);
+    upload_ibl_textures(ctx, skinned_pbr_shader_);
 
     // palette：shared_ptr 按值捕获进命令队列，渲染线程执行时数据仍有效
     if (palette && !palette->empty()) {
@@ -682,6 +807,7 @@ void RenderPipeline::bind_global_uniforms(RenderContext& ctx) {
     ctx.set_uniform_vec3(pbr_shader_, "uAmbient", ambient_);
     ctx.set_uniform_int(pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
     upload_lights(ctx, pbr_shader_);
+    upload_ibl_textures(ctx, pbr_shader_);
 }
 
 void RenderPipeline::upload_lights(RenderContext& ctx, RHIShaderHandle shader) {
@@ -716,6 +842,31 @@ void RenderPipeline::upload_lights(RenderContext& ctx, RHIShaderHandle shader) {
         ctx.set_uniform_vec4(shader, name,
                              math::Vector4f(light.range, std::cos(outer), std::cos(inner), 0.0f));
     }
+}
+
+void RenderPipeline::upload_ibl_textures(RenderContext& ctx, RHIShaderHandle shader) {
+    if (!shader.is_valid()) return;
+    const bool use_ibl = ibl_irradiance_texture_.is_valid() && ibl_prefilter_texture_.is_valid() &&
+                         ibl_brdf_lut_texture_.is_valid();
+    ctx.set_uniform_int(shader, "uUseIBL", use_ibl ? 1 : 0);
+    ctx.set_uniform_float(shader, "uIBLIntensity", ibl_intensity_);
+
+    if (!use_ibl) return;
+
+    ITexture* irradiance = ctx_->texture(ibl_irradiance_texture_);
+    if (irradiance) irradiance->bind(TextureSlots::kIBLIrradiance);
+    ctx.set_texture(shader, ibl_irradiance_texture_, TextureSlots::kIBLIrradiance, "");
+    ctx.set_uniform_int(shader, "uIrradianceMap", TextureSlots::kIBLIrradiance);
+
+    ITexture* prefilter = ctx_->texture(ibl_prefilter_texture_);
+    if (prefilter) prefilter->bind(TextureSlots::kIBLPrefilter);
+    ctx.set_texture(shader, ibl_prefilter_texture_, TextureSlots::kIBLPrefilter, "");
+    ctx.set_uniform_int(shader, "uPrefilterMap", TextureSlots::kIBLPrefilter);
+
+    ITexture* brdf = ctx_->texture(ibl_brdf_lut_texture_);
+    if (brdf) brdf->bind(TextureSlots::kIBLBRDF);
+    ctx.set_texture(shader, ibl_brdf_lut_texture_, TextureSlots::kIBLBRDF, "");
+    ctx.set_uniform_int(shader, "uBRDFLUT", TextureSlots::kIBLBRDF);
 }
 
 bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
@@ -950,7 +1101,10 @@ void RenderPipeline::render_grid(RenderContext& ctx) {
     ctx.set_blend(true);
 
     ctx.set_shader(grid_shader_);
-    ctx.set_uniform_mat4(grid_shader_, "uModel", math::Matrix4f::identity());
+    // 网格平面跟随相机在 XZ 平面上移动，避免相机远离原点后看不到网格。
+    const math::Vector3f cam_pos = camera_->position();
+    const math::Matrix4f grid_model = math::Matrix4f::translate(cam_pos.x, 0.0f, cam_pos.z);
+    ctx.set_uniform_mat4(grid_shader_, "uModel", grid_model);
     ctx.set_uniform_mat4(grid_shader_, "uView", camera_->get_view_matrix());
     ctx.set_uniform_mat4(grid_shader_, "uProjection", camera_->get_projection_matrix());
     ctx.set_uniform_vec3(grid_shader_, "uGridColor", math::Vector3f(0.5f, 0.5f, 0.5f));

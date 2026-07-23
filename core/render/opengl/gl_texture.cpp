@@ -374,6 +374,54 @@ bool GLTexture::upload_cubemap(const void* faces[6], int width, int height, int 
     return true;
 }
 
+bool GLTexture::upload_cubemap_hdr(const void* faces[6], int width, int height) {
+    if (!faces || width <= 0 || height <= 0) return false;
+    for (int i = 0; i < 6; ++i) {
+        if (!faces[i]) return false;
+    }
+
+    if (texture_id_) {
+        clear_texture_slot_cache(texture_id_);
+        glDeleteTextures(1, &texture_id_);
+    }
+
+    width_ = width;
+    height_ = height;
+    channels_ = 4;
+    is_cubemap_ = true;
+
+    const bool dsa = gl_dsa_available();
+    if (dsa) {
+        glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &texture_id_);
+        glTextureStorage2D(texture_id_, 1, GL_RGBA16F, width, height);
+        for (int i = 0; i < 6; ++i) {
+            glTextureSubImage3D(texture_id_, 0, 0, 0, i, width, height, 1,
+                                GL_RGBA, GL_FLOAT, faces[i]);
+        }
+        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    } else {
+        glGenTextures(1, &texture_id_);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id_);
+        for (int i = 0; i < 6; ++i) {
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA16F,
+                         width, height, 0, GL_RGBA, GL_FLOAT, faces[i]);
+        }
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    }
+
+    GLOG_INFO("HDR cubemap uploaded: {}x{} tex_id={}", width, height, texture_id_);
+    return true;
+}
+
 bool GLTexture::create_depth(int width, int height) {
     return create(TextureFormat::Depth24, width, height, nullptr);
 }

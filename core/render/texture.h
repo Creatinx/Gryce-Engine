@@ -61,6 +61,11 @@ namespace TextureSlots {
 
     // 天空盒
     constexpr int kSkyboxCube   = 21;
+
+    // IBL
+    constexpr int kIBLIrradiance = 22;
+    constexpr int kIBLPrefilter  = 23;
+    constexpr int kIBLBRDF       = 24;
 }
 
 // 是否为块压缩格式（每 4x4 像素一个 block：8 或 16 字节）
@@ -118,6 +123,12 @@ public:
     // 不支持 cubemap 的后端返回 false。
     virtual bool upload_cubemap(const void* faces[6], int width, int height, int channels = 4) {
         (void)faces; (void)width; (void)height; (void)channels;
+        return false;
+    }
+
+    // 上传 HDR 浮点 cubemap（RGBA32F）。faces[i] 指向 width×height×4 个 float。
+    virtual bool upload_cubemap_hdr(const void* faces[6], int width, int height) {
+        (void)faces; (void)width; (void)height;
         return false;
     }
 

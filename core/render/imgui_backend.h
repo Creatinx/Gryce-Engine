@@ -31,8 +31,8 @@ public:
     virtual bool is_vulkan() const { return false; }
 
     // 将引擎纹理转换为 ImGui 用户纹理 ID（ImTextureID，供编辑器 Viewport
-    // 面板 ImGui::Image 采样）。返回 0 表示该后端暂不支持
-    // （Vulkan 端的 descriptor 注册留待后续实现）。
+    // 面板 ImGui::Image 采样）。OpenGL 返回 GLuint 纹理对象 id，Vulkan 返回
+    // 缓存的 VkDescriptorSet；返回 0 表示转换失败。
     virtual uint64_t imgui_texture_id(ITexture* texture) const {
         (void)texture;
         return 0;

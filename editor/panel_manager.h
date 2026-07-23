@@ -48,6 +48,7 @@ private:
     std::vector<std::unique_ptr<EditorPanel>> panels_;
     std::function<void()> menu_bar_hook_;
     bool layout_checked_ = false;
+    bool first_frame_ = true;
 };
 
 } // namespace gryce_engine::editor

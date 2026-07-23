@@ -89,24 +89,3 @@ endfunction()
 add_gryce_demo_legacy(3dtest 3dtest 3dtest.cpp)
 add_gryce_demo_legacy(gt2dDemo gt2dDemo gt2dDemo.cpp)
 
-# ---------------------------------------------------------------------------
-# 新增独立功能 demos
-# ---------------------------------------------------------------------------
-add_gryce_demo(demo_sprite2d   demo_sprite2d)
-add_gryce_demo(demo_shapes2d   demo_shapes2d)
-add_gryce_demo(demo_lighting2d demo_lighting2d)
-add_gryce_demo(demo_tilemap2d  demo_tilemap2d)
-add_gryce_demo(demo_particles2d demo_particles2d)
-add_gryce_demo(demo_physics2d  demo_physics2d)
-add_gryce_demo(demo_character2d demo_character2d)
-add_gryce_demo(demo_joints2d   demo_joints2d)
-
-# 3D demos
-add_gryce_demo(demo_physics3d       demo_physics3d)
-add_gryce_demo(demo_character3d     demo_character3d)
-add_gryce_demo(demo_joints3d        demo_joints3d)
-add_gryce_demo(demo_fracture        demo_fracture)
-add_gryce_demo(demo_lighting3d      demo_lighting3d)
-add_gryce_demo(demo_audio3d         demo_audio3d)
-add_gryce_demo(demo_scene_serializer demo_scene_serializer)
-add_gryce_demo(demo_skinned3d         demo_skinned3d)

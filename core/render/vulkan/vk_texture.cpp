@@ -144,6 +144,9 @@ bool VulkanTexture::upload_data(const void* data, int width, int height, int cha
             dst[i * 4 + 3] = 255;
         }
         upload_data = converted.data();
+    } else if (channels == 3) {
+        // 3 通道格式在很多 Vulkan 驱动上不支持 optimal tiling，统一用 RGBA8。
+        channels_ = 4;
     } else {
         channels_ = channels;
     }
@@ -314,6 +317,140 @@ bool VulkanTexture::upload_cubemap(const void* faces[6], int width, int height, 
     return true;
 }
 
+bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int height) {
+    if (!faces || width <= 0 || height <= 0) return false;
+    for (int i = 0; i < 6; ++i) {
+        if (!faces[i]) return false;
+    }
+
+    destroy();
+    width_ = width;
+    height_ = height;
+    is_cubemap_ = true;
+    mip_levels_ = 1;
+    channels_ = 4;
+    format_ = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+    VkDevice dev = device_->device();
+
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.extent.width = static_cast<uint32_t>(width_);
+    info.extent.height = static_cast<uint32_t>(height_);
+    info.extent.depth = 1;
+    info.mipLevels = 1;
+    info.arrayLayers = 6;
+    info.format = format_;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo alloc_info{};
+    alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    if (vmaCreateImage(device_->allocator(), &info, &alloc_info, &image_, &allocation_, nullptr) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create HDR cubemap image");
+        return false;
+    }
+
+    VkImageViewCreateInfo view_info{};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = image_;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    view_info.format = format_;
+    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view_info.subresourceRange.baseMipLevel = 0;
+    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.baseArrayLayer = 0;
+    view_info.subresourceRange.layerCount = 6;
+    if (vkCreateImageView(dev, &view_info, nullptr, &image_view_) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create HDR cubemap image view");
+        return false;
+    }
+
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    sampler_info.unnormalizedCoordinates = VK_FALSE;
+    sampler_info.compareEnable = VK_FALSE;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.maxLod = 1.0f;
+    if (vkCreateSampler(dev, &sampler_info, nullptr, &sampler_) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanTexture: failed to create HDR cubemap sampler");
+        return false;
+    }
+
+    const VkDeviceSize face_size = static_cast<VkDeviceSize>(width_) * height_ * 4 * sizeof(float);
+    const VkDeviceSize total = face_size * 6;
+    VulkanBuffer staging;
+    if (!staging.init(device_, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        return false;
+    }
+    for (int f = 0; f < 6; ++f) {
+        staging.upload(faces[f], face_size, static_cast<VkDeviceSize>(f) * face_size);
+    }
+
+    VkCommandPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = device_->graphics_queue_family();
+    VkCommandPool pool = VK_NULL_HANDLE;
+    vkCreateCommandPool(device_->device(), &pool_info, nullptr, &pool);
+
+    VkCommandBuffer cmd = begin_one_time_commands(device_, pool);
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image_;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 6;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    VkBufferImageCopy regions[6]{};
+    for (int f = 0; f < 6; ++f) {
+        regions[f].bufferOffset = static_cast<VkDeviceSize>(f) * face_size;
+        regions[f].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        regions[f].imageSubresource.mipLevel = 0;
+        regions[f].imageSubresource.baseArrayLayer = static_cast<uint32_t>(f);
+        regions[f].imageSubresource.layerCount = 1;
+        regions[f].imageExtent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
+    }
+    vkCmdCopyBufferToImage(cmd, staging.buffer(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, regions);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    end_one_time_commands(device_, pool, cmd);
+    vkDestroyCommandPool(device_->device(), pool, nullptr);
+
+    layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    GLOG_INFO("VulkanTexture: HDR cubemap uploaded {}x{}", width_, height_);
+    return true;
+}
+
 bool VulkanTexture::create_depth(int width, int height) {
     destroy();
     width_ = width;
@@ -332,8 +469,25 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
     VkFormat vk_format = VK_FORMAT_R8G8B8A8_UNORM;
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    // 3 通道格式在很多 Vulkan 驱动上不支持 optimal tiling，统一转成 RGBA8 上传。
+    std::vector<unsigned char> converted;
+    const void* upload_data = data;
+    if (format == TextureFormat::RGB8 && data) {
+        converted.resize(static_cast<std::size_t>(width) * height * 4);
+        const unsigned char* src = static_cast<const unsigned char*>(data);
+        unsigned char* dst = converted.data();
+        for (int i = 0; i < width * height; ++i) {
+            dst[i * 4 + 0] = src[i * 3 + 0];
+            dst[i * 4 + 1] = src[i * 3 + 1];
+            dst[i * 4 + 2] = src[i * 3 + 2];
+            dst[i * 4 + 3] = 255;
+        }
+        upload_data = converted.data();
+    }
+
     switch (format) {
-        case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8_UNORM; channels_ = 3; break;
+        case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; channels_ = 4; break;
         case TextureFormat::RGBA8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; channels_ = 4; break;
         case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; channels_ = 4; break;
         case TextureFormat::RGBA32F: vk_format = VK_FORMAT_R32G32B32A32_SFLOAT; channels_ = 4; break;
@@ -345,7 +499,7 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
         default: break;
     }
     format_ = vk_format;
-    return create_image(vk_format, usage, aspect, data);
+    return create_image(vk_format, usage, aspect, upload_data);
 }
 
 VkFormat texture_format_to_vk(TextureFormat fmt) {

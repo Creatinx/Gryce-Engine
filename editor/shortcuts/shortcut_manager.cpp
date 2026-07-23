@@ -29,7 +29,7 @@ void ShortcutManager::unregister_shortcut(const std::string& name) {
 void ShortcutManager::process() {
     ImGuiIO& io = ImGui::GetIO();
     // 文本输入框获焦时不触发全局快捷键
-    if (io.WantCaptureKeyboard) return;
+    if (io.WantTextInput) return;
 
     for (const auto& entry : entries_) {
         if (combo_triggered(entry.combo)) {

@@ -156,6 +156,10 @@
     "inspector.no_entity": "No entity selected",
     "inspector.name": "Name",
     "inspector.no_fields": "(no reflected fields)",
+    "inspector.enum.Light2D.light_type": "Point;Directional;Spot",
+    "inspector.enum.Light.light_type": "Directional;Point;Spot",
+    "inspector.enum.Joint2D.joint_type": "Distance;Fixed;Hinge;Spring",
+    "inspector.enum.Joint3D.joint_type": "Distance;Fixed;Hinge;Spring",
     "physical_material.preset": "Preset",
     "physical_material.custom": "Custom",
 

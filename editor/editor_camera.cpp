@@ -1,6 +1,7 @@
 #include "editor_camera.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <imgui.h>
 
@@ -26,6 +27,17 @@ void EditorCamera::set_move_speed(float speed) {
 
 void EditorCamera::focus_on(const math::Vector3f& target, float distance) {
     camera_.set_position(target - camera_.forward() * distance);
+}
+
+void EditorCamera::focus_on_bounds(const math::Vector3f& center, float radius) {
+    if (radius <= 0.0f) {
+        focus_on(center);
+        return;
+    }
+    // 让包围球在垂直方向占满视锥的 70%，留点边缘余量。
+    const float fov_rad = math::to_radians(camera_.fov());
+    const float distance = std::max(radius / std::tan(fov_rad * 0.35f), k_min_distance);
+    camera_.set_position(center - camera_.forward() * distance);
 }
 
 void EditorCamera::update(float dt, bool viewport_hovered) {

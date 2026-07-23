@@ -253,10 +253,12 @@ void VulkanRenderer2D::shutdown() {
         if (pipeline_rect_) vkDestroyPipeline(dev, pipeline_rect_, nullptr);
         if (pipeline_text_) vkDestroyPipeline(dev, pipeline_text_, nullptr);
         if (pipeline_sprite_) vkDestroyPipeline(dev, pipeline_sprite_, nullptr);
+        if (pipeline_sprite_additive_) vkDestroyPipeline(dev, pipeline_sprite_additive_, nullptr);
         if (pipeline_lit_sprite_) vkDestroyPipeline(dev, pipeline_lit_sprite_, nullptr);
         if (pipeline_rect_scene_) vkDestroyPipeline(dev, pipeline_rect_scene_, nullptr);
         if (pipeline_text_scene_) vkDestroyPipeline(dev, pipeline_text_scene_, nullptr);
         if (pipeline_sprite_scene_) vkDestroyPipeline(dev, pipeline_sprite_scene_, nullptr);
+        if (pipeline_sprite_scene_additive_) vkDestroyPipeline(dev, pipeline_sprite_scene_additive_, nullptr);
         if (pipeline_lit_sprite_scene_) vkDestroyPipeline(dev, pipeline_lit_sprite_scene_, nullptr);
         if (pipeline_shadow_) vkDestroyPipeline(dev, pipeline_shadow_, nullptr);
         if (pipeline_bloom_threshold_) vkDestroyPipeline(dev, pipeline_bloom_threshold_, nullptr);
@@ -525,7 +527,7 @@ VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule vert_module, VkShade
                                               uint32_t vertex_stride,
                                               const VkVertexInputAttributeDescription* attrs,
                                               uint32_t attr_count,
-                                              bool depth_test, bool depth_write, bool blend,
+                                              bool depth_test, bool depth_write, BlendMode blend_mode,
                                               bool color_output) {
     VkDevice dev = vk_device_->device();
 
@@ -581,12 +583,26 @@ VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule vert_module, VkShade
     depth_stencil.depthWriteEnable = depth_write ? VK_TRUE : VK_FALSE;
 
     VkPipelineColorBlendAttachmentState blend_attach{};
-    blend_attach.blendEnable = blend ? VK_TRUE : VK_FALSE;
-    blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    if (blend_mode == BlendMode::Alpha) {
+        blend_attach.blendEnable = VK_TRUE;
+        blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend_attach.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend_attach.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    } else if (blend_mode == BlendMode::Additive) {
+        blend_attach.blendEnable = VK_TRUE;
+        blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend_attach.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend_attach.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    } else {
+        blend_attach.blendEnable = VK_FALSE;
+        blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blend_attach.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend_attach.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    }
     blend_attach.colorBlendOp = VK_BLEND_OP_ADD;
-    blend_attach.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blend_attach.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend_attach.alphaBlendOp = VK_BLEND_OP_ADD;
     blend_attach.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -655,11 +671,13 @@ bool VulkanRenderer2D::create_swapchain_pipelines() {
     base_attrs[2].offset = 6 * sizeof(float);
 
     pipeline_rect_ = create_pipeline(vert_module_, frag_rect_module_, pipeline_layout_, swapchain_rp,
-                                     sizeof(Vertex2D), base_attrs, 3, false, false, true);
+                                     sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Alpha);
     pipeline_text_ = create_pipeline(vert_module_, frag_text_module_, pipeline_layout_, swapchain_rp,
-                                     sizeof(Vertex2D), base_attrs, 3, false, false, true);
+                                     sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Alpha);
     pipeline_sprite_ = create_pipeline(vert_module_, frag_sprite_module_, pipeline_layout_, swapchain_rp,
-                                       sizeof(Vertex2D), base_attrs, 3, false, false, true);
+                                       sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Alpha);
+    pipeline_sprite_additive_ = create_pipeline(vert_module_, frag_sprite_module_, pipeline_layout_, swapchain_rp,
+                                                sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Additive);
 
     if (vert_lit_module_ != VK_NULL_HANDLE && frag_lit_sprite_module_ != VK_NULL_HANDLE) {
         VkVertexInputAttributeDescription lit_attrs[4]{};
@@ -682,7 +700,7 @@ bool VulkanRenderer2D::create_swapchain_pipelines() {
 
         pipeline_lit_sprite_ = create_pipeline(vert_lit_module_, frag_lit_sprite_module_, lit_pipeline_layout_,
                                                swapchain_rp, sizeof(LitVertex2D), lit_attrs, 4,
-                                               false, false, true);
+                                               false, false, BlendMode::Alpha);
     }
 
     if (pipeline_rect_ == VK_NULL_HANDLE || pipeline_text_ == VK_NULL_HANDLE ||
@@ -892,7 +910,7 @@ bool VulkanRenderer2D::create_shadow_map() {
 
     pipeline_shadow_ = create_pipeline(vert_shadow_module_, frag_shadow_module_, shadow_pipeline_layout_,
                                        vk_fb->render_pass(), sizeof(ShadowCasterVertex),
-                                       &shadow_attr, 1, true, true, false, false);
+                                       &shadow_attr, 1, true, true, BlendMode::Opaque, false);
     if (pipeline_shadow_ == VK_NULL_HANDLE) {
         GLOG_ERROR("VulkanRenderer2D: failed to create shadow pipeline");
         return false;
@@ -986,11 +1004,13 @@ bool VulkanRenderer2D::create_bloom_targets() {
     base_attrs[2].offset = 6 * sizeof(float);
 
     pipeline_rect_scene_ = create_pipeline(vert_module_, frag_rect_module_, pipeline_layout_, scene_rp,
-                                           sizeof(Vertex2D), base_attrs, 3, false, false, true);
+                                           sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Alpha);
     pipeline_text_scene_ = create_pipeline(vert_module_, frag_text_module_, pipeline_layout_, scene_rp,
-                                           sizeof(Vertex2D), base_attrs, 3, false, false, true);
+                                           sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Alpha);
     pipeline_sprite_scene_ = create_pipeline(vert_module_, frag_sprite_module_, pipeline_layout_, scene_rp,
-                                             sizeof(Vertex2D), base_attrs, 3, false, false, true);
+                                             sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Alpha);
+    pipeline_sprite_scene_additive_ = create_pipeline(vert_module_, frag_sprite_module_, pipeline_layout_, scene_rp,
+                                                      sizeof(Vertex2D), base_attrs, 3, false, false, BlendMode::Additive);
 
     if (vert_lit_module_ != VK_NULL_HANDLE && frag_lit_sprite_module_ != VK_NULL_HANDLE) {
         VkVertexInputAttributeDescription lit_attrs[4]{};
@@ -1013,7 +1033,7 @@ bool VulkanRenderer2D::create_bloom_targets() {
 
         pipeline_lit_sprite_scene_ = create_pipeline(vert_lit_module_, frag_lit_sprite_module_, lit_pipeline_layout_,
                                                      scene_rp, sizeof(LitVertex2D), lit_attrs, 4,
-                                                     false, false, true);
+                                                     false, false, BlendMode::Alpha);
     }
 
     // 全屏后处理顶点属性
@@ -1029,13 +1049,13 @@ bool VulkanRenderer2D::create_bloom_targets() {
 
     pipeline_bloom_threshold_ = create_pipeline(vert_bloom_module_, frag_bloom_threshold_module_,
                                                 bloom_pipeline_layout_, bloom_rp,
-                                                sizeof(FSVertex), fs_attrs, 2, false, false, false);
+                                                sizeof(FSVertex), fs_attrs, 2, false, false, BlendMode::Opaque);
     pipeline_bloom_blur_ = create_pipeline(vert_bloom_module_, frag_bloom_blur_module_,
                                            bloom_pipeline_layout_, bloom_rp,
-                                           sizeof(FSVertex), fs_attrs, 2, false, false, false);
+                                           sizeof(FSVertex), fs_attrs, 2, false, false, BlendMode::Opaque);
     pipeline_bloom_compose_ = create_pipeline(vert_bloom_module_, frag_bloom_compose_module_,
                                               bloom_compose_pipeline_layout_, swapchain_rp,
-                                              sizeof(FSVertex), fs_attrs, 2, false, false, false);
+                                              sizeof(FSVertex), fs_attrs, 2, false, false, BlendMode::Opaque);
 
     if (pipeline_rect_scene_ == VK_NULL_HANDLE || pipeline_text_scene_ == VK_NULL_HANDLE ||
         pipeline_sprite_scene_ == VK_NULL_HANDLE ||
@@ -1083,6 +1103,7 @@ void VulkanRenderer2D::destroy_bloom_pipelines() {
     destroy_if(pipeline_rect_scene_);
     destroy_if(pipeline_text_scene_);
     destroy_if(pipeline_sprite_scene_);
+    destroy_if(pipeline_sprite_scene_additive_);
     destroy_if(pipeline_lit_sprite_scene_);
     destroy_if(pipeline_bloom_threshold_);
     destroy_if(pipeline_bloom_blur_);
@@ -1221,6 +1242,9 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
             }
         }
     }
+
+    // 每帧默认回到 Alpha 混合，避免上一帧的 Additive 状态泄漏。
+    set_blend_mode(BlendMode::Alpha);
 }
 
 void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom) {
@@ -1273,6 +1297,14 @@ void VulkanRenderer2D::end_frame() {
     if (use_bloom_this_frame_) {
         render_bloom_pass();
     }
+}
+
+void VulkanRenderer2D::set_blend_mode(BlendMode mode) {
+    if (mode == blend_mode_) return;
+
+    // 切换混合模式前必须先提交当前精灵批次，因为 Vulkan 的混合状态由 Pipeline 决定。
+    flush_sprite_batch();
+    blend_mode_ = mode;
 }
 
 void VulkanRenderer2D::render_shadow_pass() {
@@ -1696,7 +1728,16 @@ void VulkanRenderer2D::flush_sprite_batch() {
               sprite_vertices_.size(),
               reinterpret_cast<uintptr_t>(tex),
               static_cast<int>(dynamic_cast<VulkanTexture*>(tex)->format()));
-    VkPipeline pipeline = use_bloom_this_frame_ ? pipeline_sprite_scene_ : pipeline_sprite_;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (use_bloom_this_frame_) {
+        pipeline = (blend_mode_ == BlendMode::Additive && pipeline_sprite_scene_additive_ != VK_NULL_HANDLE)
+                       ? pipeline_sprite_scene_additive_
+                       : pipeline_sprite_scene_;
+    } else {
+        pipeline = (blend_mode_ == BlendMode::Additive && pipeline_sprite_additive_ != VK_NULL_HANDLE)
+                       ? pipeline_sprite_additive_
+                       : pipeline_sprite_;
+    }
     flush_batch(std::move(sprite_vertices_), false, tex, pipeline, pipeline_layout_);
     sprite_texture_ = RHITextureHandle{};
 }
@@ -1889,6 +1930,61 @@ void VulkanRenderer2D::draw_sprite_region(float x, float y, float w, float h,
     push_sprite_vertex(x0, y0, tint, u0, v0);
     push_sprite_vertex(x1, y1, tint, u1, v1);
     push_sprite_vertex(x0, y1, tint, u0, v1);
+}
+
+void VulkanRenderer2D::draw_sprite_rotated(float x, float y, float w, float h, float rotation,
+                                            RHITextureHandle texture, const Color& tint) {
+    if (!texture.is_valid()) {
+        draw_rect(x, y, w, h, tint);
+        return;
+    }
+
+    if (texture != sprite_texture_) {
+        flush_sprite_batch();
+        sprite_texture_ = texture;
+    }
+
+    const float cx = x + w * 0.5f;
+    const float cy = y + h * 0.5f;
+    const float hw = w * 0.5f;
+    const float hh = h * 0.5f;
+    const float c = std::cos(rotation);
+    const float s = std::sin(rotation);
+
+    const math::Vector2f local[4] = {
+        math::Vector2f(-hw, -hh),
+        math::Vector2f( hw, -hh),
+        math::Vector2f( hw,  hh),
+        math::Vector2f(-hw,  hh)
+    };
+    const math::Vector2f uv[4] = {
+        math::Vector2f(0.0f, 0.0f),
+        math::Vector2f(1.0f, 0.0f),
+        math::Vector2f(1.0f, 1.0f),
+        math::Vector2f(0.0f, 1.0f)
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        math::Vector2f p(
+            cx + local[i].x * c - local[i].y * s,
+            cy + local[i].x * s + local[i].y * c
+        );
+        push_sprite_vertex(p.x, p.y, tint, uv[i].x, uv[i].y);
+    }
+
+    // 重复第一个和第三个顶点完成第二个三角形
+    push_sprite_vertex(
+        cx + local[0].x * c - local[0].y * s,
+        cy + local[0].x * s + local[0].y * c,
+        tint, uv[0].x, uv[0].y);
+    push_sprite_vertex(
+        cx + local[2].x * c - local[2].y * s,
+        cy + local[2].x * s + local[2].y * c,
+        tint, uv[2].x, uv[2].y);
+    push_sprite_vertex(
+        cx + local[3].x * c - local[3].y * s,
+        cy + local[3].x * s + local[3].y * c,
+        tint, uv[3].x, uv[3].y);
 }
 
 void VulkanRenderer2D::set_ambient_light(const Color& color) {

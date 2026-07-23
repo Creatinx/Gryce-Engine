@@ -51,6 +51,7 @@ public:
 
     void begin_frame(float screen_width, float screen_height) override;
     void end_frame() override;
+    void set_blend_mode(BlendMode mode) override;
 
     void set_camera(const math::Vector2f& center, float zoom) override;
     math::Vector2f camera_center() const override { return camera_center_; }
@@ -72,6 +73,8 @@ public:
     void draw_sprite_region(float x, float y, float w, float h,
                              float u0, float v0, float u1, float v1,
                              RHITextureHandle texture, const Color& tint = Color::white()) override;
+    void draw_sprite_rotated(float x, float y, float w, float h, float rotation,
+                              RHITextureHandle texture, const Color& tint = Color::white()) override;
     void draw_lit_sprite(float x, float y, float w, float h,
                           RHITextureHandle albedo, RHITextureHandle normal_map,
                           const Color& tint = Color::white()) override;
@@ -152,6 +155,7 @@ private:
     float screen_height_ = 0.0f;
     bool initialized_ = false;
     bool using_fallback_font_ = false;
+    BlendMode blend_mode_ = BlendMode::Alpha;
 
     // 2D 光照
     Color ambient_light_ = Color::black();

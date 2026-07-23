@@ -27,17 +27,32 @@ void input_texture_slot(const char* label, char* buf, size_t buf_size,
     ImGui::SameLine();
     if (ImGui::InputText(std::format("{}##path", label).c_str(), buf, buf_size)) {
         path = buf;
+        use_flag = !path.empty();
+    }
+    // 支持从 Project 面板拖拽资源文件到贴图槽
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload =
+                ImGui::AcceptDragDropPayload("GRYCE_PROJECT_FILE", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+            if (payload->IsDelivery() && payload->DataSize > 0) {
+                path = std::string(static_cast<const char*>(payload->Data));
+                copy_to_buf(buf, buf_size, path);
+                use_flag = !path.empty();
+            }
+        }
+        ImGui::EndDragDropTarget();
     }
 }
 
 } // namespace
 
 void MaterialEditorWindow::open(render::Material* material, scene::Entity* owner,
-                                const std::string& asset_path, SaveCallback on_save) {
+                                const std::string& asset_path, SaveCallback on_save,
+                                render::RenderContext* ctx) {
     material_ = material;
     owner_ = owner;
     asset_path_ = asset_path;
     on_save_ = std::move(on_save);
+    ctx_ = ctx;
     open_ = true;
     sync_buffers_from_material();
 }
@@ -69,13 +84,21 @@ void MaterialEditorWindow::save_material() {
         if (material_->save_to_file(asset_path_)) {
             GLOG_INFO("MaterialEditor: saved material to '{}'", asset_path_);
         }
-    } else if (owner_) {
-        // 实体材质：通知渲染线程重新上传 GPU 资源
+    } else if (owner_ && ctx_) {
+        // 实体材质：销毁旧 GPU 纹理并立即重新上传，使修改即时生效。
+        bool belongs_to_owner = false;
         if (auto* mr = owner_->get_component<components::MeshRenderer>()) {
-            if (mr->material.get() == material_ && material_->has_gpu_textures()) {
-                // 销毁旧 GPU 纹理，下次渲染时由 RenderSystem3D 自动重新上传
-                // TODO: 需要 RenderContext 才能立即上传；这里只做标记
+            belongs_to_owner = (mr->material.get() == material_);
+        }
+        if (!belongs_to_owner) {
+            if (auto* smr = owner_->get_component<components::SkinnedMeshRenderer>()) {
+                belongs_to_owner = (smr->material.get() == material_);
             }
+        }
+        if (belongs_to_owner) {
+            material_->destroy_gpu(ctx_);
+            material_->upload_to_gpu(ctx_);
+            GLOG_INFO("MaterialEditor: re-uploaded GPU textures for '{}'", material_->name);
         }
     }
 }

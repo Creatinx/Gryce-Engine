@@ -47,6 +47,9 @@ public:
     // 绑定 Undo/Redo 命令栈
     void set_undo_stack(CommandStack* stack) { undo_stack_ = stack; }
 
+    // 将指定实体排队到本帧延迟删除队列，实际删除在 render_ctx.present 之后执行。
+    void queue_delete(const scene::UUID& uuid);
+
     // 将本帧记录的延迟操作（删除/换父/Prefab 等）统一执行。
     // 必须在当前帧所有渲染命令已提交并呈现后调用（render_ctx.present 之后），
     // 避免渲染线程仍引用已被销毁的实体/材质资源。

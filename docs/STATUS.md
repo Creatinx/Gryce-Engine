@@ -69,10 +69,10 @@
 | 半透明渲染（按相机距离排序，blend + depth write off） | 已实现 |
 | HDR + Tonemapping（None/Reinhard/ACES + exposure） | 已实现 |
 | 级联阴影（Cascaded Shadow Maps） | 未实现 |
-| IBL（Image-Based Lighting） | 未实现 |
+| IBL（Image-Based Lighting） | 已实现（OpenGL/Vulkan PBR + Skinned PBR， irradiance/prefilter/BRDF LUT） |
 | SSAO / SSR | 未实现 |
 | GPU particles | 未实现 |
-| 后处理栈（bloom、FXAA/TAA、motion blur、color grading） | 未实现 |
+| 后处理栈（bloom、FXAA/TAA、motion blur、color grading） | 部分实现（Bloom 已实现；FXAA/TAA、motion blur、color grading 待实现） |
 
 ### 2.5 2D 渲染
 
@@ -83,9 +83,9 @@
 | ParticleEmitter2D | 已实现 |
 | ParallaxBackground | 已实现 |
 | 2D Point Light、Directional Light、Spot Light | 已实现 |
-| 2D 法线贴图 | 未实现 |
+| 2D 法线贴图 | 已实现（`Sprite2D::normal_map_path` + `IRenderer2D::draw_lit_sprite`） |
 | 2D 阴影/遮挡 | 已实现 |
-| 2D 后处理辉光（Bloom） | 已实现（OpenGL） |
+| 2D 后处理辉光（Bloom） | 已实现（OpenGL / Vulkan） |
 
 ### 2.6 材质系统
 
@@ -95,7 +95,7 @@
 | OpenGL UBO / Vulkan uniform buffer 上传 | 已实现 |
 | 材质资源文件 `.gmat`（JSON，支持 res:/ 虚拟路径） | 已实现 |
 | OBJ MTL / Assimp 材质导入（随 MeshRenderer 上传时按默认值合并） | 已实现 |
-| 材质编辑器 | 未实现 |
+| 材质编辑器 | 已实现（`editor/ui/material_editor_window.*`：PBR 参数、贴图槽、物理属性；保存后即时 re-upload GPU 纹理） |
 | Shader Graph | 未实现 |
 
 ---
@@ -142,7 +142,8 @@
 | DestructibleBody、FragmentBody | 已实现 |
 | 2D 渲染组件（ColorRect/Label/Sprite2D/Circle/Polygon/TileMap/ParticleEmitter2D/ParallaxBackground） | 已实现 |
 | AudioSource、AudioListener | 已实现（miniaudio 后端） |
-| Animator、AnimationClip | 未实现 |
+| 骨骼动画（Skeleton / AnimationClip / SkinnedMeshRenderer / AnimatorSystem） | 已实现 |
+| Animator Controller（状态机 / Blend Tree） | 未实现 |
 | NavMeshAgent、BehaviorTree | 未实现 |
 
 ### 3.4 预制体（Prefab）
@@ -156,7 +157,7 @@
 | 嵌套 Prefab | 已实现（Prefab 文件内可引用其他 Prefab） |
 | 还原模板（`Prefab::revert`） | 已实现 |
 | 场景紧凑序列化（实例写成 prefab 引用） | 已实现 |
-| 运行时变体（Prefab Variant） | 未实现 |
+| 运行时变体（Prefab Variant） | 已实现（`.geprefabvariant` + Hierarchy 右键“创建变体”） |
 
 ---
 
@@ -168,11 +169,11 @@
 |---|---|
 | `AssetManager` 缓存 mesh/texture/material | 已实现 |
 | `res:/` 路径虚拟化 | 已实现 |
-| 资源引用计数 | 未实现 |
+| 资源引用计数 | 已实现（`AssetHandle<T>` + `std::shared_ptr<Asset>` 共享持有） |
 | 异步加载 | 已实现（`AsyncLoader` 线程池 + `AssetManager::load_async`） |
-| LRU 卸载 | 未实现 |
-| 资源导入设置 `.gimport` | 未实现 |
-| 资源包 `.gpack` | 未实现 |
+| LRU 卸载 | 已实现（按最大缓存数量 / 最大内存用量驱逐，外部仍持有则保留） |
+| 资源导入设置 `.gimport` | 已实现（`editor/import/gimport_settings.*`，Project 面板双击编辑） |
+| 资源包 `.gpack` | 已实现（`resources/gpack_bundle.*` + `AssetManager::mount_bundle`） |
 
 ### 4.2 模型加载
 
@@ -182,7 +183,7 @@
 | FBX 加载器 | 已实现（Assimp） |
 | glTF 2.0 加载器 | 已实现（Assimp） |
 | Assimp 集成（OBJ/FBX/glTF/DAE/PLY/STL + 材质提取） | 已实现 |
-| 骨骼动画 | 未实现 |
+| 骨骼动画 | 已实现（CPU 插值 + GPU skinning + SkinnedMeshRenderer；状态机未实现） |
 
 ### 4.3 纹理与材质
 
@@ -193,7 +194,7 @@
 | 立方体贴图（cubemap，天空盒） | 已实现 |
 | 纹理压缩（BC1~BC7/ASTC/ETC2） | 已实现（DDS/KTX 加载 + GL/VK 上传） |
 | Mipmap 自动生成 | 已实现（2D 纹理，cubemap 暂不支持） |
-| HDR/EXR 环境贴图 | 部分实现（AssetManager 已接入 stbi_loadf/tinyexr，尚未用于 IBL） |
+| HDR/EXR 环境贴图 | 已实现（通过 `RenderPipeline::set_environment_hdr` 供 IBL 使用） |
 | 材质预设库 | 未实现 |
 
 ### 4.4 字体与文本
@@ -267,8 +268,8 @@
 | OpenGL + Vulkan ImGui 后端 | 已实现 |
 | Docking 支持 | 已实现 |
 | DebugPanel（FPS、帧率限制、摄像机、输入） | 已实现 |
-| ImGui 样式统一与主题文件 | 未实现 |
-| ImGui 字体资源统一走引擎字体系统 | 未实现 |
+| ImGui 样式统一与主题文件 | 已实现（Fluent Design 深色/浅色 + 强调色 + 圆角/阴影，持久化到 `editor_theme.json`） |
+| ImGui 字体资源统一走引擎字体系统 | 部分实现（`File > Settings` 可切换自定义字体并运行时热重载；但编辑器仍使用 ImGui 自带 ImFontAtlas，尚未复用 `core/render/font_atlas.cpp`） |
 
 ### 7.2 引擎内置 UI（运行时）
 
@@ -297,14 +298,19 @@
 
 | 功能 | 状态 |
 |---|---|
-| 场景视图（Scene View） | 未实现 |
-| 游戏视图（Game View） | 未实现 |
-| 层级面板（Hierarchy） | 未实现 |
-| Inspector 面板 | 未实现 |
-| 项目面板（Project） | 未实现 |
-| 控制台面板（Console） | 未实现 |
-| 动画/材质/地形编辑器 | 未实现 |
-| 编辑器设置保存 | 未实现 |
+| Docking 布局 + 面板管理框架 | 已实现 |
+| 场景视图（Scene View） | 已实现（自由飞行相机 + F 聚焦 + 网格线 + ImGuizmo） |
+| 游戏视图（Game View） | 已实现（独立渲染管线 + 主摄像机视角 + Viewport/Game 标签页） |
+| 层级面板（Hierarchy） | 已实现（Entity 树、增删、拖拽换父、Prefab 标记、延迟删除） |
+| Inspector 面板 | 已实现（反射自动生成字段编辑、enum 下拉、只读灰显） |
+| 项目面板（Project） | 已实现（目录树、资源图标、双击加载、拖放） |
+| 控制台面板（Console） | 已实现（日志过滤、颜色区分、自动滚动、点击定位） |
+| 动画编辑器 | 已实现（剪辑选择、播放/暂停/循环/速度、时间滑块） |
+| 材质编辑器 | 已实现（PBR 参数、贴图槽、物理属性、保存后即时 GPU 上传） |
+| 地形编辑器 | 已实现（基础高度图编辑 + MeshRenderer 导出；完整 Terrain 渲染/LOD 留 M5） |
+| 编辑器设置保存 | 已实现（`imgui.ini` 布局 + `editor_theme.json` / `editor_settings.json` 主题/语言） |
+| 快捷键体系 | 已实现（Ctrl+S/Z/Y、Delete、F、Ctrl+P Play Mode） |
+| Undo/Redo | 已实现（属性修改、增删实体、Transform） |
 
 ---
 
