@@ -25,6 +25,8 @@ struct EditorSettings {
     ThemeConfig theme;
     ThemePreset theme_preset = ThemePreset::Dark;
     ApplianceSettings appliance;
+    // UI 全局缩放（与 theme.ui_scale 保持同步，方便设置界面绑定）
+    float ui_scale = EngineTheme::k_default_ui_scale;
 };
 
 class SettingsWindow {
@@ -42,10 +44,6 @@ public:
     void open() { open_ = true; }
     bool is_open() const { return open_; }
 
-    // 若字体大小已停止变化并需要重建 atlas，返回 true 并消费该请求。
-    // 由 editor_app.cpp 在合适的时机（渲染线程暂停、持有 GPU context）处理。
-    bool consume_font_rebuild_ready();
-
 private:
     enum class Section { Theme, Appliance };
 
@@ -61,9 +59,6 @@ private:
     bool unsaved_changes_ = false;
     std::string project_root_;
     float save_debounce_ = 0.0f;
-    float last_font_size_ = 0.0f;
-    bool font_rebuild_pending_ = false;
-    bool font_rebuild_ready_ = false;
 };
 
 const char* language_name(Language lang);

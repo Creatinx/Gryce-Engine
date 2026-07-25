@@ -10,26 +10,44 @@
 
 ## 特性
 
-- **双后端渲染**
-  - OpenGL 4.6：完整 2D 批处理 + 3D PBR + Shadow + HDR。
-  - Vulkan 1.2：同等功能集，支持验证层与扩展动态状态。
+- **双后端渲染（RHI）**
+  - OpenGL 4.6：完整 2D 批处理 + 3D PBR + Shadow + HDR + Bloom。
+  - Vulkan 1.2：同等功能集，支持验证层、VMA、multi-viewport 与扩展动态状态。
+  - PBR 材质工作流：albedo / normal / roughness / metallic / ao / emissive。
+  - IBL 环境光照、天空盒、HDR/EXR 环境贴图、tonemapping（Reinhard / ACES）。
 - **ECS + 场景系统**
   - Entity-Component-System 架构，类 Godot/Unity 的节点层级。
-  - `.gesc` JSON 场景格式，支持 `res:/` 虚拟路径。
+  - `.gesc` JSON 场景格式，支持 `res:/` 虚拟路径、场景热重载与差异保存。
+  - Prefab / Prefab Variant：嵌套、覆盖参数、还原模板、场景紧凑引用。
 - **资源管线**
-  - AssetManager 缓存 mesh / texture / material。
-  - OBJ 模型加载、PNG/JPG/BMP 纹理、TTF 字体图集。
-  - 材质系统支持 albedo / normal / roughness / metallic / ao。
+  - `AssetManager` 缓存 mesh / texture / material，支持引用计数与 LRU 卸载。
+  - 异步加载（`AsyncLoader` 线程池）与 `.gpack` 资源包挂载。
+  - 模型：OBJ 内置加载器 + Assimp（FBX / glTF / DAE / PLY / STL）。
+  - 纹理：PNG / JPG / BMP / DDS / KTX（BC1~BC7 / ASTC / ETC2）、立方体贴图、HDR/EXR。
+  - 字体：TTF 动态图集（stb_truetype）。
+  - 材质资源 `.gmat`、导入设置 `.gimport`。
+- **动画**
+  - 骨骼动画：Skeleton / AnimationClip / Pose、CPU 插值 + GPU Skinning。
+  - `SkinnedMeshRenderer` + `AnimatorSystem`，128 骨上限，GL/VK 双后端蒙皮 PBR。
 - **物理**
-  - 3D：刚体、静态体、AABB 碰撞、碎裂（DestructibleBody）。
-  - 2D：基础刚体/静态体/AABB 碰撞。
-- **UI**
-  - ImGui 编辑器面板与调试界面。
-  - 运行时 2D UI 组件：ColorRect、Label、Sprite2D、Circle、Polygon、TileMap 等。
+  - 3D：Jolt Physics v5.2.0，刚体、静态体、角色控制器、Hinge/Fixed/Spring/Distance 关节、碎裂。
+  - 2D：Box2D v3.0.0，刚体/静态体、圆形/多边形碰撞体、Distance/Spring 关节、角色控制器。
+  - 统一 `IPhysicsWorld2D/3D` 抽象 + Raycast。
+- **编辑器（MVP）**
+  - ImGui Docking 布局：Scene / Game / Hierarchy / Inspector / Project / Console / Animation / Material / Terrain。
+  - 场景编辑：自由飞行相机、网格线、AABB 点选拾取、ImGuizmo 移动/旋转/缩放。
+  - Play Mode：进入/退出时场景快照与恢复。
+  - 资源拖放：模型/纹理/Prefab/场景到视口或 Inspector。
+  - 主题系统：Fluent Design 深色/浅色 + 强调色 + 自定义字体，持久化配置。
+  - 多语言：中文/英文/日文运行时切换。
+  - Undo/Redo、快捷键体系（Ctrl+S/Z/Y、F 聚焦、Ctrl+P Play Mode）。
+- **运行时 UI（2D）**
+  - ColorRect、Label、Sprite2D、Circle、Polygon、TileMap、ParticleEmitter2D、ParallaxBackground。
+  - 2D 光照：环境光、方向光、点光源、聚光灯、法线贴图、阴影/遮挡。
 - **输入**
   - 键盘、鼠标、自定义光标、鼠标锁定（FPS 模式）。
 - **工具**
-  - 帧率限制、VSync、GPU Busy Spin、截图。
+  - 帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
 
 ---
 
@@ -92,28 +110,32 @@ cmake --build build/debug
 #### 方式 C：使用 build.py（Python 脚本，推荐）
 
 ```powershell
-# 默认 Debug，自动预下载缺失依赖（带进度条）
+# 默认 Debug，自动下载缺失依赖
 python build.py
 
-# Release
+# Release / RelWithDebInfo / MinSizeRel
 python build.py Release
 
-# 清理后重新构建
+# 仅下载并解压依赖（不构建）
+python build.py --setup-deps
+
+# 清理构建产物（保留 deps/ 缓存）
 python build.py --clean
+
+# 完全清理（包括 deps/，下次构建会重新下载）
+python build.py --clean-all
 
 # 指定并行任务数
 python build.py --jobs 8
 
-# 不使用预下载（让 CMake 自行下载）
-python build.py --no-prefetch
+# 自定义构建目录前缀（默认 build/）
+python build.py --build-dir build-mingw
 
-# 自定义缓存目录
-python build.py --cache-dir D:/gryce_deps_cache
+# 使用 CMake 默认编译器检测（不锁定 MinGW/MSVC）
+python build.py --no-lock
 ```
 
-> 首次构建时，`build.py` 会预下载 assimp/glfw 等 tar.gz 依赖到 `deps_cache/` 目录，并显示进度条。若安装了 `rich` 则使用彩色进度条，否则显示 ASCII 百分比条。安装 rich：`pip install rich`。
-> 
-> `deps_cache/` 为本地缓存目录，**不上传 Git**，首次 clone 后需自行下载或让 build.py 自动下载。
+> 首次构建时，`build.py` 会调用 `tools/deps_manager.py` 下载 assimp/glfw/box2d/jolt/googletest 等源码到 `build/deps/` 目录，原始 tar.gz 缓存到 `deps_cache/`。`deps_cache/` 与 `build/deps/` 均**不上传 Git**，首次 clone 后由脚本自动下载。
 
 #### 方式 D：MSVC（Visual Studio 2022+）
 
@@ -130,26 +152,30 @@ python build.py
 
 > MSVC 已作为 CMake 的 auto-detect fallback 路径支持。部分 MinGW 特定逻辑（如 `libgcc` 运行时 DLL 复制）在 MSVC 下会被自动跳过。
 
-构建完成后，可执行文件位于：
+构建完成后，可执行文件位于（以 `build.py` 默认目录为例）：
 
-- `build/debug/bin/Debug/3dtest.exe`
-- `build/debug/bin/Debug/gt2dDemo.exe`
-- `build/debug/bin/Debug/gryce_tests.exe`
+- `build/Debug/bin/Debug/3dtest.exe`
+- `build/Debug/bin/Debug/gt2dDemo.exe`
+- `build/Debug/bin/Debug/gryce-engine.exe`
+- `build/Debug/bin/Debug/gryce_tests.exe`
 
 ### 运行
 
 ```bash
-# 3D 物理/渲染演示（OpenGL 默认）
-./build/debug/bin/Debug/3dtest.exe
+# 3D 综合演示（OpenGL 默认）
+./build/Debug/bin/Debug/3dtest.exe
 
-# 3D 演示（Vulkan 后端）
-./build/debug/bin/Debug/3dtest.exe --vulkan
+# 3D 综合演示（Vulkan 后端）
+./build/Debug/bin/Debug/3dtest.exe --vulkan
 
 # 2D 平台跳跃演示
-./build/debug/bin/Debug/gt2dDemo.exe
+./build/Debug/bin/Debug/gt2dDemo.exe
+
+# 编辑器（指定项目根）
+./build/Debug/bin/Debug/gryce-engine.exe --project-root examples/3dtest
 
 # 单元测试
-./build/debug/bin/Debug/gryce_tests.exe
+./build/Debug/bin/Debug/gryce_tests.exe
 ```
 
 ---
@@ -186,26 +212,50 @@ python build.py
 
 ```
 Gryce-Engine/
-├── cmake/                  # CMake 工具脚本
+├── cmake/                  # CMake 工具脚本（编译器选项、依赖解析）
 ├── core/                   # 引擎核心静态库（gryce_core）
-│   ├── assets/             # 资源加载器（OBJ、纹理、字体）
-│   ├── audio/              # 音频系统
+│   ├── animation/          # 骨骼动画数据结构与 GPU Skinning
+│   ├── assets/             # 资源加载器（OBJ、Assimp、纹理、字体）
+│   ├── audio/              # 音频系统（miniaudio）
 │   ├── components/         # ECS 组件（3D + 2D）
 │   ├── ecs/                # ECS 系统（World、System、调度）
 │   ├── math/               # 数学库（Vector、Matrix、Quaternion）
-│   ├── physics/            # 物理抽象与实现
+│   ├── physics/            # 物理抽象与 Box2D / Jolt 后端
 │   ├── platform/           # 窗口、输入、光标
+│   ├── reflection/         # 组件反射（编辑器 Inspector 前置）
 │   ├── render/             # RHI、渲染管线、OpenGL/Vulkan 后端
 │   ├── resources/          # 资源路径、项目根解析
-│   ├── scene/              # Scene、Entity、Transform 层级
+│   ├── scene/              # Scene、Entity、Transform 层级、Prefab
 │   └── utils/              # 日志、帧率限制、工具类
-├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API）
-├── editor/                 # 编辑器入口
+├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API、TODO）
+├── editor/                 # 编辑器可执行文件（gryce-engine.exe）
+│   ├── panels/             # 编辑器面板
+│   ├── ui/                 # 编辑器窗口与主题
+│   └── import/             # 导入设置编辑器
 ├── examples/               # 示例游戏项目
-│   ├── 3dtest/             # 3D 演示项目
-│   └── gt2dDemo/           # 2D 演示项目
-├── tests/                  # 单元测试
-├── third_party/            # 第三方库（imgui、json、stb、miniaudio）
+│   ├── common/             # 示例公共框架
+│   ├── 3dtest/             # 3D 综合演示
+│   ├── gt2dDemo/           # 2D 平台跳跃演示
+│   ├── demo_sprite2d/      # 2D Sprite2D 演示
+│   ├── demo_shapes2d/      # 2D 形状演示
+│   ├── demo_lighting2d/    # 2D 光照演示
+│   ├── demo_tilemap2d/     # 2D 瓦片地图演示
+│   ├── demo_particles2d/   # 2D 粒子演示
+│   ├── demo_physics2d/     # 2D 物理演示
+│   ├── demo_character2d/   # 2D 角色控制器演示
+│   ├── demo_joints2d/      # 2D 关节演示
+│   ├── demo_physics3d/     # 3D 物理演示
+│   ├── demo_character3d/   # 3D 角色控制器演示
+│   ├── demo_joints3d/      # 3D 关节演示
+│   ├── demo_fracture/      # 3D 碎裂演示
+│   ├── demo_lighting3d/    # 3D 光照演示
+│   ├── demo_audio3d/       # 3D 音频演示
+│   ├── demo_scene_serializer/ # 场景序列化演示
+│   └── demo_skinned3d/     # 3D 骨骼动画演示
+├── tests/                  # 单元测试（GTest）
+├── third_party/            # 第三方库（imgui、json、stb、miniaudio、imguizmo）
+├── tools/                  # 工具脚本（deps_manager.py、gen_skybox.py）
+├── deps_cache/             # 依赖源码本地缓存（gitignore）
 ├── CMakeLists.txt          # 根 CMake
 ├── README.md               # 本文件
 └── build.py                # 一键构建脚本
@@ -217,31 +267,31 @@ Gryce-Engine/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Application                           │
-│                 (3dtest / gt2dDemo / Editor)                 │
+│                        Application                          |
+│                (3dtest / gt2dDemo / Editor)                 │
 └─────────────────────────────┬───────────────────────────────┘
                               │
-┌─────────────────────────────▼───────────────────────────────┐
-│                       gryce_core                             │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────────┐  │
-│  │  Scene  │  │   ECS   │  │  Assets │  │    Input      │  │
-│  │Entity   │  │Systems  │  │Pipeline │  │   Window      │  │
-│  └────┬────┘  └────┬────┘  └────┬────┘  └───────┬───────┘  │
-│       │            │            │               │          │
-│       └────────────┴────────────┘               │          │
-│                    │                            │          │
-│       ┌────────────▼────────────┐               │          │
-│       │    RenderContext        │◄──────────────┘          │
-│       │  (Command Buffer Queue) │                          │
-│       └────────────┬────────────┘                          │
+┌-────────────────────────────▼───────────────────────────────┐
+│                      gryce_core                             │
+│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────────┐  │
+│   │  Scene  │  │   ECS   │  │  Assets │  │    Input      │  │
+│   │Entity   │  │Systems  │  │Pipeline │  │   Window      │  │
+│   └────┬────┘  └────┬────┘  └────┬────┘  └───────┬───────┘  │
+│        │            │            │               │          │
+│        └────────────┴────────────┘               │          │
+│                     │                            │          │
+│        ┌────────────▼────────────┐               │          │
+│        │    RenderContext        │◄──────────────┘          │
+│        │  (Command Buffer Queue) │                          │
+│        └────────────┬────────────┘                          │
 │                    │                                        │
-│       ┌────────────▼────────────┐                          │
-│       │      Render Thread      │                          │
-│       └────────────┬────────────┘                          │
-│                    │                                        │
-│       ┌────────────▼────────────┐                          │
-│       │  RHI: OpenGL / Vulkan   │                          │
-│       └─────────────────────────┘                          │
+│        ┌────────────▼────────────┐                          │
+│        │      Render Thread      │                          │
+│        └────────────┬────────────┘                          │
+│                     |                                       │
+│        ┌────────────▼────────────┐                          │
+│        │  RHI: OpenGL / Vulkan   │                          │
+│        └─────────────────────────┘                          │
 └─────────────────────────────────────────────────────────────┘
 ```
 

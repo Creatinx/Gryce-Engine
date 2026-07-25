@@ -86,6 +86,10 @@ float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
 
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
     proj_coords = proj_coords * 0.5 + 0.5;
+    // Vulkan 使用负 viewport 高度模拟 OpenGL 坐标系，
+    // 渲染到 shadow map 时 clip y=1 会落到图像顶部（v=0），
+    // 所以采样前需要把 y 翻转。
+    proj_coords.y = 1.0 - proj_coords.y;
 
     if (proj_coords.z > 1.0) return 1.0;
     // 阴影贴图覆盖范围之外视为全亮（边缘 depth 被 clamp 会误判为阴影）
@@ -95,15 +99,8 @@ float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
     float current_depth = proj_coords.z;
     float bias = max(ubo.uShadowBias * (1.0 - dot(normal, light_dir)), ubo.uShadowBias * 0.1);
 
-    vec2 texel_size = 1.0 / textureSize(uShadowMap, 0);
-    float lit = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            vec3 coords = vec3(proj_coords.xy + vec2(x, y) * texel_size, current_depth - bias);
-            lit += texture(uShadowMap, coords);
-        }
-    }
-    lit /= 9.0;
+    vec3 coords = vec3(proj_coords.xy, current_depth - bias);
+    float lit = texture(uShadowMap, coords);
 
     return lit;
 }

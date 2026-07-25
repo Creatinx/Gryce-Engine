@@ -1,8 +1,6 @@
 #include "glog_lib.h"
 
-#ifndef _WIN32
-#include <unistd.h>
-#endif
+
 
 namespace gryce_engine::utils {
 
@@ -83,6 +81,7 @@ void ConsoleLogger::log(LogLevel level, const std::string& message) {
               << '[' << message << ']'
               << reset
               << '\n';
+    std::cerr.flush();
 }
 
 void ConsoleLogger::log(LogLevel level, const std::string& message, std::source_location loc) {

@@ -312,6 +312,9 @@ void HierarchyPanel::flush_deferred_ops() {
         deferred_ops_.clear();
         return;
     }
+    if (!deferred_ops_.empty()) {
+        GLOG_INFO("HierarchyPanel::flush_deferred_ops: {} ops", deferred_ops_.size());
+    }
     for (const auto& op : deferred_ops_) {
         execute_op(op);
     }

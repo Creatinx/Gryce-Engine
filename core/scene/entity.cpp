@@ -22,6 +22,8 @@ Entity::Entity(const std::string& name)
 }
 
 void Entity::set_store(ecs::ComponentStore* store) {
+    std::cerr << "[UNDO-TRACE] Entity::set_store: " << name_ << " id=" << id_ << " store=" << store << " old_store=" << store_ << std::endl;
+    std::cout.flush();
     if (store_ == store) return;
     if (store_) {
         store_->unregister_entity(id_);
@@ -29,16 +31,24 @@ void Entity::set_store(ecs::ComponentStore* store) {
     store_ = store;
     if (store_) {
         for (const auto& comp : components_) {
+            std::cerr << "[UNDO-TRACE] Entity::set_store: registering component " << comp->type() << " for " << name_ << std::endl;
+            std::cout.flush();
             store_->register_component(id_, std::type_index(typeid(*comp)), comp.get());
+            std::cerr << "[UNDO-TRACE] Entity::set_store: registered component " << comp->type() << " for " << name_ << std::endl;
+            std::cout.flush();
         }
     }
+    std::cerr << "[UNDO-TRACE] Entity::set_store: done " << name_ << std::endl;
+    std::cout.flush();
 }
 
 Entity::~Entity() {
+    GLOG_INFO("~Entity: destroying '{}' id={}", name_, id_);
     on_destroy();
     if (store_) {
         store_->unregister_entity(id_);
     }
+    GLOG_INFO("~Entity: destroyed '{}' id={}", name_, id_);
 }
 
 components::Component* Entity::add_component(std::unique_ptr<components::Component> comp) {

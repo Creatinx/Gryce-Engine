@@ -398,5 +398,53 @@
 | Core API 规范（CORE_API.md） | 已完成 |
 | 路线图（TODO.md） | 已完成 |
 | API 文档（doxygen） | 未生成 |
-| 用户手册 / 快速入门 | 未编写 |
+| 用户手册 / 快速入门 | 部分实现（README 快速开始已覆盖） |
 | 着色器编写指南 | 未编写 |
+
+---
+
+## 13. 已知问题与调试记录
+
+> 本节记录 MSVC / Windows 平台下遇到的典型崩溃与渲染异常，以及排查结论。
+
+### 13.1 MSVC 下 `unique_ptr<IImGuiBackend>` 返回时 `this == nullptr` 崩溃
+
+**现象**
+- 调试器报告：写入访问冲突，`this == nullptr`。
+- 调用栈停在 `std::_Compressed_pair<...>` 的构造函数（`xmemory` 第 1556 行），触发路径为 `GLBackend::create_imgui_backend()` 返回 `std::make_unique<GLImGuiBackend>()`，随后进入 `unique_ptr<IImGuiBackend>` 的转换构造函数。
+- `GLImGuiBackend` 本身没有自定义构造函数，崩溃发生在对象构造 / `unique_ptr` 转换阶段，尚未执行 `init()`。
+
+**根因**
+`IImGuiBackend` 类以值形式通过 `std::unique_ptr<IImGuiBackend>` 跨 DLL（`gryce_core` → `gryce_engine` / 编辑器）返回。若接口类未导出，MSVC 在模块间使用不同的 vtable / 析构函数布局，导致返回值槽位地址为 `null`，从而在 `unique_ptr` 内部写入成员时触发 `this == nullptr`。
+
+**修复**
+- `core/render/imgui_backend.h`：`class IImGuiBackend` 加上 `GRYCE_API`。
+- `core/render/render.h`：`class IRenderBackend` 同样加上 `GRYCE_API`（该接口也通过 `unique_ptr` 跨 DLL 传递）。
+- 确保 `gryce_core` 的导出宏在 Windows / MSVC 下正确定义并链接到使用方。
+
+**验证**
+- `gryce_core` 与 `gryce_engine` 编译、链接通过。
+- 运行时 `create_imgui_backend()` 不再在 `unique_ptr` 转换处崩溃。
+
+### 13.2 OpenGL 编辑器 3D 场景视口上下颠倒
+
+**现象**
+- OpenGL 后端下，编辑器 Viewport 中的 3D 场景与地面/Game View 中的方向正好相反（例如聚焦 Ground 后，地面出现在视口上方）。
+- 2D、物理调试绘制方向均正常；Vulkan 后端下 3D 方向也正常。
+
+**根因**
+- 此前怀疑是 `ViewportPanel` / `GameViewPanel` 对 OpenGL 端做了多余的 V 轴翻转，但移除后问题并未解决，且会破坏 2D/物理的显示方向。
+- 真正原因是 `math::Camera` 与 `math::Quaternionf::from_euler` 的欧拉角约定不一致：
+  - `math::Camera` 的 `pitch` 是绕 X 轴、`yaw` 是绕 Y 轴；
+  - `Quaternionf::from_euler(pitch, yaw, roll)` 的约定是 (pitch=Y, yaw=Z, roll=X)。
+- 编辑器在把编辑器相机/场景主相机的朝向写入 `Transform::rotation`（或反向读取）时，直接用了 `from_euler(to_radians(camera.pitch()), to_radians(camera.yaw()), 0)`，导致 Viewport 相机与 Game View 相机（场景 MainCamera）的朝向不一致，表现为 3D 场景上下颠倒。
+
+**修复**
+- 不再通过欧拉角中转，直接根据 `camera.forward()` / `camera.up()` / `camera.right()` 构造与 `Transform::rotation` 语义一致的四元数；反向读取时则用 `rotation.rotate_vector(Vector3f::forward())` 恢复 `pitch` / `yaw`。
+- `editor/editor_app.cpp`：新增 `camera_rotation_to_quaternion` / `apply_quaternion_to_camera`，替换 `ensure_scene_defaults`、`sync_active_camera_to_scene`、`build_game_camera` 中的欧拉角转换。
+- `editor/editor_app.cpp`：新增 `sync_editor_to_scene_camera`，在场景加载/热重载/Play Mode 恢复后把编辑器相机同步到场景 `MainCamera` 的 Transform，避免加载已有场景时 Viewport 与 Game View 起始位置/方向不一致。
+- `editor/editor_camera.cpp`：改进 `focus_on_bounds`，聚焦时从斜上方 45° 看向目标并重新计算 `pitch` / `yaw`，避免相机被放到目标下方还朝上看。
+- `examples/3dtest/3dtest.cpp`：同步替换 `ensure_scene_defaults`、`sync_active_camera_to_scene` 与场景重置块中的对应转换，保持示例与编辑器一致。
+
+**验证**
+- 重新编译后，OpenGL 后端下编辑器 Viewport 与 Game View 的 3D 场景方向一致，且 2D / 物理调试绘制方向不受影响。

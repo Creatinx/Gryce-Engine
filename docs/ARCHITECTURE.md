@@ -22,8 +22,9 @@
 
 ```
 Gryce-Engine/
-├── cmake/                  # 编译器选项、依赖 FetchContent 脚本
+├── cmake/                  # 编译器选项、依赖解析脚本
 ├── core/                   # 引擎核心静态库（gryce_core）
+│   ├── animation/          # 骨骼动画数据结构
 │   ├── assets/             # 资源加载器
 │   ├── audio/              # 音频系统
 │   ├── components/         # ECS 组件定义
@@ -33,14 +34,18 @@ Gryce-Engine/
 │   ├── math/               # 数学库
 │   ├── physics/            # 物理抽象与实现
 │   ├── platform/           # 平台抽象（窗口、输入、光标）
+│   ├── reflection/         # 组件反射（编辑器 Inspector 前置）
 │   ├── render/             # 渲染抽象 + OpenGL/Vulkan 实现
 │   │   ├── opengl/         # GL 后端实现
 │   │   └── vulkan/         # Vulkan 后端实现
 │   ├── resources/          # res:/ 路径解析、项目根
-│   ├── scene/              # Scene、Entity、Transform、UUID
+│   ├── scene/              # Scene、Entity、Transform、UUID、Prefab
 │   └── utils/              # 日志、帧率限制
 ├── docs/                   # 文档
 ├── editor/                 # 编辑器入口
+│   ├── panels/             # 编辑器面板
+│   ├── ui/                 # 编辑器窗口与主题
+│   └── import/             # 导入设置编辑器
 ├── examples/               # 示例游戏项目
 │   ├── common/             # 示例公共框架（app_launcher、debug_panel）
 │   ├── 3dtest/             # 3D 综合演示项目
@@ -59,9 +64,11 @@ Gryce-Engine/
 │   ├── demo_fracture/      # 3D 碎裂演示
 │   ├── demo_lighting3d/    # 3D 光照演示
 │   ├── demo_audio3d/       # 3D 音频演示
-│   └── demo_scene_serializer/ # 场景序列化演示
+│   ├── demo_scene_serializer/ # 场景序列化演示
+│   └── demo_skinned3d/     # 3D 骨骼动画演示
 ├── tests/                  # 单元测试
-└── third_party/            # ImGui、nlohmann/json、stb、miniaudio
+├── third_party/            # ImGui、nlohmann/json、stb、miniaudio、ImGuizmo
+└── tools/                  # 构建/资源工具脚本
 ```
 
 ---
@@ -72,7 +79,7 @@ Gryce-Engine/
 
 - 根 `CMakeLists.txt`：项目定义、C++23 标准、输出目录、子目录。
 - `cmake/compiler_options.cmake`：编译警告、Debug/Release 优化选项。
-- `cmake/dependencies.cmake`：第三方依赖（GLFW、GLEW、Vulkan、GTest 等）。
+- `cmake/deps_resolver.cmake`：第三方依赖解析（GLFW、GLEW、Assimp、Box2D、Jolt、GTest 等）。
 - `core/CMakeLists.txt`：核心库源文件与链接依赖。
 - `editor/CMakeLists.txt`：编辑器可执行文件。
 - `examples/CMakeLists.txt`：示例程序。
@@ -235,7 +242,33 @@ World::update(dt)
 | `PhysicsSystem2D` | 2D 物理、碰撞检测、角色控制器、关节。 |
 | `FractureSystem` | 检测 `DestructibleBody` 冲量并生成碎片。 |
 | `RenderSystem2D` | 收集 2D 组件并提交到渲染器。 |
-| `RenderSystem3D` | 收集 3D `MeshRenderer` 并提交。 |
+| `RenderSystem3D` | 收集 3D `MeshRenderer` / `SkinnedMeshRenderer` 并提交。 |
+| `AnimatorSystem` | 更新 `SkinnedMeshRenderer` 的动画时间并生成 GPU 蒙皮 palette。 |
+
+### 5.5 动画系统
+
+动画系统与 ECS 协同工作：
+
+| 类 | 职责 |
+|---|---|
+| `animation::Skeleton` | 骨骼层级与 inverse bind matrix。 |
+| `animation::AnimationClip` | 关键帧剪辑（translation/rotation/scale 通道）。 |
+| `animation::Pose` | 某一时刻的骨骼局部/世界变换。 |
+| `components::SkinnedMeshRenderer` | 持有 mesh、skeleton、clip，上传 bone palette 到 GPU。 |
+| `ecs::AnimatorSystem` | 每帧推进动画时间，计算当前 pose 并写入 renderer。 |
+
+数据流：
+
+```
+AnimationClip::evaluate(time)
+    → Pose（局部 TRS）
+        → Skeleton::compute_world_matrices
+            → 顶点着色器 bone palette（128 矩阵）
+                → GPU Skinning（GL/VK PBR 蒙皮管线）
+```
+
+- 导入：Assimp 从 FBX/glTF 解析 skin/cluster，生成 `Skeleton` + `AnimationClip`。
+- 运行：每帧 `AnimatorSystem` 调用 `evaluate_skin_palette` 生成矩阵数组，经 `set_uniform_mat4_array` 在渲染线程上传。
 
 ---
 
@@ -314,14 +347,19 @@ for (int i = 0; i < 10; ++i) {
 - `Transform`：统一 2D/3D 变换，使用 `Vector3f` + `Quaternionf`。
 - `Entity::parent()` / `children()`：维护父子关系。
 - 世界矩阵通过递归计算：`world = parent_world * local`。
+- `Node3D` / `Node2D`：3D/2D 空节点组件，用于层级组织。
+- `PrefabInstance`：标记某 Entity 为 Prefab 实例，保存模板引用与覆盖参数。
 
 ### 7.2 3D 渲染组件
 
 | 组件 | 说明 |
 |---|---|
 | `MeshRenderer` | 网格路径 + Material，负责异步上传到 GPU。 |
+| `SkinnedMeshRenderer` | 蒙皮网格 + Skeleton/AnimationClip，GPU Skinning（128 骨上限）。 |
 | `Camera` | FOV、near/far、is_main。 |
 | `Light` | light_type（directional/point/spot）、color、intensity、range、spot_angle；三种类型管线全部支持，点光/聚光位置取自 Transform。 |
+| `Node3D` | 3D 空节点基类组件（可选，用于层级组织）。 |
+| `Terrain` | 高度图地形组件（编辑器基础高度图编辑 + MeshRenderer 导出）。 |
 
 ### 7.3 物理组件
 
@@ -343,12 +381,16 @@ for (int i = 0; i < 10; ++i) {
 |---|---|
 | `ColorRect` | 纯色矩形。 |
 | `Label` | TTF 文字渲染。 |
-| `Sprite2D` | 2D 精灵贴图。 |
+| `Sprite2D` | 2D 精灵贴图（支持法线贴图）。 |
 | `Circle` / `Polygon` | 2D 形状。 |
 | `TileMap` | 瓦片地图。 |
 | `ParticleEmitter2D` | 2D 粒子发射器。 |
 | `ParallaxBackground` | 视差背景。 |
-| `Light2D` | 2D 光源组件（占位）。 |
+| `Camera2D` | 2D 相机。 |
+| `Light2D` | 2D 点光源/聚光灯/方向光。 |
+| `AmbientLight2D` | 2D 环境光。 |
+| `Skybox2D` | 2D 天空盒/背景。 |
+| `Node2D` | 2D 空节点组件。 |
 
 ---
 

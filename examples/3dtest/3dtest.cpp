@@ -462,15 +462,44 @@ static void ensure_physics_demo_entities(scene::Scene& scene) {
 // ---------------------------------------------------------------------------
 static scene::Entity* find_main_camera_entity(scene::Scene& scene) {
     scene::Entity* result = nullptr;
+    scene::Entity* fallback_by_name = nullptr;
+    scene::Entity* any_enabled = nullptr;
+
     scene.foreach([&](scene::Entity* entity) {
         auto* cam = entity->get_component<components::Camera>();
-        if (!cam || !cam->enabled || !cam->is_main) return;
-        // 简单规则：is_main=true 中第一个找到的即可；后续可扩展 priority。
-        if (!result) {
+        if (!cam || !cam->enabled) return;
+
+        if (!any_enabled) {
+            any_enabled = entity;
+        }
+        if (!fallback_by_name && entity->name() == "MainCamera") {
+            fallback_by_name = entity;
+        }
+        if (cam->is_main && !result) {
             result = entity;
         }
     });
-    return result;
+
+    if (result) return result;
+    if (fallback_by_name) return fallback_by_name;
+    return any_enabled;
+}
+
+// 将 math::Camera 的朝向转换为 Transform 用的四元数。
+// 注意：Quaternionf::from_euler 的约定与 Camera 的 (pitch=X, yaw=Y) 不一致，
+// 因此直接根据相机的前/上/右向量构造旋转矩阵再转四元数，避免欧拉角歧义。
+static math::Quaternionf camera_rotation_to_quaternion(const math::Camera& camera) {
+    const math::Vector3f f = camera.forward();
+    const math::Vector3f u = camera.up();
+    const math::Vector3f r = camera.right();
+
+    // 引擎的 from_rotation_matrix 按转置读取，因此这里传入的矩阵需为
+    // 标准 local->world 旋转矩阵的转置。
+    math::Matrix4f basis = math::Matrix4f::identity();
+    basis(0, 0) = r.x;  basis(0, 1) = r.y;  basis(0, 2) = r.z;
+    basis(1, 0) = u.x;  basis(1, 1) = u.y;  basis(1, 2) = u.z;
+    basis(2, 0) = -f.x; basis(2, 1) = -f.y; basis(2, 2) = -f.z;
+    return math::Quaternionf::from_rotation_matrix(basis);
 }
 
 static void ensure_scene_defaults(scene::Scene& scene, math::Camera& camera) {
@@ -478,8 +507,7 @@ static void ensure_scene_defaults(scene::Scene& scene, math::Camera& camera) {
     if (!cam_entity) {
         cam_entity = scene.create_entity("MainCamera");
         cam_entity->transform()->position = camera.position();
-        cam_entity->transform()->rotation = math::Quaternionf::from_euler(
-            math::to_radians(camera.pitch()), math::to_radians(camera.yaw()), 0.0f);
+        cam_entity->transform()->rotation = camera_rotation_to_quaternion(camera);
         auto* cam = cam_entity->add_component<components::Camera>();
         cam->fov = camera.fov();
         cam->near_plane = 0.1f;
@@ -515,8 +543,7 @@ static void sync_active_camera_to_scene(scene::Scene& scene, math::Camera& camer
 
     // 将全局 FPS 摄像机的位置/朝向写回组件，便于保存场景。
     cam_entity->transform()->position = camera.position();
-    cam_entity->transform()->rotation = math::Quaternionf::from_euler(
-        math::to_radians(camera.pitch()), math::to_radians(camera.yaw()), 0.0f);
+    cam_entity->transform()->rotation = camera_rotation_to_quaternion(camera);
 }
 
 static void apply_camera_component_to_global(scene::Scene& scene, math::Camera& camera) {
@@ -744,8 +771,7 @@ static void reset_3d_scene(scene::Scene& scene, math::Camera& camera) {
     // 同步场景中的主摄像机组件
     if (scene::Entity* cam_entity = find_main_camera_entity(scene)) {
         cam_entity->transform()->position = camera.position();
-        cam_entity->transform()->rotation = math::Quaternionf::from_euler(
-            math::to_radians(camera.pitch()), math::to_radians(camera.yaw()), 0.0f);
+        cam_entity->transform()->rotation = camera_rotation_to_quaternion(camera);
     }
 
     GLOG_INFO("3D scene reset (R)");
@@ -863,6 +889,9 @@ int main(int argc, char* argv[])
     float screenshot_delay = 0.0f; // --screenshot-delay N：启动 N 秒后再截图（默认立即）
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
     float auto_close_seconds = 0.0f; // --auto-close N：运行 N 秒后自动关闭，用于 CI/关机测试
+    int record_frames = 0;            // --record-frames N：连续录制 N 帧（用于生成视频）
+    float record_delay = 0.0f;        // --record-delay N：延迟 N 秒后开始录制
+    std::string record_out = "D:/Gryce-Engine/3dtest_frames"; // --record-out DIR
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
             selected_api = render::RenderAPI::Vulkan;
@@ -874,6 +903,12 @@ int main(int argc, char* argv[])
             vulkan_validation = true;
         } else if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
+        } else if (std::strcmp(argv[i], "--record-frames") == 0 && i + 1 < argc) {
+            record_frames = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--record-delay") == 0 && i + 1 < argc) {
+            record_delay = static_cast<float>(std::atof(argv[++i]));
+        } else if (std::strcmp(argv[i], "--record-out") == 0 && i + 1 < argc) {
+            record_out = argv[++i];
         }
     }
 
@@ -1019,6 +1054,11 @@ int main(int argc, char* argv[])
 
     // 启动渲染线程（此后主线程不再持有 GL context）
     render_ctx.start();
+
+    if (record_frames > 0) {
+        std::filesystem::create_directories(record_out);
+        GLOG_INFO("Recording {} frames to '{}'", record_frames, record_out);
+    }
 
     if (screenshot_mode && screenshot_delay <= 0.0f) {
         const std::string screenshot_path = is_vulkan
@@ -1316,6 +1356,18 @@ int main(int argc, char* argv[])
                 sync_promise->set_value();
             });
         });
+
+        if (record_frames > 0) {
+            static double record_timer = 0.0;
+            static int recorded = 0;
+            record_timer += window.delta_time();
+            if (record_timer >= static_cast<double>(record_delay) && recorded < record_frames) {
+                const std::string frame_path = std::format("{}/frame_{:04d}.bmp", record_out, recorded++);
+                render_ctx.push_command([frame_path](render::IRenderBackend* backend) {
+                    backend->capture_frame_to_file(frame_path);
+                });
+            }
+        }
 
         render_ctx.present();
 

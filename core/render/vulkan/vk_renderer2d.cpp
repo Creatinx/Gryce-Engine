@@ -1206,10 +1206,16 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
               screen_width_, screen_height_, camera_center_.x, camera_center_.y, camera_zoom_);
     ortho_ = math::Matrix4f::ortho(0.0f, screen_width, screen_height, 0.0f, -1.0f, 1.0f);
 
-    math::Vector2f screen_center(screen_width * 0.5f, screen_height * 0.5f);
-    math::Matrix4f view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
-                        * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
-                        * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    math::Matrix4f view;
+    if (camera_top_left_origin_) {
+        view = math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    } else {
+        math::Vector2f screen_center(screen_width * 0.5f, screen_height * 0.5f);
+        view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
+             * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    }
     view_proj_ = ortho_ * view;
 
     // bloom 目标的销毁/创建含直接 vkCreate*/vkDestroy*（pipeline、framebuffer、
@@ -1247,19 +1253,34 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     set_blend_mode(BlendMode::Alpha);
 }
 
-void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom) {
+void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom, bool top_left_origin) {
+    // 切换摄像机前必须先提交当前已缓冲的顶点，确保它们使用绘制时的 view_proj 矩阵，
+    // 否则 UI 层（top_left_origin）顶点会在后续 flush 时被普通摄像机矩阵变换到屏幕中心。
+    flush_batches();
+    flush_sprite_batch();
+
     camera_center_ = center;
     camera_zoom_ = zoom <= 0.0f ? 1.0f : zoom;
+    camera_top_left_origin_ = top_left_origin;
     if (screen_width_ > 0.0f && screen_height_ > 0.0f) {
-        math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
-        math::Matrix4f view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
-                            * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
-                            * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+        math::Matrix4f view;
+        if (top_left_origin) {
+            view = math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+                 * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+        } else {
+            math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
+            view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
+                 * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+                 * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+        }
         view_proj_ = ortho_ * view;
     }
 }
 
 math::Vector2f VulkanRenderer2D::world_to_screen(const math::Vector2f& world) const {
+    if (camera_top_left_origin_) {
+        return (world - camera_center_) * camera_zoom_;
+    }
     math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
     return screen_center + (world - camera_center_) * camera_zoom_;
 }
@@ -1758,7 +1779,7 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
     auto verts_shared = std::make_shared<std::vector<Vertex2D>>(std::move(verts));
 
     ctx_->push_command([this, verts_shared, is_text, is_sprite, tex, pipeline, layout,
-                        screen_w, screen_h](IRenderBackend*) {
+                        view_proj, screen_w, screen_h](IRenderBackend*) {
         int frame_index = vk_swapchain_->current_frame_index();
         if (frame_index < 0 || frame_index >= static_cast<int>(vertex_buffer_rect_.size())) {
             return;
@@ -1809,7 +1830,7 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         struct alignas(16) PushConstants {
             math::Matrix4f view_proj;
         } pc;
-        pc.view_proj = view_proj_;
+        pc.view_proj = view_proj;
         GLOG_DEBUG("VulkanRenderer2D::flush_batch view_proj col0=({}, {}, {}, {}) col1=({}, {}, {}, {}) col3=({}, {}, {}, {})",
                   pc.view_proj(0,0), pc.view_proj(1,0), pc.view_proj(2,0), pc.view_proj(3,0),
                   pc.view_proj(0,1), pc.view_proj(1,1), pc.view_proj(2,1), pc.view_proj(3,1),

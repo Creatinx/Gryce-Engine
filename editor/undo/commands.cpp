@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <format>
+#include <iostream>
 
 #include "components/component.h"
 #include "scene/scene.h"
@@ -59,6 +60,11 @@ std::unique_ptr<scene::Entity> deserialize_subtree(const std::string& json_text)
         auto temp = scene::SceneSerializer::deserialize(json);
         if (!temp || temp->roots().empty()) return nullptr;
         auto owned = std::move(temp->roots().front());
+        // 关键：在临时 scene 析构前，先把子树从临时 ComponentStore 中注销，
+        // 否则 attach 到目标 scene 时 Entity::set_store 会访问已释放的 store 指针。
+        owned->foreach([](scene::Entity* e) {
+            if (e) e->set_store(nullptr);
+        });
         temp->roots().clear();
         return owned;
     } catch (const std::exception& e) {
@@ -165,7 +171,11 @@ void EntityDeleteCommand::serialize_and_remove() {
     scene::Entity* entity = scene_->find_entity_by_uuid(entity_uuid_);
     if (!entity) return;
 
+    GLOG_INFO("EntityDeleteCommand: serializing '{}'", entity->name());
+    std::cerr << "[DELETE-TRACE] serializing " << entity->name() << std::endl;
     serialized_subtree_ = wrap_entity_subtree(*entity).dump();
+    GLOG_INFO("EntityDeleteCommand: serialized, destroying '{}'", entity->name());
+    std::cerr << "[DELETE-TRACE] serialized " << entity->name() << std::endl;
 
     if (scene::Entity* parent = entity->parent()) {
         parent_uuid_ = parent->uuid();
@@ -182,6 +192,7 @@ void EntityDeleteCommand::serialize_and_remove() {
     }
 
     scene_->destroy_entity(entity);
+    GLOG_INFO("EntityDeleteCommand: destroy_entity returned");
 }
 
 void EntityDeleteCommand::execute() {
@@ -191,12 +202,36 @@ void EntityDeleteCommand::execute() {
 void EntityDeleteCommand::undo() {
     if (!scene_ || serialized_subtree_.empty()) return;
 
-    auto entity = deserialize_subtree(serialized_subtree_);
-    if (!entity) return;
+    GLOG_INFO("EntityDeleteCommand::undo: start");
+    std::cerr << "[UNDO-TRACE] start" << std::endl;
+    std::cout.flush();
+    try {
+        GLOG_INFO("EntityDeleteCommand::undo: deserializing subtree ({} bytes)", serialized_subtree_.size());
+        std::cerr << "[UNDO-TRACE] deserializing" << std::endl;
+        std::cout.flush();
+        auto entity = deserialize_subtree(serialized_subtree_);
+        if (!entity) {
+            GLOG_ERROR("EntityDeleteCommand::undo: deserialize_subtree returned null");
+            return;
+        }
+        std::cerr << "[UNDO-TRACE] deserialized: " << entity->name() << std::endl;
+        std::cout.flush();
 
-    scene::Entity* parent = parent_uuid_.is_valid() ? scene_->find_entity_by_uuid(parent_uuid_)
-                                                    : nullptr;
-    attach_entity(*scene_, std::move(entity), parent, root_index_);
+        scene::Entity* parent = parent_uuid_.is_valid() ? scene_->find_entity_by_uuid(parent_uuid_)
+                                                        : nullptr;
+        GLOG_INFO("EntityDeleteCommand::undo: attaching entity '{}' (parent={})",
+                  entity->name(), parent ? parent->name() : "<root>");
+        std::cerr << "[UNDO-TRACE] attaching" << std::endl;
+        std::cout.flush();
+        attach_entity(*scene_, std::move(entity), parent, root_index_);
+        GLOG_INFO("EntityDeleteCommand::undo: done");
+        std::cerr << "[UNDO-TRACE] done" << std::endl;
+        std::cout.flush();
+    } catch (const std::exception& e) {
+        GLOG_ERROR("EntityDeleteCommand::undo: exception: {}", e.what());
+        std::cerr << "[UNDO-TRACE] exception: " << e.what() << std::endl;
+        std::cout.flush();
+    }
 }
 
 std::string EntityDeleteCommand::description() const {

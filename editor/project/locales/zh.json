@@ -12,6 +12,7 @@
     "menu.view_theme": "主题",
     "menu.view_theme_dark": "深色",
     "menu.view_theme_light": "浅色",
+    "menu.view_theme_modern_light": "现代浅色",
     "menu.view_accent_hue": "强调色色相",
     "menu.view_font_size": "字体大小",
     "menu.view_rounding": "圆角",
@@ -23,6 +24,7 @@
     "settings.section.appliance": "应用",
     "settings.appearance": "外观",
     "settings.theme_preset": "主题预设",
+    "settings.ui_scale": "界面缩放",
     "settings.accent_hue": "强调色色相",
     "settings.font_size": "字体大小",
     "settings.rounding": "圆角",
@@ -155,9 +157,9 @@
     "material_editor.drag_coefficient": "阻力系数",
     "material_editor.density": "密度",
 
-    "project.root_invalid": "项目根目录无效",
-    "project.up": "上一级",
-    "project.root": "（根目录）",
+    "file_explorer.root_invalid": "项目根目录无效",
+    "file_explorer.up": "上一级",
+    "file_explorer.root": "（根目录）",
 
     "viewport.texture_unavailable": "视口纹理不可用",
     "viewport.opengl_check_hdr": "- OpenGL 后端：请检查 HDR 管线初始化",
@@ -165,7 +167,7 @@
     "panel.hierarchy": "层级",
     "panel.inspector": "检查器",
     "panel.console": "控制台",
-    "panel.project": "项目",
+    "panel.file_explorer": "文件资源管理器",
     "panel.viewport": "视口",
     "panel.game": "游戏视图",
     "panel.debug": "调试",
@@ -181,7 +183,7 @@
     "dialog.open_scene": "打开场景",
     "dialog.rename_entity": "重命名实体",
 
-    "project.assets_path": "资源/%s",
+    "file_explorer.assets_path": "资源/%s",
 
     "hierarchy.new_entity_name": "新实体",
 

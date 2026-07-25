@@ -1,5 +1,5 @@
 {
     "graphics": {
-        "render_api": "opengl"
+        "render_api": "vulkan"
     }
 }

@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #include "render/render_context.h"
@@ -28,6 +30,104 @@
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render {
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// 网格本地包围球缓存：按 mesh_path 缓存本地中心与半径，避免每帧重复遍历顶点。
+// ---------------------------------------------------------------------------
+struct MeshBoundsCache {
+    math::Vector3f center;
+    float radius = 0.0f;
+};
+
+static std::unordered_map<std::string, MeshBoundsCache> g_mesh_bounds_cache;
+static std::mutex g_mesh_bounds_mutex;
+
+bool compute_world_mesh_bounds(const std::string& mesh_path, const math::Matrix4f& world,
+                               math::Vector3f& out_center, float& out_radius) {
+    MeshBoundsCache local;
+    {
+        std::lock_guard<std::mutex> lock(g_mesh_bounds_mutex);
+        auto it = g_mesh_bounds_cache.find(mesh_path);
+        if (it != g_mesh_bounds_cache.end()) {
+            local = it->second;
+        } else {
+            const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(mesh_path);
+            if (!mesh || mesh->vertices.empty()) return false;
+
+            math::Vector3f lo = mesh->vertices[0].position;
+            math::Vector3f hi = lo;
+            for (const auto& v : mesh->vertices) {
+                lo = lo.min(v.position);
+                hi = hi.max(v.position);
+            }
+            local.center = (lo + hi) * 0.5f;
+            local.radius = (hi - local.center).length();
+            g_mesh_bounds_cache[mesh_path] = local;
+        }
+    }
+
+    // 世界空间中心
+    out_center = world.transform_point(local.center);
+
+    // 将本地半径按世界矩阵缩放：取各轴最大缩放作为保守半径。
+    // 非均匀缩放会略有放大，但保证包围球一定包含物体。
+    float scale_x = std::sqrt(world.m[0] * world.m[0] + world.m[1] * world.m[1] + world.m[2] * world.m[2]);
+    float scale_y = std::sqrt(world.m[4] * world.m[4] + world.m[5] * world.m[5] + world.m[6] * world.m[6]);
+    float scale_z = std::sqrt(world.m[8] * world.m[8] + world.m[9] * world.m[9] + world.m[10] * world.m[10]);
+    out_radius = local.radius * std::max({scale_x, scale_y, scale_z});
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// 蒙皮模型本地包围球缓存：按 model_path 缓存所有 submesh 合并后的中心与半径。
+// ---------------------------------------------------------------------------
+struct SkinnedMeshBoundsCache {
+    math::Vector3f center;
+    float radius = 0.0f;
+};
+
+static std::unordered_map<std::string, SkinnedMeshBoundsCache> g_skinned_bounds_cache;
+static std::mutex g_skinned_bounds_mutex;
+
+bool compute_world_skinned_mesh_bounds(const std::string& model_path, const math::Matrix4f& world,
+                                       math::Vector3f& out_center, float& out_radius) {
+    SkinnedMeshBoundsCache local;
+    {
+        std::lock_guard<std::mutex> lock(g_skinned_bounds_mutex);
+        auto it = g_skinned_bounds_cache.find(model_path);
+        if (it != g_skinned_bounds_cache.end()) {
+            local = it->second;
+        } else {
+            auto model = assets::AssetManager::instance().load_skinned_model(model_path);
+            if (!model || model->meshes.empty()) return false;
+
+            math::Vector3f lo = model->meshes[0].vertices[0].position;
+            math::Vector3f hi = lo;
+            for (const auto& mesh : model->meshes) {
+                if (mesh.vertices.empty()) continue;
+                for (const auto& v : mesh.vertices) {
+                    lo = lo.min(v.position);
+                    hi = hi.max(v.position);
+                }
+            }
+            local.center = (lo + hi) * 0.5f;
+            local.radius = (hi - local.center).length();
+            g_skinned_bounds_cache[model_path] = local;
+        }
+    }
+
+    out_center = world.transform_point(local.center);
+
+    float scale_x = std::sqrt(world.m[0] * world.m[0] + world.m[1] * world.m[1] + world.m[2] * world.m[2]);
+    float scale_y = std::sqrt(world.m[4] * world.m[4] + world.m[5] * world.m[5] + world.m[6] * world.m[6]);
+    float scale_z = std::sqrt(world.m[8] * world.m[8] + world.m[9] * world.m[9] + world.m[10] * world.m[10]);
+    out_radius = local.radius * std::max({scale_x, scale_y, scale_z});
+    return true;
+}
+
+} // namespace
 
 RenderPipeline::RenderPipeline() = default;
 
@@ -276,6 +376,65 @@ void RenderPipeline::update_light_space_matrix() {
     math::Matrix4f light_proj = math::Matrix4f::ortho(
         -shadow_area_, shadow_area_, -shadow_area_, shadow_area_, 0.1f, shadow_area_ * 4.0f);
     light_space_matrix_ = light_proj * light_view;
+}
+
+// ---------------------------------------------------------------------------
+// Frustum culling
+// ---------------------------------------------------------------------------
+bool RenderPipeline::Frustum::contains_sphere(const math::Vector3f& center, float radius) const {
+    for (int i = 0; i < 6; ++i) {
+        const math::Vector3f normal(planes[i].x, planes[i].y, planes[i].z);
+        float distance = normal.dot(center) + planes[i].w;
+        if (distance < -radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+RenderPipeline::Frustum RenderPipeline::extract_frustum(const math::Matrix4f& vp) const {
+    Frustum frustum;
+    // 提取第 i 行（列主序：row i = m[i], m[i+4], m[i+8], m[i+12]）
+    auto row = [&](int i) {
+        return math::Vector4f(vp.m[i], vp.m[i + 4], vp.m[i + 8], vp.m[i + 12]);
+    };
+
+    frustum.planes[0] = row(3) + row(0); // Left
+    frustum.planes[1] = row(3) - row(0); // Right
+    frustum.planes[2] = row(3) + row(1); // Bottom
+    frustum.planes[3] = row(3) - row(1); // Top
+    frustum.planes[4] = row(3) + row(2); // Near
+    frustum.planes[5] = row(3) - row(2); // Far
+
+    for (int i = 0; i < 6; ++i) {
+        const math::Vector3f normal(frustum.planes[i].x, frustum.planes[i].y, frustum.planes[i].z);
+        float len = normal.length();
+        if (len > 1e-6f) {
+            frustum.planes[i] = frustum.planes[i] / len;
+        }
+    }
+    return frustum;
+}
+
+bool RenderPipeline::is_inside_frustum(const Frustum& frustum, const math::Matrix4f& world_transform,
+                                       const std::string& mesh_path) const {
+    math::Vector3f center;
+    float radius = 0.0f;
+    if (!compute_world_mesh_bounds(mesh_path, world_transform, center, radius)) {
+        // 无法计算边界时保守保留
+        return true;
+    }
+    return frustum.contains_sphere(center, radius);
+}
+
+bool RenderPipeline::is_inside_frustum_skinned(const Frustum& frustum, const math::Matrix4f& world_transform,
+                                               const std::string& model_path) const {
+    math::Vector3f center;
+    float radius = 0.0f;
+    if (!compute_world_skinned_mesh_bounds(model_path, world_transform, center, radius)) {
+        return true;
+    }
+    return frustum.contains_sphere(center, radius);
 }
 
 // ---------------------------------------------------------------------------
@@ -565,14 +724,21 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     update_light_space_matrix();
     const bool render_shadow = shadow_enabled_ && shadow_light_index_ >= 0;
 
+    // 相机视锥体：用于 forward pass 剔除不可见物体
+    const math::Matrix4f camera_vp = camera_->get_projection_matrix() * camera_->get_view_matrix();
+    const Frustum camera_frustum = extract_frustum(camera_vp);
+
     // 1. Shadow pass（仅第一个方向光）
     if (render_shadow) {
+        const Frustum shadow_frustum = extract_frustum(light_space_matrix_);
         begin_shadow_pass(ctx);
         ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
             scene,
             [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
                 if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
-                ctx.set_uniform_mat4(shadow_shader_, "uModel", entity->world_transform());
+                const math::Matrix4f& model = entity->world_transform();
+                if (!is_inside_frustum(shadow_frustum, model, mr->mesh_path)) return;
+                ctx.set_uniform_mat4(shadow_shader_, "uModel", model);
                 ctx.set_uniform_mat4(shadow_shader_, "uLightSpaceMatrix", light_space_matrix_);
                 ctx.draw_mesh(mr->gpu_mesh_handle(), shadow_shader_);
             });
@@ -594,7 +760,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
     bind_global_uniforms(ctx);
 
-    // 2b. 收集绘制项并拆分不透明 / 透明
+    // 2b. 收集绘制项并拆分不透明 / 透明（同时做相机视锥体剔除）
     struct DrawItem {
         RHIMeshHandle mesh;
         const Material* material;
@@ -618,6 +784,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
             if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
             const math::Matrix4f& model = entity->world_transform();
+            if (!is_inside_frustum(camera_frustum, model, mr->mesh_path)) return;
             const Material* mat = mr->material.get();
             const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
             math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
@@ -635,8 +802,9 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
             scene,
             [&](scene::Entity* entity, components::SkinnedMeshRenderer* mr, components::Transform* /*transform*/) {
-                if (!mr->enabled || !mr->gpu_mesh_handle().is_valid() || !mr->palette()) return;
+                if (!mr->enabled || mr->model_path.empty() || !mr->gpu_mesh_handle().is_valid() || !mr->palette()) return;
                 const math::Matrix4f& model = entity->world_transform();
+                if (!is_inside_frustum_skinned(camera_frustum, model, mr->model_path)) return;
                 const Material* mat = mr->material.get();
                 const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
                 math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
@@ -654,10 +822,10 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     ctx.set_blend(false);
     ctx.set_depth_write(true);
     for (const auto& item : opaque_items) {
-        render_mesh(item.mesh, item.material, item.model, ctx);
+        render_mesh_internal(item.mesh, item.material, item.model, ctx);
     }
     for (const auto& item : skinned_opaque_items) {
-        render_skinned_mesh(item.mesh, item.material, item.model, item.palette, ctx);
+        render_skinned_mesh_internal(item.mesh, item.material, item.model, item.palette, ctx);
     }
 
     // 2d. 透明物体：按到相机距离从远到近排序，blend 开、深度写关
@@ -669,10 +837,10 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         ctx.set_blend(true);
         ctx.set_depth_write(false);
         for (const auto& item : transparent_items) {
-            render_mesh(item.mesh, item.material, item.model, ctx);
+            render_mesh_internal(item.mesh, item.material, item.model, ctx);
         }
         for (const auto& item : skinned_transparent_items) {
-            render_skinned_mesh(item.mesh, item.material, item.model, item.palette, ctx);
+            render_skinned_mesh_internal(item.mesh, item.material, item.model, item.palette, ctx);
         }
         ctx.set_blend(false);
         ctx.set_depth_write(true);
@@ -689,6 +857,12 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
 void RenderPipeline::render_mesh(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
                                  RenderContext& ctx) {
+    bind_per_frame_uniforms(ctx, pbr_shader_);
+    render_mesh_internal(mesh, material, model, ctx);
+}
+
+void RenderPipeline::render_mesh_internal(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
+                                          RenderContext& ctx) {
     if (!mesh.is_valid() || !pbr_shader_.is_valid() || !camera_) return;
 
     // 双面材质关闭背面剔除
@@ -697,32 +871,10 @@ void RenderPipeline::render_mesh(RHIMeshHandle mesh, const Material* material, c
 
     ctx.set_shader(pbr_shader_);
     ctx.set_uniform_mat4(pbr_shader_, "uModel", model);
-    ctx.set_uniform_mat4(pbr_shader_, "uView", camera_->get_view_matrix());
-    ctx.set_uniform_mat4(pbr_shader_, "uProjection", camera_->get_projection_matrix());
-    ctx.set_uniform_mat4(pbr_shader_, "uLightSpaceMatrix", light_space_matrix_);
-    ctx.set_uniform_vec3(pbr_shader_, "uCameraPos", camera_->position());
-
-    // 单独 render mesh 时也确保全局光照参数正确
-    ctx.set_uniform_vec3(pbr_shader_, "uAmbient", ambient_);
-    ctx.set_uniform_int(pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
-    upload_lights(ctx, pbr_shader_);
-    upload_ibl_textures(ctx, pbr_shader_);
 
     if (material) {
         material->bind(&ctx, pbr_shader_);
     }
-
-    const bool use_shadow = shadow_enabled_ && shadow_light_index_ >= 0 && shadow_map_.is_valid();
-    if (shadow_map_.is_valid()) {
-        ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
-        if (shadow_map_ptr) {
-            shadow_map_ptr->bind(TextureSlots::kPBRShadow);
-        }
-        ctx.set_texture(pbr_shader_, shadow_map_, TextureSlots::kPBRShadow, "");
-        ctx.set_uniform_int(pbr_shader_, "uShadowMap", TextureSlots::kPBRShadow);
-    }
-    ctx.set_uniform_int(pbr_shader_, "uUseShadowMap", use_shadow ? 1 : 0);
-    ctx.set_uniform_float(pbr_shader_, "uShadowBias", shadow_bias_);
 
     ctx.draw_mesh(mesh, pbr_shader_);
 }
@@ -730,6 +882,14 @@ void RenderPipeline::render_mesh(RHIMeshHandle mesh, const Material* material, c
 void RenderPipeline::render_skinned_mesh(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
                                          std::shared_ptr<const std::vector<math::Matrix4f>> palette,
                                          RenderContext& ctx) {
+    bind_per_frame_uniforms(ctx, skinned_pbr_shader_);
+    render_skinned_mesh_internal(mesh, material, model, palette, ctx);
+}
+
+void RenderPipeline::render_skinned_mesh_internal(RHIMeshHandle mesh, const Material* material,
+                                                  const math::Matrix4f& model,
+                                                  std::shared_ptr<const std::vector<math::Matrix4f>> palette,
+                                                  RenderContext& ctx) {
     if (!mesh.is_valid() || !skinned_pbr_shader_.is_valid() || !camera_) return;
 
     // 双面材质关闭背面剔除
@@ -738,16 +898,6 @@ void RenderPipeline::render_skinned_mesh(RHIMeshHandle mesh, const Material* mat
 
     ctx.set_shader(skinned_pbr_shader_);
     ctx.set_uniform_mat4(skinned_pbr_shader_, "uModel", model);
-    ctx.set_uniform_mat4(skinned_pbr_shader_, "uView", camera_->get_view_matrix());
-    ctx.set_uniform_mat4(skinned_pbr_shader_, "uProjection", camera_->get_projection_matrix());
-    ctx.set_uniform_mat4(skinned_pbr_shader_, "uLightSpaceMatrix", light_space_matrix_);
-    ctx.set_uniform_vec3(skinned_pbr_shader_, "uCameraPos", camera_->position());
-
-    // 蒙皮管线与标准 PBR 不共享 program/UBO，必须单独上传全局光照参数
-    ctx.set_uniform_vec3(skinned_pbr_shader_, "uAmbient", ambient_);
-    ctx.set_uniform_int(skinned_pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
-    upload_lights(ctx, skinned_pbr_shader_);
-    upload_ibl_textures(ctx, skinned_pbr_shader_);
 
     // palette：shared_ptr 按值捕获进命令队列，渲染线程执行时数据仍有效
     if (palette && !palette->empty()) {
@@ -758,18 +908,6 @@ void RenderPipeline::render_skinned_mesh(RHIMeshHandle mesh, const Material* mat
         material->bind(&ctx, skinned_pbr_shader_);
     }
 
-    const bool use_shadow = shadow_enabled_ && shadow_light_index_ >= 0 && shadow_map_.is_valid();
-    if (shadow_map_.is_valid()) {
-        ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
-        if (shadow_map_ptr) {
-            shadow_map_ptr->bind(TextureSlots::kPBRShadow);
-        }
-        ctx.set_texture(skinned_pbr_shader_, shadow_map_, TextureSlots::kPBRShadow, "");
-        ctx.set_uniform_int(skinned_pbr_shader_, "uShadowMap", TextureSlots::kPBRShadow);
-    }
-    ctx.set_uniform_int(skinned_pbr_shader_, "uUseShadowMap", use_shadow ? 1 : 0);
-    ctx.set_uniform_float(skinned_pbr_shader_, "uShadowBias", shadow_bias_);
-
     ctx.draw_mesh(mesh, skinned_pbr_shader_);
 }
 
@@ -777,6 +915,7 @@ void RenderPipeline::begin_shadow_pass(RenderContext& ctx) {
     ctx.set_shader(shadow_shader_);
     ctx.set_framebuffer(shadow_fbo_);
     ctx.set_viewport(0, 0, shadow_map_size_, shadow_map_size_);
+    // VulkanBackend::set_viewport 会同步设置 scissor，无需额外调用。
     ctx.clear_depth();
     ctx.set_depth_test(true);
     ctx.set_depth_write(true);
@@ -800,14 +939,36 @@ void RenderPipeline::end_forward_pass(RenderContext& ctx) {
     (void)ctx;
 }
 
-void RenderPipeline::bind_global_uniforms(RenderContext& ctx) {
+void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle shader) {
+    if (!shader.is_valid() || !camera_) return;
     // uniform 命令作用于"当前绑定"的 program（见 GLShader::set_*），
-    // skybox pass 可能刚绑定过其它 shader，这里必须先绑回 PBR shader。
-    ctx.set_shader(pbr_shader_);
-    ctx.set_uniform_vec3(pbr_shader_, "uAmbient", ambient_);
-    ctx.set_uniform_int(pbr_shader_, "uHDREnabled", hdr_enabled_ ? 1 : 0);
-    upload_lights(ctx, pbr_shader_);
-    upload_ibl_textures(ctx, pbr_shader_);
+    // 上传前必须先绑定目标 shader。
+    ctx.set_shader(shader);
+    ctx.set_uniform_mat4(shader, "uView", camera_->get_view_matrix());
+    ctx.set_uniform_mat4(shader, "uProjection", camera_->get_projection_matrix());
+    ctx.set_uniform_mat4(shader, "uLightSpaceMatrix", light_space_matrix_);
+    ctx.set_uniform_vec3(shader, "uCameraPos", camera_->position());
+    ctx.set_uniform_vec3(shader, "uAmbient", ambient_);
+    ctx.set_uniform_int(shader, "uHDREnabled", hdr_enabled_ ? 1 : 0);
+    upload_lights(ctx, shader);
+    upload_ibl_textures(ctx, shader);
+
+    const bool use_shadow = shadow_enabled_ && shadow_light_index_ >= 0 && shadow_map_.is_valid();
+    if (shadow_map_.is_valid()) {
+        ITexture* shadow_map_ptr = ctx_->texture(shadow_map_);
+        if (shadow_map_ptr) {
+            shadow_map_ptr->bind(TextureSlots::kPBRShadow);
+        }
+        ctx.set_texture(shader, shadow_map_, TextureSlots::kPBRShadow, "");
+        ctx.set_uniform_int(shader, "uShadowMap", TextureSlots::kPBRShadow);
+    }
+    ctx.set_uniform_int(shader, "uUseShadowMap", use_shadow ? 1 : 0);
+    ctx.set_uniform_float(shader, "uShadowBias", shadow_bias_);
+}
+
+void RenderPipeline::bind_global_uniforms(RenderContext& ctx) {
+    bind_per_frame_uniforms(ctx, pbr_shader_);
+    bind_per_frame_uniforms(ctx, skinned_pbr_shader_);
 }
 
 void RenderPipeline::upload_lights(RenderContext& ctx, RHIShaderHandle shader) {

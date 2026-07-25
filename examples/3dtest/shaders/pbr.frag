@@ -101,15 +101,8 @@ float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
     float bias = max(uShadowBias * (1.0 - dot(normal, light_dir)), uShadowBias * 0.1);
 
     // 硬件 PCF：sampler2DShadow + 线性过滤，自动做 2x2 百分比渐近过滤
-    vec2 texel_size = 1.0 / textureSize(uShadowMap, 0);
-    float lit = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            vec3 coords = vec3(proj_coords.xy + vec2(x, y) * texel_size, current_depth - bias);
-            lit += texture(uShadowMap, coords);
-        }
-    }
-    lit /= 9.0;
+    vec3 coords = vec3(proj_coords.xy, current_depth - bias);
+    float lit = texture(uShadowMap, coords);
 
     return lit;
 }

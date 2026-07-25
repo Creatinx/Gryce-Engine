@@ -115,9 +115,9 @@ void RenderSystem2D::on_render(scene::Scene& scene, render::RenderContext& /*ctx
     constexpr int k_ui_layer = 1000;
 
     for (auto* comp : comps) {
-        // UI 层（render_order >= 1000）使用屏幕空间，不受摄像机影响
+        // UI 层（render_order >= 1000）使用屏幕空间，不受摄像机影响，左上角为原点
         if (comp->render_order >= k_ui_layer) {
-            renderer_->set_camera(math::Vector2f::zero(), 1.0f);
+            renderer_->set_camera(math::Vector2f::zero(), 1.0f, true);
         } else {
             renderer_->set_camera(saved_center, saved_zoom);
         }

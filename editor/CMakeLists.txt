@@ -16,6 +16,8 @@ target_sources(gryce_engine PRIVATE
     panels/project_panel.cpp
     ui/debug_panel.cpp
     ui/editor_theme.cpp
+    ui/engine_theme.cpp
+    ui/engine_theme_modern.cpp
     ui/settings_window.cpp
     ui/project_settings_window.cpp
     ui/gimport_editor_window.cpp
@@ -62,8 +64,8 @@ if(WIN32 AND MINGW)
 endif()
 
 set_target_properties(gryce_engine PROPERTIES
-    OUTPUT_NAME gryce
-    RUNTIME_OUTPUT_NAME gryce
+    OUTPUT_NAME gryce-engine
+    RUNTIME_OUTPUT_NAME gryce-engine
     FOLDER "Editor"
 )
 

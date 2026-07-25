@@ -82,10 +82,10 @@ bool DDSLoader::parse(const uint8_t* data, size_t size, CompressedImage& out) {
     uint32_t mip_count = read_u32(h + 24);
     if (mip_count == 0) mip_count = 1;
 
-    // ddspf: offset 76 in header -> dwFlags at +0, dwFourCC at +4
-    const uint8_t* pf = h + 76;
-    const uint32_t pf_flags = read_u32(pf + 0);
-    const uint32_t pf_fourcc = read_u32(pf + 4);
+    // ddspf: offset 72 in header -> dwFlags at +4, dwFourCC at +8
+    const uint8_t* pf = h + 72;
+    const uint32_t pf_flags = read_u32(pf + 4);
+    const uint32_t pf_fourcc = read_u32(pf + 8);
     constexpr uint32_t k_ddpf_fourcc = 0x4;
     if ((pf_flags & k_ddpf_fourcc) == 0) {
         GLOG_WARN("DDSLoader: uncompressed DDS pixel formats are not supported");
@@ -142,7 +142,10 @@ bool DDSLoader::parse(const uint8_t* data, size_t size, CompressedImage& out) {
             GLOG_WARN("DDSLoader: truncated mip data (level {})", i);
             return false;
         }
-        result.mips.emplace_back(data + cursor, data + cursor + mip_bytes);
+        result.mips.resize(result.mips.size() + 1);
+        auto& mip = result.mips.back();
+        mip.resize(mip_bytes);
+        std::memcpy(mip.data(), data + cursor, mip_bytes);
         cursor += mip_bytes;
     }
 

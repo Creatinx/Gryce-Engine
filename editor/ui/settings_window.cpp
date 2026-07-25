@@ -1,5 +1,6 @@
 #include "settings_window.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -39,6 +40,7 @@ EditorSettings SettingsWindow::load(const std::string& project_root) {
     if (load_theme_config(project_root, theme_cfg, theme_preset)) {
         settings.theme = theme_cfg;
         settings.theme_preset = theme_preset;
+        settings.ui_scale = settings.theme.ui_scale;
     }
 
     // 通用配置从 editor_settings.json 读取
@@ -65,7 +67,9 @@ EditorSettings SettingsWindow::load(const std::string& project_root) {
 
 void SettingsWindow::save(const std::string& project_root, const EditorSettings& settings) {
     // 主题单独保持兼容 editor_theme.json
-    save_theme_config(project_root, settings.theme, settings.theme_preset);
+    EditorSettings persisted = settings;
+    persisted.theme.ui_scale = settings.ui_scale;
+    save_theme_config(project_root, persisted.theme, persisted.theme_preset);
 
     // 通用配置写入 editor_settings.json
     nlohmann::json j;
@@ -118,18 +122,12 @@ bool SettingsWindow::draw(const std::string& project_root, EditorSettings& setti
     }
 
     if (!still_open) {
-        if (unsaved_changes_ || font_rebuild_pending_) {
+        if (unsaved_changes_) {
             flush_save(project_root, settings);
         }
         open_ = false;
     }
     return open_;
-}
-
-bool SettingsWindow::consume_font_rebuild_ready() {
-    const bool ready = font_rebuild_ready_;
-    font_rebuild_ready_ = false;
-    return ready;
 }
 
 void SettingsWindow::draw_sidebar(float width) {
@@ -152,39 +150,28 @@ void SettingsWindow::draw_theme_section(EditorSettings& settings) {
     ImGui::Text("%s", tr("settings.appearance"));
     ImGui::Separator();
 
-    int preset = (settings.theme_preset == ThemePreset::Dark) ? 0 : 1;
-    const char* presets[] = {tr("menu.view_theme_dark"), tr("menu.view_theme_light")};
+    int preset = 0;
+    if (settings.theme_preset == ThemePreset::Light)       preset = 1;
+    else if (settings.theme_preset == ThemePreset::ModernLight) preset = 2;
+    const char* presets[] = {tr("menu.view_theme_dark"), tr("menu.view_theme_light"), tr("menu.view_theme_modern_light")};
     if (ImGui::Combo(tr("settings.theme_preset"), &preset, presets, IM_ARRAYSIZE(presets))) {
-        settings.theme_preset = (preset == 0) ? ThemePreset::Dark : ThemePreset::Light;
+        if (preset == 0)       settings.theme_preset = ThemePreset::Dark;
+        else if (preset == 1)  settings.theme_preset = ThemePreset::Light;
+        else                   settings.theme_preset = ThemePreset::ModernLight;
         apply_theme_live(settings);
         unsaved_changes_ = true;
         save_debounce_ = 0.5f;
     }
 
-    ImGui::Dummy(ImVec2(0.0f, 8.0f));
-    if (ImGui::SliderFloat(tr("settings.accent_hue"), &settings.theme.accent_hue, 0.0f, 1.0f)) {
-        apply_theme_live(settings);
+    ImGui::Dummy(ImVec2(0.0f, 12.0f));
+    bool scale_changed = ImGui::SliderFloat(tr("settings.ui_scale"), &settings.ui_scale, 1.0f, 2.0f, "%.2fx");
+    if (scale_changed) {
+        settings.ui_scale = std::clamp(settings.ui_scale, 1.0f, 2.0f);
+        settings.theme.ui_scale = settings.ui_scale;
         unsaved_changes_ = true;
-        save_debounce_ = 0.5f;
     }
-
-    if (ImGui::SliderFloat(tr("settings.rounding"), &settings.theme.rounding, 0.0f, 12.0f)) {
+    if (scale_changed && ImGui::IsItemDeactivatedAfterEdit()) {
         apply_theme_live(settings);
-        unsaved_changes_ = true;
-        save_debounce_ = 0.5f;
-    }
-
-    if (ImGui::SliderFloat(tr("settings.font_size"), &settings.theme.font_size, 12.0f, 32.0f)) {
-        // 字体大小变化只做标记；真正 Clear/Build atlas 放到 editor_app.cpp 中
-        // 在渲染线程暂停、持有 GPU context 时执行，避免帧中间操作 GPU 资源。
-        font_rebuild_pending_ = true;
-        unsaved_changes_ = true;
-        save_debounce_ = 0.5f;
-    }
-
-    if (ImGui::Checkbox(tr("settings.shadow"), &settings.theme.shadow)) {
-        apply_theme_live(settings);
-        unsaved_changes_ = true;
         save_debounce_ = 0.5f;
     }
 
@@ -218,11 +205,6 @@ void SettingsWindow::apply_theme_live(const EditorSettings& settings) {
 }
 
 void SettingsWindow::flush_save(const std::string& project_root, EditorSettings& settings) {
-    // 字体大小由 editor_app.cpp 在合适的时机（渲染线程暂停）统一重建 atlas。
-    if (font_rebuild_pending_) {
-        font_rebuild_ready_ = true;
-        font_rebuild_pending_ = false;
-    }
     Localization::instance().load(settings.appliance.language, project_root);
     save(project_root, settings);
     unsaved_changes_ = false;

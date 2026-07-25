@@ -113,6 +113,10 @@ void GLBackend::request_screenshot(const std::string& path) {
     screenshot_frame_ = frame_count_ + 1;
 }
 
+void GLBackend::capture_frame_to_file(const std::string& path) {
+    save_screenshot(path);
+}
+
 namespace {
 
 void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,

@@ -121,8 +121,11 @@ GryceGC-A 允许在 `project.gryce` 中指定物理后端：
 
 | 维度 | 后端选项 | 状态 |
 |------|---------|------|
-| 2D   | `box2d` | 已实现 CMake 集成，需 `GRYCE_HAS_BOX2D=ON` |
-| 3D   | `jolt`  | 接口预留，尚未实现 |
-| 3D   | `builtin`| 自研实现，显式传入 `"builtin"` 才启用（已知不稳定） |
+| 2D   | `box2d` | 已实现并默认启用（`GRYCE_HAS_BOX2D=ON`） |
+| 3D   | `jolt`  | 已实现并默认启用（`GRYCE_HAS_JOLT=ON`） |
+| 3D   | `builtin`| 已移除，不再可用 |
 
-引擎内部提供统一的 `IPhysicsWorld2D` / `IPhysicsWorld3D` 接口，底层由 Box2D / Jolt / 自研实现。
+引擎内部提供统一的 `IPhysicsWorld2D` / `IPhysicsWorld3D` 接口：
+- 2D 默认后端为 `Box2DPhysicsWorld2D`（Box2D v3.0.0）。
+- 3D 默认后端为 `JoltPhysicsWorld3D`（Jolt Physics v5.2.0）。
+- 若 CMake 中关闭对应依赖开关（`GRYCE_FETCH_BOX2D=OFF` / `GRYCE_FETCH_JOLT=OFF`），则该维度物理功能不可用。

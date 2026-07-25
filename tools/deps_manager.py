@@ -63,6 +63,14 @@ DEPENDENCIES = [
         "required": True,
     },
     {
+        "name": "glew",
+        "url": "https://github.com/nigels-com/glew/releases/download/glew-2.2.0/glew-2.2.0.tgz",
+        "filename": "glew-2.2.0.tgz",
+        "sha256": None,
+        "extracted_dir": "glew-2.2.0",
+        "required": False,
+    },
+    {
         "name": "box2d",
         "url": "https://github.com/erincatto/box2d/archive/refs/tags/v3.0.0.tar.gz",
         "filename": "box2d-v3.0.0.tar.gz",
@@ -76,6 +84,14 @@ DEPENDENCIES = [
         "filename": "jolt-v5.2.0.tar.gz",
         "sha256": None,
         "extracted_dir": "JoltPhysics-5.2.0",
+        "required": False,
+    },
+    {
+        "name": "googletest",
+        "url": "https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz",
+        "filename": "googletest-v1.15.2.tar.gz",
+        "sha256": None,
+        "extracted_dir": "googletest-1.15.2",
         "required": False,
     },
 ]

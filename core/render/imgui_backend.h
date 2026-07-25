@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "export.h"
+
 struct ImDrawData;
 
 namespace gryce_engine::render {
@@ -12,8 +14,12 @@ class ITexture;
 // IImGuiBackend — Dear ImGui 渲染后端抽象
 // 负责 API 相关的设备对象创建、每帧 NewFrame、绘制 DrawData。
 // 平台相关部分（GLFW）由 ImGuiRenderer 统一处理。
+//
+// 注意：该类会被 std::unique_ptr<IImGuiBackend> 以值形式跨 DLL 边界返回，
+// 因此必须导出，否则 MSVC/Windows 下会出现 ABI/vtable 不匹配，导致返回槽
+// 地址为 null，进而在 unique_ptr 内部构造 _Compressed_pair 时崩溃。
 // ---------------------------------------------------------------------------
-class IImGuiBackend {
+class GRYCE_API IImGuiBackend {
 public:
     virtual ~IImGuiBackend() = default;
 

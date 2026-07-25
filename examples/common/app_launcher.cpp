@@ -72,6 +72,8 @@ namespace {
 struct DemoArgs {
     bool vulkan = false;
     bool vulkan_validation = false;
+    bool screenshot = false;
+    float screenshot_delay = 0.0f;
     float auto_close_seconds = 0.0f;
 };
 
@@ -82,6 +84,10 @@ static DemoArgs parse_args(int argc, char* argv[]) {
             args.vulkan = true;
         } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
             args.vulkan_validation = true;
+        } else if (std::strcmp(argv[i], "--screenshot") == 0) {
+            args.screenshot = true;
+        } else if (std::strcmp(argv[i], "--screenshot-delay") == 0 && i + 1 < argc) {
+            args.screenshot_delay = static_cast<float>(std::atof(argv[++i]));
         } else if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             args.auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
         }
@@ -183,6 +189,14 @@ int run_demo(DemoApp& app, int argc, char* argv[]) {
 
     render_ctx.start();
 
+    if (args.screenshot && args.screenshot_delay <= 0.0f) {
+        const std::string screenshot_path = args.vulkan
+                                                ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
+                                                : "D:/Gryce-Engine/screenshot_opengl.bmp";
+        render_ctx.request_screenshot(screenshot_path);
+        GLOG_INFO("Screenshot requested on next frame: '{}'", screenshot_path);
+    }
+
     platform::InputManager input;
     input.update(&window);
     input.set_mouse_locked(false);
@@ -249,6 +263,20 @@ int run_demo(DemoApp& app, int argc, char* argv[]) {
                     sync_promise->set_value();
                 });
             });
+        }
+
+        if (args.screenshot && args.screenshot_delay > 0.0f) {
+            static double screenshot_timer = 0.0;
+            static bool screenshot_sent = false;
+            screenshot_timer += window.delta_time();
+            if (!screenshot_sent && screenshot_timer >= static_cast<double>(args.screenshot_delay)) {
+                screenshot_sent = true;
+                const std::string screenshot_path = args.vulkan
+                                                        ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
+                                                        : "D:/Gryce-Engine/screenshot_opengl.bmp";
+                render_ctx.request_screenshot(screenshot_path);
+                GLOG_INFO("Delayed screenshot requested: '{}'", screenshot_path);
+            }
         }
 
         render_ctx.present();

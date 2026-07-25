@@ -319,15 +319,66 @@ static void ensure_physics_demo_entities(scene::Scene& scene) {
 // ---------------------------------------------------------------------------
 static scene::Entity* find_main_camera_entity(scene::Scene& scene) {
     scene::Entity* result = nullptr;
+    scene::Entity* fallback_by_name = nullptr;
+    scene::Entity* any_enabled = nullptr;
+
     scene.foreach([&](scene::Entity* entity) {
         auto* cam = entity->get_component<components::Camera>();
-        if (!cam || !cam->enabled || !cam->is_main) return;
-        // 简单规则：is_main=true 中第一个找到的即可；后续可扩展 priority。
-        if (!result) {
+        if (!cam || !cam->enabled) return;
+
+        if (!any_enabled) {
+            any_enabled = entity;
+        }
+        if (!fallback_by_name && entity->name() == "MainCamera") {
+            fallback_by_name = entity;
+        }
+        if (cam->is_main && !result) {
             result = entity;
         }
     });
-    return result;
+
+    // 优先 is_main=true；未标记时按名称兜底；最后任选一启用相机，
+    // 避免旧场景保存时 is_main 标志丢失导致编辑器相机无法同步。
+    if (result) return result;
+    if (fallback_by_name) return fallback_by_name;
+    return any_enabled;
+}
+
+// 将 math::Camera 的朝向转换为 Transform 用的四元数。
+// 注意：Quaternionf::from_euler 的约定与 Camera 的 (pitch=X, yaw=Y) 不一致，
+// 因此直接根据相机的前/上/右向量构造旋转矩阵再转四元数，避免欧拉角歧义。
+static math::Quaternionf camera_rotation_to_quaternion(const math::Camera& camera) {
+    const math::Vector3f f = camera.forward();
+    const math::Vector3f u = camera.up();
+    const math::Vector3f r = camera.right();
+
+    // 引擎的 from_rotation_matrix 按转置读取，因此这里传入的矩阵需为
+    // 标准 local->world 旋转矩阵的转置。
+    math::Matrix4f basis = math::Matrix4f::identity();
+    basis(0, 0) = r.x;  basis(0, 1) = r.y;  basis(0, 2) = r.z;
+    basis(1, 0) = u.x;  basis(1, 1) = u.y;  basis(1, 2) = u.z;
+    basis(2, 0) = -f.x; basis(2, 1) = -f.y; basis(2, 2) = -f.z;
+    return math::Quaternionf::from_rotation_matrix(basis);
+}
+
+// 将 Transform 四元数还原为 math::Camera 的 pitch/yaw。
+static void apply_quaternion_to_camera(const math::Quaternionf& rotation, math::Camera& camera) {
+    const math::Vector3f forward = rotation.rotate_vector(math::Vector3f::forward());
+    const float pitch = math::to_degrees(std::asin(math::clamp(forward.y, -1.0f, 1.0f)));
+    const float yaw = math::to_degrees(std::atan2(forward.z, forward.x));
+    camera.set_pitch(pitch);
+    camera.set_yaw(yaw);
+}
+
+// 将场景主摄像机的 Transform 同步到编辑器相机。
+// 加载已有场景时，MainCamera 可能带有设计师指定的初始视角，编辑器相机应与之对齐，
+// 否则 Viewport 与 Game View 会出现方向/位置不一致。
+static void sync_editor_to_scene_camera(scene::Scene& scene, math::Camera& camera) {
+    scene::Entity* cam_entity = find_main_camera_entity(scene);
+    if (!cam_entity) return;
+
+    camera.set_position(cam_entity->transform()->position);
+    apply_quaternion_to_camera(cam_entity->transform()->rotation, camera);
 }
 
 static void ensure_scene_defaults(scene::Scene& scene, math::Camera& camera) {
@@ -335,8 +386,7 @@ static void ensure_scene_defaults(scene::Scene& scene, math::Camera& camera) {
     if (!cam_entity) {
         cam_entity = scene.create_entity("MainCamera");
         cam_entity->transform()->position = camera.position();
-        cam_entity->transform()->rotation = math::Quaternionf::from_euler(
-            math::to_radians(camera.pitch()), math::to_radians(camera.yaw()), 0.0f);
+        cam_entity->transform()->rotation = camera_rotation_to_quaternion(camera);
         auto* cam = cam_entity->add_component<components::Camera>();
         cam->fov = camera.fov();
         cam->near_plane = 0.1f;
@@ -370,8 +420,7 @@ static void sync_active_camera_to_scene(scene::Scene& scene, math::Camera& camer
 
     // 将编辑器相机的位置/朝向写回 MainCamera 组件，便于保存场景。
     cam_entity->transform()->position = camera.position();
-    cam_entity->transform()->rotation = math::Quaternionf::from_euler(
-        math::to_radians(camera.pitch()), math::to_radians(camera.yaw()), 0.0f);
+    cam_entity->transform()->rotation = camera_rotation_to_quaternion(camera);
 }
 
 static void apply_camera_component_to_global(scene::Scene& scene, math::Camera& camera) {
@@ -394,9 +443,7 @@ static void build_game_camera(scene::Scene& scene, math::Camera& camera) {
     camera.set_near_far(cam->near_plane, cam->far_plane);
     camera.set_position(cam_entity->transform()->position);
 
-    const math::Vector3f euler = cam_entity->transform()->rotation.to_euler();
-    camera.set_pitch(euler.x);
-    camera.set_yaw(euler.y);
+    apply_quaternion_to_camera(cam_entity->transform()->rotation, camera);
 }
 
 static std::vector<render::RenderPipeline::Light> collect_lights(scene::Scene& scene) {
@@ -569,6 +616,7 @@ int EditorApp::run(int argc, char* argv[]) {
     bool screenshot_mode = false;
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
     bool test_play_mode = false;    // --test-play-mode：自动进入/退出 Play Mode，用于 CI
+    bool test_delete_undo = false;  // --test-delete-undo：自动删除 Ground 再撤销，用于 CI
     float auto_close_seconds = 0.0f; // --auto-close N：运行 N 秒后自动关闭，用于 CI/关机测试
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
@@ -580,6 +628,8 @@ int EditorApp::run(int argc, char* argv[]) {
             vulkan_validation = true;
         } else if (std::strcmp(argv[i], "--test-play-mode") == 0) {
             test_play_mode = true;
+        } else if (std::strcmp(argv[i], "--test-delete-undo") == 0) {
+            test_delete_undo = true;
         } else if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
         }
@@ -654,15 +704,14 @@ int EditorApp::run(int argc, char* argv[]) {
     static const std::string imgui_ini_path = (project_root / "editor_imgui.ini").string();
     ImGui::GetIO().IniFilename = imgui_ini_path.c_str();
 
-    // Fluent Design 主题与字体（加载持久化配置，失败则使用默认深色主题）
+    // 加载主题预设与字体（失败则使用默认深色主题）
     editor::EditorSettings editor_settings = editor::SettingsWindow::load(project_root.string());
-    editor::ThemeConfig& theme_config = editor_settings.theme;
     editor::ThemePreset& theme_preset = editor_settings.theme_preset;
 
     // 多语言本地化必须先加载，这样 apply_theme 加载字体时才能按语言合并 CJK 字体
     editor::Localization::instance().load(editor_settings.appliance.language, project_root.string());
     editor::Localization::instance().set_light_theme(theme_preset == editor::ThemePreset::Light);
-    editor::apply_theme(theme_preset, theme_config);
+    editor::apply_theme(theme_preset, editor_settings.theme);
 
     // 设置窗口
     editor::SettingsWindow settings_window;
@@ -676,7 +725,7 @@ int EditorApp::run(int argc, char* argv[]) {
     auto* viewport_panel = panel_manager.add_panel<ViewportPanel>();
     auto* game_view_panel = panel_manager.add_panel<GameViewPanel>();
     panel_manager.add_panel<ConsolePanel>();
-    auto* project_panel = panel_manager.add_panel<ProjectPanel>();
+    auto* project_panel = panel_manager.add_panel<FileExplorerPanel>();
     viewport_panel->set_imgui_backend(imgui.backend());
     game_view_panel->set_imgui_backend(imgui.backend());
 
@@ -740,6 +789,7 @@ int EditorApp::run(int argc, char* argv[]) {
 
         // 确保场景有主摄像机和主光源
         ensure_scene_defaults(*current_scene, camera);
+        sync_editor_to_scene_camera(*current_scene, camera);
     }
 
     // 场景文件热重载：记录最后修改时间
@@ -845,6 +895,7 @@ int EditorApp::run(int argc, char* argv[]) {
         ensure_physics_demo_entities(*loaded);
         upload_scene_meshes(*loaded, render_ctx);
         ensure_scene_defaults(*loaded, camera);
+        sync_editor_to_scene_camera(*loaded, camera);
         world.attach_scene(std::move(loaded));
         render_ctx.resume_render_thread();
 
@@ -927,6 +978,7 @@ int EditorApp::run(int argc, char* argv[]) {
         ensure_physics_demo_entities(*loaded);
         upload_scene_meshes(*loaded, render_ctx);
         ensure_scene_defaults(*loaded, camera);
+        sync_editor_to_scene_camera(*loaded, camera);
         world.attach_scene(std::move(loaded));
         render_ctx.resume_render_thread();
 
@@ -1211,14 +1263,21 @@ int EditorApp::run(int argc, char* argv[]) {
             bool is_dark = (theme_preset == editor::ThemePreset::Dark);
             if (ImGui::MenuItem(editor::tr("menu.view_theme_dark"), nullptr, &is_dark)) {
                 theme_preset = editor::ThemePreset::Dark;
-                editor::apply_theme(theme_preset, theme_config);
+                editor::apply_theme(theme_preset, editor_settings.theme);
                 editor::Localization::instance().set_light_theme(false);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
             bool is_light = (theme_preset == editor::ThemePreset::Light);
             if (ImGui::MenuItem(editor::tr("menu.view_theme_light"), nullptr, &is_light)) {
                 theme_preset = editor::ThemePreset::Light;
-                editor::apply_theme(theme_preset, theme_config);
+                editor::apply_theme(theme_preset, editor_settings.theme);
+                editor::Localization::instance().set_light_theme(true);
+                editor::SettingsWindow::save(project_root.string(), editor_settings);
+            }
+            bool is_modern_light = (theme_preset == editor::ThemePreset::ModernLight);
+            if (ImGui::MenuItem(editor::tr("menu.view_theme_modern_light"), nullptr, &is_modern_light)) {
+                theme_preset = editor::ThemePreset::ModernLight;
+                editor::apply_theme(theme_preset, editor_settings.theme);
                 editor::Localization::instance().set_light_theme(true);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
             }
@@ -1241,6 +1300,9 @@ int EditorApp::run(int argc, char* argv[]) {
     bool play_mode_test_entered = false;
     bool screenshot_requested = false;
     double screenshot_delay_timer = 0.0;
+    double delete_undo_test_timer = 0.0;
+    bool delete_test_done = false;
+    bool undo_test_done = false;
 
     // Viewport 面板尺寸 → 渲染目标尺寸：防抖 0.15s，避免拖动 dock 分隔条时
     // 每帧 pause/resume 渲染线程造成的卡顿。
@@ -1276,6 +1338,25 @@ int EditorApp::run(int argc, char* argv[]) {
             }
             if (play_mode_test_entered && play_mode_test_timer >= 3.0 && play_mode_active) {
                 exit_play_mode();
+            }
+        }
+
+        // Delete + Undo CI 测试：第 1 秒删除 Ground，第 2.5 秒撤销
+        if (test_delete_undo && world.scene()) {
+            delete_undo_test_timer += window.delta_time();
+            if (!delete_test_done && delete_undo_test_timer >= 1.0) {
+                delete_test_done = true;
+                if (scene::Entity* ground = world.scene()->find_entity_by_name("Ground")) {
+                    hierarchy_panel->queue_delete(ground->uuid());
+                    GLOG_INFO("[CI] Queued delete for entity 'Ground'");
+                } else {
+                    GLOG_WARN("[CI] Entity 'Ground' not found for delete test");
+                }
+            }
+            if (delete_test_done && !undo_test_done && delete_undo_test_timer >= 2.5) {
+                undo_test_done = true;
+                undo_stack.undo();
+                GLOG_INFO("[CI] Undo executed after delete");
             }
         }
 
@@ -1444,7 +1525,7 @@ int EditorApp::run(int argc, char* argv[]) {
         }
 
         if (renderer2d) {
-            renderer2d->begin_frame(static_cast<float>(w), static_cast<float>(h));
+            renderer2d->begin_frame(static_cast<float>(render_w), static_cast<float>(render_h));
         }
 
         world.render(render_ctx);
@@ -1460,20 +1541,6 @@ int EditorApp::run(int argc, char* argv[]) {
         inspector_panel->set_scene(world.scene());
         viewport_panel->set_scene(world.scene());
         inspector_panel->set_target(hierarchy_panel->selected_entity());
-
-        // -------------------------------------------------------------------
-        // 字体大小热重载：在 NewFrame 之前、上一帧渲染完成后重建 atlas/GPU 纹理，
-        // 避免在帧中间操作 ImGui 字体数据造成竞争。
-        // -------------------------------------------------------------------
-        if (settings_window.consume_font_rebuild_ready()) {
-            render_ctx.pause_render_thread();
-            editor::apply_theme(theme_preset, theme_config);
-            if (imgui.backend()) {
-                imgui.backend()->rebuild_fonts();
-            }
-            render_ctx.resume_render_thread();
-            editor::SettingsWindow::save(project_root.string(), editor_settings);
-        }
 
         imgui.begin_frame();
         ImGuizmo::BeginFrame();
@@ -1594,6 +1661,7 @@ int EditorApp::run(int argc, char* argv[]) {
 
                     upload_scene_meshes(*reloaded, render_ctx);
                     ensure_scene_defaults(*reloaded, camera);
+                    sync_editor_to_scene_camera(*reloaded, camera);
                     world.attach_scene(std::move(reloaded));
                     render_ctx.resume_render_thread();
 

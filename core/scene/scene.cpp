@@ -35,6 +35,7 @@ Entity* Scene::add_root_entity(std::unique_ptr<Entity> entity) {
 
 bool Scene::destroy_entity(Entity* entity) {
     if (!entity) return false;
+    GLOG_INFO("Scene::destroy_entity: '{}' uuid={}", entity->name(), entity->uuid().str());
 
     // 先递归销毁子实体。
     // 注意：子实体析构时会从 entity->children_ 中 erase 自己（remove_child），
@@ -59,8 +60,11 @@ bool Scene::destroy_entity(Entity* entity) {
     // 从场景根列表移除
     for (auto it = roots_.begin(); it != roots_.end(); ++it) {
         if (it->get() == entity) {
+            // 先保存名称，因为 erase 会销毁 entity
+            std::string entity_name = entity->name();
             // unique_ptr 析构会触发 Entity 析构，自动反注册组件
             roots_.erase(it);
+            GLOG_INFO("Scene::destroy_entity: done '{}'", entity_name);
             return true;
         }
     }
@@ -78,10 +82,16 @@ Entity* Scene::create_prefab(const std::string& scene_path) {
 
 void Scene::set_store_on_entity(Entity* entity) {
     if (!entity) return;
+    std::cerr << "[UNDO-TRACE] set_store_on_entity: " << entity->name() << std::endl;
+    std::cout.flush();
     entity->set_store(&component_store_);
+    std::cerr << "[UNDO-TRACE] set_store_on_entity: " << entity->name() << " store set" << std::endl;
+    std::cout.flush();
     for (const auto& child : entity->children()) {
         set_store_on_entity(child.get());
     }
+    std::cerr << "[UNDO-TRACE] set_store_on_entity: " << entity->name() << " children done" << std::endl;
+    std::cout.flush();
 }
 
 

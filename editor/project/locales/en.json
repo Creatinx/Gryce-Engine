@@ -12,6 +12,7 @@
     "menu.view_theme": "Theme",
     "menu.view_theme_dark": "Dark",
     "menu.view_theme_light": "Light",
+    "menu.view_theme_modern_light": "Modern Light",
     "menu.view_accent_hue": "Accent Hue",
     "menu.view_font_size": "Font Size",
     "menu.view_rounding": "Rounding",
@@ -23,6 +24,7 @@
     "settings.section.appliance": "Appliance",
     "settings.appearance": "Appearance",
     "settings.theme_preset": "Theme Preset",
+    "settings.ui_scale": "UI Scale",
     "settings.accent_hue": "Accent Hue",
     "settings.font_size": "Font Size",
     "settings.rounding": "Rounding",
@@ -163,9 +165,9 @@
     "physical_material.preset": "Preset",
     "physical_material.custom": "Custom",
 
-    "project.root_invalid": "Project root is not a valid directory",
-    "project.up": "Up",
-    "project.root": "(root)",
+    "file_explorer.root_invalid": "Project root is not a valid directory",
+    "file_explorer.up": "Up",
+    "file_explorer.root": "(root)",
 
     "viewport.texture_unavailable": "Viewport texture unavailable",
     "viewport.opengl_check_hdr": "- OpenGL backend: check HDR pipeline init",
@@ -173,7 +175,7 @@
     "panel.hierarchy": "Hierarchy",
     "panel.inspector": "Inspector",
     "panel.console": "Console",
-    "panel.project": "Project",
+    "panel.file_explorer": "File Explorer",
     "panel.viewport": "Viewport",
     "panel.game": "Game",
     "panel.debug": "Debug",
@@ -189,7 +191,7 @@
     "dialog.open_scene": "Open Scene",
     "dialog.rename_entity": "Rename Entity",
 
-    "project.assets_path": "Assets/%s",
+    "file_explorer.assets_path": "Assets/%s",
 
     "hierarchy.new_entity_name": "New Entity",
 

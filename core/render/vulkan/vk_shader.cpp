@@ -403,6 +403,13 @@ bool VulkanShader::create_pipeline() {
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0f;
 
+    // Shadow map 输出深度时不加硬件 depth bias；bias 完全在 fragment shader
+    // 中基于 normal·light_dir 计算，避免与硬件 bias 叠加导致 Peter-panning
+    // 或阴影范围异常扩大。OpenGL 版本同样不在 shadow pass 中设 bias。
+    if (!color_output_enabled_ && !post_process_ && !skybox_) {
+        raster.depthBiasEnable = VK_FALSE;
+    }
+
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;

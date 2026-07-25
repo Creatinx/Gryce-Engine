@@ -21,6 +21,11 @@ if(MSVC)
         /MP                    # 多处理器编译
     )
 
+    # 禁用 Windows.h 的 min/max 宏，避免与 std::min/std::max 冲突
+    target_compile_definitions(gryce_compile_options INTERFACE NOMINMAX)
+    # 关闭 CRT 安全警告（sscanf 等），与 GCC/Clang 行为保持一致
+    target_compile_definitions(gryce_compile_options INTERFACE _CRT_SECURE_NO_WARNINGS)
+
     # 运行时库
     if(GRYCE_STATIC_RUNTIME)
         set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

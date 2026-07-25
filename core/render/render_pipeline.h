@@ -144,8 +144,26 @@ private:
     void end_forward_pass(RenderContext& ctx);
 
     void update_light_space_matrix();
+    void bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle shader);
     void bind_global_uniforms(RenderContext& ctx);
     void upload_lights(RenderContext& ctx, RHIShaderHandle shader);
+
+    void render_mesh_internal(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
+                              RenderContext& ctx);
+    void render_skinned_mesh_internal(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
+                                      std::shared_ptr<const std::vector<math::Matrix4f>> palette,
+                                      RenderContext& ctx);
+
+    // 视锥体：6 个平面 ax+by+cz+d=0，Vector4f 存储 (a,b,c,d)
+    struct Frustum {
+        math::Vector4f planes[6];
+        bool contains_sphere(const math::Vector3f& center, float radius) const;
+    };
+    Frustum extract_frustum(const math::Matrix4f& vp) const;
+    bool is_inside_frustum(const Frustum& frustum, const math::Matrix4f& world_transform,
+                           const std::string& mesh_path) const;
+    bool is_inside_frustum_skinned(const Frustum& frustum, const math::Matrix4f& world_transform,
+                                   const std::string& model_path) const;
 
     bool create_skybox_mesh(RenderContext* ctx);
     void render_skybox(RenderContext& ctx);
@@ -162,7 +180,7 @@ private:
 
     RHITextureHandle shadow_map_;
     RHIFramebufferHandle shadow_fbo_;
-    int shadow_map_size_ = 2048;
+    int shadow_map_size_ = 1024;
     bool shadow_enabled_ = true;
     float shadow_area_ = 15.0f;
     int shadow_light_index_ = -1;
@@ -175,7 +193,7 @@ private:
     int viewport_width_ = 1280;
     int viewport_height_ = 720;
 
-    float shadow_bias_ = 0.005f;
+    float shadow_bias_ = 0.001f;
     bool initialized_ = false;
     bool owns_shaders_ = false;
     bool cull_disabled_ = false;

@@ -11,9 +11,13 @@
 #include <format>
 #include <source_location>
 
-#if defined(_WIN32)
+#ifdef _WIN32
     #include <windows.h>
+#else
+    #include <unistd.h>
 #endif
+
+
 
 namespace gryce_engine::utils {
 

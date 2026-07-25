@@ -641,10 +641,16 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
     screen_height_ = screen_height;
     ortho_ = math::Matrix4f::ortho(0.0f, screen_width, screen_height, 0.0f, -1.0f, 1.0f);
 
-    math::Vector2f screen_center(screen_width * 0.5f, screen_height * 0.5f);
-    math::Matrix4f view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
-                        * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
-                        * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    math::Matrix4f view;
+    if (camera_top_left_origin_) {
+        view = math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    } else {
+        math::Vector2f screen_center(screen_width * 0.5f, screen_height * 0.5f);
+        view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
+             * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    }
     view_proj_ = ortho_ * view;
 
     if (context_alive()) {
@@ -677,19 +683,33 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
     }
 }
 
-void Renderer2D::set_camera(const math::Vector2f& center, float zoom) {
+void Renderer2D::set_camera(const math::Vector2f& center, float zoom, bool top_left_origin) {
+    // 切换摄像机前必须先提交当前已缓冲的顶点，确保它们使用绘制时的 view_proj 矩阵，
+    // 否则 UI 层（top_left_origin）顶点会在后续 flush 时被普通摄像机矩阵变换到屏幕中心。
+    flush_batches();
+
     camera_center_ = center;
     camera_zoom_ = zoom <= 0.0f ? 1.0f : zoom;
+    camera_top_left_origin_ = top_left_origin;
     if (screen_width_ > 0.0f && screen_height_ > 0.0f) {
-        math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
-        math::Matrix4f view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
-                            * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
-                            * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+        math::Matrix4f view;
+        if (top_left_origin) {
+            view = math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+                 * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+        } else {
+            math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
+            view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
+                 * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+                 * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+        }
         view_proj_ = ortho_ * view;
     }
 }
 
 math::Vector2f Renderer2D::world_to_screen(const math::Vector2f& world) const {
+    if (camera_top_left_origin_) {
+        return (world - camera_center_) * camera_zoom_;
+    }
     math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
     return screen_center + (world - camera_center_) * camera_zoom_;
 }

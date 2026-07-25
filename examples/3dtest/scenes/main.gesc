@@ -16,6 +16,7 @@
           "width": 120.0
         }
       ],
+      "enabled": true,
       "name": "FPS_BG",
       "parent": null,
       "transform": {
@@ -50,10 +51,11 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 10,
-          "text": "FPS: 195.5",
+          "text": "FPS: 567.7",
           "type": "Label"
         }
       ],
+      "enabled": true,
       "name": "FPS_Label",
       "parent": null,
       "transform": {
@@ -92,6 +94,7 @@
           "width": 200.0
         }
       ],
+      "enabled": true,
       "name": "Panel_BG",
       "parent": null,
       "transform": {
@@ -130,6 +133,7 @@
           "type": "Circle"
         }
       ],
+      "enabled": true,
       "name": "Circle",
       "parent": null,
       "transform": {
@@ -180,6 +184,7 @@
           "type": "Polygon"
         }
       ],
+      "enabled": true,
       "name": "Triangle",
       "parent": null,
       "transform": {
@@ -238,6 +243,7 @@
           "type": "Polygon"
         }
       ],
+      "enabled": true,
       "name": "Pentagon",
       "parent": null,
       "transform": {
@@ -277,6 +283,7 @@
           "type": "Camera"
         }
       ],
+      "enabled": true,
       "name": "MainCamera",
       "parent": null,
       "transform": {
@@ -317,9 +324,11 @@
           "light_type": 0,
           "range": 10.0,
           "spot_angle": 45.0,
+          "spot_softness": 0.20000000298023224,
           "type": "Light"
         }
       ],
+      "enabled": true,
       "name": "MainLight",
       "parent": null,
       "transform": {
@@ -413,6 +422,7 @@
           "type": "BoxCollider"
         }
       ],
+      "enabled": true,
       "name": "Ground",
       "parent": null,
       "transform": {
@@ -554,6 +564,7 @@
           "type": "BoxCollider"
         }
       ],
+      "enabled": true,
       "name": "Cube",
       "parent": null,
       "transform": {
@@ -627,6 +638,7 @@
           "type": "MeshRenderer"
         }
       ],
+      "enabled": true,
       "name": "ShowcaseEmissiveCube",
       "parent": null,
       "transform": {
@@ -700,6 +712,7 @@
           "type": "MeshRenderer"
         }
       ],
+      "enabled": true,
       "name": "ShowcaseGlassCube",
       "parent": null,
       "transform": {
@@ -773,6 +786,7 @@
           "type": "MeshRenderer"
         }
       ],
+      "enabled": true,
       "name": "ShowcaseTiledCube",
       "parent": null,
       "transform": {
@@ -813,9 +827,11 @@
           "light_type": 1,
           "range": 30.0,
           "spot_angle": 45.0,
+          "spot_softness": 0.20000000298023224,
           "type": "Light"
         }
       ],
+      "enabled": true,
       "name": "ShowcasePointLight",
       "parent": null,
       "transform": {
@@ -856,9 +872,11 @@
           "light_type": 2,
           "range": 25.0,
           "spot_angle": 35.0,
+          "spot_softness": 0.20000000298023224,
           "type": "Light"
         }
       ],
+      "enabled": true,
       "name": "ShowcaseSpotLight",
       "parent": null,
       "transform": {

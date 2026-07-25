@@ -74,15 +74,17 @@ target_link_libraries(your_app PRIVATE Gryce::GryceCore)
 
 | 命名空间 | 内容 |
 |---|---|
-| `gryce_engine::scene` | Scene、Entity、UUID、SceneSerializer |
+| `gryce_engine::scene` | Scene、Entity、UUID、SceneSerializer、Prefab |
 | `gryce_engine::ecs` | World、ISystem、ComponentStore、EntityID |
 | `gryce_engine::components` | Component 基类、Transform、所有具体组件 |
 | `gryce_engine::render` | IRenderBackend、RenderContext、IRenderer2D、Material |
 | `gryce_engine::math` | Vector2f/3f/4f、Matrix4f、Quaternionf、Camera |
 | `gryce_engine::platform` | Window、Input、Cursor |
-| `gryce_engine::assets` | AssetManager、MeshData、TextureData、AssetHandle |
+| `gryce_engine::assets` | AssetManager、MeshData、TextureData、AssetHandle、AsyncLoader |
 | `gryce_engine::resources` | ResourcePath、Project、Tileset |
 | `gryce_engine::physics` | IPhysicsWorld2D/3D、PhysicsFactory、PhysicsTypes |
+| `gryce_engine::animation` | Skeleton、AnimationClip、Pose |
+| `gryce_engine::reflection` | 组件反射注册与字段访问 |
 | `gryce_engine::utils` | FrameLimiter、glog |
 
 ---
@@ -103,6 +105,9 @@ ecs/system.h
 ecs/types.h
 ecs/query.h
 ecs/component_store.h
+animation/skeleton.h
+animation/animation_clip.h
+animation/pose.h
 ```
 
 ### 组件
@@ -111,9 +116,14 @@ ecs/component_store.h
 components/component.h
 components/component_factory.h
 components/transform.h
+components/node3d.h
+components/node2d.h
 components/camera.h
 components/light.h
 components/mesh_renderer.h
+components/skinned_mesh_renderer.h
+components/terrain.h
+components/prefab_instance.h
 components/audio_listener.h
 components/audio_source.h
 components/physics_body.h
@@ -138,6 +148,8 @@ components/2d/basic_rect.h
 components/2d/shape.h
 components/2d/label.h
 components/2d/light_2d.h
+components/2d/ambient_light_2d.h
+components/2d/skybox_2d.h
 components/2d/sprite_2d.h
 components/2d/tilemap.h
 components/2d/camera_2d.h

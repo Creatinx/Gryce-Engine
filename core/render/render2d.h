@@ -3,11 +3,12 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "math/math.h"
 #include "render/rhi_handle.h"
 
 namespace gryce_engine {
-namespace assets { class TextureData; }
+namespace assets { struct TextureData; }
 namespace render {
 
 // ---------------------------------------------------------------------------
@@ -89,8 +90,9 @@ enum class BlendMode {
 // IRenderer2D — 2D 图形渲染接口
 // 支持：矩形、n 边形、圆形、文字
 // 所有坐标系以屏幕左上角为原点，向右为 +X，向下为 +Y
+// 注意：以 std::unique_ptr<IRenderer2D> 跨 DLL 边界返回，必须导出。
 // ---------------------------------------------------------------------------
-class IRenderer2D {
+class GRYCE_API IRenderer2D {
 public:
     virtual ~IRenderer2D() = default;
 
@@ -110,9 +112,11 @@ public:
     // 2D 摄像机（可选）
     // -----------------------------------------------------------------------
     // 设置当前活动摄像机的世界中心坐标与缩放。默认不调用时等价于
-    // center=(0,0), zoom=1，左上角为原点。
-    virtual void set_camera(const math::Vector2f& center, float zoom) {
-        (void)center; (void)zoom;
+    // center=(0,0), zoom=1。
+    // top_left_origin=true 时坐标系以屏幕左上角为原点（UI/HUD 层），
+    // 此时 center=(0,0), zoom=1 表示世界 (0,0) 对齐屏幕左上角。
+    virtual void set_camera(const math::Vector2f& center, float zoom, bool top_left_origin = false) {
+        (void)center; (void)zoom; (void)top_left_origin;
     }
 
     // 获取当前摄像机状态（用于 RenderSystem2D 做世界→屏幕变换）

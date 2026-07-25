@@ -1,8 +1,5 @@
 {
-    "accent_hue": 0.25999999046325684,
-    "font_path": "",
     "font_size": 20.899999618530273,
-    "preset": "dark",
-    "rounding": 5.0,
-    "shadow": true
+    "preset": "light",
+    "ui_scale": 1.5
 }

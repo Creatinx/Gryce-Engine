@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "export.h"
 #include "render/render2d.h"
 #include "render/imgui_backend.h"
 #include "render/rhi_handle.h"
@@ -43,8 +44,10 @@ struct RenderBackendCapabilities {
 
 // ---------------------------------------------------------------------------
 // IRenderBackend — 渲染后端抽象接口
+// 注意：以 std::unique_ptr<IRenderBackend> 跨 DLL 边界传递，必须导出以保证
+// vtable/析构函数在模块间一致。
 // ---------------------------------------------------------------------------
-class IRenderBackend {
+class GRYCE_API IRenderBackend {
 public:
     virtual ~IRenderBackend() = default;
 
@@ -137,6 +140,9 @@ public:
 
     // Screenshot: backend captures current swapchain/frontbuffer to a BMP file.
     virtual void request_screenshot(const std::string& path) { (void)path; }
+
+    // Capture the current frame to a BMP file immediately (called from render thread).
+    virtual void capture_frame_to_file(const std::string& path) { (void)path; }
 
     // Factory for 2D renderer (OpenGL -> Renderer2D, Vulkan -> VulkanRenderer2D).
     virtual std::unique_ptr<IRenderer2D> create_renderer2d() { return nullptr; }

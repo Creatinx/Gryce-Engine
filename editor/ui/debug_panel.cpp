@@ -312,9 +312,9 @@ void DebugPanel::show(platform::Window* window, scene::Scene* scene, math::Camer
     // -----------------------------------------------------------------------
     ImGui::Separator();
     ImGui::Text("%s", tr("debug.shadow_map"));
-    static float shadow_bias = 0.005f;
+    static float shadow_bias = 0.001f;
     static bool use_shadow = true;
-    if (ImGui::SliderFloat(tr("debug.shadow_bias"), &shadow_bias, 0.0001f, 0.05f, "%.4f")) {
+    if (ImGui::SliderFloat(tr("debug.shadow_bias"), &shadow_bias, 0.0001f, 0.01f, "%.4f")) {
         if (pipeline) {
             pipeline->set_shadow_bias(shadow_bias);
         }

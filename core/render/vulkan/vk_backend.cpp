@@ -423,6 +423,13 @@ void VulkanBackend::set_viewport(int x, int y, int w, int h, uint32_t viewport_i
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
     set_viewport_cached(cmd, viewport, viewport_index);
+
+    // Vulkan 中 scissor 是必须动态状态，set_viewport 时同步设置，
+    // 避免后续 pass 沿用旧 scissor（如 shadow pass 后 forward pass 被错误裁剪）。
+    VkRect2D scissor{};
+    scissor.offset = {x, y};
+    scissor.extent = {static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
+    set_scissor_cached(cmd, scissor, viewport_index);
 }
 
 void VulkanBackend::set_scissor(int x, int y, int w, int h, uint32_t viewport_index) {

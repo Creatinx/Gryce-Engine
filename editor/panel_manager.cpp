@@ -55,15 +55,11 @@ void PanelManager::show() {
     }
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
-    // 首帧强制激活 Scene View（Viewport），避免从 imgui.ini 恢复时 Game View 抢占焦点
-    if (first_frame_) {
-        first_frame_ = false;
-        if (ImGuiDockNode* central = find_central_node(ImGui::DockBuilderGetNode(dockspace_id))) {
-            central->SelectedTabId = ImGui::GetID("Viewport");
-        }
-    }
-
     // 菜单栏：应用菜单钩子（File 等） + Window 菜单切换面板可见性
+    // 单独增加菜单栏高度，让它在高 DPI/缩放时更易点击，而不影响全局 FramePadding。
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ImGui::GetStyle().FramePadding.x,
+                               ImGui::GetStyle().FramePadding.y + 4.0f));
     if (ImGui::BeginMenuBar()) {
         if (menu_bar_hook_) {
             menu_bar_hook_();
@@ -76,13 +72,24 @@ void PanelManager::show() {
                 ImGui::MenuItem(display, nullptr, panel->visible_ptr());
             }
             ImGui::EndMenu();
-        }
-        ImGui::EndMenuBar();
     }
-    ImGui::End();
+    ImGui::EndMenuBar();
+}
+ImGui::PopStyleVar();
+ImGui::End();
 
     for (auto& panel : panels_) {
         panel->show();
+    }
+
+    // 首帧强制激活 Scene View（Viewport），避免从 imgui.ini 恢复时 Game View 抢占焦点。
+    // 必须在所有面板窗口 show() 完成、Dock 节点状态更新后再设置 SelectedTabId。
+    if (first_frame_) {
+        first_frame_ = false;
+        if (ImGuiDockNode* central = find_central_node(ImGui::DockBuilderGetNode(dockspace_id))) {
+            central->SelectedTabId = ImGui::GetID("Viewport");
+            central->LastFrameAlive = ImGui::GetFrameCount();
+        }
     }
 }
 
@@ -102,18 +109,20 @@ void PanelManager::build_default_layout(ImGuiID dockspace_id) {
 
     ImGui::DockBuilderDockWindow("Hierarchy", dock_left);
     ImGui::DockBuilderDockWindow("Inspector", dock_right);
-    // Project 与 Console 放在同一 dock 节点，以标签页形式并列（Unity 默认风格）
-    ImGui::DockBuilderDockWindow("Project", dock_bottom);
+    // File Explorer 与 Console 放在同一 dock 节点，以标签页形式并列（Unity 默认风格）
+    ImGui::DockBuilderDockWindow("File Explorer", dock_bottom);
     ImGui::DockBuilderDockWindow("Console", dock_bottom);
     // Viewport 与 Game View 以标签页形式共享中间区域
     ImGui::DockBuilderDockWindow("Viewport", dock_main);
     ImGui::DockBuilderDockWindow("Game", dock_main);
-    // 强制默认激活 Scene View（Viewport）
+    ImGui::DockBuilderFinish(dockspace_id);
+
+    // DockBuilderFinish 之后再强制激活 Scene View（Viewport），
+    // 否则 SelectedTabId 会被后续节点状态更新覆盖。
     if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock_main)) {
         node->SelectedTabId = ImGui::GetID("Viewport");
+        node->LastFrameAlive = ImGui::GetFrameCount();
     }
-
-    ImGui::DockBuilderFinish(dockspace_id);
 }
 
 } // namespace gryce_engine::editor
