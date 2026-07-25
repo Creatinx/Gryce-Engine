@@ -31,6 +31,10 @@ void EditorCamera::focus_on(const math::Vector3f& target, float distance) {
     camera_.set_position(target - camera_.forward() * distance);
 }
 
+void EditorCamera::set_orbit_radius(float radius) {
+    orbit_radius_ = std::max(radius, k_min_distance);
+}
+
 void EditorCamera::focus_on_bounds(const math::Vector3f& center, float radius) {
     if (radius <= 0.0f) {
         focus_on(center);
@@ -62,7 +66,32 @@ void EditorCamera::focus_on_bounds(const math::Vector3f& center, float radius) {
     camera_.set_yaw(yaw);
 }
 
+void EditorCamera::update_orbit(float dt) {
+    orbit_angle_ += orbit_speed_ * dt;
+    if (orbit_angle_ >= 360.0f) orbit_angle_ -= 360.0f;
+
+    const float rad = math::to_radians(orbit_angle_);
+    const math::Vector3f offset(
+        std::cos(rad) * orbit_radius_,
+        orbit_radius_ * 0.5f,
+        std::sin(rad) * orbit_radius_);
+
+    camera_.set_position(orbit_target_ + offset);
+    camera_.look_at(orbit_target_);
+}
+
 void EditorCamera::update(float dt, bool viewport_hovered) {
+    if (preset_ == CameraPreset::Orbit) {
+        update_orbit(dt);
+        return;
+    }
+
+    // Demo 模式暂无场景相机动画数据，回退为静态。
+    if (preset_ == CameraPreset::Demo) {
+        return;
+    }
+
+    // Flythrough 与 Static 都响应手动输入；Static 只是没有预设运动。
     if (!viewport_hovered) return;
 
     ImGuiIO& io = ImGui::GetIO();

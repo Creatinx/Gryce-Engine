@@ -6,6 +6,8 @@ add_executable(gryce_engine)
 target_sources(gryce_engine PRIVATE
     main.cpp
     editor_app.cpp
+    cli_args.cpp
+    recorder.cpp
     editor_camera.cpp
     panel_manager.cpp
     panels/hierarchy_panel.cpp

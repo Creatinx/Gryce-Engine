@@ -27,6 +27,7 @@ target_sources(gryce_core
         assets/async_loader.cpp
         assets/obj_loader.cpp
         assets/stb_image_impl.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/stb/stb_image_write_impl.cpp
         assets/compressed_image.cpp
         assets/dds_loader.cpp
         assets/ktx_loader.cpp

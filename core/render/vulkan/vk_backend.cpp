@@ -1,8 +1,11 @@
 #include "vk_backend.h"
 
 #include <cstring>
+#include <cctype>
 #include <fstream>
 #include <vector>
+
+#include "stb/stb_image_write.h"
 
 #include <GLFW/glfw3.h>
 
@@ -978,7 +981,7 @@ void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,
     file.write(reinterpret_cast<char*>(header), 54);
 
     std::vector<unsigned char> row(row_size, 0);
-    // BMP pixel array is stored bottom-up. The Vulkan image buffer is now top-down,
+    // BMP pixel array is stored bottom-up. The Vulkan image buffer is top-down,
     // so write rows in reverse order to produce a correctly oriented BMP.
     for (int y = static_cast<int>(height) - 1; y >= 0; --y) {
         const unsigned char* src = bgr_data + static_cast<std::size_t>(y) * width * 4;
@@ -991,6 +994,26 @@ void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,
     }
 }
 
+bool path_ends_with(const std::string& path, const std::string& ext) {
+    if (path.size() < ext.size()) return false;
+    return std::equal(ext.rbegin(), ext.rend(), path.rbegin(),
+                      [](char a, char b) { return std::tolower(a) == std::tolower(b); });
+}
+
+// Vulkan swapchain surface format on Windows is BGRA; convert top-down BGRA -> RGBA.
+void bgra_to_rgba_topdown(const uint8_t* bgra, std::vector<uint8_t>& rgba, uint32_t width, uint32_t height) {
+    rgba.resize(static_cast<std::size_t>(width) * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * width + x) * 4;
+            rgba[i + 0] = bgra[i + 2];
+            rgba[i + 1] = bgra[i + 1];
+            rgba[i + 2] = bgra[i + 0];
+            rgba[i + 3] = bgra[i + 3];
+        }
+    }
+}
+
 } // namespace
 
 void VulkanBackend::request_screenshot(const std::string& path) {
@@ -998,23 +1021,25 @@ void VulkanBackend::request_screenshot(const std::string& path) {
     screenshot_frame_ = frame_count_ + 1;
 }
 
-void VulkanBackend::save_screenshot(const std::string& path) {
+bool VulkanBackend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) {
+    if (!initialized_ || frame_aborted_) return false;
+
     VkDevice dev = device_.device();
     VkQueue queue = device_.graphics_queue();
     uint32_t queue_family = device_.graphics_queue_family();
 
     VkImage src_image = swapchain_.image(current_image_);
     VkExtent2D extent = swapchain_.extent();
-    VkDeviceSize size = static_cast<VkDeviceSize>(extent.width * extent.height * 4);
-    GLOG_INFO("VulkanBackend::save_screenshot path={} image_index={} image_handle={} extent={}x{}",
-              path, current_image_, reinterpret_cast<uintptr_t>(src_image), extent.width, extent.height);
+    width = static_cast<int>(extent.width);
+    height = static_cast<int>(extent.height);
+    VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
 
     VulkanBuffer staging;
     if (!staging.init(&device_, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         GLOG_ERROR("VulkanBackend: failed to create screenshot staging buffer");
-        return;
+        return false;
     }
 
     VkCommandPoolCreateInfo pool_info{};
@@ -1083,17 +1108,40 @@ void VulkanBackend::save_screenshot(const std::string& path) {
     vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
     vkQueueWaitIdle(queue);
 
-    // The swapchain image is in the selected surface format (BGRA8 on Windows).
-    // save_bgr_bmp expects BGRA-ordered input and writes a 24-bit BGR BMP, so
-    // we can pass the mapped buffer directly.
-    save_bgr_bmp(path, static_cast<const unsigned char*>(staging.mapped()),
-                 extent.width, extent.height);
+    std::vector<uint8_t> bgra(static_cast<std::size_t>(width) * height * 4);
+    std::memcpy(bgra.data(), staging.mapped(), bgra.size());
+    bgra_to_rgba_topdown(bgra.data(), out, extent.width, extent.height);
 
     vkFreeCommandBuffers(dev, pool, 1, &cmd);
     vkDestroyCommandPool(dev, pool, nullptr);
     staging.shutdown();
 
-    GLOG_INFO("VulkanBackend: screenshot saved to '{}'", path);
+    return true;
+}
+
+void VulkanBackend::save_screenshot(const std::string& path) {
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgba;
+    if (!capture_frame_rgba(rgba, width, height)) {
+        GLOG_ERROR("VulkanBackend: failed to capture framebuffer for screenshot '{}'", path);
+        return;
+    }
+
+    if (path_ends_with(path, ".png")) {
+        if (stbi_write_png(path.c_str(), width, height, 4, rgba.data(), width * 4)) {
+            GLOG_INFO("VulkanBackend: screenshot saved to '{}' ({}x{} PNG)", path, width, height);
+        } else {
+            GLOG_ERROR("VulkanBackend: stbi_write_png failed for '{}'", path);
+        }
+    } else {
+        // BMP expects BGRA input; our RGBA is wrong for save_bgr_bmp.
+        // Convert RGBA -> BGRA in-place for the BMP writer.
+        for (std::size_t i = 0; i < rgba.size(); i += 4) {
+            std::swap(rgba[i + 0], rgba[i + 2]);
+        }
+        save_bgr_bmp(path, rgba.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        GLOG_INFO("VulkanBackend: screenshot saved to '{}' ({}x{} BMP)", path, width, height);
+    }
 }
 
 std::unique_ptr<IRenderer2D> VulkanBackend::create_renderer2d() {

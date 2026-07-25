@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 #include <vulkan/vulkan.h>
 
 #include "render/render.h"
@@ -84,6 +85,7 @@ public:
     RenderBackendCapabilities get_capabilities() const override;
 
     void request_screenshot(const std::string& path) override;
+    bool capture_frame_rgba(std::vector<uint8_t>& out, int& w, int& h) override;
     std::unique_ptr<IRenderer2D> create_renderer2d() override;
     std::unique_ptr<IImGuiBackend> create_imgui_backend() override;
     void set_validation_enabled(bool enabled) override;

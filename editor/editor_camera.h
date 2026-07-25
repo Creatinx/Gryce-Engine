@@ -1,5 +1,6 @@
 #pragma once
 
+#include "camera_preset.h"
 #include "math/camera.h"
 
 namespace gryce_engine::editor {
@@ -12,7 +13,14 @@ namespace gryce_engine::editor {
 //   W/A/S/D + Q/E  —— 平移（需右键按住，Q 降 E 升），Shift 加速
 //   滚轮           —— 沿视线方向缩放（推进/拉远）
 //   F              —— 聚焦选中实体（按 MeshRenderer/SkinnedMeshRenderer 的世界 AABB）
+//
+// 相机预设：
+//   Static    — 固定视角，仅响应手动输入
+//   Orbit     — 自动绕场景中心旋转展示
+//   Flythrough — 自由飞行（手动输入）
+//   Demo      — 播放场景内置相机动画（当前回退为静态）
 // ---------------------------------------------------------------------------
+
 class EditorCamera {
 public:
     EditorCamera();
@@ -32,11 +40,32 @@ public:
     float move_speed() const { return move_speed_; }
     void set_move_speed(float speed);
 
+    void set_preset(CameraPreset preset) { preset_ = preset; }
+    CameraPreset preset() const { return preset_; }
+
+    // 设置轨道旋转中心（Orbit 模式使用）
+    void set_orbit_target(const math::Vector3f& target) { orbit_target_ = target; }
+    const math::Vector3f& orbit_target() const { return orbit_target_; }
+
+    // 设置轨道半径与速度
+    void set_orbit_radius(float radius);
+    void set_orbit_speed(float degrees_per_second) { orbit_speed_ = degrees_per_second; }
+
 private:
+    void update_orbit(float dt);
+
     math::Camera camera_;
     float move_speed_ = 5.0f;
     float look_sensitivity_ = 0.15f;  // 度/像素
     float sprint_multiplier_ = 3.0f;
+
+    CameraPreset preset_ = CameraPreset::Static;
+
+    // Orbit 状态
+    math::Vector3f orbit_target_ = math::Vector3f::zero();
+    float orbit_radius_ = 10.0f;
+    float orbit_speed_ = 15.0f; // 度/秒
+    float orbit_angle_ = 0.0f;
 };
 
 } // namespace gryce_engine::editor

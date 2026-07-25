@@ -3,6 +3,7 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <string>
+#include <vector>
 
 #include "render/render.h"
 #include "render/rhi_resource_pool.h"
@@ -86,6 +87,7 @@ public:
 
     void request_screenshot(const std::string& path) override;
     void capture_frame_to_file(const std::string& path) override;
+    bool capture_frame_rgba(std::vector<uint8_t>& out, int& w, int& h) override;
     std::unique_ptr<IRenderer2D> create_renderer2d() override;
     std::unique_ptr<IImGuiBackend> create_imgui_backend() override;
     void set_validation_enabled(bool enabled) override;

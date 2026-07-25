@@ -43,6 +43,9 @@ public:
     void set_mouse_sensitivity(float sens) { mouse_sensitivity_ = sens; }
     void set_fov(float fov) { fov_ = fov; }
     float fov() const { return fov_; }
+
+    // 让相机看向目标点，并重新计算 yaw/pitch/forward/right/up。
+    void look_at(const Vector3f& target);
     void set_near_far(float near_plane, float far_plane) { near_ = near_plane; far_ = far_plane; }
     float near_plane() const { return near_; }
     float far_plane() const { return far_; }

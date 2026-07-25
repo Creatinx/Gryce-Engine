@@ -1,8 +1,12 @@
 #include "gl_backend.h"
 
 #include <cstring>
+#include <cstdint>
+#include <cctype>
 #include <fstream>
 #include <vector>
+
+#include "stb/stb_image_write.h"
 
 #include "gl_utils.h"
 #include "gl_buffer.h"
@@ -444,26 +448,58 @@ RenderBackendCapabilities GLBackend::get_capabilities() const {
     return caps;
 }
 
-void GLBackend::save_screenshot(const std::string& path) {
-    int width = 0, height = 0;
-    glfwGetFramebufferSize(window_, &width, &height);
-    if (width <= 0 || height <= 0) return;
+namespace {
+
+bool read_framebuffer_rgba_topdown(GLFWwindow* window, std::vector<uint8_t>& out,
+                                   int& width, int& height) {
+    glfwGetFramebufferSize(window, &width, &height);
+    if (width <= 0 || height <= 0) return false;
 
     std::vector<unsigned char> pixels(static_cast<std::size_t>(width * height * 4));
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 
-    // OpenGL 返回的是 bottom-up（row 0 为底部），save_bgr_bmp 期望 RGBA top-down，
-    // 因此先翻转成 top-down。
-    std::vector<unsigned char> flipped(static_cast<std::size_t>(width * height * 4));
+    // OpenGL 返回 bottom-up（row 0 为底部），转成 top-down RGBA。
+    out.resize(static_cast<std::size_t>(width * height * 4));
     for (int y = 0; y < height; ++y) {
         int src_y = height - 1 - y;
-        std::memcpy(flipped.data() + static_cast<std::size_t>(y * width * 4),
+        std::memcpy(out.data() + static_cast<std::size_t>(y * width * 4),
                     pixels.data() + static_cast<std::size_t>(src_y * width * 4),
                     static_cast<std::size_t>(width * 4));
     }
+    return true;
+}
 
-    save_bgr_bmp(path, flipped.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-    GLOG_INFO("GLBackend: screenshot saved to '{}'", path);
+bool path_ends_with(const std::string& path, const std::string& ext) {
+    if (path.size() < ext.size()) return false;
+    return std::equal(ext.rbegin(), ext.rend(), path.rbegin(),
+                      [](char a, char b) { return std::tolower(a) == std::tolower(b); });
+}
+
+} // namespace
+
+bool GLBackend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) {
+    if (!window_) return false;
+    return read_framebuffer_rgba_topdown(window_, out, width, height);
+}
+
+void GLBackend::save_screenshot(const std::string& path) {
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgba;
+    if (!capture_frame_rgba(rgba, width, height)) {
+        GLOG_ERROR("GLBackend: failed to read framebuffer for screenshot '{}'", path);
+        return;
+    }
+
+    if (path_ends_with(path, ".png")) {
+        if (stbi_write_png(path.c_str(), width, height, 4, rgba.data(), width * 4)) {
+            GLOG_INFO("GLBackend: screenshot saved to '{}' ({}x{} PNG)", path, width, height);
+        } else {
+            GLOG_ERROR("GLBackend: stbi_write_png failed for '{}'", path);
+        }
+    } else {
+        save_bgr_bmp(path, rgba.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        GLOG_INFO("GLBackend: screenshot saved to '{}' ({}x{} BMP)", path, width, height);
+    }
 }
 
 std::unique_ptr<IRenderer2D> GLBackend::create_renderer2d() {

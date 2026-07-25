@@ -1,5 +1,7 @@
 #include "render_context.h"
 
+#include <future>
+
 #include "render_command_buffer.h"
 #include "render_thread.h"
 #include "render/render.h"
@@ -572,6 +574,23 @@ void RenderContext::request_screenshot(const std::string& path) {
     } else {
         backend_->request_screenshot(path);
     }
+}
+
+bool RenderContext::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) {
+    if (!backend_) return false;
+    if (!running_) {
+        return backend_->capture_frame_rgba(out, width, height);
+    }
+
+    std::promise<bool> promise;
+    std::future<bool> future = promise.get_future();
+    cmd_buffer_->push([&out, &width, &height, &promise](IRenderBackend* backend) {
+        bool ok = backend->capture_frame_rgba(out, width, height);
+        promise.set_value(ok);
+    });
+    cmd_buffer_->submit();
+    wait_for_idle();
+    return future.get();
 }
 
 std::unique_ptr<IRenderer2D> RenderContext::create_renderer2d() {

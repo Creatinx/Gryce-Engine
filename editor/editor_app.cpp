@@ -71,9 +71,11 @@
 #include "ecs/systems/render_system_3d.h"
 #include "render/render_pipeline.h"
 
+#include "cli_args.h"
 #include "editor_camera.h"
 #include "panel_manager.h"
 #include "project/project_settings.h"
+#include "recorder.h"
 #include "panels/hierarchy_panel.h"
 #include "panels/inspector_panel.h"
 #include "panels/console_panel.h"
@@ -136,6 +138,21 @@ static std::filesystem::path find_project_root() {
 // ---------------------------------------------------------------------------
 // 场景辅助函数（与原 demo 相同：2D FPS label + 图形、物理演示 cube/ground）
 // ---------------------------------------------------------------------------
+static std::string resolve_scene_path(const std::string& input, const std::filesystem::path& project_root) {
+    if (input.empty()) return {};
+    if (input.rfind("res:/", 0) == 0) return input;
+
+    std::filesystem::path p(input);
+    if (p.is_absolute() && std::filesystem::exists(p)) return p.string();
+
+    auto rel_to_project = project_root / input;
+    if (std::filesystem::exists(rel_to_project)) return rel_to_project.string();
+
+    std::error_code ec;
+    auto abs = std::filesystem::absolute(p, ec);
+    return ec ? input : abs.string();
+}
+
 static std::unique_ptr<scene::Scene> create_demo_scene(float screen_w, float screen_h) {
     auto scene = std::make_unique<scene::Scene>("main");
 
@@ -527,6 +544,35 @@ static bool compute_world_aabb(const assets::MeshData& mesh, const math::Matrix4
     return true;
 }
 
+static bool compute_entity_world_bounds(scene::Entity* entity, math::Vector3f& out_center,
+                                        float& out_radius);
+
+// 计算整个场景的世界空间包围盒中心与包围球半径。
+static bool compute_scene_bounds(scene::Scene& scene, math::Vector3f& out_center,
+                                 float& out_radius) {
+    math::Vector3f bmin(1e30f, 1e30f, 1e30f);
+    math::Vector3f bmax(-1e30f, -1e30f, -1e30f);
+    bool has_bounds = false;
+
+    scene.foreach([&](scene::Entity* entity) {
+        math::Vector3f center;
+        float radius = 0.0f;
+        if (!compute_entity_world_bounds(entity, center, radius)) return;
+        bmin = math::Vector3f(std::min(bmin.x, center.x - radius),
+                              std::min(bmin.y, center.y - radius),
+                              std::min(bmin.z, center.z - radius));
+        bmax = math::Vector3f(std::max(bmax.x, center.x + radius),
+                              std::max(bmax.y, center.y + radius),
+                              std::max(bmax.z, center.z + radius));
+        has_bounds = true;
+    });
+
+    if (!has_bounds) return false;
+    out_center = (bmin + bmax) * 0.5f;
+    out_radius = (bmax - out_center).length();
+    return true;
+}
+
 // 计算单个实体的世界空间包围盒中心与包围球半径。
 // 优先使用 MeshRenderer / SkinnedMeshRenderer 的网格数据；没有网格时返回 false，
 // 调用方可退回到 Transform.position。
@@ -616,9 +662,12 @@ int EditorApp::run(int argc, char* argv[]) {
     std::cout << "Gryce Engine Editor v0.1.0" << std::endl;
 
     // 解析命令行参数
+    CliArgs args = parse_cli_args(argc, argv);
+    if (args.show_help) return 0;
+
     bool api_override_by_cli = false;
     render::RenderAPI selected_api = render::RenderAPI::OpenGL;
-    bool screenshot_mode = false;
+    bool screenshot_mode = args.should_screenshot();
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
     bool test_play_mode = false;    // --test-play-mode：自动进入/退出 Play Mode，用于 CI
     bool test_delete_undo = false;  // --test-delete-undo：自动删除 Ground 再撤销，用于 CI
@@ -627,8 +676,6 @@ int EditorApp::run(int argc, char* argv[]) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
             selected_api = render::RenderAPI::Vulkan;
             api_override_by_cli = true;
-        } else if (std::strcmp(argv[i], "--screenshot") == 0) {
-            screenshot_mode = true;
         } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
             vulkan_validation = true;
         } else if (std::strcmp(argv[i], "--test-play-mode") == 0) {
@@ -638,6 +685,9 @@ int EditorApp::run(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
         }
+    }
+    if (args.should_record() && auto_close_seconds <= 0.0f) {
+        auto_close_seconds = args.record_seconds;
     }
 
     utils::glog_initialize();
@@ -670,12 +720,15 @@ int EditorApp::run(int argc, char* argv[]) {
     platform::WindowContextType window_ctx = (selected_api == render::RenderAPI::Vulkan)
                                                  ? platform::WindowContextType::NoApi
                                                  : platform::WindowContextType::OpenGL;
-    platform::Window window("Gryce Engine Editor", 1920, 1080,
+    platform::Window window("Gryce Engine Editor", args.resolution_w, args.resolution_h,
                             platform::WindowMode::Windowed, window_ctx);
     if (!window.is_valid()) {
         GLOG_ERROR("Failed to create window");
         platform::Window::shutdown_sdk();
         return -1;
+    }
+    if (args.headless) {
+        glfwHideWindow(window.native_handle());
     }
     if (selected_api == render::RenderAPI::OpenGL) {
         window.set_vsync(false);
@@ -805,6 +858,49 @@ int EditorApp::run(int argc, char* argv[]) {
         // 确保场景有主摄像机和主光源
         ensure_scene_defaults(*current_scene, camera);
         sync_editor_to_scene_camera(*current_scene, camera);
+    }
+
+    // 命令行指定了场景时，加载该场景（支持 res:/ 路径、绝对路径、相对项目根路径）。
+    if (!args.scene_path.empty()) {
+        std::string cli_scene = resolve_scene_path(args.scene_path, project_root);
+        auto cli_loaded = scene::SceneSerializer::load_from_file(cli_scene);
+        if (cli_loaded) {
+            current_scene = std::move(cli_loaded);
+            scene_path = cli_scene;
+            GLOG_INFO("CLI scene loaded from '{}'", cli_scene);
+
+            // 重新执行上传与默认对象保证
+            if (current_scene) {
+                scene::Entity* fps_entity = current_scene->find_entity_by_name("FPS_Label");
+                fps_label = fps_entity ? fps_entity->get_component<components::d2::text::Label>() : nullptr;
+                ensure_physics_demo_entities(*current_scene);
+                upload_scene_meshes(*current_scene, render_ctx);
+                ensure_scene_defaults(*current_scene, camera);
+                sync_editor_to_scene_camera(*current_scene, camera);
+            }
+        } else {
+            GLOG_ERROR("Failed to load CLI scene '{}', falling back to default", cli_scene);
+        }
+    }
+
+    // 应用相机预设
+    editor_camera.set_preset(args.camera_preset);
+    if (args.camera_preset == CameraPreset::Orbit) {
+        // 轨道中心取场景包围盒中心；无实体时取原点。
+        math::Vector3f center = math::Vector3f::zero();
+        float radius = 5.0f;
+        if (current_scene) {
+            compute_scene_bounds(*current_scene, center, radius);
+        }
+        editor_camera.set_orbit_target(center);
+        editor_camera.set_orbit_radius(std::max(radius * 1.5f, 5.0f));
+    } else if (args.camera_preset == CameraPreset::Static && current_scene) {
+        // Static 固定最佳视角：聚焦场景包围盒。
+        math::Vector3f center;
+        float radius = 0.0f;
+        if (compute_scene_bounds(*current_scene, center, radius)) {
+            editor_camera.focus_on_bounds(center, radius);
+        }
     }
 
     // 场景文件热重载：记录最后修改时间
@@ -1375,6 +1471,22 @@ int EditorApp::run(int argc, char* argv[]) {
     bool delete_test_done = false;
     bool undo_test_done = false;
 
+    // 录制器：命令行 --record 时创建
+    std::unique_ptr<FrameRecorder> recorder;
+    if (args.should_record()) {
+        std::filesystem::path output = args.output_path.empty()
+                                           ? std::filesystem::path("clip.mp4")
+                                           : std::filesystem::path(args.output_path);
+        recorder = std::make_unique<FrameRecorder>(output, 30, args.no_audio);
+        GLOG_INFO("FrameRecorder initialized: output='{}' duration={}s", output.string(), args.record_seconds);
+    }
+
+    // 截图/录制时隐藏 FPS 等调试 UI
+    const bool hide_debug_ui = args.should_record() || args.should_screenshot();
+    if (hide_debug_ui) {
+        fps_label = nullptr;
+    }
+
     // Viewport 面板尺寸 → 渲染目标尺寸：防抖 0.15s，避免拖动 dock 分隔条时
     // 每帧 pause/resume 渲染线程造成的卡顿。
     int pending_vw = 0, pending_vh = 0;
@@ -1456,9 +1568,19 @@ int EditorApp::run(int argc, char* argv[]) {
             screenshot_delay_timer += dt;
             if (!screenshot_requested && screenshot_delay_timer >= 1.0) {
                 screenshot_requested = true;
-                const std::string screenshot_path = is_vulkan
-                                                        ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
-                                                        : "D:/Gryce-Engine/screenshot_opengl.bmp";
+                std::string screenshot_path = args.screenshot_path;
+                if (screenshot_path.empty() && !args.output_path.empty()) {
+                    screenshot_path = args.output_path;
+                }
+                if (screenshot_path.empty()) {
+                    screenshot_path = is_vulkan
+                                          ? "D:/Gryce-Engine/screenshot_vulkan.png"
+                                          : "D:/Gryce-Engine/screenshot_opengl.png";
+                }
+                // 确保截图使用 PNG 格式
+                if (std::filesystem::path(screenshot_path).extension() != ".png") {
+                    screenshot_path += ".png";
+                }
                 render_ctx.request_screenshot(screenshot_path);
                 GLOG_INFO("Screenshot requested after startup delay: '{}'", screenshot_path);
             }
@@ -1728,6 +1850,15 @@ int EditorApp::run(int argc, char* argv[]) {
 
         render_ctx.present();
 
+        // 录制：捕获当前帧 RGBA 并写入 PNG 序列
+        if (recorder && recorder->frame_count() < static_cast<int>(args.record_seconds * 30.0f + 0.5f)) {
+            std::vector<uint8_t> rgba;
+            int cw = 0, ch = 0;
+            if (render_ctx.capture_frame_rgba(rgba, cw, ch)) {
+                recorder->write_frame(rgba.data(), cw, ch);
+            }
+        }
+
         // 在 present 之后执行 hierarchy 的删除/换父等延迟操作，确保渲染线程已完成
         // 本帧所有引用这些实体的绘制命令，避免删除节点时访问已释放资源而崩溃。
         hierarchy_panel->flush_deferred_ops();
@@ -1781,6 +1912,11 @@ int EditorApp::run(int argc, char* argv[]) {
     }
 
     GLOG_INFO("Editor loop exited. FPS: {:.1f}", window.fps());
+
+    // 完成视频编码
+    if (recorder) {
+        recorder->finalize();
+    }
 
     // 退出时保存场景
     if (world.scene()) {

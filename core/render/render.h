@@ -138,11 +138,18 @@ public:
     // 能力查询（将 vendor-specific 特性、格式支持等显式化）
     virtual RenderBackendCapabilities get_capabilities() const = 0;
 
-    // Screenshot: backend captures current swapchain/frontbuffer to a BMP file.
+    // Screenshot: backend captures current swapchain/frontbuffer to a file.
     virtual void request_screenshot(const std::string& path) { (void)path; }
 
-    // Capture the current frame to a BMP file immediately (called from render thread).
+    // Capture the current frame to a file immediately (called from render thread).
     virtual void capture_frame_to_file(const std::string& path) { (void)path; }
+
+    // Synchronous readback of the current framebuffer/swapchain as top-down RGBA.
+    // Returns true on success; out is resized to w*h*4.
+    virtual bool capture_frame_rgba(std::vector<uint8_t>& out, int& w, int& h) {
+        (void)out; (void)w; (void)h;
+        return false;
+    }
 
     // Factory for 2D renderer (OpenGL -> Renderer2D, Vulkan -> VulkanRenderer2D).
     virtual std::unique_ptr<IRenderer2D> create_renderer2d() { return nullptr; }

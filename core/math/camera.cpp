@@ -50,6 +50,13 @@ void Camera::update_vectors() {
     up_    = right_.cross(forward_).normalized();
 }
 
+void Camera::look_at(const Vector3f& target) {
+    Vector3f dir = (target - position_).normalized();
+    pitch_ = math::to_degrees(std::asin(math::clamp(dir.y, -1.0f, 1.0f)));
+    yaw_ = math::to_degrees(std::atan2(dir.z, dir.x));
+    update_vectors();
+}
+
 Matrix4f Camera::get_view_matrix() const {
     return Matrix4f::look_at(position_, position_ + forward_, up_);
 }

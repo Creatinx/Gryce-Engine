@@ -132,6 +132,10 @@ public:
 
     // 高层便捷方法：委托给 backend 或在运行期推入命令缓冲
     void request_screenshot(const std::string& path);
+
+    // 同步读取当前帧为 top-down RGBA。阻塞直到渲染线程完成本帧。
+    bool capture_frame_rgba(std::vector<uint8_t>& out, int& w, int& h);
+
     std::unique_ptr<IRenderer2D> create_renderer2d();
     std::unique_ptr<IImGuiBackend> create_imgui_backend();
     void set_validation_enabled(bool enabled); // must be called before init()
