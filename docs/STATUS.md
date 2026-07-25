@@ -429,22 +429,24 @@
 ### 13.2 OpenGL 编辑器 3D 场景视口上下颠倒
 
 **现象**
-- OpenGL 后端下，编辑器 Viewport 中的 3D 场景与地面/Game View 中的方向正好相反（例如聚焦 Ground 后，地面出现在视口上方）。
+- OpenGL 后端下，编辑器 Viewport 中的 3D 场景与 Game View 中的方向正好相反（例如默认进入时地面出现在视口上方，按 F 聚焦 Ground 后暂时正常）。
 - 2D、物理调试绘制方向均正常；Vulkan 后端下 3D 方向也正常。
 
 **根因**
-- 此前怀疑是 `ViewportPanel` / `GameViewPanel` 对 OpenGL 端做了多余的 V 轴翻转，但移除后问题并未解决，且会破坏 2D/物理的显示方向。
-- 真正原因是 `math::Camera` 与 `math::Quaternionf::from_euler` 的欧拉角约定不一致：
-  - `math::Camera` 的 `pitch` 是绕 X 轴、`yaw` 是绕 Y 轴；
-  - `Quaternionf::from_euler(pitch, yaw, roll)` 的约定是 (pitch=Y, yaw=Z, roll=X)。
-- 编辑器在把编辑器相机/场景主相机的朝向写入 `Transform::rotation`（或反向读取）时，直接用了 `from_euler(to_radians(camera.pitch()), to_radians(camera.yaw()), 0)`，导致 Viewport 相机与 Game View 相机（场景 MainCamera）的朝向不一致，表现为 3D 场景上下颠倒。
+- 第一阶段怀疑是 `ViewportPanel` / `GameViewPanel` 对 OpenGL 端做了多余的 V 轴翻转，但移除后问题并未解决，且会破坏 2D/物理的显示方向。
+- 第二阶段怀疑是 `math::Camera` 与 `math::Quaternionf::from_euler` 的欧拉角约定不一致，因此用 `camera.forward()/up()/right()` 直接构造四元数、用 `rotation.rotate_vector(Vector3f::forward())` 还原 `pitch`/`yaw`。但用户反馈“默认进去仍反，聚焦 Ground 正常、不聚焦又反”，说明 Game View 与 Viewport 的相机朝向仍是反向。
+- 最终根因：引擎内部存在两套四元数旋转约定：
+  - `Quaternionf::rotate_vector(v)` 计算 `q * v * q^-1`（标准数学约定）；
+  - `Transform::local_matrix()` 使用 `Matrix4f::from_quaternion(q)`，即 `q.to_matrix()`，其矩阵乘法等价于 `q^-1 * v * q`（与 `rotate_vector` 方向相反）。
+- 因此，把 `Transform::rotation` 读回 `math::Camera` 时，若用 `rotation.rotate_vector(Vector3f::forward())` 会得到与渲染管线（Game View）相反的前向向量，导致 Viewport 相机与 Game View 相机朝向相反。
 
 **修复**
-- 不再通过欧拉角中转，直接根据 `camera.forward()` / `camera.up()` / `camera.right()` 构造与 `Transform::rotation` 语义一致的四元数；反向读取时则用 `rotation.rotate_vector(Vector3f::forward())` 恢复 `pitch` / `yaw`。
-- `editor/editor_app.cpp`：新增 `camera_rotation_to_quaternion` / `apply_quaternion_to_camera`，替换 `ensure_scene_defaults`、`sync_active_camera_to_scene`、`build_game_camera` 中的欧拉角转换。
-- `editor/editor_app.cpp`：新增 `sync_editor_to_scene_camera`，在场景加载/热重载/Play Mode 恢复后把编辑器相机同步到场景 `MainCamera` 的 Transform，避免加载已有场景时 Viewport 与 Game View 起始位置/方向不一致。
-- `editor/editor_camera.cpp`：改进 `focus_on_bounds`，聚焦时从斜上方 45° 看向目标并重新计算 `pitch` / `yaw`，避免相机被放到目标下方还朝上看。
-- `examples/3dtest/3dtest.cpp`：同步替换 `ensure_scene_defaults`、`sync_active_camera_to_scene` 与场景重置块中的对应转换，保持示例与编辑器一致。
+- `editor/editor_app.cpp` 的 `apply_quaternion_to_camera`：改用 `rotation.conjugate().rotate_vector(Vector3f::forward())` 还原世界前向，使其与 `Transform::local_matrix()` / 渲染管线约定保持一致。
+- `camera_rotation_to_quaternion`（`camera -> Transform::rotation`）本身已按 `to_matrix` 约定构造，无需修改。
+- 保留此前新增的 `sync_editor_to_scene_camera`，在场景加载/热重载/Play Mode 恢复后把编辑器相机同步到场景 `MainCamera` 的 Transform，避免加载已有场景时起始位置/方向不一致。
+- 保留 `editor/editor_camera.cpp` 中 `focus_on_bounds` 的斜上方 45° 聚焦逻辑，作为兜底体验优化。
+- `examples/3dtest/3dtest.cpp` 只把相机写入场景，不从中读回，因此不受影响；为保持一致性仍使用 `camera_rotation_to_quaternion`。
 
 **验证**
 - 重新编译后，OpenGL 后端下编辑器 Viewport 与 Game View 的 3D 场景方向一致，且 2D / 物理调试绘制方向不受影响。
+- 按 F 聚焦 Ground 后视角不再“临时反转”，离开聚焦状态也能保持与 Game View 同向。

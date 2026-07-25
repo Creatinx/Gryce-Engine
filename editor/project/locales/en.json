@@ -1,7 +1,9 @@
 {
     "menu.file": "File",
+    "menu.load_project": "Load Project...",
     "menu.save_scene": "Save Scene",
     "menu.save_scene_as": "Save Scene As...",
+    "menu.load_scene": "Load Scene...",
     "menu.open_scene": "Open Scene...",
     "menu.project_settings": "Project Settings",
     "menu.settings": "Settings",
@@ -189,6 +191,9 @@
     "dialog.open": "Open",
     "dialog.save_scene_as": "Save Scene As",
     "dialog.open_scene": "Open Scene",
+    "dialog.load_project": "Load Project",
+    "dialog.load_project_from": "Project directory:",
+    "dialog.load": "Load",
     "dialog.rename_entity": "Rename Entity",
 
     "file_explorer.assets_path": "Assets/%s",

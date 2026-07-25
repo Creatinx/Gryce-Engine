@@ -1,7 +1,9 @@
 {
     "menu.file": "文件",
+    "menu.load_project": "加载项目...",
     "menu.save_scene": "保存场景",
     "menu.save_scene_as": "另存为...",
+    "menu.load_scene": "加载场景...",
     "menu.open_scene": "打开场景...",
     "menu.project_settings": "项目设置",
     "menu.settings": "设置",
@@ -181,6 +183,9 @@
     "dialog.open": "打开",
     "dialog.save_scene_as": "另存为",
     "dialog.open_scene": "打开场景",
+    "dialog.load_project": "加载项目",
+    "dialog.load_project_from": "项目目录：",
+    "dialog.load": "加载",
     "dialog.rename_entity": "重命名实体",
 
     "file_explorer.assets_path": "资源/%s",

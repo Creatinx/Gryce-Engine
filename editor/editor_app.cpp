@@ -362,8 +362,11 @@ static math::Quaternionf camera_rotation_to_quaternion(const math::Camera& camer
 }
 
 // 将 Transform 四元数还原为 math::Camera 的 pitch/yaw。
+// 注意：引擎的 Transform::local_matrix() 使用 q.to_matrix()，其矩阵乘法等价于
+// q^-1 * v * q（与 rotate_vector 方向相反）。因此从 Transform 读取世界前向时应取
+// conjugate().rotate_vector，否则会得到反向朝向，导致 Viewport 与 Game View 相反。
 static void apply_quaternion_to_camera(const math::Quaternionf& rotation, math::Camera& camera) {
-    const math::Vector3f forward = rotation.rotate_vector(math::Vector3f::forward());
+    const math::Vector3f forward = rotation.conjugate().rotate_vector(math::Vector3f::forward());
     const float pitch = math::to_degrees(std::asin(math::clamp(forward.y, -1.0f, 1.0f)));
     const float yaw = math::to_degrees(std::atan2(forward.z, forward.x));
     camera.set_pitch(pitch);
@@ -641,8 +644,8 @@ int EditorApp::run(int argc, char* argv[]) {
     utils::GLog::instance().set_logger(
         std::make_unique<utils::MemoryLogSink>(std::make_unique<utils::ConsoleLogger>()));
 
-    // 设置项目根目录（自动从可执行文件位置向上查找）
-    const std::filesystem::path project_root = find_project_root();
+    // 设置项目根目录（自动从可执行文件位置向上查找；运行时可通过 File > Load Project 切换）
+    std::filesystem::path project_root = find_project_root();
     resources::Project::instance().set_root(project_root.string());
     components::register_builtin_components();
 
@@ -700,8 +703,9 @@ int EditorApp::run(int argc, char* argv[]) {
     auto imgui_backend = render_ctx.create_imgui_backend();
     imgui.init(window.native_handle(), std::move(imgui_backend));
 
-    // 布局持久化：ini 写到项目根目录而不是工作目录/build 目录
-    static const std::string imgui_ini_path = (project_root / "editor_imgui.ini").string();
+    // 布局持久化：ini 写到项目根目录而不是工作目录/build 目录。
+    // 使用普通 std::string 而不用 static const，以便 File > Load Project 时更新路径。
+    std::string imgui_ini_path = (project_root / "editor_imgui.ini").string();
     ImGui::GetIO().IniFilename = imgui_ini_path.c_str();
 
     // 加载主题预设与字体（失败则使用默认深色主题）
@@ -712,6 +716,15 @@ int EditorApp::run(int argc, char* argv[]) {
     editor::Localization::instance().load(editor_settings.appliance.language, project_root.string());
     editor::Localization::instance().set_light_theme(theme_preset == editor::ThemePreset::Light);
     editor::apply_theme(theme_preset, editor_settings.theme);
+
+    // File > Load Project 时重新加载编辑器配置（主题、语言、字体）
+    auto reload_editor_config = [&](const std::string& root) {
+        editor_settings = editor::SettingsWindow::load(root);
+        theme_preset = editor_settings.theme_preset;
+        editor::Localization::instance().load(editor_settings.appliance.language, root);
+        editor::Localization::instance().set_light_theme(theme_preset == editor::ThemePreset::Light);
+        editor::apply_theme(theme_preset, editor_settings.theme);
+    };
 
     // 设置窗口
     editor::SettingsWindow settings_window;
@@ -849,8 +862,10 @@ int EditorApp::run(int argc, char* argv[]) {
     // -------------------------------------------------------------------
     bool save_as_popup_requested = false;
     bool open_popup_requested = false;
+    bool load_project_popup_requested = false;
     char save_as_buf[256] = "res:/scenes/main.gesc";
     char open_buf[256] = "res:/scenes/main.gesc";
+    char load_project_buf[512] = "";
 
     // FPS Label 组件指针在场景替换后需要重新查找
     auto refresh_fps_label = [&]() {
@@ -986,6 +1001,54 @@ int EditorApp::run(int argc, char* argv[]) {
         scene_last_write = get_scene_write_time(scene_path);
         refresh_fps_label();
         GLOG_INFO("Scene opened from '{}'", path);
+    };
+
+    // -----------------------------------------------------------------------
+    // File > Load Project：切换工作项目
+    // -----------------------------------------------------------------------
+    auto load_project = [&](const std::string& path) {
+        std::filesystem::path new_root(path);
+        if (new_root.empty() || !std::filesystem::is_directory(new_root)) {
+            GLOG_ERROR("Load Project: '{}' is not a valid directory", path);
+            return;
+        }
+        if (!std::filesystem::exists(new_root / "project.gryce")) {
+            GLOG_ERROR("Load Project: '{}' does not contain project.gryce", path);
+            return;
+        }
+        try {
+            new_root = std::filesystem::canonical(new_root);
+        } catch (const std::exception& e) {
+            GLOG_ERROR("Load Project: failed to canonicalize '{}': {}", path, e.what());
+            return;
+        }
+
+        // 保存当前场景并退出 Play Mode
+        if (world.scene()) {
+            save_scene(scene_path);
+        }
+        if (play_mode_active) {
+            exit_play_mode();
+        }
+
+        // 更新项目上下文
+        project_root = new_root;
+        resources::Project::instance().set_root(project_root.string());
+        editor::AssetDatabase::instance().scan(project_root);
+
+        // 重新加载项目与编辑器配置
+        project_settings = editor::ProjectSettingsWindow::load(project_root.string());
+        reload_editor_config(project_root.string());
+
+        // 更新 ImGui ini 路径
+        imgui_ini_path = (project_root / "editor_imgui.ini").string();
+        ImGui::GetIO().IniFilename = imgui_ini_path.c_str();
+
+        // 加载新项目默认场景
+        scene_path = "res:/scenes/main.gesc";
+        open_scene(scene_path);
+
+        GLOG_INFO("Project loaded from '{}'", project_root.string());
     };
 
     // -----------------------------------------------------------------------
@@ -1230,6 +1293,12 @@ int EditorApp::run(int argc, char* argv[]) {
 
     panel_manager.set_menu_bar_hook([&]() {
         if (ImGui::BeginMenu(editor::tr("menu.file"))) {
+            if (ImGui::MenuItem(editor::tr("menu.load_project"))) {
+                std::strncpy(load_project_buf, project_root.string().c_str(), sizeof(load_project_buf) - 1);
+                load_project_buf[sizeof(load_project_buf) - 1] = '\0';
+                load_project_popup_requested = true;
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem(editor::tr("menu.save_scene"), "Ctrl+S")) {
                 save_scene(scene_path);
             }
@@ -1238,7 +1307,7 @@ int EditorApp::run(int argc, char* argv[]) {
                 save_as_buf[sizeof(save_as_buf) - 1] = '\0';
                 save_as_popup_requested = true;
             }
-            if (ImGui::MenuItem(editor::tr("menu.open_scene"))) {
+            if (ImGui::MenuItem(editor::tr("menu.load_scene"))) {
                 std::strncpy(open_buf, scene_path.c_str(), sizeof(open_buf) - 1);
                 open_buf[sizeof(open_buf) - 1] = '\0';
                 open_popup_requested = true;
@@ -1600,6 +1669,27 @@ int EditorApp::run(int argc, char* argv[]) {
             if (ImGui::Button(editor::tr("dialog.open")) ||
                 (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false))) {
                 open_scene(open_buf);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(editor::tr("dialog.cancel"))) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+
+        // Load Project 弹窗
+        if (load_project_popup_requested) {
+            ImGui::OpenPopup("LoadProject");
+            load_project_popup_requested = false;
+        }
+        if (ImGui::BeginPopupModal((std::string(editor::tr("dialog.load_project")) + "###LoadProject").c_str(),
+                                   nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%s", editor::tr("dialog.load_project_from"));
+            ImGui::InputText("##load_project_path", load_project_buf, sizeof(load_project_buf));
+            if (ImGui::Button(editor::tr("dialog.load")) ||
+                (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false))) {
+                load_project(load_project_buf);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
