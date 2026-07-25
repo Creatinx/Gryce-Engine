@@ -566,8 +566,16 @@ static std::vector<render::RenderPipeline::Light> collect_lights(scene::Scene& s
         case components::Light::Type::Spot:  out.type = render::RenderPipeline::LightType::Spot;  break;
         default:                             out.type = render::RenderPipeline::LightType::Directional; break;
         }
-        out.position = entity->transform() ? entity->transform()->position : math::Vector3f::zero();
-        out.direction = light->direction.normalized();
+        components::Transform* transform = entity->transform();
+        out.position = transform ? transform->position : math::Vector3f::zero();
+
+        // 注意：Transform::local_matrix() 的 q.to_matrix() 等价于 q^-1 * v * q，
+        // 因此世界空间方向需用 rotation.conjugate().rotate_vector，与渲染管线约定一致。
+        math::Vector3f local_dir = light->direction.normalized();
+        if (local_dir.length_sq() < 1e-6f) {
+            local_dir = math::Vector3f(0.0f, -1.0f, 0.0f);
+        }
+        out.direction = (transform ? transform->rotation.conjugate().rotate_vector(local_dir) : local_dir).normalized();
         out.color = light->color;
         out.intensity = light->intensity;
         out.range = light->range;

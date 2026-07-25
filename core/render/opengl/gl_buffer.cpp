@@ -42,6 +42,10 @@ GLMesh::~GLMesh() {
 void GLMesh::upload_vertices(const void* data, uint32_t size, uint32_t count) {
     vertex_count_ = count;
     if (size == 0) return;
+    if (!data) {
+        GLOG_ERROR("GLMesh::upload_vertices: null data with size={}", size);
+        return;
+    }
 
     if (gl_dsa_available()) {
         if (size <= vertex_buffer_size_) {
@@ -68,6 +72,10 @@ void GLMesh::upload_indices(const void* data, uint32_t size, uint32_t count) {
     index_count_ = count;
     has_index_ = true;
     if (size == 0) return;
+    if (!data) {
+        GLOG_ERROR("GLMesh::upload_indices: null data with size={}", size);
+        return;
+    }
 
     if (gl_dsa_available()) {
         if (size <= index_buffer_size_) {

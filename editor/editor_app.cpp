@@ -468,11 +468,13 @@ static std::vector<render::RenderPipeline::Light> collect_lights(scene::Scene& s
         out.position = transform ? transform->position : math::Vector3f::zero();
 
         // 方向由 Transform 旋转 + 组件局部方向共同决定。
+        // 注意：Transform::local_matrix() 的 q.to_matrix() 等价于 q^-1 * v * q，
+        // 因此世界空间方向需用 rotation.conjugate().rotate_vector，与相机朝向保持一致。
         math::Vector3f local_dir = light->direction.normalized();
         if (local_dir.length_sq() < 1e-6f) {
             local_dir = math::Vector3f(0.0f, -1.0f, 0.0f);
         }
-        out.direction = (transform ? transform->rotation.rotate_vector(local_dir) : local_dir).normalized();
+        out.direction = (transform ? transform->rotation.conjugate().rotate_vector(local_dir) : local_dir).normalized();
 
         lights.push_back(out);
     });
