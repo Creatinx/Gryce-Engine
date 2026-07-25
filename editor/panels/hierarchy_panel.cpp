@@ -4,8 +4,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <string>
+#include <unordered_set>
 
 #include "components/component.h"
+#include "components/component_factory.h"
+#include "components/node2d.h"
+#include "components/node3d.h"
 #include "components/prefab_instance.h"
 #include "resources/project.h"
 #include "scene/scene.h"
@@ -401,22 +406,15 @@ void HierarchyPanel::on_imgui() {
         clear_selection();
     }
     if (ImGui::BeginPopupContextItem("##hierarchy_bg_menu")) {
-        if (ImGui::MenuItem(tr("hierarchy.create_empty_entity"))) {
-            if (undo_stack_) {
-                auto cmd = std::make_unique<EntityCreateCommand>(*scene_, tr("hierarchy.new_entity_name"));
-                EntityCreateCommand* cmd_ptr = cmd.get();
-                undo_stack_->push(std::move(cmd));
-                select(cmd_ptr->created_uuid());
-            } else {
-                scene::Entity* entity = scene_->create_entity(tr("hierarchy.new_entity_name"));
-                select(entity->uuid());
-            }
-        }
+        draw_new_submenu(nullptr);
         ImGui::EndPopup();
     }
 
     // 树遍历结束，统一执行本帧记录的删除/换父操作
     execute_pending_op();
+
+    // 组件选择器（New → Component 触发的弹窗）
+    draw_component_picker();
 }
 
 void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
@@ -554,19 +552,7 @@ void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
 void HierarchyPanel::draw_entity_context_menu(scene::Entity* entity) {
     if (!ImGui::BeginPopupContextItem("##entity_menu")) return;
 
-    if (ImGui::MenuItem(tr("hierarchy.create_empty_child"))) {
-        if (undo_stack_) {
-            auto cmd = std::make_unique<EntityCreateCommand>(*scene_, tr("hierarchy.new_entity_name"),
-                                                             entity->uuid());
-            EntityCreateCommand* cmd_ptr = cmd.get();
-            undo_stack_->push(std::move(cmd));
-            select(cmd_ptr->created_uuid());
-        } else {
-            auto child = std::make_unique<scene::Entity>(tr("hierarchy.new_entity_name"));
-            scene::Entity* added = entity->add_child(std::move(child));
-            if (added) select(added->uuid());
-        }
-    }
+    draw_new_submenu(entity);
     if (ImGui::MenuItem(tr("hierarchy.rename"))) {
         start_rename(entity);
     }
@@ -634,6 +620,195 @@ void HierarchyPanel::finish_rename(bool confirm) {
     rename_uuid_ = scene::UUID::nil();
     rename_buf_[0] = '\0';
     rename_first_frame_ = false;
+}
+
+void HierarchyPanel::draw_new_submenu(scene::Entity* parent_entity) {
+    if (!ImGui::BeginMenu(tr("hierarchy.new"))) return;
+
+    // 创建空实体
+    if (ImGui::MenuItem(tr("hierarchy.new.empty"))) {
+        if (undo_stack_) {
+            auto cmd = std::make_unique<EntityCreateCommand>(*scene_, tr("hierarchy.new_entity_name"),
+                                                             parent_entity ? parent_entity->uuid()
+                                                                           : scene::UUID::nil());
+            EntityCreateCommand* cmd_ptr = cmd.get();
+            undo_stack_->push(std::move(cmd));
+            select(cmd_ptr->created_uuid());
+        } else {
+            scene::Entity* added = nullptr;
+            if (parent_entity) {
+                auto child = std::make_unique<scene::Entity>(tr("hierarchy.new_entity_name"));
+                added = parent_entity->add_child(std::move(child));
+            } else {
+                added = scene_->create_entity(tr("hierarchy.new_entity_name"));
+            }
+            if (added) select(added->uuid());
+        }
+    }
+
+    // Node3D：带 Node3D 组件的空实体
+    if (ImGui::MenuItem(tr("hierarchy.new.node3d"))) {
+        scene::Entity* added = nullptr;
+        if (undo_stack_) {
+            auto cmd = std::make_unique<EntityCreateCommand>(*scene_, "Node3D",
+                                                             parent_entity ? parent_entity->uuid()
+                                                                           : scene::UUID::nil());
+            EntityCreateCommand* cmd_ptr = cmd.get();
+            undo_stack_->push(std::move(cmd));
+            added = scene_->find_entity_by_uuid(cmd_ptr->created_uuid());
+        } else {
+            if (parent_entity) {
+                auto child = std::make_unique<scene::Entity>("Node3D");
+                added = parent_entity->add_child(std::move(child));
+            } else {
+                added = scene_->create_entity("Node3D");
+            }
+        }
+        if (added) {
+            if (!added->get_component<components::Node3D>()) {
+                added->add_component<components::Node3D>();
+            }
+            select(added->uuid());
+        }
+    }
+
+    // Node2D：带 Node2D 组件的空实体
+    if (ImGui::MenuItem(tr("hierarchy.new.node2d"))) {
+        scene::Entity* added = nullptr;
+        if (undo_stack_) {
+            auto cmd = std::make_unique<EntityCreateCommand>(*scene_, "Node2D",
+                                                             parent_entity ? parent_entity->uuid()
+                                                                           : scene::UUID::nil());
+            EntityCreateCommand* cmd_ptr = cmd.get();
+            undo_stack_->push(std::move(cmd));
+            added = scene_->find_entity_by_uuid(cmd_ptr->created_uuid());
+        } else {
+            if (parent_entity) {
+                auto child = std::make_unique<scene::Entity>("Node2D");
+                added = parent_entity->add_child(std::move(child));
+            } else {
+                added = scene_->create_entity("Node2D");
+            }
+        }
+        if (added) {
+            if (!added->get_component<components::Node2D>()) {
+                added->add_component<components::Node2D>();
+            }
+            select(added->uuid());
+        }
+    }
+
+    // 添加组件 → 打开组件选择器
+    if (ImGui::MenuItem(tr("hierarchy.new.component"))) {
+        scene::Entity* target = parent_entity ? parent_entity : selected_entity();
+        open_component_picker(target);
+    }
+
+    ImGui::EndMenu();
+}
+
+void HierarchyPanel::open_component_picker(scene::Entity* target_entity) {
+    if (!target_entity) {
+        GLOG_WARN("Hierarchy: cannot open component picker without a target entity");
+        return;
+    }
+    component_picker_target_uuid_ = target_entity->uuid();
+    component_picker_open_ = true;
+    component_picker_first_frame_ = true;
+    component_picker_search_[0] = '\0';
+    ImGui::OpenPopup("AddComponent");
+}
+
+void HierarchyPanel::draw_component_picker() {
+    if (!component_picker_open_) return;
+
+    const char* title = tr("hierarchy.add_component.title");
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 480.0f), ImGuiCond_FirstUseEver);
+
+    bool open = true;
+    if (!ImGui::BeginPopupModal(title, &open,
+                                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+        component_picker_open_ = false;
+        return;
+    }
+
+    if (component_picker_first_frame_) {
+        ImGui::SetKeyboardFocusHere();
+        component_picker_first_frame_ = false;
+    }
+
+    // 搜索框
+    ImGui::InputText(tr("hierarchy.add_component.search"),
+                     component_picker_search_, sizeof(component_picker_search_));
+    ImGui::Separator();
+
+    scene::Entity* target = scene_ ? scene_->find_entity_by_uuid(component_picker_target_uuid_) : nullptr;
+    if (!target) {
+        ImGui::TextDisabled("%s", tr("inspector.no_entity"));
+        if (ImGui::Button("OK")) {
+            ImGui::CloseCurrentPopup();
+            component_picker_open_ = false;
+        }
+        ImGui::EndPopup();
+        return;
+    }
+
+    const std::string filter = component_picker_search_;
+    const auto& types = components::ComponentFactory::instance().all_types();
+
+    // 不应手动添加的内部组件黑名单
+    static const std::unordered_set<std::string> k_internal_types = {
+        "Transform", "PrefabInstance"
+    };
+
+    bool any_match = false;
+    ImGui::BeginChild("##component_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
+    for (const std::string& type : types) {
+        if (k_internal_types.find(type) != k_internal_types.end()) continue;
+        if (target->get_component_by_type(type)) continue; // 已存在则跳过
+        if (!filter.empty()) {
+            bool found = false;
+            for (size_t i = 0; i + filter.size() <= type.size(); ++i) {
+                if (type.compare(i, filter.size(), filter) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) continue;
+        }
+        any_match = true;
+
+        const char* desc = components::ComponentFactory::instance().description(type);
+        if (ImGui::Selectable(type.c_str())) {
+            if (undo_stack_) {
+                undo_stack_->push(std::make_unique<ComponentAddCommand>(
+                    *scene_, component_picker_target_uuid_, type));
+            } else {
+                auto comp = components::ComponentFactory::instance().create(type);
+                if (comp && target) {
+                    target->add_component(std::move(comp));
+                }
+            }
+            ImGui::CloseCurrentPopup();
+            component_picker_open_ = false;
+        }
+        if (desc && desc[0] != '\0' && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", desc);
+        }
+    }
+    if (!any_match) {
+        ImGui::TextDisabled("%s", tr("hierarchy.add_component.no_result"));
+    }
+    ImGui::EndChild();
+
+    if (ImGui::Button("Cancel")) {
+        ImGui::CloseCurrentPopup();
+        component_picker_open_ = false;
+    }
+
+    ImGui::EndPopup();
 }
 
 void HierarchyPanel::draw_inline_rename(scene::Entity* entity, int depth,

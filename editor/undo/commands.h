@@ -113,6 +113,26 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// ComponentAddCommand — 为实体添加组件
+// ---------------------------------------------------------------------------
+class ComponentAddCommand : public EditorCommand {
+public:
+    ComponentAddCommand(scene::Scene& scene,
+                        const scene::UUID& entity_uuid,
+                        std::string component_type);
+
+    void execute() override;
+    void undo() override;
+    std::string description() const override;
+
+private:
+    scene::Scene* scene_;
+    scene::UUID entity_uuid_;
+    std::string component_type_;
+    bool executed_ = false;
+};
+
+// ---------------------------------------------------------------------------
 // ComponentMultiFieldCommand — 一次修改同一组件的多个字段
 // 用于物理材质预设、动画关键帧等需要同时修改多个字段的场景。
 // ---------------------------------------------------------------------------

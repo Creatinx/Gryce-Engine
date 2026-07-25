@@ -20,12 +20,25 @@ public:
     static ComponentFactory& instance();
 
     void register_type(const std::string& type, Creator creator);
+    void register_type(const std::string& type, Creator creator, const std::string& description);
     std::unique_ptr<Component> create(const std::string& type) const;
     bool has_type(const std::string& type) const;
 
+    // 所有已注册类型名（按注册顺序）
+    std::vector<std::string> all_types() const;
+    // 组件描述；未注册或没有描述返回空字符串
+    const char* description(const std::string& type) const;
+
 private:
     ComponentFactory() = default;
-    std::unordered_map<std::string, Creator> creators_;
+
+    struct TypeInfo {
+        Creator creator;
+        std::string description;
+    };
+
+    std::unordered_map<std::string, TypeInfo> creators_;
+    std::vector<std::string> type_order_;
 };
 
 // 注册 helper

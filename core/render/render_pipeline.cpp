@@ -372,9 +372,24 @@ void RenderPipeline::update_light_space_matrix() {
         center = camera_->position() + camera_->forward() * shadow_area_;
     }
     math::Vector3f eye = center - light_dir * (shadow_area_ * 2.0f);
-    math::Matrix4f light_view = math::Matrix4f::look_at(eye, center, math::Vector3f::up());
+
+    // 当方向光与世界 up 平行时，look_at 的默认 up 会产生 gimbal lock（cross 结果为零）。
+    // 选择一个与 light_dir 不共线的 up 向量。
+    math::Vector3f up = math::Vector3f::up();
+    if (std::abs(light_dir.dot(up)) > 0.98f) {
+        up = math::Vector3f::forward();
+    }
+    math::Matrix4f light_view = math::Matrix4f::look_at(eye, center, up);
+
+    // 根据相机 far 平面 tighter 地计算正交投影 near/far，减少 z-fighting。
+    float near_plane = 0.1f;
+    float far_plane = shadow_area_ * 4.0f;
+    if (camera_) {
+        far_plane = std::max(far_plane, camera_->far_plane());
+        near_plane = std::min(near_plane, camera_->near_plane());
+    }
     math::Matrix4f light_proj = math::Matrix4f::ortho(
-        -shadow_area_, shadow_area_, -shadow_area_, shadow_area_, 0.1f, shadow_area_ * 4.0f);
+        -shadow_area_, shadow_area_, -shadow_area_, shadow_area_, near_plane, far_plane);
     light_space_matrix_ = light_proj * light_view;
 }
 

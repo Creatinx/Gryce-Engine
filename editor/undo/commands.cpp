@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "components/component.h"
+#include "components/component_factory.h"
 #include "scene/scene.h"
 #include "scene/scene_serializer.h"
 #include "scene/entity.h"
@@ -127,6 +128,52 @@ void ComponentFieldCommand::undo() {
 
 std::string ComponentFieldCommand::description() const {
     return std::format("Modify {}.{}", component_type_, field_name_);
+}
+
+// ---------------------------------------------------------------------------
+// ComponentAddCommand
+// ---------------------------------------------------------------------------
+ComponentAddCommand::ComponentAddCommand(scene::Scene& scene,
+                                         const scene::UUID& entity_uuid,
+                                         std::string component_type)
+    : scene_(&scene),
+      entity_uuid_(entity_uuid),
+      component_type_(std::move(component_type)) {}
+
+void ComponentAddCommand::execute() {
+    if (!scene_ || executed_) return;
+    scene::Entity* entity = scene_->find_entity_by_uuid(entity_uuid_);
+    if (!entity) {
+        GLOG_WARN("ComponentAddCommand: entity not found");
+        return;
+    }
+    if (entity->get_component_by_type(component_type_)) {
+        GLOG_WARN("ComponentAddCommand: entity '{}' already has component '{}'",
+                  entity->name(), component_type_);
+        return;
+    }
+    auto comp = components::ComponentFactory::instance().create(component_type_);
+    if (!comp) {
+        GLOG_ERROR("ComponentAddCommand: failed to create component '{}'", component_type_);
+        return;
+    }
+    entity->add_component(std::move(comp));
+    executed_ = true;
+}
+
+void ComponentAddCommand::undo() {
+    if (!scene_ || !executed_) return;
+    scene::Entity* entity = scene_->find_entity_by_uuid(entity_uuid_);
+    if (!entity) return;
+    components::Component* comp = entity->get_component_by_type(component_type_);
+    if (comp) {
+        entity->remove_component(comp);
+    }
+    executed_ = false;
+}
+
+std::string ComponentAddCommand::description() const {
+    return std::format("Add component {}", component_type_);
 }
 
 // ---------------------------------------------------------------------------

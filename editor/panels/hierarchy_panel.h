@@ -72,6 +72,9 @@ private:
                      const std::vector<bool>& parent_has_next_sibling = {},
                      bool is_last_child = true);
     void draw_entity_context_menu(scene::Entity* entity);
+    void draw_new_submenu(scene::Entity* parent_entity); // parent_entity=nullptr 表示在根级创建
+    void open_component_picker(scene::Entity* target_entity);
+    void draw_component_picker();
     void handle_drag_drop(scene::Entity* entity);
     void execute_pending_op();
     void execute_op(const PendingOp& op);
@@ -97,6 +100,12 @@ private:
     char rename_buf_[128] = {};
     bool rename_active_ = false;
     bool rename_first_frame_ = false;
+
+    // 组件选择器状态
+    bool component_picker_open_ = false;
+    bool component_picker_first_frame_ = false;
+    scene::UUID component_picker_target_uuid_ = scene::UUID::nil();
+    char component_picker_search_[64] = {};
 
     void start_rename(scene::Entity* entity);
     void finish_rename(bool confirm);
