@@ -738,7 +738,10 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
     sampler_info.addressModeW = to_vk_wrap(wrap_s_);
     sampler_info.anisotropyEnable = use_aniso ? VK_TRUE : VK_FALSE;
     sampler_info.maxAnisotropy = use_aniso ? device_->max_sampler_anisotropy() : 1.0f;
-    sampler_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    // 深度比较阴影贴图：边界设为最远深度（白色），避免 ClampToBorder 的边缘
+    // 被 LESS_OR_EQUAL 判定为阴影，从而产生黑边。
+    sampler_info.borderColor = is_depth ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
+                                        : VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     sampler_info.unnormalizedCoordinates = VK_FALSE;
     sampler_info.compareEnable = is_depth ? VK_TRUE : VK_FALSE;
     sampler_info.compareOp = is_depth ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_NEVER;

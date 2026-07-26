@@ -110,8 +110,10 @@ bool VulkanDevice::pick_physical_device(VkInstance instance, VkSurfaceKHR surfac
             vkGetPhysicalDeviceProperties(device, &props);
             max_sampler_anisotropy_ = props.limits.maxSamplerAnisotropy;
             supports_anisotropy_ = max_sampler_anisotropy_ > 1.0f;
-            GLOG_INFO("VulkanDevice selected GPU: {} (extended_dynamic_state={}, anisotropy={})",
-                      props.deviceName, supports_extended_dynamic_state_, supports_anisotropy_);
+            max_push_constants_size_ = props.limits.maxPushConstantsSize;
+            GLOG_INFO("VulkanDevice selected GPU: {} (extended_dynamic_state={}, anisotropy={}, max_push_constants={})",
+                      props.deviceName, supports_extended_dynamic_state_, supports_anisotropy_,
+                      max_push_constants_size_);
             return true;
         }
     }

@@ -422,7 +422,11 @@ bool VulkanShader::create_pipeline() {
     depth_stencil.depthCompareOp = skybox_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
 
     VkPipelineColorBlendAttachmentState blend_attach{};
-    blend_attach.blendEnable = (dynamic_cdb && !post_process_) ? VK_TRUE : VK_FALSE;
+    // 混合不是动态状态；PBR / shadow / grid 等不透明管线默认关闭混合。
+    // 透明物体由 RenderPipeline 在 forward pass 中排序后绘制，当前 Vulkan
+    // 路径尚不支持动态 blend，因此统一用不透明管线；后续可为透明材质创建
+    // 专用 pipeline 或启用 VK_EXT_extended_dynamic_state3 的动态颜色混合。
+    blend_attach.blendEnable = VK_FALSE;
     blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend_attach.colorBlendOp = VK_BLEND_OP_ADD;

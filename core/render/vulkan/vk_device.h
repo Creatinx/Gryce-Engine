@@ -33,6 +33,9 @@ public:
     // 最大各向异性过滤倍数；若不支持则返回 0
     float max_sampler_anisotropy() const { return max_sampler_anisotropy_; }
 
+    // 物理设备的 maxPushConstantsSize
+    uint32_t max_push_constants_size() const { return max_push_constants_size_; }
+
 private:
     bool pick_physical_device(VkInstance instance, VkSurfaceKHR surface);
     bool create_logical_device();
@@ -48,6 +51,7 @@ private:
     bool supports_extended_dynamic_state_ = false;
     bool supports_anisotropy_ = false;
     float max_sampler_anisotropy_ = 0.0f;
+    uint32_t max_push_constants_size_ = 128;
     VmaAllocator allocator_ = nullptr;
 };
 

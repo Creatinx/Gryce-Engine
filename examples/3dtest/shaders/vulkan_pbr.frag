@@ -86,6 +86,9 @@ float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
 
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
     proj_coords = proj_coords * 0.5 + 0.5;
+    // Vulkan 负 viewport 高度导致 shadow map 的 v 方向与 OpenGL 相反，
+    // 采样前需翻转 y，否则阴影会上下颠倒。
+    proj_coords.y = 1.0 - proj_coords.y;
 
     if (proj_coords.z > 1.0) return 1.0;
     // 阴影贴图覆盖范围之外视为全亮（边缘 depth 被 clamp 会误判为阴影）

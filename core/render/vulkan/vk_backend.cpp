@@ -945,7 +945,7 @@ RenderBackendCapabilities VulkanBackend::get_capabilities() const {
     caps.supports_nv_delay_before_swap = false;
     caps.supports_dynamic_state = supports_dynamic_state_;
     caps.max_texture_slots = 32;
-    caps.max_push_constant_size = 128; // Vulkan 1.2 最小保证值
+    caps.max_push_constant_size = device_.max_push_constants_size();
     caps.supports_srgb = true;
     caps.supports_depth32f = true;
     caps.supports_r8 = true;
