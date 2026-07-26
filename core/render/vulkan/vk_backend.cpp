@@ -779,6 +779,22 @@ void VulkanBackend::bind_framebuffer(RHIFramebufferHandle fb) {
         return;
     }
 
+    VkRenderPass fb_rp = vk_fb->render_pass();
+    VkFramebuffer fb_handle = vk_fb->framebuffer();
+    GLOG_INFO("VulkanBackend::bind_framebuffer: fb.index={} fb.gen={} vk_fb={} rp={} fb_handle={} primary={} current_image_={} image_count={}",
+              fb.index, fb.generation,
+              reinterpret_cast<uintptr_t>(vk_fb),
+              reinterpret_cast<uintptr_t>(fb_rp),
+              reinterpret_cast<uintptr_t>(fb_handle),
+              reinterpret_cast<uintptr_t>(primary),
+              current_image_, swapchain_.image_count());
+
+    if (fb_rp == VK_NULL_HANDLE || fb_handle == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanBackend::bind_framebuffer: framebuffer render_pass or handle is null, skipping");
+        frame_aborted_ = true;
+        return;
+    }
+
     // 使用 VulkanFramebuffer 自身的 clear 逻辑，但指定 secondary contents
     vk_fb->begin_render_pass(primary, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
     current_render_pass_ = vk_fb->render_pass();

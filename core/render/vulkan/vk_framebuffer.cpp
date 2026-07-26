@@ -226,8 +226,21 @@ void VulkanFramebuffer::set_clear_color(float r, float g, float b, float a) {
 }
 
 void VulkanFramebuffer::begin_render_pass(VkCommandBuffer cmd, VkSubpassContents contents) const {
-    if (cmd == VK_NULL_HANDLE) return;
-    if (!render_pass_ || !framebuffer_) return;
+    if (cmd == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanFramebuffer::begin_render_pass: cmd is null");
+        return;
+    }
+    if (render_pass_ == VK_NULL_HANDLE || framebuffer_ == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanFramebuffer::begin_render_pass: render_pass={} framebuffer={} width={} height={}",
+                   reinterpret_cast<uintptr_t>(render_pass_),
+                   reinterpret_cast<uintptr_t>(framebuffer_),
+                   width_, height_);
+        return;
+    }
+    if (width_ <= 0 || height_ <= 0) {
+        GLOG_ERROR("VulkanFramebuffer::begin_render_pass: invalid extent {}x{}", width_, height_);
+        return;
+    }
 
     VkRenderPassBeginInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -250,6 +263,12 @@ void VulkanFramebuffer::begin_render_pass(VkCommandBuffer cmd, VkSubpassContents
 
     info.clearValueCount = static_cast<uint32_t>(clears.size());
     info.pClearValues = clears.data();
+
+    GLOG_INFO("VulkanFramebuffer::begin_render_pass: cmd={} rp={} fb={} extent={}x{} clears={}",
+              reinterpret_cast<uintptr_t>(cmd),
+              reinterpret_cast<uintptr_t>(render_pass_),
+              reinterpret_cast<uintptr_t>(framebuffer_),
+              width_, height_, clears.size());
 
     vkCmdBeginRenderPass(cmd, &info, contents);
 }
