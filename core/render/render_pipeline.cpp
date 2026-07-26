@@ -1209,6 +1209,8 @@ bool RenderPipeline::create_fullscreen_mesh(RenderContext* ctx) {
 }
 
 void RenderPipeline::begin_hdr_forward_pass(RenderContext& ctx) {
+    GLOG_INFO("RenderPipeline::begin_hdr_forward_pass: hdr_fbo_={} viewport={}x{}",
+              hdr_fbo_.index, viewport_width_, viewport_height_);
     ctx.set_shader(pbr_shader_);
     ctx.set_framebuffer(hdr_fbo_);
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
@@ -1229,6 +1231,8 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
     const bool to_viewport = viewport_output_enabled_ && viewport_fbo_.is_valid();
+    GLOG_INFO("RenderPipeline::render_tonemap: to_viewport={} viewport_fbo_={} viewport={}x{}",
+              to_viewport, viewport_fbo_.index, viewport_width_, viewport_height_);
     ctx.set_framebuffer(to_viewport ? viewport_fbo_ : RHIFramebufferHandle{});
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_depth_test(false);
