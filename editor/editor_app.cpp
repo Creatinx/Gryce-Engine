@@ -1074,25 +1074,36 @@ int EditorApp::run(int argc, char* argv[]) {
     });
 
     auto open_scene = [&](const std::string& path) {
+        GLOG_INFO("Open Scene: starting '{}'", path);
         // 打开新场景前若处于 Play Mode，先退出并丢弃快照
         if (play_mode_active) {
+            GLOG_INFO("Open Scene: exiting play mode");
             exit_play_mode();
         }
 
+        GLOG_INFO("Open Scene: loading from file");
         auto loaded = scene::SceneSerializer::load_from_file(path);
         if (!loaded) {
             GLOG_ERROR("Failed to open scene from '{}'", path);
             return;
         }
         // 与热重载相同的替换流程：暂停渲染线程后上传 GPU 资源
+        GLOG_INFO("Open Scene: detaching old scene");
         world.detach_scene();
         hierarchy_panel->clear_selection();
+        GLOG_INFO("Open Scene: pausing render thread");
         render_ctx.pause_render_thread();
+        GLOG_INFO("Open Scene: ensuring physics entities");
         ensure_physics_demo_entities(*loaded);
+        GLOG_INFO("Open Scene: uploading meshes");
         upload_scene_meshes(*loaded, render_ctx);
+        GLOG_INFO("Open Scene: ensuring defaults");
         ensure_scene_defaults(*loaded, camera);
+        GLOG_INFO("Open Scene: syncing camera");
         sync_editor_to_scene_camera(*loaded, camera);
+        GLOG_INFO("Open Scene: attaching new scene");
         world.attach_scene(std::move(loaded));
+        GLOG_INFO("Open Scene: resuming render thread");
         render_ctx.resume_render_thread();
 
         scene_path = path;
@@ -1105,6 +1116,7 @@ int EditorApp::run(int argc, char* argv[]) {
     // File > Load Project：切换工作项目
     // -----------------------------------------------------------------------
     auto load_project = [&](const std::string& path) {
+        GLOG_INFO("Load Project: starting '{}'", path);
         std::filesystem::path new_root(path);
         if (new_root.empty() || !std::filesystem::is_directory(new_root)) {
             GLOG_ERROR("Load Project: '{}' is not a valid directory", path);
@@ -1120,29 +1132,38 @@ int EditorApp::run(int argc, char* argv[]) {
             GLOG_ERROR("Load Project: failed to canonicalize '{}': {}", path, e.what());
             return;
         }
+        GLOG_INFO("Load Project: validated root '{}'", new_root.string());
 
         // 保存当前场景并退出 Play Mode
         if (world.scene()) {
+            GLOG_INFO("Load Project: saving current scene");
             save_scene(scene_path);
         }
         if (play_mode_active) {
+            GLOG_INFO("Load Project: exiting play mode");
             exit_play_mode();
         }
 
         // 更新项目上下文
+        GLOG_INFO("Load Project: updating project root");
         project_root = new_root;
         resources::Project::instance().set_root(project_root.string());
+        GLOG_INFO("Load Project: scanning asset database");
         editor::AssetDatabase::instance().scan(project_root);
 
         // 重新加载项目与编辑器配置
+        GLOG_INFO("Load Project: reloading project settings");
         project_settings = editor::ProjectSettingsWindow::load(project_root.string());
+        GLOG_INFO("Load Project: reloading editor config");
         reload_editor_config(project_root.string());
 
         // 更新 ImGui ini 路径
+        GLOG_INFO("Load Project: updating imgui ini path");
         imgui_ini_path = (project_root / "editor_imgui.ini").string();
         ImGui::GetIO().IniFilename = imgui_ini_path.c_str();
 
         // 加载新项目默认场景
+        GLOG_INFO("Load Project: opening default scene");
         scene_path = "res:/scenes/main.gesc";
         open_scene(scene_path);
 
