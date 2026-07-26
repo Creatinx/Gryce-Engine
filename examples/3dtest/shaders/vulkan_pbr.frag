@@ -85,10 +85,10 @@ float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
     if (ubo.uUseShadowMap == 0) return 1.0;
 
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
-    proj_coords = proj_coords * 0.5 + 0.5;
-    // Vulkan 负 viewport 高度导致 shadow map 的 v 方向与 OpenGL 相反，
-    // 采样前需翻转 y，否则阴影会上下颠倒。
-    proj_coords.y = 1.0 - proj_coords.y;
+    // Vulkan NDC 已经是 [0,1] Z（uLightSpaceMatrix 在 C++ 侧已做 Vulkan 投影重映射），
+    // 因此只需翻转 XY 到纹理空间；Z 保持 [0,1] 直接用于深度比较。
+    proj_coords.x = proj_coords.x * 0.5 + 0.5;
+    proj_coords.y = 1.0 - (proj_coords.y * 0.5 + 0.5);
 
     if (proj_coords.z > 1.0) return 1.0;
     // 阴影贴图覆盖范围之外视为全亮（边缘 depth 被 clamp 会误判为阴影）
