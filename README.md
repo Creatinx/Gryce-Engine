@@ -46,8 +46,9 @@
   - 2D 光照：环境光、方向光、点光源、聚光灯、法线贴图、阴影/遮挡。
 - **输入**
   - 键盘、鼠标、自定义光标、鼠标锁定（FPS 模式）。
-- **工具**
+- **工具与自动化**
   - 帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
+  - 命令行参数：场景加载、无窗口截图、MP4 录制、相机预设。详见 [`docs/CLI.md`](./docs/CLI.md)。
 
 ---
 
@@ -227,7 +228,7 @@ Gryce-Engine/
 │   ├── resources/          # 资源路径、项目根解析
 │   ├── scene/              # Scene、Entity、Transform 层级、Prefab
 │   └── utils/              # 日志、帧率限制、工具类
-├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API、TODO）
+├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API、TODO、CLI）
 ├── editor/                 # 编辑器可执行文件（gryce-engine.exe）
 │   ├── panels/             # 编辑器面板
 │   ├── ui/                 # 编辑器窗口与主题

@@ -310,6 +310,7 @@
 | 地形编辑器 | 已实现（基础高度图编辑 + MeshRenderer 导出；完整 Terrain 渲染/LOD 留 M5） |
 | 编辑器设置保存 | 已实现（`imgui.ini` 布局 + `editor_theme.json` / `editor_settings.json` 主题/语言） |
 | 快捷键体系 | 已实现（Ctrl+S/Z/Y、Delete、F、Ctrl+P Play Mode） |
+| 命令行参数（CLI） | 已实现（`--scene`、`--screenshot`、`--record`、`--camera`、`--headless` 等） | 详见 `docs/CLI.md` |
 | Undo/Redo | 已实现（属性修改、增删实体、Transform） |
 
 ---
@@ -397,6 +398,7 @@
 | 工程状态报告（STATUS.md） | 已完成 |
 | Core API 规范（CORE_API.md） | 已完成 |
 | 路线图（TODO.md） | 已完成 |
+| 命令行参数参考（CLI.md） | 已完成 |
 | API 文档（doxygen） | 未生成 |
 | 用户手册 / 快速入门 | 部分实现（README 快速开始已覆盖） |
 | 着色器编写指南 | 未编写 |
@@ -426,7 +428,32 @@
 - `gryce_core` 与 `gryce_engine` 编译、链接通过。
 - 运行时 `create_imgui_backend()` 不再在 `unique_ptr` 转换处崩溃。
 
-### 13.2 OpenGL 编辑器 3D 场景视口上下颠倒
+### 13.2 Vulkan 阴影/光照异常（阴影方向偏移、边缘黑边、混合错误）
+
+**现象**
+- Vulkan 后端下 3D 场景阴影整体方向偏移、光照明暗区域与 OpenGL 不一致。
+- 阴影贴图边缘出现明显黑边（超出 shadow map 范围的部分被错误判定为阴影）。
+- 部分不透明物体看起来半透明，PBR 高光/环境光混合异常。
+
+**根因**
+1. `VulkanShader::create_pipeline` 中 `blendEnable` 被条件错误地设为 `VK_TRUE`，导致大量不透明管线强制开启 Alpha Blend，破坏光照累积。
+2. 深度阴影贴图 sampler 使用 `VK_BORDER_COLOR_INT_OPAQUE_BLACK`，`ClampToBorder` 时边界深度为 0.0，被 `LESS_OR_EQUAL` 判定为处于阴影，产生黑边。
+3. Vulkan NDC 的 Y 轴与 OpenGL 相反，而 `vulkan_pbr.frag` 的 `shadow_calculation` 未对 `proj_coords.y` 做翻转，导致采样 shadow map 的 UV 上下颠倒。
+4. `vk_backend` 硬编码 `max_push_constant_size = 128`，但现代 NVIDIA GPU（如 RTX 5070）实际支持 256B；硬编码值不会直接导致崩溃，但会虚假限制 push constant 可用空间。
+
+**修复**
+- `core/render/vulkan/vk_shader.cpp`：不透明管线统一设置 `blendEnable = VK_FALSE`；透明材质未来通过专用 pipeline 或 `VK_EXT_extended_dynamic_state3` 动态混合支持。
+- `core/render/vulkan/vk_texture.cpp`：深度纹理 sampler 的 `borderColor` 改为 `VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE`，使边界深度为 1.0（最远），不被判定为阴影。
+- `examples/3dtest/shaders/vulkan_pbr.frag` 与 `examples/gt2dDemo/shaders/vulkan_pbr.frag`：在 `shadow_calculation` 中加入 `proj_coords.y = 1.0 - proj_coords.y`。
+- `core/render/vulkan/vk_device.cpp/.h`：读取 `physicalDeviceProperties.limits.maxPushConstantsSize`。
+- `core/render/vulkan/vk_backend.cpp`：使用 `device_.max_push_constants_size()` 替代硬编码 128。
+
+**验证**
+- `gryce-engine.exe --vulkan --screenshot shadow_test.png --headless --auto-close 2` 可正常完成截图，无 Vulkan 错误。
+- 设备日志正确报告 `max_push_constants=256`（RTX 5070 Laptop）。
+- 对应 SPIR-V 已本地重新生成；`*.spv` 在 `.gitignore` 中，构建或运行前需用 `glslangValidator -V` 重新编译着色器源。
+
+### 13.3 OpenGL 编辑器 3D 场景视口上下颠倒
 
 **现象**
 - OpenGL 后端下，编辑器 Viewport 中的 3D 场景与 Game View 中的方向正好相反（例如默认进入时地面出现在视口上方，按 F 聚焦 Ground 后暂时正常）。
