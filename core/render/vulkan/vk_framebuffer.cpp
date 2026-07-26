@@ -226,6 +226,7 @@ void VulkanFramebuffer::set_clear_color(float r, float g, float b, float a) {
 }
 
 void VulkanFramebuffer::begin_render_pass(VkCommandBuffer cmd, VkSubpassContents contents) const {
+    if (cmd == VK_NULL_HANDLE) return;
     if (!render_pass_ || !framebuffer_) return;
 
     VkRenderPassBeginInfo info{};

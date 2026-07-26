@@ -45,12 +45,21 @@ public:
     VkRenderPass render_pass() const { return render_pass_; }
     // 用于从 shadow map 等 offscreen framebuffer 切回 swapchain 时不清除已有内容
     VkRenderPass render_pass_load() const { return render_pass_load_; }
-    VkFramebuffer framebuffer(uint32_t index) const { return framebuffers_[index]; }
+    VkFramebuffer framebuffer(uint32_t index) const {
+        if (index >= framebuffers_.size()) return VK_NULL_HANDLE;
+        return framebuffers_[index];
+    }
     VkExtent2D extent() const { return extent_; }
     VkFormat format() const { return format_; }
     uint32_t image_count() const { return static_cast<uint32_t>(images_.size()); }
-    VkImage image(uint32_t index) const { return images_[index]; }
-    VkCommandBuffer command_buffer(uint32_t index) const { return command_buffers_[index]; }
+    VkImage image(uint32_t index) const {
+        if (index >= images_.size()) return VK_NULL_HANDLE;
+        return images_[index];
+    }
+    VkCommandBuffer command_buffer(uint32_t index) const {
+        if (index >= command_buffers_.size()) return VK_NULL_HANDLE;
+        return command_buffers_[index];
+    }
     VkCommandPool command_pool() const { return command_pool_; }
     // secondary command pool 按帧槽独立：begin_frame 只 reset 当前帧槽的池，
     // 避免把其他帧槽仍在 GPU 上执行的 secondary CB 一并失效（会 device lost）

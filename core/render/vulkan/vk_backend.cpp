@@ -298,6 +298,11 @@ void VulkanBackend::begin_frame() {
     render_pass_contents_secondary_ = false;
 
     VkCommandBuffer primary = primary_command_buffer();
+    if (primary == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanBackend: primary command buffer is null, aborting frame");
+        frame_aborted_ = true;
+        return;
+    }
     vkResetCommandBuffer(primary, 0);
 
     VkCommandBufferBeginInfo begin_info{};
@@ -508,6 +513,11 @@ void VulkanBackend::reset_state_cache() {
 
 VkCommandBuffer VulkanBackend::primary_command_buffer() const {
     if (!initialized_) return VK_NULL_HANDLE;
+    if (current_image_ >= swapchain_.image_count()) {
+        GLOG_ERROR("VulkanBackend: current_image_={} out of range (image_count={})",
+                   current_image_, swapchain_.image_count());
+        return VK_NULL_HANDLE;
+    }
     return swapchain_.command_buffer(current_image_);
 }
 
@@ -643,6 +653,10 @@ void VulkanBackend::begin_render_pass_secondary(VkRenderPass rp, VkFramebuffer f
                                                 const VkExtent2D& extent) {
     VkCommandBuffer primary = primary_command_buffer();
     if (primary == VK_NULL_HANDLE) return;
+    if (fb == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanBackend::begin_render_pass_secondary: framebuffer is null");
+        return;
+    }
 
     VkRenderPassBeginInfo rp_info{};
     rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -758,8 +772,15 @@ void VulkanBackend::bind_framebuffer(RHIFramebufferHandle fb) {
     end_current_render_pass();
     in_forward_pass_ = false;
 
+    VkCommandBuffer primary = primary_command_buffer();
+    if (primary == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanBackend::bind_framebuffer: primary command buffer is null");
+        frame_aborted_ = true;
+        return;
+    }
+
     // 使用 VulkanFramebuffer 自身的 clear 逻辑，但指定 secondary contents
-    vk_fb->begin_render_pass(primary_command_buffer(), VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    vk_fb->begin_render_pass(primary, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
     current_render_pass_ = vk_fb->render_pass();
     current_framebuffer_vk_ = vk_fb->framebuffer();
     render_pass_contents_secondary_ = true;
@@ -788,10 +809,16 @@ void VulkanBackend::unbind_framebuffer() {
 
     // 从 offscreen framebuffer 回到 swapchain 时不清除，否则 offscreen 之前
     // 已经绘制到 swapchain 的内容（如天空盒）会被清掉。
+    VkFramebuffer swapchain_fb = swapchain_.framebuffer(current_image_);
+    if (swapchain_fb == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanBackend::unbind_framebuffer: swapchain framebuffer is null, aborting frame");
+        frame_aborted_ = true;
+        return;
+    }
     VkClearValue clears[2]{};
     clears[0].color = {{clear_r_, clear_g_, clear_b_, clear_a_}};
     clears[1].depthStencil = {1.0f, 0};
-    begin_render_pass_secondary(swapchain_.render_pass_load(), swapchain_.framebuffer(current_image_),
+    begin_render_pass_secondary(swapchain_.render_pass_load(), swapchain_fb,
                                 clears, 2, swapchain_.extent());
 }
 
@@ -1029,6 +1056,11 @@ bool VulkanBackend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, in
     uint32_t queue_family = device_.graphics_queue_family();
 
     VkImage src_image = swapchain_.image(current_image_);
+    if (src_image == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanBackend::capture_frame_rgba: swapchain image is null (current_image_={})",
+                   current_image_);
+        return false;
+    }
     VkExtent2D extent = swapchain_.extent();
     width = static_cast<int>(extent.width);
     height = static_cast<int>(extent.height);
