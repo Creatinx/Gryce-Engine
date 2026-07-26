@@ -147,6 +147,8 @@ private:
     void bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle shader);
     void bind_global_uniforms(RenderContext& ctx);
     void upload_lights(RenderContext& ctx, RHIShaderHandle shader);
+    // 根据后端类型返回正确 Z 范围的投影矩阵（OpenGL [-1,1] / Vulkan [0,1]）
+    math::Matrix4f get_projection_matrix() const;
 
     void render_mesh_internal(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
                               RenderContext& ctx);

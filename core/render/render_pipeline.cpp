@@ -714,7 +714,7 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
 
     ctx.set_shader(skybox_shader_);
     ctx.set_uniform_mat4(skybox_shader_, "uView", view);
-    ctx.set_uniform_mat4(skybox_shader_, "uProjection", camera_->get_projection_matrix());
+    ctx.set_uniform_mat4(skybox_shader_, "uProjection", get_projection_matrix());
 
     ITexture* tex_ptr = ctx_->texture(skybox_tex);
     if (tex_ptr) {
@@ -740,7 +740,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     const bool render_shadow = shadow_enabled_ && shadow_light_index_ >= 0;
 
     // 相机视锥体：用于 forward pass 剔除不可见物体
-    const math::Matrix4f camera_vp = camera_->get_projection_matrix() * camera_->get_view_matrix();
+    const math::Matrix4f camera_vp = get_projection_matrix() * camera_->get_view_matrix();
     const Frustum camera_frustum = extract_frustum(camera_vp);
 
     // 1. Shadow pass（仅第一个方向光）
@@ -954,13 +954,26 @@ void RenderPipeline::end_forward_pass(RenderContext& ctx) {
     (void)ctx;
 }
 
+math::Matrix4f RenderPipeline::get_projection_matrix() const {
+    if (!camera_) return math::Matrix4f::identity();
+    math::Matrix4f proj = camera_->get_projection_matrix();
+    if (ctx_ && ctx_->backend() && std::strcmp(ctx_->backend()->api_name(), "Vulkan") == 0) {
+        // OpenGL NDC z ∈ [-1,1]，Vulkan z ∈ [0,1]。调整投影矩阵的 z 行。
+        const float near_plane = camera_->near_plane();
+        const float far_plane = camera_->far_plane();
+        proj(2, 2) = far_plane / (near_plane - far_plane);
+        proj(2, 3) = (far_plane * near_plane) / (near_plane - far_plane);
+    }
+    return proj;
+}
+
 void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle shader) {
     if (!shader.is_valid() || !camera_) return;
     // uniform 命令作用于"当前绑定"的 program（见 GLShader::set_*），
     // 上传前必须先绑定目标 shader。
     ctx.set_shader(shader);
     ctx.set_uniform_mat4(shader, "uView", camera_->get_view_matrix());
-    ctx.set_uniform_mat4(shader, "uProjection", camera_->get_projection_matrix());
+    ctx.set_uniform_mat4(shader, "uProjection", get_projection_matrix());
     ctx.set_uniform_mat4(shader, "uLightSpaceMatrix", light_space_matrix_);
     ctx.set_uniform_vec3(shader, "uCameraPos", camera_->position());
     ctx.set_uniform_vec3(shader, "uAmbient", ambient_);
@@ -1282,7 +1295,7 @@ void RenderPipeline::render_grid(RenderContext& ctx) {
     const math::Matrix4f grid_model = math::Matrix4f::translate(cam_pos.x, 0.0f, cam_pos.z);
     ctx.set_uniform_mat4(grid_shader_, "uModel", grid_model);
     ctx.set_uniform_mat4(grid_shader_, "uView", camera_->get_view_matrix());
-    ctx.set_uniform_mat4(grid_shader_, "uProjection", camera_->get_projection_matrix());
+    ctx.set_uniform_mat4(grid_shader_, "uProjection", get_projection_matrix());
     ctx.set_uniform_vec3(grid_shader_, "uGridColor", math::Vector3f(0.5f, 0.5f, 0.5f));
     ctx.set_uniform_float(grid_shader_, "uGridSize", k_grid_size);
     ctx.set_uniform_float(grid_shader_, "uMajorLineEvery", k_grid_major_every);
