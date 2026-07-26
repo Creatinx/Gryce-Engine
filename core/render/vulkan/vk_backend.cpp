@@ -303,12 +303,22 @@ void VulkanBackend::begin_frame() {
         frame_aborted_ = true;
         return;
     }
-    vkResetCommandBuffer(primary, 0);
+    VkResult reset_result = vkResetCommandBuffer(primary, 0);
+    if (reset_result != VK_SUCCESS) {
+        GLOG_ERROR("VulkanBackend: vkResetCommandBuffer failed, VkResult={}", static_cast<int>(reset_result));
+        frame_aborted_ = true;
+        return;
+    }
 
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(primary, &begin_info);
+    VkResult begin_result = vkBeginCommandBuffer(primary, &begin_info);
+    if (begin_result != VK_SUCCESS) {
+        GLOG_ERROR("VulkanBackend: vkBeginCommandBuffer failed, VkResult={}", static_cast<int>(begin_result));
+        frame_aborted_ = true;
+        return;
+    }
 
     VkClearValue clears[2]{};
     clears[0].color = {{clear_r_, clear_g_, clear_b_, clear_a_}};
@@ -335,7 +345,14 @@ void VulkanBackend::begin_frame() {
 void VulkanBackend::end_frame() {
     if (!initialized_) return;
     if (frame_aborted_) {
-        // 当前帧未能获取 swapchain image，跳过 submit/present，避免使用未初始化的命令缓冲。
+        // begin_frame 中 acquire_next_image 成功后已 reset 当前帧 fence。
+        // 若此处不 signal，下一帧 vkWaitForFences 将永久阻塞（整窗卡死）。
+        VkFence fence = swapchain_.current_fence();
+        if (fence != VK_NULL_HANDLE) {
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            vkQueueSubmit(device_.graphics_queue(), 1, &submit, fence);
+        }
         ++frame_count_;
         return;
     }
@@ -386,6 +403,12 @@ void VulkanBackend::end_frame() {
             // submit 失败时该帧 fence 不会被 signal，后续 acquire 的
             // vkWaitForFences 可能永久阻塞（整窗卡死），必须大声报错。
             GLOG_ERROR("VulkanBackend: submit/present failed with VK_ERROR_DEVICE_LOST");
+            VkFence fence = swapchain_.current_fence();
+            if (fence != VK_NULL_HANDLE) {
+                VkSubmitInfo submit{};
+                submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                vkQueueSubmit(device_.graphics_queue(), 1, &submit, fence);
+            }
         }
     }
 
