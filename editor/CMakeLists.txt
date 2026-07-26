@@ -71,6 +71,11 @@ set_target_properties(gryce_engine PROPERTIES
     FOLDER "Editor"
 )
 
+# 编辑器运行时可能加载示例项目的 SPIR-V，确保它们已编译
+if(GRYCE_EXAMPLE_SHADER_TARGETS)
+    add_dependencies(gryce_engine ${GRYCE_EXAMPLE_SHADER_TARGETS})
+endif()
+
 # ---------------------------------------------------------------------------
 # 复制 MinGW/UCRT64 运行时 DLL 到输出目录
 # 避免运行时加载到 PATH 中其他不兼容的 libstdc++/libgcc 版本

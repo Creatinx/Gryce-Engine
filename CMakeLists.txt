@@ -73,6 +73,7 @@ option(GRYCE_STATIC_RUNTIME       "Use static C++ runtime (/MT) on MSVC" OFF)
 # 编译器选项
 # ---------------------------------------------------------------------------
 include(cmake/compiler_options.cmake)
+include(cmake/shaders.cmake)
 
 # ---------------------------------------------------------------------------
 # 第三方依赖

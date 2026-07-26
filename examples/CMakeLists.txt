@@ -84,8 +84,32 @@ function(_gryce_demo_post_build target_name)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# Vulkan 着色器 SPIR-V 自动编译
+# ---------------------------------------------------------------------------
+set(GRYCE_SHADER_TARGETS)
+
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/3dtest/shaders")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/gt2dDemo/shaders")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
+# 把着色器 target 暴露给父目录，editor 可依赖
+set(GRYCE_EXAMPLE_SHADER_TARGETS "${GRYCE_SHADER_TARGETS}" PARENT_SCOPE)
+
+# ---------------------------------------------------------------------------
 # 现有综合演示（尽可能覆盖所有功能）
 # ---------------------------------------------------------------------------
 add_gryce_demo_legacy(3dtest 3dtest 3dtest.cpp)
 add_gryce_demo_legacy(gt2dDemo gt2dDemo gt2dDemo.cpp)
+
+# 示例可执行文件依赖对应 SPIR-V
+if(GRYCE_SHADER_TARGETS)
+    add_dependencies(3dtest ${GRYCE_SHADER_TARGETS})
+    add_dependencies(gt2dDemo ${GRYCE_SHADER_TARGETS})
+endif()
 
