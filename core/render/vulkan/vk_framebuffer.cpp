@@ -264,12 +264,6 @@ void VulkanFramebuffer::begin_render_pass(VkCommandBuffer cmd, VkSubpassContents
     info.clearValueCount = static_cast<uint32_t>(clears.size());
     info.pClearValues = clears.data();
 
-    GLOG_INFO("VulkanFramebuffer::begin_render_pass: cmd={} rp={} fb={} extent={}x{} clears={}",
-              reinterpret_cast<uintptr_t>(cmd),
-              reinterpret_cast<uintptr_t>(render_pass_),
-              reinterpret_cast<uintptr_t>(framebuffer_),
-              width_, height_, clears.size());
-
     vkCmdBeginRenderPass(cmd, &info, contents);
 }
 

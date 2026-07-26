@@ -133,17 +133,12 @@ void RenderContext::pause_render_thread() {
         backend_->wait_gpu_idle();
     }
 
-    // 把尚未提交到 GPU 的清理命令（例如旧场景销毁产生的 destroy_texture）
-    // 在当前线程 GL context 下执行掉，避免资源泄漏。
+    // 丢弃 cmd_buffer_ 中剩余的渲染命令：渲染线程已退出且 command buffer
+    // 已完成/提交，此时再执行 bind_framebuffer/draw_mesh 等命令会导致
+    // vkCmdBeginRenderPass 在无效 command buffer 上调用而崩溃。
+    // 资源销毁命令走 enqueue_destroy/process_pending_destroys，不走 cmd_buffer_。
     if (cmd_buffer_) {
-        auto pending = cmd_buffer_->drain();
-        for (auto& item : pending) {
-            if (item.is_typed()) {
-                execute_typed_command(backend_.get(), item.typed());
-            } else {
-                item.lambda()(backend_.get());
-            }
-        }
+        cmd_buffer_->drain();
     }
 
     // pause() 已经关闭旧的 command buffer 并唤醒渲染线程。
@@ -175,16 +170,12 @@ void RenderContext::pause_render_thread_keep_cmdbuffer() {
         backend_->wait_gpu_idle();
     }
 
-    // 不销毁 cmd_buffer_：暂停后仍可能有同步资源清理命令需要被 drain
+    // 丢弃 cmd_buffer_ 中剩余的渲染命令：渲染线程已退出且 command buffer
+    // 已完成/提交，此时再执行 bind_framebuffer/draw_mesh 等命令会导致
+    // vkCmdBeginRenderPass 在无效 command buffer 上调用而崩溃。
+    // 资源销毁命令走 enqueue_destroy/process_pending_destroys，不走 cmd_buffer_。
     if (cmd_buffer_) {
-        auto pending = cmd_buffer_->drain();
-        for (auto& item : pending) {
-            if (item.is_typed()) {
-                execute_typed_command(backend_.get(), item.typed());
-            } else {
-                item.lambda()(backend_.get());
-            }
-        }
+        cmd_buffer_->drain();
     }
 
     // 渲染线程已退出、GPU 已 idle，可以安全处理所有待销毁资源
