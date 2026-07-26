@@ -529,7 +529,28 @@ VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule vert_module, VkShade
                                               uint32_t attr_count,
                                               bool depth_test, bool depth_write, BlendMode blend_mode,
                                               bool color_output) {
+    if (!vk_device_) {
+        GLOG_ERROR("VulkanRenderer2D::create_pipeline: vk_device_ is null");
+        return VK_NULL_HANDLE;
+    }
     VkDevice dev = vk_device_->device();
+    if (dev == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanRenderer2D::create_pipeline: VkDevice is null");
+        return VK_NULL_HANDLE;
+    }
+    if (vert_module == VK_NULL_HANDLE || frag_module == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanRenderer2D::create_pipeline: shader module is null (vert={}, frag={})",
+                   reinterpret_cast<void*>(vert_module), reinterpret_cast<void*>(frag_module));
+        return VK_NULL_HANDLE;
+    }
+    if (layout == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanRenderer2D::create_pipeline: pipeline layout is null");
+        return VK_NULL_HANDLE;
+    }
+    if (render_pass == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanRenderer2D::create_pipeline: render pass is null");
+        return VK_NULL_HANDLE;
+    }
 
     VkPipelineShaderStageCreateInfo vert_stage{};
     vert_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -653,7 +674,15 @@ VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule vert_module, VkShade
 }
 
 bool VulkanRenderer2D::create_swapchain_pipelines() {
+    if (!vk_swapchain_) {
+        GLOG_ERROR("VulkanRenderer2D::create_swapchain_pipelines: swapchain is null");
+        return false;
+    }
     VkRenderPass swapchain_rp = vk_swapchain_->render_pass();
+    if (swapchain_rp == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanRenderer2D::create_swapchain_pipelines: swapchain render pass is null");
+        return false;
+    }
 
     // Vertex2D 属性：pos(0) + color(1) + uv(2)
     VkVertexInputAttributeDescription base_attrs[3]{};
