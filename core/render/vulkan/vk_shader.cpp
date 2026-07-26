@@ -577,7 +577,15 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
         vk_proj(2, 3) = value(2, 3) * 0.5f + value(3, 3) * 0.5f;
         projection_ = vk_proj;
     }
-    else if (name == "uLightSpaceMatrix") light_space_matrix_ = value;
+    else if (name == "uLightSpaceMatrix") {
+        // Shadow map 的投影矩阵同样使用 OpenGL 风格 [-1,1] Z，
+        // 在 Vulkan NDC [0,1] 下会导致深度范围与采样值不一致，
+        // 因此需要做与 uProjection 相同的 Z 行重映射。
+        math::Matrix4f vk_light = value;
+        vk_light(2, 2) = value(2, 2) * 0.5f + value(3, 2) * 0.5f;
+        vk_light(2, 3) = value(2, 3) * 0.5f + value(3, 3) * 0.5f;
+        light_space_matrix_ = vk_light;
+    }
 }
 void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) { set_mat4(std::string(name), value); }
 
