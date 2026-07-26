@@ -234,7 +234,9 @@ void VulkanBackend::begin_frame() {
         GLOG_INFO("VulkanBackend: swapchain recreated to {}x{}", width, height);
     }
 
+    GLOG_INFO("VulkanBackend::begin_frame: acquiring image, current_frame={}", swapchain_.current_frame_index());
     VkResult acquire_result = swapchain_.acquire_next_image(&current_image_);
+    GLOG_INFO("VulkanBackend::begin_frame: acquire_result={} current_image_={}", static_cast<int>(acquire_result), current_image_);
     if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
         // OUT_OF_DATE 可通过重建 swapchain 恢复。
         GLOG_WARN("VulkanBackend: acquire returned VK_ERROR_OUT_OF_DATE_KHR, recreating swapchain");
@@ -244,6 +246,7 @@ void VulkanBackend::begin_frame() {
             return;
         }
         acquire_result = swapchain_.acquire_next_image(&current_image_);
+        GLOG_INFO("VulkanBackend::begin_frame: after recreate acquire_result={}", static_cast<int>(acquire_result));
     }
     if (acquire_result == VK_NOT_READY || acquire_result == VK_TIMEOUT) {
         // 规范中的成功类返回码：本帧暂时没有可用图像（某些驱动在
@@ -347,6 +350,7 @@ void VulkanBackend::end_frame() {
     if (frame_aborted_) {
         // begin_frame 中 acquire_next_image 成功后已 reset 当前帧 fence。
         // 若此处不 signal，下一帧 vkWaitForFences 将永久阻塞（整窗卡死）。
+        GLOG_INFO("VulkanBackend::end_frame: frame_aborted_, signaling fence");
         VkFence fence = swapchain_.current_fence();
         if (fence != VK_NULL_HANDLE) {
             VkSubmitInfo submit{};
@@ -398,7 +402,9 @@ void VulkanBackend::end_frame() {
         GLOG_INFO("VulkanBackend::end_frame present_result={}", static_cast<int>(present_result));
         swapchain_.advance_frame();
     } else {
+        GLOG_INFO("VulkanBackend::end_frame: submit_and_present current_image_={}", current_image_);
         present_result = swapchain_.submit_and_present(current_image_, primary_command_buffer());
+        GLOG_INFO("VulkanBackend::end_frame: present_result={}", static_cast<int>(present_result));
         if (present_result == VK_ERROR_DEVICE_LOST) {
             // submit 失败时该帧 fence 不会被 signal，后续 acquire 的
             // vkWaitForFences 可能永久阻塞（整窗卡死），必须大声报错。

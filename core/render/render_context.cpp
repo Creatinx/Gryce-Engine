@@ -188,6 +188,7 @@ void RenderContext::pause_render_thread_keep_cmdbuffer() {
 void RenderContext::resume_render_thread() {
     if (running_ || !initialized_) return;
 
+    GLOG_INFO("RenderContext::resume_render_thread: creating new cmd buffer");
     // 创建新的 command buffer，替换掉 pause 时关闭的旧 buffer
     cmd_buffer_ = std::make_unique<RenderCommandBuffer>();
 
@@ -196,6 +197,7 @@ void RenderContext::resume_render_thread() {
         backend_->release_context();
     }
 
+    GLOG_INFO("RenderContext::resume_render_thread: starting render thread");
     render_thread_ = std::make_unique<RenderThread>(backend_.get(), cmd_buffer_.get(), native_window_);
     render_thread_->start();
     running_ = true;
