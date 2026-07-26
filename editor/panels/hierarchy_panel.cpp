@@ -716,13 +716,15 @@ void HierarchyPanel::open_component_picker(scene::Entity* target_entity) {
     component_picker_open_ = true;
     component_picker_first_frame_ = true;
     component_picker_search_[0] = '\0';
-    ImGui::OpenPopup("AddComponent");
+    ImGui::OpenPopup("###AddComponent");
 }
 
 void HierarchyPanel::draw_component_picker() {
     if (!component_picker_open_) return;
 
-    const char* title = tr("hierarchy.add_component.title");
+    // 使用 ###AddComponent 作为稳定 ID，标题可翻译且不影响 popup 匹配。
+    const std::string title_str = std::format("{}###AddComponent", tr("hierarchy.add_component.title"));
+    const char* title = title_str.c_str();
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(360.0f, 480.0f), ImGuiCond_FirstUseEver);
