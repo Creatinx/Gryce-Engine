@@ -1161,6 +1161,12 @@ bool RenderPipeline::resize_render_targets(int width, int height) {
         viewport_color_ = RHITextureHandle{};
         viewport_fbo_ = RHIFramebufferHandle{};
 
+        // 先 invalidate 旧的 ImGui descriptor set 缓存，避免视口面板显示已销毁纹理
+        if (imgui_backend_ && old_color.is_valid()) {
+            ITexture* old_tex = ctx_->texture(old_color);
+            if (old_tex) imgui_backend_->invalidate_texture(old_tex);
+        }
+
         if (!create_viewport_target(ctx_)) {
             GLOG_ERROR("RenderPipeline: resize viewport target failed ({}x{})", width, height);
             if (viewport_color_.is_valid()) ctx_->destroy_texture(viewport_color_);

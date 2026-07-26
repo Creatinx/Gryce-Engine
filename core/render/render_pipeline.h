@@ -21,6 +21,7 @@ class ITexture;
 class IFramebuffer;
 class IMesh;
 class Material;
+class IImGuiBackend;
 
 // ---------------------------------------------------------------------------
 // RenderPipeline — 前向渲染管线
@@ -132,6 +133,9 @@ public:
     // 重建需要额外处理，本轮视口输出只在 GL 端启用）。
     bool resize_render_targets(int width, int height);
 
+    // 设置 ImGui 后端引用（用于 resize 时 invalidate 旧的 descriptor set 缓存）
+    void set_imgui_backend(IImGuiBackend* backend) { imgui_backend_ = backend; }
+
 private:
     RHIShaderHandle load_shader(const std::string& name, RHIFramebufferHandle target, bool color_output, bool post_process,
                                 bool skinned = false);
@@ -236,6 +240,7 @@ private:
     bool viewport_output_enabled_ = false;
     RHITextureHandle viewport_color_;
     RHIFramebufferHandle viewport_fbo_;
+    IImGuiBackend* imgui_backend_ = nullptr;
 
     bool create_hdr_target(RenderContext* ctx);
     bool create_viewport_target(RenderContext* ctx);

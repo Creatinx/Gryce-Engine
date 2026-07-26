@@ -44,6 +44,9 @@ public:
         return 0;
     }
 
+    // 使指定纹理的 ImGui 缓存失效（如纹理被销毁/重建后）。
+    virtual void invalidate_texture(ITexture* texture) { (void)texture; }
+
     // 运行时重建 ImGui 字体 GPU 纹理（如字体大小变化后）。
     // 调用方需保证当前线程持有正确的 GPU context / device。
     virtual void rebuild_fonts() {}

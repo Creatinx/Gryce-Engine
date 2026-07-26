@@ -923,6 +923,7 @@ int EditorApp::run(int argc, char* argv[]) {
     // 视口离屏输出：tonemap 结果写入独立 FBO 供 Viewport / Game View 面板采样。
     render::RenderPipeline pipeline;
     pipeline.set_viewport_output_enabled(true);
+    pipeline.set_imgui_backend(imgui.backend());
     if (!pipeline.init(&render_ctx, "res:/shaders")) {
         GLOG_ERROR("Failed to initialize render pipeline");
         render_ctx.shutdown();
@@ -934,6 +935,7 @@ int EditorApp::run(int argc, char* argv[]) {
     // Game View 独立渲染管线：使用场景主摄像机，渲染到独立 FBO
     render::RenderPipeline game_pipeline;
     game_pipeline.set_viewport_output_enabled(true);
+    game_pipeline.set_imgui_backend(imgui.backend());
     if (!game_pipeline.init(&render_ctx, "res:/shaders")) {
         GLOG_WARN("Failed to initialize game view pipeline; Game View will be unavailable");
     }
