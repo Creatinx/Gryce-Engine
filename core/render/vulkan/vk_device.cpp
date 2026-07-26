@@ -49,11 +49,38 @@ bool VulkanDevice::init(VkInstance instance, VkSurfaceKHR surface) {
     vkGetDeviceQueue(device_, graphics_family_, 0, &graphics_queue_);
     vkGetDeviceQueue(device_, present_family_, 0, &present_queue_);
 
+    VmaVulkanFunctions vulkan_functions{};
+    // 显式提供 Vulkan 函数指针，避免依赖 VMA 的静态加载或动态探测；
+    // 在 MSVC / 某些 Vulkan Loader 组合下，静态加载可能拿到空指针或损坏值。
+    vulkan_functions.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
+    vulkan_functions.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
+    vulkan_functions.vkAllocateMemory = vkAllocateMemory;
+    vulkan_functions.vkFreeMemory = vkFreeMemory;
+    vulkan_functions.vkMapMemory = vkMapMemory;
+    vulkan_functions.vkUnmapMemory = vkUnmapMemory;
+    vulkan_functions.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
+    vulkan_functions.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges;
+    vulkan_functions.vkBindBufferMemory = vkBindBufferMemory;
+    vulkan_functions.vkBindImageMemory = vkBindImageMemory;
+    vulkan_functions.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
+    vulkan_functions.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements;
+    vulkan_functions.vkCreateBuffer = vkCreateBuffer;
+    vulkan_functions.vkDestroyBuffer = vkDestroyBuffer;
+    vulkan_functions.vkCreateImage = vkCreateImage;
+    vulkan_functions.vkDestroyImage = vkDestroyImage;
+    vulkan_functions.vkCmdCopyBuffer = vkCmdCopyBuffer;
+    vulkan_functions.vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2;
+    vulkan_functions.vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2;
+    vulkan_functions.vkBindBufferMemory2KHR = vkBindBufferMemory2;
+    vulkan_functions.vkBindImageMemory2KHR = vkBindImageMemory2;
+    vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2;
+
     VmaAllocatorCreateInfo allocator_info{};
     allocator_info.vulkanApiVersion = VK_API_VERSION_1_2;
     allocator_info.physicalDevice = physical_device_;
     allocator_info.device = device_;
     allocator_info.instance = instance;
+    allocator_info.pVulkanFunctions = &vulkan_functions;
     if (vmaCreateAllocator(&allocator_info, &allocator_) != VK_SUCCESS) {
         GLOG_ERROR("VulkanDevice: failed to create VMA allocator");
         return false;
