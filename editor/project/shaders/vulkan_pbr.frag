@@ -97,7 +97,9 @@ float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
         proj_coords.y < 0.0 || proj_coords.y > 1.0) return 1.0;
 
     float current_depth = proj_coords.z;
-    float bias = max(ubo.uShadowBias * (1.0 - dot(normal, light_dir)), ubo.uShadowBias * 0.1);
+    // 参考 Godot：法线方向动态 bias，避免 NdotL 为负时 bias 过大
+    float ndotl = clamp(dot(normal, light_dir), 0.0, 1.0);
+    float bias = max(ubo.uShadowBias * (1.0 - ndotl), ubo.uShadowBias * 0.1);
 
     vec3 coords = vec3(proj_coords.xy, current_depth - bias);
     float lit = texture(uShadowMap, coords);
@@ -147,8 +149,13 @@ void main() {
             float range = light.dir_range.w;
             if (dist > range) continue;
             L = to_light / dist;
-            float attenuation = 1.0 - dist / range;
-            attenuation *= attenuation;
+            // 参考 Godot get_omni_attenuation：平滑二次衰减
+            float nd = dist / range;
+            nd *= nd;
+            nd *= nd; // nd^4
+            nd = max(1.0 - nd, 0.0);
+            nd *= nd; // nd^2
+            float attenuation = nd;
             radiance = light.color_intensity.xyz * light.color_intensity.w * attenuation;
 
             if (light_type == 2) {
