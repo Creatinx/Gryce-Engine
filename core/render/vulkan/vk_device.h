@@ -51,8 +51,10 @@ private:
     bool supports_extended_dynamic_state_ = false;
     bool supports_anisotropy_ = false;
     float max_sampler_anisotropy_ = 0.0f;
-    uint32_t max_push_constants_size_ = 128;
+    // allocator_ 保持在类布局末尾（历史位置），避免 ABI 偏移变化导致
+    // 其他 TU 中 device_->allocator() 读到损坏值。
     VmaAllocator allocator_ = nullptr;
+    uint32_t max_push_constants_size_ = 128;
 };
 
 } // namespace gryce_engine::render

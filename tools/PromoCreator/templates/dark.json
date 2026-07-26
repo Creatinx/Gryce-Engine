@@ -1,0 +1,119 @@
+{
+  "name": "dark",
+  "description": "深色极客风，完全匹配 Gryce Engine 原宣传片",
+  "bgm": {
+    "bpm": 120,
+    "style": "minimal_electronic",
+    "kick_intensity": 0.6,
+    "bass_intensity": 0.25
+  },
+  "layout": {
+    "width": 1920,
+    "height": 1080,
+    "background": "#0A0A0A",
+    "padding_x": 120,
+    "padding_y": 100
+  },
+  "fonts": {
+    "title": {
+      "family": "Inter-Bold",
+      "size": 96,
+      "color": "#FFFFFF"
+    },
+    "subtitle": {
+      "family": "Inter-Regular",
+      "size": 28,
+      "color": "#888888"
+    },
+    "heading": {
+      "family": "Inter-Bold",
+      "size": 64,
+      "color": "#FFFFFF"
+    },
+    "body": {
+      "family": "Inter-Regular",
+      "size": 20,
+      "color": "#AAAAAA"
+    },
+    "label": {
+      "family": "JetBrainsMono-Regular",
+      "size": 12,
+      "color": "#555555",
+      "letter_spacing": 2
+    },
+    "mono": {
+      "family": "JetBrainsMono-Regular",
+      "size": 14,
+      "color": "#666666"
+    },
+    "tag": {
+      "family": "JetBrainsMono-Regular",
+      "size": 12,
+      "color": "#444444",
+      "letter_spacing": 1
+    }
+  },
+  "cursor": {
+    "color": "#FFFFFF",
+    "width": 3,
+    "blink": true,
+    "blink_interval": 0.8
+  },
+  "card": {
+    "background": "#111111",
+    "border_color": "#1A1A1A",
+    "border_width": 1,
+    "border_radius": 8,
+    "padding": 32,
+    "shadow": false,
+    "accent_line": {
+      "enabled": true,
+      "color": "#333333",
+      "width": 2,
+      "position": "left"
+    }
+  },
+  "pill": {
+    "background": "#151515",
+    "border_color": "#222222",
+    "border_radius": 6,
+    "padding_x": 18,
+    "padding_y": 10,
+    "text_color": "#AAAAAA",
+    "font_size": 15
+  },
+  "mono_box": {
+    "background": "#0F0F0F",
+    "border_color": "#222222",
+    "border_radius": 4,
+    "padding_x": 16,
+    "padding_y": 10,
+    "left_border": {
+      "enabled": true,
+      "color": "#FFFFFF",
+      "width": 2
+    }
+  },
+  "button": {
+    "background": "#111111",
+    "border_color": "#2A2A2A",
+    "border_radius": 8,
+    "padding_x": 24,
+    "padding_y": 14,
+    "text_color": "#FFFFFF",
+    "subtext_color": "#666666",
+    "font_size": 16,
+    "subfont_size": 13
+  },
+  "list": {
+    "bullet": "▪",
+    "bullet_color": "#555555",
+    "text_color": "#AAAAAA",
+    "strong_color": "#FFFFFF",
+    "font_size": 18,
+    "line_height": 2.2,
+    "indent": 24
+  },
+  "transition": "fade",
+  "fade_duration": 0.3
+}
