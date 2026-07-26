@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../undo/command_stack.h"
+#include "components/light.h"
 #include "scene/uuid.h"
 
 namespace gryce_engine {
@@ -36,6 +37,12 @@ public:
         drop_handler_ = std::move(handler);
     }
 
+    // 聚焦回调：Hierarchy 右键 "Frame Selected" / 双击空白处时触发，
+    // 由 EditorApp 将编辑器相机对准选中实体包围盒。
+    void set_focus_handler(std::function<void(scene::Entity*)> handler) {
+        focus_handler_ = std::move(handler);
+    }
+
     // UUID 弱引用选中：访问时实时解析，实体已销毁则自动清除
     scene::Entity* selected_entity();
     void select(const scene::UUID& id) { selected_uuid_ = id; }
@@ -61,7 +68,7 @@ protected:
 private:
     // 帧末执行的延迟操作（树遍历期间不允许改动场景结构）
     struct PendingOp {
-        enum class Kind { None, Delete, Reparent, ReparentToRoot, CreatePrefab, ApplyPrefab, RevertPrefab, CreateVariant };
+        enum class Kind { None, Delete, Reparent, ReparentToRoot, CreatePrefab, ApplyPrefab, RevertPrefab, CreateVariant, Duplicate };
         Kind kind = Kind::None;
         scene::UUID child;
         scene::UUID target; // 仅 Reparent 使用
@@ -73,7 +80,18 @@ private:
                      bool is_last_child = true);
     void draw_entity_context_menu(scene::Entity* entity);
     void draw_new_submenu(scene::Entity* parent_entity); // parent_entity=nullptr 表示在根级创建
+    void draw_new_3d_object_submenu(scene::Entity* parent_entity);
+    void draw_new_2d_object_submenu(scene::Entity* parent_entity);
+    void draw_new_light_submenu(scene::Entity* parent_entity);
     void open_component_picker(scene::Entity* target_entity);
+
+    // 创建实体辅助函数（统一处理 Undo/Redo 与非 Undo 路径）
+    scene::Entity* create_empty_entity(const char* name, scene::Entity* parent_entity);
+    scene::Entity* create_node3d(const char* name, scene::Entity* parent_entity);
+    scene::Entity* create_node2d(const char* name, scene::Entity* parent_entity);
+    scene::Entity* create_mesh_entity(const char* name, scene::Entity* parent_entity, const char* mesh_path);
+    scene::Entity* create_camera(scene::Entity* parent_entity);
+    scene::Entity* create_light(components::Light::Type type, scene::Entity* parent_entity);
     void draw_component_picker();
     void handle_drag_drop(scene::Entity* entity);
     void execute_pending_op();
@@ -83,6 +101,7 @@ private:
 
     scene::Scene* scene_ = nullptr;
     std::function<void(scene::Entity*, const std::string&)> drop_handler_;
+    std::function<void(scene::Entity*)> focus_handler_;
     scene::UUID selected_uuid_ = scene::UUID::nil();
     bool drag_enabled_ = true;
     CommandStack* undo_stack_ = nullptr;

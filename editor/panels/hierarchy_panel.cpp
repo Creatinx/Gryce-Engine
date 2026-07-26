@@ -11,6 +11,12 @@
 #include "components/component_factory.h"
 #include "components/node2d.h"
 #include "components/node3d.h"
+#include "components/camera.h"
+#include "components/light.h"
+#include "components/mesh_renderer.h"
+#include "components/2d/sprite_2d.h"
+#include "components/2d/label.h"
+#include "components/2d/basic_rect.h"
 #include "components/prefab_instance.h"
 #include "resources/project.h"
 #include "scene/scene.h"
@@ -307,6 +313,26 @@ void HierarchyPanel::execute_op(const PendingOp& op) {
             }
             break;
         }
+        case PendingOp::Kind::Duplicate: {
+            scene::Entity* entity = scene_->find_entity_by_uuid(op.child);
+            if (!entity) break;
+            auto cloned = entity->clone();
+            if (!cloned) break;
+            // 生成新名称：在原名后加 " (Copy)"
+            std::string new_name = entity->name() + " " + tr("hierarchy.duplicate_suffix");
+            cloned->set_name(new_name);
+            scene::Entity* added = nullptr;
+            if (scene::Entity* parent = entity->parent()) {
+                added = parent->add_child(std::move(cloned));
+            } else {
+                added = scene_->add_root_entity(std::move(cloned));
+            }
+            if (added) {
+                select(added->uuid());
+                GLOG_INFO("Hierarchy: duplicated '{}' as '{}'", entity->name(), added->name());
+            }
+            break;
+        }
         case PendingOp::Kind::None:
             break;
     }
@@ -552,10 +578,22 @@ void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
 void HierarchyPanel::draw_entity_context_menu(scene::Entity* entity) {
     if (!ImGui::BeginPopupContextItem("##entity_menu")) return;
 
+    // 标准 IDE 顺序：New / Duplicate / Rename / Focus / --- / Prefab / --- / Delete
     draw_new_submenu(entity);
+
+    if (ImGui::MenuItem(tr("hierarchy.duplicate"))) {
+        pending_op_.kind = PendingOp::Kind::Duplicate;
+        pending_op_.child = entity->uuid();
+    }
+
     if (ImGui::MenuItem(tr("hierarchy.rename"))) {
         start_rename(entity);
     }
+
+    if (ImGui::MenuItem(tr("hierarchy.focus"))) {
+        if (focus_handler_) focus_handler_(entity);
+    }
+
     ImGui::Separator();
 
     // Prefab 操作
@@ -622,86 +660,172 @@ void HierarchyPanel::finish_rename(bool confirm) {
     rename_first_frame_ = false;
 }
 
+// ---------------------------------------------------------------------------
+// 实体创建辅助函数
+// ---------------------------------------------------------------------------
+scene::Entity* HierarchyPanel::create_empty_entity(const char* name, scene::Entity* parent_entity) {
+    if (!scene_) return nullptr;
+    scene::UUID parent_uuid = parent_entity ? parent_entity->uuid() : scene::UUID::nil();
+    if (undo_stack_) {
+        auto cmd = std::make_unique<EntityCreateCommand>(*scene_, name, parent_uuid);
+        EntityCreateCommand* cmd_ptr = cmd.get();
+        undo_stack_->push(std::move(cmd));
+        return scene_->find_entity_by_uuid(cmd_ptr->created_uuid());
+    }
+    if (parent_entity) {
+        auto child = std::make_unique<scene::Entity>(name);
+        return parent_entity->add_child(std::move(child));
+    }
+    return scene_->create_entity(name);
+}
+
+scene::Entity* HierarchyPanel::create_node3d(const char* name, scene::Entity* parent_entity) {
+    scene::Entity* added = create_empty_entity(name, parent_entity);
+    if (added && !added->get_component<components::Node3D>()) {
+        added->add_component<components::Node3D>();
+    }
+    return added;
+}
+
+scene::Entity* HierarchyPanel::create_node2d(const char* name, scene::Entity* parent_entity) {
+    scene::Entity* added = create_empty_entity(name, parent_entity);
+    if (added && !added->get_component<components::Node2D>()) {
+        added->add_component<components::Node2D>();
+    }
+    return added;
+}
+
+scene::Entity* HierarchyPanel::create_mesh_entity(const char* name, scene::Entity* parent_entity,
+                                                  const char* mesh_path) {
+    scene::Entity* added = create_node3d(name, parent_entity);
+    if (added) {
+        added->add_component<components::MeshRenderer>(mesh_path);
+    }
+    return added;
+}
+
+scene::Entity* HierarchyPanel::create_camera(scene::Entity* parent_entity) {
+    scene::Entity* added = create_empty_entity(tr("hierarchy.new.camera"), parent_entity);
+    if (added) {
+        if (!added->get_component<components::Node3D>()) {
+            added->add_component<components::Node3D>();
+        }
+        if (!added->get_component<components::Camera>()) {
+            added->add_component<components::Camera>();
+        }
+    }
+    return added;
+}
+
+scene::Entity* HierarchyPanel::create_light(components::Light::Type type, scene::Entity* parent_entity) {
+    const char* name = tr("hierarchy.new.light");
+    if (type == components::Light::Type::Directional) name = tr("hierarchy.new.light.directional");
+    if (type == components::Light::Type::Point) name = tr("hierarchy.new.light.point");
+    if (type == components::Light::Type::Spot) name = tr("hierarchy.new.light.spot");
+
+    scene::Entity* added = create_node3d(name, parent_entity);
+    if (added) {
+        auto* light = added->get_component<components::Light>();
+        if (!light) light = added->add_component<components::Light>();
+        if (light) light->light_type = type;
+    }
+    return added;
+}
+
 void HierarchyPanel::draw_new_submenu(scene::Entity* parent_entity) {
     if (!ImGui::BeginMenu(tr("hierarchy.new"))) return;
 
-    // 创建空实体
-    if (ImGui::MenuItem(tr("hierarchy.new.empty"))) {
-        if (undo_stack_) {
-            auto cmd = std::make_unique<EntityCreateCommand>(*scene_, tr("hierarchy.new_entity_name"),
-                                                             parent_entity ? parent_entity->uuid()
-                                                                           : scene::UUID::nil());
-            EntityCreateCommand* cmd_ptr = cmd.get();
-            undo_stack_->push(std::move(cmd));
-            select(cmd_ptr->created_uuid());
-        } else {
-            scene::Entity* added = nullptr;
-            if (parent_entity) {
-                auto child = std::make_unique<scene::Entity>(tr("hierarchy.new_entity_name"));
-                added = parent_entity->add_child(std::move(child));
-            } else {
-                added = scene_->create_entity(tr("hierarchy.new_entity_name"));
+    draw_new_3d_object_submenu(parent_entity);
+    draw_new_2d_object_submenu(parent_entity);
+
+    if (ImGui::BeginMenu(tr("hierarchy.new.light"))) {
+        if (ImGui::MenuItem(tr("hierarchy.new.light.directional"))) {
+            if (auto* added = create_light(components::Light::Type::Directional, parent_entity)) {
+                select(added->uuid());
             }
-            if (added) select(added->uuid());
         }
+        if (ImGui::MenuItem(tr("hierarchy.new.light.point"))) {
+            if (auto* added = create_light(components::Light::Type::Point, parent_entity)) {
+                select(added->uuid());
+            }
+        }
+        if (ImGui::MenuItem(tr("hierarchy.new.light.spot"))) {
+            if (auto* added = create_light(components::Light::Type::Spot, parent_entity)) {
+                select(added->uuid());
+            }
+        }
+        ImGui::EndMenu();
     }
 
-    // Node3D：带 Node3D 组件的空实体
-    if (ImGui::MenuItem(tr("hierarchy.new.node3d"))) {
-        scene::Entity* added = nullptr;
-        if (undo_stack_) {
-            auto cmd = std::make_unique<EntityCreateCommand>(*scene_, "Node3D",
-                                                             parent_entity ? parent_entity->uuid()
-                                                                           : scene::UUID::nil());
-            EntityCreateCommand* cmd_ptr = cmd.get();
-            undo_stack_->push(std::move(cmd));
-            added = scene_->find_entity_by_uuid(cmd_ptr->created_uuid());
-        } else {
-            if (parent_entity) {
-                auto child = std::make_unique<scene::Entity>("Node3D");
-                added = parent_entity->add_child(std::move(child));
-            } else {
-                added = scene_->create_entity("Node3D");
-            }
-        }
-        if (added) {
-            if (!added->get_component<components::Node3D>()) {
-                added->add_component<components::Node3D>();
-            }
+    if (ImGui::MenuItem(tr("hierarchy.new.camera"))) {
+        if (auto* added = create_camera(parent_entity)) {
             select(added->uuid());
         }
     }
 
-    // Node2D：带 Node2D 组件的空实体
-    if (ImGui::MenuItem(tr("hierarchy.new.node2d"))) {
-        scene::Entity* added = nullptr;
-        if (undo_stack_) {
-            auto cmd = std::make_unique<EntityCreateCommand>(*scene_, "Node2D",
-                                                             parent_entity ? parent_entity->uuid()
-                                                                           : scene::UUID::nil());
-            EntityCreateCommand* cmd_ptr = cmd.get();
-            undo_stack_->push(std::move(cmd));
-            added = scene_->find_entity_by_uuid(cmd_ptr->created_uuid());
-        } else {
-            if (parent_entity) {
-                auto child = std::make_unique<scene::Entity>("Node2D");
-                added = parent_entity->add_child(std::move(child));
-            } else {
-                added = scene_->create_entity("Node2D");
-            }
-        }
-        if (added) {
-            if (!added->get_component<components::Node2D>()) {
-                added->add_component<components::Node2D>();
-            }
-            select(added->uuid());
-        }
-    }
+    ImGui::Separator();
 
     // 添加组件 → 打开组件选择器
     if (ImGui::MenuItem(tr("hierarchy.new.component"))) {
         scene::Entity* target = parent_entity ? parent_entity : selected_entity();
         open_component_picker(target);
+    }
+
+    ImGui::EndMenu();
+}
+
+void HierarchyPanel::draw_new_3d_object_submenu(scene::Entity* parent_entity) {
+    if (!ImGui::BeginMenu(tr("hierarchy.new.3d_object"))) return;
+
+    if (ImGui::MenuItem(tr("hierarchy.new.node3d"))) {
+        if (auto* added = create_node3d(tr("hierarchy.new.node3d"), parent_entity)) {
+            select(added->uuid());
+        }
+    }
+
+    if (ImGui::MenuItem(tr("hierarchy.new.cube"))) {
+        if (auto* added = create_mesh_entity(tr("hierarchy.new.cube"), parent_entity,
+                                             "res:/models/cube_pbr.obj")) {
+            select(added->uuid());
+        }
+    }
+
+    ImGui::EndMenu();
+}
+
+void HierarchyPanel::draw_new_2d_object_submenu(scene::Entity* parent_entity) {
+    if (!ImGui::BeginMenu(tr("hierarchy.new.2d_object"))) return;
+
+    if (ImGui::MenuItem(tr("hierarchy.new.node2d"))) {
+        if (auto* added = create_node2d(tr("hierarchy.new.node2d"), parent_entity)) {
+            select(added->uuid());
+        }
+    }
+
+    if (ImGui::MenuItem(tr("hierarchy.new.sprite2d"))) {
+        scene::Entity* added = create_node2d(tr("hierarchy.new.sprite2d"), parent_entity);
+        if (added) {
+            added->add_component<components::d2::sprite::Sprite2D>();
+            select(added->uuid());
+        }
+    }
+
+    if (ImGui::MenuItem(tr("hierarchy.new.label"))) {
+        scene::Entity* added = create_node2d(tr("hierarchy.new.label"), parent_entity);
+        if (added) {
+            added->add_component<components::d2::text::Label>(tr("hierarchy.new.label_text"), 24.0f,
+                                                              render::Color::white());
+            select(added->uuid());
+        }
+    }
+
+    if (ImGui::MenuItem(tr("hierarchy.new.color_rect"))) {
+        scene::Entity* added = create_node2d(tr("hierarchy.new.color_rect"), parent_entity);
+        if (added) {
+            added->add_component<components::d2::basic_rect::ColorRect>(100.0f, 100.0f,
+                                                                        render::Color::white());
+            select(added->uuid());
+        }
     }
 
     ImGui::EndMenu();

@@ -821,6 +821,18 @@ int EditorApp::run(int argc, char* argv[]) {
     EditorCamera editor_camera;
     math::Camera& camera = editor_camera.camera();
 
+    // Hierarchy 聚焦回调：将编辑器相机对准选中实体
+    hierarchy_panel->set_focus_handler([&](scene::Entity* e) {
+        if (!e) return;
+        math::Vector3f center;
+        float radius = 0.0f;
+        if (compute_entity_world_bounds(e, center, radius)) {
+            editor_camera.focus_on_bounds(center, radius);
+        } else if (e->transform()) {
+            editor_camera.focus_on(e->transform()->position);
+        }
+    });
+
     // Game View 独立相机：从场景主摄像机构建
     math::Camera game_camera;
 
