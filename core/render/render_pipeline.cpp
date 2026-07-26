@@ -390,6 +390,11 @@ void RenderPipeline::update_light_space_matrix() {
     }
     math::Matrix4f light_proj = math::Matrix4f::ortho(
         -shadow_area_, shadow_area_, -shadow_area_, shadow_area_, near_plane, far_plane);
+    if (ctx_ && ctx_->backend() && std::strcmp(ctx_->backend()->api_name(), "Vulkan") == 0) {
+        // OpenGL ortho z ∈ [-1,1]，Vulkan z ∈ [0,1]。调整正交投影的 z 行。
+        light_proj(2, 2) = 1.0f / (far_plane - near_plane);
+        light_proj(2, 3) = -near_plane / (far_plane - near_plane);
+    }
     light_space_matrix_ = light_proj * light_view;
 }
 
