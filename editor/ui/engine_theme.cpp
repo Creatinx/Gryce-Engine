@@ -42,13 +42,13 @@ void ApplyCommonStyle(float rounding_window, float rounding_frame, float scrollb
     style.ChildBorderSize  = 1.0f;
     style.TabBorderSize    = 1.0f;
 
-    style.WindowPadding     = ImVec2(8.0f, 8.0f);
-    style.FramePadding      = ImVec2(8.0f, 4.0f);
-    style.ItemSpacing       = ImVec2(6.0f, 4.0f);
+    style.WindowPadding     = ImVec2(10.0f, 10.0f);
+    style.FramePadding      = ImVec2(10.0f, 5.0f);
+    style.ItemSpacing       = ImVec2(8.0f, 5.0f);
     style.ItemInnerSpacing  = ImVec2(6.0f, 4.0f);
     style.CellPadding       = ImVec2(6.0f, 4.0f);
-    style.IndentSpacing     = 16.0f;
-    style.GrabMinSize       = 10.0f;
+    style.IndentSpacing     = 18.0f;
+    style.GrabMinSize       = 12.0f;
 
     style.AntiAliasedLines = true;
     style.AntiAliasedFill  = true;
@@ -138,7 +138,7 @@ std::string find_mono_font(const char* requested_path) {
 // Dark Apply
 // ---------------------------------------------------------------------------
 void Dark::Apply() {
-    ApplyCommonStyle(6.0f, 4.0f, 12.0f);
+    ApplyCommonStyle(8.0f, 6.0f, 14.0f);
 
     SetColor(ImGuiCol_Text,                 TextPrimary);
     SetColor(ImGuiCol_TextDisabled,         TextSecondary);
@@ -148,8 +148,8 @@ void Dark::Apply() {
     SetColor(ImGuiCol_ChildBg,              Bg0);
     SetColor(ImGuiCol_PopupBg,              Bg1);
 
-    SetColor(ImGuiCol_Border,               ColorFromHex(0x6E7681));
-    SetColor(ImGuiCol_BorderShadow,         ColorFromHex(0x000000), 120);
+    SetColor(ImGuiCol_Border,               ColorFromHex(0x30363D));
+    SetColor(ImGuiCol_BorderShadow,         ColorFromHex(0x000000), 80);
 
     SetColor(ImGuiCol_FrameBg,              Bg1);
     SetColor(ImGuiCol_FrameBgHovered,       Bg2);
@@ -216,7 +216,7 @@ void Dark::Apply() {
 // Light Apply
 // ---------------------------------------------------------------------------
 void Light::Apply() {
-    ApplyCommonStyle(6.0f, 4.0f, 12.0f);
+    ApplyCommonStyle(8.0f, 6.0f, 14.0f);
 
     SetColor(ImGuiCol_Text,                 TextPrimary);
     SetColor(ImGuiCol_TextDisabled,         TextSecondary);
@@ -226,8 +226,8 @@ void Light::Apply() {
     SetColor(ImGuiCol_ChildBg,              Bg0);
     SetColor(ImGuiCol_PopupBg,              Bg0);
 
-    SetColor(ImGuiCol_Border,               ColorFromHex(0x8C959F));
-    SetColor(ImGuiCol_BorderShadow,         ColorFromHex(0x000000), 100);
+    SetColor(ImGuiCol_Border,               ColorFromHex(0xD0D7DE));
+    SetColor(ImGuiCol_BorderShadow,         ColorFromHex(0x000000), 40);
 
     SetColor(ImGuiCol_FrameBg,              Bg1);
     SetColor(ImGuiCol_FrameBgHovered,       Bg2);
