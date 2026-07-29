@@ -13,7 +13,7 @@
 namespace gryce_engine::scene {
 
 // ---------------------------------------------------------------------------
-// Scene — 场景，包含若干根实体
+// Scene — 场景，Godot 风格单根节点树：所有实体都挂在合成根节点 root() 下
 // ---------------------------------------------------------------------------
 class Scene {
 public:
@@ -27,7 +27,13 @@ public:
     ecs::ComponentStore& component_store() { return component_store_; }
     const ecs::ComponentStore& component_store() const { return component_store_; }
 
+    // 场景合成根节点：随 Scene 构造创建，不可销毁、不参与序列化、
+    // 不驱动自身生命周期（生命周期只在其子树上运行）。
+    Entity* root() { return root_.get(); }
+    const Entity* root() const { return root_.get(); }
+
     Entity* create_entity(const std::string& name = "Entity");
+    // 在根节点下添加实体（历史 API 名，"根级实体" 现为 root 的直接子实体）
     Entity* add_root_entity(std::unique_ptr<Entity> entity);
 
     // 运行时销毁实体（递归销毁子实体并反注册所有组件）
@@ -65,8 +71,8 @@ public:
 
     const std::vector<SubScene>& sub_scenes() const { return sub_scenes_; }
 
-    const std::vector<std::unique_ptr<Entity>>& roots() const { return roots_; }
-    std::vector<std::unique_ptr<Entity>>& roots() { return roots_; }
+    // 兼容访问器：返回根节点的直接子实体列表（即旧的"根实体列表"）
+    const std::vector<std::unique_ptr<Entity>>& roots() const { return root_->children(); }
 
     Entity* find_entity_by_uuid(const UUID& id);
     Entity* find_entity_by_name(const std::string& name);
@@ -90,7 +96,7 @@ private:
     bool apply_hot_reload_entity(Entity* existing, const nlohmann::json& e_json);
 
     std::string name_;
-    std::vector<std::unique_ptr<Entity>> roots_;
+    std::unique_ptr<Entity> root_; // 合成根节点（必须在 component_store_ 之前声明/销毁）
     ecs::ComponentStore component_store_;
 
     std::vector<SubScene> sub_scenes_;

@@ -891,8 +891,8 @@ int main(int argc, char* argv[])
 {
     std::cout << "Gryce Engine v0.1.0 - Scene Demo" << std::endl;
 
-    // 解析命令行参数
-    render::RenderAPI selected_api = render::RenderAPI::OpenGL;
+    // 解析命令行参数（默认 Vulkan，--opengl 切回兼容后端）
+    render::RenderAPI selected_api = render::RenderAPI::Vulkan;
     bool screenshot_mode = false;
     float screenshot_delay = 0.0f; // --screenshot-delay N：启动 N 秒后再截图（默认立即）
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
@@ -903,6 +903,8 @@ int main(int argc, char* argv[])
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
             selected_api = render::RenderAPI::Vulkan;
+        } else if (std::strcmp(argv[i], "--opengl") == 0) {
+            selected_api = render::RenderAPI::OpenGL;
         } else if (std::strcmp(argv[i], "--screenshot") == 0) {
             screenshot_mode = true;
         } else if (std::strcmp(argv[i], "--screenshot-delay") == 0 && i + 1 < argc) {

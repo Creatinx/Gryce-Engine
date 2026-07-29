@@ -8,6 +8,9 @@
 #include <iostream>
 #include <mutex>
 #include <vector>
+#include <deque>
+#include <thread>
+#include <condition_variable>
 #include <format>
 #include <source_location>
 
@@ -118,6 +121,42 @@ private:
     size_t head_ = 0;               // 下一个写入位置
     size_t count_ = 0;              // 当前条目数（<= capacity）
     mutable std::mutex mutex_;
+};
+
+// ---------------------------------------------------------------------------
+// AsyncLogger — 异步日志装饰器：log() 只入队，独立工作线程负责实际输出。
+// 调用线程不再被 stderr/文件 I/O 阻塞；flush() 会等待队列排空。
+// GLog 的默认后端与 set_logger() 均自动包装为异步。
+// ---------------------------------------------------------------------------
+class AsyncLogger : public ILogger {
+public:
+    explicit AsyncLogger(std::unique_ptr<ILogger> inner);
+    ~AsyncLogger() override;
+
+    void log(LogLevel level, const std::string& message) override;
+    void log(LogLevel level, const std::string& message, std::source_location loc) override;
+    void flush() override;
+    bool supports_color() const override;
+
+    // 取得被包装的内层后端（MemoryLogSink::from_glog 等需要穿透）
+    ILogger* inner() const { return inner_.get(); }
+
+private:
+    struct Item {
+        LogLevel level;
+        std::string message;
+        std::source_location loc;
+    };
+    void worker_main();
+
+    std::unique_ptr<ILogger> inner_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::condition_variable drain_cv_;
+    std::deque<Item> queue_;
+    size_t pending_ = 0;   // 已入队未输出的条目数
+    bool stop_ = false;
+    std::thread worker_;
 };
 
 // ---------------------------------------------------------------------------

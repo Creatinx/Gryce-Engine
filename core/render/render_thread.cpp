@@ -279,14 +279,14 @@ void RenderThread::thread_loop() {
     GLOG_INFO("RenderThread thread_loop entered");
 
     while (!stop_requested_.load()) {
-        GLOG_INFO("RenderThread: waiting for commands");
+        GLOG_DEBUG("RenderThread: waiting for commands");
         auto* commands = cmd_buffer_->acquire();
         if (!commands) {
             // shutdown 信号
             GLOG_INFO("RenderThread: acquire returned null, exiting");
             break;
         }
-        GLOG_INFO("RenderThread: acquired {} commands", commands->size());
+        GLOG_DEBUG("RenderThread: acquired {} commands", commands->size());
 
         backend_->begin_frame();
         CommandStateCache state_cache;
@@ -303,7 +303,7 @@ void RenderThread::thread_loop() {
         backend_->end_frame();
 
         cmd_buffer_->release();
-        GLOG_INFO("RenderThread: frame released");
+        GLOG_DEBUG("RenderThread: frame released");
     }
 
     if (shutdown_backend_on_exit_.load()) {

@@ -16,7 +16,9 @@ namespace gryce_engine::scene {
 
 namespace {
 
-constexpr int k_gesc_version = 1;
+// v2：场景改为单根节点树（合成根节点不落盘），文件布局与 v1 完全一致，
+// 加载端兼容 version 缺失 / 1 / 2（父子关系按 UUID 重建，无需区分版本）。
+constexpr int k_gesc_version = 2;
 
 std::string read_file(const std::string& path) {
     std::ifstream file(path);
@@ -56,7 +58,13 @@ nlohmann::json SceneSerializer::serialize(const Scene& scene) {
         for (Entity* p = e->parent(); p != nullptr; p = p->parent()) {
             if (Prefab::get_instance(p) != nullptr) return;
         }
-        entities.push_back(serialize_entity(*e));
+        auto e_json = serialize_entity(*e);
+        // 合成根节点不落盘：顶层实体（父级为场景根）的 parent 仍写 null，
+        // 保持与 v1 文件布局一致
+        if (e->parent() == scene.root()) {
+            e_json["parent"] = nullptr;
+        }
+        entities.push_back(std::move(e_json));
     });
     out["entities"] = entities;
 

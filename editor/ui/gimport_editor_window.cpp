@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "../localization/localization.h"
+#include "file_browser_popup.h"
 
 namespace gryce_engine::editor {
 
@@ -31,8 +32,22 @@ void GImportEditorWindow::draw() {
         ImGui::Checkbox(tr("gimport_editor.generate_collider"), &settings_.generate_collider);
         ImGui::Checkbox(tr("gimport_editor.add_rigidbody"), &settings_.add_rigidbody);
 
-        if (ImGui::InputText(tr("gimport_editor.physics_material"), physics_material_buf_, sizeof(physics_material_buf_))) {
-            settings_.physics_material = physics_material_buf_;
+        // 两列表格：输入框拉伸 +「浏览...」按钮固定宽，按钮不会被挤出
+        if (ImGui::BeginTable("##physics_material_browse", 2)) {
+            ImGui::TableSetupColumn("##input", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("##browsebtn", ImGuiTableColumnFlags_WidthFixed,
+                                    FileBrowserPopup::browse_button_width());
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText(tr("gimport_editor.physics_material"), physics_material_buf_, sizeof(physics_material_buf_))) {
+                settings_.physics_material = physics_material_buf_;
+            }
+            ImGui::TableNextColumn();
+            if (FileBrowserPopup::instance().browse_button("##browse_physics_material",
+                                                           physics_material_buf_, sizeof(physics_material_buf_))) {
+                settings_.physics_material = physics_material_buf_;
+            }
+            ImGui::EndTable();
         }
         ImGui::TextDisabled("%s", tr("gimport_editor.physics_material_hint"));
 

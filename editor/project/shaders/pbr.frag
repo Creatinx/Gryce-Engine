@@ -39,6 +39,7 @@ uniform int uUseAOMap;
 uniform int uUseEmissiveMap;
 uniform int uUseIBL;
 uniform float uIBLIntensity;
+uniform int uTwoSided; // 双面材质：背面翻转法线
 
 // ---------------------------------------------------------------------------
 // 灯光 / 相机
@@ -92,6 +93,40 @@ vec3 fresnel_schlick(float cos_theta, vec3 F0) {
 // ---------------------------------------------------------------------------
 // Shadow
 // ---------------------------------------------------------------------------
+// 16-tap Poisson disk 软阴影采样：单 tap 硬件 PCF 在大阴影盒下会呈现
+// 明显的 texel 网格；多 tap 按 texel 尺寸抖动后阴影过渡平滑。
+const vec2 k_shadow_poisson[16] = vec2[](
+    vec2(-0.94201624, -0.39906216), vec2( 0.94558609, -0.76890725),
+    vec2(-0.09418410, -0.92938870), vec2( 0.34495938,  0.29387760),
+    vec2(-0.91588581,  0.45771432), vec2(-0.81544232, -0.87912464),
+    vec2(-0.38277543,  0.27676845), vec2( 0.97484398,  0.75648379),
+    vec2( 0.44323325, -0.97511554), vec2( 0.53742981, -0.47373420),
+    vec2(-0.26496911, -0.41893023), vec2( 0.79197514,  0.19090188),
+    vec2(-0.24188840,  0.99706507), vec2(-0.81409955,  0.91437590),
+    vec2( 0.19984126,  0.78641367), vec2( 0.14383161, -0.14100790));
+
+// 廉价逐像素噪声（无需纹理）：用于旋转 Poisson 盘，把固定采样盘留下的
+// texel 网格图案打散成细噪点，视觉上读作平滑过渡。
+float interleaved_gradient_noise(vec2 pixel) {
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+float shadow_sample_pcf(vec3 coords) {
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    const float radius = 2.0; // 采样半径（texel 单位）
+    // 每像素随机旋转 Poisson 盘
+    float angle = interleaved_gradient_noise(gl_FragCoord.xy) * 6.2831853;
+    float s = sin(angle);
+    float c = cos(angle);
+    mat2 rot = mat2(c, -s, s, c);
+    float lit = 0.0;
+    for (int i = 0; i < 16; ++i) {
+        vec2 offset = rot * k_shadow_poisson[i];
+        lit += texture(uShadowMap, vec3(coords.xy + offset * texel * radius, coords.z));
+    }
+    return lit / 16.0;
+}
+
 float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
     if (uUseShadowMap == 0) return 1.0;
 
@@ -99,18 +134,19 @@ float shadow_calculation(vec4 light_space_pos, vec3 normal, vec3 light_dir) {
     proj_coords = proj_coords * 0.5 + 0.5;
 
     if (proj_coords.z > 1.0) return 1.0;
-    // 阴影贴图覆盖范围之外视为全亮（边缘 depth 被 clamp 会误判为阴影）
-    if (proj_coords.x < 0.0 || proj_coords.x > 1.0 ||
-        proj_coords.y < 0.0 || proj_coords.y > 1.0) return 1.0;
 
     float current_depth = proj_coords.z;
     float bias = max(uShadowBias * (1.0 - dot(normal, light_dir)), uShadowBias * 0.1);
 
-    // 硬件 PCF：sampler2DShadow + 线性过滤，自动做 2x2 百分比渐近过滤
+    // Poisson 软阴影采样
     vec3 coords = vec3(proj_coords.xy, current_depth - bias);
-    float lit = texture(uShadowMap, coords);
+    float lit = shadow_sample_pcf(coords);
 
-    return lit;
+    // 阴影贴图覆盖范围边缘淡出为全亮：消除阴影盒边界的硬线（无"临界位置"）
+    float edge = min(min(proj_coords.x, 1.0 - proj_coords.x),
+                     min(proj_coords.y, 1.0 - proj_coords.y));
+    float fade = smoothstep(0.0, 0.05, edge);
+    return mix(1.0, lit, fade);
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +164,8 @@ void main() {
         ? normalize(texture(uNormalMap, uv).rgb * 2.0 - 1.0)
         : vec3(0.0, 0.0, 1.0);
     vec3 N = normalize(vTBN * normal);
+    // 双面材质：背面使用翻转法线，否则背面光照全错（发暗/发黑）
+    if (uTwoSided != 0 && !gl_FrontFacing) N = -N;
 
     float roughness = uUseRoughnessMap > 0 ? texture(uRoughnessMap, uv).r : uRoughness;
     float metallic = uUseMetallicMap > 0 ? texture(uMetallicMap, uv).r : uMetallic;

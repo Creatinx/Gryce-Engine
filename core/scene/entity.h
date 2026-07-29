@@ -62,9 +62,15 @@ public:
     void set_parent(Entity* parent);
 
     Entity* add_child(std::unique_ptr<Entity> child);
+    // 在指定位置插入子实体（index 越界时追加到末尾）
+    Entity* insert_child(std::unique_ptr<Entity> child, size_t index);
     bool remove_child(Entity* child);
     // 把子实体从层级中摘下并移交所有权（不销毁，不触发组件反注册）
     std::unique_ptr<Entity> detach_child(Entity* child);
+    // 摘下全部子实体并移交所有权（本实体的 children 被清空）
+    std::vector<std::unique_ptr<Entity>> detach_all_children();
+    // 把 other 的全部子实体搬移为本实体的子实体（other 被清空，不转移 store）
+    void adopt_children_of(Entity& other);
     const std::vector<std::unique_ptr<Entity>>& children() const { return children_; }
 
     // 组件

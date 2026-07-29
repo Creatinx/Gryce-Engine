@@ -1,5 +1,17 @@
 {
     "graphics": {
-        "render_api": "vulkan"
+        "ambient": [
+            0.15000000596046448,
+            0.15000000596046448,
+            0.15000000596046448
+        ],
+        "exposure": 2.0,
+        "hdr_enabled": true,
+        "ibl_intensity": 1.0,
+        "render_api": "vulkan",
+        "shadow_area": 15.0,
+        "shadow_bias": 0.0010000000474974513,
+        "shadow_map_size": 2048,
+        "tone_map_mode": 1
     }
 }

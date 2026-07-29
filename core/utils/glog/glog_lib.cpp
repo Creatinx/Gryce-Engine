@@ -150,7 +150,15 @@ size_t MemoryLogSink::size() const {
 }
 
 MemoryLogSink* MemoryLogSink::from_glog() {
-    return dynamic_cast<MemoryLogSink*>(GLog::instance().logger());
+    ILogger* backend = GLog::instance().logger();
+    if (auto* sink = dynamic_cast<MemoryLogSink*>(backend)) {
+        return sink;
+    }
+    // 后端被 AsyncLogger 包装时穿透到内层
+    if (auto* async = dynamic_cast<AsyncLogger*>(backend)) {
+        return dynamic_cast<MemoryLogSink*>(async->inner());
+    }
+    return nullptr;
 }
 
 const char* MemoryLogSink::level_str(LogLevel level) {
@@ -183,18 +191,86 @@ std::string MemoryLogSink::make_timestamp() {
 }
 
 // ---------------------------------------------------------------------------
+// AsyncLogger
+// ---------------------------------------------------------------------------
+AsyncLogger::AsyncLogger(std::unique_ptr<ILogger> inner)
+    : inner_(std::move(inner)), worker_(&AsyncLogger::worker_main, this) {}
+
+AsyncLogger::~AsyncLogger() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+    }
+    cv_.notify_one();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+}
+
+void AsyncLogger::log(LogLevel level, const std::string& message) {
+    log(level, message, std::source_location{});
+}
+
+void AsyncLogger::log(LogLevel level, const std::string& message, std::source_location loc) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push_back(Item{level, message, loc});
+        ++pending_;
+    }
+    cv_.notify_one();
+}
+
+void AsyncLogger::flush() {
+    // 等待队列排空，再 flush 内层后端
+    std::unique_lock<std::mutex> lock(mutex_);
+    drain_cv_.wait(lock, [&] { return pending_ == 0; });
+    lock.unlock();
+    if (inner_) inner_->flush();
+}
+
+bool AsyncLogger::supports_color() const {
+    return inner_ && inner_->supports_color();
+}
+
+void AsyncLogger::worker_main() {
+    for (;;) {
+        std::deque<Item> batch;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [&] { return stop_ || !queue_.empty(); });
+            if (stop_ && queue_.empty()) break;
+            batch.swap(queue_);
+        }
+        for (const auto& item : batch) {
+            if (inner_) inner_->log(item.level, item.message, item.loc);
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pending_ -= batch.size();
+        }
+        drain_cv_.notify_all();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GLog 单例
 // ---------------------------------------------------------------------------
-GLog::GLog() : logger_(std::make_unique<ConsoleLogger>()) {}
+GLog::GLog() : logger_(std::make_unique<AsyncLogger>(std::make_unique<ConsoleLogger>())) {}
 
 GLog& GLog::instance() {
-    static GLog inst;
-    return inst;
+    // 故意泄漏单例（永不析构）：进程退出时 CRT 会析构函数级 static，
+    // 若其他 static 析构函数或未退出的线程（音频/驱动回调等）在此之后
+    // 仍调用 GLOG_*，会访问已销毁的 mutex_ 与 AsyncLogger（堆 UAF，
+    // 典型表现为 ntdll 0xC0000374）。泄漏后 worker 线程随进程一起被
+    // OS 回收，退出阶段任何时候打日志都是安全的。
+    static GLog* inst = new GLog();
+    return *inst;
 }
 
 void GLog::set_logger(std::unique_ptr<ILogger> logger) {
     std::lock_guard<std::mutex> lock(mutex_);
-    logger_ = std::move(logger);
+    // 统一包装为异步后端：日志输出在独立线程执行
+    logger_ = std::make_unique<AsyncLogger>(std::move(logger));
 }
 
 ILogger* GLog::logger() const {

@@ -53,6 +53,7 @@ uniform float uShadowBias;
 uniform int uUseShadowMap;
 uniform int uShadowLightIndex; // 产生阴影的方向光下标（-1 表示无）
 uniform int uHDREnabled;       // 1=输出线性 HDR（由 tonemap pass 处理），0=内置 tonemap
+uniform int uTwoSided;         // 双面材质：背面翻转法线
 
 const float PI = 3.14159265359;
 
@@ -122,6 +123,8 @@ void main() {
         ? normalize(texture(uNormalMap, uv).rgb * 2.0 - 1.0)
         : vec3(0.0, 0.0, 1.0);
     vec3 N = normalize(vTBN * normal);
+    // 双面材质：背面使用翻转法线，否则背面光照全错（发暗/发黑）
+    if (uTwoSided != 0 && !gl_FrontFacing) N = -N;
 
     float roughness = uUseRoughnessMap > 0 ? texture(uRoughnessMap, uv).r : uRoughness;
     float metallic = uUseMetallicMap > 0 ? texture(uMetallicMap, uv).r : uMetallic;

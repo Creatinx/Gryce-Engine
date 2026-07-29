@@ -487,8 +487,8 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
     }
 
     switch (format) {
-        case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; channels_ = 4; break;
-        case TextureFormat::RGBA8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; channels_ = 4; break;
+        case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 4; break;
+        case TextureFormat::RGBA8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 4; break;
         case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; channels_ = 4; break;
         case TextureFormat::RGBA32F: vk_format = VK_FORMAT_R32G32B32A32_SFLOAT; channels_ = 4; break;
         case TextureFormat::R8: vk_format = VK_FORMAT_R8_UNORM; channels_ = 1; break;

@@ -12,7 +12,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 1000,
-          "text": "FPS: 329.9",
+          "text": "FPS: 236.8",
           "type": "Label"
         }
       ],
@@ -184,9 +184,9 @@
           ],
           "angular_damping": 0.0,
           "angular_velocity": [
-            0.00011536524834809825,
-            1.3830564471462026e-10,
-            0.00011288005771348253
+            0.0,
+            -2.5929086655551714e-10,
+            0.0
           ],
           "enabled": true,
           "friction": 0.8999999761581421,
@@ -215,9 +215,9 @@
           "type": "RigidBody",
           "use_gravity": true,
           "velocity": [
-            0.0,
-            -7.995024681091309,
-            0.0
+            -4.827095667625514e-11,
+            4.656612873077393e-10,
+            -2.3171878305028315e-10
           ]
         },
         {
@@ -241,14 +241,14 @@
       "parent": null,
       "transform": {
         "position": [
-          0.0,
-          -1.7753103971481323,
-          0.0
+          -0.002296929946169257,
+          -4.91109037399292,
+          0.0039325593970716
         ],
         "rotation": [
-          0.0,
-          0.0,
-          0.0,
+          -3.428646948577807e-07,
+          0.00015971125685609877,
+          -2.4619609462206427e-07,
           1.0
         ],
         "scale": [
@@ -316,8 +316,8 @@
       "transform": {
         "position": [
           10.617767333984375,
-          2.874263286590576,
-          -8.0
+          13.799201965332031,
+          -7.598978042602539
         ],
         "rotation": [
           0.0,
@@ -347,7 +347,7 @@
             "ao": 1.0,
             "ao_map_path": "",
             "blend_mode": 1,
-            "density": 1.0,
+            "density": 26500.0,
             "drag_coefficient": 0.0,
             "emissive_color": [
               0.0,
@@ -363,14 +363,14 @@
             "preset_name": "",
             "roughness": 0.05000000074505806,
             "roughness_map_path": "",
-            "softness": 0.0,
-            "two_sided": true,
-            "use_albedo_map": true,
-            "use_ao_map": true,
-            "use_emissive_map": true,
-            "use_metallic_map": true,
-            "use_normal_map": true,
-            "use_roughness_map": true,
+            "softness": 1.0,
+            "two_sided": false,
+            "use_albedo_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "use_metallic_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
             "uv_offset": [
               0.0,
               0.0
@@ -382,6 +382,60 @@
           },
           "mesh_path": "res:/models/cube_pbr.obj",
           "type": "MeshRenderer"
+        },
+        {
+          "anchor_a": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "anchor_b": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "axis_a": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis_b": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "body_a_uuid": "51e8c5b3-9375-4e00-abe7-b62774f80593",
+          "body_b_uuid": "014889e7-7288-4360-8cc7-761a4fba0b22",
+          "collide_connected": false,
+          "damping": 0.5,
+          "enabled": false,
+          "frequency": 2.0,
+          "joint_type": 1,
+          "length": 1.0,
+          "type": "Joint3D"
+        },
+        {
+          "damping": 0.9900000095367432,
+          "enabled": true,
+          "floor_y": -2.0,
+          "gravity": [
+            0.0,
+            -9.800000190734863,
+            0.0
+          ],
+          "points": [],
+          "restitution": 0.5,
+          "simulate": true,
+          "type": "PhysicsBody"
+        },
+        {
+          "density": 100.0,
+          "drag_coefficient": 0.0,
+          "enabled": true,
+          "friction": 0.9279999732971191,
+          "preset_name": "",
+          "softness": 1.0,
+          "type": "PhysicalMaterial"
         }
       ],
       "enabled": true,
@@ -389,9 +443,9 @@
       "parent": null,
       "transform": {
         "position": [
-          -8.0,
-          1.9178959131240845,
-          8.0
+          1.5879426002502441,
+          16.458637237548828,
+          -0.5728638172149658
         ],
         "rotation": [
           0.0,
@@ -521,131 +575,6 @@
       "uuid": "0cc20798-7d8f-4973-8b7c-57188b13394d"
     },
     {
-      "components": [],
-      "enabled": true,
-      "name": "新实体",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          -0.2864946722984314,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "3197859a-9c67-44a7-8731-8b042f63168d"
-    },
-    {
-      "components": [],
-      "enabled": true,
-      "name": "新实体",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "8b33c2cf-179a-4225-bfc4-bb87ee4847fe"
-    },
-    {
-      "components": [],
-      "enabled": true,
-      "name": "新实体",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "fa4c38fd-af2f-4f71-a883-8d4dfbde41cd"
-    },
-    {
-      "components": [],
-      "enabled": true,
-      "name": "新实体",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "54ca17f4-ae83-447f-baad-251ac4ce504b"
-    },
-    {
-      "components": [],
-      "enabled": true,
-      "name": "新实体",
-      "parent": null,
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "uuid": "24ee50b3-8507-47de-8967-0290da1847e2"
-    },
-    {
       "components": [
         {
           "background_color": [
@@ -667,15 +596,15 @@
       "parent": null,
       "transform": {
         "position": [
-          -3.5258889198303223,
-          36.4883918762207,
-          31.818666458129883
+          42.651329040527344,
+          42.82878875732422,
+          2.8348991870880127
         ],
         "rotation": [
-          -0.38159632682800293,
-          -0.06959187239408493,
-          -0.028825901448726654,
-          0.9212547540664673
+          -0.2794387638568878,
+          0.6312167048454285,
+          0.26145851612091064,
+          0.6746249794960022
         ],
         "scale": [
           1.0,
@@ -807,7 +736,7 @@
       "transform": {
         "position": [
           0.0,
-          4.381598472595215,
+          -5.661090850830078,
           0.0
         ],
         "rotation": [
@@ -823,8 +752,77 @@
         ]
       },
       "uuid": "ed80eb27-5297-41c1-b1e8-e3b4e079a78c"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "global_volume": 1.0,
+          "type": "AudioListener"
+        }
+      ],
+      "enabled": true,
+      "name": "AudioListener",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "4179b35b-9222-435e-bb5f-af3a338c7c2a"
+    },
+    {
+      "components": [
+        {
+          "clip_path": "res:/audio/7B单词录音(1).mp3",
+          "enabled": true,
+          "is_3d": true,
+          "loop": false,
+          "max_distance": 100.0,
+          "min_distance": 1.0,
+          "pitch": 2.8510000705718994,
+          "play_on_awake": false,
+          "type": "AudioSource",
+          "volume": 1.0
+        }
+      ],
+      "enabled": true,
+      "name": "AudioSource",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "9fccb093-1c44-472e-8066-56fa18d70487"
     }
   ],
   "name": "main",
-  "version": 1
+  "version": 2
 }

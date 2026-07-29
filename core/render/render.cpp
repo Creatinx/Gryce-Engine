@@ -19,6 +19,10 @@ std::unique_ptr<IRenderBackend> create_render_backend(RenderAPI api) {
         GLOG_ERROR("create_render_backend: Vulkan support not compiled in");
         return nullptr;
 #endif
+    case RenderAPI::DX11:
+    case RenderAPI::DX12:
+        GLOG_ERROR("create_render_backend: DirectX backend is reserved (WinNative) and not implemented yet");
+        return nullptr;
     default:
         GLOG_ERROR("create_render_backend: unsupported RenderAPI {}", static_cast<int>(api));
         return nullptr;

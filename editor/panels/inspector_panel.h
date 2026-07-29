@@ -55,6 +55,12 @@ public:
     // 绑定渲染上下文，供材质编辑器等需要即时上传 GPU 资源的面板使用
     void set_render_context(render::RenderContext* ctx) { render_ctx_ = ctx; }
 
+    // 「Add Component」按钮回调：由 EditorApp 接到 Hierarchy 面板的组件选择器，
+    // 保证两处共用同一个 Undo 感知的添加流程
+    void set_add_component_handler(std::function<void(scene::Entity*)> handler) {
+        add_component_handler_ = std::move(handler);
+    }
+
 protected:
     void on_imgui() override;
 
@@ -69,6 +75,7 @@ private:
     void draw_terrain_section(scene::Entity* entity, components::Component* component);
     void draw_particle_section(scene::Entity* entity, components::Component* component);
     void draw_physical_material_section(scene::Entity* entity, components::Component* component);
+    void draw_audio_source_section(scene::Entity* entity, components::Component* component);
 
     std::string field_key(scene::Entity* entity, components::Component* component, const reflection::FieldInfo& field) const;
     void push_field_command(scene::Entity* entity, components::Component* component,
@@ -83,6 +90,7 @@ private:
     scene::Scene* scene_ = nullptr;
     render::RenderContext* render_ctx_ = nullptr;
     std::function<void(scene::Entity*, const std::string&)> drop_handler_;
+    std::function<void(scene::Entity*)> add_component_handler_;
     bool read_only_ = false;
     CommandStack* undo_stack_ = nullptr;
 

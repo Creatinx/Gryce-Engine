@@ -25,10 +25,12 @@
 |---|---|
 | `IRenderBackend` 接口 | 已实现 |
 | RHI 句柄化（`RHIMeshHandle` 等） | 已实现 |
-| OpenGL 4.6 后端 | 已实现 |
-| Vulkan 1.2 后端 | 已实现 |
+| 后端分层（`RenderAPI` 枚举 + 工厂） | 已实现（Vulkan 默认 / OpenGL 兼容 / DX11、DX12 为 WinNative 预留，`create_render_backend` 返回 `nullptr`） |
+| OpenGL 4.6 后端 | 已实现（兼容后端） |
+| Vulkan 1.2 后端 | 已实现（**默认后端**） |
 | 命令缓冲合并批处理 | 已实现（`CommandStateCache` + multi-viewport 数组） |
-| D3D12 / Metal 后端 | 未实现 |
+| 渲染 API 项目设置 | 已实现（Project Settings 窗口渲染 API 下拉 + Render Quality 区，持久化到 `project_settings.json` 的 `graphics` 组，重启生效） |
+| D3D11 / D3D12 / Metal 后端 | 未实现（DX 枚举值已预留） |
 
 ### 2.2 OpenGL 后端
 
@@ -64,7 +66,10 @@
 | PBR 着色（albedo/normal/roughness/metallic/ao/emissive） | 已实现 |
 | 多光源（最多 8 盏：方向光/点光/聚光，逐光源 range/cone 参数） | 已实现 |
 | 环境光（ambient） | 已实现 |
-| Shadow map（2048x2048，跟随相机，范围外按全亮处理） | 已实现 |
+| Shadow map（尺寸可配置，取第一个方向光） | 已实现 |
+| 阴影光空间贴合相机视锥（8 角点 → 光空间 AABB，纹素对齐，深度向光源延伸 50 单位，无固定 cutoff） | 已实现 |
+| 阴影边缘淡出（4 个 PBR 着色器内 smoothstep 5%） | 已实现 |
+| 自适应 shadow bias（基础值 + 0.5 纹素）+ Vulkan 硬件 slope-scaled depth bias（1.25 / 2.5） | 已实现 |
 | 天空盒（Cubemap，GL+VK，ITexture::upload_cubemap） | 已实现 |
 | 半透明渲染（按相机距离排序，blend + depth write off） | 已实现 |
 | HDR + Tonemapping（None/Reinhard/ACES + exposure） | 已实现 |
@@ -108,7 +113,9 @@
 |---|---|
 | Entity-Component-System 基础架构 | 已实现 |
 | `World`、`Scene`、`Entity`、`Component` | 已实现 |
+| 场景单根节点（合成根 Entity，`Scene::root()`） | 已实现（`.gesc` 格式版本 2，v1 兼容加载；Hierarchy 顶行显示场景名且不可删除） |
 | 父子级 Transform 层级 | 已实现 |
+| 2D 父链变换（`world_transform_2d()` 组合祖先 XY/Z 旋转/XY 缩放） | 已实现（`Node2D::top_level` 可脱离父链；`z_index` 参与 2D 排序；2D 物理与编辑器 2D Gizmo 使用世界 2D 空间） |
 | `ComponentFactory` 反射创建组件 | 已实现 |
 | `on_awake`、`on_start` 回调 | 已实现 |
 | `on_enable`、`on_disable` 回调 | 已实现 |
@@ -119,7 +126,7 @@
 
 | 功能 | 状态 |
 |---|---|
-| `.gesc` 场景文件 JSON 格式 | 已实现 |
+| `.gesc` 场景文件 JSON 格式 | 已实现（版本 2；v1 文件原样兼容加载，格式保持扁平） |
 | `res:/` 虚拟路径解析 | 已实现 |
 | 保存/加载场景 | 已实现 |
 | 场景差异保存 | 已实现（`Scene::serialize_delta` / `save_delta`） |
@@ -301,16 +308,23 @@
 | Docking 布局 + 面板管理框架 | 已实现 |
 | 场景视图（Scene View） | 已实现（自由飞行相机 + F 聚焦 + 网格线 + ImGuizmo） |
 | 游戏视图（Game View） | 已实现（独立渲染管线 + 主摄像机视角 + Viewport/Game 标签页） |
-| 层级面板（Hierarchy） | 已实现（Entity 树、增删、拖拽换父、Prefab 标记、延迟删除） |
+| 层级面板（Hierarchy） | 已实现（Entity 树、增删、拖拽换父、Prefab 标记、延迟删除、合成根顶行显示场景名） |
+| Hierarchy 右键菜单与全局快捷键 | 已实现（新建/Cut/Copy/Paste/Duplicate/Rename/Focus/Prefab/Delete；Ctrl+X/C/V/D、F2、Del 注册于 ShortcutManager） |
+| Create Entity 对话框（Godot 风格） | 已实现（`editor/ui/create_entity_dialog.*`：收藏/最近/搜索/过滤/描述，持久化到 `create_entity_dialog.json`） |
+| File Explorer 右键菜单 | 已实现（新建文件夹/场景/材质、重命名、删除确认、复制路径） |
 | Inspector 面板 | 已实现（反射自动生成字段编辑、enum 下拉、只读灰显） |
 | 项目面板（Project） | 已实现（目录树、资源图标、双击加载、拖放） |
 | 控制台面板（Console） | 已实现（日志过滤、颜色区分、自动滚动、点击定位） |
 | 动画编辑器 | 已实现（剪辑选择、播放/暂停/循环/速度、时间滑块） |
 | 材质编辑器 | 已实现（PBR 参数、贴图槽、物理属性、保存后即时 GPU 上传） |
 | 地形编辑器 | 已实现（基础高度图编辑 + MeshRenderer 导出；完整 Terrain 渲染/LOD 留 M5） |
-| 编辑器设置保存 | 已实现（`imgui.ini` 布局 + `editor_theme.json` / `editor_settings.json` 主题/语言） |
-| 快捷键体系 | 已实现（Ctrl+S/Z/Y、Delete、F、Ctrl+P Play Mode） |
-| 命令行参数（CLI） | 已实现（`--scene`、`--screenshot`、`--record`、`--camera`、`--headless` 等） | 详见 `docs/CLI.md` |
+| 编辑器设置保存 | 已实现（`imgui.ini` 布局 + `editor_theme.json` / `editor_settings.json` 主题/语言/VSync/快捷键） |
+| Settings 窗口分区 | 已实现（Theme / Appliance 语言 / Editor：VSync 持久化 + 场景自动保存间隔（分钟，0=关）/ Shortcuts：按键捕获改绑、冲突检测、重置，持久化到 `editor_settings.json` 的 `shortcuts` 组） |
+| 启动时应用 VSync | 已实现 |
+| 场景自动保存 | 已实现（按间隔保存脏场景，Play Mode 下跳过） |
+| Project Settings 窗口 | 已实现（File > Project Settings：渲染 API（DX 显示为预留）+ Render Quality：shadow map 尺寸/bias/area、环境光、HDR、tone map、exposure、IBL 强度；持久化到 `project_settings.json` 的 `graphics` 组，重启生效） |
+| 快捷键体系 | 已实现（Ctrl+S/Z/Y、Delete、F、Ctrl+P Play Mode、Ctrl+X/C/V/D、F2，支持改绑） |
+| 命令行参数（CLI） | 已实现（`--vulkan`（默认）/`--opengl`/`--vulkan-validation`、`--scene`、`--record`、`--camera`、`--headless` 等） | 详见 `docs/CLI.md` |
 | Undo/Redo | 已实现（属性修改、增删实体、Transform） |
 
 ---
@@ -380,6 +394,13 @@
 | 功能 | 状态 |
 |---|---|
 | Vulkan/OpenGL 批处理 | 已实现 |
+| 异步日志（AsyncLogger） | 已实现（`core/utils/glog/glog_lib.*`：`log()` 入队、worker 线程写出；`GLog` 自动包装默认/自定义 logger；`MemoryLogSink::from_glog()` 穿透包装；`flush()` 等待排空） |
+| 每帧热路径日志降级 | 已实现（降为 `GLOG_DEBUG`） |
+| `GL_CHECK_ERROR` Release 编译剔除 | 已实现（`NDEBUG` 下为空操作） |
+| DrawItem 向量跨帧复用 | 已实现 |
+| 连续相同材质绑定跳过 | 已实现 |
+| Vulkan/OpenGL NDC z 双重映射修复 | 已实现（此前导致全场景误判为阴影） |
+| GL `set_swap_interval` 无当前上下文防护 | 已实现 |
 | GPU profiling（Nsight/RenderDoc 标记） | 未实现 |
 | CPU profiling（Tracy/自带 profiler） | 未实现 |
 | 遮挡剔除、视锥剔除 | 未实现 |
@@ -449,7 +470,7 @@
 - `core/render/vulkan/vk_backend.cpp`：使用 `device_.max_push_constants_size()` 替代硬编码 128。
 
 **验证**
-- `gryce-engine.exe --vulkan --screenshot shadow_test.png --headless --auto-close 2` 可正常完成截图，无 Vulkan 错误。
+- `gryce-engine.exe --vulkan --headless --auto-close 2` 可正常运行退出，无 Vulkan 错误。（历史记录：当时通过截图参数验证，该参数现已移除。）
 - 设备日志正确报告 `max_push_constants=256`（RTX 5070 Laptop）。
 - 对应 SPIR-V 已本地重新生成；`*.spv` 在 `.gitignore` 中，构建或运行前需用 `glslangValidator -V` 重新编译着色器源。
 

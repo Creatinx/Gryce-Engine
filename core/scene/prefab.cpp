@@ -86,12 +86,8 @@ std::unique_ptr<Prefab> Prefab::load(const std::string& path) {
     scene->foreach([](Entity* e) { e->set_store(nullptr); });
 
     auto prefab = std::make_unique<Prefab>();
-    // 从加载的 Scene 中移出所有根实体（不触发 Scene 析构时的组件反注册）
-    auto& roots = scene->roots();
-    for (auto& root : roots) {
-        prefab->roots_.push_back(std::move(root));
-    }
-    roots.clear(); // 清空原 vector，避免 scene 析构时重复释放
+    // 从加载的 Scene 根节点下移出所有顶层实体（不触发 Scene 析构时的组件反注册）
+    prefab->roots_ = scene->root()->detach_all_children();
 
     return prefab;
 }

@@ -11,7 +11,9 @@ const float uFadeStart = 30.0;
 const float uFadeEnd = 100.0;
 
 float grid_line(vec2 coord) {
-    vec2 derivative = fwidth(coord);
+    // 线宽系数 0.5：fwidth 缩放决定覆盖的像素宽度，0.5 = 半像素细线
+    const float kLineWidth = 0.5;
+    vec2 derivative = fwidth(coord) * kLineWidth;
     vec2 grid = abs(fract(coord - 0.5) - 0.5) / derivative;
     return 1.0 - min(min(grid.x, grid.y), 1.0);
 }

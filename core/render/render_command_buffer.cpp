@@ -34,7 +34,7 @@ void RenderCommandBuffer::submit() {
     int submitted = write_index_;
     frames_[submitted].state = Frame::Submitted;
     frames_[submitted].seq = next_seq_++;
-    GLOG_INFO("RenderCommandBuffer::submit: frame {} seq={} commands={}", submitted, frames_[submitted].seq, frames_[submitted].commands.size());
+    GLOG_DEBUG("RenderCommandBuffer::submit: frame {} seq={} commands={}", submitted, frames_[submitted].seq, frames_[submitted].commands.size());
 
     // 找一个 Free 的 frame 作为下一帧写入目标
     int new_write = -1;
@@ -47,7 +47,7 @@ void RenderCommandBuffer::submit() {
 
     // 如果没有 Free，等待渲染线程释放（正常三缓冲不会触发）
     if (new_write < 0) {
-        GLOG_INFO("RenderCommandBuffer::submit: no free frame, waiting");
+        GLOG_DEBUG("RenderCommandBuffer::submit: no free frame, waiting");
         cv_main_.wait(lock, [this, &new_write] {
             if (shutdown_) return true;
             for (int i = 0; i < kFrameCount; ++i) {
@@ -58,7 +58,7 @@ void RenderCommandBuffer::submit() {
             }
             return false;
         });
-        GLOG_INFO("RenderCommandBuffer::submit: woke up, new_write={}", new_write);
+        GLOG_DEBUG("RenderCommandBuffer::submit: woke up, new_write={}", new_write);
     }
 
     if (shutdown_) return;
@@ -73,7 +73,7 @@ void RenderCommandBuffer::submit() {
 
 std::vector<RenderCommandItem>* RenderCommandBuffer::acquire() {
     std::unique_lock<std::mutex> lock(mutex_);
-    GLOG_INFO("RenderCommandBuffer::acquire: waiting, shutdown_={}", shutdown_);
+    GLOG_DEBUG("RenderCommandBuffer::acquire: waiting, shutdown_={}", shutdown_);
     cv_render_.wait(lock, [this] {
         if (shutdown_) return true;
         for (int i = 0; i < kFrameCount; ++i) {
@@ -81,7 +81,7 @@ std::vector<RenderCommandItem>* RenderCommandBuffer::acquire() {
         }
         return false;
     });
-    GLOG_INFO("RenderCommandBuffer::acquire: woke up, shutdown_={}", shutdown_);
+    GLOG_DEBUG("RenderCommandBuffer::acquire: woke up, shutdown_={}", shutdown_);
 
     // 即使 shutdown，也先把已提交的 frame 处理完
     int idx = -1;
@@ -94,11 +94,11 @@ std::vector<RenderCommandItem>* RenderCommandBuffer::acquire() {
     }
 
     if (idx < 0) {
-        GLOG_INFO("RenderCommandBuffer::acquire: no submitted frame, returning null");
+        GLOG_DEBUG("RenderCommandBuffer::acquire: no submitted frame, returning null");
         return nullptr;
     }
 
-    GLOG_INFO("RenderCommandBuffer::acquire: got frame {} seq={} commands={}", idx, min_seq, frames_[idx].commands.size());
+    GLOG_DEBUG("RenderCommandBuffer::acquire: got frame {} seq={} commands={}", idx, min_seq, frames_[idx].commands.size());
     frames_[idx].state = Frame::Rendering;
     return &frames_[idx].commands;
 }

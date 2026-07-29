@@ -1,21 +1,28 @@
 #include "inspector_panel.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <string>
 #include <vector>
 
 #include "components/component.h"
+#include "components/audio_source.h"
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
 #include "components/physical_material.h"
 #include "components/terrain.h"
 #include "components/2d/particle_emitter.h"
 #include "reflection/reflection.h"
+#include "resources/resource_path.h"
 #include "scene/entity.h"
 #include "scene/scene.h"
 #include "../localization/localization.h"
+#include "../platform_utils.h"
+#include "../ui/file_browser_popup.h"
+#include "../ui/message_popup.h"
 #include "../undo/commands.h"
 
 namespace {
@@ -198,6 +205,15 @@ void InspectorPanel::on_imgui() {
         draw_component(entity, comp.get());
     }
 
+    // 「Add Component」：复用 Hierarchy 面板的组件选择器（同一 Undo 感知流程）
+    if (!read_only_ && add_component_handler_) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button(tr("inspector.add_component"), ImVec2(-1.0f, 0.0f))) {
+            add_component_handler_(entity);
+        }
+    }
+
     if (read_only_) {
         ImGui::EndDisabled();
     }
@@ -239,6 +255,11 @@ void InspectorPanel::draw_component(scene::Entity* entity, components::Component
         // PhysicalMaterial 显示物理材质预设选择器
         if (std::strcmp(raw_type_name, "PhysicalMaterial") == 0) {
             draw_physical_material_section(entity, component);
+        }
+
+        // AudioSource 显示测试播放 / 停止按钮（编辑模式下直接试听音频片段）
+        if (std::strcmp(raw_type_name, "AudioSource") == 0) {
+            draw_audio_source_section(entity, component);
         }
 
         const auto fields = reflection::Registry::instance().all_fields(raw_type_name);
@@ -371,6 +392,50 @@ void InspectorPanel::draw_physical_material_section(scene::Entity* entity, compo
     ImGui::Separator();
 }
 
+void InspectorPanel::draw_audio_source_section(scene::Entity* entity, components::Component* component) {
+    (void)entity;
+    auto* src = dynamic_cast<components::AudioSource*>(component);
+    if (!src) return;
+
+    ImGui::Separator();
+
+    // 编辑模式下直接试听：play()/stop() 走组件自身的播放路径（miniaudio 懒初始化），
+    // 音量/音高/循环/3D 空间化沿用组件当前设置；3D 源按实体位置播放。
+    const bool has_clip = !src->clip_path.empty();
+    const bool playing = src->is_playing();
+
+    ImGui::BeginDisabled(!has_clip || playing || read_only_);
+    if (ImGui::Button(tr("inspector.audio_test_play"))) {
+        // 先试音前检查文件是否存在，缺失时弹警告而不是只打日志
+        const std::string resolved = resources::ResourcePath::resolve(src->clip_path);
+        std::error_code ec;
+        if (!std::filesystem::exists(utf8_path(resolved), ec) || ec) {
+            MessagePopup::instance().warn(
+                std::vformat(tr("inspector.audio_file_not_found"),
+                             std::make_format_args(src->clip_path)));
+        } else {
+            src->play();
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!playing);
+    if (ImGui::Button(tr("inspector.audio_test_stop"))) {
+        src->stop();
+    }
+    ImGui::EndDisabled();
+    if (playing) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr("inspector.audio_playing"));
+    }
+    if (!has_clip) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr("inspector.audio_no_clip"));
+    }
+
+    ImGui::Separator();
+}
+
 void InspectorPanel::draw_field(scene::Entity* entity,
                                 components::Component* component,
                                 const reflection::FieldInfo& field) {
@@ -423,10 +488,35 @@ void InspectorPanel::draw_field(scene::Entity* entity,
             std::string v = read_field<std::string>(component, field);
             char buf[256] = {};
             std::strncpy(buf, v.c_str(), sizeof(buf) - 1);
-            if (ImGui::InputText(label, buf, sizeof(buf))) {
-                write_field<std::string>(component, field, std::string(buf));
+            // 资源路径字段（*_path）附「浏览...」按钮，弹窗写回 res:/ 路径
+            const bool is_asset_path =
+                field.name.size() > 5 && field.name.compare(field.name.size() - 5, 5, "_path") == 0;
+            if (is_asset_path) {
+                // 两列表格：输入框拉伸 + 按钮固定宽，按钮不会被挤出可视区域
+                if (ImGui::BeginTable("##path_browse", 2)) {
+                    ImGui::TableSetupColumn("##input", ImGuiTableColumnFlags_WidthStretch);
+                    ImGui::TableSetupColumn("##browsebtn", ImGuiTableColumnFlags_WidthFixed,
+                                            FileBrowserPopup::browse_button_width());
+                    ImGui::TableNextColumn();
+                    ImGui::SetNextItemWidth(-FLT_MIN); // 填满单元格（自动为 label 留位）
+                    if (ImGui::InputText(label, buf, sizeof(buf))) {
+                        write_field<std::string>(component, field, std::string(buf));
+                    }
+                    track_field_change(entity, component, field, v);
+                    ImGui::TableNextColumn();
+                    if (FileBrowserPopup::instance().browse_button("##browse", buf, sizeof(buf))) {
+                        const std::string new_value(buf);
+                        write_field<std::string>(component, field, new_value);
+                        push_field_command(entity, component, field, v, new_value);
+                    }
+                    ImGui::EndTable();
+                }
+            } else {
+                if (ImGui::InputText(label, buf, sizeof(buf))) {
+                    write_field<std::string>(component, field, std::string(buf));
+                }
+                track_field_change(entity, component, field, v);
             }
-            track_field_change(entity, component, field, v);
             break;
         }
         case FieldType::Vector2f: {

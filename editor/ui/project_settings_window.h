@@ -39,6 +39,7 @@ private:
     bool open_ = false;
     Section current_section_ = Section::Graphics;
     bool unsaved_changes_ = false;
+    bool dx_reserved_warn_ = false;
     std::string project_root_;
 };
 

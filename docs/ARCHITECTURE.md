@@ -13,7 +13,7 @@
 | 语言 | C++23 |
 | 构建 | CMake + Ninja |
 | 平台 | Windows（MSYS2 UCRT64 / MinGW-w64，MSVC 2022+）|
-| 渲染后端 | OpenGL 4.6、Vulkan 1.2 |
+| 渲染后端 | Vulkan 1.2（默认）、OpenGL 4.6（兼容后端）、DX11/DX12（预留，未实现） |
 | 架构风格 | ECS + 场景树混合 |
 
 ---
@@ -139,7 +139,20 @@ MinGW 下构建后自动复制：
 - **资源延迟销毁**：GPU 资源在对应帧渲染完成后才释放，避免跨线程 use-after-free。
 - **RHI 句柄化**：资源通过 `RHIMeshHandle`、`RHITextureHandle` 等句柄引用，替代裸指针。
 
-### 4.2 核心接口
+### 4.2 后端分层
+
+`core/render/render.h` 定义 `enum class RenderAPI { Vulkan, OpenGL, DX11, DX12 }`：
+
+| 后端 | 定位 |
+|---|---|
+| Vulkan 1.2 | **默认后端**（首选，全功能） |
+| OpenGL 4.6 | 兼容后端（旧硬件 / 调试用） |
+| DX11 / DX12 | WinNative 预留枚举值，尚未实现，`create_render_backend` 返回 `nullptr` |
+
+- 命令行：`--vulkan`（默认，仅为兼容性保留）、`--opengl`、`--vulkan-validation`。未指定时使用项目设置中的默认后端。
+- **File > Project Settings** 窗口提供渲染 API 下拉（DX 项显示为预留），以及 **Render Quality** 区：shadow map 尺寸、shadow bias、shadow area、环境光颜色、HDR 开关、tone map 模式（None/Reinhard/ACES）、exposure、IBL 强度。以上持久化到 `project_settings.json` 的 `graphics` 组，启动时应用到编辑器的两条渲染管线，修改后需重启生效。
+
+### 4.3 核心接口
 
 ```
 IRenderBackend
@@ -155,7 +168,7 @@ IRenderBackend
 └── flush_gpu() / wait_gpu_idle()
 ```
 
-### 4.3 OpenGL 后端
+### 4.4 OpenGL 后端
 
 - `GLBackend`：管理 GL 上下文、ImGui 后端、状态切换。
 - `GLMesh`：VAO/VBO/IBO 封装。
@@ -166,7 +179,7 @@ IRenderBackend
 - `GLRenderer3D`：3D 网格渲染。
 - `GLFramePacing`：帧率限制与 NVIDIA `WGL_NV_delay_before_swap`。
 
-### 4.4 Vulkan 后端
+### 4.5 Vulkan 后端
 
 - `VulkanInstance`：实例创建、验证层、调试 messenger。
 - `VulkanDevice`：物理设备选择、逻辑设备、队列、描述符池。
@@ -175,10 +188,10 @@ IRenderBackend
 - `VulkanRenderer2D`：Vulkan 2D 批处理。
 - `VulkanImGuiBackend`：ImGui Vulkan 后端。
 
-### 4.5 渲染管线（3D）
+### 4.6 渲染管线（3D）
 
 ```
-1. Shadow Pass        → 渲染 depth map（2048x2048，跟随相机，取第一个方向光）
+1. Shadow Pass        → 渲染 depth map（尺寸可在项目设置中配置，取第一个方向光）
 2. Skybox Pass        → 立方体贴图天空盒（depth test on / write off，可选）
 3. Main Pass (Opaque) → 多光源 PBR 着色（最多 8 盏：方向光/点光/聚光）+ shadow sampling
 4. Main Pass (Blend)  → 半透明物体按相机距离远→近排序（blend on / depth write off）
@@ -189,6 +202,12 @@ IRenderBackend
 
 - 全局环境光 `set_ambient`（默认 0.15）；`set_exposure` / `set_tone_map_mode` / `set_shadow_enabled` 可运行时调节。
 - 材质按 `Material::blend_mode` 自动分到不透明/半透明两个队列。
+
+### 4.7 阴影系统
+
+- **光空间正交盒贴合相机视锥**：取相机视锥 8 个角点，在光空间求 AABB，并按 shadow map 纹素对齐（texel snapping）消除边缘抖动；深度范围向光源方向额外延伸 50 单位，覆盖视锥外的投射体。无固定 cutoff 距离。
+- **着色器边缘淡出**：全部 4 个 PBR 着色器（GL/VK × 普通/蒙皮）对阴影贴图边缘 5% 区域做 smoothstep 淡出，避免硬边界。
+- **自适应 shadow bias**：CPU 侧 bias = 基础值 + 0.5 个纹素；Vulkan 阴影管线（`core/render/vulkan/vk_shader.cpp`）另启用硬件 slope-scaled depth bias（constant 1.25，slope 2.5）。
 
 ---
 
@@ -281,7 +300,7 @@ JSON 结构：
 ```json
 {
   "name": "main",
-  "version": 1,
+  "version": 2,
   "entities": [
     {
       "name": "Cube",
@@ -298,11 +317,15 @@ JSON 结构：
 }
 ```
 
+- 每个 `Scene` 都有且仅有一个**合成根 Entity**（`core/scene/scene.h` 的 `Scene::root()`），场景中所有实体都是它的子孙；序列化格式保持扁平（`"parent": null` 表示直接挂在根下）。
+- 格式版本已升级为 `2`；旧的 v1 文件可原样加载，无需迁移。
+- 编辑器 Hierarchy 面板将根显示为不可删除的顶行（显示场景名）；Undo 命令把根级操作统一处理为"根的子节点"。
+
 ### 6.2 虚拟路径 `res:/`
 
 - `res:/scenes/main.gesc` → 项目根目录下的 `scenes/main.gesc`。
 - 解析逻辑在 `core/resources/resource_path.cpp`。
-- 运行示例时通过 `--project-root <path>` 指定项目根。
+- 运行示例时项目根从可执行文件位置向上自动探测（未命中则以当前工作目录为项目根）；编辑器内可通过 File > Load Project 切换。
 
 ### 6.3 序列化机制
 
@@ -345,8 +368,11 @@ for (int i = 0; i < 10; ++i) {
 ### 7.1 变换与层级
 
 - `Transform`：统一 2D/3D 变换，使用 `Vector3f` + `Quaternionf`。
-- `Entity::parent()` / `children()`：维护父子关系。
+- `Entity::parent()` / `children()`：维护父子关系；每个场景有一个合成根 Entity（见 6.1）。
 - 世界矩阵通过递归计算：`world = parent_world * local`。
+- **2D 父链变换**：`core/components/2d/component_2d.h` 的 `world_transform_2d()` 沿祖先链组合 XY 平移 / Z 旋转 / XY 缩放；`Node2D::top_level = true` 时该节点脱离父链（并为其后代截断链条），行为类似 Godot 的 top-level 节点。
+- `Node2D::z_index` 参与 2D 绘制排序（排序键：`render_order` → `z_index` → 稳定次序）。
+- 2D 物理与编辑器 2D Gizmo 均在世界 2D 空间下工作（已考虑父链变换）。
 - `Node3D` / `Node2D`：3D/2D 空节点组件，用于层级组织。
 - `PrefabInstance`：标记某 Entity 为 Prefab 实例，保存模板引用与覆盖参数。
 
@@ -491,8 +517,17 @@ for (int i = 0; i < 10; ++i) {
 ### 11.2 运行时 2D UI
 
 - 通过 ECS 组件实现：`ColorRect`、`Label`、`Sprite2D` 等。
-- `RenderSystem2D` 收集并排序（`render_order`）后提交。
+- `RenderSystem2D` 收集并排序（`render_order` → `z_index` → 稳定次序）后提交。
 - 坐标系：屏幕左上角为原点，X 向右，Y 向下。
+
+### 11.3 编辑器功能
+
+- **Create Entity 对话框**（Godot 风格，`editor/ui/create_entity_dialog.{h,cpp}`）：收藏 / 最近使用 / 搜索 / 分类过滤 / 组件描述；由 Hierarchy 右键"新建…"打开，状态持久化到 `create_entity_dialog.json`。
+- **Hierarchy 右键菜单**：新建 / Cut / Copy / Paste / Duplicate / Rename / Focus / Prefab / Delete；全局快捷键 Ctrl+X/C/V/D、F2、Del 注册在 `ShortcutManager`。
+- **File Explorer 右键菜单**：新建文件夹 / 场景 / 材质、重命名、删除（带确认）、复制路径。
+- **Settings 窗口**（4 个分区）：Theme（外观）、Appliance（语言）、Editor（VSync 持久化 + 场景自动保存间隔分钟数，0 = 关闭）、Shortcuts（按键捕获式改绑、冲突检测、重置，持久化到 `editor_settings.json` 的 `shortcuts` 组）。
+- VSync 在启动时应用；自动保存按间隔保存脏场景（Play Mode 下跳过）。
+- **Project Settings 窗口**（File > Project Settings）：渲染 API 选择与 Render Quality 参数（见 4.2）。
 
 ---
 
@@ -524,6 +559,12 @@ for (int i = 0; i < 10; ++i) {
 
 - 渲染 lambda 必须捕获值或安全对象，避免悬空引用。
 - GPU 资源释放必须通过 `RenderContext::destroy_*` 走延迟队列。
+
+### 12.4 异步日志
+
+- `core/utils/glog/glog_lib.h/.cpp` 的 `AsyncLogger` 是装饰器：`log()` 只入队，由独立 worker 线程写出。
+- `GLog` 会自动用 `AsyncLogger` 包装默认与自定义 logger；`MemoryLogSink::from_glog()` 可穿透包装拿到内层 sink（供 Console 面板读取）。
+- `flush()` 会等待队列排空；每帧热路径的日志已降级为 `GLOG_DEBUG`，减少日志开销。
 
 ---
 

@@ -32,7 +32,9 @@ inline const char* gl_error_string(GLenum err) {
 // GL 错误检查宏：仅记录并清除错误，不再 assert，避免把残留错误变成崩溃。
 // 注意：OpenGL 错误会在发生错误的调用之后才通过 glGetError 暴露，因此本条
 // 日志的 file/line 只是“发现错误的位置”，真正的错误源在之前的 GL 调用。
+// Release 构建下完全剔除：glGetError 是 CPU/GPU 同步点，热路径每帧可达万次。
 // ---------------------------------------------------------------------------
+#ifndef NDEBUG
 #define GL_CHECK_ERROR() \
     do { \
         GLenum err = glGetError(); \
@@ -40,6 +42,9 @@ inline const char* gl_error_string(GLenum err) {
             GLOG_ERROR("OpenGL error {} ({}) at {}:{}", err, gl_error_string(err), __FILE__, __LINE__); \
         } \
     } while (0)
+#else
+#define GL_CHECK_ERROR() ((void)0)
+#endif
 
 // ---------------------------------------------------------------------------
 // GL Debug Group：在 RenderDoc / Nsight 中标记渲染范围

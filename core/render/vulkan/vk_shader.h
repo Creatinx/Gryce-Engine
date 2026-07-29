@@ -159,8 +159,17 @@ private:
         int shadow_light_index;
         int use_ibl;
         float ibl_intensity;
+        int two_sided;
+        // std140：结构体数组必须 16 字节对齐。Vector4f 对齐为 4，two_sided 之后
+        // 若不齐pad，lights 会落在 148（GLSL 期望 160）——灯光数据整体错位 12
+        // 字节，shader 读到全零（场景无光照）。此前 lights 恰好在 144 只是运气。
+        float _pad_std140[3];
         LightUBO lights[k_max_lights];
     };
+    // 布局必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 的 MaterialLightUBO 一致
+    static_assert(offsetof(UBOData, lights) == 160, "std140: lights must start at offset 160");
+    static_assert(sizeof(LightUBO) == 64, "std140: LightUBO must be 64 bytes");
+    static_assert(sizeof(UBOData) == 160 + 8 * 64, "std140: UBOData size mismatch");
 
     // 非 post-process 路径：每 draw 独立描述符 + UBO 偏移。
     // 每帧一个描述符池（on_begin_frame 整池 reset）和一个大 UBO
@@ -192,6 +201,8 @@ private:
     // binding 留空而 shader（条件分支被编译器提升后）仍采样它，GPU 会读到
     // 垃圾描述符并可能直接挂死（fence 永不 signal，表现为整个窗口卡死）。
     std::unique_ptr<VulkanTexture> fallback_texture_;
+    // 1x1 立方体回退：IBL binding 9/10 是 samplerCube，不能用 2D 回退
+    std::unique_ptr<VulkanTexture> fallback_cube_;
 
     // post-process 仍使用每帧固定描述符集（每帧只绑一张贴图，无串扰问题），
     // 沿用按 frame/binding 的更新缓存。

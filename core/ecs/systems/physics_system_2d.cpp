@@ -12,6 +12,7 @@
 #include "components/circle_collider_2d.h"
 #include "components/character_controller_2d.h"
 #include "components/joint_2d.h"
+#include "components/2d/component_2d.h"
 #include "components/transform.h"
 #include "ecs/query.h"
 #include "physics/physics_factory.h"
@@ -26,14 +27,32 @@ constexpr float k_pi = 3.14159265358979323846f;
 constexpr float k_sleep_threshold = 0.05f;
 constexpr int k_sleep_frames = 30;
 
-float quat_to_z(const math::Quaternionf& q) {
-    // 从四元数提取绕 Z 轴的旋转角
-    return std::atan2(2.0f * (q.w * q.z + q.x * q.y),
-                      1.0f - 2.0f * (q.y * q.y + q.z * q.z));
-}
-
 math::Quaternionf z_to_quat(float angle) {
     return math::Quaternionf::from_axis_angle(math::Vector3f(0.0f, 0.0f, 1.0f), angle);
+}
+
+// 实体的 2D 世界变换（沿父链组合，top_level 截止；见 components::d2::world_transform_2d）。
+// 物理后端统一在世界空间模拟：body 的创建/同步都用世界位置与旋转。
+components::d2::Transform2D world_2d(const scene::Entity* entity) {
+    return components::d2::world_transform_2d(entity);
+}
+
+// 把 2D 世界位置/旋转写回本地 Transform：对父级世界变换求逆
+// （平移 + 旋转 + 缩放全补偿；父级缩放接近 0 的分量不做缩放补偿）。
+void set_local_from_world_2d(scene::Entity* entity, const math::Vector2f& wpos, float wangle) {
+    auto* t = entity ? entity->transform() : nullptr;
+    if (!t) return;
+    const components::d2::Transform2D pw = components::d2::world_transform_2d(entity->parent());
+    const float c = std::cos(-pw.rotation);
+    const float s = std::sin(-pw.rotation);
+    const float dx = wpos.x - pw.position.x;
+    const float dy = wpos.y - pw.position.y;
+    math::Vector2f local(dx * c - dy * s, dx * s + dy * c);
+    if (std::abs(pw.scale.x) > 1e-6f) local.x /= pw.scale.x;
+    if (std::abs(pw.scale.y) > 1e-6f) local.y /= pw.scale.y;
+    t->position.x = local.x;
+    t->position.y = local.y;
+    t->rotation = z_to_quat(wangle - pw.rotation);
 }
 
 float compute_density_for_box(float mass, const math::Vector2f& half_extents) {
@@ -144,8 +163,7 @@ struct PhysicsSystem2D::Impl {
         }
         slot.shapes.clear();
 
-        auto* t = entity->transform();
-        math::Vector2f scale(t->scale.x, t->scale.y);
+        math::Vector2f scale = world_2d(entity).scale; // 碰撞体尺寸随父链缩放
         float mass = determine_mass(entity);
         physics::MaterialDesc mat = make_material(entity);
 
@@ -184,8 +202,7 @@ struct PhysicsSystem2D::Impl {
     }
 
     bool shapes_changed(const Slot& slot, scene::Entity* entity) const {
-        auto* t = entity->transform();
-        math::Vector2f scale(t->scale.x, t->scale.y);
+        math::Vector2f scale = world_2d(entity).scale;
         if (scale != slot.last_scale) return true;
 
         auto* box = entity->get_component<components::BoxCollider2D>();
@@ -214,8 +231,10 @@ struct PhysicsSystem2D::Impl {
         auto* t = entity->transform();
         if (!t) return;
 
-        math::Vector2f pos(t->position.x, t->position.y);
-        float angle = quat_to_z(t->rotation);
+        // body 使用 2D 世界空间（沿父链组合，top_level 截止）
+        const auto wt = world_2d(entity);
+        math::Vector2f pos = wt.position;
+        float angle = wt.rotation;
 
         physics::BodyHandle body = world->create_body(determine_body_type(entity), pos, angle);
         if (body == physics::k_invalid_body) {
@@ -228,7 +247,7 @@ struct PhysicsSystem2D::Impl {
         slot.body = body;
         slot.last_position = pos;
         slot.last_angle = angle;
-        slot.last_scale = math::Vector2f(t->scale.x, t->scale.y);
+        slot.last_scale = world_2d(entity).scale;
 
         auto* rb = entity->get_component<components::RigidBody2D>();
         if (rb) {
@@ -251,8 +270,10 @@ struct PhysicsSystem2D::Impl {
         auto* t = entity->transform();
         if (!t) return;
 
-        math::Vector2f pos(t->position.x, t->position.y);
-        float angle = quat_to_z(t->rotation);
+        // 与渲染一致，同步 2D 世界空间位置/旋转到后端
+        const auto wt = world_2d(entity);
+        math::Vector2f pos = wt.position;
+        float angle = wt.rotation;
 
         // 位置/角度变更较大时同步到后端（避免每帧都写）
         if (pos != slot.last_position || std::abs(angle - slot.last_angle) > 1e-4f) {
@@ -273,7 +294,7 @@ struct PhysicsSystem2D::Impl {
 
         if (shapes_changed(slot, entity)) {
             create_shapes(slot);
-            slot.last_scale = math::Vector2f(t->scale.x, t->scale.y);
+            slot.last_scale = world_2d(entity).scale;
         }
     }
 
@@ -322,8 +343,8 @@ struct PhysicsSystem2D::Impl {
             world->set_fixed_rotation(slot.body, true);
         }
 
-        auto* t = entity->transform();
-        math::Vector2f pos = t ? math::Vector2f(t->position.x, t->position.y) : math::Vector2f::zero();
+        // 接地/台阶探测在世界空间进行（与 body 同步空间一致）
+        math::Vector2f pos = world_2d(entity).position;
 
         // 1. 多射线接地检测
         GroundInfo2D ground = check_ground_2d(pos, cc);
@@ -375,9 +396,9 @@ struct PhysicsSystem2D::Impl {
                     auto head_hit = world->raycast(head_origin, dir, forward_offset);
                     if (!head_hit.has_value()) {
                         math::Vector2f new_pos = pos + dir * 0.05f + math::Vector2f(0.0f, height_delta + 0.02f);
-                        t->position.x = new_pos.x;
-                        t->position.y = new_pos.y;
-                        world->set_transform(slot.body, new_pos, quat_to_z(t->rotation));
+                        // new_pos 为世界空间，写回本地 Transform
+                        set_local_from_world_2d(entity, new_pos, world_2d(entity).rotation);
+                        world->set_transform(slot.body, new_pos, world_2d(entity).rotation);
                         slot.last_position = new_pos;
                     }
                 }
@@ -420,9 +441,8 @@ struct PhysicsSystem2D::Impl {
         math::Vector2f pos;
         float angle = 0.0f;
         world->get_transform(slot.body, pos, angle);
-        t->position.x = pos.x;
-        t->position.y = pos.y;
-        t->rotation = z_to_quat(angle);
+        // 后端输出的是世界空间，写回本地 Transform 需按父级世界变换求逆
+        set_local_from_world_2d(entity, pos, angle);
         slot.last_position = pos;
         slot.last_angle = angle;
 

@@ -12,7 +12,7 @@ res:/scenes/main.gesc
 <game_project_root>/scenes/main.gesc
 ```
 
-- 在编辑器/运行器启动时，通过 `--project-root <path>` 或工作目录确定游戏项目根。
+- 在编辑器/运行器启动时，项目根从可执行文件位置向上自动探测（优先 `editor/project/project.gryce`，其次 `examples/3dtest/project.gryce`，否则以当前工作目录为项目根）；编辑器运行中可通过 **File > Load Project** 切换。
 - 若未显式指定，默认以当前工作目录作为游戏项目根。
 - 引擎内部代码（核心、渲染、资源管理）只处理 `res:/` 路径，不硬编码引擎仓库路径。
 
@@ -55,10 +55,10 @@ Gryce-Engine/                  ← 引擎仓库根（不是 res:/）
 └── ...
 ```
 
-运行示例时：
+运行示例时（示例程序同样自动从可执行文件位置向上探测项目根）：
 
 ```bash
-./gryce.exe --project-root examples/3dtest
+./gryce-engine.exe          # 自动探测项目根；编辑器内 File > Load Project 可切换
 ```
 
 ---
@@ -111,7 +111,7 @@ GryceGC（Gryce Game Compiler）是将来用于打包游戏资源的编译器/�
 1. **自包含**：每个示例项目是一个完整目录，可在任意位置部署。
 2. **只引用 `res:/`**：场景文件、脚本、材质内部路径全部使用 `res:/`。
 3. **引擎与项目分离**：引擎二进制不依赖项目具体位置。
-4. **向后兼容**：未提供 `--project-root` 时，默认以工作目录作为项目根。
+4. **向后兼容**：自动探测失败时，以当前工作目录作为项目根。
 
 ---
 

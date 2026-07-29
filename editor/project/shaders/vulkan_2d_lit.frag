@@ -37,7 +37,8 @@ layout(set = 0, binding = 2) uniform LightUBO {
 
 float compute_shadow(vec4 light_space_pos) {
     vec3 proj = light_space_pos.xyz / light_space_pos.w;
-    proj = proj * 0.5 + 0.5;
+    // Vulkan NDC z 已是 [0,1]，只有 xy 需要从 [-1,1] 重映射
+    proj.xy = proj.xy * 0.5 + 0.5;
     // Vulkan 负 viewport 导致 shadow map 的 v 方向与 OpenGL 相反，采样前翻转 y
     proj.y = 1.0 - proj.y;
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 0.0;

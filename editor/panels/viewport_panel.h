@@ -61,6 +61,7 @@ protected:
 
 private:
     void draw_gizmo();
+    void draw_gizmo_2d(scene::Entity* entity); // Node2D 实体的屏幕像素拖拽（Godot 风格）
     void handle_gizmo_shortcuts();
 
     render::RenderPipeline* pipeline_ = nullptr;

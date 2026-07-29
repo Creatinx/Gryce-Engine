@@ -17,6 +17,7 @@ target_sources(gryce_engine PRIVATE
     panels/game_view_panel.cpp
     panels/project_panel.cpp
     ui/debug_panel.cpp
+    ui/create_entity_dialog.cpp
     ui/editor_theme.cpp
     ui/engine_theme.cpp
     ui/engine_theme_modern.cpp
@@ -27,6 +28,9 @@ target_sources(gryce_engine PRIVATE
     ui/animation_editor_window.cpp
     ui/terrain_editor_window.cpp
     ui/particle_editor_window.cpp
+    ui/file_browser_popup.cpp
+    ui/message_popup.cpp
+    platform_utils.cpp
     project/project_settings.cpp
     import/gimport_settings.cpp
     asset/asset_database.cpp
@@ -34,6 +38,7 @@ target_sources(gryce_engine PRIVATE
     shortcuts/shortcut_manager.cpp
     undo/command_stack.cpp
     undo/commands.cpp
+    undo/file_commands.cpp
 )
 
 # ImGuizmo（M1-E2 Transform Gizmo）：捆绑源码，第三方代码关闭警告
@@ -74,6 +79,15 @@ set_target_properties(gryce_engine PROPERTIES
 # 编辑器运行时可能加载示例项目的 SPIR-V，确保它们已编译
 if(GRYCE_EXAMPLE_SHADER_TARGETS)
     add_dependencies(gryce_engine ${GRYCE_EXAMPLE_SHADER_TARGETS})
+endif()
+
+# 编辑器项目自身的 Vulkan 着色器 SPIR-V 自动编译。
+# 输出到 editor/project/shaders/spirv/（与 VulkanShader::load_program 的
+# 运行时加载路径一致），.frag/.vert 修改后随构建自动重编译，避免
+# GLSL 与 C++ UBO 布局漂移导致的陈旧 SPIR-V。
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/project/shaders")
+if(GRYCE_SHADER_TARGET)
+    add_dependencies(gryce_engine ${GRYCE_SHADER_TARGET})
 endif()
 
 # ---------------------------------------------------------------------------

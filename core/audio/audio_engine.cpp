@@ -3,7 +3,28 @@
 #include "miniaudio.h"
 #include "utils/glog/glog_lib.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace gryce_engine::audio {
+
+namespace {
+
+#ifdef _WIN32
+// miniaudio 的默认 VFS 用 CreateFileA 打开文件，窄路径按系统代码页（GBK）解释，
+// UTF-8 编码的中文/特殊字符文件名会打不开（result=-7）。
+// 显式按 UTF-8 转宽字符，改走 ma_sound_init_from_file_w。
+std::wstring utf8_to_wide(const std::string& utf8) {
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (len <= 1) return {};
+    std::wstring wide(static_cast<size_t>(len - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), len);
+    return wide;
+}
+#endif
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // AudioEngine
@@ -78,9 +99,20 @@ bool AudioClip::load(const std::string& path) {
     }
 
     sound_.reset(new ma_sound{});
+#ifdef _WIN32
+    const std::wstring wide_path = utf8_to_wide(path);
+    ma_result result = wide_path.empty()
+                           ? ma_sound_init_from_file(engine.engine(), path.c_str(),
+                                                     MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
+                                                     nullptr, nullptr, sound_.get())
+                           : ma_sound_init_from_file_w(engine.engine(), wide_path.c_str(),
+                                                       MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
+                                                       nullptr, nullptr, sound_.get());
+#else
     ma_result result = ma_sound_init_from_file(engine.engine(), path.c_str(),
                                                MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
                                                nullptr, nullptr, sound_.get());
+#endif
     if (result != MA_SUCCESS) {
         GLOG_WARN("AudioClip: failed to load '{}' (result={})", path, static_cast<int>(result));
         sound_.reset();

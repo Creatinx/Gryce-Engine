@@ -41,11 +41,13 @@ TEST(GLog, SetCustomLogger) {
     GLog::instance().set_logger(std::move(mock));
 
     GLOG_INFO("test message {}", 42);
+    GLog::instance().flush(); // 异步后端：等待队列排空后再断言
     EXPECT_EQ(raw->call_count, 1);
     EXPECT_EQ(raw->last_level, LogLevel::Info);
     EXPECT_EQ(raw->last_message, "test message 42");
 
     GLOG_WARN("warning");
+    GLog::instance().flush();
     EXPECT_EQ(raw->call_count, 2);
     EXPECT_EQ(raw->last_level, LogLevel::Warn);
     EXPECT_EQ(raw->last_message, "warning");

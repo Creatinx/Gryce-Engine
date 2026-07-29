@@ -70,7 +70,7 @@ std::filesystem::path find_project_root() {
 namespace {
 
 struct DemoArgs {
-    bool vulkan = false;
+    bool vulkan = true;  // 默认 Vulkan，--opengl 切回兼容后端
     bool vulkan_validation = false;
     bool screenshot = false;
     float screenshot_delay = 0.0f;
@@ -82,6 +82,8 @@ static DemoArgs parse_args(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
             args.vulkan = true;
+        } else if (std::strcmp(argv[i], "--opengl") == 0) {
+            args.vulkan = false;
         } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
             args.vulkan_validation = true;
         } else if (std::strcmp(argv[i], "--screenshot") == 0) {

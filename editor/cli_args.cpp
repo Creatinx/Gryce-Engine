@@ -51,10 +51,12 @@ void print_help(const char* program) {
               << "Options:\n"
               << "  --scene <scene_name>      Load scene file (.gesc)\n"
               << "  --record <seconds>        Record N seconds video, then exit\n"
-              << "  --screenshot <path>       Save a single screenshot\n"
-              << "  --output <path>           Output path for recording/screenshot\n"
+              << "  --output <path>           Output path for recording\n"
               << "  --resolution <WxH>        Window resolution (default 1920x1080)\n"
               << "  --camera <preset>         Camera preset: orbit | flythrough | static | demo\n"
+              << "  --vulkan                  Use Vulkan backend (default)\n"
+              << "  --opengl                  Use OpenGL backend (compatibility)\n"
+              << "  --vulkan-validation       Enable Vulkan validation layers\n"
               << "  --headless                Run without visible window (best-effort)\n"
               << "  --no-audio                Do not record system audio\n"
               << "  --help                    Show this help message\n";
@@ -81,8 +83,6 @@ CliArgs parse_cli_args(int argc, char* argv[]) {
                     args.record_seconds = 0.0f;
                 }
             }
-        } else if (arg_matches(arg, "--screenshot")) {
-            if (i + 1 < argc) args.screenshot_path = argv[++i];
         } else if (arg_matches(arg, "--output")) {
             if (i + 1 < argc) args.output_path = argv[++i];
         } else if (arg_matches(arg, "--resolution")) {

@@ -188,7 +188,14 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         return false;
     }
 
-    tonemap_shader_ = load_shader("tonemap", RHIFramebufferHandle{}, true, true);
+    // tonemap 管线的 render pass 必须与实际绘制目标一致：视口离屏输出开启时
+    // 画到 viewport_fbo_（RGBA8、无深度），否则画到默认 framebuffer（交换链
+    // 格式、含深度）。用错误的 render pass 建管线是 UB（格式/深度不匹配），
+    // 在部分驱动上直接 VK_ERROR_DEVICE_LOST + 视口黑屏。
+    const bool tonemap_to_viewport = viewport_output_enabled_ && viewport_fbo_.is_valid();
+    tonemap_shader_ = load_shader("tonemap",
+                                  tonemap_to_viewport ? viewport_fbo_ : RHIFramebufferHandle{},
+                                  true, true);
     if (!tonemap_shader_.is_valid()) {
         GLOG_ERROR("RenderPipeline: failed to load tonemap shader");
         return false;
@@ -361,17 +368,13 @@ void RenderPipeline::update_light_space_matrix() {
         return;
     }
 
-    // 阴影正交盒跟随相机焦点（相机前方 shadow_area_ 处），避免远处物体出盒失影。
+    // 阴影正交盒贴合相机视锥：把视锥 8 个角点变换到 light space 求 AABB，
+    // 可见区域内处处有阴影，只有溢出画面（视锥剔除）才不渲染——没有固定"临界位置"。
     // 方向光方向为零向量时 normalized() 产生 NaN，look_at 会崩坏；先判零再归一化。
     const math::Vector3f& raw_dir = lights_[shadow_light_index_].direction;
     math::Vector3f light_dir = raw_dir.length_sq() < 1e-6f
                                ? math::Vector3f(0.0f, -1.0f, 0.0f)
                                : raw_dir.normalized();
-    math::Vector3f center = math::Vector3f::zero();
-    if (camera_) {
-        center = camera_->position() + camera_->forward() * shadow_area_;
-    }
-    math::Vector3f eye = center - light_dir * (shadow_area_ * 2.0f);
 
     // 当方向光与世界 up 平行时，look_at 的默认 up 会产生 gimbal lock（cross 结果为零）。
     // 选择一个与 light_dir 不共线的 up 向量。
@@ -379,22 +382,97 @@ void RenderPipeline::update_light_space_matrix() {
     if (std::abs(light_dir.dot(up)) > 0.98f) {
         up = math::Vector3f::forward();
     }
-    math::Matrix4f light_view = math::Matrix4f::look_at(eye, center, up);
 
-    // 根据相机 far 平面 tighter 地计算正交投影 near/far，减少 z-fighting。
-    float near_plane = 0.1f;
-    float far_plane = shadow_area_ * 4.0f;
     if (camera_) {
-        far_plane = std::max(far_plane, camera_->far_plane());
-        near_plane = std::min(near_plane, camera_->near_plane());
+        const float cam_near = camera_->near_plane();
+        const float cam_far = camera_->far_plane();
+        const float tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+        const float aspect = camera_->aspect();
+        const math::Vector3f pos = camera_->position();
+        const math::Vector3f fwd = camera_->forward();
+        const math::Vector3f rgt = camera_->right();
+        const math::Vector3f upv = camera_->up();
+
+        // 视锥 8 角点（世界空间）
+        auto corner = [&](float dist, float sx, float sy) {
+            const float hh = tan_half * dist;
+            const float hw = hh * aspect;
+            return pos + fwd * dist + rgt * (hw * sx) + upv * (hh * sy);
+        };
+        math::Vector3f corners[8] = {
+            corner(cam_near, -1.0f, -1.0f), corner(cam_near, 1.0f, -1.0f),
+            corner(cam_near, 1.0f, 1.0f),   corner(cam_near, -1.0f, 1.0f),
+            corner(cam_far, -1.0f, -1.0f),  corner(cam_far, 1.0f, -1.0f),
+            corner(cam_far, 1.0f, 1.0f),    corner(cam_far, -1.0f, 1.0f),
+        };
+
+        math::Vector3f frustum_center = math::Vector3f::zero();
+        for (const auto& c : corners) frustum_center = frustum_center + c;
+        frustum_center = frustum_center / 8.0f;
+
+        // light 相机后退距离 = 视锥半径 + 投影物余量。
+        // 之前直接退 cam_far 会让深度范围膨胀到数千单位，深度精度不足产生
+        // 随镜头移动的条状 shadow acne。
+        float frustum_radius = 0.0f;
+        for (const auto& c : corners) {
+            frustum_radius = std::max(frustum_radius, (c - frustum_center).length());
+        }
+        const float eye_dist = frustum_radius + 60.0f;
+        math::Vector3f eye = frustum_center - light_dir * eye_dist;
+        math::Matrix4f light_view = math::Matrix4f::look_at(eye, frustum_center, up);
+
+        // light space AABB（look_at 下前方为 -z）
+        math::Vector3f lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
+        for (const auto& c : corners) {
+            math::Vector3f p = light_view.transform_point(c);
+            lo.x = std::min(lo.x, p.x); lo.y = std::min(lo.y, p.y); lo.z = std::min(lo.z, p.z);
+            hi.x = std::max(hi.x, p.x); hi.y = std::max(hi.y, p.y); hi.z = std::max(hi.z, p.z);
+        }
+
+        // 轻微外扩，避免视锥边缘恰好贴盒边采样出问题
+        const float margin_x = (hi.x - lo.x) * 0.02f + 0.5f;
+        const float margin_y = (hi.y - lo.y) * 0.02f + 0.5f;
+        lo.x -= margin_x; hi.x += margin_x;
+        lo.y -= margin_y; hi.y += margin_y;
+
+        // 按 texel 对齐边界，消除相机移动时的阴影边缘抖动
+        const float texel_x = (hi.x - lo.x) / static_cast<float>(shadow_map_size_);
+        const float texel_y = (hi.y - lo.y) / static_cast<float>(shadow_map_size_);
+        if (texel_x > 1e-6f) {
+            lo.x = std::floor(lo.x / texel_x) * texel_x;
+            hi.x = std::floor(hi.x / texel_x) * texel_x;
+        }
+        if (texel_y > 1e-6f) {
+            lo.y = std::floor(lo.y / texel_y) * texel_y;
+            hi.y = std::floor(hi.y / texel_y) * texel_y;
+        }
+
+        // 深度范围：near 朝光源方向延伸，把视锥外（画面上方/侧面）的投影物也纳入，
+        // 这样离屏物体依然能把影子投进画面；far 留一点余量。
+        const float near_plane = std::max(0.1f, -hi.z - 50.0f);
+        const float far_plane = -lo.z + 10.0f;
+
+        // 自适应 shadow bias：硬件 slope-scaled bias 负责坡度部分（vk_shader.cpp
+        // shadow pipeline 的 depthBias），这里只需覆盖 texel 量化余量（0.5 texel）。
+        const float depth_range = std::max(far_plane - near_plane, 1e-3f);
+        const float texel_world = std::max((hi.x - lo.x), (hi.y - lo.y)) /
+                                  static_cast<float>(shadow_map_size_);
+        effective_shadow_bias_ = shadow_bias_ + texel_world * 0.5f / depth_range;
+
+        math::Matrix4f light_proj = math::Matrix4f::ortho(lo.x, hi.x, lo.y, hi.y, near_plane, far_plane);
+        // 注意：不要在这里做 OpenGL→Vulkan 的 z 重映射。
+        // VulkanShader::set_mat4("uLightSpaceMatrix") 已统一处理 NDC z 转换。
+        light_space_matrix_ = light_proj * light_view;
+        return;
     }
+
+    // 无相机时的兜底：以原点为中心、shadow_area_ 为半径的固定盒
+    math::Vector3f center = math::Vector3f::zero();
+    math::Vector3f eye = center - light_dir * (shadow_area_ * 2.0f);
+    math::Matrix4f light_view = math::Matrix4f::look_at(eye, center, up);
     math::Matrix4f light_proj = math::Matrix4f::ortho(
-        -shadow_area_, shadow_area_, -shadow_area_, shadow_area_, near_plane, far_plane);
-    if (ctx_ && ctx_->backend() && std::strcmp(ctx_->backend()->api_name(), "Vulkan") == 0) {
-        // OpenGL ortho z ∈ [-1,1]，Vulkan z ∈ [0,1]。调整正交投影的 z 行。
-        light_proj(2, 2) = 1.0f / (far_plane - near_plane);
-        light_proj(2, 3) = -near_plane / (far_plane - near_plane);
-    }
+        -shadow_area_, shadow_area_, -shadow_area_, shadow_area_, 0.1f, shadow_area_ * 4.0f);
+    effective_shadow_bias_ = shadow_bias_;
     light_space_matrix_ = light_proj * light_view;
 }
 
@@ -741,6 +819,10 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
 void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     if (!initialized_ || !camera_) return;
 
+    // 每帧重置材质 bind 缓存（跨 pass 不保留）
+    last_bound_material_pbr_ = nullptr;
+    last_bound_material_skinned_ = nullptr;
+
     update_light_space_matrix();
     const bool render_shadow = shadow_enabled_ && shadow_light_index_ >= 0;
 
@@ -781,23 +863,15 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     bind_global_uniforms(ctx);
 
     // 2b. 收集绘制项并拆分不透明 / 透明（同时做相机视锥体剔除）
-    struct DrawItem {
-        RHIMeshHandle mesh;
-        const Material* material;
-        math::Matrix4f model;
-        float dist_sq;
-    };
-    struct SkinnedDrawItem {
-        RHIMeshHandle mesh;
-        const Material* material;
-        math::Matrix4f model;
-        std::shared_ptr<const std::vector<math::Matrix4f>> palette;
-        float dist_sq;
-    };
-    std::vector<DrawItem> opaque_items;
-    std::vector<DrawItem> transparent_items;
-    std::vector<SkinnedDrawItem> skinned_opaque_items;
-    std::vector<SkinnedDrawItem> skinned_transparent_items;
+    // 容器为成员变量，每帧 clear() 复用 capacity，避免反复堆分配。
+    auto& opaque_items = opaque_items_;
+    auto& transparent_items = transparent_items_;
+    auto& skinned_opaque_items = skinned_opaque_items_;
+    auto& skinned_transparent_items = skinned_transparent_items_;
+    opaque_items.clear();
+    transparent_items.clear();
+    skinned_opaque_items.clear();
+    skinned_transparent_items.clear();
     const math::Vector3f cam_pos = camera_->position();
     ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
         scene,
@@ -891,9 +965,12 @@ void RenderPipeline::render_mesh_internal(RHIMeshHandle mesh, const Material* ma
 
     ctx.set_shader(pbr_shader_);
     ctx.set_uniform_mat4(pbr_shader_, "uModel", model);
+    // 每 draw 设置（material 可能为空，bind 有缓存跳过），供 shader 翻转背面法线
+    ctx.set_uniform_int(pbr_shader_, "uTwoSided", two_sided ? 1 : 0);
 
-    if (material) {
+    if (material && material != last_bound_material_pbr_) {
         material->bind(&ctx, pbr_shader_);
+        last_bound_material_pbr_ = material;
     }
 
     ctx.draw_mesh(mesh, pbr_shader_);
@@ -918,14 +995,17 @@ void RenderPipeline::render_skinned_mesh_internal(RHIMeshHandle mesh, const Mate
 
     ctx.set_shader(skinned_pbr_shader_);
     ctx.set_uniform_mat4(skinned_pbr_shader_, "uModel", model);
+    // 每 draw 设置（material 可能为空，bind 有缓存跳过），供 shader 翻转背面法线
+    ctx.set_uniform_int(skinned_pbr_shader_, "uTwoSided", two_sided ? 1 : 0);
 
     // palette：shared_ptr 按值捕获进命令队列，渲染线程执行时数据仍有效
     if (palette && !palette->empty()) {
         ctx.set_uniform_mat4_array(skinned_pbr_shader_, "uBonePalette", std::move(palette));
     }
 
-    if (material) {
+    if (material && material != last_bound_material_skinned_) {
         material->bind(&ctx, skinned_pbr_shader_);
+        last_bound_material_skinned_ = material;
     }
 
     ctx.draw_mesh(mesh, skinned_pbr_shader_);
@@ -996,7 +1076,7 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
         ctx.set_uniform_int(shader, "uShadowMap", TextureSlots::kPBRShadow);
     }
     ctx.set_uniform_int(shader, "uUseShadowMap", use_shadow ? 1 : 0);
-    ctx.set_uniform_float(shader, "uShadowBias", shadow_bias_);
+    ctx.set_uniform_float(shader, "uShadowBias", effective_shadow_bias_);
 }
 
 void RenderPipeline::bind_global_uniforms(RenderContext& ctx) {
@@ -1209,7 +1289,7 @@ bool RenderPipeline::create_fullscreen_mesh(RenderContext* ctx) {
 }
 
 void RenderPipeline::begin_hdr_forward_pass(RenderContext& ctx) {
-    GLOG_INFO("RenderPipeline::begin_hdr_forward_pass: hdr_fbo_={} viewport={}x{}",
+    GLOG_DEBUG("RenderPipeline::begin_hdr_forward_pass: hdr_fbo_={} viewport={}x{}",
               hdr_fbo_.index, viewport_width_, viewport_height_);
     ctx.set_shader(pbr_shader_);
     ctx.set_framebuffer(hdr_fbo_);
@@ -1231,7 +1311,7 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
     const bool to_viewport = viewport_output_enabled_ && viewport_fbo_.is_valid();
-    GLOG_INFO("RenderPipeline::render_tonemap: to_viewport={} viewport_fbo_={} viewport={}x{}",
+    GLOG_DEBUG("RenderPipeline::render_tonemap: to_viewport={} viewport_fbo_={} viewport={}x{}",
               to_viewport, viewport_fbo_.index, viewport_width_, viewport_height_);
     ctx.set_framebuffer(to_viewport ? viewport_fbo_ : RHIFramebufferHandle{});
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);

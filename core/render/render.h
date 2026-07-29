@@ -161,12 +161,18 @@ public:
     virtual void set_validation_enabled(bool enabled) { (void)enabled; }
 };
 
+// 渲染后端分层：
+//   Vulkan —— 默认后端（首选，全功能）
+//   OpenGL —— 兼容后端（旧硬件 / 调试用）
+//   DX11 / DX12 —— WinNative 预留，尚未实现（工厂返回 nullptr）
 enum class RenderAPI {
+    Vulkan,
     OpenGL,
-    Vulkan
+    DX11,
+    DX12
 };
 
-// 根据 API 创建对应后端（OpenGL / Vulkan）
+// 根据 API 创建对应后端；DX11/DX12 为预留项，当前返回 nullptr。
 std::unique_ptr<IRenderBackend> create_render_backend(RenderAPI api);
 
 } // namespace gryce_engine::render

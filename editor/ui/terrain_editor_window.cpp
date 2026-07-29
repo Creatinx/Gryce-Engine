@@ -13,6 +13,7 @@
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
 #include "../localization/localization.h"
+#include "file_browser_popup.h"
 
 namespace gryce_engine::editor {
 
@@ -108,9 +109,23 @@ void TerrainEditorWindow::draw_parameters() {
 
     char buf[256] = {};
     std::strncpy(buf, terrain_->base_texture_path.c_str(), sizeof(buf) - 1);
-    if (ImGui::InputText(tr("terrain_editor.base_texture"), buf, sizeof(buf))) {
-        terrain_->base_texture_path = buf;
-        changed = true;
+    // 两列表格：输入框拉伸 +「浏览...」按钮固定宽，按钮不会被挤出
+    if (ImGui::BeginTable("##base_texture_browse", 2)) {
+        ImGui::TableSetupColumn("##input", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("##browsebtn", ImGuiTableColumnFlags_WidthFixed,
+                                FileBrowserPopup::browse_button_width());
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputText(tr("terrain_editor.base_texture"), buf, sizeof(buf))) {
+            terrain_->base_texture_path = buf;
+            changed = true;
+        }
+        ImGui::TableNextColumn();
+        if (FileBrowserPopup::instance().browse_button("##browse_base_texture", buf, sizeof(buf))) {
+            terrain_->base_texture_path = buf;
+            changed = true;
+        }
+        ImGui::EndTable();
     }
 
     if (changed) {

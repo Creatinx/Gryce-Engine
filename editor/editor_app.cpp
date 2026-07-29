@@ -86,6 +86,7 @@
 #include "ui/settings_window.h"
 #include "ui/project_settings_window.h"
 #include "ui/gimport_editor_window.h"
+#include "ui/message_popup.h"
 #include "import/gimport_settings.h"
 #include "asset/asset_database.h"
 #include "localization/localization.h"
@@ -666,8 +667,7 @@ int EditorApp::run(int argc, char* argv[]) {
     if (args.show_help) return 0;
 
     bool api_override_by_cli = false;
-    render::RenderAPI selected_api = render::RenderAPI::OpenGL;
-    bool screenshot_mode = args.should_screenshot();
+    render::RenderAPI selected_api = render::RenderAPI::Vulkan;
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
     bool test_play_mode = false;    // --test-play-mode：自动进入/退出 Play Mode，用于 CI
     bool test_delete_undo = false;  // --test-delete-undo：自动删除 Ground 再撤销，用于 CI
@@ -675,6 +675,9 @@ int EditorApp::run(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
             selected_api = render::RenderAPI::Vulkan;
+            api_override_by_cli = true;
+        } else if (std::strcmp(argv[i], "--opengl") == 0) {
+            selected_api = render::RenderAPI::OpenGL;
             api_override_by_cli = true;
         } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
             vulkan_validation = true;
@@ -708,6 +711,12 @@ int EditorApp::run(int argc, char* argv[]) {
     editor::ProjectSettings project_settings = editor::ProjectSettingsWindow::load(project_root.string());
     if (!api_override_by_cli) {
         selected_api = project_settings.render_api;
+    }
+    // DX11/DX12 为预留后端（WinNative，尚未实现）：回退到默认 Vulkan。
+    if (selected_api == render::RenderAPI::DX11 || selected_api == render::RenderAPI::DX12) {
+        GLOG_WARN("Render backend '{}' is reserved and not implemented yet, falling back to Vulkan",
+                  editor::render_api_to_string(selected_api));
+        selected_api = render::RenderAPI::Vulkan;
     }
 
     // 初始化 GLFW
@@ -772,6 +781,9 @@ int EditorApp::run(int argc, char* argv[]) {
     editor::Localization::instance().set_light_theme(theme_preset == editor::ThemePreset::Light);
     editor::apply_theme(theme_preset, editor_settings.theme);
 
+    // 应用持久化的 VSync 设置
+    render_ctx.set_swap_interval(editor_settings.editor.vsync ? 1 : 0);
+
     // File > Load Project 时重新加载编辑器配置（主题、语言、字体）
     auto reload_editor_config = [&](const std::string& root) {
         editor_settings = editor::SettingsWindow::load(root);
@@ -779,10 +791,12 @@ int EditorApp::run(int argc, char* argv[]) {
         editor::Localization::instance().load(editor_settings.appliance.language, root);
         editor::Localization::instance().set_light_theme(theme_preset == editor::ThemePreset::Light);
         editor::apply_theme(theme_preset, editor_settings.theme);
+        render_ctx.set_swap_interval(editor_settings.editor.vsync ? 1 : 0);
     };
 
     // 设置窗口
     editor::SettingsWindow settings_window;
+    settings_window.set_render_context(&render_ctx);
     editor::ProjectSettingsWindow project_settings_window;
     editor::GImportEditorWindow gimport_editor_window;
 
@@ -807,6 +821,9 @@ int EditorApp::run(int argc, char* argv[]) {
     hierarchy_panel->set_undo_stack(&undo_stack);
     inspector_panel->set_undo_stack(&undo_stack);
     inspector_panel->set_render_context(&render_ctx);
+    // Inspector「Add Component」按钮复用 Hierarchy 的组件选择器（同一 Undo 感知流程）
+    inspector_panel->set_add_component_handler(
+        [hierarchy_panel](scene::Entity* entity) { hierarchy_panel->open_component_picker(entity); });
 
     // Play Mode（M1-E4）：运行时预览，退出时从快照恢复场景
     bool play_mode_active = false;
@@ -921,9 +938,22 @@ int EditorApp::run(int argc, char* argv[]) {
 
     // 创建渲染管线（必须在 start() 之前，主线程持有 GL context）。
     // 视口离屏输出：tonemap 结果写入独立 FBO 供 Viewport / Game View 面板采样。
+    // 项目设置中的渲染质量选项（阴影/HDR/环境光等）在 init 前应用到两条管线。
+    auto apply_quality_settings = [&project_settings](render::RenderPipeline& p) {
+        const auto& q = project_settings.quality;
+        p.set_shadow_map_size(q.shadow_map_size);
+        p.set_shadow_bias(q.shadow_bias);
+        p.set_shadow_area(q.shadow_area);
+        p.set_ambient(math::Vector3f(q.ambient[0], q.ambient[1], q.ambient[2]));
+        p.set_hdr_enabled(q.hdr_enabled);
+        p.set_exposure(q.exposure);
+        p.set_tone_map_mode(q.tone_map_mode);
+        p.set_ibl_intensity(q.ibl_intensity);
+    };
     render::RenderPipeline pipeline;
     pipeline.set_viewport_output_enabled(true);
     pipeline.set_imgui_backend(imgui.backend());
+    apply_quality_settings(pipeline);
     if (!pipeline.init(&render_ctx, "res:/shaders")) {
         GLOG_ERROR("Failed to initialize render pipeline");
         render_ctx.shutdown();
@@ -936,6 +966,7 @@ int EditorApp::run(int argc, char* argv[]) {
     render::RenderPipeline game_pipeline;
     game_pipeline.set_viewport_output_enabled(true);
     game_pipeline.set_imgui_backend(imgui.backend());
+    apply_quality_settings(game_pipeline);
     if (!game_pipeline.init(&render_ctx, "res:/shaders")) {
         GLOG_WARN("Failed to initialize game view pipeline; Game View will be unavailable");
     }
@@ -1073,6 +1104,21 @@ int EditorApp::run(int argc, char* argv[]) {
             hierarchy_panel->queue_delete(e->uuid());
         }
     });
+    shortcuts.register_shortcut("Cut Entity", {ImGuiKey_X, true, false, false}, [&]() {
+        hierarchy_panel->cut_entity(hierarchy_panel->selected_entity());
+    });
+    shortcuts.register_shortcut("Copy Entity", {ImGuiKey_C, true, false, false}, [&]() {
+        hierarchy_panel->copy_entity(hierarchy_panel->selected_entity());
+    });
+    shortcuts.register_shortcut("Paste Entity", {ImGuiKey_V, true, false, false}, [&]() {
+        hierarchy_panel->paste_clipboard(hierarchy_panel->selected_entity());
+    });
+    shortcuts.register_shortcut("Duplicate Entity", {ImGuiKey_D, true, false, false}, [&]() {
+        hierarchy_panel->duplicate_entity(hierarchy_panel->selected_entity());
+    });
+    shortcuts.register_shortcut("Rename Entity", {ImGuiKey_F2, false, false, false}, [&]() {
+        hierarchy_panel->rename_selected();
+    });
     shortcuts.register_shortcut("Focus Selected", {ImGuiKey_F, false, false, false}, [&]() {
         if (!viewport_panel->hovered()) return;
         auto* e = hierarchy_panel->selected_entity();
@@ -1086,6 +1132,17 @@ int EditorApp::run(int argc, char* argv[]) {
             editor_camera.focus_on(e->transform()->position);
         }
     });
+
+    // 应用持久化的快捷键覆盖（editor_settings.json "shortcuts" 组）
+    for (const auto& [name, combo_str] : editor_settings.shortcut_overrides) {
+        ShortcutManager::KeyCombo combo;
+        if (ShortcutManager::combo_from_string(combo_str, combo)) {
+            if (!shortcuts.set_combo(name, combo)) {
+                GLOG_WARN("Shortcuts: unknown shortcut '{}', ignored", name);
+            }
+        }
+    }
+    settings_window.set_shortcut_manager(&shortcuts);
 
     auto open_scene = [&](const std::string& path) {
         GLOG_INFO("Open Scene: starting '{}'", path);
@@ -1454,6 +1511,36 @@ int EditorApp::run(int argc, char* argv[]) {
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu(editor::tr("menu.edit"))) {
+            // Undo/Redo 与全局快捷键共用同一命令栈
+            if (ImGui::MenuItem(editor::tr("menu.undo"), "Ctrl+Z", false, undo_stack.can_undo())) {
+                undo_stack.undo();
+            }
+            if (ImGui::MenuItem(editor::tr("menu.redo"), "Ctrl+Y", false, undo_stack.can_redo())) {
+                undo_stack.redo();
+            }
+            ImGui::Separator();
+            scene::Entity* selected = hierarchy_panel->selected_entity();
+            if (ImGui::MenuItem(editor::tr("menu.cut"), "Ctrl+X", false, selected != nullptr)) {
+                hierarchy_panel->cut_entity(selected);
+            }
+            if (ImGui::MenuItem(editor::tr("menu.copy"), "Ctrl+C", false, selected != nullptr)) {
+                hierarchy_panel->copy_entity(selected);
+            }
+            if (ImGui::MenuItem(editor::tr("menu.paste"), "Ctrl+V", false, hierarchy_panel->has_clipboard())) {
+                hierarchy_panel->paste_clipboard(selected);
+            }
+            if (ImGui::MenuItem(editor::tr("menu.duplicate"), "Ctrl+D", false, selected != nullptr)) {
+                hierarchy_panel->duplicate_entity(selected);
+            }
+            if (ImGui::MenuItem(editor::tr("menu.rename"), "F2", false, selected != nullptr)) {
+                hierarchy_panel->rename_selected();
+            }
+            if (ImGui::MenuItem(editor::tr("menu.delete"), "Del", false, selected != nullptr)) {
+                hierarchy_panel->queue_delete(selected->uuid());
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu(editor::tr("menu.play"))) {
             if (ImGui::MenuItem(play_mode_active ? editor::tr("menu.play_stop") : editor::tr("menu.play_play"), "Ctrl+P")) {
                 toggle_play_mode();
@@ -1500,11 +1587,11 @@ int EditorApp::run(int argc, char* argv[]) {
     double auto_close_timer = 0.0;
     double play_mode_test_timer = 0.0;
     bool play_mode_test_entered = false;
-    bool screenshot_requested = false;
-    double screenshot_delay_timer = 0.0;
     double delete_undo_test_timer = 0.0;
     bool delete_test_done = false;
     bool undo_test_done = false;
+    double autosave_timer = 0.0;
+    int last_autosave_interval_min = editor_settings.editor.autosave_interval_min;
 
     // 录制器：命令行 --record 时创建
     std::unique_ptr<FrameRecorder> recorder;
@@ -1516,8 +1603,8 @@ int EditorApp::run(int argc, char* argv[]) {
         GLOG_INFO("FrameRecorder initialized: output='{}' duration={}s", output.string(), args.record_seconds);
     }
 
-    // 截图/录制时隐藏 FPS 等调试 UI
-    const bool hide_debug_ui = args.should_record() || args.should_screenshot();
+    // 录制时隐藏 FPS 等调试 UI
+    const bool hide_debug_ui = args.should_record();
     if (hide_debug_ui) {
         fps_label = nullptr;
     }
@@ -1581,6 +1668,22 @@ int EditorApp::run(int argc, char* argv[]) {
         // 场景热重载计时器（实际重载在 present 之后执行）
         scene_reload_timer += window.delta_time();
 
+        // 场景自动保存：间隔为 0 表示关闭；间隔被修改时重置计时器
+        if (editor_settings.editor.autosave_interval_min != last_autosave_interval_min) {
+            last_autosave_interval_min = editor_settings.editor.autosave_interval_min;
+            autosave_timer = 0.0;
+        }
+        if (editor_settings.editor.autosave_interval_min > 0 && !play_mode_active) {
+            autosave_timer += window.delta_time();
+            if (autosave_timer >= editor_settings.editor.autosave_interval_min * 60.0) {
+                autosave_timer = 0.0;
+                if (world.scene() && world.scene()->has_unsaved_changes()) {
+                    save_scene(scene_path);
+                    GLOG_INFO("Scene autosaved to '{}'", scene_path);
+                }
+            }
+        }
+
         input.update(&window);
 
         // F1 切换线框模式（调试用，仅 OpenGL）
@@ -1597,29 +1700,6 @@ int EditorApp::run(int argc, char* argv[]) {
 
         // 编辑器相机：只在 Viewport 面板悬停且 gizmo 未激活时响应输入
         editor_camera.update(dt, viewport_panel->hovered() && !viewport_panel->gizmo_active());
-
-        // 截图模式：等待 1.0s，让 Viewport 尺寸防抖和布局稳定后再截图
-        if (screenshot_mode) {
-            screenshot_delay_timer += dt;
-            if (!screenshot_requested && screenshot_delay_timer >= 1.0) {
-                screenshot_requested = true;
-                std::string screenshot_path = args.screenshot_path;
-                if (screenshot_path.empty() && !args.output_path.empty()) {
-                    screenshot_path = args.output_path;
-                }
-                if (screenshot_path.empty()) {
-                    screenshot_path = is_vulkan
-                                          ? "D:/Gryce-Engine/screenshot_vulkan.png"
-                                          : "D:/Gryce-Engine/screenshot_opengl.png";
-                }
-                // 确保截图使用 PNG 格式
-                if (std::filesystem::path(screenshot_path).extension() != ".png") {
-                    screenshot_path += ".png";
-                }
-                render_ctx.request_screenshot(screenshot_path);
-                GLOG_INFO("Screenshot requested after startup delay: '{}'", screenshot_path);
-            }
-        }
 
         // 驱动 ECS 系统（物理、动画、游戏逻辑等）
         world.update(dt);
@@ -1794,6 +1874,9 @@ int EditorApp::run(int argc, char* argv[]) {
         settings_window.draw(project_root.string(), editor_settings);
         project_settings_window.draw(project_root.string(), project_settings);
         gimport_editor_window.draw();
+
+        // 通用警告/错误弹窗（各面板通过 MessagePopup::warn/error 登记）
+        editor::MessagePopup::instance().draw();
 
         // Save Scene As 弹窗
         if (save_as_popup_requested) {

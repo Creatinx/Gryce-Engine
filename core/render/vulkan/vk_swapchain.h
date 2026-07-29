@@ -71,7 +71,7 @@ public:
     }
     int current_frame_index() const { return current_frame_; }
     VkSemaphore current_image_available_semaphore() const { return image_available_semaphores_[current_frame_]; }
-    VkSemaphore current_render_finished_semaphore() const { return render_finished_semaphores_[current_frame_]; }
+    VkSemaphore current_render_finished_semaphore() const { return render_finished_semaphores_[current_image_]; }
     VkFence current_fence() const { return frame_fences_[current_frame_]; }
     int frames_in_flight() const { return frames_in_flight_; }
 

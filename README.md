@@ -4,19 +4,23 @@
 [![Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](./CMakeLists.txt)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-> 一个处于原型阶段的 C++ 游戏引擎，采用 OpenGL / Vulkan 双渲染后端、ECS 架构、JSON 场景序列化，目标是为中小规模 2D/3D 游戏提供完整的运行时与编辑器工具链。
+> 一个处于原型阶段的 C++ 游戏引擎，采用 Vulkan 默认 / OpenGL 兼容的双渲染后端、ECS 架构、JSON 场景序列化，目标是为中小规模 2D/3D 游戏提供完整的运行时与编辑器工具链。
 
 ---
 
 ## 特性
 
 - **双后端渲染（RHI）**
-  - OpenGL 4.6：完整 2D 批处理 + 3D PBR + Shadow + HDR + Bloom。
-  - Vulkan 1.2：同等功能集，支持验证层、VMA、multi-viewport 与扩展动态状态。
+  - Vulkan 1.2：**默认后端**，完整 2D 批处理 + 3D PBR + Shadow + HDR + Bloom，支持验证层、VMA、multi-viewport 与扩展动态状态。
+  - OpenGL 4.6：兼容后端（旧硬件/调试），同等功能集。
+  - DirectX 11 / 12：枚举值已预留（WinNative），尚未实现。
   - PBR 材质工作流：albedo / normal / roughness / metallic / ao / emissive。
   - IBL 环境光照、天空盒、HDR/EXR 环境贴图、tonemapping（Reinhard / ACES）。
+  - 阴影：光空间正交盒贴合相机视锥（纹素对齐、深度延伸覆盖屏外投射体）、着色器边缘淡出、自适应 bias + 硬件 slope-scaled depth bias。
+  - Project Settings 内可配置渲染 API 与 Render Quality（阴影、环境光、HDR、tonemap、exposure、IBL 强度），持久化到 `project_settings.json`。
 - **ECS + 场景系统**
-  - Entity-Component-System 架构，类 Godot/Unity 的节点层级。
+  - Entity-Component-System 架构，类 Godot/Unity 的节点层级；每个场景有且仅有一个合成根节点（`.gesc` 格式版本 2，v1 兼容）。
+  - 2D 父链变换：`world_transform_2d()` 组合祖先变换，`Node2D::top_level` 脱离父链，`z_index` 参与绘制排序。
   - `.gesc` JSON 场景格式，支持 `res:/` 虚拟路径、场景热重载与差异保存。
   - Prefab / Prefab Variant：嵌套、覆盖参数、还原模板、场景紧凑引用。
 - **资源管线**
@@ -40,7 +44,13 @@
   - 资源拖放：模型/纹理/Prefab/场景到视口或 Inspector。
   - 主题系统：Fluent Design 深色/浅色 + 强调色 + 自定义字体，持久化配置。
   - 多语言：中文/英文/日文运行时切换。
+  - Godot 风格 Create Entity 对话框（收藏/最近/搜索/过滤/描述）。
+  - Hierarchy / File Explorer 右键菜单与全局快捷键（Ctrl+X/C/V/D、F2、Del）。
+  - Settings 四分区：主题、语言、VSync + 场景自动保存、快捷键改绑（冲突检测）。
   - Undo/Redo、快捷键体系（Ctrl+S/Z/Y、F 聚焦、Ctrl+P Play Mode）。
+- **日志与性能**
+  - 异步日志 AsyncLogger：`log()` 入队、worker 线程写出，`GLog` 自动包装 logger。
+  - 热路径优化：每帧日志降为 DEBUG、Release 剔除 `GL_CHECK_ERROR`、DrawItem 跨帧复用、重复材质绑定跳过。
 - **运行时 UI（2D）**
   - ColorRect、Label、Sprite2D、Circle、Polygon、TileMap、ParticleEmitter2D、ParallaxBackground。
   - 2D 光照：环境光、方向光、点光源、聚光灯、法线贴图、阴影/遮挡。
@@ -61,8 +71,8 @@
 | 平台 | Windows 10/11（主要支持） |
 | 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64）或 **MSVC**（VS 2022+）|
 | 构建工具 | CMake ≥ 3.28，Ninja（推荐） |
-| 显卡 | OpenGL 4.6 / Vulkan 1.2 兼容 |
-| Vulkan SDK | 可选，仅当使用 `--vulkan` 时需要 |
+| 显卡 | Vulkan 1.2（默认后端）/ OpenGL 4.6（兼容后端）兼容 |
+| Vulkan SDK | 构建 Vulkan 后端（默认）所需；无 SDK 时仅 OpenGL 可用 |
 
 > **注意**：本项目当前主要使用 **MSYS2 UCRT64 MinGW-w64** 工具链开发与测试。CMake 会优先自动选择 MinGW；若未找到则自动 fallback 到 MSVC（需打开 VS 2022 x64 Native Tools Prompt）。
 
@@ -85,7 +95,7 @@ pacman -S mingw-w64-ucrt-x86_64-gcc \
 在 MSYS2 UCRT64 终端中 cd 到项目目录后：
 
 ```bash
-# Debug（默认 OpenGL 后端）
+# Debug（默认 Vulkan 后端，--opengl 可切换兼容后端）
 cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/debug
 
@@ -153,6 +163,15 @@ python build.py
 
 > MSVC 已作为 CMake 的 auto-detect fallback 路径支持。部分 MinGW 特定逻辑（如 `libgcc` 运行时 DLL 复制）在 MSVC 下会被自动跳过。
 
+#### 方式 E：Visual Studio（VS2026）
+
+仓库根目录的 `CMakeSettings.json` 已内置 `x64-Debug` / `x64-Release`（Ninja）配置，可直接用 Visual Studio 的"打开文件夹"工作流；也可以命令行生成 VS2026 解决方案：
+
+```powershell
+cmake -S . -B out/vs -G "Visual Studio 18 2026" -A x64
+# 生成 out/vs/GryceEngine.slnx，用 VS2026 打开即可
+```
+
 构建完成后，可执行文件位于（以 `build.py` 默认目录为例）：
 
 - `build/Debug/bin/Debug/3dtest.exe`
@@ -163,17 +182,17 @@ python build.py
 ### 运行
 
 ```bash
-# 3D 综合演示（OpenGL 默认）
+# 3D 综合演示（默认 Vulkan 后端）
 ./build/Debug/bin/Debug/3dtest.exe
 
-# 3D 综合演示（Vulkan 后端）
-./build/Debug/bin/Debug/3dtest.exe --vulkan
+# 3D 综合演示（OpenGL 兼容后端）
+./build/Debug/bin/Debug/3dtest.exe --opengl
 
 # 2D 平台跳跃演示
 ./build/Debug/bin/Debug/gt2dDemo.exe
 
-# 编辑器（指定项目根）
-./build/Debug/bin/Debug/gryce-engine.exe --project-root examples/3dtest
+# 编辑器（项目根自动从可执行文件位置向上探测，可在 File > Load Project 中切换）
+./build/Debug/bin/Debug/gryce-engine.exe
 
 # 单元测试
 ./build/Debug/bin/Debug/gryce_tests.exe
@@ -227,7 +246,7 @@ Gryce-Engine/
 │   ├── render/             # RHI、渲染管线、OpenGL/Vulkan 后端
 │   ├── resources/          # 资源路径、项目根解析
 │   ├── scene/              # Scene、Entity、Transform 层级、Prefab
-│   └── utils/              # 日志、帧率限制、工具类
+│   └── utils/              # 日志（异步 AsyncLogger）、帧率限制、工具类
 ├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API、TODO、CLI）
 ├── editor/                 # 编辑器可执行文件（gryce-engine.exe）
 │   ├── panels/             # 编辑器面板
@@ -291,7 +310,7 @@ Gryce-Engine/
 │        └────────────┬────────────┘                          │
 │                     |                                       │
 │        ┌────────────▼────────────┐                          │
-│        │  RHI: OpenGL / Vulkan   │                          │
+│        │  RHI: Vulkan（默认）/ OpenGL（兼容）│                          │
 │        └─────────────────────────┘                          │
 └─────────────────────────────────────────────────────────────┘
 ```

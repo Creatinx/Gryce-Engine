@@ -40,6 +40,7 @@ layout(set = 0, binding = 0) uniform MaterialLightUBO {
     int uShadowLightIndex; // 产生阴影的方向光下标（-1 表示无）
     int uUseIBL;
     float uIBLIntensity;
+    int uTwoSided;         // 双面材质：背面翻转法线
     Light uLights[MAX_LIGHTS];
 } ubo;
 
@@ -123,6 +124,8 @@ void main() {
         ? normalize(texture(uNormalMap, uv).rgb * 2.0 - 1.0)
         : vec3(0.0, 0.0, 1.0);
     vec3 N = normalize(vTBN * normal);
+    // 双面材质：背面使用翻转法线，否则背面光照全错（发暗/发黑）
+    if (ubo.uTwoSided != 0 && !gl_FrontFacing) N = -N;
 
     float roughness = ubo.uUseRoughnessMap > 0 ? texture(uRoughnessMap, uv).r : ubo.uRoughness;
     float metallic = ubo.uUseMetallicMap > 0 ? texture(uMetallicMap, uv).r : ubo.uMetallic;

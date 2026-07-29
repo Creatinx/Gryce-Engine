@@ -171,15 +171,20 @@ void Entity::set_parent(Entity* parent) {
 }
 
 Entity* Entity::add_child(std::unique_ptr<Entity> child) {
+    return insert_child(std::move(child), children_.size());
+}
+
+Entity* Entity::insert_child(std::unique_ptr<Entity> child, size_t index) {
     if (!child) return nullptr;
 
+    if (index > children_.size()) index = children_.size();
     Entity* raw = child.get();
     raw->parent_ = this;
     // 子实体继承父实体的组件存储池
     if (store_) {
         raw->set_store(store_);
     }
-    children_.push_back(std::move(child));
+    children_.insert(children_.begin() + static_cast<ptrdiff_t>(index), std::move(child));
     return raw;
 }
 
@@ -206,6 +211,23 @@ std::unique_ptr<Entity> Entity::detach_child(Entity* child) {
         }
     }
     return nullptr;
+}
+
+std::vector<std::unique_ptr<Entity>> Entity::detach_all_children() {
+    std::vector<std::unique_ptr<Entity>> owned = std::move(children_);
+    children_.clear();
+    for (auto& child : owned) {
+        child->parent_ = nullptr;
+    }
+    return owned;
+}
+
+void Entity::adopt_children_of(Entity& other) {
+    if (&other == this) return;
+    auto adopted = other.detach_all_children();
+    for (auto& child : adopted) {
+        add_child(std::move(child));
+    }
 }
 
 components::Component* Entity::get_component_by_type(const std::string& type) const {

@@ -163,10 +163,16 @@ void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,
 } // namespace
 
 void GLBackend::set_swap_interval(int interval) {
-    if (window_) {
-        glfwSwapInterval(interval);
-        GLOG_INFO("GLBackend::set_swap_interval: {}", interval);
+    if (!window_) return;
+    // glfwSwapInterval 要求调用线程持有本窗口的 GL context；
+    // context 同一时刻只能属于一个线程（主线程/渲染线程会交接）。
+    // 不持有 context 时调用会在驱动内空指针崩溃（nvoglv64 0xC0000005）。
+    if (glfwGetCurrentContext() != static_cast<GLFWwindow*>(window_)) {
+        GLOG_WARN("GLBackend::set_swap_interval({}): no current context on this thread, skipped", interval);
+        return;
     }
+    glfwSwapInterval(interval);
+    GLOG_INFO("GLBackend::set_swap_interval: {}", interval);
 }
 
 void GLBackend::set_gpu_busy_spin(bool enabled, int iterations) {

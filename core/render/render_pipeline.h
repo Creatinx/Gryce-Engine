@@ -57,6 +57,9 @@ public:
     void set_lights(const std::vector<Light>& lights);
     void set_viewport(int width, int height);
     void set_shadow_bias(float bias) { shadow_bias_ = bias; }
+    // 阴影贴图分辨率：必须在 init() 之前调用（shadow map 在初始化时创建）
+    void set_shadow_map_size(int size) { if (!initialized_) shadow_map_size_ = size; }
+    int shadow_map_size() const { return shadow_map_size_; }
     void set_shadow_enabled(bool enabled) { shadow_enabled_ = enabled; }
     bool shadow_enabled() const { return shadow_enabled_; }
     // 阴影正交盒半径（世界单位），阴影盒跟随相机焦点
@@ -176,6 +179,29 @@ private:
 
     void upload_ibl_textures(RenderContext& ctx, RHIShaderHandle shader);
 
+    // 每帧复用的绘制项容器（clear() 保留 capacity，避免反复堆分配）
+    struct DrawItem {
+        RHIMeshHandle mesh;
+        const Material* material;
+        math::Matrix4f model;
+        float dist_sq;
+    };
+    struct SkinnedDrawItem {
+        RHIMeshHandle mesh;
+        const Material* material;
+        math::Matrix4f model;
+        std::shared_ptr<const std::vector<math::Matrix4f>> palette;
+        float dist_sq;
+    };
+    std::vector<DrawItem> opaque_items_;
+    std::vector<DrawItem> transparent_items_;
+    std::vector<SkinnedDrawItem> skinned_opaque_items_;
+    std::vector<SkinnedDrawItem> skinned_transparent_items_;
+
+    // 连续相同材质跳过重复 bind（按 shader 分开缓存，每帧/每 pass 重置）
+    const Material* last_bound_material_pbr_ = nullptr;
+    const Material* last_bound_material_skinned_ = nullptr;
+
     RenderContext* ctx_ = nullptr;
     std::string shader_dir_;
 
@@ -186,7 +212,7 @@ private:
 
     RHITextureHandle shadow_map_;
     RHIFramebufferHandle shadow_fbo_;
-    int shadow_map_size_ = 1024;
+    int shadow_map_size_ = 2048;
     bool shadow_enabled_ = true;
     float shadow_area_ = 15.0f;
     int shadow_light_index_ = -1;
@@ -200,6 +226,8 @@ private:
     int viewport_height_ = 720;
 
     float shadow_bias_ = 0.001f;
+    // 每帧由 update_light_space_matrix 按阴影盒尺寸自适应计算（基础 bias + texel 余量）
+    float effective_shadow_bias_ = 0.001f;
     bool initialized_ = false;
     bool owns_shaders_ = false;
     bool cull_disabled_ = false;

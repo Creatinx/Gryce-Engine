@@ -8,6 +8,7 @@
 #include "components/2d/ambient_light_2d.h"
 #include "components/2d/component_2d.h"
 #include "components/2d/light_2d.h"
+#include "components/node2d.h"
 #include "ecs/query.h"
 #include "scene/scene.h"
 #include "utils/glog/glog_lib.h"
@@ -66,8 +67,9 @@ void RenderSystem2D::on_render(scene::Scene& scene, render::RenderContext& /*ctx
         l.spot_angle = light->spot_angle;
         l.spot_softness = light->spot_softness;
 
-        auto p = entity->transform()->position;
-        l.position = math::Vector2f(p.x, p.y);
+        // 使用 2D 世界位置（沿父链组合，top_level 截止）
+        auto p = components::d2::world_transform_2d(entity).position;
+        l.position = p;
         l.direction = light->direction;
         if (l.direction.length_sq() < 1e-6f) {
             l.direction = math::Vector2f(0.0f, -1.0f);
@@ -100,7 +102,7 @@ void RenderSystem2D::on_render(scene::Scene& scene, render::RenderContext& /*ctx
         }
     });
 
-    // 按 render_order 排序后再绘制，防止背景盖住文字/UI。
+    // 排序后再绘制，防止背景盖住文字/UI。
     std::vector<components::d2::Component2D*> comps;
     foreach_with_component<components::d2::Component2D>(scene, [&](scene::Entity* /*e*/, components::d2::Component2D* comp) {
         if (comp->enabled) {
@@ -108,8 +110,20 @@ void RenderSystem2D::on_render(scene::Scene& scene, render::RenderContext& /*ctx
         }
     });
 
-    std::sort(comps.begin(), comps.end(), [](components::d2::Component2D* a, components::d2::Component2D* b) {
-        return a->render_order < b->render_order;
+    // 最终绘制顺序规则（升序，越小越先画/越靠底）：
+    //   1. Component2D::render_order（主层级，>=1000 为屏幕空间 UI 层）；
+    //   2. owner 挂有 Node2D 时的 z_index（无 Node2D 视为 0）；
+    //   3. stable_sort 保持收集顺序（同层级按场景遍历顺序）。
+    auto z_index_of = [](components::d2::Component2D* c) {
+        auto* owner = c->owner();
+        auto* n2d = owner ? owner->get_component<components::Node2D>() : nullptr;
+        return n2d ? n2d->z_index : 0;
+    };
+    std::stable_sort(comps.begin(), comps.end(), [&](components::d2::Component2D* a, components::d2::Component2D* b) {
+        if (a->render_order != b->render_order) {
+            return a->render_order < b->render_order;
+        }
+        return z_index_of(a) < z_index_of(b);
     });
 
     constexpr int k_ui_layer = 1000;

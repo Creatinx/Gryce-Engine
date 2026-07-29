@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include "../localization/localization.h"
+#include "file_browser_popup.h"
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
 #include "render/render_context.h"
@@ -23,8 +24,19 @@ void copy_to_buf(char* buf, size_t size, const std::string& str) {
 
 void input_texture_slot(const char* label, char* buf, size_t buf_size,
                         std::string& path, bool& use_flag) {
+    // 三列表格：勾选框 / 输入框（拉伸）/「浏览...」按钮（固定宽），按钮不会被挤出
+    if (!ImGui::BeginTable(std::format("{}##row", label).c_str(), 3)) return;
+    ImGui::TableSetupColumn("##use", ImGuiTableColumnFlags_WidthFixed,
+                            ImGui::GetFrameHeight());
+    ImGui::TableSetupColumn("##input", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("##browsebtn", ImGuiTableColumnFlags_WidthFixed,
+                            FileBrowserPopup::browse_button_width());
+
+    ImGui::TableNextColumn();
     ImGui::Checkbox(std::format("{}##use", label).c_str(), &use_flag);
-    ImGui::SameLine();
+
+    ImGui::TableNextColumn();
+    ImGui::SetNextItemWidth(-FLT_MIN); // 填满单元格（自动为 label 留位）
     if (ImGui::InputText(std::format("{}##path", label).c_str(), buf, buf_size)) {
         path = buf;
         use_flag = !path.empty();
@@ -41,6 +53,17 @@ void input_texture_slot(const char* label, char* buf, size_t buf_size,
         }
         ImGui::EndDragDropTarget();
     }
+
+    // 「浏览...」按钮：弹窗选择 res:/ 资源
+    ImGui::TableNextColumn();
+    ImGui::PushID(label);
+    if (FileBrowserPopup::instance().browse_button("##browse", buf, buf_size)) {
+        path = buf;
+        use_flag = !path.empty();
+    }
+    ImGui::PopID();
+
+    ImGui::EndTable();
 }
 
 } // namespace

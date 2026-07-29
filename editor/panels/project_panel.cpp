@@ -4,14 +4,19 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "render/material.h"
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
 #include "../asset/asset_database.h"
 #include "../localization/localization.h"
+#include "../platform_utils.h"
+#include "../undo/command_stack.h"
+#include "../undo/file_commands.h"
 
 namespace gryce_engine::editor {
 
@@ -248,6 +253,9 @@ void FileExplorerPanel::draw_grid_item(const GridItem& item, ImVec2 pos, float i
         }
     }
 
+    // 右键菜单：新建置顶 + 常用文件操作
+    draw_item_context_menu(item);
+
     if (!item.is_dir && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
         std::string guid = AssetDatabase::instance().guid_for_path(item.entry.path());
         std::string type = AssetDatabase::instance().infer_type(item.entry.path());
@@ -311,7 +319,7 @@ void FileExplorerPanel::on_imgui() {
         GridItem item;
         item.entry = entry;
         item.is_dir = entry.is_directory(ec);
-        item.name = entry.path().filename().string();
+        item.name = path_to_utf8(entry.path().filename());
         item.lines = wrap_text(item.name.c_str(), item_width - text_h_padding);
         const float text_h = static_cast<float>(item.lines.size()) * ImGui::GetFontSize();
         item.height = top_margin + icon_size + text_gap + text_h + bottom_margin;
@@ -345,6 +353,352 @@ void FileExplorerPanel::on_imgui() {
         x += item_width + item_h_gap;
         row_max_h = std::max(row_max_h, item.height);
         first_in_row = false;
+    }
+
+    // 空白处右键：新建菜单（NoOpenOverItems 避免与网格项菜单冲突）
+    if (ImGui::BeginPopupContextWindow("##file_explorer_bg_menu",
+                                       ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
+        draw_new_submenu();
+        ImGui::Separator();
+        if (ImGui::MenuItem(tr("file_explorer.paste"), nullptr, false, !clipboard_path_.empty())) {
+            paste_into_current_dir();
+        }
+        ImGui::EndPopup();
+    }
+
+    draw_popups();
+}
+
+// ---------------------------------------------------------------------------
+// 右键菜单：新建 / 重命名 / 删除
+// ---------------------------------------------------------------------------
+std::filesystem::path FileExplorerPanel::unique_path(const std::string& base, const std::string& ext) const {
+    std::error_code ec;
+    std::filesystem::path candidate = current_dir_ / utf8_path(base + ext);
+    int suffix = 1;
+    while (std::filesystem::exists(candidate, ec)) {
+        candidate = current_dir_ / utf8_path(base + "_" + std::to_string(suffix) + ext);
+        ++suffix;
+    }
+    return candidate;
+}
+
+namespace {
+
+std::filesystem::path undo_backup_dir() {
+    std::error_code ec;
+    auto dir = std::filesystem::temp_directory_path(ec) / "gryce_undo_files";
+    if (!ec) std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+} // namespace
+
+void FileExplorerPanel::create_folder() {
+    std::string name = path_to_utf8(unique_path(tr("file_explorer.new_folder_name"), "").filename());
+    if (undo_stack_) {
+        undo_stack_->push(std::make_unique<FileCreateFolderCommand>(current_dir_, name));
+    } else {
+        std::error_code ec;
+        std::filesystem::create_directories(current_dir_ / utf8_path(name), ec);
+    }
+}
+
+void FileExplorerPanel::create_scene() {
+    std::string name = path_to_utf8(unique_path(tr("file_explorer.new_scene_name"), ".gesc").filename());
+    if (undo_stack_) {
+        undo_stack_->push(std::make_unique<FileCreateSceneCommand>(current_dir_, name));
+    } else {
+        std::error_code ec;
+        std::ofstream ofs(current_dir_ / utf8_path(name));
+        if (ofs) ofs << "{\n  \"entities\": []\n}\n";
+    }
+}
+
+void FileExplorerPanel::create_material() {
+    std::string name = path_to_utf8(unique_path(tr("file_explorer.new_material_name"), ".gmat").filename());
+    if (undo_stack_) {
+        undo_stack_->push(std::make_unique<FileCreateMaterialCommand>(current_dir_, name));
+    } else {
+        std::error_code ec;
+        std::filesystem::path file = current_dir_ / utf8_path(name);
+        render::Material material;
+        nlohmann::json j;
+        material.serialize(j);
+        std::ofstream ofs(file);
+        if (ofs) ofs << j.dump(2);
+    }
+}
+
+void FileExplorerPanel::start_rename(const std::filesystem::path& target) {
+    rename_target_ = target;
+    const std::string name = path_to_utf8(target.filename());
+    std::strncpy(rename_buf_, name.c_str(), sizeof(rename_buf_) - 1);
+    rename_buf_[sizeof(rename_buf_) - 1] = '\0';
+    rename_popup_requested_ = true;
+}
+
+void FileExplorerPanel::request_delete(const std::filesystem::path& target) {
+    delete_target_ = target;
+    delete_popup_requested_ = true;
+}
+
+// ---------------------------------------------------------------------------
+// 复制 / 剪切 / 粘贴（内部文件剪贴板）
+// ---------------------------------------------------------------------------
+void FileExplorerPanel::clipboard_copy(const std::filesystem::path& target, bool is_cut) {
+    clipboard_path_ = target;
+    clipboard_is_cut_ = is_cut;
+}
+
+// 目标文件名冲突时追加 " (2)"、" (3)"… 后缀
+std::filesystem::path FileExplorerPanel::unique_destination(const std::filesystem::path& file_name) const {
+    std::error_code ec;
+    std::filesystem::path candidate = current_dir_ / file_name;
+    if (!std::filesystem::exists(candidate, ec)) return candidate;
+
+    const std::wstring stem = file_name.stem().wstring();
+    const std::wstring ext = file_name.extension().wstring();
+    for (int i = 2;; ++i) {
+        candidate = current_dir_ / (stem + L" (" + std::to_wstring(i) + L")" + ext);
+        if (!std::filesystem::exists(candidate, ec)) return candidate;
+    }
+}
+
+void FileExplorerPanel::paste_into_current_dir() {
+    if (clipboard_path_.empty()) return;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(clipboard_path_, ec) || ec) {
+        clipboard_path_.clear();
+        clipboard_is_cut_ = false;
+        return;
+    }
+
+    const std::filesystem::path src = clipboard_path_;
+    const std::filesystem::path dst = unique_destination(src.filename());
+    const std::filesystem::path src_meta(src.wstring() + L".meta");
+    const bool is_dir = std::filesystem::is_directory(src, ec);
+
+    if (clipboard_is_cut_) {
+        // 移动：连同同名 .meta 一起搬走，GUID 保持不变
+        std::filesystem::rename(src, dst, ec);
+        if (ec) {
+            GLOG_ERROR("FileExplorer: move failed '{}' -> '{}': {}", path_to_utf8(src), path_to_utf8(dst), ec.message());
+            return;
+        }
+        if (std::filesystem::exists(src_meta, ec)) {
+            std::filesystem::rename(src_meta, dst.wstring() + L".meta", ec);
+        }
+        clipboard_path_.clear();
+        clipboard_is_cut_ = false;
+        GLOG_INFO("FileExplorer: moved '{}' -> '{}'", path_to_utf8(src), path_to_utf8(dst));
+
+        // 路径缓存已失效，重建
+        const std::string root = resources::Project::instance().root();
+        if (!root.empty()) {
+            AssetDatabase::instance().rescan(utf8_path(root));
+        }
+    } else {
+        // 复制：生成新文件后必须删除随附的 .meta 并重新分配 GUID，避免 GUID 重复
+        if (is_dir) {
+            std::filesystem::copy(src, dst, std::filesystem::copy_options::recursive, ec);
+        } else {
+            std::filesystem::copy_file(src, dst, ec);
+        }
+        if (ec) {
+            GLOG_ERROR("FileExplorer: copy failed '{}' -> '{}': {}", path_to_utf8(src), path_to_utf8(dst), ec.message());
+            return;
+        }
+        std::vector<std::filesystem::path> copied_metas;
+        std::vector<std::filesystem::path> copied_files;
+        if (is_dir) {
+            for (const auto& e : std::filesystem::recursive_directory_iterator(dst, ec)) {
+                if (!e.is_regular_file(ec)) continue;
+                if (e.path().extension() == ".meta") copied_metas.push_back(e.path());
+                else copied_files.push_back(e.path());
+            }
+        } else {
+            const std::filesystem::path dst_meta(dst.wstring() + L".meta");
+            if (std::filesystem::exists(dst_meta, ec)) copied_metas.push_back(dst_meta);
+            copied_files.push_back(dst);
+        }
+        for (const auto& meta : copied_metas) {
+            std::filesystem::remove(meta, ec);
+        }
+        for (const auto& file : copied_files) {
+            AssetDatabase::instance().ensure_meta(file);
+        }
+        GLOG_INFO("FileExplorer: copied '{}' -> '{}'", path_to_utf8(src), path_to_utf8(dst));
+    }
+}
+
+void FileExplorerPanel::show_properties(const std::filesystem::path& target) {
+    properties_target_ = target;
+    properties_popup_requested_ = true;
+}
+
+void FileExplorerPanel::draw_new_submenu() {
+    if (ImGui::BeginMenu(tr("file_explorer.new"))) {
+        if (ImGui::MenuItem(tr("file_explorer.new_folder"))) {
+            create_folder();
+        }
+        if (ImGui::MenuItem(tr("file_explorer.new_scene"))) {
+            create_scene();
+        }
+        if (ImGui::MenuItem(tr("file_explorer.new_material"))) {
+            create_material();
+        }
+        ImGui::EndMenu();
+    }
+}
+
+void FileExplorerPanel::draw_item_context_menu(const GridItem& item) {
+    if (!ImGui::BeginPopupContextItem("##file_item_menu")) return;
+
+    // 新建置顶
+    draw_new_submenu();
+    ImGui::Separator();
+
+    if (!item.is_dir) {
+        if (ImGui::MenuItem(tr("file_explorer.open"))) {
+            if (on_activate_file) {
+                on_activate_file(to_res_path(item.entry.path()));
+            }
+        }
+    }
+    if (item.is_dir) {
+        if (ImGui::MenuItem(tr("file_explorer.open_folder"))) {
+            navigate_to(item.entry.path());
+        }
+    }
+    if (ImGui::MenuItem(tr("file_explorer.rename"))) {
+        start_rename(item.entry.path());
+    }
+    if (ImGui::MenuItem(tr("file_explorer.delete"))) {
+        request_delete(item.entry.path());
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(tr("file_explorer.copy_path"))) {
+        ImGui::SetClipboardText(to_res_path(item.entry.path()).c_str());
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(tr("file_explorer.copy"))) {
+        clipboard_copy(item.entry.path(), false);
+    }
+    if (ImGui::MenuItem(tr("file_explorer.cut"))) {
+        clipboard_copy(item.entry.path(), true);
+    }
+    if (ImGui::MenuItem(tr("file_explorer.paste"), nullptr, false, !clipboard_path_.empty())) {
+        paste_into_current_dir();
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(tr("file_explorer.open_in_explorer"))) {
+        reveal_in_file_explorer(item.entry.path());
+    }
+    if (ImGui::MenuItem(tr("file_explorer.properties"))) {
+        show_properties(item.entry.path());
+    }
+    ImGui::EndPopup();
+}
+
+void FileExplorerPanel::draw_popups() {
+    // 重命名弹窗
+    const std::string rename_title = std::string(tr("file_explorer.rename")) + "###fe_rename";
+    if (rename_popup_requested_) {
+        ImGui::OpenPopup(rename_title.c_str());
+        rename_popup_requested_ = false;
+    }
+    if (ImGui::BeginPopupModal(rename_title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("%s", path_to_utf8(rename_target_.filename()).c_str());
+        ImGui::SetNextItemWidth(280.0f);
+        const bool confirm = ImGui::InputText("##rename_input", rename_buf_, sizeof(rename_buf_),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsWindowAppearing()) {
+            ImGui::SetKeyboardFocusHere();
+        }
+        if (confirm || ImGui::Button(tr("common.ok"), ImVec2(120.0f, 0.0f))) {
+            std::filesystem::path new_path = rename_target_.parent_path() / utf8_path(rename_buf_);
+            std::error_code ec;
+            if (rename_buf_[0] != '\0' && new_path != rename_target_) {
+                std::filesystem::rename(rename_target_, new_path, ec);
+                if (ec) {
+                    GLOG_ERROR("FileExplorer: rename failed '{}': {}", path_to_utf8(rename_target_), ec.message());
+                } else {
+                    GLOG_INFO("FileExplorer: renamed '{}' -> '{}'", path_to_utf8(rename_target_), path_to_utf8(new_path));
+                }
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("common.cancel"), ImVec2(120.0f, 0.0f))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // 删除确认弹窗
+    const std::string delete_title = std::string(tr("file_explorer.delete")) + "###fe_delete";
+    if (delete_popup_requested_) {
+        ImGui::OpenPopup(delete_title.c_str());
+        delete_popup_requested_ = false;
+    }
+    if (ImGui::BeginPopupModal(delete_title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("%s", tr("file_explorer.delete_confirm"));
+        ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1.0f), "%s", path_to_utf8(delete_target_.filename()).c_str());
+        if (ImGui::Button(tr("common.ok"), ImVec2(120.0f, 0.0f))) {
+            std::error_code ec;
+            if (std::filesystem::is_directory(delete_target_, ec)) {
+                std::filesystem::remove_all(delete_target_, ec);
+            } else {
+                std::filesystem::remove(delete_target_, ec);
+            }
+            if (ec) {
+                GLOG_ERROR("FileExplorer: delete failed '{}': {}", path_to_utf8(delete_target_), ec.message());
+            } else {
+                GLOG_INFO("FileExplorer: deleted '{}'", path_to_utf8(delete_target_));
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("common.cancel"), ImVec2(120.0f, 0.0f))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // 属性弹窗：名称 / 路径 / 大小 / 修改时间
+    const std::string properties_title = std::string(tr("file_explorer.properties")) + "###fe_properties";
+    if (properties_popup_requested_) {
+        ImGui::OpenPopup(properties_title.c_str());
+        properties_popup_requested_ = false;
+    }
+    if (ImGui::BeginPopupModal(properties_title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        std::error_code ec;
+        const bool is_dir = std::filesystem::is_directory(properties_target_, ec);
+
+        ImGui::Text("%s: %s", tr("file_explorer.prop_name"),
+                    path_to_utf8(properties_target_.filename()).c_str());
+        ImGui::Text("%s: %s", tr("file_explorer.prop_path"), to_res_path(properties_target_).c_str());
+
+        if (!is_dir) {
+            const auto size = std::filesystem::file_size(properties_target_, ec);
+            if (!ec) {
+                ImGui::Text("%s: %s", tr("file_explorer.prop_size"), format_file_size(size).c_str());
+            }
+        } else {
+            ImGui::Text("%s: %s", tr("file_explorer.prop_size"), tr("file_explorer.prop_folder"));
+        }
+
+        const std::string modified = format_file_time(properties_target_);
+        if (!modified.empty()) {
+            ImGui::Text("%s: %s", tr("file_explorer.prop_modified"), modified.c_str());
+        }
+
+        if (ImGui::Button(tr("common.ok"), ImVec2(120.0f, 0.0f))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 }
 

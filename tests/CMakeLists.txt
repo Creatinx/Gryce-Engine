@@ -12,6 +12,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             math_test.cpp
             glog_test.cpp
             scene_test.cpp
+            transform2d_test.cpp
             asset_test.cpp
             physics_3d_test.cpp
             physics_2d_test.cpp

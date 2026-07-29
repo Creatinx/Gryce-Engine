@@ -12,6 +12,26 @@
 namespace gryce_engine::components::d2 {
 
 // ---------------------------------------------------------------------------
+// Transform2D — 2D 仿射变换（XY 平移 + Z 旋转 + XY 缩放）
+// ---------------------------------------------------------------------------
+struct Transform2D {
+    math::Vector2f position = math::Vector2f::zero();
+    float rotation = 0.0f;
+    math::Vector2f scale = math::Vector2f::one();
+};
+
+// 计算实体的 2D 世界变换（Godot 风格父链组合）。
+// 组合规则：
+// - 从自身沿父链向上，逐层组合每个祖先 Transform 的 XY 平移 / Z 旋转 / XY 缩放
+//   （无论祖先是否挂 Node2D；场景合成根节点的 Transform 为恒等，天然不影响结果）；
+// - 若实体自身挂有 Node2D 且 top_level == true，则忽略整条父链（Godot top_level
+//   语义：top_level 节点不受父级 2D 变换影响，世界变换 == 本地变换）；
+// - 组合公式：world.pos = parent.pos + parent.rot * (parent.scale * local.pos)，
+//   world.rot = parent.rot + local.rot，world.scale = parent.scale * local.scale。
+Transform2D world_transform_2d(const scene::Entity* entity);
+
+
+// ---------------------------------------------------------------------------
 // 2D 渲染哈希辅助
 // 用于 Dirty-Frame 优化：画面未变化时跳过本帧渲染。
 // ---------------------------------------------------------------------------
@@ -49,10 +69,10 @@ public:
     // 当组件所有影响画面的字段都没变化时，返回的哈希值应保持不变。
     virtual uint64_t render_hash() const;
 
-    // 快捷访问 owner 的 Transform
-    math::Vector2f position() const;
-    float rotation() const;
-    math::Vector2f scale() const;
+    // 快捷访问 owner 的 2D 世界变换（沿父链组合，top_level 截止；见 world_transform_2d）
+    math::Vector2f position() const;  // 世界 XY
+    float rotation() const;           // 世界 Z 旋转
+    math::Vector2f scale() const;     // 世界 XY 缩放
 
 protected:
     Component2D() = default;

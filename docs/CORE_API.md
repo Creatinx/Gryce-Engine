@@ -25,7 +25,7 @@ set(GRYCE_BUILD_SHARED ON)  # 默认 OFF
 | 项 | 要求 |
 |---|---|
 | 平台 | Windows 10/11 |
-| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64） |
+| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64）或 **MSVC**（VS 2022+ / VS 2026） |
 | CMake | ≥ 3.28 |
 | 生成器 | Ninja（推荐） |
 
@@ -97,7 +97,7 @@ target_link_libraries(your_app PRIVATE Gryce::GryceCore)
 
 ```
 scene/entity.h
-scene/scene.h
+scene/scene.h                  # Scene；每个场景有且仅有一个合成根 Entity（Scene::root()），.gesc 版本 2（v1 兼容加载）
 scene/prefab.h               # Prefab 加载与实例化
 scene/uuid.h
 ecs/world.h
@@ -143,7 +143,7 @@ components/character_controller_3d.h
 components/character_controller_2d.h
 components/joint_3d.h
 components/joint_2d.h
-components/2d/component_2d.h
+components/2d/component_2d.h   # 2D 组件基类；world_transform_2d() 父链变换（Node2D::top_level 脱离，z_index 参与排序）
 components/2d/basic_rect.h
 components/2d/shape.h
 components/2d/label.h
@@ -160,7 +160,7 @@ components/2d/particle_emitter.h
 ### 渲染
 
 ```
-render/render.h              # IRenderBackend、create_render_backend()
+render/render.h              # IRenderBackend、RenderAPI 枚举（Vulkan 默认 / OpenGL 兼容 / DX11、DX12 预留）、create_render_backend()
 render/render2d.h            # IRenderer2D
 render/render_context.h      # RenderContext
 render/render_pipeline.h     # RenderPipeline
@@ -232,7 +232,7 @@ physics/jolt_world_3d.h       # Jolt Physics 后端（GRYCE_HAS_JOLT）
 
 ```
 utils/frame_limiter.h
-utils/glog/glog_lib.h
+utils/glog/glog_lib.h          # GLog + AsyncLogger（log() 入队、worker 线程写出；GLog 自动包装 logger；flush() 等待排空）
 export.h                     # GRYCE_API 宏
 ```
 
@@ -259,6 +259,8 @@ mesh->set_mesh_path("res:/models/cube_pbr.obj");
 // 访问 Transform
 entity->transform()->position = math::Vector3f(1.0f, 2.0f, 3.0f);
 ```
+
+> **注意**：每个 `Scene` 有且仅有一个合成根 Entity（`Scene::root()`）；手工创建的顶层 Entity 应作为根的子节点加入场景。`.gesc` 序列化格式为版本 2（v1 文件可原样加载）。
 
 ### 5.2 World 与 System
 
@@ -303,8 +305,8 @@ using namespace gryce_engine;
 // 创建窗口（OpenGL 上下文）
 platform::Window window("My Game", 1280, 720, platform::WindowMode::Windowed);
 
-// 创建渲染后端
-auto backend = render::create_render_backend(render::RenderAPI::OpenGL);
+// 创建渲染后端：RenderAPI { Vulkan（默认）, OpenGL（兼容）, DX11 / DX12（预留，返回 nullptr） }
+auto backend = render::create_render_backend(render::RenderAPI::Vulkan);
 backend->init(window.native_handle());
 
 // 帧循环

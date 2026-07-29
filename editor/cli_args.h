@@ -13,7 +13,6 @@ namespace gryce_engine::editor {
 
 struct CliArgs {
     std::string scene_path;          // --scene <scene_name> (.gesc)
-    std::string screenshot_path;     // --screenshot <path>
     std::string output_path;         // --output <path>
     float record_seconds = 0.0f;     // --record <seconds>; 0 表示不录制
     int resolution_w = 1920;         // --resolution <WxH>
@@ -24,7 +23,6 @@ struct CliArgs {
     bool show_help = false;          // --help
 
     bool should_record() const { return record_seconds > 0.0f; }
-    bool should_screenshot() const { return !screenshot_path.empty(); }
 };
 
 CliArgs parse_cli_args(int argc, char* argv[]);

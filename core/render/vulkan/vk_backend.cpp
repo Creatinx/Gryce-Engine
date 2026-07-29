@@ -234,9 +234,9 @@ void VulkanBackend::begin_frame() {
         GLOG_INFO("VulkanBackend: swapchain recreated to {}x{}", width, height);
     }
 
-    GLOG_INFO("VulkanBackend::begin_frame: acquiring image, current_frame={}", swapchain_.current_frame_index());
+    GLOG_DEBUG("VulkanBackend::begin_frame: acquiring image, current_frame={}", swapchain_.current_frame_index());
     VkResult acquire_result = swapchain_.acquire_next_image(&current_image_);
-    GLOG_INFO("VulkanBackend::begin_frame: acquire_result={} current_image_={}", static_cast<int>(acquire_result), current_image_);
+    GLOG_DEBUG("VulkanBackend::begin_frame: acquire_result={} current_image_={}", static_cast<int>(acquire_result), current_image_);
     if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
         // OUT_OF_DATE 可通过重建 swapchain 恢复。
         GLOG_WARN("VulkanBackend: acquire returned VK_ERROR_OUT_OF_DATE_KHR, recreating swapchain");
@@ -402,9 +402,9 @@ void VulkanBackend::end_frame() {
         GLOG_INFO("VulkanBackend::end_frame present_result={}", static_cast<int>(present_result));
         swapchain_.advance_frame();
     } else {
-        GLOG_INFO("VulkanBackend::end_frame: submit_and_present current_image_={}", current_image_);
+        GLOG_DEBUG("VulkanBackend::end_frame: submit_and_present current_image_={}", current_image_);
         present_result = swapchain_.submit_and_present(current_image_, primary_command_buffer());
-        GLOG_INFO("VulkanBackend::end_frame: present_result={}", static_cast<int>(present_result));
+        GLOG_DEBUG("VulkanBackend::end_frame: present_result={}", static_cast<int>(present_result));
         if (present_result == VK_ERROR_DEVICE_LOST) {
             // submit 失败时该帧 fence 不会被 signal，后续 acquire 的
             // vkWaitForFences 可能永久阻塞（整窗卡死），必须大声报错。
@@ -547,7 +547,9 @@ VkCommandBuffer VulkanBackend::primary_command_buffer() const {
                    current_image_, swapchain_.image_count());
         return VK_NULL_HANDLE;
     }
-    return swapchain_.command_buffer(current_image_);
+    // 主命令缓冲按 frame 槽索引（与 fence 配对），不按 image 索引；
+    // image 只决定本帧渲染到哪个 framebuffer。
+    return swapchain_.command_buffer(swapchain_.current_frame_index());
 }
 
 VkCommandBuffer VulkanBackend::current_command_buffer() {

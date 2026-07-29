@@ -2,6 +2,8 @@
 
 #include <ImGuizmo.h>
 
+#include "components/node2d.h"
+#include "components/2d/component_2d.h"
 #include "components/transform.h"
 #include "math/camera.h"
 #include "render/imgui_backend.h"
@@ -114,6 +116,14 @@ void ViewportPanel::draw_gizmo() {
         return;
     }
 
+    // 2D 节点（Node2D，含 Label/Sprite2D 等）：走 Godot 风格的屏幕像素拖拽，
+    // 不使用 3D gizmo——2D 渲染端是像素坐标系（原点左上、Y 向下），
+    // 3D gizmo 的世界单位/Y 向上/父级逆补偿与 2D 语义三重不匹配，会导致拖拽错位。
+    if (entity->get_component<components::Node2D>()) {
+        draw_gizmo_2d(entity);
+        return;
+    }
+
     ImGuizmo::SetDrawlist();
     ImGuizmo::SetRect(image_min_.x, image_min_.y, size_.x, size_.y);
 
@@ -175,6 +185,71 @@ void ViewportPanel::draw_gizmo() {
                         *scene_, gizmo_entity_uuid_, "Transform", "scale",
                         gizmo_start_scale_, tr->scale));
                 }
+            }
+        }
+    }
+}
+
+void ViewportPanel::draw_gizmo_2d(scene::Entity* entity) {
+    // Godot 风格 2D 拖拽：以视口屏幕像素为单位（Y 向下）。
+    // 渲染端 Component2D::position() 是 2D 世界坐标（沿父链组合，top_level 截止），
+    // 因此把手绘制与拖拽都在世界空间进行，写回时再换算成本地 Transform：
+    //   local = world_target - parent_2d_world_position
+    // （仅平移补偿：父级带旋转/缩放时拖拽方向会有误差，TODO: 按父级世界变换求逆）
+    // 实体自身为 top_level 时世界 == 本地，无需补偿。
+    components::Transform* tr = entity ? entity->transform() : nullptr;
+    if (!tr) {
+        gizmo_active_ = false;
+        return;
+    }
+
+    // 父级 2D 世界偏移（top_level 实体忽略父链，偏移为 0）
+    math::Vector2f parent_world = math::Vector2f::zero();
+    {
+        auto* n2d = entity->get_component<components::Node2D>();
+        const bool top_level = n2d && n2d->top_level;
+        if (!top_level && entity->parent()) {
+            parent_world = components::d2::world_transform_2d(entity->parent()).position;
+        }
+    }
+    const math::Vector2f world_pos = parent_world +
+        math::Vector2f(tr->position.x, tr->position.y);
+
+    // 在当前 2D 世界位置画一个可拖拽把手
+    const ImVec2 handle(image_min_.x + world_pos.x, image_min_.y + world_pos.y);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddCircleFilled(handle, 5.0f, IM_COL32(255, 200, 60, 255));
+    dl->AddCircle(handle, 9.0f, IM_COL32(255, 200, 60, 160), 0, 1.5f);
+
+    ImGui::SetCursorScreenPos(ImVec2(handle.x - 10.0f, handle.y - 10.0f));
+    ImGui::InvisibleButton("##gizmo2d_handle", ImVec2(20.0f, 20.0f));
+    const bool handle_hovered = ImGui::IsItemHovered();
+    const bool dragging = ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+    gizmo_active_ = handle_hovered || dragging;
+
+    if (dragging) {
+        if (!gizmo_was_using_) {
+            // 拖拽开始：记录旧值（Undo 用）
+            gizmo_was_using_ = true;
+            gizmo_entity_uuid_ = entity->uuid();
+            gizmo_start_pos_ = tr->position;
+        }
+        // 鼠标位移即像素位移，Y 方向与 2D 渲染天然一致（都向下）
+        const ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+        // 世界目标位置 = 拖拽起点世界位置 + 像素位移，再减去父级偏移得到本地值
+        const math::Vector2f start_world = parent_world +
+            math::Vector2f(gizmo_start_pos_.x, gizmo_start_pos_.y);
+        tr->position.x = start_world.x + delta.x - parent_world.x;
+        tr->position.y = start_world.y + delta.y - parent_world.y;
+    } else if (gizmo_was_using_) {
+        // 拖拽结束：生成 Undo 命令（与 3D gizmo 同一模式）
+        gizmo_was_using_ = false;
+        if (scene_ && undo_stack_ && gizmo_entity_uuid_.is_valid()) {
+            scene::Entity* e = scene_->find_entity_by_uuid(gizmo_entity_uuid_);
+            if (e && e->transform()->position != gizmo_start_pos_) {
+                undo_stack_->push(std::make_unique<ComponentFieldCommand>(
+                    *scene_, gizmo_entity_uuid_, "Transform", "position",
+                    gizmo_start_pos_, e->transform()->position));
             }
         }
     }

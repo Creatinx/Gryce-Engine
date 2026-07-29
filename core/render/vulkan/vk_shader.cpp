@@ -305,12 +305,22 @@ bool VulkanShader::create_pipeline() {
 
         // 1x1 白色回退贴图，保证 prepare_draw 里每个贴图 binding 都写入
         // 合法描述符（新分配的描述符集内容未定义，留空可能被 shader 采样
-        // 导致 GPU 读垃圾描述符挂死）。
+        // 导致 GPU 读垃圾描述符挂死）。IBL 的 irradiance/prefilter 是
+        // samplerCube，必须另备 1x1 立方体回退，否则 2D view 配 cube
+        // 采样器是 UB（验证层报错，部分驱动 device lost）。
         fallback_texture_ = std::make_unique<VulkanTexture>(device_);
         const uint32_t white_pixel = 0xFFFFFFFF;
         if (!fallback_texture_->upload_data(&white_pixel, 1, 1, 4)) {
             GLOG_ERROR("VulkanShader: failed to create fallback texture");
             fallback_texture_.reset();
+            return false;
+        }
+        fallback_cube_ = std::make_unique<VulkanTexture>(device_);
+        const void* white_faces[6] = {&white_pixel, &white_pixel, &white_pixel,
+                                      &white_pixel, &white_pixel, &white_pixel};
+        if (!fallback_cube_->upload_cubemap(white_faces, 1, 1, 4)) {
+            GLOG_ERROR("VulkanShader: failed to create fallback cube texture");
+            fallback_cube_.reset();
             return false;
         }
     }
@@ -403,11 +413,16 @@ bool VulkanShader::create_pipeline() {
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0f;
 
-    // Shadow map 输出深度时不加硬件 depth bias；bias 完全在 fragment shader
-    // 中基于 normal·light_dir 计算，避免与硬件 bias 叠加导致 Peter-panning
-    // 或阴影范围异常扩大。OpenGL 版本同样不在 shadow pass 中设 bias。
+    // Shadow map 输出深度：启用硬件斜率缩放 depth bias。
+    // 掠射角（地面、大平面）下 shader 内基于法线的 bias 不足以覆盖整个
+    // 视锥尺寸阴影盒的 texel 深度差，会产生随镜头移动的 shadow acne 条纹；
+    // 硬件 slope-scaled bias 按表面坡度自动加权，两者叠加后条纹消除且
+    // constant 很小，不会明显 Peter-panning。
     if (!color_output_enabled_ && !post_process_ && !skybox_) {
-        raster.depthBiasEnable = VK_FALSE;
+        raster.depthBiasEnable = VK_TRUE;
+        raster.depthBiasConstantFactor = 1.25f;
+        raster.depthBiasSlopeFactor = 2.5f;
+        raster.depthBiasClamp = 0.0f;
     }
 
     VkPipelineMultisampleStateCreateInfo multisample{};
@@ -495,6 +510,7 @@ void VulkanShader::set_int(const std::string& name, int value) {
     else if (name == "uLightCount") ubo_data_.light_count = value;
     else if (name == "uShadowLightIndex") ubo_data_.shadow_light_index = value;
     else if (name == "uUseIBL") ubo_data_.use_ibl = value;
+    else if (name == "uTwoSided") ubo_data_.two_sided = value;
     else if (parse_light_index(name, "uLightType", light_index)) {
         ubo_data_.lights[light_index].pos_type.w = static_cast<float>(value);
     }
@@ -829,7 +845,11 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
         if (binding == 8) continue;
         VulkanTexture* vk_tex = current_textures_[binding];
         if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) {
-            vk_tex = fallback_texture_.get();
+            // IBL binding 9/10 在 shader 中是 samplerCube：回退必须用立方体贴图，
+            // 绑 2D view 到 cube 采样器是 UB（验证层报错，部分驱动 device lost）。
+            const bool cube_binding = (binding == 9 || binding == 10);
+            vk_tex = (cube_binding && fallback_cube_) ? fallback_cube_.get()
+                                                      : fallback_texture_.get();
         }
         if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) continue;
         auto& image_info = image_infos[binding];

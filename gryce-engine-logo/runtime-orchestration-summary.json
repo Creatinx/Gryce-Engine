@@ -1,0 +1,58 @@
+{
+  "project": {
+    "resolvedLane": "graphic_bitmap_first",
+    "selectedIntentWorkflowRead": true,
+    "contextRequirementsLoaded": [
+      { "path": "intent-workflows/intent-graphic-asset-generation/INTENT_WORKFLOW.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "intent-workflows/intent-graphic-asset-generation/start-graphic-asset-project.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "intent-workflows/intent-graphic-asset-generation/graphic-text-controllability-gate.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "intent-workflows/intent-graphic-asset-generation/graphic-asset-planning.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "intent-workflows/intent-graphic-asset-generation/graphic-asset-dispatch-contract.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "shared-runtime/design-artifact-formats/graphic-asset-design-file-format.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "shared-runtime/runtime-boundaries/lane-runtime-contracts.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "delivery-quality/delivery-evidence-contract.md", "readStatus": "loaded", "bodyRead": true }
+    ],
+    "contextReadScope": "graphic_bitmap_first lane only",
+    "validationRunDiscipline": "validate-graphic-asset-design.mjs for image-only project",
+    "lowValueCallWatchdog": {
+      "noProgressNextAction": "proceed to image generation after gate decision"
+    },
+    "graphicStrategyGate": {
+      "graphicStrategyGate": "bitmap-first",
+      "textCriticality": "low",
+      "copyDensity": "short",
+      "coreInfoTypes": ["brand"],
+      "bitmapFirstAllowed": true,
+      "layoutStaticRequired": false,
+      "graphicStrategyRoutingReason": "用户请求制作 logo,品牌名 Gryce Engine 为短文案,无编辑文本/长文案需求,视觉为主"
+    },
+    "operatingMode": "new-image-only-project",
+    "visualQualityCheckpoints": [
+      {
+        "anchor": "极简几何 logo,品牌名 Gryce Engine 清晰可读",
+        "hierarchy": "几何标记为主视觉 + 品牌名 wordmark",
+        "composition": "横向 lockup:左侧几何标记 + 右侧/下方 wordmark",
+        "strategy": "bitmap-first 图像生成,白底干净背景,扁平矢量美感"
+      }
+    ]
+  },
+  "assetPlan": {
+    "assetCount": 2,
+    "assets": [
+      {
+        "title": "几何 G 字母标 logo",
+        "filename": "gryce-engine-logo-monogram",
+        "deliverableType": "logo",
+        "intendedAspect": "landscape 16:9",
+        "direction": "极简几何 G 字母标 + wordmark,靛蓝主色"
+      },
+      {
+        "title": "六边形引擎核心 logo",
+        "filename": "gryce-engine-logo-core",
+        "deliverableType": "logo",
+        "intendedAspect": "landscape 16:9",
+        "direction": "抽象六边形几何核心标记 + wordmark,青绿/石板色"
+      }
+    ]
+  }
+}

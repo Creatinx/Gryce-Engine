@@ -15,32 +15,24 @@ namespace gryce_engine::editor {
 
 namespace {
 
-// 从当前持有者（父实体或场景根列表）摘下实体所有权。
+// 从当前持有者（父实体）摘下实体所有权。
+// 单根场景树下所有实体都有父级（顶层实体的父级是场景合成根节点）。
 std::unique_ptr<scene::Entity> detach_entity(scene::Scene& scene, scene::Entity* entity) {
+    (void)scene;
     if (scene::Entity* parent = entity->parent()) {
         return parent->detach_child(entity);
-    }
-    for (auto it = scene.roots().begin(); it != scene.roots().end(); ++it) {
-        if (it->get() == entity) {
-            std::unique_ptr<scene::Entity> owned = std::move(*it);
-            scene.roots().erase(it);
-            return owned;
-        }
     }
     return nullptr;
 }
 
-// 把 detached 实体挂接到目标父实体下；parent=nullptr 表示挂到根级。
+// 把 detached 实体挂接到目标父实体下；parent=nullptr 表示挂到场景根节点下。
 void attach_entity(scene::Scene& scene, std::unique_ptr<scene::Entity> entity,
                    scene::Entity* parent, size_t root_index = 0) {
     if (!entity) return;
     if (parent) {
         parent->add_child(std::move(entity));
     } else {
-        auto& roots = scene.roots();
-        if (root_index > roots.size()) root_index = roots.size();
-        roots.insert(roots.begin() + static_cast<ptrdiff_t>(root_index),
-                     std::move(entity));
+        scene.root()->insert_child(std::move(entity), root_index);
     }
     scene.set_store_on_entity_for_all();
 }
@@ -54,19 +46,18 @@ nlohmann::json wrap_entity_subtree(const scene::Entity& entity) {
     return json;
 }
 
-// 反序列化单棵子树，返回根实体所有权（临时 scene 的 roots 会被清空）。
+// 反序列化单棵子树，返回根实体所有权（从临时 scene 根节点下 detach）。
 std::unique_ptr<scene::Entity> deserialize_subtree(const std::string& json_text) {
     try {
         nlohmann::json json = nlohmann::json::parse(json_text);
         auto temp = scene::SceneSerializer::deserialize(json);
-        if (!temp || temp->roots().empty()) return nullptr;
-        auto owned = std::move(temp->roots().front());
+        if (!temp || temp->root()->children().empty()) return nullptr;
+        auto owned = temp->root()->detach_child(temp->root()->children().front().get());
         // 关键：在临时 scene 析构前，先把子树从临时 ComponentStore 中注销，
         // 否则 attach 到目标 scene 时 Entity::set_store 会访问已释放的 store 指针。
         owned->foreach([](scene::Entity* e) {
             if (e) e->set_store(nullptr);
         });
-        temp->roots().clear();
         return owned;
     } catch (const std::exception& e) {
         GLOG_ERROR("Undo: failed to deserialize entity subtree: {}", e.what());
@@ -224,14 +215,16 @@ void EntityDeleteCommand::serialize_and_remove() {
     GLOG_INFO("EntityDeleteCommand: serialized, destroying '{}'", entity->name());
     std::cerr << "[DELETE-TRACE] serialized " << entity->name() << std::endl;
 
-    if (scene::Entity* parent = entity->parent()) {
+    scene::Entity* parent = entity->parent();
+    if (parent && parent != scene_->root()) {
         parent_uuid_ = parent->uuid();
         root_index_ = 0;
     } else {
+        // 顶层实体：父级是场景合成根节点，记录其在根节点下的位置用于撤销时恢复顺序
         parent_uuid_ = scene::UUID::nil();
-        const auto& roots = scene_->roots();
-        for (size_t i = 0; i < roots.size(); ++i) {
-            if (roots[i]->uuid() == entity_uuid_) {
+        const auto& children = scene_->root()->children();
+        for (size_t i = 0; i < children.size(); ++i) {
+            if (children[i]->uuid() == entity_uuid_) {
                 root_index_ = i;
                 break;
             }
@@ -350,14 +343,16 @@ void EntityReparentCommand::execute() {
     scene::Entity* child = scene_->find_entity_by_uuid(child_uuid_);
     if (!child) return;
 
-    if (scene::Entity* parent = child->parent()) {
+    scene::Entity* parent = child->parent();
+    if (parent && parent != scene_->root()) {
         old_parent_uuid_ = parent->uuid();
         old_root_index_ = 0;
     } else {
+        // 顶层实体：父级是场景合成根节点，记录其在根节点下的位置
         old_parent_uuid_ = scene::UUID::nil();
-        const auto& roots = scene_->roots();
-        for (size_t i = 0; i < roots.size(); ++i) {
-            if (roots[i]->uuid() == child_uuid_) {
+        const auto& children = scene_->root()->children();
+        for (size_t i = 0; i < children.size(); ++i) {
+            if (children[i]->uuid() == child_uuid_) {
                 old_root_index_ = i;
                 break;
             }

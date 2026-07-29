@@ -8,6 +8,7 @@
 #include "scene/entity.h"
 #include "utils/glog/glog_lib.h"
 #include "../localization/localization.h"
+#include "file_browser_popup.h"
 
 namespace gryce_engine::editor {
 
@@ -129,8 +130,21 @@ void ParticleEditorWindow::draw_appearance() {
 
         char buf[256] = {};
         std::strncpy(buf, emitter_->texture_path.c_str(), sizeof(buf) - 1);
-        if (ImGui::InputText(tr("particle_editor.texture"), buf, sizeof(buf))) {
-            emitter_->texture_path = buf;
+        // 两列表格：输入框拉伸 +「浏览...」按钮固定宽，按钮不会被挤出
+        if (ImGui::BeginTable("##texture_browse", 2)) {
+            ImGui::TableSetupColumn("##input", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("##browsebtn", ImGuiTableColumnFlags_WidthFixed,
+                                    FileBrowserPopup::browse_button_width());
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText(tr("particle_editor.texture"), buf, sizeof(buf))) {
+                emitter_->texture_path = buf;
+            }
+            ImGui::TableNextColumn();
+            if (FileBrowserPopup::instance().browse_button("##browse_texture", buf, sizeof(buf))) {
+                emitter_->texture_path = buf;
+            }
+            ImGui::EndTable();
         }
     }
 }

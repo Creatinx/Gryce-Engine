@@ -13,12 +13,14 @@
 
 namespace gryce_engine::scene {
 
-Scene::Scene(const std::string& name) : name_(name) {}
+Scene::Scene(const std::string& name)
+    : name_(name)
+    , root_(std::make_unique<Entity>(name)) {}
 
 Scene::~Scene() {
     // 必须在 ComponentStore 析构前清空 Entity，否则 Entity::~Entity 调用
     // store_->unregister_entity 时 store_ 已经失效。
-    roots_.clear();
+    root_.reset();
 }
 
 Entity* Scene::create_entity(const std::string& name) {
@@ -29,12 +31,12 @@ Entity* Scene::add_root_entity(std::unique_ptr<Entity> entity) {
     if (!entity) return nullptr;
     Entity* raw = entity.get();
     set_store_on_entity(raw);
-    roots_.push_back(std::move(entity));
+    root_->add_child(std::move(entity));
     return raw;
 }
 
 bool Scene::destroy_entity(Entity* entity) {
-    if (!entity) return false;
+    if (!entity || entity == root_.get()) return false; // 合成根节点不可销毁
     GLOG_INFO("Scene::destroy_entity: '{}' uuid={}", entity->name(), entity->uuid().str());
 
     // 先递归销毁子实体。
@@ -51,22 +53,10 @@ bool Scene::destroy_entity(Entity* entity) {
         destroy_entity(child);
     }
 
-    // 从父级移除（如果有）
+    // 从父级移除（单根树下所有实体都有父级，顶层实体的父级是合成根节点）
     if (entity->parent()) {
         entity->parent()->remove_child(entity);
         return true;
-    }
-
-    // 从场景根列表移除
-    for (auto it = roots_.begin(); it != roots_.end(); ++it) {
-        if (it->get() == entity) {
-            // 先保存名称，因为 erase 会销毁 entity
-            std::string entity_name = entity->name();
-            // unique_ptr 析构会触发 Entity 析构，自动反注册组件
-            roots_.erase(it);
-            GLOG_INFO("Scene::destroy_entity: done '{}'", entity_name);
-            return true;
-        }
     }
     return false;
 }
@@ -116,35 +106,36 @@ Entity* Scene::find_entity_by_name(const std::string& name) {
 }
 
 void Scene::foreach(std::function<void(Entity*)> callback) {
-    for (auto& root : roots_) {
-        root->foreach(callback);
+    // 合成根节点不参与遍历（不序列化、不可查找）
+    for (auto& child : root_->children()) {
+        child->foreach(callback);
     }
 }
 
 void Scene::init() {
-    for (auto& root : roots_) {
-        root->on_init();
+    for (auto& child : root_->children()) {
+        child->on_init();
     }
-    for (auto& root : roots_) {
-        root->on_start();
+    for (auto& child : root_->children()) {
+        child->on_start();
     }
 }
 
 void Scene::update(float dt) {
-    for (auto& root : roots_) {
-        root->on_update(dt);
+    for (auto& child : root_->children()) {
+        child->on_update(dt);
     }
 }
 
 void Scene::render(render::RenderContext& ctx) {
-    for (auto& root : roots_) {
-        root->on_render(ctx);
+    for (auto& child : root_->children()) {
+        child->on_render(ctx);
     }
 }
 
 void Scene::destroy() {
-    for (auto& root : roots_) {
-        root->on_destroy();
+    for (auto& child : root_->children()) {
+        child->on_destroy();
     }
 }
 
@@ -320,8 +311,12 @@ bool Scene::hot_reload(const std::string& path) {
         }
     });
 
-    // 替换当前场景的数据（保留 ComponentStore 和子场景列表）
-    roots_ = std::move(fresh->roots());
+    // 替换当前场景的数据（保留 ComponentStore 和子场景列表）：
+    // 先销毁根节点下的旧子树，再把新加载场景的子树整体搬移到根节点下。
+    while (!root_->children().empty()) {
+        root_->remove_child(root_->children().front().get());
+    }
+    root_->adopt_children_of(*fresh->root());
     name_ = fresh->name();
     set_store_on_entity_for_all();
 
@@ -331,8 +326,8 @@ bool Scene::hot_reload(const std::string& path) {
 }
 
 void Scene::set_store_on_entity_for_all() {
-    for (auto& root : roots_) {
-        set_store_on_entity(root.get());
+    for (auto& child : root_->children()) {
+        set_store_on_entity(child.get());
     }
 }
 
@@ -401,14 +396,13 @@ int Scene::stream_in(const std::string& path, const std::string& label) {
     ss.label = label.empty() ? std::filesystem::path(path).stem().string() : label;
     ss.loaded = true;
 
-    // 将加载的实体移入本场景
-    for (auto& root : sub_scene->roots()) {
-        Entity* raw = root.get();
+    // 将加载的实体从临时场景的根节点下移出，挂到本场景根节点下
+    auto children = sub_scene->root()->detach_all_children();
+    for (auto& child : children) {
+        Entity* raw = child.get();
         ss.entities.push_back(raw);
-        add_root_entity(std::move(root));
+        add_root_entity(std::move(child));
     }
-    // 清空临时 scene 的 roots，避免析构时释放
-    sub_scene->roots().clear();
 
     int index = static_cast<int>(sub_scenes_.size());
     sub_scenes_.push_back(std::move(ss));

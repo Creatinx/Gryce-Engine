@@ -101,6 +101,9 @@
 | 任务 | 状态 | 里程碑 | 说明 / Unity 对应 |
 |---|---|---|---|
 | Prefab 完整实现（覆盖参数、嵌套、revert、场景紧凑引用） | **已完成** | — | `PrefabInstance` + `Prefab::revert` |
+| 场景单根节点（Node 架构） | **已完成** | — | 合成根 Entity（`Scene::root()`）；`.gesc` 版本 2（v1 兼容）；Hierarchy 顶行显示场景名；Undo 按"根的子节点"处理根级操作 |
+| 2D 父链变换 | **已完成** | — | `world_transform_2d()` 组合祖先变换；`Node2D::top_level` 脱离父链；`z_index` 参与排序；2D 物理与 2D Gizmo 使用世界空间 |
+| 2D / 3D 场景拆分 | 待实现 | M4 | 当前 2D/3D 组件共存于同一场景，计划拆分独立场景类型 |
 | 组件反射 Inspector 生成 | **已完成** | **M1-E1** | Editor Inspector 前置 |
 | Prefab 编辑器集成（编辑器内创建/应用/还原） | **已完成** | M2 | Hierarchy 右键菜单：Create/Apply/Revert Prefab |
 | Prefab Variant（覆盖持久化 + 属性优先级） | **已完成** | M2 | `.geprefabvariant` + Hierarchy 右键"创建变体" |
@@ -118,6 +121,8 @@
 | 任务 | 状态 | 里程碑 | 说明 |
 |---|---|---|---|
 | DDS/KTX 压缩纹理（BC1~BC7 / ETC2 / ASTC） | **已完成** | — | GL + VK 双后端 |
+| 渲染后端分层（Vulkan 默认 / OpenGL 兼容 / DX 预留） | **已完成** | — | `RenderAPI` 枚举 + Project Settings 渲染 API 下拉 + Render Quality 区（`project_settings.json` `graphics` 组） |
+| 阴影系统加固 | **已完成** | — | 光空间贴合相机视锥 + 纹素对齐 + 深度延伸 50；着色器边缘 5% 淡出；自适应 bias + Vulkan slope-scaled depth bias；NDC z 双重映射修复 |
 | HDR/EXR 环境贴图加载 | **已完成** | — | `RenderPipeline::set_environment_hdr`，CPU 端生成 IBL |
 | IBL（Image-Based Lighting） | **已完成** | — | irradiance + prefilter + BRDF LUT；OpenGL/Vulkan PBR 与 Skinned PBR |
 | Cubemap Mipmap 生成 | 待实现 | M3 | 当前 cubemap 强制 1 mip |
@@ -138,8 +143,8 @@
 | Decal / Projector | 待实现 | 贴花系统 |
 | Terrain（高度图、LOD、刷草） | 待实现 | Unity Terrain |
 | Mesh LOD / HLOD | 待实现 | LOD Group |
-| GPU-Driven Rendering / Indirect Draw | 远期目标 | 海量物体 |
-| D3D12 / Metal 后端 | 远期目标 | 多平台图形 API |
+| GPU-Driven Rendering / Indirect Draw | 远期目标 | 海量物体；GPU instancing（A1）已延期，随本项一起做 |
+| D3D12 / Metal 后端 | 远期目标 | 多平台图形 API；DX11/DX12 枚举值已预留（`create_render_backend` 返回 `nullptr`），实现未开始 |
 | Ray Tracing（RTX/DXR/Metal RT） | 远期目标 | 光追反射/阴影 |
 | Virtual Shadow Maps / GPU Culling | 远期目标 | 开放世界阴影 |
 
@@ -208,7 +213,7 @@
 | 任务 | 状态 | 里程碑 | 说明 |
 |---|---|---|---|
 | 事件/消息总线 | 待实现 | M4 | 解耦系统通信 |
-| 脚本语言选型与集成（Lua / C# / Python） | 待实现 | M4 | 推荐 Lua 或 C# |
+| 脚本语言选型与集成（Lua / C# / Python） | 待实现 | M4 | 推荐 Lua 或 C#；Node 架构（场景单根）已完成，脚本系统可在此基础上启动 |
 | C++ 组件绑定到脚本 | 待实现 | M4 | 反射（M1-E1）可直接复用 |
 | 脚本生命周期回调 | 待实现 | M4 | `Start` / `Update` / `OnCollisionEnter` |
 | 脚本热重载 | 待实现 | M4 | 开发时快速迭代 |
@@ -267,6 +272,11 @@
 | Play Mode | **已完成** | **M1-E4** |
 | 控制台面板（Console） | **已完成** | **M1-E4**：过滤/颜色/自动滚动/点击定位完成 |
 | 布局/设置持久化 + 快捷键 + Undo/Redo | **已完成** | **M1-E5** |
+| Create Entity 对话框（Godot 风格） | **已完成** | 收藏/最近/搜索/过滤/描述；Hierarchy 右键"新建…"打开；持久化到 `create_entity_dialog.json` |
+| Hierarchy 右键菜单 + 全局快捷键（Ctrl+X/C/V/D、F2、Del） | **已完成** | 新建/Cut/Copy/Paste/Duplicate/Rename/Focus/Prefab/Delete，注册于 ShortcutManager |
+| File Explorer 右键菜单 | **已完成** | 新建文件夹/场景/材质、重命名、删除确认、复制路径 |
+| Settings 窗口四分区（Theme / Appliance / Editor / Shortcuts） | **已完成** | Editor 区：VSync 持久化 + 自动保存间隔（Play Mode 跳过）；Shortcuts 区：按键捕获改绑 + 冲突检测 + 重置 |
+| Project Settings 窗口（渲染 API + Render Quality） | **已完成** | `project_settings.json` `graphics` 组，启动时应用到两条编辑器管线，重启生效 |
 | 材质编辑器 | **已完成** | M2，参数面板：PBR 参数、贴图槽、物理属性 |
 | 动画编辑器 | **已完成** | M2，关键帧剪辑播放控制 |
 | 地形编辑器 | **已完成** | M2，基础高度图编辑 + MeshRenderer 导出（完整 Terrain 渲染/LOD 留 M5） |
@@ -302,6 +312,9 @@
 
 | 任务 | 状态 | 里程碑 | 说明 |
 |---|---|---|---|
+| 异步日志（AsyncLogger） | **已完成** | — | `core/utils/glog/`：log() 入队 + worker 线程写出；GLog 自动包装 logger；flush() 等待排空 |
+| 热路径性能批次 | **已完成** | — | 每帧日志降为 GLOG_DEBUG；GL_CHECK_ERROR Release 剔除；DrawItem 跨帧复用；相同材质绑定跳过；NDC z 双重映射修复；set_swap_interval 上下文防护 |
+| GPU instancing（A1） | 延期 | — | 并入 GPU-Driven Rendering 一起做 |
 | GPU Profiling（RenderDoc/Nsight 标记） | 待实现 | M2 | 渲染 Pass 标注（编辑器开发期间就需要） |
 | 遮挡剔除 / 视锥剔除 | 待实现 | M3 | 减少 draw call |
 | CPU Profiler / Tracy 集成 | 待实现 | M6 | 性能火焰图 |
@@ -335,5 +348,6 @@
 8. ~~E5 Settings 窗口~~（已完成：`File > Settings` 入口、左侧 Theme / Appliance 栏目、Theme 管理外观、Appliance 管理语言、配置持久化到 `editor_settings.json`，143/143 测试通过）。
 9. **E4 Game View + Console 点击定位**，**E5 布局完全持久化 + 快捷键体系 + Undo/Redo**（已完成，146/146 测试通过）。
 10. **M2 编辑器完全体 + 内容管线**（已完成：材质/动画/地形/粒子编辑器、Prefab 编辑器集成、资源数据库、LRU 缓存、`.gpack` 资源包、物理材质编辑器、Prefab Variant，146/146 测试通过）。
-11. 之后进入 M3（渲染补完）：IBL、后处理栈、CSM、抗锯齿、材质预设库，
-   渲染新特性直接在编辑器里做预览面板，边开发边验证。
+11. **Node 架构 + 渲染后端分层 + 编辑器可用性 + 性能批次**（已完成：场景单根 Entity（`.gesc` v2）+ 2D 父链变换（`world_transform_2d` / `top_level` / `z_index`）；Vulkan 设为默认后端、OpenGL 降为兼容后端、DX11/12 预留；阴影贴合视锥 + 边缘淡出 + 自适应 bias；Create Entity 对话框、Hierarchy/File Explorer 右键菜单、Settings 四分区（含快捷键改绑、VSync、自动保存）、Project Settings 渲染质量；异步日志 AsyncLogger + 热路径性能优化）。
+12. 之后进入 M3（渲染补完）：IBL、后处理栈、CSM、抗锯齿、材质预设库，
+   渲染新特性直接在编辑器里做预览面板，边开发边验证；脚本系统（M4）的前置 Node 架构已就绪，可提前启动脚本语言选型。

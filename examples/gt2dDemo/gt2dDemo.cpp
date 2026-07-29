@@ -748,7 +748,7 @@ void reset_game(scene::Scene* scene, int& score, int& coins, int& lives, bool& g
 int main(int argc, char* argv[]) {
     float auto_close_seconds = 0.0f;
     std::string screenshot_path;
-    render::RenderAPI selected_api = render::RenderAPI::OpenGL;
+    render::RenderAPI selected_api = render::RenderAPI::Vulkan; // 默认 Vulkan，--opengl 切回兼容后端
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {

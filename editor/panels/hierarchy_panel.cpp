@@ -5,6 +5,7 @@
 #include <format>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "components/component.h"
@@ -32,18 +33,13 @@ namespace gryce_engine::editor {
 
 namespace {
 
-// 从当前持有者（父实体或场景根列表）摘下实体所有权。
+// 从当前持有者（父实体）摘下实体所有权。
 // 供拖拽换父使用；返回 nullptr 表示未找到。
+// 单根场景树下所有实体都有父级（顶层实体的父级是场景合成根节点）。
 std::unique_ptr<scene::Entity> detach_entity(scene::Scene& scene, scene::Entity* entity) {
+    (void)scene;
     if (scene::Entity* parent = entity->parent()) {
         return parent->detach_child(entity);
-    }
-    for (auto it = scene.roots().begin(); it != scene.roots().end(); ++it) {
-        if (it->get() == entity) {
-            std::unique_ptr<scene::Entity> owned = std::move(*it);
-            scene.roots().erase(it);
-            return owned;
-        }
     }
     return nullptr;
 }
@@ -125,9 +121,15 @@ NodeIcon node_icon_for_entity(const scene::Entity* entity) {
     return {"N", IM_COL32(128, 128, 128, 255), IM_COL32(255, 255, 255, 255)};
 }
 
-// 绘制 Godot 风格树形连线
+// 绘制树形连线（标准树控件样式）：
+//   - 每个祖先层级：若该祖先还有后续兄弟，绘制贯通整行的竖直轨道（连续）
+//   - 当前节点在父级轨道上的接头：中间子节点为 ├（竖线贯通整行），
+//     末尾子节点为 └（竖线只到行中），并画水平短线连到节点
+//   - 当前节点自身有展开的子节点时，从行中向下画半行竖线，
+//     与第一个子节点的接头衔接，保证轨道连续
 void draw_tree_lines(int depth, const std::vector<bool>& parent_has_next_sibling,
-                     bool is_last_child, float row_screen_x, float row_y,
+                     bool is_last_child, bool has_open_children,
+                     float row_screen_x, float row_y,
                      float row_height, float indent, float arrow_offset) {
     if (depth <= 0) return;
 
@@ -137,20 +139,24 @@ void draw_tree_lines(int depth, const std::vector<bool>& parent_has_next_sibling
     const ImU32 color = IM_COL32(140, 140, 140, 90);
     const float thickness = 1.0f;
 
-    // 祖先层级竖线：仅当该祖先之后还有兄弟时绘制贯通竖线
+    // 祖先层级竖直轨道：该祖先之后还有兄弟时贯通整行（每行画一段，行间自然连续）
     for (int k = 0; k < depth - 1; ++k) {
         if (parent_has_next_sibling[k]) {
             const float x = row_screen_x - (depth - k) * indent + arrow_offset;
-            draw_list->AddLine(ImVec2(x, row_y), ImVec2(x, row_y + row_height), color, thickness);
+            draw_list->AddLine(ImVec2(x, row_y), ImVec2(x, y_bottom), color, thickness);
         }
     }
 
-    // 从父节点到当前节点的横线，以及当前节点如果不是最后一个子节点时的向下竖线
+    // 当前节点在父级轨道上的接头（├ / └）+ 水平短线
     const float parent_x = row_screen_x - indent + arrow_offset;
     const float current_x = row_screen_x + arrow_offset;
+    const float junction_bottom = is_last_child ? y_center : y_bottom;
+    draw_list->AddLine(ImVec2(parent_x, row_y), ImVec2(parent_x, junction_bottom), color, thickness);
     draw_list->AddLine(ImVec2(parent_x, y_center), ImVec2(current_x, y_center), color, thickness);
-    if (!is_last_child) {
-        draw_list->AddLine(ImVec2(parent_x, y_center), ImVec2(parent_x, y_bottom), color, thickness);
+
+    // 当前节点有展开的子节点：从行中向下引出子级轨道，与第一个子节点的接头衔接
+    if (has_open_children) {
+        draw_list->AddLine(ImVec2(current_x, y_center), ImVec2(current_x, y_bottom), color, thickness);
     }
 }
 
@@ -181,21 +187,19 @@ bool HierarchyPanel::is_ancestor_of(scene::Entity* maybe_ancestor, scene::Entity
 }
 
 void HierarchyPanel::reparent(scene::Entity* child, scene::Entity* new_parent) {
-    if (!scene_ || !child || child == new_parent) return;
+    if (!scene_ || !child || child == scene_->root() || child == new_parent) return;
+    // new_parent=nullptr 表示移到根级（即场景合成根节点的直接子级）
+    scene::Entity* target = new_parent ? new_parent : scene_->root();
     // 禁止环：不能把实体拖到自己的后代下
     if (new_parent && is_ancestor_of(child, new_parent)) {
         GLOG_WARN("Hierarchy: cannot reparent '{}' to its own descendant", child->name());
         return;
     }
-    if (child->parent() == new_parent) return; // 无变化
+    if (child->parent() == target) return; // 无变化
 
     std::unique_ptr<scene::Entity> owned = detach_entity(*scene_, child);
     if (!owned) return;
-    if (new_parent) {
-        new_parent->add_child(std::move(owned));
-    } else {
-        scene_->add_root_entity(std::move(owned));
-    }
+    target->add_child(std::move(owned));
     GLOG_INFO("Hierarchy: reparented '{}' to '{}'", child->name(),
               new_parent ? new_parent->name() : "<root>");
 }
@@ -210,6 +214,7 @@ void HierarchyPanel::execute_op(const PendingOp& op) {
     if (op.kind == PendingOp::Kind::None || !scene_) return;
 
     scene::Entity* child = scene_->find_entity_by_uuid(op.child);
+    if (child == scene_->root()) return; // 场景根节点不参与任何延迟操作
     switch (op.kind) {
         case PendingOp::Kind::Delete:
             if (child) {
@@ -315,21 +320,33 @@ void HierarchyPanel::execute_op(const PendingOp& op) {
         }
         case PendingOp::Kind::Duplicate: {
             scene::Entity* entity = scene_->find_entity_by_uuid(op.child);
-            if (!entity) break;
+            if (!entity || entity == scene_->root()) break;
             auto cloned = entity->clone();
             if (!cloned) break;
             // 生成新名称：在原名后加 " (Copy)"
             std::string new_name = entity->name() + " " + tr("hierarchy.duplicate_suffix");
             cloned->set_name(new_name);
-            scene::Entity* added = nullptr;
-            if (scene::Entity* parent = entity->parent()) {
-                added = parent->add_child(std::move(cloned));
-            } else {
-                added = scene_->add_root_entity(std::move(cloned));
-            }
+            // 单根树下所有实体都有父级，副本挂到同一父级下
+            scene::Entity* added = entity->parent()->add_child(std::move(cloned));
             if (added) {
                 select(added->uuid());
                 GLOG_INFO("Hierarchy: duplicated '{}' as '{}'", entity->name(), added->name());
+            }
+            break;
+        }
+        case PendingOp::Kind::Paste: {
+            if (!clipboard_) break;
+            auto cloned = clipboard_->clone();
+            if (!cloned) break;
+            // target 无效时粘贴到根级（场景根节点的直接子级）
+            scene::Entity* parent = op.target.is_valid()
+                ? scene_->find_entity_by_uuid(op.target)
+                : nullptr;
+            if (!parent) parent = scene_->root();
+            scene::Entity* added = parent->add_child(std::move(cloned));
+            if (added) {
+                select(added->uuid());
+                GLOG_INFO("Hierarchy: pasted '{}'", added->name());
             }
             break;
         }
@@ -398,11 +415,9 @@ void HierarchyPanel::on_imgui() {
         }
     }
 
-    const auto& roots = scene_->roots();
-    for (size_t i = 0; i < roots.size(); ++i) {
-        const bool is_last = (i == roots.size() - 1);
-        draw_entity(roots[i].get(), 0, {}, is_last);
-    }
+    // 单根节点树：场景合成根节点作为唯一顶层行（不可删除/重命名/拖拽），
+    // 其余实体全部是其子级
+    draw_entity(scene_->root(), 0, {}, true);
 
     ImGui::PopStyleVar(3);
 
@@ -432,7 +447,13 @@ void HierarchyPanel::on_imgui() {
         clear_selection();
     }
     if (ImGui::BeginPopupContextItem("##hierarchy_bg_menu")) {
-        draw_new_submenu(nullptr);
+        if (ImGui::MenuItem(tr("hierarchy.create_entity"))) {
+            create_entity_dialog_.open(nullptr);
+        }
+        // 粘贴到根级
+        if (ImGui::MenuItem(tr("hierarchy.paste"), "Ctrl+V", false, clipboard_ != nullptr)) {
+            paste_clipboard(nullptr);
+        }
         ImGui::EndPopup();
     }
 
@@ -441,12 +462,18 @@ void HierarchyPanel::on_imgui() {
 
     // 组件选择器（New → Component 触发的弹窗）
     draw_component_picker();
+
+    // 创建实体对话框（每帧绘制）
+    create_entity_dialog_.draw(scene_);
 }
 
 void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
                                  const std::vector<bool>& parent_has_next_sibling,
                                  bool is_last_child) {
     if (!entity) return;
+
+    // 场景合成根节点行：不可删除/重命名/拖拽，名称显示为场景名
+    const bool is_scene_root = (scene_ && entity == scene_->root());
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
@@ -465,8 +492,11 @@ void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
     const ImVec2 row_screen_min = ImGui::GetCursorScreenPos();
     const float row_screen_x = row_screen_min.x;
 
+    const bool has_children = !entity->children().empty();
+    const bool open = !is_collapsed(entity->uuid());
+
     // 绘制树形连线
-    draw_tree_lines(depth, parent_has_next_sibling, is_last_child,
+    draw_tree_lines(depth, parent_has_next_sibling, is_last_child, has_children && open,
                     row_screen_x, row_screen_min.y, row_height, indent, arrow_offset);
 
     ImGui::PushID(static_cast<void*>(entity));
@@ -478,15 +508,16 @@ void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
         select(entity->uuid());
     }
 
-    // 右键菜单与拖拽绑定到 Selectable
-    draw_entity_context_menu(entity);
-    handle_drag_drop(entity);
+    // 右键菜单与拖拽绑定到 Selectable；根节点行只有 新建/粘贴 菜单，且不可拖拽
+    if (is_scene_root) {
+        draw_scene_root_context_menu();
+    } else {
+        draw_entity_context_menu(entity);
+        handle_drag_drop(entity);
+    }
 
     // 恢复光标到行起点，在 Selectable 之上绘制图标与文本
     ImGui::SetCursorScreenPos(row_screen_min);
-
-    const bool has_children = !entity->children().empty();
-    const bool open = !is_collapsed(entity->uuid());
 
     // 展开/折叠箭头（仅在有子节点时显示）
     if (has_children) {
@@ -554,7 +585,8 @@ void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
             finish_rename(true);
         }
     } else {
-        draw_list->AddText(name_pos, ImGui::GetColorU32(ImGuiCol_Text), entity->name().c_str());
+        const std::string& display_name = is_scene_root ? scene_->name() : entity->name();
+        draw_list->AddText(name_pos, ImGui::GetColorU32(ImGuiCol_Text), display_name.c_str());
     }
 
     ImGui::PopID();
@@ -575,18 +607,45 @@ void HierarchyPanel::draw_entity(scene::Entity* entity, int depth,
     }
 }
 
+void HierarchyPanel::draw_scene_root_context_menu() {
+    if (!ImGui::BeginPopupContextItem("##scene_root_menu")) return;
+
+    // 场景根节点行：只允许 新建（作为根的直接子级）与 粘贴到根级
+    if (ImGui::MenuItem(tr("hierarchy.create_entity"))) {
+        create_entity_dialog_.open(nullptr);
+    }
+    if (ImGui::MenuItem(tr("hierarchy.paste"), "Ctrl+V", false, clipboard_ != nullptr)) {
+        paste_clipboard(nullptr);
+    }
+    ImGui::EndPopup();
+}
+
 void HierarchyPanel::draw_entity_context_menu(scene::Entity* entity) {
     if (!ImGui::BeginPopupContextItem("##entity_menu")) return;
 
-    // 标准 IDE 顺序：New / Duplicate / Rename / Focus / --- / Prefab / --- / Delete
-    draw_new_submenu(entity);
+    // 标准 IDE 顺序：新建 / --- / 剪切 复制 粘贴 / --- / 副本 重命名 聚焦 / --- / Prefab / --- / 删除
+    if (ImGui::MenuItem(tr("hierarchy.create_entity"))) {
+        create_entity_dialog_.open(entity);
+    }
+    ImGui::Separator();
 
-    if (ImGui::MenuItem(tr("hierarchy.duplicate"))) {
-        pending_op_.kind = PendingOp::Kind::Duplicate;
-        pending_op_.child = entity->uuid();
+    // 剪贴板操作（IDE 必备）
+    if (ImGui::MenuItem(tr("hierarchy.cut"), "Ctrl+X")) {
+        cut_entity(entity);
+    }
+    if (ImGui::MenuItem(tr("hierarchy.copy"), "Ctrl+C")) {
+        copy_entity(entity);
+    }
+    if (ImGui::MenuItem(tr("hierarchy.paste"), "Ctrl+V", false, clipboard_ != nullptr)) {
+        paste_clipboard(entity); // 粘贴为该实体的子级
+    }
+    ImGui::Separator();
+
+    if (ImGui::MenuItem(tr("hierarchy.duplicate"), "Ctrl+D")) {
+        duplicate_entity(entity);
     }
 
-    if (ImGui::MenuItem(tr("hierarchy.rename"))) {
+    if (ImGui::MenuItem(tr("hierarchy.rename"), "F2")) {
         start_rename(entity);
     }
 
@@ -619,7 +678,7 @@ void HierarchyPanel::draw_entity_context_menu(scene::Entity* entity) {
         ImGui::Separator();
     }
 
-    if (ImGui::MenuItem(tr("hierarchy.delete"))) {
+    if (ImGui::MenuItem(tr("hierarchy.delete"), "Del")) {
         // 延迟到帧末执行：当前正处于实体树遍历中，直接销毁会使迭代器失效
         pending_op_.kind = PendingOp::Kind::Delete;
         pending_op_.child = entity->uuid();
@@ -627,8 +686,42 @@ void HierarchyPanel::draw_entity_context_menu(scene::Entity* entity) {
     ImGui::EndPopup();
 }
 
+// ---------------------------------------------------------------------------
+// 剪贴板 / 副本（右键菜单与全局快捷键共用）
+// ---------------------------------------------------------------------------
+void HierarchyPanel::cut_entity(scene::Entity* entity) {
+    if (!entity) return;
+    clipboard_ = entity->clone();
+    pending_op_.kind = PendingOp::Kind::Delete;
+    pending_op_.child = entity->uuid();
+}
+
+void HierarchyPanel::copy_entity(scene::Entity* entity) {
+    if (!entity) return;
+    clipboard_ = entity->clone();
+}
+
+void HierarchyPanel::paste_clipboard(scene::Entity* parent) {
+    if (!clipboard_) return;
+    pending_op_.kind = PendingOp::Kind::Paste;
+    pending_op_.target = parent ? parent->uuid() : scene::UUID::nil();
+}
+
+void HierarchyPanel::duplicate_entity(scene::Entity* entity) {
+    if (!entity) return;
+    pending_op_.kind = PendingOp::Kind::Duplicate;
+    pending_op_.child = entity->uuid();
+}
+
+void HierarchyPanel::rename_selected() {
+    if (scene::Entity* e = selected_entity()) {
+        start_rename(e);
+    }
+}
+
 void HierarchyPanel::start_rename(scene::Entity* entity) {
     if (!entity) return;
+    if (scene_ && entity == scene_->root()) return; // 场景根节点不可重命名
     if (rename_active_) {
         finish_rename(true); // 先确认上一个正在编辑的重命名
     }
@@ -732,103 +825,88 @@ scene::Entity* HierarchyPanel::create_light(components::Light::Type type, scene:
     return added;
 }
 
-void HierarchyPanel::draw_new_submenu(scene::Entity* parent_entity) {
-    if (!ImGui::BeginMenu(tr("hierarchy.new"))) return;
+void HierarchyPanel::create_entity_of_type(const std::string& type_id, scene::Entity* parent_entity) {
+    scene::Entity* added = nullptr;
 
-    draw_new_3d_object_submenu(parent_entity);
-    draw_new_2d_object_submenu(parent_entity);
-
-    if (ImGui::BeginMenu(tr("hierarchy.new.light"))) {
-        if (ImGui::MenuItem(tr("hierarchy.new.light.directional"))) {
-            if (auto* added = create_light(components::Light::Type::Directional, parent_entity)) {
-                select(added->uuid());
-            }
-        }
-        if (ImGui::MenuItem(tr("hierarchy.new.light.point"))) {
-            if (auto* added = create_light(components::Light::Type::Point, parent_entity)) {
-                select(added->uuid());
-            }
-        }
-        if (ImGui::MenuItem(tr("hierarchy.new.light.spot"))) {
-            if (auto* added = create_light(components::Light::Type::Spot, parent_entity)) {
-                select(added->uuid());
-            }
-        }
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::MenuItem(tr("hierarchy.new.camera"))) {
-        if (auto* added = create_camera(parent_entity)) {
-            select(added->uuid());
-        }
-    }
-
-    ImGui::Separator();
-
-    // 添加组件 → 打开组件选择器
-    if (ImGui::MenuItem(tr("hierarchy.new.component"))) {
-        scene::Entity* target = parent_entity ? parent_entity : selected_entity();
-        open_component_picker(target);
-    }
-
-    ImGui::EndMenu();
-}
-
-void HierarchyPanel::draw_new_3d_object_submenu(scene::Entity* parent_entity) {
-    if (!ImGui::BeginMenu(tr("hierarchy.new.3d_object"))) return;
-
-    if (ImGui::MenuItem(tr("hierarchy.new.node3d"))) {
-        if (auto* added = create_node3d(tr("hierarchy.new.node3d"), parent_entity)) {
-            select(added->uuid());
-        }
-    }
-
-    if (ImGui::MenuItem(tr("hierarchy.new.cube"))) {
-        if (auto* added = create_mesh_entity(tr("hierarchy.new.cube"), parent_entity,
-                                             "res:/models/cube_pbr.obj")) {
-            select(added->uuid());
-        }
-    }
-
-    ImGui::EndMenu();
-}
-
-void HierarchyPanel::draw_new_2d_object_submenu(scene::Entity* parent_entity) {
-    if (!ImGui::BeginMenu(tr("hierarchy.new.2d_object"))) return;
-
-    if (ImGui::MenuItem(tr("hierarchy.new.node2d"))) {
-        if (auto* added = create_node2d(tr("hierarchy.new.node2d"), parent_entity)) {
-            select(added->uuid());
-        }
-    }
-
-    if (ImGui::MenuItem(tr("hierarchy.new.sprite2d"))) {
-        scene::Entity* added = create_node2d(tr("hierarchy.new.sprite2d"), parent_entity);
-        if (added) {
-            added->add_component<components::d2::sprite::Sprite2D>();
-            select(added->uuid());
-        }
-    }
-
-    if (ImGui::MenuItem(tr("hierarchy.new.label"))) {
-        scene::Entity* added = create_node2d(tr("hierarchy.new.label"), parent_entity);
+    if (type_id == "empty") {
+        added = create_empty_entity(tr("create_entity.name.empty"), parent_entity);
+    } else if (type_id == "node3d") {
+        added = create_node3d(tr("create_entity.name.node3d"), parent_entity);
+    } else if (type_id == "cube") {
+        added = create_mesh_entity(tr("create_entity.name.cube"), parent_entity,
+                                   "res:/models/cube_pbr.obj");
+    } else if (type_id == "node2d") {
+        added = create_node2d(tr("create_entity.name.node2d"), parent_entity);
+    } else if (type_id == "sprite2d") {
+        added = create_node2d(tr("create_entity.name.sprite2d"), parent_entity);
+        if (added) added->add_component<components::d2::sprite::Sprite2D>();
+    } else if (type_id == "label") {
+        added = create_node2d(tr("create_entity.name.label"), parent_entity);
         if (added) {
             added->add_component<components::d2::text::Label>(tr("hierarchy.new.label_text"), 24.0f,
                                                               render::Color::white());
-            select(added->uuid());
         }
-    }
-
-    if (ImGui::MenuItem(tr("hierarchy.new.color_rect"))) {
-        scene::Entity* added = create_node2d(tr("hierarchy.new.color_rect"), parent_entity);
+    } else if (type_id == "color_rect") {
+        added = create_node2d(tr("create_entity.name.color_rect"), parent_entity);
         if (added) {
             added->add_component<components::d2::basic_rect::ColorRect>(100.0f, 100.0f,
                                                                         render::Color::white());
-            select(added->uuid());
         }
+    } else if (type_id == "dir_light") {
+        added = create_light(components::Light::Type::Directional, parent_entity);
+    } else if (type_id == "point_light") {
+        added = create_light(components::Light::Type::Point, parent_entity);
+    } else if (type_id == "spot_light") {
+        added = create_light(components::Light::Type::Spot, parent_entity);
+    } else if (type_id == "camera") {
+        added = create_camera(parent_entity);
+    } else if (type_id == "circle" || type_id == "polygon" || type_id == "camera2d" ||
+               type_id == "light2d" || type_id == "ambient_light2d" ||
+               type_id == "static_body2d" || type_id == "rigid_body2d" ||
+               type_id == "static_body3d" || type_id == "rigid_body3d" ||
+               type_id == "audio_source" || type_id == "audio_listener") {
+        // 「实体 + 组件」类型：先建合适的节点基座，再通过 ComponentFactory 挂组件。
+        static const std::unordered_map<std::string, const char*> k_component_types = {
+            {"circle", "Circle"},
+            {"polygon", "Polygon"},
+            {"camera2d", "Camera2D"},
+            {"light2d", "Light2D"},
+            {"ambient_light2d", "AmbientLight2D"},
+            {"static_body2d", "StaticBody2D"},
+            {"rigid_body2d", "RigidBody2D"},
+            {"static_body3d", "StaticBody"},
+            {"rigid_body3d", "RigidBody"},
+            {"audio_source", "AudioSource"},
+            {"audio_listener", "AudioListener"},
+        };
+        const char* component_type = k_component_types.at(type_id);
+        const bool is_3d = (type_id == "static_body3d" || type_id == "rigid_body3d");
+        const bool is_plain = (type_id == "audio_source" || type_id == "audio_listener");
+        const std::string name_key = "create_entity.name." + type_id;
+        if (is_plain) {
+            added = create_empty_entity(tr(name_key.c_str()), parent_entity);
+        } else if (is_3d) {
+            added = create_node3d(tr(name_key.c_str()), parent_entity);
+        } else {
+            added = create_node2d(tr(name_key.c_str()), parent_entity);
+        }
+        if (added) {
+            auto comp = components::ComponentFactory::instance().create(component_type);
+            if (comp) {
+                added->add_component(std::move(comp));
+            } else {
+                GLOG_WARN("Hierarchy: failed to create component '{}' for type id '{}'",
+                          component_type, type_id);
+            }
+        }
+    } else {
+        GLOG_WARN("Hierarchy: unknown create-entity type id '{}'", type_id);
+        return;
     }
 
-    ImGui::EndMenu();
+    if (added) {
+        select(added->uuid());
+    }
 }
 
 void HierarchyPanel::open_component_picker(scene::Entity* target_entity) {
@@ -839,8 +917,8 @@ void HierarchyPanel::open_component_picker(scene::Entity* target_entity) {
     component_picker_target_uuid_ = target_entity->uuid();
     component_picker_open_ = true;
     component_picker_first_frame_ = true;
+    component_picker_pending_open_ = true;
     component_picker_search_[0] = '\0';
-    ImGui::OpenPopup("###AddComponent");
 }
 
 void HierarchyPanel::draw_component_picker() {
@@ -849,6 +927,12 @@ void HierarchyPanel::draw_component_picker() {
     // 使用 ###AddComponent 作为稳定 ID，标题可翻译且不影响 popup 匹配。
     const std::string title_str = std::format("{}###AddComponent", tr("hierarchy.add_component.title"));
     const char* title = title_str.c_str();
+    if (component_picker_pending_open_) {
+        // 在 draw() 中再 OpenPopup：选择器可能由其他窗口（Inspector）触发，
+        // 在别的窗口 ID 栈内 OpenPopup 会导致 ID 不匹配、弹窗永不显示
+        ImGui::OpenPopup(title);
+        component_picker_pending_open_ = false;
+    }
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(360.0f, 480.0f), ImGuiCond_FirstUseEver);

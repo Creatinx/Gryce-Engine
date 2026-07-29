@@ -399,7 +399,13 @@ bool VulkanSwapchain::create_command_buffer() {
         return false;
     }
 
-    command_buffers_.resize(images_.size(), VK_NULL_HANDLE);
+    // 主命令缓冲按 frame-in-flight 槽分配（而非按交换链 image）：
+    // CB[slot] 与 fence[slot] 一一对应，acquire 时等待 fence[slot] 即保证
+    // 上一周期使用该槽 CB 的提交已执行完毕。若按 image 分配，驱动连续返回
+    // 同一 image（FIFO 单可用 image / IMMEDIATE 等场景）时会在 CB 仍 pending
+    // 的情况下 reset/begin/submit，验证层报 "command buffer in use"，
+    // 在部分驱动上直接导致 VK_ERROR_DEVICE_LOST。
+    command_buffers_.resize(frames_in_flight_, VK_NULL_HANDLE);
     VkCommandBufferAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     alloc_info.commandPool = command_pool_;
@@ -441,14 +447,26 @@ bool VulkanSwapchain::create_sync_objects() {
 
     VkDevice dev = device_->device();
     image_available_semaphores_.resize(frames_in_flight_);
-    render_finished_semaphores_.resize(frames_in_flight_);
+    // render_finished 信号量按交换链 image 分配（而非按 frame 槽）：
+    // 同一信号量只能在前一次 present 完成后才能被重新 signal；frame 槽的
+    // fence 只保证 CB 执行完毕，不保证 present 引擎已消费完信号量，
+    // image 数 > frames_in_flight 时会报 "semaphore still in use by
+    // VkSwapchainKHR"，在部分驱动上是 device lost 的诱因。
+    // 按 image 索引后，只有重新 acquire 到同一 image 才会复用其信号量，
+    // 而 acquire 成功本身即保证该 image 的 present 已结束。
+    render_finished_semaphores_.resize(images_.size());
     frame_fences_.resize(frames_in_flight_, VK_NULL_HANDLE);
 
     for (int i = 0; i < frames_in_flight_; ++i) {
         if (vkCreateSemaphore(dev, &sem_info, nullptr, &image_available_semaphores_[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(dev, &sem_info, nullptr, &render_finished_semaphores_[i]) != VK_SUCCESS ||
             vkCreateFence(dev, &fence_info, nullptr, &frame_fences_[i]) != VK_SUCCESS) {
             GLOG_ERROR("VulkanSwapchain: failed to create sync objects");
+            return false;
+        }
+    }
+    for (size_t i = 0; i < images_.size(); ++i) {
+        if (vkCreateSemaphore(dev, &sem_info, nullptr, &render_finished_semaphores_[i]) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanSwapchain: failed to create render-finished semaphores");
             return false;
         }
     }
@@ -493,7 +511,7 @@ VkResult VulkanSwapchain::submit_and_present(uint32_t image_index, VkCommandBuff
     }
 
     VkSemaphore image_available = image_available_semaphores_[current_frame_];
-    VkSemaphore render_finished = render_finished_semaphores_[current_frame_];
+    VkSemaphore render_finished = render_finished_semaphores_[image_index];
     VkFence fence = frame_fences_[current_frame_];
 
     VkSubmitInfo submit{};
