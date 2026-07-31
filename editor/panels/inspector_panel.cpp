@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <format>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "components/component.h"
@@ -149,7 +150,7 @@ void InspectorPanel::on_imgui() {
         return;
     }
 
-    // 切换实体后清理旧实体的编辑中字段
+    // 切换实体后清理旧实体的编辑中字段与聚焦组件
     {
         const std::string prefix = entity->uuid().str() + ":";
         for (auto it = active_fields_.begin(); it != active_fields_.end();) {
@@ -159,6 +160,7 @@ void InspectorPanel::on_imgui() {
                 ++it;
             }
         }
+        focused_component_type_.clear();
     }
 
     if (read_only_) {
@@ -205,6 +207,27 @@ void InspectorPanel::on_imgui() {
         draw_component(entity, comp.get());
     }
 
+    // Delete 键标记当前聚焦的组件为待删除（Transform 不可删除）
+    if (!read_only_ && !focused_component_type_.empty() &&
+        std::strcmp(focused_component_type_.c_str(), "Transform") != 0 &&
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+        pending_delete_component_type_ = focused_component_type_;
+    }
+
+    // 组件遍历结束后统一执行延迟删除，避免迭代器失效
+    if (!pending_delete_component_type_.empty() && undo_stack_ && scene_) {
+        const std::string type_to_delete = std::exchange(pending_delete_component_type_, {});
+        if (entity->get_component_by_type(type_to_delete)) {
+            undo_stack_->push(std::make_unique<ComponentRemoveCommand>(
+                *scene_, entity->uuid(), type_to_delete));
+            if (component_changed_handler_) {
+                component_changed_handler_(entity);
+            }
+        }
+        focused_component_type_.clear();
+    }
+
     // 「Add Component」：复用 Hierarchy 面板的组件选择器（同一 Undo 感知流程）
     if (!read_only_ && add_component_handler_) {
         ImGui::Spacing();
@@ -230,7 +253,24 @@ void InspectorPanel::draw_component(scene::Entity* entity, components::Component
     const char* raw_type_name = component->type();
     const char* display_type_name = translated_type_name(raw_type_name);
     ImGui::PushID(static_cast<void*>(component));
-    if (ImGui::CollapsingHeader(display_type_name, ImGuiTreeNodeFlags_DefaultOpen)) {
+    const bool header_open = ImGui::CollapsingHeader(display_type_name, ImGuiTreeNodeFlags_DefaultOpen);
+
+    // 记录当前聚焦的组件，用于 Delete 键删除
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+        focused_component_type_ = raw_type_name;
+    }
+
+    // 右键菜单：删除组件（Transform 不可删除）
+    if (!read_only_ && std::strcmp(raw_type_name, "Transform") != 0 &&
+        ImGui::BeginPopupContextItem("component_context")) {
+        if (ImGui::MenuItem(tr("inspector.delete_component"))) {
+            // 延迟到组件遍历结束后再执行删除，避免迭代器失效
+            pending_delete_component_type_ = raw_type_name;
+        }
+        ImGui::EndPopup();
+    }
+
+    if (header_open) {
         // MeshRenderer / SkinnedMeshRenderer 额外显示材质编辑入口
         if (std::strcmp(raw_type_name, "MeshRenderer") == 0 ||
             std::strcmp(raw_type_name, "SkinnedMeshRenderer") == 0) {
@@ -267,7 +307,13 @@ void InspectorPanel::draw_component(scene::Entity* entity, components::Component
             ImGui::TextDisabled("%s", tr("inspector.no_fields"));
         }
         for (const reflection::FieldInfo* field : fields) {
-            if (field) draw_field(entity, component, *field);
+            if (!field) continue;
+            // AudioSource 的 pitch 由自定义倍速滑块控制，避免与反射字段重复显示。
+            if (std::strcmp(raw_type_name, "AudioSource") == 0 &&
+                std::strcmp(field->name.c_str(), "pitch") == 0) {
+                continue;
+            }
+            draw_field(entity, component, *field);
         }
     }
     ImGui::PopID();
@@ -393,7 +439,6 @@ void InspectorPanel::draw_physical_material_section(scene::Entity* entity, compo
 }
 
 void InspectorPanel::draw_audio_source_section(scene::Entity* entity, components::Component* component) {
-    (void)entity;
     auto* src = dynamic_cast<components::AudioSource*>(component);
     if (!src) return;
 
@@ -432,6 +477,21 @@ void InspectorPanel::draw_audio_source_section(scene::Entity* entity, components
         ImGui::SameLine();
         ImGui::TextDisabled("%s", tr("inspector.audio_no_clip"));
     }
+
+    // 倍速（Pitch）专用滑块：0.1x ~ 4.0x，拖动时即时同步到正在播放的实例。
+    ImGui::BeginDisabled(read_only_);
+    if (ImGui::SliderFloat(tr("inspector.audio_pitch"), &src->pitch, 0.1f, 4.0f, "%.2fx")) {
+        if (playing) {
+            src->on_update(0.0f);
+        }
+    }
+    // 倍速滑块暂不提供 Ctrl+Z 撤销：手动构造的 ComponentFieldCommand 在 push 时
+    // 出现虚表损坏导致崩溃，待排查 reflection/CommandStack 交互问题后再启用。
+    // 目前直接修改 src->pitch 并通过 on_update 同步到播放实例，功能正常。
+    (void)undo_stack_;
+    (void)scene_;
+    (void)entity;
+    ImGui::EndDisabled();
 
     ImGui::Separator();
 }

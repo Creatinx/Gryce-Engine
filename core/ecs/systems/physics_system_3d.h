@@ -6,6 +6,8 @@
 #include <memory>
 #include <optional>
 
+namespace gryce_engine { namespace scene { class Entity; } }
+
 namespace gryce_engine::ecs {
 
 // ---------------------------------------------------------------------------
@@ -29,6 +31,9 @@ public:
     std::optional<physics::RaycastHit> raycast(const math::Vector3f& origin,
                                                 const math::Vector3f& direction,
                                                 float max_distance) const;
+
+    // 立即重建指定实体的物理 body（组件增删后热重载，不等待下一帧）
+    void rebuild_body_for_entity(scene::Entity* entity);
 
     // 全局重力（默认 -9.81 m/s^2，沿 Y 轴向下）
     math::Vector3f gravity = math::Vector3f(0.0f, -9.81f, 0.0f);

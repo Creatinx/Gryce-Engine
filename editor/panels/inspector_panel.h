@@ -61,6 +61,11 @@ public:
         add_component_handler_ = std::move(handler);
     }
 
+    // 组件增删后的回调（用于物理等需要即时热重载的系统）
+    void set_component_changed_handler(std::function<void(scene::Entity*)> handler) {
+        component_changed_handler_ = std::move(handler);
+    }
+
 protected:
     void on_imgui() override;
 
@@ -91,8 +96,11 @@ private:
     render::RenderContext* render_ctx_ = nullptr;
     std::function<void(scene::Entity*, const std::string&)> drop_handler_;
     std::function<void(scene::Entity*)> add_component_handler_;
+    std::function<void(scene::Entity*)> component_changed_handler_;
     bool read_only_ = false;
     CommandStack* undo_stack_ = nullptr;
+    std::string focused_component_type_;
+    std::string pending_delete_component_type_;
 
     // 正在编辑的字段旧值（entity_uuid:component_type:field_name -> FieldValue）
     std::unordered_map<std::string, FieldValue> active_fields_;

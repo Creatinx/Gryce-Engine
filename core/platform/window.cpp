@@ -263,6 +263,39 @@ void Window::set_size(int width, int height) {
     }
 }
 
+void Window::set_decorated(bool decorated) {
+    if (handle_) {
+        glfwSetWindowAttrib(handle_, GLFW_DECORATED, decorated ? GLFW_TRUE : GLFW_FALSE);
+    }
+}
+
+void Window::set_position(int x, int y) {
+    if (handle_) {
+        glfwSetWindowPos(handle_, x, y);
+    }
+}
+
+void Window::center_on_primary_monitor() {
+    if (!handle_) return;
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    if (!monitor) return;
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    glfwGetMonitorWorkarea(monitor, &mx, &my, &mw, &mh);
+    if (mw <= 0 || mh <= 0) {
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        if (!mode) return;
+        mx = 0; my = 0; mw = mode->width; mh = mode->height;
+    }
+    glfwSetWindowPos(handle_, mx + (mw - width_) / 2, my + (mh - height_) / 2);
+}
+
+void Window::focus_window() {
+    if (handle_) {
+        glfwShowWindow(handle_);
+        glfwFocusWindow(handle_);
+    }
+}
+
 void Window::get_size(int& width, int& height) const {
     if (handle_) {
         glfwGetWindowSize(handle_, &width, &height);

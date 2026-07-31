@@ -196,7 +196,7 @@
 
 | 功能 | 状态 |
 |---|---|
-| PNG/JPG/BMP 加载（stb_image） | 已实现 |
+| PNG/JPG/BMP 加载（stb_image） | 已实现（路径统一按 UTF-8 处理，支持中文文件名） |
 | 法线/roughness/metallic/ao/emissive 贴图 | 已实现 |
 | 立方体贴图（cubemap，天空盒） | 已实现 |
 | 纹理压缩（BC1~BC7/ASTC/ETC2） | 已实现（DDS/KTX 加载 + GL/VK 上传） |
@@ -293,11 +293,13 @@
 
 | 功能 | 状态 |
 |---|---|
-| 脚本语言 | 未选型 |
+| 脚本语言 | 已选型：Lua（计划通过 sol2/LuaJIT 集成） |
 | C++ 组件暴露到脚本 | 未实现 |
 | 脚本生命周期回调 | 未实现 |
 | 脚本热重载 | 未实现 |
 | Visual Scripting | 未实现 |
+
+**选型说明**：Lua 在嵌入体积（~200 KB）、C/C++ 互操作、热重载速度与 GC 可控性上均优于 Python/JS/TS，适合作为引擎脚本层；性能敏感路径继续由 C++ 实现并暴露 API。
 
 ---
 
@@ -403,10 +405,15 @@
 | GL `set_swap_interval` 无当前上下文防护 | 已实现 |
 | GPU profiling（Nsight/RenderDoc 标记） | 未实现 |
 | CPU profiling（Tracy/自带 profiler） | 未实现 |
-| 遮挡剔除、视锥剔除 | 未实现 |
+| 视锥剔除 | 部分实现（RenderPipeline 已有局部包围球 + camera frustum 判断） |
+| 遮挡剔除 | 未实现 |
 | GPU driven rendering | 未实现 |
 | 纹理流送 | 未实现 |
 | LOD 系统 | 未实现 |
+| GPU Instancing | 未实现（规划：按 mesh+material+two_sided 分桶，减少 Draw Call） |
+| 共享可见 entity 列表 | 未实现（规划：shadow/forward pass 复用同一份 VisibleItem 列表） |
+| Material/Shader 状态缓存 | 部分实现（连续相同材质绑定跳过） |
+| 包围球脏标记 | 未实现（规划：Transform 版本号 + 缓存世界空间包围球） |
 
 ---
 

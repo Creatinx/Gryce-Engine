@@ -1,5 +1,7 @@
 #include "audio/audio_engine.h"
 
+#include <filesystem>
+
 #include "miniaudio.h"
 #include "utils/glog/glog_lib.h"
 
@@ -98,20 +100,50 @@ bool AudioClip::load(const std::string& path) {
         if (!engine.init()) return false;
     }
 
-    sound_.reset(new ma_sound{});
+    // 短音效整体解码（低延迟、可被 ma_sound_init_copy 复制出多实例）；
+    // 长音频（>4MB）用流式播放，避免阻塞与内存暴涨。
+    // 注意：流式源不支持 ma_sound_init_copy，因此 AudioInstance 会直接从文件创建。
+    constexpr std::uintmax_t k_stream_threshold = 4 * 1024 * 1024; // 4MB
+    std::uintmax_t file_size = 0;
+
 #ifdef _WIN32
     const std::wstring wide_path = utf8_to_wide(path);
-    ma_result result = wide_path.empty()
-                           ? ma_sound_init_from_file(engine.engine(), path.c_str(),
-                                                     MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
-                                                     nullptr, nullptr, sound_.get())
-                           : ma_sound_init_from_file_w(engine.engine(), wide_path.c_str(),
-                                                       MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
-                                                       nullptr, nullptr, sound_.get());
+    {
+        std::error_code ec;
+        const std::filesystem::path fs_path =
+            wide_path.empty() ? std::filesystem::path(path) : std::filesystem::path(wide_path);
+        file_size = std::filesystem::file_size(fs_path, ec);
+        if (ec) file_size = 0;
+    }
 #else
-    ma_result result = ma_sound_init_from_file(engine.engine(), path.c_str(),
-                                               MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
-                                               nullptr, nullptr, sound_.get());
+    {
+        std::error_code ec;
+        file_size = std::filesystem::file_size(std::filesystem::path(path), ec);
+        if (ec) file_size = 0;
+    }
+#endif
+
+    is_streaming_ = file_size > k_stream_threshold;
+
+    if (is_streaming_) {
+        // 流式 clip 不预打开文件：只在播放时由 AudioInstance 创建流式 sound。
+        // 这样停止播放后文件立即解锁，编辑器可正常删除/重命名。
+        path_ = path;
+        GLOG_INFO("AudioClip: loaded '{}' (stream, deferred)", path);
+        return true;
+    }
+
+    sound_.reset(new ma_sound{});
+    ma_result result;
+#ifdef _WIN32
+    result = wide_path.empty()
+                 ? ma_sound_init_from_file(engine.engine(), path.c_str(),
+                                           MA_SOUND_FLAG_DECODE, nullptr, nullptr, sound_.get())
+                 : ma_sound_init_from_file_w(engine.engine(), wide_path.c_str(),
+                                             MA_SOUND_FLAG_DECODE, nullptr, nullptr, sound_.get());
+#else
+    result = ma_sound_init_from_file(engine.engine(), path.c_str(),
+                                     MA_SOUND_FLAG_DECODE, nullptr, nullptr, sound_.get());
 #endif
     if (result != MA_SUCCESS) {
         GLOG_WARN("AudioClip: failed to load '{}' (result={})", path, static_cast<int>(result));
@@ -119,7 +151,7 @@ bool AudioClip::load(const std::string& path) {
         return false;
     }
     path_ = path;
-    GLOG_INFO("AudioClip: loaded '{}'", path);
+    GLOG_INFO("AudioClip: loaded '{}' (decode)", path);
     return true;
 }
 
@@ -142,39 +174,69 @@ bool AudioInstance::create_from_clip(const AudioClip& clip) {
     if (!engine.valid()) return false;
 
     sound_.reset(new ma_sound{});
-    ma_result result = ma_sound_init_copy(engine.engine(), clip.handle(),
-                                          MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
-                                          nullptr, sound_.get());
+    ma_result result;
+    if (clip.is_streaming()) {
+        // 流式源不支持 ma_sound_init_copy，直接从文件创建独立流式实例。
+#ifdef _WIN32
+        const std::wstring wide_path = utf8_to_wide(clip.path());
+        result = wide_path.empty()
+                     ? ma_sound_init_from_file(engine.engine(), clip.path().c_str(),
+                                               MA_SOUND_FLAG_STREAM, nullptr, nullptr, sound_.get())
+                     : ma_sound_init_from_file_w(engine.engine(), wide_path.c_str(),
+                                                 MA_SOUND_FLAG_STREAM, nullptr, nullptr, sound_.get());
+#else
+        result = ma_sound_init_from_file(engine.engine(), clip.path().c_str(),
+                                         MA_SOUND_FLAG_STREAM, nullptr, nullptr, sound_.get());
+#endif
+    } else {
+        // flags 传 0：拷贝继承源 sound 的加载方式（解码源共享已解码数据）。
+        result = ma_sound_init_copy(engine.engine(), clip.handle(),
+                                    0, nullptr, sound_.get());
+    }
     if (result != MA_SUCCESS) {
         GLOG_WARN("AudioInstance: failed to create instance (result={})", static_cast<int>(result));
         sound_.reset();
         return false;
     }
+    GLOG_INFO("AudioInstance: created {} sound={} engine={}",
+              clip.is_streaming() ? "stream" : "decode",
+              reinterpret_cast<void*>(sound_.get()),
+              reinterpret_cast<void*>(ma_sound_get_engine(sound_.get())));
     return true;
 }
 
 void AudioInstance::play() {
-    if (sound_) ma_sound_start(sound_.get());
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) return;
+    ma_sound_start(sound_.get());
 }
 
 void AudioInstance::stop() {
-    if (sound_) ma_sound_stop(sound_.get());
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) return;
+    ma_sound_stop(sound_.get());
 }
 
 void AudioInstance::set_volume(float volume) {
-    if (sound_) ma_sound_set_volume(sound_.get(), volume);
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) return;
+    ma_sound_set_volume(sound_.get(), volume);
 }
 
 void AudioInstance::set_pitch(float pitch) {
-    if (sound_) ma_sound_set_pitch(sound_.get(), pitch);
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) {
+        GLOG_WARN("AudioInstance: set_pitch skipped, sound={} engine={}",
+                  reinterpret_cast<void*>(sound_.get()),
+                  reinterpret_cast<void*>(sound_ ? ma_sound_get_engine(sound_.get()) : nullptr));
+        return;
+    }
+    ma_sound_set_pitch(sound_.get(), pitch);
 }
 
 void AudioInstance::set_loop(bool loop) {
-    if (sound_) ma_sound_set_looping(sound_.get(), loop ? MA_TRUE : MA_FALSE);
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) return;
+    ma_sound_set_looping(sound_.get(), loop ? MA_TRUE : MA_FALSE);
 }
 
 void AudioInstance::set_3d(bool enabled) {
-    if (!sound_) return;
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) return;
     if (enabled) {
         ma_sound_set_spatialization_enabled(sound_.get(), MA_TRUE);
     } else {
@@ -183,18 +245,19 @@ void AudioInstance::set_3d(bool enabled) {
 }
 
 void AudioInstance::set_position(const math::Vector3f& pos) {
-    if (sound_) ma_sound_set_position(sound_.get(), pos.x, pos.y, pos.z);
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) return;
+    ma_sound_set_position(sound_.get(), pos.x, pos.y, pos.z);
 }
 
 void AudioInstance::set_spatial_range(float min_dist, float max_dist) {
-    if (sound_) {
-        ma_sound_set_min_distance(sound_.get(), min_dist);
-        ma_sound_set_max_distance(sound_.get(), max_dist);
-    }
+    if (!sound_ || !ma_sound_get_engine(sound_.get())) return;
+    ma_sound_set_min_distance(sound_.get(), min_dist);
+    ma_sound_set_max_distance(sound_.get(), max_dist);
 }
 
 bool AudioInstance::is_playing() const {
-    return sound_ && ma_sound_is_playing(sound_.get()) == MA_TRUE;
+    return sound_ && ma_sound_get_engine(sound_.get()) &&
+           ma_sound_is_playing(sound_.get()) == MA_TRUE;
 }
 
 } // namespace gryce_engine::audio

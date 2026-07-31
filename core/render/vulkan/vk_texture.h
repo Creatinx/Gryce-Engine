@@ -21,6 +21,7 @@ public:
     ~VulkanTexture() override;
 
     bool load_from_file(const std::string& path) override;
+    bool load_from_memory(const void* data, size_t size) override;
     bool create_empty(int width, int height, int channels = 4) override;
     bool upload_data(const void* data, int width, int height, int channels = 4) override;
     bool upload_cubemap(const void* faces[6], int width, int height, int channels = 4) override;

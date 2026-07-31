@@ -27,10 +27,11 @@ bool load_editor_font(const ThemeConfig& config) {
 }
 
 void apply_theme(ThemePreset preset, const ThemeConfig& config) {
+    // Dark/Light 预设即 Xcode 暗色/亮色主题
     if (preset == ThemePreset::Dark) {
-        EngineTheme::Dark::Apply();
+        apply_xcode_dark();
     } else if (preset == ThemePreset::Light) {
-        EngineTheme::Light::Apply();
+        apply_xcode_light();
     } else {
         EngineTheme::ModernLight::Apply();
     }
@@ -90,6 +91,7 @@ bool load_theme_config(const std::string& project_root, ThemeConfig& out_config,
         std::string preset_str = j.value("preset", "dark");
         if (preset_str == "light")        out_preset = ThemePreset::Light;
         else if (preset_str == "modern_light") out_preset = ThemePreset::ModernLight;
+        // 兼容旧配置："xcode" 预设已并入 Dark
         else                              out_preset = ThemePreset::Dark;
     } catch (const std::exception& e) {
         GLOG_ERROR("EditorTheme: failed to parse '{}': {}", path, e.what());

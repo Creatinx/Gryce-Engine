@@ -48,6 +48,7 @@ public:
         is_3d = in.value("is_3d", true);
         min_distance = in.value("min_distance", 1.0f);
         max_distance = in.value("max_distance", 100.0f);
+        last_is_3d_ = is_3d; // 热重载后不要误判为切换
     }
 
     void on_awake() override;
@@ -70,6 +71,7 @@ private:
     std::shared_ptr<audio::AudioClip> clip_;
     std::vector<std::unique_ptr<audio::AudioInstance>> instances_;
     bool started_on_awake_ = false;
+    bool last_is_3d_ = false; // 用于检测 is_3d 切换并立即同步到播放实例
 };
 
 } // namespace gryce_engine::components

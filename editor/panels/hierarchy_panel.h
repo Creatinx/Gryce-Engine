@@ -63,6 +63,11 @@ public:
     // 绑定 Undo/Redo 命令栈
     void set_undo_stack(CommandStack* stack) { undo_stack_ = stack; }
 
+    // 组件增删后触发外部系统（如 PhysicsSystem3D）即时热重载
+    void set_component_changed_handler(std::function<void(scene::Entity*)> handler) {
+        component_changed_handler_ = std::move(handler);
+    }
+
     // 将指定实体排队到本帧延迟删除队列，实际删除在 render_ctx.present 之后执行。
     void queue_delete(const scene::UUID& uuid);
 
@@ -125,6 +130,7 @@ private:
     scene::UUID selected_uuid_ = scene::UUID::nil();
     bool drag_enabled_ = true;
     CommandStack* undo_stack_ = nullptr;
+    std::function<void(scene::Entity*)> component_changed_handler_;
 
     PendingOp pending_op_;
     std::vector<PendingOp> deferred_ops_;

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Gryce Engine</title>
+  <defs>
+    <linearGradient id="top" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#4338CA"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#312E81"/>
+      <stop offset="100%" stop-color="#1E1B4B"/>
+    </linearGradient>
+  </defs>
+  <polygon points="256,70 404,155 256,240 108,155" fill="url(#top)" stroke="#C7D2FE" stroke-width="4" stroke-linejoin="round"/>
+  <polygon points="108,155 256,240 256,420 108,335" fill="url(#left)" stroke="#C7D2FE" stroke-width="4" stroke-linejoin="round"/>
+  <polygon points="404,155 404,335 256,420 256,240" fill="url(#right)" stroke="#1E1B4B" stroke-width="4" stroke-linejoin="round"/>
+</svg>

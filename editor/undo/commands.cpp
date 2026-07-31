@@ -168,6 +168,66 @@ std::string ComponentAddCommand::description() const {
 }
 
 // ---------------------------------------------------------------------------
+// ComponentRemoveCommand
+// ---------------------------------------------------------------------------
+ComponentRemoveCommand::ComponentRemoveCommand(scene::Scene& scene,
+                                               const scene::UUID& entity_uuid,
+                                               std::string component_type)
+    : scene_(&scene),
+      entity_uuid_(entity_uuid),
+      component_type_(std::move(component_type)) {}
+
+void ComponentRemoveCommand::execute() {
+    if (!scene_ || executed_) return;
+    scene::Entity* entity = scene_->find_entity_by_uuid(entity_uuid_);
+    if (!entity) {
+        GLOG_WARN("ComponentRemoveCommand: entity not found");
+        return;
+    }
+    components::Component* comp = entity->get_component_by_type(component_type_);
+    if (!comp) {
+        GLOG_WARN("ComponentRemoveCommand: component '{}' not found on entity '{}'",
+                  component_type_, entity->name());
+        return;
+    }
+
+    serialized_component_ = nlohmann::json::object();
+    serialized_component_["type"] = comp->type();
+    serialized_component_["enabled"] = comp->enabled;
+    comp->serialize(serialized_component_);
+
+    entity->remove_component(comp);
+    executed_ = true;
+}
+
+void ComponentRemoveCommand::undo() {
+    if (!scene_ || !executed_) return;
+    scene::Entity* entity = scene_->find_entity_by_uuid(entity_uuid_);
+    if (!entity) {
+        GLOG_WARN("ComponentRemoveCommand::undo: entity not found");
+        return;
+    }
+    if (entity->get_component_by_type(component_type_)) {
+        GLOG_WARN("ComponentRemoveCommand::undo: entity '{}' already has component '{}'",
+                  entity->name(), component_type_);
+        return;
+    }
+    auto comp = components::ComponentFactory::instance().create(component_type_);
+    if (!comp) {
+        GLOG_ERROR("ComponentRemoveCommand::undo: failed to recreate component '{}'", component_type_);
+        return;
+    }
+    comp->enabled = serialized_component_.value("enabled", true);
+    comp->deserialize(serialized_component_);
+    entity->add_component(std::move(comp));
+    executed_ = false;
+}
+
+std::string ComponentRemoveCommand::description() const {
+    return std::format("Remove component {}", component_type_);
+}
+
+// ---------------------------------------------------------------------------
 // EntityRenameCommand
 // ---------------------------------------------------------------------------
 EntityRenameCommand::EntityRenameCommand(scene::Scene& scene,

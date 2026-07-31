@@ -1,5 +1,6 @@
 # Build outputs
 build/
+build_vs*/
 cmake-build-*/
 out/
 
@@ -17,17 +18,28 @@ deps_cache/
 .vs/
 .vscode/
 *.user
+*.sln
+*.vcxproj
+*.vcxproj.filters
 
 # ImGui runtime layout
 imgui.ini
 
-# Runtime generated assets / screenshots
+# Runtime generated assets / screenshots / recordings
+media/
 font_atlas_debug.bmp
 screenshot_*.bmp
+screenshot_*.jpg
 *.png
+*.mp4
+*.avi
 
 # Test textures (not referenced by source)
 checkerboard.bmp
+
+# Temporary / local helper scripts
+_save-server.js
+*.tmp
 
 # Obsidian personal config
 docs/.obsidian/

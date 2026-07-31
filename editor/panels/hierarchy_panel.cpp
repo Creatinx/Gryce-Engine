@@ -1001,6 +1001,9 @@ void HierarchyPanel::draw_component_picker() {
                     target->add_component(std::move(comp));
                 }
             }
+            if (component_changed_handler_ && target) {
+                component_changed_handler_(target);
+            }
             ImGui::CloseCurrentPopup();
             component_picker_open_ = false;
         }

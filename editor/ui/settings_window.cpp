@@ -1,6 +1,7 @@
 #include "settings_window.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 
@@ -8,7 +9,6 @@
 
 #include "render/render_context.h"
 #include "utils/glog/glog_lib.h"
-#include "../shortcuts/shortcut_manager.h"
 
 namespace gryce_engine::editor {
 
@@ -26,6 +26,24 @@ Language language_from_string(const std::string& s) {
     if (s == "zh") return Language::Chinese;
     return Language::English;
 }
+
+std::string to_lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// 栏目树：分组 › 页面（只包含真实存在的设置页）
+const SettingsWindow::PageInfo k_pages[] = {
+    {SettingsWindow::Page::Appearance,    "settings.page.appearance", "settings.group.appearance_behavior"},
+    {SettingsWindow::Page::Language,      "settings.page.language",   "settings.group.appearance_behavior"},
+    {SettingsWindow::Page::EditorGeneral, "settings.page.general",    "settings.group.editor"},
+    {SettingsWindow::Page::Shortcuts,     "settings.section.shortcuts", nullptr},
+};
+
+const char* k_groups[] = {
+    "settings.group.appearance_behavior",
+    "settings.group.editor",
+};
 
 } // namespace
 
@@ -104,6 +122,9 @@ void SettingsWindow::save(const std::string& project_root, const EditorSettings&
     GLOG_INFO("SettingsWindow: saved settings '{}'", path);
 }
 
+// ---------------------------------------------------------------------------
+// 主绘制
+// ---------------------------------------------------------------------------
 bool SettingsWindow::draw(const std::string& project_root, EditorSettings& settings) {
     if (!open_) {
         // 窗口关闭时确保快捷键不处于挂起状态
@@ -115,6 +136,22 @@ bool SettingsWindow::draw(const std::string& project_root, EditorSettings& setti
     }
     project_root_ = project_root;
 
+    // 打开时快照：设置副本（暂存编辑）+ 快捷键组合（取消时还原）
+    if (just_opened_) {
+        just_opened_ = false;
+        staged_ = settings;
+        dirty_ = false;
+        search_buf_[0] = '\0';
+        rebinding_shortcut_.clear();
+        rebind_conflict_.clear();
+        shortcut_snapshot_.clear();
+        if (shortcut_mgr_) {
+            for (const auto& entry : shortcut_mgr_->entries()) {
+                shortcut_snapshot_.emplace_back(entry.name, entry.combo);
+            }
+        }
+    }
+
     // 捕获新按键期间挂起全局快捷键，避免误触发
     if (shortcut_mgr_) {
         shortcut_mgr_->set_suspended(!rebinding_shortcut_.empty());
@@ -122,159 +159,265 @@ bool SettingsWindow::draw(const std::string& project_root, EditorSettings& setti
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(880.0f, 560.0f), ImGuiCond_Appearing);
+
+    const PageInfo* current_info = &k_pages[0];
+    for (const auto& p : k_pages) {
+        if (p.page == current_page_) {
+            current_info = &p;
+            break;
+        }
+    }
 
     bool still_open = true;
     if (ImGui::Begin(tr("settings.title"), &still_open, ImGuiWindowFlags_NoDocking)) {
-        const float sidebar_width = 160.0f;
-        draw_sidebar(sidebar_width);
+        const float footer_h = ImGui::GetFrameHeightWithSpacing() + 12.0f;
+        const float region_h = ImGui::GetContentRegionAvail().y - footer_h;
 
-        ImGui::SameLine();
-        ImGui::BeginChild("##settings_content", ImVec2(0.0f, 0.0f), true);
-        switch (current_section_) {
-            case Section::Theme:
-                draw_theme_section(settings);
-                break;
-            case Section::Appliance:
-                draw_appliance_section(settings);
-                break;
-            case Section::Editor:
-                draw_editor_section(settings);
-                break;
-            case Section::Shortcuts:
-                draw_shortcuts_section(settings);
-                break;
+        // 左侧栏目树
+        ImGui::BeginChild("##settings_sidebar", ImVec2(240.0f, region_h), false);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##settings_search", tr("settings.search_hint"),
+                                 search_buf_, sizeof(search_buf_));
+        ImGui::Spacing();
+        draw_sidebar_tree();
+        ImGui::EndChild();
+
+        // 1px 竖直分隔线（JetBrains 风格 hairline divider，替代宽间距）
+        ImGui::SameLine(0.0f, 6.0f);
+        {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddLine(p, ImVec2(p.x, p.y + region_h),
+                                                ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
+        }
+        ImGui::Dummy(ImVec2(1.0f, region_h));
+        ImGui::SameLine(0.0f, 6.0f);
+
+        // 右侧内容区：面包屑 + 当前页
+        ImGui::BeginChild("##settings_content", ImVec2(0.0f, region_h), false);
+        draw_breadcrumb(*current_info);
+        ImGui::Separator();
+        ImGui::Spacing();
+        switch (current_page_) {
+            case Page::Appearance:    draw_appearance_page();    break;
+            case Page::Language:      draw_language_page();      break;
+            case Page::EditorGeneral: draw_editor_general_page(); break;
+            case Page::Shortcuts:     draw_shortcuts_page();     break;
         }
         ImGui::EndChild();
+
+        // 底部按钮行（右对齐）
+        ImGui::Separator();
+        draw_footer_buttons(settings);
     }
     ImGui::End();
 
-    // 延迟保存 + 字体热重载防抖：用户停止拖动 0.5s 后再真正保存/请求重建。
-    const float dt = ImGui::GetIO().DeltaTime;
-    if (save_debounce_ > 0.0f) {
-        save_debounce_ -= dt;
-        if (save_debounce_ <= 0.0f) {
-            flush_save(project_root, settings);
-        }
-    }
-
     if (!still_open) {
-        if (unsaved_changes_) {
-            flush_save(project_root, settings);
-        }
-        open_ = false;
+        cancel_and_close();
     }
     return open_;
 }
 
-void SettingsWindow::draw_sidebar(float width) {
-    ImGui::BeginChild("##settings_sidebar", ImVec2(width, 0.0f), true);
-
-    auto item = [&](Section section, const char* label) {
-        bool selected = (current_section_ == section);
-        if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_None, ImVec2(0.0f, 28.0f))) {
-            current_section_ = section;
-        }
-    };
-
-    item(Section::Theme, tr("settings.section.theme"));
-    item(Section::Appliance, tr("settings.section.appliance"));
-    item(Section::Editor, tr("settings.section.editor"));
-    item(Section::Shortcuts, tr("settings.section.shortcuts"));
-
-    ImGui::EndChild();
+// ---------------------------------------------------------------------------
+// 左侧栏目树（搜索过滤）
+// ---------------------------------------------------------------------------
+bool SettingsWindow::page_matches_filter(const PageInfo& info) const {
+    if (search_buf_[0] == '\0') return true;
+    const std::string needle = to_lower(search_buf_);
+    return to_lower(tr(info.name_key)).find(needle) != std::string::npos;
 }
 
-void SettingsWindow::draw_theme_section(EditorSettings& settings) {
-    ImGui::Text("%s", tr("settings.appearance"));
-    ImGui::Separator();
+bool SettingsWindow::group_matches_filter(const char* group_key) const {
+    if (search_buf_[0] == '\0') return true;
+    const std::string needle = to_lower(search_buf_);
+    if (to_lower(tr(group_key)).find(needle) != std::string::npos) return true;
+    // 分组下任一页面匹配则分组可见
+    for (const auto& p : k_pages) {
+        if (p.group_key && std::string(p.group_key) == group_key && page_matches_filter(p)) {
+            return true;
+        }
+    }
+    return false;
+}
 
+void SettingsWindow::draw_sidebar_tree() {
+    // 选中行用 Xcode 蓝高亮（JetBrains Settings 风格）
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.039f, 0.518f, 1.0f, 0.55f));
+
+    // 分组节点（可展开/折叠；搜索时强制展开）
+    for (const char* group_key : k_groups) {
+        if (!group_matches_filter(group_key)) continue;
+
+        const bool searching = search_buf_[0] != '\0';
+        if (searching) {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        } else {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Once); // 默认展开（JetBrains 风格）
+        }
+        if (!ImGui::TreeNode(tr(group_key))) continue;
+
+        for (const auto& p : k_pages) {
+            if (!p.group_key || std::string(p.group_key) != group_key) continue;
+            if (!page_matches_filter(p)) continue;
+            const bool selected = (current_page_ == p.page);
+            if (ImGui::Selectable(tr(p.name_key), selected,
+                                  ImGuiSelectableFlags_None, ImVec2(0.0f, 26.0f))) {
+                current_page_ = p.page;
+            }
+        }
+        ImGui::TreePop();
+    }
+
+    // 顶层叶子页（无分组）
+    for (const auto& p : k_pages) {
+        if (p.group_key) continue;
+        if (!page_matches_filter(p)) continue;
+        const bool selected = (current_page_ == p.page);
+        if (ImGui::Selectable(tr(p.name_key), selected,
+                              ImGuiSelectableFlags_None, ImVec2(0.0f, 26.0f))) {
+            current_page_ = p.page;
+        }
+    }
+
+    ImGui::PopStyleColor();
+}
+
+void SettingsWindow::draw_breadcrumb(const PageInfo& info) {
+    if (info.group_key) {
+        ImGui::TextDisabled("%s", tr(info.group_key));
+        ImGui::SameLine(0.0f, 4.0f);
+        ImGui::TextDisabled("›");
+        ImGui::SameLine(0.0f, 4.0f);
+    }
+    ImGui::TextUnformatted(tr(info.name_key));
+}
+
+// ---------------------------------------------------------------------------
+// 底部按钮：确定 / 取消 / 应用
+// ---------------------------------------------------------------------------
+void SettingsWindow::draw_footer_buttons(EditorSettings& settings) {
+    const float btn_w = 90.0f;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float total = btn_w * 3.0f + spacing * 2.0f;
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - total);
+
+    if (ImGui::Button(tr("common.ok"), ImVec2(btn_w, 0.0f))) {
+        commit(settings);
+        open_ = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("common.cancel"), ImVec2(btn_w, 0.0f))) {
+        cancel_and_close();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!dirty_);
+    if (ImGui::Button(tr("settings.apply"), ImVec2(btn_w, 0.0f))) {
+        commit(settings);
+    }
+    ImGui::EndDisabled();
+}
+
+// ---------------------------------------------------------------------------
+// 提交 / 取消
+// ---------------------------------------------------------------------------
+void SettingsWindow::commit(EditorSettings& settings) {
+    staged_.theme.ui_scale = staged_.ui_scale;
+    settings = staged_;
+
+    // 生效：先切语言，再应用主题/字体（确保 CJK 字体按需合并），最后 VSync
+    Localization::instance().load(settings.appliance.language, project_root_);
+    Localization::instance().set_light_theme(settings.theme_preset == ThemePreset::Light);
+    apply_theme(settings.theme_preset, settings.theme);
+    if (render_ctx_) {
+        render_ctx_->set_swap_interval(settings.editor.vsync ? 1 : 0);
+    }
+
+    // 快捷键组合同步进待保存设置
+    if (shortcut_mgr_) {
+        settings.shortcut_overrides.clear();
+        for (const auto& entry : shortcut_mgr_->entries()) {
+            settings.shortcut_overrides[entry.name] = ShortcutManager::combo_to_string(entry.combo);
+        }
+    }
+
+    save(project_root_, settings);
+    // 提交后副本与正式设置一致
+    staged_ = settings;
+    dirty_ = false;
+}
+
+void SettingsWindow::cancel_and_close() {
+    // 还原打开窗口时的快捷键快照（重绑定/重置直接作用于 ShortcutManager，需手动回滚）
+    if (shortcut_mgr_ && !shortcut_snapshot_.empty()) {
+        for (const auto& [name, combo] : shortcut_snapshot_) {
+            shortcut_mgr_->set_combo(name, combo);
+        }
+    }
+    rebinding_shortcut_.clear();
+    open_ = false;
+}
+
+// ---------------------------------------------------------------------------
+// 页面：外观与行为 › 外观（主题预设 + UI 缩放）
+// ---------------------------------------------------------------------------
+void SettingsWindow::draw_appearance_page() {
     int preset = 0;
-    if (settings.theme_preset == ThemePreset::Light)       preset = 1;
-    else if (settings.theme_preset == ThemePreset::ModernLight) preset = 2;
-    const char* presets[] = {tr("menu.view_theme_dark"), tr("menu.view_theme_light"), tr("menu.view_theme_modern_light")};
+    if (staged_.theme_preset == ThemePreset::Light)       preset = 1;
+    else if (staged_.theme_preset == ThemePreset::ModernLight) preset = 2;
+    const char* presets[] = {tr("menu.view_theme_dark"), tr("menu.view_theme_light"),
+                             tr("menu.view_theme_modern_light")};
     if (ImGui::Combo(tr("settings.theme_preset"), &preset, presets, IM_ARRAYSIZE(presets))) {
-        if (preset == 0)       settings.theme_preset = ThemePreset::Dark;
-        else if (preset == 1)  settings.theme_preset = ThemePreset::Light;
-        else                   settings.theme_preset = ThemePreset::ModernLight;
-        apply_theme_live(settings);
-        unsaved_changes_ = true;
-        save_debounce_ = 0.5f;
+        if (preset == 0)       staged_.theme_preset = ThemePreset::Dark;
+        else if (preset == 1)  staged_.theme_preset = ThemePreset::Light;
+        else                   staged_.theme_preset = ThemePreset::ModernLight;
+        dirty_ = true;
     }
 
     ImGui::Dummy(ImVec2(0.0f, 12.0f));
-    bool scale_changed = ImGui::SliderFloat(tr("settings.ui_scale"), &settings.ui_scale, 1.0f, 2.0f, "%.2fx");
-    if (scale_changed) {
-        settings.ui_scale = std::clamp(settings.ui_scale, 1.0f, 2.0f);
-        settings.theme.ui_scale = settings.ui_scale;
-        unsaved_changes_ = true;
-    }
-    if (scale_changed && ImGui::IsItemDeactivatedAfterEdit()) {
-        apply_theme_live(settings);
-        save_debounce_ = 0.5f;
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 16.0f));
-    if (ImGui::Button(tr("settings.apply"), ImVec2(100.0f, 0.0f))) {
-        flush_save(project_root_, settings);
+    if (ImGui::SliderFloat(tr("settings.ui_scale"), &staged_.ui_scale, 1.0f, 2.0f, "%.2fx")) {
+        staged_.ui_scale = std::clamp(staged_.ui_scale, 1.0f, 2.0f);
+        staged_.theme.ui_scale = staged_.ui_scale;
+        dirty_ = true;
     }
 }
 
-void SettingsWindow::draw_appliance_section(EditorSettings& settings) {
-    ImGui::Text("%s", tr("settings.section.appliance"));
-    ImGui::Separator();
-
-    int lang = static_cast<int>(settings.appliance.language);
+// ---------------------------------------------------------------------------
+// 页面：外观与行为 › 语言和区域
+// ---------------------------------------------------------------------------
+void SettingsWindow::draw_language_page() {
+    int lang = static_cast<int>(staged_.appliance.language);
     const char* languages[] = {language_display_name(Language::English),
                                language_display_name(Language::Chinese)};
     if (ImGui::Combo(tr("settings.language"), &lang, languages, IM_ARRAYSIZE(languages))) {
-        settings.appliance.language = static_cast<Language>(lang);
-        unsaved_changes_ = true;
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 16.0f));
-    if (ImGui::Button(tr("settings.apply"), ImVec2(100.0f, 0.0f))) {
-        apply_and_save(project_root_, settings);
+        staged_.appliance.language = static_cast<Language>(lang);
+        dirty_ = true;
     }
 }
 
-void SettingsWindow::draw_editor_section(EditorSettings& settings) {
-    ImGui::Text("%s", tr("settings.section.editor"));
-    ImGui::Separator();
-
-    // VSync：立即生效并持久化
-    if (ImGui::Checkbox(tr("settings.vsync"), &settings.editor.vsync)) {
-        if (render_ctx_) {
-            render_ctx_->set_swap_interval(settings.editor.vsync ? 1 : 0);
-        }
-        unsaved_changes_ = true;
-        save_debounce_ = 0.5f;
+// ---------------------------------------------------------------------------
+// 页面：编辑器 › 常规（VSync + 自动保存）
+// ---------------------------------------------------------------------------
+void SettingsWindow::draw_editor_general_page() {
+    if (ImGui::Checkbox(tr("settings.vsync"), &staged_.editor.vsync)) {
+        dirty_ = true;
     }
     ImGui::TextDisabled("%s", tr("settings.vsync_hint"));
 
     ImGui::Dummy(ImVec2(0.0f, 12.0f));
     ImGui::Text("%s", tr("settings.autosave_interval"));
-    if (ImGui::SliderInt("##autosave_interval", &settings.editor.autosave_interval_min, 0, 30, "%d min")) {
-        settings.editor.autosave_interval_min = std::clamp(settings.editor.autosave_interval_min, 0, 30);
-        unsaved_changes_ = true;
+    if (ImGui::SliderInt("##autosave_interval", &staged_.editor.autosave_interval_min, 0, 30, "%d min")) {
+        staged_.editor.autosave_interval_min = std::clamp(staged_.editor.autosave_interval_min, 0, 30);
+        dirty_ = true;
     }
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        save_debounce_ = 0.5f;
-    }
-    if (settings.editor.autosave_interval_min == 0) {
+    if (staged_.editor.autosave_interval_min == 0) {
         ImGui::TextDisabled("%s", tr("settings.autosave_disabled"));
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 16.0f));
-    if (ImGui::Button(tr("settings.apply"), ImVec2(100.0f, 0.0f))) {
-        flush_save(project_root_, settings);
     }
 }
 
-void SettingsWindow::draw_shortcuts_section(EditorSettings& settings) {
-    ImGui::Text("%s", tr("settings.section.shortcuts"));
-    ImGui::Separator();
-
+// ---------------------------------------------------------------------------
+// 页面：快捷键（重绑定直接作用于 ShortcutManager；取消时整体还原快照）
+// ---------------------------------------------------------------------------
+void SettingsWindow::draw_shortcuts_page() {
     if (!shortcut_mgr_) {
         ImGui::TextDisabled("%s", tr("settings.shortcuts.unavailable"));
         return;
@@ -308,7 +451,7 @@ void SettingsWindow::draw_shortcuts_section(EditorSettings& settings) {
                     } else {
                         shortcut_mgr_->set_combo(rebinding_shortcut_, combo);
                         rebind_conflict_.clear();
-                        unsaved_changes_ = true;
+                        dirty_ = true;
                     }
                     rebinding_shortcut_.clear();
                     break;
@@ -342,7 +485,7 @@ void SettingsWindow::draw_shortcuts_section(EditorSettings& settings) {
             ImGui::SameLine();
             if (ImGui::SmallButton(tr("settings.shortcuts.reset"))) {
                 shortcut_mgr_->reset_to_default(entry.name);
-                unsaved_changes_ = true;
+                dirty_ = true;
             }
             ImGui::PopID();
         }
@@ -352,40 +495,8 @@ void SettingsWindow::draw_shortcuts_section(EditorSettings& settings) {
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
     if (ImGui::Button(tr("settings.shortcuts.reset_all"), ImVec2(140.0f, 0.0f))) {
         shortcut_mgr_->reset_all_defaults();
-        unsaved_changes_ = true;
+        dirty_ = true;
     }
-    ImGui::SameLine();
-    if (ImGui::Button(tr("settings.apply"), ImVec2(100.0f, 0.0f))) {
-        flush_save(project_root_, settings);
-    }
-}
-
-void SettingsWindow::apply_theme_live(const EditorSettings& settings) {
-    Localization::instance().set_light_theme(settings.theme_preset == ThemePreset::Light);
-    apply_theme(settings.theme_preset, settings.theme);
-}
-
-void SettingsWindow::flush_save(const std::string& project_root, EditorSettings& settings) {
-    // 把当前快捷键组合同步进待保存设置
-    if (shortcut_mgr_) {
-        settings.shortcut_overrides.clear();
-        for (const auto& entry : shortcut_mgr_->entries()) {
-            settings.shortcut_overrides[entry.name] = ShortcutManager::combo_to_string(entry.combo);
-        }
-    }
-    Localization::instance().load(settings.appliance.language, project_root);
-    save(project_root, settings);
-    unsaved_changes_ = false;
-    save_debounce_ = 0.0f;
-}
-
-void SettingsWindow::apply_and_save(const std::string& project_root, EditorSettings& settings) {
-    // 先切换语言，再应用主题/字体，确保 CJK 字体按需合并
-    Localization::instance().load(settings.appliance.language, project_root);
-    Localization::instance().set_light_theme(settings.theme_preset == ThemePreset::Light);
-    apply_theme(settings.theme_preset, settings.theme);
-    save(project_root, settings);
-    unsaved_changes_ = false;
 }
 
 } // namespace gryce_engine::editor

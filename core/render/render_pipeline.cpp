@@ -1202,8 +1202,20 @@ ITexture* RenderPipeline::viewport_color_texture() const {
     return ctx_->texture(viewport_color_);
 }
 
+bool RenderPipeline::rebuild(RenderContext* ctx, const std::string& shader_dir) {
+    if (!ctx) return false;
+    GLOG_INFO("RenderPipeline: rebuilding...");
+    shutdown();
+    const bool ok = init(ctx, shader_dir);
+    if (ok) {
+        GLOG_INFO("RenderPipeline: rebuild succeeded");
+    } else {
+        GLOG_ERROR("RenderPipeline: rebuild failed");
+    }
+    return ok;
+}
+
 bool RenderPipeline::resize_render_targets(int width, int height) {
-    if (!ctx_ || width <= 0 || height <= 0) return false;
     if (width == viewport_width_ && height == viewport_height_) return true;
 
     viewport_width_ = width;

@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "command.h"
 #include "field_value.h"
 
@@ -129,6 +131,27 @@ private:
     scene::Scene* scene_;
     scene::UUID entity_uuid_;
     std::string component_type_;
+    bool executed_ = false;
+};
+
+// ---------------------------------------------------------------------------
+// ComponentRemoveCommand — 删除实体上的组件（支持撤销）
+// ---------------------------------------------------------------------------
+class ComponentRemoveCommand : public EditorCommand {
+public:
+    ComponentRemoveCommand(scene::Scene& scene,
+                           const scene::UUID& entity_uuid,
+                           std::string component_type);
+
+    void execute() override;
+    void undo() override;
+    std::string description() const override;
+
+private:
+    scene::Scene* scene_;
+    scene::UUID entity_uuid_;
+    std::string component_type_;
+    nlohmann::json serialized_component_;
     bool executed_ = false;
 };
 

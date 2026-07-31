@@ -56,8 +56,9 @@ public:
 
     // 从文件加载（支持 wav/mp3/ogg/flac 等 miniaudio 支持的格式）
     bool load(const std::string& path);
-    bool valid() const { return sound_ != nullptr; }
+    bool valid() const { return is_streaming_ ? !path_.empty() : sound_ != nullptr; }
     const std::string& path() const { return path_; }
+    bool is_streaming() const { return is_streaming_; }
 
     ma_sound* handle() const { return sound_.get(); }
 
@@ -67,6 +68,7 @@ private:
     };
     std::unique_ptr<ma_sound, SoundDeleter> sound_;
     std::string path_;
+    bool is_streaming_ = false;
 };
 
 // ---------------------------------------------------------------------------

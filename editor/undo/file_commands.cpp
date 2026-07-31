@@ -4,7 +4,7 @@
 #include <random>
 
 #include "utils/glog/glog_lib.h"
-#include "platform_utils.h"
+#include "../platform_utils.h"
 #include "render/material.h"
 #include "scene/scene_serializer.h"
 #include <nlohmann/json.hpp>
@@ -212,24 +212,35 @@ FileDeleteCommand::FileDeleteCommand(std::filesystem::path target_path,
 bool FileDeleteCommand::backup_to_temp() {
     std::error_code ec;
     std::filesystem::create_directories(backup_subdir_, ec);
-    if (ec) return false;
+    if (ec) {
+        GLOG_ERROR("FileCommand: backup create_dirs failed '{}' ec={}", path_to_utf8(backup_subdir_), ec.value());
+        return false;
+    }
 
     const auto stem = target_path_.filename();
     const auto backup_target = backup_subdir_ / stem;
 
     if (std::filesystem::is_directory(target_path_, ec)) {
-        if (!copy_directory_recursive(target_path_, backup_target)) return false;
+        if (!copy_directory_recursive(target_path_, backup_target)) {
+            GLOG_ERROR("FileCommand: backup directory recursive failed '{}' -> '{}'", path_to_utf8(target_path_), path_to_utf8(backup_target));
+            return false;
+        }
     } else {
         std::filesystem::copy_file(target_path_, backup_target,
                                    std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) return false;
+        if (ec) {
+            GLOG_ERROR("FileCommand: backup copy_file failed '{}' -> '{}' ec={}", path_to_utf8(target_path_), path_to_utf8(backup_target), ec.value());
+            return false;
+        }
     }
 
     auto meta = meta_path_of(target_path_);
     if (!meta.empty()) {
         std::filesystem::copy_file(meta, backup_subdir_ / meta.filename(),
                                    std::filesystem::copy_options::overwrite_existing, ec);
-        // .meta 备份失败不致命
+        if (ec) {
+            GLOG_WARN("FileCommand: backup .meta failed '{}' -> '{}' ec={}", path_to_utf8(meta), path_to_utf8(backup_subdir_ / meta.filename()), ec.value());
+        }
     }
     return true;
 }
@@ -238,25 +249,40 @@ bool FileDeleteCommand::restore_from_temp() {
     std::error_code ec;
     const auto stem = target_path_.filename();
     const auto backup_target = backup_subdir_ / stem;
-    if (!std::filesystem::exists(backup_target, ec)) return false;
+    if (!std::filesystem::exists(backup_target, ec)) {
+        GLOG_ERROR("FileCommand: restore backup missing '{}' ec={}", path_to_utf8(backup_target), ec.value());
+        return false;
+    }
 
     std::filesystem::path parent = target_path_.parent_path();
     if (!parent.empty()) {
         std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            GLOG_ERROR("FileCommand: restore create_dirs failed '{}' ec={}", path_to_utf8(parent), ec.value());
+        }
     }
 
     if (std::filesystem::is_directory(backup_target, ec)) {
-        if (!copy_directory_recursive(backup_target, target_path_)) return false;
+        if (!copy_directory_recursive(backup_target, target_path_)) {
+            GLOG_ERROR("FileCommand: restore directory recursive failed '{}' -> '{}'", path_to_utf8(backup_target), path_to_utf8(target_path_));
+            return false;
+        }
     } else {
         std::filesystem::copy_file(backup_target, target_path_,
                                    std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) return false;
+        if (ec) {
+            GLOG_ERROR("FileCommand: restore copy_file failed '{}' -> '{}' ec={}", path_to_utf8(backup_target), path_to_utf8(target_path_), ec.value());
+            return false;
+        }
     }
 
     auto backup_meta = backup_subdir_ / (stem.wstring() + L".meta");
     if (std::filesystem::exists(backup_meta, ec) && !ec) {
         std::filesystem::copy_file(backup_meta, std::filesystem::path(target_path_.wstring() + L".meta"),
                                    std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            GLOG_WARN("FileCommand: restore .meta failed '{}' ec={}", path_to_utf8(backup_meta), ec.value());
+        }
     }
     return true;
 }
@@ -268,8 +294,9 @@ void FileDeleteCommand::remove_backup() {
 
 void FileDeleteCommand::execute() {
     std::error_code ec;
+    GLOG_INFO("FileCommand: delete execute '{}' backup='{}'", path_to_utf8(target_path_), path_to_utf8(backup_subdir_));
     if (!std::filesystem::exists(target_path_, ec) || ec) {
-        GLOG_WARN("FileCommand: delete target does not exist '{}'", path_to_utf8(target_path_));
+        GLOG_WARN("FileCommand: delete target does not exist '{}' ec={}", path_to_utf8(target_path_), ec.value());
         return;
     }
     if (!backup_to_temp()) {
@@ -282,21 +309,27 @@ void FileDeleteCommand::execute() {
         std::filesystem::remove(target_path_, ec);
     }
     if (ec) {
-        GLOG_ERROR("FileCommand: delete failed '{}'", path_to_utf8(target_path_));
+        GLOG_ERROR("FileCommand: delete failed '{}' ec={}", path_to_utf8(target_path_), ec.value());
+        failed_ = true;
         return;
     }
     auto meta = meta_path_of(target_path_);
     if (!meta.empty()) {
         std::filesystem::remove(meta, ec);
+        if (ec) {
+            GLOG_WARN("FileCommand: delete .meta failed '{}' ec={}", path_to_utf8(meta), ec.value());
+        }
     }
 }
 
 void FileDeleteCommand::undo() {
+    GLOG_INFO("FileCommand: delete undo '{}' backup='{}'", path_to_utf8(target_path_), path_to_utf8(backup_subdir_));
     if (!restore_from_temp()) {
-        GLOG_ERROR("FileCommand: restore failed '{}'", path_to_utf8(target_path_));
+        GLOG_ERROR("FileCommand: restore failed '{}' backup='{}'", path_to_utf8(target_path_), path_to_utf8(backup_subdir_));
         return;
     }
     remove_backup();
+    GLOG_INFO("FileCommand: delete undo completed '{}'", path_to_utf8(target_path_));
 }
 
 std::string FileDeleteCommand::description() const {

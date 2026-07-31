@@ -192,6 +192,65 @@ bool GLTexture::load_from_file(const std::string& path) {
     return true;
 }
 
+bool GLTexture::load_from_memory(const void* data, size_t size) {
+    int w = 0, h = 0, ch = 0;
+    unsigned char* pixels = stbi_load_from_memory(static_cast<const unsigned char*>(data),
+                                                   static_cast<int>(size), &w, &h, &ch, 0);
+    if (!pixels) {
+        GLOG_ERROR("Failed to load texture from memory");
+        return false;
+    }
+
+    // stb_image 默认 top-down，OpenGL 需要 bottom-up，本地翻转避免全局状态污染
+    flip_image_vertical(pixels, w, h, ch);
+
+    if (texture_id_) {
+        clear_texture_slot_cache(texture_id_);
+        glDeleteTextures(1, &texture_id_);
+    }
+
+    width_ = w;
+    height_ = h;
+    channels_ = ch;
+    is_cubemap_ = false;
+
+    const bool dsa = gl_dsa_available();
+    if (dsa) {
+        glCreateTextures(GL_TEXTURE_2D, 1, &texture_id_);
+    } else {
+        glGenTextures(1, &texture_id_);
+        glBindTexture(GL_TEXTURE_2D, texture_id_);
+    }
+
+    GLint internal_format = (ch == 4) ? GL_RGBA : (ch == 3) ? GL_RGB : GL_RED;
+    GLenum format = (ch == 4) ? GL_RGBA : (ch == 3) ? GL_RGB : GL_RED;
+
+    if (dsa) {
+        glTextureStorage2D(texture_id_, 1, internal_format, w, h);
+        glTextureSubImage2D(texture_id_, 0, 0, 0, w, h, format, GL_UNSIGNED_BYTE, pixels);
+        glGenerateTextureMipmap(texture_id_);
+
+        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    } else {
+        glTexImage2D(GL_TEXTURE_2D, 0, internal_format, w, h, 0, format, GL_UNSIGNED_BYTE, pixels);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    stbi_image_free(pixels);
+
+    GLOG_INFO("Texture loaded from memory ({}x{}, {} channels) tex_id={}", w, h, ch, texture_id_);
+    return true;
+}
+
 bool GLTexture::create_empty(int width, int height, int channels) {
     if (texture_id_) {
         // 旧 id 可能仍缓存在 g_bound_textures 槽位中；删除前先失效，

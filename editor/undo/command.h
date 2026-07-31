@@ -14,7 +14,8 @@ class EditorCommand {
 public:
     virtual ~EditorCommand() = default;
 
-    // 执行命令（首次入栈时由 CommandStack 调用，也是 Redo 的实现）
+    // 执行命令（首次入栈时由 CommandStack 调用，也是 Redo 的实现）。
+    // 若执行失败（如文件被占用），子类应将 failed_ 置为 true，CommandStack 会丢弃该命令。
     virtual void execute() = 0;
 
     // 撤销命令
@@ -22,6 +23,12 @@ public:
 
     // 用于菜单/日志的简短描述
     virtual std::string description() const = 0;
+
+    // execute 是否执行失败；失败命令不会被压入 undo 栈
+    virtual bool failed() const { return failed_; }
+
+protected:
+    bool failed_ = false;
 };
 
 using EditorCommandPtr = std::unique_ptr<EditorCommand>;

@@ -477,38 +477,32 @@ void FileExplorerPanel::paste_into_current_dir() {
 
     const std::filesystem::path src = clipboard_path_;
     const std::filesystem::path dst = unique_destination(src.filename());
-    const std::filesystem::path src_meta(src.wstring() + L".meta");
     const bool is_dir = std::filesystem::is_directory(src, ec);
 
     if (clipboard_is_cut_) {
         // 移动：连同同名 .meta 一起搬走，GUID 保持不变
-        std::filesystem::rename(src, dst, ec);
-        if (ec) {
-            GLOG_ERROR("FileExplorer: move failed '{}' -> '{}': {}", path_to_utf8(src), path_to_utf8(dst), ec.message());
-            return;
-        }
-        if (std::filesystem::exists(src_meta, ec)) {
-            std::filesystem::rename(src_meta, dst.wstring() + L".meta", ec);
+        if (undo_stack_) {
+            undo_stack_->push(std::make_unique<FileMoveCommand>(src, dst));
+        } else {
+            std::filesystem::rename(src, dst, ec);
+            const std::filesystem::path src_meta(src.wstring() + L".meta");
+            if (std::filesystem::exists(src_meta, ec)) {
+                std::filesystem::rename(src_meta, dst.wstring() + L".meta", ec);
+            }
         }
         clipboard_path_.clear();
         clipboard_is_cut_ = false;
         GLOG_INFO("FileExplorer: moved '{}' -> '{}'", path_to_utf8(src), path_to_utf8(dst));
-
-        // 路径缓存已失效，重建
-        const std::string root = resources::Project::instance().root();
-        if (!root.empty()) {
-            AssetDatabase::instance().rescan(utf8_path(root));
-        }
     } else {
         // 复制：生成新文件后必须删除随附的 .meta 并重新分配 GUID，避免 GUID 重复
-        if (is_dir) {
-            std::filesystem::copy(src, dst, std::filesystem::copy_options::recursive, ec);
+        if (undo_stack_) {
+            undo_stack_->push(std::make_unique<FileCopyCommand>(src, dst));
         } else {
-            std::filesystem::copy_file(src, dst, ec);
-        }
-        if (ec) {
-            GLOG_ERROR("FileExplorer: copy failed '{}' -> '{}': {}", path_to_utf8(src), path_to_utf8(dst), ec.message());
-            return;
+            if (is_dir) {
+                std::filesystem::copy(src, dst, std::filesystem::copy_options::recursive, ec);
+            } else {
+                std::filesystem::copy_file(src, dst, ec);
+            }
         }
         std::vector<std::filesystem::path> copied_metas;
         std::vector<std::filesystem::path> copied_files;
@@ -619,13 +613,12 @@ void FileExplorerPanel::draw_popups() {
         }
         if (confirm || ImGui::Button(tr("common.ok"), ImVec2(120.0f, 0.0f))) {
             std::filesystem::path new_path = rename_target_.parent_path() / utf8_path(rename_buf_);
-            std::error_code ec;
             if (rename_buf_[0] != '\0' && new_path != rename_target_) {
-                std::filesystem::rename(rename_target_, new_path, ec);
-                if (ec) {
-                    GLOG_ERROR("FileExplorer: rename failed '{}': {}", path_to_utf8(rename_target_), ec.message());
+                if (undo_stack_) {
+                    undo_stack_->push(std::make_unique<FileRenameCommand>(rename_target_, new_path));
                 } else {
-                    GLOG_INFO("FileExplorer: renamed '{}' -> '{}'", path_to_utf8(rename_target_), path_to_utf8(new_path));
+                    std::error_code ec;
+                    std::filesystem::rename(rename_target_, new_path, ec);
                 }
             }
             ImGui::CloseCurrentPopup();
@@ -647,16 +640,15 @@ void FileExplorerPanel::draw_popups() {
         ImGui::Text("%s", tr("file_explorer.delete_confirm"));
         ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1.0f), "%s", path_to_utf8(delete_target_.filename()).c_str());
         if (ImGui::Button(tr("common.ok"), ImVec2(120.0f, 0.0f))) {
-            std::error_code ec;
-            if (std::filesystem::is_directory(delete_target_, ec)) {
-                std::filesystem::remove_all(delete_target_, ec);
+            if (undo_stack_) {
+                undo_stack_->push(std::make_unique<FileDeleteCommand>(delete_target_, undo_backup_dir()));
             } else {
-                std::filesystem::remove(delete_target_, ec);
-            }
-            if (ec) {
-                GLOG_ERROR("FileExplorer: delete failed '{}': {}", path_to_utf8(delete_target_), ec.message());
-            } else {
-                GLOG_INFO("FileExplorer: deleted '{}'", path_to_utf8(delete_target_));
+                std::error_code ec;
+                if (std::filesystem::is_directory(delete_target_, ec)) {
+                    std::filesystem::remove_all(delete_target_, ec);
+                } else {
+                    std::filesystem::remove(delete_target_, ec);
+                }
             }
             ImGui::CloseCurrentPopup();
         }

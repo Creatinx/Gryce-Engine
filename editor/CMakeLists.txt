@@ -30,6 +30,7 @@ target_sources(gryce_engine PRIVATE
     ui/particle_editor_window.cpp
     ui/file_browser_popup.cpp
     ui/message_popup.cpp
+    ui/xcode_theme.cpp
     platform_utils.cpp
     project/project_settings.cpp
     import/gimport_settings.cpp

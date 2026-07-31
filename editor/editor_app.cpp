@@ -7,6 +7,7 @@
 #include <string>
 #include <memory>
 #include <filesystem>
+#include "stb/stb_image_write.h"
 #include <thread>
 #include <chrono>
 #include <cstring>
@@ -15,11 +16,14 @@
 #include <future>
 #include <algorithm>
 
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#endif
+
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
 #ifdef _WIN32
-#define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <windows.h>
 #endif
@@ -276,7 +280,6 @@ static scene::Entity* create_cube_entity(scene::Scene& scene, const std::string&
 
     if (dynamic) {
         e->add_component<components::RigidBody>();
-        e->add_component<components::BoxCollider>();
     }
     return e;
 }
@@ -301,8 +304,6 @@ static scene::Entity* create_ground_entity(scene::Scene& scene, const std::strin
     }
 
     e->add_component<components::StaticBody>();
-    auto* col = e->add_component<components::BoxCollider>();
-    col->size = math::Vector3f(1.0f, 1.0f, 1.0f); // 缩放由 Transform.scale 处理
     return e;
 }
 
@@ -318,9 +319,6 @@ static void ensure_physics_demo_entities(scene::Scene& scene) {
         // 确保已有的 Cube 是动态的，并放到空中准备下落
         if (!cube->get_component<components::RigidBody>()) {
             cube->add_component<components::RigidBody>();
-        }
-        if (!cube->get_component<components::BoxCollider>()) {
-            cube->add_component<components::BoxCollider>();
         }
         cube->transform()->position = math::Vector3f(0.0f, 3.0f, 0.0f);
         cube->transform()->rotation = math::Quaternionf::identity();
@@ -736,6 +734,54 @@ int EditorApp::run(int argc, char* argv[]) {
         platform::Window::shutdown_sdk();
         return -1;
     }
+
+    // 启动画面预判（与 splash 初始化条件一致）：启用时先把主窗口切换为
+    // 无边框小窗并居中，splash 结束后再恢复编辑器窗口状态。
+    // 启动页面素材位于引擎目录 editor/asset_manager/background/，与示例项目完全分离
+    std::filesystem::path engine_root_for_splash;
+    {
+        std::filesystem::path exe_path;
+#ifdef _WIN32
+        wchar_t buffer[MAX_PATH];
+        if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) > 0) {
+            exe_path = std::filesystem::path(buffer);
+        }
+#else
+        exe_path = std::filesystem::canonical("/proc/self/exe");
+#endif
+        std::filesystem::path dir = exe_path.parent_path();
+        for (int i = 0; i < 8 && !dir.empty(); ++i) {
+            if (std::filesystem::exists(dir / "CMakeLists.txt") &&
+                std::filesystem::is_directory(dir / "core")) {
+                engine_root_for_splash = dir;
+                break;
+            }
+            dir = dir.parent_path();
+        }
+    }
+    const std::filesystem::path splash_assets_dir = engine_root_for_splash / "editor" / "asset_manager" / "background";
+    const bool splash_will_show =
+        !(args.headless || auto_close_seconds > 0.0f || args.should_record() ||
+          test_play_mode || test_delete_undo) &&
+        (std::filesystem::exists(splash_assets_dir / "splash.jpg") ||
+         std::filesystem::exists(splash_assets_dir / "splash.png") ||
+         std::filesystem::exists(splash_assets_dir / "icon.png"));
+    constexpr int k_splash_w = 560;
+    constexpr int k_splash_h = 340;
+    if (splash_will_show) {
+        window.set_decorated(false);
+        window.set_size(k_splash_w, k_splash_h);
+        window.center_on_primary_monitor();
+        window.focus_window();
+    }
+    // splash 结束 / 跳过 / 上传失败时恢复编辑器窗口状态
+    auto restore_editor_window = [&]() {
+        if (!splash_will_show) return;
+        window.set_size(args.resolution_w, args.resolution_h);
+        window.set_decorated(true);
+        window.center_on_primary_monitor();
+        window.focus_window();
+    };
     if (args.headless) {
         glfwHideWindow(window.native_handle());
     }
@@ -784,6 +830,183 @@ int EditorApp::run(int argc, char* argv[]) {
     // 应用持久化的 VSync 设置
     render_ctx.set_swap_interval(editor_settings.editor.vsync ? 1 : 0);
 
+    // -------------------------------------------------------------------
+    // 启动画面（splash）：大背景铺满 + 居中图标 + 底部进度条。
+    // 资源位于引擎目录 editor/asset_manager/background/（splash.jpg 优先，回退 splash.png；icon.png）。
+    // 实现方式：render_ctx.start() 之前 Vulkan/GL context 本来就归主线程，
+    // 因此在各初始化阶段之间由主线程同步驱动 backend->begin_frame/end_frame
+    // 泵一帧 ImGui 启动画面；不提前启动渲染线程，也不需要 pause/resume。
+    // headless / --auto-close / --record / CI 测试模式下跳过；
+    // 图片缺失时告警并跳过，不影响启动。
+    // -------------------------------------------------------------------
+    const bool splash_mode_disabled = args.headless || auto_close_seconds > 0.0f ||
+                                      args.should_record() || test_play_mode || test_delete_undo;
+    const bool splash_has_bg = std::filesystem::exists(splash_assets_dir / "splash.jpg") ||
+                               std::filesystem::exists(splash_assets_dir / "splash.png");
+    const bool splash_has_icon = std::filesystem::exists(splash_assets_dir / "icon.png");
+    bool splash_active = false;
+    uint64_t splash_bg_id = 0, splash_icon_id = 0;
+    render::RHITextureHandle splash_bg_tex, splash_icon_tex;
+    std::chrono::steady_clock::time_point splash_start;
+
+    auto pump_splash = [&](float progress) {
+        if (!splash_active) return;
+        window.poll_events();
+        if (window.should_close()) {
+            splash_active = false;
+            return;
+        }
+        render::IRenderBackend* backend = render_ctx.backend();
+        if (!backend) return;
+
+        // 主线程同步渲染一帧（此时 context 归主线程，渲染线程尚未启动）
+        backend->begin_frame();
+        imgui.begin_frame();
+        ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        if (splash_bg_id) {
+            // 大背景铺满（拉伸到全窗口）
+            draw_list->AddImage(ImTextureRef(static_cast<ImTextureID>(splash_bg_id)),
+                                ImVec2(0.0f, 0.0f), display);
+        } else {
+            draw_list->AddRectFilled(ImVec2(0.0f, 0.0f), display, IM_COL32(22, 23, 27, 255));
+        }
+        if (splash_icon_id) {
+            // 图标居中（略偏上），边长取窗口高度 18%
+            const float icon_size = display.y * 0.18f;
+            const float cx = display.x * 0.5f;
+            const float cy = display.y * 0.46f;
+            draw_list->AddImage(ImTextureRef(static_cast<ImTextureID>(splash_icon_id)),
+                                ImVec2(cx - icon_size * 0.5f, cy - icon_size * 0.5f),
+                                ImVec2(cx + icon_size * 0.5f, cy + icon_size * 0.5f));
+        }
+        // 底部进度条（Xcode 蓝）
+        const float bar_h = 4.0f;
+        const float bar_y = display.y - bar_h - 2.0f;
+        const float p = std::clamp(progress, 0.0f, 1.0f);
+        draw_list->AddRectFilled(ImVec2(0.0f, bar_y), ImVec2(display.x, bar_y + bar_h),
+                                 IM_COL32(0x3A, 0x3A, 0x3C, 255), 2.0f);
+        if (p > 0.0f) {
+            draw_list->AddRectFilled(ImVec2(0.0f, bar_y), ImVec2(display.x * p, bar_y + bar_h),
+                                     IM_COL32(0x0A, 0x84, 0xFF, 255), 2.0f);
+        }
+
+        // 自定义关闭按钮（无边框窗口没有 OS 关闭按钮）：
+        // 右上角小圆 + ×，悬停显示浅色圆底；点击按正常关闭流程退出
+        const ImGuiIO& io = ImGui::GetIO();
+        const float btn_r = 11.0f;
+        const ImVec2 btn_c(display.x - btn_r - 8.0f, btn_r + 8.0f);
+        const float mdx = io.MousePos.x - btn_c.x;
+        const float mdy = io.MousePos.y - btn_c.y;
+        const bool btn_hovered = (mdx * mdx + mdy * mdy) <= btn_r * btn_r;
+        if (btn_hovered) {
+            draw_list->AddCircleFilled(btn_c, btn_r, IM_COL32(255, 255, 255, 28));
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                window.request_close(); // 下一次 pump 停用 splash；主循环随即按关闭流程退出
+            }
+        }
+        const float arm = btn_r * 0.42f;
+        const ImU32 x_col = IM_COL32(255, 255, 255, btn_hovered ? 235 : 150);
+        draw_list->AddLine(ImVec2(btn_c.x - arm, btn_c.y - arm),
+                           ImVec2(btn_c.x + arm, btn_c.y + arm), x_col, 1.2f);
+        draw_list->AddLine(ImVec2(btn_c.x + arm, btn_c.y - arm),
+                           ImVec2(btn_c.x - arm, btn_c.y + arm), x_col, 1.2f);
+
+        ImGui::Render();
+        imgui.render_draw_data(ImGui::GetDrawData());
+        backend->end_frame();
+    };
+
+    // 异步加载启动页素材的结构
+    struct SplashAssetLoadResult {
+        std::vector<uint8_t> bg_data;  // 背景图原始数据
+        std::vector<uint8_t> icon_data; // 图标原始数据
+        bool bg_loaded = false;
+        bool icon_loaded = false;
+    };
+
+    if (!splash_mode_disabled && (splash_has_bg || splash_has_icon)) {
+        GLOG_INFO("Splash: loading assets from '{}'", splash_assets_dir.string());
+        splash_active = true;
+        splash_start = std::chrono::steady_clock::now();
+
+        // 先立即渲染一帧（纯色背景+进度条+关闭按钮），避免白屏
+        pump_splash(0.05f);
+
+        // 异步加载素材文件（读取到内存，不上传 GPU）
+        std::future<SplashAssetLoadResult> asset_future = std::async(std::launch::async, [&]() {
+            SplashAssetLoadResult result;
+            if (splash_has_bg) {
+                const std::filesystem::path bg_file =
+                    std::filesystem::exists(splash_assets_dir / "splash.jpg")
+                        ? splash_assets_dir / "splash.jpg"
+                        : splash_assets_dir / "splash.png";
+                GLOG_INFO("Splash: async loading background '{}'", bg_file.string());
+                std::ifstream ifs(bg_file, std::ios::binary);
+                if (ifs) {
+                    result.bg_data = std::vector<uint8_t>((std::istreambuf_iterator<char>(ifs)),
+                                                           std::istreambuf_iterator<char>());
+                    result.bg_loaded = !result.bg_data.empty();
+                }
+            }
+            if (splash_has_icon) {
+                const std::filesystem::path icon_file = splash_assets_dir / "icon.png";
+                GLOG_INFO("Splash: async loading icon '{}'", icon_file.string());
+                std::ifstream ifs(icon_file, std::ios::binary);
+                if (ifs) {
+                    result.icon_data = std::vector<uint8_t>((std::istreambuf_iterator<char>(ifs)),
+                                                             std::istreambuf_iterator<char>());
+                    result.icon_loaded = !result.icon_data.empty();
+                }
+            }
+            return result;
+        });
+
+        // 等待异步加载完成，期间持续渲染启动页
+        while (asset_future.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready) {
+            pump_splash(0.1f);
+            if (!splash_active) break;
+        }
+
+        if (!splash_active) {
+            // 用户关闭了窗口
+            restore_editor_window();
+        } else {
+            // 素材加载完成，上传到 GPU（需要主线程）
+            SplashAssetLoadResult assets = asset_future.get();
+
+            auto upload_texture = [&](const std::vector<uint8_t>& data,
+                                      render::RHITextureHandle& handle) -> uint64_t {
+                if (data.empty()) return 0;
+                handle = render_ctx.create_texture();
+                render::ITexture* tex = render_ctx.texture(handle);
+                if (!tex) return 0;
+                // 使用内存数据加载
+                if (!tex->load_from_memory(data.data(), data.size())) {
+                    return 0;
+                }
+                return imgui.backend() ? imgui.backend()->imgui_texture_id(tex) : 0;
+            };
+
+            if (assets.bg_loaded) {
+                splash_bg_id = upload_texture(assets.bg_data, splash_bg_tex);
+            }
+            if (assets.icon_loaded) {
+                splash_icon_id = upload_texture(assets.icon_data, splash_icon_tex);
+            }
+
+            if (splash_bg_id || splash_icon_id) {
+                pump_splash(0.3f);
+            } else {
+                GLOG_WARN("Splash: assets loaded but failed to upload, skipping splash");
+                restore_editor_window();
+                splash_active = false;
+            }
+        }
+    } else if (!splash_mode_disabled) {
+        GLOG_WARN("Splash: no images found in '{}', skipping splash", splash_assets_dir.string());
+    }
+
     // File > Load Project 时重新加载编辑器配置（主题、语言、字体）
     auto reload_editor_config = [&](const std::string& root) {
         editor_settings = editor::SettingsWindow::load(root);
@@ -820,6 +1043,7 @@ int EditorApp::run(int argc, char* argv[]) {
                                 [&]() { undo_stack.redo(); });
     hierarchy_panel->set_undo_stack(&undo_stack);
     inspector_panel->set_undo_stack(&undo_stack);
+    project_panel->set_undo_stack(&undo_stack);
     inspector_panel->set_render_context(&render_ctx);
     // Inspector「Add Component」按钮复用 Hierarchy 的组件选择器（同一 Undo 感知流程）
     inspector_panel->set_add_component_handler(
@@ -858,6 +1082,8 @@ int EditorApp::run(int argc, char* argv[]) {
     viewport_panel->set_selection_provider(
         [hierarchy_panel]() { return hierarchy_panel->selected_entity(); });
     viewport_panel->set_undo_stack(&undo_stack);
+
+    pump_splash(0.45f);
 
     // 加载或创建场景（必须在 render_ctx.start() 之前，因为上传网格需要主线程 GL context）
     std::string scene_path = "res:/scenes/main.gesc";
@@ -972,6 +1198,22 @@ int EditorApp::run(int argc, char* argv[]) {
     }
     game_view_panel->set_pipeline(&game_pipeline);
 
+    pump_splash(0.8f);
+
+#ifdef _WIN32
+    // TEMP-DEBUG: verify borderless style + capture splash frame
+    {
+        HWND hwnd = glfwGetWin32Window(window.native_handle());
+        LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        GLOG_INFO("TEMP splash window style=0x{:x} WS_CAPTION={} size={}x{}", style,
+                  (style & WS_CAPTION) ? 1 : 0, k_splash_w, k_splash_h);
+        std::vector<uint8_t> rgba; int cw = 0, ch = 0;
+        if (render_ctx.capture_frame_rgba(rgba, cw, ch)) {
+            stbi_write_png("D:/tmp/splash_dump2.png", cw, ch, 4, rgba.data(), cw * 4);
+        }
+    }
+#endif
+
     // 窗口大小变化时先记录尺寸，主循环中安全同步渲染目标
     struct WindowResizeState {
         std::atomic<int> width{0};
@@ -999,6 +1241,18 @@ int EditorApp::run(int argc, char* argv[]) {
         world.init();
         inspector_panel->set_scene(world.scene());
     }
+
+    // 组件增删后即时热重载物理 body（不等待下一帧）
+    auto component_changed_handler = [&](scene::Entity* entity) {
+        if (!entity) return;
+        if (auto* ps = world.get_system<ecs::PhysicsSystem3D>()) {
+            ps->rebuild_body_for_entity(entity);
+        }
+    };
+    inspector_panel->set_component_changed_handler(component_changed_handler);
+    hierarchy_panel->set_component_changed_handler(component_changed_handler);
+
+    pump_splash(0.9f);
 
     // -------------------------------------------------------------------
     // File 菜单：场景保存 / 加载（M1-E2）
@@ -1174,6 +1428,16 @@ int EditorApp::run(int argc, char* argv[]) {
         sync_editor_to_scene_camera(*loaded, camera);
         GLOG_INFO("Open Scene: attaching new scene");
         world.attach_scene(std::move(loaded));
+
+        // 加载新场景后重建渲染管线，确保 shader / 目标与当前项目一致
+        GLOG_INFO("Open Scene: rebuilding render pipelines");
+        apply_quality_settings(pipeline);
+        pipeline.rebuild(&render_ctx, "res:/shaders");
+        if (game_pipeline.is_valid()) {
+            apply_quality_settings(game_pipeline);
+            game_pipeline.rebuild(&render_ctx, "res:/shaders");
+        }
+
         GLOG_INFO("Open Scene: resuming render thread");
         render_ctx.resume_render_thread();
 
@@ -1330,9 +1594,6 @@ int EditorApp::run(int argc, char* argv[]) {
 
         entity->transform()->scale = math::Vector3f::one() * import_settings.scale;
 
-        if (import_settings.generate_collider) {
-            entity->add_component<components::BoxCollider>();
-        }
         if (import_settings.add_rigidbody) {
             auto* rb = entity->add_component<components::RigidBody>();
             if (rb && !import_settings.physics_material.empty()) {
@@ -1573,6 +1834,20 @@ int EditorApp::run(int argc, char* argv[]) {
             ImGui::EndMenu();
         }
     });
+
+    // splash 收尾：满进度并保证最短显示 0.8s（避免一闪而过），随后销毁启动画面纹理
+    if (splash_active) {
+        pump_splash(0.98f);
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                             splash_start).count() < 0.8) {
+            pump_splash(1.0f);
+        }
+        splash_active = false;
+        render_ctx.destroy_texture(splash_bg_tex);
+        render_ctx.destroy_texture(splash_icon_tex);
+        // 恢复编辑器窗口状态：有边框 + 原始分辨率 + 居中聚焦
+        restore_editor_window();
+    }
 
     // 启动渲染线程（此后主线程不再持有 GL context）
     render_ctx.start();
@@ -1990,9 +2265,14 @@ int EditorApp::run(int argc, char* argv[]) {
             auto new_time = get_scene_write_time(scene_path);
             if (new_time != std::filesystem::file_time_type::min() &&
                 new_time != scene_last_write) {
+                // 热重载前保存当前选中实体的 UUID，重载后按 UUID 恢复选中
+                const scene::UUID pre_reload_selection =
+                    hierarchy_panel->selected_entity()
+                        ? hierarchy_panel->selected_entity()->uuid()
+                        : scene::UUID::nil();
+
                 auto reloaded = try_reload_scene(scene_path, world.detach_scene(),
                                                  new_time, scene_last_write);
-                hierarchy_panel->clear_selection();
 
                 if (reloaded) {
                     render_ctx.pause_render_thread();
@@ -2006,11 +2286,20 @@ int EditorApp::run(int argc, char* argv[]) {
                     world.attach_scene(std::move(reloaded));
                     render_ctx.resume_render_thread();
 
+                    // 恢复选中：新场景中若仍存在同 UUID 实体则保留选中，否则清空
+                    if (pre_reload_selection.is_valid()) {
+                        hierarchy_panel->select(pre_reload_selection);
+                    } else {
+                        hierarchy_panel->clear_selection();
+                    }
+
                     fps_label = nullptr;
                     scene::Entity* fps_entity = world.scene()->find_entity_by_name("FPS_Label");
                     if (fps_entity) {
                         fps_label = fps_entity->get_component<components::d2::text::Label>();
                     }
+                } else {
+                    hierarchy_panel->clear_selection();
                 }
             }
         }

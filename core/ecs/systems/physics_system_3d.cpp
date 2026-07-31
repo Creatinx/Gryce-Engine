@@ -8,13 +8,13 @@
 
 #include "components/rigid_body.h"
 #include "components/static_body.h"
-#include "components/box_collider.h"
-#include "components/sphere_collider.h"
-#include "components/plane_collider.h"
+#include "components/mesh_renderer.h"
 #include "components/character_controller_3d.h"
 #include "components/joint_3d.h"
 #include "components/transform.h"
 #include "components/physical_material.h"
+#include "assets/asset_manager.h"
+#include "assets/mesh_data.h"
 #include "ecs/query.h"
 #include "physics/physics_factory.h"
 #include "scene/entity.h"
@@ -32,19 +32,29 @@ math::Vector3f mul_per_component(const math::Vector3f& a, const math::Vector3f& 
     return math::Vector3f(a.x * b.x, a.y * b.y, a.z * b.z);
 }
 
-float compute_collider_volume(scene::Entity* entity) {
+float compute_mesh_volume(scene::Entity* entity) {
     auto* t = entity->transform();
     if (!t) return 1.0f;
-    if (auto* box = entity->get_component<components::BoxCollider>()) {
-        math::Vector3f size = mul_per_component(box->size, t->scale);
-        return std::abs(size.x * size.y * size.z);
+    auto* mr = entity->get_component<components::MeshRenderer>();
+    if (!mr || mr->mesh_path.empty()) return 1.0f;
+    const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+    if (!mesh || mesh->vertices.empty()) return 1.0f;
+
+    math::Vector3f min_p = mesh->vertices[0].position;
+    math::Vector3f max_p = mesh->vertices[0].position;
+    for (const auto& v : mesh->vertices) {
+        min_p = math::Vector3f(std::min(min_p.x, v.position.x),
+                               std::min(min_p.y, v.position.y),
+                               std::min(min_p.z, v.position.z));
+        max_p = math::Vector3f(std::max(max_p.x, v.position.x),
+                               std::max(max_p.y, v.position.y),
+                               std::max(max_p.z, v.position.z));
     }
-    if (auto* sphere = entity->get_component<components::SphereCollider>()) {
-        float scale_max = std::max({std::abs(t->scale.x), std::abs(t->scale.y), std::abs(t->scale.z)});
-        float r = sphere->radius * scale_max;
-        return (4.0f / 3.0f) * k_pi * r * r * r;
-    }
-    return 1.0f;
+    math::Vector3f local_size = max_p - min_p;
+    math::Vector3f world_size = math::Vector3f(std::abs(local_size.x * t->scale.x),
+                                               std::abs(local_size.y * t->scale.y),
+                                               std::abs(local_size.z * t->scale.z));
+    return world_size.x * world_size.y * world_size.z;
 }
 
 void apply_physical_material(scene::Entity* entity, components::RigidBody* rb) {
@@ -52,7 +62,7 @@ void apply_physical_material(scene::Entity* entity, components::RigidBody* rb) {
     auto* pm = entity->get_component<components::PhysicalMaterial>();
     if (!pm) return;
 
-    float volume = compute_collider_volume(entity);
+    float volume = compute_mesh_volume(entity);
     rb->mass = std::max(0.001f, pm->density * volume * k_mass_scale);
     rb->restitution = math::clamp(1.0f - pm->softness, 0.0f, 1.0f);
     rb->friction = math::clamp(pm->friction, 0.0f, 1.0f);
@@ -77,18 +87,8 @@ struct PhysicsSystem3D::Impl {
         math::Quaternionf last_rotation = math::Quaternionf::identity();
         math::Vector3f last_scale{1.0f, 1.0f, 1.0f};
 
-        // collider 缓存
-        math::Vector3f last_box_size;
-        math::Vector3f last_box_center;
-        bool has_box = false;
-
-        float last_sphere_radius = 0.0f;
-        math::Vector3f last_sphere_center;
-        bool has_sphere = false;
-
-        math::Vector3f last_plane_normal;
-        float last_plane_offset = 0.0f;
-        bool has_plane = false;
+        // 碰撞体缓存
+        std::string last_mesh_path;
 
         // 材质/质量缓存，用于检测是否需要重建 body
         float last_mass = 0.0f;
@@ -167,7 +167,7 @@ struct PhysicsSystem3D::Impl {
             return;
         }
 
-        float volume = compute_collider_volume(entity);
+        float volume = compute_mesh_volume(entity);
         float mass = rb->mass;
         if (volume > 1e-9f) {
             out_mass = mass;
@@ -183,32 +183,9 @@ struct PhysicsSystem3D::Impl {
         if (!t) return false;
         if (t->scale != slot.last_scale) return true;
 
-        auto* box = entity->get_component<components::BoxCollider>();
-        if (box) {
-            if (!slot.has_box || box->size != slot.last_box_size || box->center != slot.last_box_center) {
-                return true;
-            }
-        } else if (slot.has_box) {
-            return true;
-        }
-
-        auto* sphere = entity->get_component<components::SphereCollider>();
-        if (sphere) {
-            if (!slot.has_sphere || sphere->radius != slot.last_sphere_radius || sphere->center != slot.last_sphere_center) {
-                return true;
-            }
-        } else if (slot.has_sphere) {
-            return true;
-        }
-
-        auto* plane = entity->get_component<components::PlaneCollider>();
-        if (plane) {
-            if (!slot.has_plane || plane->normal != slot.last_plane_normal || plane->offset != slot.last_plane_offset) {
-                return true;
-            }
-        } else if (slot.has_plane) {
-            return true;
-        }
+        auto* mr = entity->get_component<components::MeshRenderer>();
+        const std::string current_mesh = mr ? mr->mesh_path : std::string();
+        if (current_mesh != slot.last_mesh_path) return true;
 
         return false;
     }
@@ -254,44 +231,41 @@ struct PhysicsSystem3D::Impl {
         physics::ShapeDesc desc;
         desc.density = density;
 
-        auto* box = entity->get_component<components::BoxCollider>();
-        if (box) {
-            math::Vector3f world_size = mul_per_component(box->size, t->scale);
-            desc.type = physics::ShapeType::Box;
-            desc.size = world_size * 0.5f;
-            desc.offset = mul_per_component(box->center, t->scale);
-            slot.has_box = true;
-            slot.last_box_size = box->size;
-            slot.last_box_center = box->center;
-        } else {
-            slot.has_box = false;
+        auto* mr = entity->get_component<components::MeshRenderer>();
+        if (!mr || mr->mesh_path.empty()) return;
+
+        const assets::MeshData* mesh_data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+        if (!mesh_data || mesh_data->vertices.empty()) {
+            GLOG_WARN("PhysicsSystem3D: no mesh data for entity '{}'", entity->name());
+            return;
         }
 
-        auto* sphere = entity->get_component<components::SphereCollider>();
-        if (sphere) {
-            float scale_max = std::max({std::abs(t->scale.x), std::abs(t->scale.y), std::abs(t->scale.z)});
-            float radius = sphere->radius * scale_max;
-            desc.type = physics::ShapeType::Sphere;
-            desc.size = math::Vector3f(radius, 0.0f, 0.0f);
-            desc.offset = mul_per_component(sphere->center, t->scale);
-            slot.has_sphere = true;
-            slot.last_sphere_radius = sphere->radius;
-            slot.last_sphere_center = sphere->center;
+        // 静态物体用精确三角网格，动态刚体用凸包（Jolt MeshShape 不能用于动态）
+        const bool is_static = entity->get_component<components::StaticBody>() != nullptr;
+        if (is_static) {
+            desc.type = physics::ShapeType::Mesh;
+            desc.points.reserve(mesh_data->vertices.size());
+            for (const auto& v : mesh_data->vertices) {
+                desc.points.push_back(v.position);
+            }
+            desc.indices = mesh_data->indices;
+            if (desc.indices.empty()) {
+                // 没有索引时从 vertices 顺序生成三角面（假设每 3 个顶点一组）
+                desc.indices.reserve((mesh_data->vertices.size() / 3) * 3);
+                for (uint32_t i = 0; i + 2 < mesh_data->vertices.size(); i += 3) {
+                    desc.indices.push_back(i);
+                    desc.indices.push_back(i + 1);
+                    desc.indices.push_back(i + 2);
+                }
+            }
         } else {
-            slot.has_sphere = false;
+            desc.type = physics::ShapeType::ConvexHull;
+            desc.points.reserve(mesh_data->vertices.size());
+            for (const auto& v : mesh_data->vertices) {
+                desc.points.push_back(v.position);
+            }
         }
-
-        auto* plane = entity->get_component<components::PlaneCollider>();
-        if (plane) {
-            desc.type = physics::ShapeType::Plane;
-            slot.has_plane = true;
-            slot.last_plane_normal = plane->normal;
-            slot.last_plane_offset = plane->offset;
-        } else {
-            slot.has_plane = false;
-        }
-
-        if (!box && !sphere && !plane) return;
+        slot.last_mesh_path = mr->mesh_path;
 
         slot.shape = world->create_shape(desc);
     }
@@ -694,6 +668,27 @@ void PhysicsSystem3D::on_shutdown(scene::Scene& /*scene*/) {
     }
 }
 
+void PhysicsSystem3D::rebuild_body_for_entity(scene::Entity* entity) {
+    if (!entity || !impl_->world) return;
+
+    const scene::UUID& uuid = entity->uuid();
+    auto it = impl_->slots.find(uuid);
+    if (it != impl_->slots.end()) {
+        impl_->destroy_slot_body(it->second);
+        impl_->slots.erase(it);
+    }
+
+    auto* t = entity->transform();
+    if (!t) return;
+    bool has_rb = entity->get_component<components::RigidBody>() != nullptr;
+    bool has_static = entity->get_component<components::StaticBody>() != nullptr;
+    if (!has_rb && !has_static) return;
+    auto* mr = entity->get_component<components::MeshRenderer>();
+    if (!mr || mr->mesh_path.empty()) return;
+
+    impl_->create_body(entity, uuid);
+}
+
 void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
     if (dt <= 0.0f) return;
 
@@ -711,10 +706,8 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
         bool has_rb = entity->get_component<components::RigidBody>() != nullptr;
         bool has_static = entity->get_component<components::StaticBody>() != nullptr;
         if (!has_rb && !has_static) return;
-        bool has_collider = entity->get_component<components::BoxCollider>() != nullptr ||
-                            entity->get_component<components::SphereCollider>() != nullptr ||
-                            entity->get_component<components::PlaneCollider>() != nullptr;
-        if (!has_collider) return;
+        auto* mr = entity->get_component<components::MeshRenderer>();
+        if (!mr || mr->mesh_path.empty()) return;
 
         const scene::UUID& uuid = entity->uuid();
         current_uuids.insert(uuid);

@@ -106,6 +106,19 @@ bool VulkanTexture::load_from_file(const std::string& path) {
     return ok;
 }
 
+bool VulkanTexture::load_from_memory(const void* data, size_t size) {
+    int w = 0, h = 0, ch = 0;
+    stbi_uc* pixels = stbi_load_from_memory(static_cast<const stbi_uc*>(data),
+                                             static_cast<int>(size), &w, &h, &ch, STBI_rgb_alpha);
+    if (!pixels) {
+        GLOG_ERROR("VulkanTexture: failed to load image from memory");
+        return false;
+    }
+    bool ok = upload_data(pixels, w, h, 4);
+    stbi_image_free(pixels);
+    return ok;
+}
+
 bool VulkanTexture::create_empty(int width, int height, int channels) {
     return upload_data(nullptr, width, height, channels);
 }

@@ -136,6 +136,11 @@ public:
     // 重建需要额外处理，本轮视口输出只在 GL 端启用）。
     bool resize_render_targets(int width, int height);
 
+    // 完整重建渲染管线：释放当前 shader / target 后按当前配置重新初始化。
+    // 用于加载新项目或场景后 shader 目录/质量设置发生变化时。
+    // 线程约束：调用前必须 pause_render_thread()，调用后 resume_render_thread()。
+    bool rebuild(RenderContext* ctx, const std::string& shader_dir = "res:/shaders");
+
     // 设置 ImGui 后端引用（用于 resize 时 invalidate 旧的 descriptor set 缓存）
     void set_imgui_backend(IImGuiBackend* backend) { imgui_backend_ = backend; }
 

@@ -114,6 +114,10 @@ public:
     virtual ~ITexture() = default;
 
     virtual bool load_from_file(const std::string& path) = 0;
+    virtual bool load_from_memory(const void* data, size_t size) {
+        (void)data; (void)size;
+        return false;
+    }
     virtual bool create_empty(int width, int height, int channels = 4) = 0;
     virtual bool upload_data(const void* data, int width, int height, int channels = 4) = 0;
     virtual bool create_depth(int width, int height) = 0;

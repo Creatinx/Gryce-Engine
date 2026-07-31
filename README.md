@@ -27,7 +27,7 @@
   - `AssetManager` 缓存 mesh / texture / material，支持引用计数与 LRU 卸载。
   - 异步加载（`AsyncLoader` 线程池）与 `.gpack` 资源包挂载。
   - 模型：OBJ 内置加载器 + Assimp（FBX / glTF / DAE / PLY / STL）。
-  - 纹理：PNG / JPG / BMP / DDS / KTX（BC1~BC7 / ASTC / ETC2）、立方体贴图、HDR/EXR。
+  - 纹理：PNG / JPG / BMP / DDS / KTX（BC1~BC7 / ASTC / ETC2）、立方体贴图、HDR/EXR；资源路径统一按 UTF-8 处理，支持中文文件名。
   - 字体：TTF 动态图集（stb_truetype）。
   - 材质资源 `.gmat`、导入设置 `.gimport`。
 - **动画**
@@ -51,11 +51,14 @@
 - **日志与性能**
   - 异步日志 AsyncLogger：`log()` 入队、worker 线程写出，`GLog` 自动包装 logger。
   - 热路径优化：每帧日志降为 DEBUG、Release 剔除 `GL_CHECK_ERROR`、DrawItem 跨帧复用、重复材质绑定跳过。
+  - 大规模渲染优化方向：GPU Instancing、共享可见 entity 列表、Material/Shader 状态缓存、包围球脏标记，目标支撑 1000+ entity 场景。
 - **运行时 UI（2D）**
   - ColorRect、Label、Sprite2D、Circle、Polygon、TileMap、ParticleEmitter2D、ParallaxBackground。
   - 2D 光照：环境光、方向光、点光源、聚光灯、法线贴图、阴影/遮挡。
 - **输入**
   - 键盘、鼠标、自定义光标、鼠标锁定（FPS 模式）。
+- **脚本系统（规划）**
+  - 计划引入 Lua 脚本层，用于玩法逻辑、组件行为与热重载；引擎核心（渲染、物理、ECS）继续以 C++ 实现并通过绑定层暴露 API，兼顾性能与迭代效率。
 - **工具与自动化**
   - 帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
   - 命令行参数：场景加载、无窗口截图、MP4 录制、相机预设。详见 [`docs/CLI.md`](./docs/CLI.md)。
@@ -319,9 +322,14 @@ Gryce-Engine/
 
 ---
 
-## 开发计划
+## 已知限制与下一步
 
-详见 [`docs/STATUS.md`](./docs/STATUS.md)。
+- 当前 Editor 主要以 Vulkan 后端进行开发与测试，OpenGL 后端保持功能同步但偶发 DPI/翻转问题。
+- 大规模 3D 场景（>1000 entity）尚未启用 GPU Instancing，后续会按优先级落地。
+- 脚本系统处于规划阶段，计划先集成 LuaJIT/sol2 并暴露 Scene/Entity/Component API。
+- 资源路径已统一按 UTF-8 处理，中文贴图/模型名可正常加载。
+
+更多开发计划详见 [`docs/STATUS.md`](./docs/STATUS.md)。
 
 ---
 

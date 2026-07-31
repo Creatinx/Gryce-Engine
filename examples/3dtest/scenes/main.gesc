@@ -51,7 +51,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 10,
-          "text": "FPS: 480.9",
+          "text": "FPS: 67.1",
           "type": "Label"
         }
       ],

@@ -3,6 +3,7 @@
 #include "math/math.h"
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace gryce_engine::physics {
 
@@ -26,7 +27,9 @@ enum class ShapeType {
     Box,
     Sphere,
     Capsule,
-    Plane
+    Plane,
+    ConvexHull, // 由模型顶点构建的凸包碰撞体（用于动态刚体）
+    Mesh        // 由模型顶点+索引构建的三角网格碰撞体（主要用于静态物体）
 };
 
 struct ShapeDesc {
@@ -35,6 +38,8 @@ struct ShapeDesc {
     math::Vector3f offset;
     math::Quaternionf rotation;
     float density = 1.0f; // 用于后端根据体积自动计算质量（kg/m^3 相对值）
+    std::vector<math::Vector3f> points;     // ConvexHull 顶点 / Mesh 顶点（模型局部空间）
+    std::vector<uint32_t> indices;          // Mesh 三角面索引（每 3 个一组）
 };
 
 struct BodyDesc {

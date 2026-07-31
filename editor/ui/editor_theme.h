@@ -4,6 +4,7 @@
 
 #include "engine_theme.h"
 #include "engine_theme_modern.h"
+#include "xcode_theme.h"
 
 namespace gryce_engine::editor {
 

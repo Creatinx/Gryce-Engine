@@ -56,6 +56,14 @@ public:
     void set_title(const std::string& title);
     void set_size(int width, int height);
     void get_size(int& width, int& height) const;
+    // 切换 OS 标题栏/边框（GLFW_DECORATED），启动画面用无边框，编辑器恢复有边框
+    void set_decorated(bool decorated);
+    // 设置窗口位置（屏幕坐标）
+    void set_position(int x, int y);
+    // 将窗口居中到主显示器工作区
+    void center_on_primary_monitor();
+    // 置前并请求焦点
+    void focus_window();
     void set_vsync(bool enabled);
     void set_cursor_visible(bool visible);
     void set_cursor_disabled(bool disabled);

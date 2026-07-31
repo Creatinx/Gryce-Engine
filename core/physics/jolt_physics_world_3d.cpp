@@ -15,6 +15,8 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Constraints/DistanceConstraint.h>
@@ -215,6 +217,8 @@ BodyHandle JoltPhysicsWorld3D::create_body(const BodyDesc& desc) {
     settings.mLinearDamping = desc.linear_damping;
     settings.mAngularDamping = desc.angular_damping;
     settings.mAllowSleeping = desc.allow_sleep;
+    // 启用 LinearCast CCD，防止高速物体穿模
+    settings.mMotionQuality = JPH::EMotionQuality::LinearCast;
 
     const JPH::Shape* shape_ptr = nullptr;
     JPH::Ref<JPH::Shape> fallback_shape;
@@ -410,6 +414,56 @@ ShapeHandle JoltPhysicsWorld3D::create_shape(const ShapeDesc& desc) {
         case ShapeType::Plane: {
             // 使用一个很大的盒子近似无限平面，避免 Jolt PlaneShape 的朝向/偏移语义不一致
             shape = new JPH::BoxShape(JPH::Vec3(500.0f, 0.05f, 500.0f));
+            break;
+        }
+        case ShapeType::ConvexHull: {
+            if (desc.points.size() < 4) {
+                GLOG_WARN("Jolt: convex hull needs at least 4 points, got {}", desc.points.size());
+                return k_invalid_shape;
+            }
+            JPH::Array<JPH::Vec3> verts;
+            verts.reserve(static_cast<int>(desc.points.size()));
+            for (const auto& p : desc.points) {
+                verts.push_back(to_jolt(p));
+            }
+            JPH::ConvexHullShapeSettings settings(verts);
+            settings.mDensity = desc.density;
+            auto result = settings.Create();
+            if (result.HasError()) {
+                GLOG_ERROR("Jolt: failed to create convex hull shape: {}", result.GetError().c_str());
+                return k_invalid_shape;
+            }
+            shape = result.Get();
+            break;
+        }
+        case ShapeType::Mesh: {
+            if (desc.indices.size() < 3 || desc.indices.size() % 3 != 0) {
+                GLOG_WARN("Jolt: mesh needs at least 1 triangle and index count multiple of 3, got {}",
+                          desc.indices.size());
+                return k_invalid_shape;
+            }
+            if (desc.points.empty()) {
+                GLOG_WARN("Jolt: mesh has no vertices");
+                return k_invalid_shape;
+            }
+            JPH::VertexList verts;
+            verts.reserve(static_cast<int>(desc.points.size()));
+            for (const auto& p : desc.points) {
+                JPH::Vec3 v = to_jolt(p);
+                verts.push_back(JPH::Float3(v.GetX(), v.GetY(), v.GetZ()));
+            }
+            JPH::IndexedTriangleList tris;
+            tris.reserve(static_cast<int>(desc.indices.size() / 3));
+            for (size_t i = 0; i + 2 < desc.indices.size(); i += 3) {
+                tris.push_back(JPH::IndexedTriangle(desc.indices[i], desc.indices[i + 1], desc.indices[i + 2]));
+            }
+            JPH::MeshShapeSettings settings(verts, tris);
+            auto result = settings.Create();
+            if (result.HasError()) {
+                GLOG_ERROR("Jolt: failed to create mesh shape: {}", result.GetError().c_str());
+                return k_invalid_shape;
+            }
+            shape = result.Get();
             break;
         }
     }
