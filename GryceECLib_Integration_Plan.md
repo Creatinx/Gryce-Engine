@@ -1,340 +1,658 @@
-# GryceECLib 接入现有引擎方案
+# Gryce Engine — Core / Editor 分离架构方案
 
-> 目标：把现有 Gryce Engine 的 Core 能力（ECS、渲染、物理、输入）封装成独立的 `GryceECLib.dll`，对外暴露纯 C API，供 WPF 编辑器通过 P/Invoke 调用。
+> 目标：把 `core/` 编译为 **GryceCore.dll**（SHARED），对外暴露纯 C API。Editor（WPF C#）**只能通过 C API 与 Core 交互**。所有代码统一使用 **C++23**。
+>
+> 通信模型：**Editor 每帧通过 C API push 命令到 Core 的 CommandBuffer，Core 在下一帧 `ExecuteFrame` 中消费并执行**。
+>
+> 现有 C++ ImGui Editor 已封存至 `backup/editor/`，不再维护。
+
+---
 
 ## 1. 总体架构
 
-不再只生成一个 DLL，而是按命名空间拆成多个模块，最后由 `GryceECLib.dll` 作为统一的 C API 门面：
-
 ```
-WPF Editor (C#)
-    ↓ P/Invoke
-GryceECLib.dll          ← 唯一对外 C API
-    ↓ 链接 / 依赖
-GryceCore.dll        ← ECS、Scene、Component、反射、Math
-GryceRenderer.dll    ← RenderContext、RenderPipeline、Vulkan/OpenGL Backend
-GrycePlatform.dll    ← Window 抽象、InputManager、Cursor、Timer
-GrycePhysics.dll     ← Jolt 3D Physics、Box2D 2D Physics
-GryceAudio.dll       ← miniaudio 音频（可选）
+┌─────────────────────────────────────────────────────────────┐
+│  Editor (WPF C#)                                            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ Inspector   │  │ Hierarchy   │  │ Viewport / GameView │  │
+│  │ (PropertyGrid│  │ (TreeView)  │  │ (SwapChainPanel)    │  │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
+│         │                │                    │              │
+│         └────────────────┼────────────────────┘              │
+│                          ▼                                   │
+│         ┌─────────────────────────────────────┐              │
+│         │  Editor 每帧构造 Command 写入 Buffer │              │
+│         │  （SelectEntity / SetTransform /    │              │
+│         │   LoadScene / PlayMode / etc.）      │              │
+│         └──────────────────┬──────────────────┘              │
+│                            │ P/Invoke                        │
+└────────────────────────────┼─────────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│  GryceCore.dll  ← 由 core/ 编译的 SHARED DLL               │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  C API Layer (gryce_core.h)  ← 唯一对外头文件          │  │
+│  │  ─────────────────────────────────────────────────────│  │
+│  │  Core_Init() / Core_Shutdown()                        │  │
+│  │  Core_BeginFrame() / Core_Render() / Core_EndFrame()  │  │
+│  │  Core_PushCommand()                                   │  │
+│  │  Core_RegisterCallback()                              │  │
+│  │  Core_GetEntityCount() / Core_GetEntityName()  etc.   │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                            │                                 │
+│         ┌──────────────────┼──────────────────┐              │
+│         ▼                  ▼                  ▼              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ ECS / Scene │  │  Rendering  │  │ Physics (Jolt/Box2D)│  │
+│  │ (ecs::World)│  │(RenderContext│  │ (IPhysicsWorld)    │  │
+│  │(ComponentStore│ │ + Pipeline) │  │                     │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │  Platform   │  │   Assets    │  │      Input          │  │
+│  │ (Window/GLFW)│  │(AssetManager)│  │  (InputManager)    │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  CommandBuffer — 双缓冲 Lock-free Ring Buffer          │  │
+│  │  Editor 写 front，Core 在 BeginFrame 时 swap & 消费    │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-> 注：当前 `core/CMakeLists.txt` 把所有内容编译成一个 `gryce_core` 静态库。Phase 1 可以先让 `GryceECLib.dll` 静态链接 `gryce_core.lib`，再逐步拆分为独立 DLL，避免一次性改动过大。
+### 关键边界
+
+| Core 内部（GryceCore.dll） | Editor 外部（任何语言） |
+|---------------------------|----------------------|
+| `ecs::World`, `scene::Scene`, `scene::Entity` | 只能看到 `EntityHandle`（int id） |
+| `render::RenderContext`, `render::RenderPipeline` | 只能调用 `Core_Render()` |
+| `components::MeshRenderer`, `Transform`, `Camera` | 只能通过 `Core_SetComponentProperty()` 修改 |
+| `assets::AssetManager` | 只能通过 `Core_LoadAsset()` / `Core_ImportAsset()` |
+| `physics::IPhysicsWorld` | 只能通过 PlayMode 触发 step |
+| 输入从 GLFW 轮询（standalone） | 输入由 Editor 转发事件到 `Core_PushInputEvent()` |
+
+> **Editor 永远不能 `#include "ecs/world.h"` 或 `#include "scene/entity.h"`。所有交互走 `gryce_core.h` 这一个头文件。**
 
 ---
 
-## 2. 现有引擎入口梳理
+## 2. 单头文件 C API：`gryce_core.h`
 
-### 2.1 ECS / 场景（`gryce_engine::ecs` / `gryce_engine::scene`）
+使用者（C/C++/C#）**只需 `#include <gryce_core.h>`**，无需手动链接。头文件内部自动处理平台相关的导入库链接。
 
-| 文件 | 关键类型 | 说明 |
-|------|---------|------|
-| `core/ecs/world.h` | `ecs::World` | ECS 世界，持有 Scene 和 Systems |
-| `core/scene/scene.h` | `scene::Scene` | 场景，单根节点树，管理 Entity 生命周期 |
-| `core/scene/entity.h` | `scene::Entity` | 实体，UUID 标识，可挂 Component 和子实体 |
-| `core/ecs/component_store.h` | `ecs::ComponentStore` | 组件存储池 |
-| `core/ecs/system.h` | `ecs::ISystem` | System 基类，按 Phase 排序执行 |
-| `core/ecs/systems/physics_system_3d.h` | `ecs::PhysicsSystem3D` | 3D 物理系统 |
-| `core/ecs/systems/render_system_3d.h` | `ecs::RenderSystem3D` | 3D 渲染系统 |
-| `core/ecs/systems/render_system_2d.h` | `ecs::RenderSystem2D` | 2D 渲染系统 |
+```c
+// gryce_core.h — Editor 唯一允许 include 的头文件
+// 编译时自动链接 GryceCore.lib（MSVC）或等效机制
 
-**核心 API（编辑器当前用法）**：
+#ifndef GRYCE_CORE_H
+#define GRYCE_CORE_H
 
-```cpp
-ecs::World world;
-world.attach_scene(std::move(current_scene));
-world.add_system<ecs::PhysicsSystem3D>();
-world.add_system<ecs::RenderSystem3D>(&pipeline);
-if (renderer2d) world.add_system<ecs::RenderSystem2D>(renderer2d.get());
-world.init();
-
-world.update(dt);           // PreUpdate / Update / PostUpdate
-world.render(render_ctx);   // PreRender / Render / PostRender
-```
-
-**场景操作**：
-
-```cpp
-scene::Scene* s = world.scene();
-scene::Entity* e = s->create_entity("Cube");
-s->destroy_entity(e);
-scene::Entity* found = s->find_entity_by_uuid(uuid);
-scene::Entity* found = s->find_entity_by_name("Camera");
-```
-
-### 2.2 平台 / 窗口 / 输入（`gryce_engine::platform`）
-
-| 文件 | 关键类型 | 说明 |
-|------|---------|------|
-| `core/platform/window.h` | `platform::Window` | GLFW 窗口封装 |
-| `core/platform/input.h` | `platform::InputManager` | 输入状态管理（512 键 + 8 鼠标按钮） |
-| `core/platform/cursor.h` | `platform::Cursor` | 光标 |
-
-**关键 API**：
-
-```cpp
-platform::Window window("Gryce Editor", 1920, 1080, WindowMode::Windowed);
-GLFWwindow* native = window.native_handle();  // 当前取 GLFW 句柄
-#ifdef _WIN32
-HWND hwnd = glfwGetWin32Window(native);       // 编辑器里就是这样取 HWND 的
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-platform::InputManager input;
-input.update(&window);
-bool pressed = input.is_key_pressed(GLFW_KEY_W);
-bool held    = input.is_key_held(GLFW_KEY_W);
+// ============================================================================
+// 平台自动链接导入库
+// ============================================================================
+#ifdef _WIN32
+    #ifdef _MSC_VER
+        // MSVC: #pragma comment 自动链接导入库
+        #ifdef GRYCE_CORE_STATIC
+            // 静态链接模式（预留）
+        #else
+            #pragma comment(lib, "GryceCore.lib")
+        #endif
+    #endif
+    // DLL 导出/导入声明
+    #ifdef GRYCE_CORE_BUILDING
+        #define GRYCE_API __declspec(dllexport)
+    #else
+        #define GRYCE_API __declspec(dllimport)
+    #endif
+#else
+    #define GRYCE_API __attribute__((visibility("default")))
+#endif
+
+// ============================================================================
+// 基础类型
+// ============================================================================
+typedef int   EntityHandle;     // 0 = invalid/null
+typedef int   ComponentHandle;  // 0 = invalid
+typedef int   AssetHandle;      // 0 = invalid
+typedef void* TextureHandle;    // 平台相关渲染纹理句柄
+
+// ============================================================================
+// 初始化描述
+// ============================================================================
+typedef enum {
+    GRYCE_RENDER_API_OPENGL = 0,
+    GRYCE_RENDER_API_VULKAN = 1,
+} GryceRenderAPI;
+
+typedef struct {
+    uint32_t version;           // sizeof(CoreInitDesc)，用于未来扩展
+    void*    native_window;     // HWND on Windows
+    GryceRenderAPI render_api;
+    const char* project_root;   // 资源根目录（绝对路径）
+    int      viewport_w;
+    int      viewport_h;
+    int      gameview_w;        // 0 = 不创建 GameView
+    int      gameview_h;
+    bool     sync_render_mode;  // true: 不启动内部 RenderThread，由 Editor 线程驱动
+} CoreInitDesc;
+
+// ============================================================================
+// 命令系统
+// ============================================================================
+typedef enum {
+    ECMD_NOP = 0,
+
+    // --- 场景操作 ---
+    ECMD_LOAD_SCENE,            // payload: const char* path
+    ECMD_SAVE_SCENE,            // payload: const char* path
+    ECMD_CREATE_ENTITY,         // payload: const char* name, parent_handle
+    ECMD_DESTROY_ENTITY,        // payload: EntityHandle
+    ECMD_RENAME_ENTITY,         // payload: EntityHandle, const char* new_name
+    ECMD_REPARENT_ENTITY,       // payload: EntityHandle, new_parent_handle
+
+    // --- 实体选择 / Inspector ---
+    ECMD_SELECT_ENTITY,         // payload: EntityHandle (0 = deselect)
+    ECMD_SET_TRANSFORM,         // payload: EntityHandle, pos[3], rot[4], scale[3]
+    ECMD_SET_PROPERTY,          // payload: EntityHandle, comp_type_hash, field_hash, value_bytes[]
+    ECMD_ADD_COMPONENT,         // payload: EntityHandle, comp_type_hash
+    ECMD_REMOVE_COMPONENT,      // payload: EntityHandle, comp_type_hash
+
+    // --- Play Mode ---
+    ECMD_PLAY_MODE,             // 无 payload
+    ECMD_STOP_MODE,             // 无 payload
+    ECMD_PAUSE_MODE,            // 无 payload
+    ECMD_STEP_FRAME,            // payload: int step_count
+
+    // --- 资产 ---
+    ECMD_IMPORT_ASSET,          // payload: const char* source_path
+    ECMD_SET_MATERIAL,          // payload: EntityHandle, material_path
+
+    // --- 渲染 ---
+    ECMD_SET_RENDER_TARGET,     // payload: HWND handle (0 = offscreen)
+    ECMD_SET_VIEWPORT_SIZE,     // payload: w, h
+    ECMD_SET_GAMEVIEW_SIZE,     // payload: w, h
+
+    // --- 输入（由 Editor 转发） ---
+    ECMD_INPUT_KEY,             // payload: key_code, action(press/release/repeat)
+    ECMD_INPUT_MOUSE_MOVE,      // payload: x, y
+    ECMD_INPUT_MOUSE_BUTTON,    // payload: button, action, x, y
+    ECMD_INPUT_MOUSE_SCROLL,    // payload: delta_x, delta_y
+
+    // --- Gizmo ---
+    ECMD_GIZMO_SET_OPERATION,   // payload: int op (translate/rotate/scale)
+    ECMD_GIZMO_SET_SPACE,       // payload: int space (local/world)
+    ECMD_GIZMO_MANIPULATE,      // payload: EntityHandle, delta_matrix[16]
+
+    ECMD_COUNT                  // 哨兵
+} ECommandType;
+
+#define ECMD_PAYLOAD_SIZE 256
+
+typedef struct {
+    ECommandType type;
+    uint64_t     seq;                   // monotonic sequence
+    uint8_t      payload[ECMD_PAYLOAD_SIZE];
+} ECommand;
+
+// ============================================================================
+// 回调类型（Core → Editor）
+// ============================================================================
+typedef void (*OnEntitySelected)(EntityHandle entity, void* user_data);
+typedef void (*OnEntityDeselected)(void* user_data);
+typedef void (*OnSceneLoaded)(const char* path, void* user_data);
+typedef void (*OnSceneSaved)(const char* path, void* user_data);
+typedef void (*OnPlayModeChanged)(bool is_playing, bool is_paused, void* user_data);
+typedef void (*OnEntityListChanged)(void* user_data);           // 创建/删除/重命名/重排
+ntypedef void (*OnComponentChanged)(EntityHandle entity, uint64_t comp_type_hash, void* user_data);
+typedef void (*OnLogMessage)(int level, const char* msg, void* user_data);
+typedef void (*OnViewportTextureReady)(TextureHandle handle, int w, int h, void* user_data);
+typedef void (*OnGameViewTextureReady)(TextureHandle handle, int w, int h, void* user_data);
+
+// ============================================================================
+// C API 函数
+// ============================================================================
+
+// --- 生命周期 ---
+GRYCE_API int  Core_Init(const CoreInitDesc* desc);
+GRYCE_API void Core_Shutdown(void);
+GRYCE_API bool Core_IsInitialized(void);
+
+// --- 帧驱动（由 Editor 的渲染线程按固定频率调用，如 144fps） ---
+GRYCE_API void Core_BeginFrame(float dt);
+GRYCE_API void Core_Render(void);
+GRYCE_API void Core_EndFrame(void);
+
+// --- 命令提交（线程安全，可从 Editor UI 线程随时调用） ---
+GRYCE_API int Core_PushCommand(const ECommand* cmd);
+GRYCE_API int Core_PushCommands(const ECommand* cmds, int count);
+GRYCE_API int Core_GetCommandQueueCapacity(void);    // 返回剩余可写入命令数
+GRYCE_API int Core_GetDroppedCommandCount(void);      // 自上次调用以来因队列满丢弃的命令数
+
+// --- 回调注册 ---
+GRYCE_API void Core_SetCallback_UserData(void* user_data);
+GRYCE_API void Core_RegisterCallback_OnEntitySelected(OnEntitySelected cb);
+GRYCE_API void Core_RegisterCallback_OnEntityDeselected(OnEntityDeselected cb);
+GRYCE_API void Core_RegisterCallback_OnSceneLoaded(OnSceneLoaded cb);
+GRYCE_API void Core_RegisterCallback_OnPlayModeChanged(OnPlayModeChanged cb);
+GRYCE_API void Core_RegisterCallback_OnEntityListChanged(OnEntityListChanged cb);
+GRYCE_API void Core_RegisterCallback_OnComponentChanged(OnComponentChanged cb);
+GRYCE_API void Core_RegisterCallback_OnLogMessage(OnLogMessage cb);
+GRYCE_API void Core_RegisterCallback_OnViewportTextureReady(OnViewportTextureReady cb);
+GRYCE_API void Core_RegisterCallback_OnGameViewTextureReady(OnGameViewTextureReady cb);
+
+// --- 场景查询（只读，Editor 用来刷新 Hierarchy / Inspector） ---
+GRYCE_API int          Core_GetEntityCount(void);
+GRYCE_API EntityHandle Core_GetEntityAt(int index);
+GRYCE_API int          Core_GetEntityName(EntityHandle entity, char* out_buf, int buf_size);
+GRYCE_API int          Core_GetEntityPath(EntityHandle entity, char* out_buf, int buf_size);  // "Parent/Child/Name"
+GRYCE_API EntityHandle Core_GetEntityParent(EntityHandle entity);       // 0 = root
+GRYCE_API int          Core_GetEntityChildCount(EntityHandle entity);
+GRYCE_API EntityHandle Core_GetEntityChildAt(EntityHandle entity, int index);
+GRYCE_API int          Core_GetEntitySiblingIndex(EntityHandle entity);
+
+GRYCE_API int          Core_GetEntityComponentCount(EntityHandle entity);
+GRYCE_API int          Core_GetEntityComponentTypeHashAt(EntityHandle entity, int index, uint64_t* out_hash);
+GRYCE_API int          Core_GetEntityComponentTypeNameAt(EntityHandle entity, int index, char* out_buf, int buf_size);
+
+// 获取组件属性（反射驱动）
+GRYCE_API int Core_GetComponentPropertyCount(EntityHandle entity, uint64_t comp_type_hash);
+GRYCE_API int Core_GetComponentPropertyInfo(EntityHandle entity, uint64_t comp_type_hash, int prop_index,
+                                             char* out_name, int name_buf_size,
+                                             int* out_type, int* out_size, int* out_offset);
+GRYCE_API int Core_GetComponentProperty(EntityHandle entity, uint64_t comp_type_hash, const char* prop_name,
+                                         void* out_value, int value_size);
+GRYCE_API int Core_SetComponentProperty(EntityHandle entity, uint64_t comp_type_hash, const char* prop_name,
+                                         const void* value, int value_size);
+
+GRYCE_API EntityHandle Core_GetSelectedEntity(void);   // 0 = none
+
+// --- 变换快捷查询 ---
+GRYCE_API int Core_GetEntityLocalPosition(EntityHandle entity, float out_pos[3]);
+GRYCE_API int Core_GetEntityLocalRotation(EntityHandle entity, float out_rot[4]);
+GRYCE_API int Core_GetEntityLocalScale(EntityHandle entity, float out_scale[3]);
+GRYCE_API int Core_GetEntityWorldPosition(EntityHandle entity, float out_pos[3]);
+GRYCE_API int Core_GetEntityWorldRotation(EntityHandle entity, float out_rot[4]);
+GRYCE_API int Core_GetEntityWorldScale(EntityHandle entity, float out_scale[3]);
+
+// --- 渲染查询 ---
+GRYCE_API TextureHandle Core_GetViewportTextureHandle(void);
+GRYCE_API TextureHandle Core_GetGameViewTextureHandle(void);
+GRYCE_API int           Core_GetViewportTextureSize(int* out_w, int* out_h);
+GRYCE_API int           Core_GetGameViewTextureSize(int* out_w, int* out_h);
+
+// --- PlayMode 状态 ---
+GRYCE_API bool Core_IsPlaying(void);
+GRYCE_API bool Core_IsPaused(void);
+
+// --- 日志 ---
+GRYCE_API int Core_GetLogMessages(char* out_buf, int buf_size);   // 消费并返回日志文本
+
+// --- 反射 / 类型信息 ---
+GRYCE_API int Core_GetRegisteredComponentTypeCount(void);
+GRYCE_API int Core_GetRegisteredComponentTypeInfo(int index, uint64_t* out_hash, char* out_name, int name_buf_size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // GRYCE_CORE_H
 ```
-
-**HWND 注入点**：
-
-- `Window` 目前只支持 GLFW 自己创建窗口。
-- 需要新增一个 `platform::HostWindow` 或扩展 `Window`，让它接收外部 `HWND`，并提供与 GLFW 窗口相同的接口（`get_size`、`poll_events`、`swap_buffers` 等）。
-- 输入可以复用 `InputManager`，但需要把 WPF 转发来的鼠标/键盘事件写进 `InputManager` 的内部状态，而不是从 GLFW 读。
-
-### 2.3 渲染（`gryce_engine::render`）
-
-| 文件 | 关键类型 | 说明 |
-|------|---------|------|
-| `core/render/render_context.h` | `render::RenderContext` | 高层渲染上下文，组合 backend + command buffer + render thread |
-| `core/render/render.h` | `render::IRenderBackend` | 后端抽象接口（Vulkan / OpenGL） |
-| `core/render/render_pipeline.h` | `render::RenderPipeline` | 渲染管线，Viewport / Game View 各一个 |
-| `core/render/imgui_backend.h` | `render::IImGuiBackend` | ImGui 后端接口 |
-| `core/render/opengl/gl_backend.h` | `render::GLBackend` | OpenGL 后端 |
-| `core/render/vulkan/vk_backend.h` | `render::VulkanBackend` | Vulkan 后端 |
-
-**关键 API**：
-
-```cpp
-render::RenderContext render_ctx;
-render_ctx.set_validation_enabled(true);
-render_ctx.init(window.native_handle(), render::RenderAPI::Vulkan);
-
-auto renderer2d = render_ctx.create_renderer2d();
-if (renderer2d) renderer2d->init(&render_ctx);
-
-auto imgui_backend = render_ctx.create_imgui_backend();
-render::ImGuiRenderer imgui;
-imgui.init(window.native_handle(), std::move(imgui_backend));
-
-render::RenderPipeline pipeline;
-pipeline.set_viewport_output_enabled(true);
-pipeline.set_imgui_backend(imgui.backend());
-pipeline.init(&render_ctx, "res:/shaders");
-
-render_ctx.start();     // 启动渲染线程
-render_ctx.present();   // 提交一帧
-```
-
-**注意**：
-
-- `RenderContext::init` 接受 `void* native_window`，实际就是 `GLFWwindow*`。
-- Vulkan backend 内部会通过 `glfwCreateWindowSurface` 创建 surface；OpenGL backend 通过 `glfwMakeContextCurrent` 创建 context。
-- 要支持外部 `HWND`，Vulkan backend 需要改用 `VkWin32SurfaceCreateInfoKHR` + `hwnd`；OpenGL backend 需要 `wglCreateContext` / `wglMakeCurrent` + `hwnd`。
-- `RenderContext` 内部有渲染线程，但 WPF 已经要求 Core 不创建渲染线程，由外部按 144fps 驱动。因此 GryceECLib 可能不调用 `render_ctx.start()`，而是直接在 WPF 渲染线程里同步调用 `backend->begin_frame()` / `end_frame()`，或让 `RenderThread` 处于暂停状态。
-
-### 2.4 物理（`gryce_engine::physics`）
-
-| 文件 | 关键类型 | 说明 |
-|------|---------|------|
-| `core/physics/physics_world_3d.h` | `physics::IPhysicsWorld3D` | 3D 物理世界接口 |
-| `core/physics/jolt_physics_world_3d.h` | `physics::JoltPhysicsWorld3D` | Jolt 实现 |
-| `core/physics/physics_factory.cpp` | `physics::create_physics_world_3d` | 工厂函数 |
-| `core/ecs/systems/physics_system_3d.h` | `ecs::PhysicsSystem3D` | ECS 系统封装 |
-
-**关键 API**：
-
-```cpp
-auto phys_world = physics::create_physics_world_3d("Jolt");
-phys_world->init(math::Vector3f(0, -9.81f, 0));
-phys_world->step(dt, substeps);
-
-physics::BodyHandle body = phys_world->create_body(desc);
-phys_world->set_transform(body, pos, rot);
-phys_world->get_transform(body, pos, rot);
-std::optional<physics::RaycastHit> hit = phys_world->raycast(origin, dir, max_dist);
-```
-
-**ECS 集成**：
-
-- `PhysicsSystem3D` 在 `on_init` 时扫描 Scene 中所有 `RigidBody` / `StaticBody` + Collider，创建对应物理 body。
-- `on_update` 中调用 `phys_world->step(dt)`，并把物理结果同步回 Entity 的 Transform。
-- `rebuild_body_for_entity(entity)` 用于组件增删后的热重载。
 
 ---
 
-## 3. GryceECLib.dll 职责边界
+## 3. 通信机制：CommandBuffer
 
-GryceECLib 只做三件事：
+### 3.1 双缓冲设计
 
-1. **生命周期管理**：`Core_Init` / `Core_Shutdown`，创建/销毁 `RenderContext`、`World`、物理世界、输入状态。
-2. **命令队列消费**：WPF 通过 `Core_SubmitCommand` 发送命令，GryceECLib 在 `Core_BeginFrame` 中把命令翻译成对 ECS / 物理 / 渲染的调用。
-3. **回调触发**：把 Core 内部事件（实体选中、场景修改、PlayMode 变化等）通过 C 回调通知 WPF。
+```
+Editor Thread (WPF UI Thread / 任意线程)
+    │
+    ▼
+┌─────────────────┐     Core_PushCommand() 写入
+│  write_buffer   │  ← 当前帧编辑器写命令到这里
+│  (front buffer) │     线程安全：单生产者 CAS spinlock
+└─────────────────┘
+    │
+    │ Core_BeginFrame() 内部自动 swap
+    ▼
+┌─────────────────┐
+│  exec_buffer    │  ← Core 消费上一帧的命令
+│  (back buffer)  │     Core 单线程访问，无锁
+└─────────────────┘
+    │
+    ▼
+Core 内部: 逐个 ECommand → 调用 ecs::World / scene::Entity / RenderContext
+```
 
-GryceECLib **不**做：
+- 容量：每缓冲 **8192** 条命令（可配置）
+- 溢出策略：环形覆盖（旧命令丢弃）+ `OnLogMessage` 通知 Editor "commands dropped"
+- 线程安全：Editor 线程通过 CAS 写入 front buffer；Core 在 `BeginFrame` 时原子 swap 两个 `std::atomic<size_t>*` 指针
 
-- 不创建窗口（WPF 提供 `HWND`）。
-- 不创建渲染线程（WPF 在独立线程里按 144fps 调用 `Core_BeginFrame / Core_Render / Core_EndFrame`）。
-- 不画任何编辑器面板（只画 Viewport Toolbar、Gizmo、Debug Overlay）。
+### 3.2 命令执行时序
+
+```
+Core_BeginFrame(dt):
+    1. swap_command_buffers()           // 原子交换 front/back 指针
+    2. consume_all_commands(exec_buffer) // 按 seq 顺序执行
+    3. 如果是 PlayMode: world->update(dt)
+    4. 如果是 PlayMode: phys_world->step(dt)
+
+Core_Render():
+    1. backend->begin_frame()
+    2. world->render(render_ctx)        // ECS RenderSystem
+    3. render viewport toolbar + gizmo  // Core 内部 ImGui（仅 Viewport 区域）
+    4. backend->end_frame() / present
+
+Core_EndFrame():
+    1. 触发回调（entity list changed, selection changed, texture ready 等）
+    2. 清理本帧临时资源
+```
 
 ---
 
-## 4. 需要新增 / 修改的代码
+## 4. Core 内部改造要点
 
-### 4.1 平台层：支持外部 HWND
+### 4.1 `core/` → `GryceCore.dll`
 
-**方案 A（推荐）：新增 `platform::HostWindow`**
+修改 `core/CMakeLists.txt`：
+
+```cmake
+# core/CMakeLists.txt
+add_library(gryce_core SHARED)
+
+set_target_properties(gryce_core PROPERTIES
+    OUTPUT_NAME GryceCore
+    RUNTIME_OUTPUT_NAME GryceCore
+    EXPORT_NAME GryceCore
+)
+
+target_compile_definitions(gryce_core PRIVATE GRYCE_CORE_BUILDING)
+```
+
+新增文件（位于 `core/` 根目录）：
+
+| 文件 | 职责 |
+|------|------|
+| `gryce_core.h` | **唯一对外 C API 头文件**，使用者 `#include` 即可 |
+| `gryce_core_api.cpp` | C API 实现，Core 内部全局状态管理 |
+| `command_buffer.h/.cpp` | 双缓冲 lock-free 命令队列 |
+| `entity_handle_map.h/.cpp` | `EntityHandle(int) ↔ UUID` 映射 + 反射查询桥接 |
+
+### 4.2 全局状态
 
 ```cpp
-namespace gryce_engine::platform {
+// core/gryce_core_api.cpp
+namespace gryce_core {
 
-class HostWindow {
-public:
-    explicit HostWindow(HWND hwnd);
-    bool is_valid() const;
-    void get_size(int& w, int& h) const;
-    void set_size(int w, int h);
-    void* native_handle() const;  // 返回 HWND
-    // 输入由外部写入，这里不再从 GLFW 轮询
+struct GlobalState {
+    std::unique_ptr<ecs::World> world;
+    std::unique_ptr<render::RenderContext> render_ctx;
+    std::unique_ptr<render::ImGuiRenderer> imgui;      // 仅 Viewport Toolbar + Gizmo
+    std::unique_ptr<physics::IPhysicsWorld3D> phys_world;
+
+    // CommandBuffer 双缓冲
+    CommandBuffer cmdbuf;
+
+    // EntityHandle ↔ UUID
+    HandleMap entity_map;
+
+    // 回调
+    CallbackTable callbacks;
+    void* callback_user_data = nullptr;
+
+    // 运行时状态
+    bool initialized = false;
+    bool play_mode = false;
+    bool paused = false;
+    std::unique_ptr<scene::Scene> scene_snapshot;
+
+    // 窗口
+    void* native_window = nullptr;      // HWND
+    bool external_window = false;       // true: 不创建 GLFW 窗口
 };
 
-} // namespace gryce_engine::platform
+static GlobalState g_state;
+
+} // namespace gryce_core
 ```
 
-- `HostWindow` 不调用 `glfwCreateWindow`，只保存 `HWND`。
-- `RenderContext::init(hwnd, RenderAPI::Vulkan)` 要能识别这个 `HWND` 是外部句柄。
-- Vulkan backend 需要新增 `init_with_hwnd(HWND)` 分支。
-- OpenGL backend 在 Windows 下需要 `wgl` 相关代码。
-
-**方案 B：扩展 `platform::Window`**
-
-增加一个静态工厂：
+### 4.3 外部 HWND 注入
 
 ```cpp
-static Window wrap_external_handle(void* native_handle);
+// Core_Init 中的窗口初始化分支
+if (desc->native_window) {
+    // 外部 HWND 模式
+    g_state.external_window = true;
+    g_state.native_window = desc->native_window;
+
+    // RenderContext::init 新增分支：识别外部 HWND
+    // Vulkan: vkCreateWin32SurfaceCreateInfoKHR(hwnd) 替代 glfwCreateWindowSurface
+    // OpenGL: wglCreateContext(GetDC(hwnd)) + wglMakeCurrent
+    render_ctx->init_with_hwnd(desc->native_window, desc->render_api);
+} else {
+    // Standalone 模式：保留现有 GLFW 窗口创建逻辑
+    auto window = std::make_unique<platform::Window>(...);
+    render_ctx->init(window->native_handle(), desc->render_api);
+}
 ```
 
-但 `Window` 目前基于 GLFW，改起来比新增类更脏。建议方案 A。
+### 4.4 渲染模式
 
-### 4.2 渲染层：适配无渲染线程模式
+| 模式 | 说明 | 标志 |
+|------|------|------|
+| **SyncMode** | 不启动 `RenderThread`，Editor 线程直接调用 `backend->begin_frame/end_frame` | `desc->sync_render_mode = true` |
+| **AsyncMode** | 启动 `RenderThread`，Core 内部异步 present | `desc->sync_render_mode = false` |
 
-当前 `RenderContext` 默认使用渲染线程。 GryceECLib 需要一种“同步模式”：
+WPF 场景强制 **SyncMode**：WPF 在独立线程按目标帧率调用 `Core_BeginFrame / Render / EndFrame`，Core 内部不创建额外渲染线程。
+
+Standalone / examples 用 **AsyncMode**：保留现有 `render_ctx.start()` 行为。
+
+### 4.5 EntityHandle 映射
+
+Core 内部仍然使用 `scene::UUID`，对外暴露 opaque `int`：
 
 ```cpp
-render_ctx.init(hwnd, RenderAPI::Vulkan);
-// 不调用 render_ctx.start();
-// 每帧：
-render_ctx.backend()->begin_frame();
-world.render(render_ctx);   // 同步执行渲染命令
-imgui.render_draw_data(ImGui::GetDrawData());
-render_ctx.backend()->end_frame();
+// core/entity_handle_map.cpp
+EntityHandle HandleMap::alloc(const scene::UUID& uuid) {
+    int h = next_handle.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard lock(mutex);
+    handle_to_uuid[h] = uuid;
+    uuid_to_handle[uuid] = h;
+    return h;
+}
+
+scene::Entity* HandleMap::resolve(EntityHandle h) const {
+    std::lock_guard lock(mutex);
+    auto it = handle_to_uuid.find(h);
+    if (it == handle_to_uuid.end()) return nullptr;
+    return g_state.world->scene()->find_entity_by_uuid(it->second);
+}
+
+// PlayMode 快照/恢复时：handle → uuid 映射保持不变
+// 场景 reload 时：重建映射表，原有 handle 失效，Editor 收到 OnSceneLoaded 回调后刷新
 ```
 
-但 `RenderContext` 的资源创建接口（`create_mesh` / `create_texture` 等）仍然可用，因为它们会直接调用 backend。
+### 4.6 PlayMode 快照
 
-更稳妥的做法：保留渲染线程，但把 `RenderContext` 的调用方从“主线程”换成“WPF 渲染线程”。这样改动最小，只是线程角色变了。
+```cpp
+// ECMD_PLAY_MODE:
+g_state.scene_snapshot = scene::SceneSerializer::clone(*g_state.world->scene());
+g_state.world->set_updates_enabled(true);
+g_state.play_mode = true;
+g_state.paused = false;
+if (auto* ps3d = g_state.world->get_system<ecs::PhysicsSystem3D>()) {
+    ps3d->rebuild_all_bodies();  // 确保物理 body 与 scene 同步
+}
+fire_callback(OnPlayModeChanged, true, false);
 
-### 4.3 ECS 层：提供 C 友好的实体标识
-
-现有 `Entity` 用 `scene::UUID` 标识。C API 可以：
-
-- 继续使用 UUID 字符串（C# 侧好处理）。
-- 或者在 GryceECLib 内部维护一个 `int id → UUID` 的映射，对外暴露 `int`。
-
-建议 Phase 1 先用 `int entity_id`，内部查表映射到 UUID，减少 WPF 侧改动。
-
-### 4.4 命令映射
-
-| C 命令 | 内部操作 |
-|--------|---------|
-| `ECmd_SelectEntity` | `scene->find_entity_by_id(id)` → `selected_entity = id` → callback |
-| `ECmd_SetTransform` | `entity->transform()->set_position/rotation/scale` 或设置本地矩阵 → 标记 dirty |
-| `ECmd_SetMaterial` | `entity->get_component<MeshRenderer>()->set_material(...)` |
-| `ECmd_LoadScene` | `SceneSerializer::load_from_file(path)` → `world.attach_scene(...)` |
-| `ECmd_PlayMode` | 保存场景快照 → `world.set_updates_enabled(true)` → callback |
-| `ECmd_StopMode` | 恢复快照 → callback |
-| `ECmd_ImportAsset` | 调用 `assets::AssetManager` / `import` 流程 |
-| `ECmd_BuildProject` | 预留 |
-
-### 4.5 ImGui Overlay
-
-当前编辑器用 `render::ImGuiRenderer` + `IImGuiBackend`。 GryceECLib 需要：
-
-- 在 Core 内部创建独立的 `ImGuiContext`。
-- 用 `ImGui_ImplWin32_Init(hwnd)` + `ImGui_ImplVulkan_Init(...)` 或 `ImGui_ImplOpenGL3_Init`。
-- 只绘制 Viewport Toolbar、ImGuizmo、Debug Info。
-- 不加载编辑器主题/字体，避免和 WPF 主题冲突。
+// ECMD_STOP_MODE:
+if (g_state.scene_snapshot) {
+    g_state.world->attach_scene(std::move(g_state.scene_snapshot));
+    g_state.world->set_updates_enabled(false);
+    g_state.play_mode = false;
+    g_state.paused = false;
+    if (auto* ps3d = g_state.world->get_system<ecs::PhysicsSystem3D>()) {
+        ps3d->rebuild_all_bodies();
+    }
+    // 重建 handle map（scene 重建了，UUID 可能变化）
+    g_state.entity_map.rebuild_from_scene(g_state.world->scene());
+    fire_callback(OnEntityListChanged);
+    fire_callback(OnPlayModeChanged, false, false);
+}
+```
 
 ---
 
-## 5. 推荐实施步骤
+## 5. Editor（WPF C#）侧设计
 
-### Phase 1：最小可运行骨架（GryceECLib 链接 gryce_core）
+### 5.1 P/Invoke 封装
 
-1. 修改 `GameEngine/CMakeLists.txt`，让 `GryceECLib` 链接 `gryce_core`（静态库）。
-2. 在 GryceECLib 内部创建 `HostWindow` 占位实现，接收 `HWND`。
-3. 用 `RenderContext` + `World` + `PhysicsSystem3D` + `RenderSystem3D` 替换当前 `VulkanRHI` / `OpenGLRHI` / `SceneManager`。
-4. 保留 Lock-free Command Queue 和 Callback Manager。
-5. 实现 `Core_Render`：清屏 + ImGui Overlay + 调用 `world.render(render_ctx)` + present。
-6. 编译通过，WPF 侧能初始化、收到回调、看到清屏色和 ImGui。
+```csharp
+// GryceCore.cs — C# 对 gryce_core.h 的封装
+using System;
+using System.Runtime.InteropServices;
 
-### Phase 2：场景操作命令
+public static class GryceCore
+{
+    private const string DllName = "GryceCore.dll";
 
-1. 实现 `ECmd_LoadScene`、 `ECmd_SelectEntity`、 `ECmd_SetTransform`。
-2. 用 UUID → int 映射暴露实体 ID。
-3. 集成 `Transform` 组件读写。
-4. WPF 侧验证：加载场景、选中实体、Inspector 改 Transform。
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Core_Init(ref CoreInitDesc desc);
 
-### Phase 3：Play Mode 与物理
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void Core_BeginFrame(float dt);
 
-1. 实现 `ECmd_PlayMode` / `ECmd_StopMode`，场景快照/恢复。
-2. 确认 `PhysicsSystem3D` 在 GryceECLib 中正确 step。
-3. Gizmo 操作通过命令队列写回 Transform。
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void Core_Render();
 
-### Phase 4：拆分为独立 DLL（可选）
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void Core_EndFrame();
 
-1. 把 `core/` 里的 platform / render / physics / ecs 拆成独立 CMake target。
-2. 每个 target 导出符号（`export.h` 已经做了基础工作）。
-3. GryceECLib 从链接 `gryce_core.lib` 改为链接多个 DLL。
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Core_PushCommand(ref ECommand cmd);
+
+    // 命令快捷方法
+    public static void SelectEntity(int entityHandle)
+    {
+        var cmd = new ECommand { type = ECommandType.ECMD_SELECT_ENTITY };
+        unsafe {
+            *(int*)cmd.payload = entityHandle;
+        }
+        Core_PushCommand(ref cmd);
+    }
+
+    public static void SetTransform(int entityHandle, Vector3 pos, Quaternion rot, Vector3 scale)
+    {
+        var cmd = new ECommand { type = ECommandType.ECMD_SET_TRANSFORM };
+        // 序列化到 payload...
+        Core_PushCommand(ref cmd);
+    }
+
+    // 回调注册...
+}
+```
+
+### 5.2 渲染集成
+
+- **Viewport**: `SwapChainPanel` / `WindowsFormsHost` 承载 Core 渲染输出
+- Core 将 Viewport 渲染到 offscreen texture → Editor 通过 `Core_GetViewportTextureHandle()` 获取 texture handle 并绑定到 WPF 的 D3D11 interop
+- 或者 Core 直接在 Editor 提供的 HWND 上渲染（OpenGL/Vulkan 共享 context）
+
+### 5.3 输入转发
+
+WPF 鼠标/键盘事件 → `Core_PushCommand(ECMD_INPUT_MOUSE_MOVE / KEY / BUTTON)` → Core 内部更新 `InputManager` 状态 → ECS Systems 消费。
 
 ---
 
-## 6. 风险与注意事项
+## 6. 目录结构
+
+```
+Gryce-Engine/
+├── CMakeLists.txt
+│
+├── core/                          # GryceCore.dll 源码
+│   ├── CMakeLists.txt             # add_library(gryce_core SHARED, OUTPUT_NAME GryceCore)
+│   ├── gryce_core.h               # ← 唯一对外 C API 头文件（自动链接 GryceCore.lib）
+│   ├── gryce_core_api.cpp         # C API 实现
+│   ├── command_buffer.h/.cpp      # 双缓冲命令队列
+│   ├── entity_handle_map.h/.cpp   # Handle ↔ UUID 映射
+│   ├── ecs/                       # 现有 ECS（不变）
+│   ├── scene/                     # 现有 Scene（不变）
+│   ├── render/                    # 现有 Render（+ init_with_hwnd）
+│   ├── physics/                   # 现有 Physics（不变）
+│   ├── platform/                  # 现有 Platform（+ HostWindow 外部 HWND 支持）
+│   ├── assets/                    # 现有 Assets（不变）
+│   ├── math/                      # 现有 Math（不变）
+│   └── ...
+│
+├── backup/
+│   └── editor/                    # ← 封存的原 C++ ImGui Editor（不再维护）
+│       ├── CMakeLists.txt
+│       ├── editor_app.cpp
+│       └── ...
+│
+├── editor_wpf/                    # （未来）C# WPF Editor
+│   └── ...
+│
+├── examples/                      # Standalone 示例（走 C API 或直接链接 core）
+│   └── ...
+│
+└── tests/                         # 单元测试
+```
+
+---
+
+## 7. 实施步骤
+
+### Phase 0: 骨架（先完成）
+- [x] Git checkpoint: `b099c19`
+- [x] 现有 ImGui Editor 封存至 `backup/editor/`
+- [ ] 新建 `core/gryce_core.h`（单头文件 C API，含自动链接）
+- [ ] 修改 `core/CMakeLists.txt`：输出 `GryceCore.dll` + `GryceCore.lib`
+- [ ] 新建 `core/gryce_core_api.cpp`（空实现，编译通过）
+
+### Phase 1: 最小可运行 C API
+1. `Core_Init` / `Core_Shutdown` — 内部创建 `ecs::World`、`RenderContext`
+2. `Core_BeginFrame` / `Core_Render` / `Core_EndFrame` — 清屏 + 空场景
+3. 外部 HWND 模式（`init_with_hwnd`）
+4. SyncMode（不启动 RenderThread）
+5. 编译通过，standalone test 加载 DLL 并看到清屏
+
+### Phase 2: CommandBuffer + 基础场景操作
+1. 双缓冲 `CommandBuffer` 实现
+2. `ECMD_LOAD_SCENE`、`ECMD_SELECT_ENTITY`、`ECMD_SET_TRANSFORM`
+3. `EntityHandle` 映射 + 查询接口
+4. 回调系统：`OnSceneLoaded`、`OnEntitySelected`、`OnEntityListChanged`
+
+### Phase 3: PlayMode + 物理 + Gizmo
+1. `ECMD_PLAY_MODE` / `ECMD_STOP_MODE` + 场景快照
+2. 输入事件转发（`ECMD_INPUT_KEY` / `ECMD_INPUT_MOUSE`）
+3. Core 内部绘制 Viewport Toolbar + ImGuizmo
+4. Gizmo 操作通过 `ECMD_GIZMO_MANIPULATE` 写回 Transform
+
+### Phase 4: Inspector + 资产
+1. 反射桥接：`Core_GetComponentProperty` / `Core_SetComponentProperty`
+2. `ECMD_IMPORT_ASSET` + `AssetManager` 集成
+3. 日志转发：`Core_GetLogMessages`
+4. 完整 Editor ↔ Core 闭环验证
+
+---
+
+## 8. 风险与缓解
 
 | 风险 | 说明 | 缓解方案 |
 |------|------|---------|
-| 渲染线程冲突 | `RenderContext` 内部有渲染线程，WPF 也要求在独立线程调用 Core | 使用同步模式，或不启动 `RenderContext` 的渲染线程 |
-| ImGui 上下文冲突 | 编辑器已有 ImGui context，Core 内部再建一个 | 完全隔离：Core 只处理 Viewport 内 ImGui |
-| RTTI / 异常 | 用户要求 C++20、noexcept、-fno-rtti | 检查 `gryce_core` 是否用 `dynamic_cast`（`World::get_system<T>` 用了） |
-| 资源路径解析 | 现有引擎用 `res:/` 虚拟路径 | GryceECLib 初始化时需要设置 `project_root` |
-| 静态库符号重复 | GryceECLib 和 Editor 都链接 imgui/glfw | 拆 DLL 后自然解决；Phase 1 需确保不重复链接 |
-| C++23 vs C++20 | 现有引擎用 C++23，用户要求 C++20 | GryceECLib 自身用 C++20，但链接 `gryce_core.lib`（C++23 编译）通常兼容 |
+| `RenderContext` RenderThread 冲突 | Core 默认启动渲染线程，WPF 也要求独立线程调用 | SyncMode：不启动 RenderThread，Editor 线程直接驱动 backend |
+| 外部 HWND + Vulkan Surface | `vkCreateWin32SurfaceKHR` + HWND，替代 glfwCreateWindowSurface | Phase 1 先验证 OpenGL（wgl 更简单），Vulkan 跟进 |
+| `dynamic_cast` 与 `-fno-rtti` | `World::get_system<T>()` 用了 `dynamic_cast` | 替换为 typeid hash 比较 + `static_cast`，或编译期索引表 |
+| C# P/Invoke payload 对齐 | C struct payload 在 C# 侧需要精确内存布局 | payload 用固定大小数组 + `StructLayout(LayoutKind.Sequential, Pack = 1)` |
+| Standalone examples 兼容性 | examples 目前直接 include core 内部头文件 | 逐步迁移 examples 也走 C API，或保留 static 链接模式 |
 
 ---
 
-## 7. 预计工作量
+## 9. 立即行动
 
-> 以下工作量为粗略估计，假设你熟悉现有代码且每天能投入一定时间。实际受编译/链接问题、第三方依赖调整影响较大。
-
-| 阶段 | 主要工作 | 复杂度 | 估算 |
-|------|---------|--------|------|
-| Phase 1 | GryceECLib 链接 gryce_core，HWND 注入，RenderContext 同步模式，清屏 + ImGui Overlay | 高 | 较大 |
-| Phase 2 | 场景加载、实体选择、Transform 设置命令 | 中 | 中等 |
-| Phase 3 | Play Mode 快照/恢复、物理 step、Gizmo 回写 | 中高 | 中等偏大 |
-| Phase 4 | 拆分 platform/render/physics/ecs 为独立 DLL | 高 | 较大 |
-
-**关键难点排序**：
-
-1. `RenderContext` 在不启动渲染线程的情况下稳定跑通 Vulkan（最难）。
-2. 外部 `HWND` 注入到现有平台/渲染层（较难）。
-3. 实体 ID 映射和命令队列到 ECS 的转换（中等）。
-4. Play Mode 场景快照/恢复（中等）。
-
----
-
-## 8. 下一步行动
-
-需要你确认后再继续：
-
-1. **是否接受 Phase 1 先让 GryceECLib 静态链接 `gryce_core.lib`？** 这是改动最小、最快的路径。
-2. **渲染线程策略**：是不启动 `RenderContext` 的渲染线程（纯同步），还是让 WPF 渲染线程扮演原“主线程”角色？
-3. **实体 ID 方案**：对外用 `int`（内部映射 UUID）还是直接用 UUID 字符串？
-4. **是否立即开始 Phase 1 实现？** 还是需要我先给出更详细的某一块设计（比如 `HostWindow` 或 同步渲染模式）？
+1. **确认本方案** → 开始 Phase 0：创建 `gryce_core.h` + 修改 CMake 输出 DLL
+2. 如有调整（如回调设计、命令 payload 结构），现在提出
