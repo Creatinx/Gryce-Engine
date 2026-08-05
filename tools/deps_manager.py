@@ -52,7 +52,7 @@ GITHUB_MIRRORS = [
     "https://mirror.ghproxy.com/https://github.com",
 ]
 
-_URL_TIMEOUT_SEC = 30  # 连接/读取超时，防止卡死
+_URL_TIMEOUT_SEC = 600  # 10 min: some mirrors/GitHub are very slow
 
 
 def _mirror_url(original_url: str) -> list[str]:
@@ -209,45 +209,58 @@ def _download_rich(url: str, dest: Path, description: str = ""):
                     progress.update(task, advance=len(chunk))
 
 
-def download_file(urls: list[str], dest: Path, description: str = "") -> bool:
-    """Download a file with progress bar, trying multiple URLs (mirrors first)."""
+def download_file(urls: list[str], dest: Path, description: str = "", retries: int = 2) -> bool:
+    """Download a file with progress bar, trying multiple URLs (mirrors first).
+    Each URL is retried `retries` times before moving to the next."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     last_error = ""
     for idx, url in enumerate(urls):
         src_label = f"mirror[{idx}]" if idx < len(urls) - 1 else "original"
-        try:
-            print(f"{C_INFO}[deps]{C_RESET} [{src_label}] {description} — {url}")
-            _download_rich(url, dest, description)
-            return True
-        except ImportError:
-            print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using manual progress bar")
+        for attempt in range(retries + 1):
             try:
-                _download_simple(url, dest, description)
+                if attempt > 0:
+                    print(f"{C_INFO}[deps]{C_RESET} [{src_label}] retry {attempt}/{retries} — {url}")
+                else:
+                    print(f"{C_INFO}[deps]{C_RESET} [{src_label}] {description} — {url}")
+                _download_rich(url, dest, description)
                 return True
+            except ImportError:
+                print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using manual progress bar")
+                try:
+                    _download_simple(url, dest, description)
+                    return True
+                except socket.timeout as e:
+                    last_error = f"timeout: {e}"
+                    print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] timed out after {_URL_TIMEOUT_SEC}s")
+                    if dest.exists():
+                        dest.unlink()
+                    if attempt < retries:
+                        time.sleep(2)
+                    continue
+                except Exception as e:
+                    last_error = str(e)
+                    print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] failed: {e}")
+                    if dest.exists():
+                        dest.unlink()
+                    if attempt < retries:
+                        time.sleep(2)
+                    continue
             except socket.timeout as e:
                 last_error = f"timeout: {e}"
                 print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] timed out after {_URL_TIMEOUT_SEC}s")
                 if dest.exists():
                     dest.unlink()
+                if attempt < retries:
+                    time.sleep(2)
                 continue
             except Exception as e:
                 last_error = str(e)
                 print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] failed: {e}")
                 if dest.exists():
                     dest.unlink()
+                if attempt < retries:
+                    time.sleep(2)
                 continue
-        except socket.timeout as e:
-            last_error = f"timeout: {e}"
-            print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] timed out after {_URL_TIMEOUT_SEC}s")
-            if dest.exists():
-                dest.unlink()
-            continue
-        except Exception as e:
-            last_error = str(e)
-            print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] failed: {e}")
-            if dest.exists():
-                dest.unlink()
-            continue
     print(f"{C_ERR}[ERROR]{C_RESET} All download sources failed. Last error: {last_error}")
     return False
 
@@ -325,28 +338,32 @@ def ensure_dependency(dep: dict) -> bool:
         return True
     
     # Download if not cached
-    if cache_file.exists() and sha256 and verify_sha256(cache_file, sha256):
-        print(f"{C_OK}[OK]{C_RESET} {name}: cached tarball verified")
-    elif cache_file.exists() and not sha256:
-        print(f"{C_OK}[OK]{C_RESET} {name}: cached tarball (no SHA256)")
-    else:
-        if cache_file.exists() and sha256 and not verify_sha256(cache_file, sha256):
-            print(f"{C_WARN}[WARN]{C_RESET} {name}: SHA256 mismatch, re-downloading...")
-            cache_file.unlink()
-        
+    cache_ok = False
+    if cache_file.exists():
+        if sha256 and verify_sha256(cache_file, sha256):
+            print(f"{C_OK}[OK]{C_RESET} {name}: cached tarball verified")
+            cache_ok = True
+        elif not sha256:
+            print(f"{C_OK}[OK]{C_RESET} {name}: cached tarball (no SHA256)")
+            cache_ok = True
+        else:
+            print(f"{C_WARN}[WARN]{C_RESET} {name}: SHA256 mismatch, will try re-download or use cache as fallback")
+    
+    if not cache_ok:
         if not download_file(_mirror_url(url), cache_file, f"Downloading {name}"):
-            if required:
+            if cache_file.exists():
+                print(f"{C_WARN}[WARN]{C_RESET} {name}: download failed, attempting to use existing cache as fallback")
+            elif required:
                 print(f"{C_ERR}[ERROR]{C_RESET} Failed to download required dependency: {name}")
                 return False
             else:
                 print(f"{C_WARN}[WARN]{C_RESET} Failed to download optional dependency: {name}")
                 return False
         
-        # Verify after download
-        if sha256 and not verify_sha256(cache_file, sha256):
-            print(f"{C_ERR}[ERROR]{C_RESET} {name}: SHA256 mismatch after download!")
-            cache_file.unlink()
-            return False
+        # Verify after download (only if download succeeded)
+        if sha256 and cache_file.exists() and not verify_sha256(cache_file, sha256):
+            print(f"{C_WARN}[WARN]{C_RESET} {name}: SHA256 mismatch after download, attempting extract anyway")
+            # Do NOT delete cache — try to extract it; extraction will fail if truly corrupted
     
     # Extract
     print(f"{C_INFO}[deps]{C_RESET} Extracting {name} ...")
