@@ -1,25 +1,33 @@
 # core/CMakeLists.txt
-# Gryce Engine 核心库（支持静态/动态）
+# Gryce Engine 模块化核心库 — 拆分为 GryceCore / GryceRenderer / GrycePlatform / GrycePhysics
 
-option(GRYCE_BUILD_SHARED "Build GryceCore as a shared library (DLL)" OFF)
+# ============================================================================
+# GryceCore.dll — ECS、Scene、Entity、Component、Math、UUID、Reflection、Assets
+# ============================================================================
+add_library(GryceCore SHARED)
 
-if(GRYCE_BUILD_SHARED)
-    add_library(gryce_core SHARED)
-    target_compile_definitions(gryce_core PRIVATE GRYCE_CORE_BUILDING)
-    target_compile_definitions(gryce_core INTERFACE GRYCE_BUILD_SHARED)
-else()
-    add_library(gryce_core STATIC)
-endif()
+set_target_properties(GryceCore PROPERTIES
+    OUTPUT_NAME GryceCore
+    RUNTIME_OUTPUT_NAME GryceCore
+    EXPORT_NAME GryceCore
+    FOLDER "Core"
+)
 
-target_sources(gryce_core
+target_compile_definitions(GryceCore PRIVATE GRYCE_CORE_BUILDING)
+
+target_sources(GryceCore
     PRIVATE
+        # C API 实现
+        api/core_api.cpp
+        api/entity_api.cpp
+        api/component_api.cpp
+        api/scene_api.cpp
+        api/asset_api.cpp
+        # 内部模块
         math/math.cpp
         math/camera.cpp
         utils/glog/glog_lib.cpp
         utils/frame_limiter.cpp
-        platform/window.cpp
-        platform/input.cpp
-        platform/cursor.cpp
         resources/project.cpp
         resources/resource_path.cpp
         resources/gpack_bundle.cpp
@@ -32,11 +40,11 @@ target_sources(gryce_core
         assets/dds_loader.cpp
         assets/ktx_loader.cpp
         assets/tinyexr_impl.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/tinyexr/miniz.c
+        $<$<BOOL:${GRYCE_HAS_ASSIMP}>:assets/assimp_importer.cpp>
         animation/skeleton.cpp
         animation/animation_clip.cpp
         animation/pose.cpp
-        ${CMAKE_SOURCE_DIR}/third_party/tinyexr/miniz.c
-        $<$<BOOL:${GRYCE_HAS_ASSIMP}>:assets/assimp_importer.cpp>
         components/component_factory.cpp
         components/2d/component_2d.cpp
         components/2d/sprite_2d.cpp
@@ -50,15 +58,6 @@ target_sources(gryce_core
         components/terrain.cpp
         reflection/builtin_reflections.cpp
         components/physical_material.cpp
-        audio/audio_engine.cpp
-        audio/time_stretcher.cpp
-        audio/miniaudio_impl.cpp
-        ecs/systems/physics_system_3d.cpp
-        ecs/systems/physics_system_2d.cpp
-        ecs/systems/fracture_system.cpp
-        physics/physics_factory.cpp
-        physics/box2d_world_2d.cpp
-        physics/jolt_physics_world_3d.cpp
         scene/uuid.cpp
         scene/entity.cpp
         scene/scene.cpp
@@ -66,35 +65,18 @@ target_sources(gryce_core
         scene/scene_serializer.cpp
         ecs/world.cpp
         ecs/component_store.cpp
-        ecs/systems/render_system_2d.cpp
-        ecs/systems/render_system_3d.cpp
         ecs/systems/animator_system.cpp
-        render/render.cpp
-        render/mesh.cpp
-        render/shader.cpp
-        render/texture.cpp
-        render/material.cpp
-        render/framebuffer.cpp
-        render/render_pipeline.cpp
-        render/render_command_buffer.cpp
-        render/render_thread.cpp
-        render/render_context.cpp
-        render/render2d.cpp
-        render/font_atlas.cpp
-        render/renderer2d_impl.cpp
-        render/ibl_generator.cpp
-        render/opengl/gl_backend.cpp
-        render/opengl/gl_frame_pacing.cpp
-        render/opengl/gl_buffer.cpp
-        render/opengl/gl_shader.cpp
-        render/opengl/gl_texture.cpp
-        render/opengl/gl_framebuffer.cpp
-        render/opengl/gl_imgui_backend.cpp
-        render/opengl/imgui_renderer.cpp
+        ecs/systems/fracture_system.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
+            GryceCore/types.h
+            GryceCore/core_api.h
+            GryceCore/entity_api.h
+            GryceCore/component_api.h
+            GryceCore/scene_api.h
+            GryceCore/asset_api.h
             export.h
             components/component.h
             components/component_factory.h
@@ -169,21 +151,93 @@ target_sources(gryce_core
             ecs/systems/physics_system_3d.h
             ecs/systems/physics_system_2d.h
             ecs/systems/fracture_system.h
-            ecs/systems/render_system_2d.h
-            ecs/systems/render_system_3d.h
             ecs/systems/animator_system.h
             math/math.h
             math/camera.h
             utils/glog/glog_lib.h
             utils/frame_limiter.h
-            platform/window.h
-            platform/input.h
-            platform/cursor.h
+)
+
+target_include_directories(GryceCore
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/stb>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/tinyexr>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(GryceCore PUBLIC gryce::compile_options)
+
+target_compile_definitions(GryceCore PUBLIC
+    $<$<BOOL:${GRYCE_HAS_ASSIMP}>:GRYCE_HAS_ASSIMP>
+    $<$<BOOL:${GRYCE_HAS_NLOHMANN_JSON}>:GRYCE_HAS_NLOHMANN_JSON>
+)
+
+# Windows: 链接 imm32（IME）和 winmm（高精度定时器）
+if(WIN32)
+    target_link_libraries(GryceCore PUBLIC imm32 winmm)
+endif()
+
+# 链接 nlohmann/json
+if(GRYCE_HAS_NLOHMANN_JSON)
+    target_link_libraries(GryceCore PUBLIC nlohmann_json::nlohmann_json)
+endif()
+
+# 链接 Assimp
+if(GRYCE_HAS_ASSIMP)
+    target_link_libraries(GryceCore PUBLIC assimp::assimp)
+endif()
+
+# ============================================================================
+# GryceRenderer.dll — RenderContext、Pipeline、GL/Vulkan Backend、Mesh、Texture
+# ============================================================================
+add_library(GryceRenderer SHARED)
+
+set_target_properties(GryceRenderer PROPERTIES
+    OUTPUT_NAME GryceRenderer
+    RUNTIME_OUTPUT_NAME GryceRenderer
+    EXPORT_NAME GryceRenderer
+    FOLDER "Core"
+)
+
+target_compile_definitions(GryceRenderer PRIVATE GRYCE_RENDERER_BUILDING)
+
+target_sources(GryceRenderer
+    PRIVATE
+        api/render_api.cpp
+        render/render.cpp
+        render/mesh.cpp
+        render/shader.cpp
+        render/texture.cpp
+        render/material.cpp
+        render/framebuffer.cpp
+        render/render_pipeline.cpp
+        render/render_command_buffer.cpp
+        render/render_thread.cpp
+        render/render_context.cpp
+        render/render2d.cpp
+        render/font_atlas.cpp
+        render/renderer2d_impl.cpp
+        render/ibl_generator.cpp
+        render/opengl/gl_backend.cpp
+        render/opengl/gl_frame_pacing.cpp
+        render/opengl/gl_buffer.cpp
+        render/opengl/gl_shader.cpp
+        render/opengl/gl_texture.cpp
+        render/opengl/gl_framebuffer.cpp
+        render/opengl/gl_imgui_backend.cpp
+        render/opengl/imgui_renderer.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+        FILES
+            GryceRenderer/render_api.h
+            GryceRenderer/viewport_api.h
             render/render.h
             render/mesh.h
             render/skinned_vertex.h
             render/shader.h
-            reflection/reflection.h
             render/texture.h
             render/material.h
             render/framebuffer.h
@@ -216,9 +270,18 @@ target_sources(gryce_core
             $<$<BOOL:${GRYCE_HAS_VULKAN}>:render/vulkan/vk_renderer2d.h>
 )
 
-# ImGui 源文件（本地 third_party/imgui 或 FetchContent）
+target_include_directories(GryceRenderer
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/stb>
+)
+
+target_link_libraries(GryceRenderer PUBLIC GryceCore gryce::compile_options)
+
+# ImGui 源文件
 if(GRYCE_HAS_IMGUI)
-    target_sources(gryce_core
+    target_sources(GryceRenderer
         PRIVATE
             ${IMGUI_DIR}/imgui.cpp
             ${IMGUI_DIR}/imgui_demo.cpp
@@ -228,9 +291,8 @@ if(GRYCE_HAS_IMGUI)
             ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
             ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
     )
-    target_include_directories(gryce_core PUBLIC ${IMGUI_DIR})
+    target_include_directories(GryceRenderer PUBLIC ${IMGUI_DIR})
 
-    # 抑制第三方 ImGui 源码的编译警告
     set(_imgui_sources
         ${IMGUI_DIR}/imgui.cpp
         ${IMGUI_DIR}/imgui_demo.cpp
@@ -246,46 +308,25 @@ if(GRYCE_HAS_IMGUI)
     set_source_files_properties(${_imgui_sources} PROPERTIES COMPILE_FLAGS -w)
 endif()
 
-# 抑制 third_party 单文件实现的编译警告
+# 抑制第三方单文件实现的编译警告
 set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/audio/miniaudio_impl.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/assets/stb_image_impl.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/assets/tinyexr_impl.cpp
     ${CMAKE_SOURCE_DIR}/third_party/tinyexr/miniz.c
     PROPERTIES COMPILE_FLAGS -w
 )
 
-target_include_directories(gryce_core
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/stb>
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/tinyexr>
-        $<INSTALL_INTERFACE:include>
-)
+# ImGui OpenGL3 backend 使用项目已有的 GLEW 加载器
+target_compile_definitions(GryceRenderer PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
 
-# 引擎内部严格警告选项（不传播到第三方依赖）
-target_link_libraries(gryce_core PUBLIC gryce::compile_options)
-
-# 将依赖可用性暴露给 C++ 代码
-target_compile_definitions(gryce_core PUBLIC
-    $<$<BOOL:${GRYCE_HAS_ASSIMP}>:GRYCE_HAS_ASSIMP>
-    $<$<BOOL:${GRYCE_HAS_IMGUI}>:GRYCE_HAS_IMGUI>
-    $<$<BOOL:${GRYCE_HAS_NLOHMANN_JSON}>:GRYCE_HAS_NLOHMANN_JSON>
-)
-
-# ImGui OpenGL3 backend 使用项目已有的 GLEW 加载器，避免自带 loader 冲突
-target_compile_definitions(gryce_core PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
-
-# 链接 Vulkan（可选）
+# 链接 Vulkan
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
     message(STATUS "Vulkan SDK found: ${Vulkan_INCLUDE_DIRS}")
     set(GRYCE_HAS_VULKAN TRUE)
-    target_include_directories(gryce_core PUBLIC ${Vulkan_INCLUDE_DIRS})
-    target_compile_definitions(gryce_core PUBLIC GRYCE_HAS_VULKAN)
+    target_include_directories(GryceRenderer PUBLIC ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(GryceRenderer PUBLIC GRYCE_HAS_VULKAN)
 
-    # MinGW 无法直接链接 MSVC 的 vulkan-1.lib，需要从系统 vulkan-1.dll 生成 import lib
     if(MINGW AND EXISTS "${Vulkan_LIBRARY}")
         get_filename_component(_vulkan_lib_ext "${Vulkan_LIBRARY}" EXT)
         if(_vulkan_lib_ext STREQUAL ".lib")
@@ -297,7 +338,6 @@ if(Vulkan_FOUND)
                     message(STATUS "Generating MinGW import library for ${GRYCE_VULKAN_DLL}")
                     find_program(GENDEF_EXECUTABLE gendef REQUIRED)
                     find_program(DLLTOOL_EXECUTABLE dlltool REQUIRED)
-                    # gendef 默认在 WORKING_DIRECTORY 生成与 DLL 同名的 .def 文件
                     get_filename_component(_vulkan_dll_name "${GRYCE_VULKAN_DLL}" NAME_WE)
                     execute_process(
                         COMMAND ${GENDEF_EXECUTABLE} "${GRYCE_VULKAN_DLL}"
@@ -317,7 +357,7 @@ if(Vulkan_FOUND)
                     endif()
                 endif()
                 if(GRYCE_HAS_VULKAN)
-                    target_link_libraries(gryce_core PUBLIC ${GRYCE_VULKAN_IMPLIB})
+                    target_link_libraries(GryceRenderer PUBLIC ${GRYCE_VULKAN_IMPLIB})
                     message(STATUS "Vulkan MinGW import library: ${GRYCE_VULKAN_IMPLIB}")
                 endif()
             else()
@@ -325,19 +365,19 @@ if(Vulkan_FOUND)
                 set(GRYCE_HAS_VULKAN FALSE)
             endif()
         else()
-            target_link_libraries(gryce_core PUBLIC ${Vulkan_LIBRARY})
+            target_link_libraries(GryceRenderer PUBLIC ${Vulkan_LIBRARY})
         endif()
     else()
-        target_link_libraries(gryce_core PUBLIC Vulkan::Vulkan)
+        target_link_libraries(GryceRenderer PUBLIC Vulkan::Vulkan)
     endif()
 else()
     message(STATUS "Vulkan not found, Vulkan backend disabled")
     set(GRYCE_HAS_VULKAN FALSE)
 endif()
 
-# Vulkan 源文件必须在 GRYCE_HAS_VULKAN 确定后添加
+# Vulkan 源文件
 if(GRYCE_HAS_VULKAN)
-    target_sources(gryce_core
+    target_sources(GryceRenderer
         PRIVATE
             render/vulkan/vk_backend.cpp
             render/vulkan/vk_instance.cpp
@@ -355,20 +395,18 @@ if(GRYCE_HAS_VULKAN)
     )
 endif()
 
-# 链接 GLFW + GLEW（窗口系统 + OpenGL 加载器）
+# 链接 GLFW + GLEW
 if(GRYCE_HAS_GLFW)
-    target_link_libraries(gryce_core PUBLIC glfw)
+    target_link_libraries(GryceRenderer PUBLIC glfw)
 endif()
-# 链接 GLEW（OpenGL 加载器）
-# deps_resolver.cmake 会优先 find_package(GLEW)，失败时从 build/deps/glew 源码构建
 if(GRYCE_HAS_GLEW)
     if(TARGET GLEW::glew)
-        target_link_libraries(gryce_core PUBLIC GLEW::glew)
+        target_link_libraries(GryceRenderer PUBLIC GLEW::glew)
     elseif(TARGET glew_s)
-        target_link_libraries(gryce_core PUBLIC glew_s)
-        target_compile_definitions(gryce_core PUBLIC GLEW_STATIC)
+        target_link_libraries(GryceRenderer PUBLIC glew_s)
+        target_compile_definitions(GryceRenderer PUBLIC GLEW_STATIC)
     elseif(TARGET glew)
-        target_link_libraries(gryce_core PUBLIC glew)
+        target_link_libraries(GryceRenderer PUBLIC glew)
     else()
         message(FATAL_ERROR "GLEW found but no known target present")
     endif()
@@ -376,34 +414,103 @@ else()
     message(FATAL_ERROR "GLEW is required. Run: python tools/deps_manager.py download")
 endif()
 
-# 链接 nlohmann/json（场景序列化）
-if(GRYCE_HAS_NLOHMANN_JSON)
-    target_link_libraries(gryce_core PUBLIC nlohmann_json::nlohmann_json)
-endif()
+# ============================================================================
+# GrycePlatform.dll — Window、Input、Cursor
+# ============================================================================
+add_library(GrycePlatform SHARED)
 
-# 链接 Assimp（模型导入）
-if(GRYCE_HAS_ASSIMP)
-    target_link_libraries(gryce_core PUBLIC assimp::assimp)
-endif()
-
-# 链接 Box2D（2D 物理）
-if(GRYCE_HAS_BOX2D)
-    target_link_libraries(gryce_core PUBLIC box2d)
-    target_compile_definitions(gryce_core PUBLIC GRYCE_HAS_BOX2D)
-endif()
-
-# 链接 JoltPhysics（3D 物理主后端）
-if(GRYCE_HAS_JOLT)
-    target_link_libraries(gryce_core PUBLIC Jolt)
-    target_compile_definitions(gryce_core PUBLIC GRYCE_HAS_JOLT)
-endif()
-
-# Windows: 链接 imm32（IME 输入法管理）和 winmm（高精度定时器）
-if(WIN32)
-    target_link_libraries(gryce_core PUBLIC imm32 winmm)
-endif()
-
-set_target_properties(gryce_core PROPERTIES
-    EXPORT_NAME GryceCore
+set_target_properties(GrycePlatform PROPERTIES
+    OUTPUT_NAME GrycePlatform
+    RUNTIME_OUTPUT_NAME GrycePlatform
+    EXPORT_NAME GrycePlatform
     FOLDER "Core"
 )
+
+target_compile_definitions(GrycePlatform PRIVATE GRYCE_PLATFORM_BUILDING)
+
+target_sources(GrycePlatform
+    PRIVATE
+        api/platform_api.cpp
+        platform/window.cpp
+        platform/input.cpp
+        platform/cursor.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+        FILES
+            GrycePlatform/window_api.h
+            GrycePlatform/input_api.h
+            platform/window.h
+            platform/input.h
+            platform/cursor.h
+)
+
+target_include_directories(GrycePlatform
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
+)
+
+target_link_libraries(GrycePlatform PUBLIC GryceCore gryce::compile_options)
+
+if(GRYCE_HAS_GLFW)
+    target_link_libraries(GrycePlatform PUBLIC glfw)
+endif()
+
+# ============================================================================
+# GrycePhysics.dll — Jolt 3D / Box2D 2D
+# ============================================================================
+add_library(GrycePhysics SHARED)
+
+set_target_properties(GrycePhysics PROPERTIES
+    OUTPUT_NAME GrycePhysics
+    RUNTIME_OUTPUT_NAME GrycePhysics
+    EXPORT_NAME GrycePhysics
+    FOLDER "Core"
+)
+
+target_compile_definitions(GrycePhysics PRIVATE GRYCE_PHYSICS_BUILDING)
+
+target_sources(GrycePhysics
+    PRIVATE
+        api/physics_api.cpp
+        physics/physics_factory.cpp
+        physics/box2d_world_2d.cpp
+        physics/jolt_physics_world_3d.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+        FILES
+            GrycePhysics/physics_api.h
+            physics/physics_point.h
+            physics/physics_types.h
+            physics/physics_world_2d.h
+            physics/physics_world_3d.h
+            physics/physics_factory.h
+            physics/box2d_world_2d.h
+            physics/jolt_physics_world_3d.h
+)
+
+target_include_directories(GrycePhysics
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
+)
+
+target_link_libraries(GrycePhysics PUBLIC GryceCore gryce::compile_options)
+
+if(GRYCE_HAS_BOX2D)
+    target_link_libraries(GrycePhysics PUBLIC box2d)
+    target_compile_definitions(GrycePhysics PUBLIC GRYCE_HAS_BOX2D)
+endif()
+
+if(GRYCE_HAS_JOLT)
+    target_link_libraries(GrycePhysics PUBLIC Jolt)
+    target_compile_definitions(GrycePhysics PUBLIC GRYCE_HAS_JOLT)
+endif()
+
+# ============================================================================
+# GryceAudio.dll — miniaudio（optional）
+# ============================================================================
+# TODO: 音频模块拆分（Phase 2+）
+# add_library(GryceAudio SHARED ...)

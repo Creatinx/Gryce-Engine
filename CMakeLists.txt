@@ -103,6 +103,9 @@ endif()
 
 add_subdirectory(examples)
 
+# editor 已封存至 backup/，WPF Editor 走 C API 调用 GryceCore DLL
+# add_subdirectory(editor)
+
 add_subdirectory(editor)
 
 # ---------------------------------------------------------------------------

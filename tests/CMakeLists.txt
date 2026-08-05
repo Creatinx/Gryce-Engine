@@ -28,6 +28,10 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
     )
     target_link_libraries(gryce_tests
         PRIVATE
+            GryceCore GryceRenderer GrycePlatform GrycePhysics
+            GTest::gtest_main
+    )
+        PRIVATE
             gryce_core
             GTest::gtest_main
     )

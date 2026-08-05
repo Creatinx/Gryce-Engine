@@ -1,0 +1,39 @@
+#ifndef GRYCE_WINDOW_API_H
+#define GRYCE_WINDOW_API_H
+
+#include "GryceCore/types.h"
+
+#ifdef _WIN32
+    #ifdef GRYCE_PLATFORM_BUILDING
+        #define GRYCE_PLATFORM_API __declspec(dllexport)
+    #else
+        #define GRYCE_PLATFORM_API __declspec(dllimport)
+        #ifdef _MSC_VER
+            #pragma comment(lib, "GrycePlatform.lib")
+        #endif
+    #endif
+#else
+    #define GRYCE_PLATFORM_API __attribute__((visibility("default")))
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+GRYCE_PLATFORM_API int  GWindow_InitExternal(GWindowHandle hwnd, int w, int h);
+GRYCE_PLATFORM_API int  GWindow_Create(const char* title, int w, int h, GWindowMode mode);
+GRYCE_PLATFORM_API void GWindow_Destroy(void);
+GRYCE_PLATFORM_API bool GWindow_IsValid(void);
+
+GRYCE_PLATFORM_API void GWindow_GetSize(int* out_w, int* out_h);
+GRYCE_PLATFORM_API void GWindow_SetSize(int w, int h);
+GRYCE_PLATFORM_API GWindowHandle GWindow_GetNativeHandle(void);
+GRYCE_PLATFORM_API bool GWindow_ShouldClose(void);
+GRYCE_PLATFORM_API void GWindow_PollEvents(void);
+GRYCE_PLATFORM_API void GWindow_SwapBuffers(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

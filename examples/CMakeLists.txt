@@ -11,7 +11,7 @@ target_sources(examples_common PRIVATE
     ${EXAMPLES_COMMON_DIR}/app_launcher.cpp
     ${EXAMPLES_COMMON_DIR}/ui/debug_panel.cpp
 )
-target_link_libraries(examples_common PUBLIC gryce_core)
+target_link_libraries(examples_common PUBLIC GryceCore GryceRenderer GrycePlatform GrycePhysics)
 target_include_directories(examples_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${EXAMPLES_COMMON_DIR}
