@@ -43,6 +43,27 @@ else:
     C_OK = C_WARN = C_ERR = C_INFO = C_RESET = ''
 
 # ---------------------------------------------------------------------------
+# Mirror configuration — GitHub downloads are slow from mainland China
+# ---------------------------------------------------------------------------
+GITHUB_MIRRORS = [
+    "https://ghps.cc/https://github.com",
+    "https://ghproxy.com/https://github.com",
+    "https://mirror.ghproxy.com/https://github.com",
+]
+
+def _mirror_url(original_url: str) -> list[str]:
+    """Generate a list of URLs to try: mirrors first, then original."""
+    urls = []
+    if original_url.startswith("https://github.com"):
+        for mirror in GITHUB_MIRRORS:
+            urls.append(original_url.replace("https://github.com", mirror, 1))
+    urls.append(original_url)
+    return urls
+
+# ---------------------------------------------------------------------------
+# Dependency definitions
+
+# ---------------------------------------------------------------------------
 # Dependency definitions
 # ---------------------------------------------------------------------------
 DEPENDENCIES = [
@@ -187,28 +208,34 @@ def _download_rich(url: str, dest: Path, description: str = ""):
                     progress.update(task, advance=len(chunk))
 
 
-def download_file(url: str, dest: Path, description: str = "") -> bool:
-    """Download a file with progress bar."""
+def download_file(urls: list[str], dest: Path, description: str = "") -> bool:
+    """Download a file with progress bar, trying multiple URLs (mirrors first)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        print(f"{C_INFO}[deps]{C_RESET} Downloading {description} from {url} ...")
-        _download_rich(url, dest, description)
-        return True
-    except ImportError:
-        print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using manual progress bar")
+    last_error = ""
+    for url in urls:
         try:
-            _download_simple(url, dest, description)
+            print(f"{C_INFO}[deps]{C_RESET} Downloading {description} from {url} ...")
+            _download_rich(url, dest, description)
             return True
+        except ImportError:
+            print(f"{C_WARN}[WARN]{C_RESET} rich not installed, using manual progress bar")
+            try:
+                _download_simple(url, dest, description)
+                return True
+            except Exception as e:
+                last_error = str(e)
+                print(f"{C_WARN}[WARN]{C_RESET} Mirror failed ({url}): {e}")
+                if dest.exists():
+                    dest.unlink()
+                continue
         except Exception as e:
-            print(f"{C_ERR}[ERROR]{C_RESET} Download failed: {e}")
+            last_error = str(e)
+            print(f"{C_WARN}[WARN]{C_RESET} Mirror failed ({url}): {e}")
             if dest.exists():
                 dest.unlink()
-            return False
-    except Exception as e:
-        print(f"{C_ERR}[ERROR]{C_RESET} Download failed: {e}")
-        if dest.exists():
-            dest.unlink()
-        return False
+            continue
+    print(f"{C_ERR}[ERROR]{C_RESET} All download sources failed. Last error: {last_error}")
+    return False
 
 
 def verify_sha256(path: Path, expected: str) -> bool:
@@ -291,7 +318,7 @@ def ensure_dependency(dep: dict) -> bool:
             print(f"{C_WARN}[WARN]{C_RESET} {name}: SHA256 mismatch, re-downloading...")
             cache_file.unlink()
         
-        if not download_file(url, cache_file, f"Downloading {name}"):
+        if not download_file(_mirror_url(url), cache_file, f"Downloading {name}"):
             if required:
                 print(f"{C_ERR}[ERROR]{C_RESET} Failed to download required dependency: {name}")
                 return False
