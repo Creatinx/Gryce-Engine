@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import os
 import shutil
+import socket
 import sys
 import tarfile
 import tempfile
@@ -51,6 +52,9 @@ GITHUB_MIRRORS = [
     "https://mirror.ghproxy.com/https://github.com",
 ]
 
+_URL_TIMEOUT_SEC = 30  # 连接/读取超时，防止卡死
+
+
 def _mirror_url(original_url: str) -> list[str]:
     """Generate a list of URLs to try: mirrors first, then original."""
     urls = []
@@ -59,9 +63,6 @@ def _mirror_url(original_url: str) -> list[str]:
             urls.append(original_url.replace("https://github.com", mirror, 1))
     urls.append(original_url)
     return urls
-
-# ---------------------------------------------------------------------------
-# Dependency definitions
 
 # ---------------------------------------------------------------------------
 # Dependency definitions
@@ -140,7 +141,7 @@ def cache_dir() -> Path:
 def _download_simple(url: str, dest: Path, description: str = ""):
     """Fallback download with manual progress bar."""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req) as response:
+    with urllib.request.urlopen(req, timeout=_URL_TIMEOUT_SEC) as response:
         total = int(response.headers.get("Content-Length", 0))
         downloaded = 0
         chunk_size = 65536
@@ -182,7 +183,7 @@ def _download_rich(url: str, dest: Path, description: str = ""):
     from rich.console import Console
 
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req) as response:
+    with urllib.request.urlopen(req, timeout=_URL_TIMEOUT_SEC) as response:
         total = int(response.headers.get("Content-Length", 0))
         console = Console()
 
@@ -212,9 +213,10 @@ def download_file(urls: list[str], dest: Path, description: str = "") -> bool:
     """Download a file with progress bar, trying multiple URLs (mirrors first)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     last_error = ""
-    for url in urls:
+    for idx, url in enumerate(urls):
+        src_label = f"mirror[{idx}]" if idx < len(urls) - 1 else "original"
         try:
-            print(f"{C_INFO}[deps]{C_RESET} Downloading {description} from {url} ...")
+            print(f"{C_INFO}[deps]{C_RESET} [{src_label}] {description} — {url}")
             _download_rich(url, dest, description)
             return True
         except ImportError:
@@ -222,15 +224,27 @@ def download_file(urls: list[str], dest: Path, description: str = "") -> bool:
             try:
                 _download_simple(url, dest, description)
                 return True
-            except Exception as e:
-                last_error = str(e)
-                print(f"{C_WARN}[WARN]{C_RESET} Mirror failed ({url}): {e}")
+            except socket.timeout as e:
+                last_error = f"timeout: {e}"
+                print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] timed out after {_URL_TIMEOUT_SEC}s")
                 if dest.exists():
                     dest.unlink()
                 continue
+            except Exception as e:
+                last_error = str(e)
+                print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] failed: {e}")
+                if dest.exists():
+                    dest.unlink()
+                continue
+        except socket.timeout as e:
+            last_error = f"timeout: {e}"
+            print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] timed out after {_URL_TIMEOUT_SEC}s")
+            if dest.exists():
+                dest.unlink()
+            continue
         except Exception as e:
             last_error = str(e)
-            print(f"{C_WARN}[WARN]{C_RESET} Mirror failed ({url}): {e}")
+            print(f"{C_WARN}[WARN]{C_RESET} [{src_label}] failed: {e}")
             if dest.exists():
                 dest.unlink()
             continue
@@ -302,6 +316,8 @@ def ensure_dependency(dep: dict) -> bool:
     
     dep_dir = deps_root() / name
     cache_file = cache_dir() / filename
+    
+    print(f"{C_INFO}[deps]{C_RESET} Checking {name} ...")
     
     # Already extracted?
     if dep_dir.exists() and (dep_dir / "CMakeLists.txt").exists():
