@@ -1,8 +1,11 @@
 #include "audio/audio_engine.h"
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 #include "miniaudio.h"
+#include "audio/time_stretcher.h"
 #include "utils/glog/glog_lib.h"
 
 #ifdef _WIN32
@@ -155,6 +158,55 @@ bool AudioClip::load(const std::string& path) {
     return true;
 }
 
+bool AudioClip::decode_to_pcm(std::vector<float>& out_pcm, uint32_t& out_sample_rate,
+                              uint32_t& out_channels) const {
+    if (path_.empty() || is_streaming_) return false;
+
+    // 保持文件原始声道数与采样率
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
+    ma_decoder decoder{};
+    ma_result result;
+
+#ifdef _WIN32
+    const std::wstring wide_path = utf8_to_wide(path_);
+    result = wide_path.empty()
+                 ? ma_decoder_init_file(path_.c_str(), &config, &decoder)
+                 : ma_decoder_init_file_w(wide_path.c_str(), &config, &decoder);
+#else
+    result = ma_decoder_init_file(path_.c_str(), &config, &decoder);
+#endif
+    if (result != MA_SUCCESS) {
+        GLOG_WARN("AudioClip::decode_to_pcm: failed to init decoder for '{}' (result={})",
+                  path_, static_cast<int>(result));
+        return false;
+    }
+
+    ma_uint64 total_frames = 0;
+    ma_decoder_get_length_in_pcm_frames(&decoder, &total_frames);
+    if (total_frames == 0) {
+        ma_decoder_uninit(&decoder);
+        return false;
+    }
+
+    out_channels = decoder.outputChannels;
+    out_sample_rate = decoder.outputSampleRate;
+    out_pcm.resize(static_cast<size_t>(total_frames * out_channels));
+
+    ma_uint64 frames_read = 0;
+    result = ma_decoder_read_pcm_frames(&decoder, out_pcm.data(), total_frames, &frames_read);
+    ma_decoder_uninit(&decoder);
+
+    if (result != MA_SUCCESS || frames_read == 0) {
+        out_pcm.clear();
+        out_sample_rate = 0;
+        out_channels = 0;
+        return false;
+    }
+
+    out_pcm.resize(static_cast<size_t>(frames_read * out_channels));
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // AudioInstance
 // ---------------------------------------------------------------------------
@@ -165,44 +217,157 @@ void AudioInstance::SoundDeleter::operator()(ma_sound* s) const {
     }
 }
 
+void AudioInstance::AudioBufferDeleter::operator()(void* b) const {
+    if (b) {
+        auto* buffer = static_cast<ma_audio_buffer*>(b);
+        ma_audio_buffer_uninit(buffer);
+        delete buffer;
+    }
+}
+
 AudioInstance::AudioInstance() = default;
 AudioInstance::~AudioInstance() = default;
 
-bool AudioInstance::create_from_clip(const AudioClip& clip) {
-    if (!clip.valid()) return false;
+bool AudioInstance::create_from_clip(std::shared_ptr<const AudioClip> clip, float speed) {
+    if (!clip || !clip->valid()) return false;
     AudioEngine& engine = AudioEngine::instance();
     if (!engine.valid()) return false;
 
-    sound_.reset(new ma_sound{});
+    // 先保存源，再清理旧资源
+    source_clip_ = std::move(clip);
+    speed_ = speed;
+    sample_rate_ = 0;
+    channels_ = 0;
+
+    sound_.reset();
+    audio_buffer_.reset();
+    stretched_pcm_.clear();
+
+    return recreate_from_source(speed_);
+}
+
+bool AudioInstance::recreate_from_source(float speed) {
+    if (!source_clip_ || !source_clip_->valid()) return false;
+    AudioEngine& engine = AudioEngine::instance();
+    if (!engine.valid()) return false;
+
+    sound_.reset();
+    audio_buffer_.reset();
+    stretched_pcm_.clear();
+
+    const bool need_time_stretch = !source_clip_->is_streaming() && std::abs(speed - 1.0f) >= 0.005f;
+    if (need_time_stretch) {
+        std::vector<float> pcm;
+        if (!source_clip_->decode_to_pcm(pcm, sample_rate_, channels_)) {
+            GLOG_WARN("AudioInstance: decode_to_pcm failed for '{}', falling back to normal playback",
+                      source_clip_->path());
+        } else if (!TimeStretcher::process(pcm.data(), static_cast<int64_t>(pcm.size() / channels_),
+                                           static_cast<int>(channels_), speed, stretched_pcm_)) {
+            GLOG_WARN("AudioInstance: time stretch failed for '{}', falling back to normal playback",
+                      source_clip_->path());
+            stretched_pcm_.clear();
+        }
+    }
+
     ma_result result;
-    if (clip.is_streaming()) {
+    sound_.reset(new ma_sound{});
+
+    if (!stretched_pcm_.empty() && channels_ > 0 && sample_rate_ > 0) {
+        // 从拉伸后的内存 PCM 创建 sound
+        auto* buffer = new ma_audio_buffer{};
+        ma_audio_buffer_config config = ma_audio_buffer_config_init(
+            ma_format_f32,
+            static_cast<ma_uint32>(channels_),
+            static_cast<ma_uint64>(stretched_pcm_.size() / channels_),
+            stretched_pcm_.data(),
+            nullptr);
+        config.sampleRate = sample_rate_;
+
+        result = ma_audio_buffer_init(&config, buffer);
+        if (result != MA_SUCCESS) {
+            GLOG_WARN("AudioInstance: failed to init audio buffer (result={})", static_cast<int>(result));
+            delete buffer;
+            sound_.reset();
+            audio_buffer_.reset();
+            stretched_pcm_.clear();
+            return false;
+        }
+        audio_buffer_.reset(buffer);
+
+        result = ma_sound_init_from_data_source(engine.engine(), buffer,
+                                                0, nullptr, sound_.get());
+        if (result != MA_SUCCESS) {
+            GLOG_WARN("AudioInstance: failed to init sound from data source (result={})",
+                      static_cast<int>(result));
+            sound_.reset();
+            audio_buffer_.reset();
+            stretched_pcm_.clear();
+            return false;
+        }
+    } else if (source_clip_->is_streaming()) {
         // 流式源不支持 ma_sound_init_copy，直接从文件创建独立流式实例。
 #ifdef _WIN32
-        const std::wstring wide_path = utf8_to_wide(clip.path());
+        const std::wstring wide_path = utf8_to_wide(source_clip_->path());
         result = wide_path.empty()
-                     ? ma_sound_init_from_file(engine.engine(), clip.path().c_str(),
+                     ? ma_sound_init_from_file(engine.engine(), source_clip_->path().c_str(),
                                                MA_SOUND_FLAG_STREAM, nullptr, nullptr, sound_.get())
                      : ma_sound_init_from_file_w(engine.engine(), wide_path.c_str(),
                                                  MA_SOUND_FLAG_STREAM, nullptr, nullptr, sound_.get());
 #else
-        result = ma_sound_init_from_file(engine.engine(), clip.path().c_str(),
+        result = ma_sound_init_from_file(engine.engine(), source_clip_->path().c_str(),
                                          MA_SOUND_FLAG_STREAM, nullptr, nullptr, sound_.get());
 #endif
+        if (result != MA_SUCCESS) {
+            GLOG_WARN("AudioInstance: failed to create stream instance (result={})",
+                      static_cast<int>(result));
+            sound_.reset();
+            return false;
+        }
     } else {
         // flags 传 0：拷贝继承源 sound 的加载方式（解码源共享已解码数据）。
-        result = ma_sound_init_copy(engine.engine(), clip.handle(),
+        result = ma_sound_init_copy(engine.engine(), source_clip_->handle(),
                                     0, nullptr, sound_.get());
+        if (result != MA_SUCCESS) {
+            GLOG_WARN("AudioInstance: failed to create copy instance (result={})",
+                      static_cast<int>(result));
+            sound_.reset();
+            return false;
+        }
     }
-    if (result != MA_SUCCESS) {
-        GLOG_WARN("AudioInstance: failed to create instance (result={})", static_cast<int>(result));
-        sound_.reset();
-        return false;
-    }
-    GLOG_INFO("AudioInstance: created {} sound={} engine={}",
-              clip.is_streaming() ? "stream" : "decode",
+
+    GLOG_INFO("AudioInstance: created {} speed={} sound={} engine={}",
+              source_clip_->is_streaming() ? "stream" : (stretched_pcm_.empty() ? "decode" : "time-stretch"),
+              speed_,
               reinterpret_cast<void*>(sound_.get()),
               reinterpret_cast<void*>(ma_sound_get_engine(sound_.get())));
     return true;
+}
+
+void AudioInstance::set_speed(float speed) {
+    if (!source_clip_ || source_clip_->is_streaming()) {
+        // 流式音频回退到 pitch 控制（会改变音调，符合预期）
+        set_pitch(speed);
+        return;
+    }
+    if (std::abs(speed_ - speed) < 0.005f) return;
+
+    const bool was_playing = is_playing();
+    const float pos_sec = (sound_ && ma_sound_get_engine(sound_.get()))
+                              ? static_cast<float>(ma_sound_get_time_in_milliseconds(sound_.get())) / 1000.0f
+                              : 0.0f;
+
+    speed_ = speed;
+    if (!recreate_from_source(speed_)) {
+        GLOG_WARN("AudioInstance: set_speed failed to recreate sound");
+        return;
+    }
+
+    // 恢复播放状态与大致位置
+    if (was_playing) {
+        ma_sound_seek_to_pcm_frame(sound_.get(),
+                                   static_cast<ma_uint64>(pos_sec * static_cast<float>(sample_rate_)));
+        play();
+    }
 }
 
 void AudioInstance::play() {

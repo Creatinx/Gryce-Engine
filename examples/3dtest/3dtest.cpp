@@ -180,10 +180,10 @@ static void upload_scene_meshes(scene::Scene& scene, render::RenderContext& ctx)
         auto* mr = entity->get_component<components::MeshRenderer>();
         if (!mr || mr->mesh_path.empty()) return;
 
-        const assets::MeshData* data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+        auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
         if (!data) return;
 
-        render::IMesh* gpu_mesh = mr->upload_to_gpu(&ctx, data);
+        render::IMesh* gpu_mesh = mr->upload_to_gpu(&ctx, data.get());
         if (gpu_mesh) {
             GLOG_INFO("Pre-uploaded mesh '{}' for entity '{}'", mr->mesh_path, entity->name());
         }
@@ -280,6 +280,60 @@ static scene::Entity* create_ground_entity(scene::Scene& scene, const std::strin
         pm->apply_preset("Concrete");
     }
     return e;
+}
+
+static scene::Entity* create_trigger_demo_entities(scene::Scene& scene) {
+    scene::Entity* zone = scene.find_entity_by_name("TriggerZone");
+    if (!zone) {
+        zone = scene.create_entity("TriggerZone");
+        zone->transform()->position = math::Vector3f(40.0f, 10.0f, 0.0f);
+        zone->transform()->scale = math::Vector3f(6.0f, 6.0f, 6.0f);
+        auto* mr = zone->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->use_albedo_map = false;
+            mr->material->use_normal_map = false;
+            mr->material->use_roughness_map = false;
+            mr->material->use_metallic_map = false;
+            mr->material->use_ao_map = false;
+            mr->material->albedo_color = math::Vector3f(1.0f, 1.0f, 0.0f);
+            mr->material->opacity = 0.3f;
+            mr->material->blend_mode = render::Material::BlendMode::Blend;
+            mr->material->two_sided = true;
+        }
+        zone->add_component<components::StaticBody>();
+        auto* col = zone->add_component<components::BoxCollider>();
+        col->size = math::Vector3f::one();
+        col->is_trigger = true;
+        GLOG_INFO("Created TriggerZone at (40,10,0)");
+    }
+
+    scene::Entity* ball = scene.find_entity_by_name("TriggerBall");
+    if (!ball) {
+        ball = scene.create_entity("TriggerBall");
+        ball->transform()->position = math::Vector3f(40.0f, 30.0f, 0.0f);
+        ball->transform()->scale = math::Vector3f(2.0f, 2.0f, 2.0f);
+        auto* mr = ball->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->use_albedo_map = false;
+            mr->material->use_normal_map = false;
+            mr->material->use_roughness_map = false;
+            mr->material->use_metallic_map = false;
+            mr->material->use_ao_map = false;
+            mr->material->albedo_color = math::Vector3f(0.8f, 0.2f, 0.2f);
+        }
+        ball->add_component<components::RigidBody>();
+        ball->add_component<components::SphereCollider>();
+        GLOG_INFO("Created TriggerBall at (40,30,0)");
+    } else {
+        // 重新从高处丢下
+        ball->transform()->position = math::Vector3f(40.0f, 30.0f, 0.0f);
+        if (auto* rb = ball->get_component<components::RigidBody>()) {
+            rb->velocity = math::Vector3f::zero();
+            rb->is_sleeping = false;
+            rb->sleep_frames = 0;
+        }
+    }
+    return zone;
 }
 
 static scene::Entity* create_joint_chain(scene::Scene& scene, const std::string& name) {
@@ -454,6 +508,7 @@ static void ensure_physics_demo_entities(scene::Scene& scene) {
 
     create_joint_chain(scene, "DemoChain");
     create_character_entity(scene, "DemoCharacter");
+    create_trigger_demo_entities(scene);
     ensure_material_showcase_entities(scene);
 }
 
@@ -533,6 +588,41 @@ static void ensure_scene_defaults(scene::Scene& scene, math::Camera& camera) {
         light->intensity = 3.0f;
         GLOG_INFO("Created default MainLight entity");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 资源热重载：AssetManager 检测到 res:/ 文件变化后重新导入，这里失效引用该
+// 资源的 MeshRenderer GPU 副本（mesh + 材质贴图），下一帧由 RenderSystem3D
+// 从最新缓存重新上传。主线程调用安全（invalidate_gpu_mesh 仅排队销毁命令）。
+// ---------------------------------------------------------------------------
+static void apply_asset_hot_reload(scene::Scene& scene) {
+    auto changed = assets::AssetManager::instance().poll_hot_reload();
+    if (changed.empty()) return;
+
+    scene.foreach([&](scene::Entity* entity) {
+        auto* mr = entity->get_component<components::MeshRenderer>();
+        if (!mr) return;
+        bool affected = std::find(changed.begin(), changed.end(), mr->mesh_path) != changed.end();
+        if (!affected && mr->material) {
+            const std::string* tex_paths[] = {
+                &mr->material->albedo_map_path,
+                &mr->material->normal_map_path,
+                &mr->material->roughness_map_path,
+                &mr->material->metallic_map_path,
+                &mr->material->ao_map_path,
+                &mr->material->emissive_map_path,
+            };
+            for (const auto* p : tex_paths) {
+                if (std::find(changed.begin(), changed.end(), *p) != changed.end()) {
+                    affected = true;
+                    break;
+                }
+            }
+        }
+        if (affected) {
+            mr->invalidate_gpu_mesh();
+        }
+    });
 }
 
 static void sync_active_camera_to_scene(scene::Scene& scene, math::Camera& camera) {
@@ -737,8 +827,54 @@ static void show_physics_debug_panel(scene::Scene* scene, scene::Entity* selecte
 }
 
 // ---------------------------------------------------------------------------
-// 场景重置：清理碎片、还原 Cube 与摄像机
+// 碰撞 / 触发器回调演示面板：读取本帧 drain 出的 PhysicsSystem3D 事件
 // ---------------------------------------------------------------------------
+static void show_collision_events_panel(scene::Scene* scene, ecs::PhysicsSystem3D* physics) {
+    static size_t begin_count = 0;
+    static size_t end_count = 0;
+    static size_t trigger_enter_count = 0;
+    static size_t trigger_exit_count = 0;
+    static float last_impulse = 0.0f;
+    static std::string last_event;
+
+    if (physics) {
+        for (const auto& ev : physics->collision_events()) {
+            auto name_of = [&](const scene::UUID& id) -> std::string {
+                scene::Entity* e = scene ? scene->find_entity_by_uuid(id) : nullptr;
+                return e ? e->name() : "<destroyed>";
+            };
+            const char* kind = ev.is_trigger ? "Trigger" : "Contact";
+            const char* dir = ev.type == physics::CollisionEventType::BeginContact ? "Enter" : "Exit";
+            if (ev.is_trigger) {
+                if (ev.type == physics::CollisionEventType::BeginContact) {
+                    ++trigger_enter_count;
+                } else {
+                    ++trigger_exit_count;
+                }
+            } else {
+                if (ev.type == physics::CollisionEventType::BeginContact) {
+                    ++begin_count;
+                } else {
+                    ++end_count;
+                }
+                last_impulse = ev.impulse;
+            }
+            last_event = std::format("[{} {}] {} <-> {} (impulse {:.1f})",
+                                     kind, dir, name_of(ev.body_a), name_of(ev.body_b),
+                                     ev.impulse);
+        }
+    }
+
+    ImGui::Begin("Collision Events");
+    ImGui::TextWrapped("Physics3D 碰撞 / 触发器回调演示（F4 重置小球）");
+    ImGui::Separator();
+    ImGui::Text("Contacts: begin %zu, end %zu", begin_count, end_count);
+    ImGui::Text("Triggers: enter %zu, exit %zu", trigger_enter_count, trigger_exit_count);
+    ImGui::Text("Last impact impulse: %.2f", static_cast<double>(last_impulse));
+    ImGui::Separator();
+    ImGui::TextWrapped("%s", last_event.empty() ? "No events yet" : last_event.c_str());
+    ImGui::End();
+}
 static void reset_3d_scene(scene::Scene& scene, math::Camera& camera) {
     // 销毁所有碎片实体与运行时加载的模型，保持场景干净
     std::vector<scene::Entity*> to_remove;
@@ -1033,6 +1169,8 @@ int main(int argc, char* argv[])
     // 场景文件热重载：记录最后修改时间
     std::filesystem::file_time_type scene_last_write = get_scene_write_time(scene_path);
     double scene_reload_timer = 0.0;
+    double shader_reload_timer = 0.0;
+    double asset_reload_timer = 0.0;
 
     // 创建渲染管线（必须在 start() 之前，主线程持有 GL context）
     render::RenderPipeline pipeline;
@@ -1125,6 +1263,8 @@ int main(int argc, char* argv[])
 
         // 场景热重载计时器（实际重载在 present 之后执行）
         scene_reload_timer += window.delta_time();
+        shader_reload_timer += window.delta_time();
+        asset_reload_timer += window.delta_time();
 
         input.update(&window);
 
@@ -1189,6 +1329,15 @@ int main(int argc, char* argv[])
             } else {
                 GLOG_ERROR("F3: Failed to save scene to '{}'", save_path);
             }
+        }
+
+        // F4 触发器演示：创建半透明触发器体积并让小球穿过后落下
+        if (input.is_key_pressed(GLFW_KEY_F4)) {
+            render_ctx.pause_render_thread();
+            create_trigger_demo_entities(*world.scene());
+            upload_scene_meshes(*world.scene(), render_ctx);
+            render_ctx.resume_render_thread();
+            GLOG_INFO("F4: Trigger demo reset (drop ball through the zone)");
         }
 
         // DemoCharacter 控制器（方向键移动，右 Shift 跳跃）
@@ -1357,6 +1506,7 @@ int main(int argc, char* argv[])
         debug_panel.show(&window, world.scene(), &camera, &frame_limiter, &render_ctx, &pipeline);
         model_loaded = model_loader_panel.show(world.scene());
         show_physics_debug_panel(world.scene(), debug_panel.selected_entity());
+        show_collision_events_panel(world.scene(), world.get_system<ecs::PhysicsSystem3D>());
 
         imgui.end_frame([&](ImDrawData* draw_data, std::shared_ptr<std::promise<void>> sync_promise) {
             // 深拷贝 ImDrawData，避免无限制帧率下主线程继续 NewFrame 覆盖 draw data
@@ -1411,6 +1561,25 @@ int main(int argc, char* argv[])
                         fps_label = fps_entity->get_component<components::d2::text::Label>();
                     }
                 }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Shader 热重载：修改 shaders/*.vert/.frag（或 Vulkan 的 SPIR-V）后自动生效。
+        // 同样在 present 之后执行，避免 pause 丢失未提交的渲染命令。
+        // -------------------------------------------------------------------
+        if (shader_reload_timer >= 0.5) {
+            shader_reload_timer = 0.0;
+            pipeline.poll_shader_hot_reload(render_ctx);
+        }
+
+        // -------------------------------------------------------------------
+        // 资源热重载：修改 res:/ 下的模型/贴图文件后自动重新导入并重建 GPU 副本
+        // -------------------------------------------------------------------
+        if (asset_reload_timer >= 0.5) {
+            asset_reload_timer = 0.0;
+            if (world.scene()) {
+                apply_asset_hot_reload(*world.scene());
             }
         }
 

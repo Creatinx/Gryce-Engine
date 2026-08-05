@@ -150,12 +150,13 @@ size_t MemoryLogSink::size() const {
 }
 
 MemoryLogSink* MemoryLogSink::from_glog() {
-    ILogger* backend = GLog::instance().logger();
-    if (auto* sink = dynamic_cast<MemoryLogSink*>(backend)) {
+    // 持有 shared_ptr，避免并发 set_logger 替换后端时解引用已释放的内存
+    auto backend = GLog::instance().logger();
+    if (auto* sink = dynamic_cast<MemoryLogSink*>(backend.get())) {
         return sink;
     }
     // 后端被 AsyncLogger 包装时穿透到内层
-    if (auto* async = dynamic_cast<AsyncLogger*>(backend)) {
+    if (auto* async = dynamic_cast<AsyncLogger*>(backend.get())) {
         return dynamic_cast<MemoryLogSink*>(async->inner());
     }
     return nullptr;
@@ -255,7 +256,7 @@ void AsyncLogger::worker_main() {
 // ---------------------------------------------------------------------------
 // GLog 单例
 // ---------------------------------------------------------------------------
-GLog::GLog() : logger_(std::make_unique<AsyncLogger>(std::make_unique<ConsoleLogger>())) {}
+GLog::GLog() : logger_(std::make_shared<AsyncLogger>(std::make_unique<ConsoleLogger>())) {}
 
 GLog& GLog::instance() {
     // 故意泄漏单例（永不析构）：进程退出时 CRT 会析构函数级 static，
@@ -270,11 +271,12 @@ GLog& GLog::instance() {
 void GLog::set_logger(std::unique_ptr<ILogger> logger) {
     std::lock_guard<std::mutex> lock(mutex_);
     // 统一包装为异步后端：日志输出在独立线程执行
-    logger_ = std::make_unique<AsyncLogger>(std::move(logger));
+    logger_ = std::make_shared<AsyncLogger>(std::move(logger));
 }
 
-ILogger* GLog::logger() const {
-    return logger_.get();
+std::shared_ptr<ILogger> GLog::logger() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return logger_;
 }
 
 void GLog::set_min_level(LogLevel level) {

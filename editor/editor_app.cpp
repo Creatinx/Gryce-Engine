@@ -92,11 +92,12 @@
 #include "ui/gimport_editor_window.h"
 #include "ui/message_popup.h"
 #include "import/gimport_settings.h"
-#include "asset/asset_database.h"
+#include "assets_manager/asset_database.h"
 #include "localization/localization.h"
 #include "shortcuts/shortcut_manager.h"
 #include "undo/command_stack.h"
 #include "undo/commands.h"
+#include "fluent_window.h"
 
 using namespace gryce_engine;
 
@@ -224,10 +225,10 @@ static void upload_scene_meshes(scene::Scene& scene, render::RenderContext& ctx)
         auto* mr = entity->get_component<components::MeshRenderer>();
         if (!mr || mr->mesh_path.empty()) return;
 
-        const assets::MeshData* data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+        auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
         if (!data) return;
 
-        render::IMesh* gpu_mesh = mr->upload_to_gpu(&ctx, data);
+        render::IMesh* gpu_mesh = mr->upload_to_gpu(&ctx, data.get());
         if (gpu_mesh) {
             GLOG_INFO("Pre-uploaded mesh '{}' for entity '{}'", mr->mesh_path, entity->name());
         }
@@ -585,7 +586,7 @@ static bool compute_entity_world_bounds(scene::Entity* entity, math::Vector3f& o
 
     if (auto* mr = entity->get_component<components::MeshRenderer>()) {
         if (mr->enabled && !mr->mesh_path.empty()) {
-            const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            auto mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
             if (mesh && compute_world_aabb(*mesh, entity->world_transform(), bmin, bmax)) {
                 has_bounds = true;
             }
@@ -637,11 +638,11 @@ static scene::Entity* pick_entity(scene::Scene& scene, const math::Ray& ray) {
         auto* mr = entity->get_component<components::MeshRenderer>();
         if (!mr || !mr->enabled || mr->mesh_path.empty()) return;
 
-        const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+        auto mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
         if (!mesh) return;
 
         math::Vector3f bmin, bmax;
-        if (!compute_world_aabb(*mesh, entity->world_transform(), bmin, bmax)) return;
+        if (!compute_world_aabb(*mesh.get(), entity->world_transform(), bmin, bmax)) return;
 
         float t = 0.0f;
         if (math::ray_intersect_aabb(ray, bmin, bmax, t) && t < best_t) {
@@ -759,7 +760,7 @@ int EditorApp::run(int argc, char* argv[]) {
             dir = dir.parent_path();
         }
     }
-    const std::filesystem::path splash_assets_dir = engine_root_for_splash / "editor" / "asset_manager" / "background";
+    const std::filesystem::path splash_assets_dir = engine_root_for_splash / "editor" / "assets" / "background";
     const bool splash_will_show =
         !(args.headless || auto_close_seconds > 0.0f || args.should_record() ||
           test_play_mode || test_delete_undo) &&
@@ -775,10 +776,12 @@ int EditorApp::run(int argc, char* argv[]) {
         window.focus_window();
     }
     // splash 结束 / 跳过 / 上传失败时恢复编辑器窗口状态
+    // 必须恢复 set_decorated(true)，因为 Mica 需要非客户区才能渲染
+    // FluentWindow_Init 会随后去掉 WS_CAPTION 但保留 WS_THICKFRAME
     auto restore_editor_window = [&]() {
         if (!splash_will_show) return;
+        window.set_decorated(true);  // 恢复系统装饰（Mica 需要非客户区）
         window.set_size(args.resolution_w, args.resolution_h);
-        window.set_decorated(true);
         window.center_on_primary_monitor();
         window.focus_window();
     };
@@ -1020,6 +1023,9 @@ int EditorApp::run(int argc, char* argv[]) {
     // 设置窗口
     editor::SettingsWindow settings_window;
     settings_window.set_render_context(&render_ctx);
+    settings_window.set_rebuild_fonts_callback([&imgui]() {
+        if (imgui.backend()) imgui.backend()->rebuild_fonts();
+    });
     editor::ProjectSettingsWindow project_settings_window;
     editor::GImportEditorWindow gimport_editor_window;
 
@@ -1742,7 +1748,9 @@ int EditorApp::run(int argc, char* argv[]) {
         apply_file_to_entity(entity, path);
     });
 
-    panel_manager.set_menu_bar_hook([&]() {
+    // 菜单栏钩子：注入到 FluentWindow 标题栏
+    // 左侧 Logo 由 FluentWindow 绘制，右侧系统按钮也由 FluentWindow 处理
+    editor::FluentWindow_SetMenuBarHook([&]() {
         if (ImGui::BeginMenu(editor::tr("menu.file"))) {
             if (ImGui::MenuItem(editor::tr("menu.load_project"))) {
                 std::strncpy(load_project_buf, project_root.string().c_str(), sizeof(load_project_buf) - 1);
@@ -1812,24 +1820,23 @@ int EditorApp::run(int argc, char* argv[]) {
             // 主题详细设置统一放到 File > Settings；这里只保留明暗快速切换。
             bool is_dark = (theme_preset == editor::ThemePreset::Dark);
             if (ImGui::MenuItem(editor::tr("menu.view_theme_dark"), nullptr, &is_dark)) {
+                render_ctx.pause_render_thread();
                 theme_preset = editor::ThemePreset::Dark;
                 editor::apply_theme(theme_preset, editor_settings.theme);
+                if (imgui.backend()) imgui.backend()->rebuild_fonts();
                 editor::Localization::instance().set_light_theme(false);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
+                render_ctx.resume_render_thread();
             }
             bool is_light = (theme_preset == editor::ThemePreset::Light);
             if (ImGui::MenuItem(editor::tr("menu.view_theme_light"), nullptr, &is_light)) {
+                render_ctx.pause_render_thread();
                 theme_preset = editor::ThemePreset::Light;
                 editor::apply_theme(theme_preset, editor_settings.theme);
+                if (imgui.backend()) imgui.backend()->rebuild_fonts();
                 editor::Localization::instance().set_light_theme(true);
                 editor::SettingsWindow::save(project_root.string(), editor_settings);
-            }
-            bool is_modern_light = (theme_preset == editor::ThemePreset::ModernLight);
-            if (ImGui::MenuItem(editor::tr("menu.view_theme_modern_light"), nullptr, &is_modern_light)) {
-                theme_preset = editor::ThemePreset::ModernLight;
-                editor::apply_theme(theme_preset, editor_settings.theme);
-                editor::Localization::instance().set_light_theme(true);
-                editor::SettingsWindow::save(project_root.string(), editor_settings);
+                render_ctx.resume_render_thread();
             }
             ImGui::EndMenu();
         }
@@ -1845,12 +1852,19 @@ int EditorApp::run(int argc, char* argv[]) {
         splash_active = false;
         render_ctx.destroy_texture(splash_bg_tex);
         render_ctx.destroy_texture(splash_icon_tex);
-        // 恢复编辑器窗口状态：有边框 + 原始分辨率 + 居中聚焦
+        // 恢复编辑器窗口状态：无边框 + 原始分辨率 + 居中聚焦
         restore_editor_window();
     }
 
     // 启动渲染线程（此后主线程不再持有 GL context）
     render_ctx.start();
+
+#ifdef _WIN32
+    // 初始化 FluentWindow（DWM Mica Alt + 圆角 + 自定义标题栏）
+    // 必须在渲染线程启动后调用，因为 WndProc 子类化需要窗口已创建
+    editor::FluentWindow_Init(window.native_handle());
+    GLOG_INFO("FluentWindow initialized (DWM Mica Alt + rounded corners)");
+#endif
 
     GLOG_INFO("Entering editor main loop...");
     GLOG_INFO("Viewport controls: RMB drag look | WASD+QE move (hold RMB) | Shift sprint | Wheel zoom | Close window to exit");
@@ -2127,6 +2141,11 @@ int EditorApp::run(int argc, char* argv[]) {
 
         imgui.begin_frame();
         ImGuizmo::BeginFrame();
+
+#ifdef _WIN32
+        // 绘制 FluentWindow 标题栏（用 BackgroundDrawList，不创建 ImGui 窗口）
+        editor::FluentWindow_RenderTitleBar(window.native_handle());
+#endif
 
         // 全局快捷键（跳过文本输入框获焦时）
         shortcuts.process();

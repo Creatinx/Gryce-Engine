@@ -93,6 +93,10 @@ struct PhysicsSystem2D::Impl {
         math::Vector2f last_circle_center;
         bool has_circle = false;
 
+        // 速度/重力缓存：仅在变化时唤醒，避免每帧 wake_up 使睡眠机制失效
+        math::Vector2f last_velocity;
+        float last_gravity_scale = 1.0f;
+
         bool seen_this_frame = false;
     };
 
@@ -288,8 +292,16 @@ struct PhysicsSystem2D::Impl {
             if (!cc) {
                 world->set_linear_velocity(slot.body, rb->velocity);
             }
-            world->set_gravity_scale(slot.body, rb->use_gravity ? 1.0f : 0.0f);
-            world->wake_up(slot.body);
+            const float gravity_scale = rb->use_gravity ? 1.0f : 0.0f;
+            world->set_gravity_scale(slot.body, gravity_scale);
+            // 仅当速度/重力设置或变换实际变化时唤醒，避免每帧 wake_up 让睡眠机制失效
+            const bool vel_changed = rb->velocity != slot.last_velocity;
+            const bool grav_changed = gravity_scale != slot.last_gravity_scale;
+            if (vel_changed || grav_changed || pos != slot.last_position || std::abs(angle - slot.last_angle) > 1e-4f) {
+                world->wake_up(slot.body);
+            }
+            slot.last_velocity = rb->velocity;
+            slot.last_gravity_scale = gravity_scale;
         }
 
         if (shapes_changed(slot, entity)) {
@@ -530,6 +542,32 @@ PhysicsSystem2D::PhysicsSystem2D()
     : impl_(std::make_unique<Impl>()) {}
 
 PhysicsSystem2D::~PhysicsSystem2D() = default;
+
+void PhysicsSystem2D::on_init(scene::Scene& /*scene*/) {
+    impl_->ensure_world(gravity);
+}
+
+void PhysicsSystem2D::on_shutdown(scene::Scene& /*scene*/) {
+    // 场景分离时销毁全部物理资源，避免旧场景的 body/关节残留到下一个场景
+    for (auto& [uuid, jslot] : impl_->joints) {
+        if (jslot.handle != physics::k_invalid_joint && impl_->world) {
+            impl_->world->destroy_joint(jslot.handle);
+        }
+    }
+    impl_->joints.clear();
+    for (auto& [uuid, slot] : impl_->slots) {
+        if (slot.body != physics::k_invalid_body && impl_->world) {
+            impl_->world->destroy_body(slot.body);
+        }
+    }
+    impl_->slots.clear();
+    if (impl_->world) {
+        impl_->world->shutdown();
+        impl_->world.reset();
+    }
+    impl_->time_accumulator = 0.0f;
+    impl_->create_failed = false; // 允许下次场景重新创建（此前失败可能只是环境问题）
+}
 
 void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
     if (dt <= 0.0f) return;

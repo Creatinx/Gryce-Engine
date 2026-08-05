@@ -51,6 +51,7 @@ target_sources(gryce_core
         reflection/builtin_reflections.cpp
         components/physical_material.cpp
         audio/audio_engine.cpp
+        audio/time_stretcher.cpp
         audio/miniaudio_impl.cpp
         ecs/systems/physics_system_3d.cpp
         ecs/systems/physics_system_2d.cpp

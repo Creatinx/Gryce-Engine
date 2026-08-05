@@ -141,6 +141,12 @@ public:
     // 线程约束：调用前必须 pause_render_thread()，调用后 resume_render_thread()。
     bool rebuild(RenderContext* ctx, const std::string& shader_dir = "res:/shaders");
 
+    // Shader 热重载：检查本管线持有的 shader 源文件（GLSL/SPIR-V）是否变化，
+    // 有变化则 pause_render_thread -> reload() -> resume_render_thread。
+    // 调用方应保证在 present() 之后调用（与场景热重载相同的时机约束）。
+    // 返回成功重载的 shader 数量。
+    int poll_shader_hot_reload(RenderContext& ctx);
+
     // 设置 ImGui 后端引用（用于 resize 时 invalidate 旧的 descriptor set 缓存）
     void set_imgui_backend(IImGuiBackend* backend) { imgui_backend_ = backend; }
 

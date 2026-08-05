@@ -36,6 +36,16 @@ void EditorCamera::set_orbit_radius(float radius) {
 }
 
 void EditorCamera::focus_on_bounds(const math::Vector3f& center, float radius) {
+    // 安全检查：场景包围盒异常大时不移动相机，避免被拉到远处。
+    constexpr float k_max_safe_bounds_radius = 10000.0f;
+    constexpr float k_max_safe_position = 10000.0f;
+    if (std::isnan(center.x) || std::isnan(center.y) || std::isnan(center.z) ||
+        center.length() > k_max_safe_position || radius > k_max_safe_bounds_radius) {
+        GLOG_WARN("Scene bounds center ({},{},{}) radius {} exceeds safe threshold, skipping camera focus",
+                  center.x, center.y, center.z, radius);
+        return;
+    }
+
     if (radius <= 0.0f) {
         focus_on(center);
         return;
@@ -105,25 +115,11 @@ void EditorCamera::update(float dt, bool viewport_hovered) {
         }
     }
 
-    // 视角旋转 + 平移只在右键按住时生效（类 Unity 编辑器交互）
+    // 视角旋转只在右键按住时生效（类 Unity 编辑器交互）
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) return;
 
     camera_.set_yaw(camera_.yaw() + io.MouseDelta.x * look_sensitivity_);
     camera_.set_pitch(camera_.pitch() - io.MouseDelta.y * look_sensitivity_);
-
-    math::Vector3f move = math::Vector3f::zero();
-    if (ImGui::IsKeyDown(ImGuiKey_W)) move += camera_.forward();
-    if (ImGui::IsKeyDown(ImGuiKey_S)) move -= camera_.forward();
-    if (ImGui::IsKeyDown(ImGuiKey_D)) move += camera_.right();
-    if (ImGui::IsKeyDown(ImGuiKey_A)) move -= camera_.right();
-    if (ImGui::IsKeyDown(ImGuiKey_E)) move += math::Vector3f(0.0f, 1.0f, 0.0f);
-    if (ImGui::IsKeyDown(ImGuiKey_Q)) move -= math::Vector3f(0.0f, 1.0f, 0.0f);
-
-    if (move.length_sq() > 0.0f) {
-        const float speed = move_speed_ *
-                            (ImGui::IsKeyDown(ImGuiKey_LeftShift) ? sprint_multiplier_ : 1.0f);
-        camera_.set_position(camera_.position() + move.normalized() * speed * dt);
-    }
 }
 
 } // namespace gryce_engine::editor

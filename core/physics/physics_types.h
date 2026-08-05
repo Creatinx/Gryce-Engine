@@ -52,7 +52,26 @@ struct BodyDesc {
     float linear_damping = 0.0f;
     float angular_damping = 0.0f;
     bool allow_sleep = true;
+    bool is_sensor = false; // 触发器：产生接触回调但无碰撞响应
     ShapeHandle shape = k_invalid_shape; // 创建 body 时直接附带一个 shape
+};
+
+// 碰撞/触发事件类型：BeginContact（开始接触/进入触发器）、EndContact（分离/离开触发器）
+enum class CollisionEventType {
+    BeginContact,
+    EndContact
+};
+
+// 由后端 ContactListener 产生的一次接触事件。
+// 触发事件（is_trigger=true）无接触点/法线/冲量，point 取两刚体质心中点。
+struct CollisionEvent {
+    CollisionEventType type = CollisionEventType::BeginContact;
+    BodyHandle body_a = k_invalid_body;
+    BodyHandle body_b = k_invalid_body;
+    math::Vector3f point;
+    math::Vector3f normal;
+    float impulse = 0.0f; // 仅 BeginContact 时估计的碰撞冲量（沿接触法线）
+    bool is_trigger = false;
 };
 
 struct MaterialDesc {

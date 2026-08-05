@@ -30,7 +30,15 @@ void World::attach_scene(std::unique_ptr<scene::Scene> scene) {
 
 std::unique_ptr<scene::Scene> World::detach_scene() {
     if (initialized_) {
-        shutdown();
+        // 仅运行系统 shutdown（物理/渲染等停止引用场景），
+        // 不销毁场景：所有权转移给调用方，实体/组件保持完整可用，
+        // 由 unique_ptr 在适当时机析构（析构时会调用 on_destroy）。
+        for (const auto& sys : systems_) {
+            if (scene_) {
+                sys->on_shutdown(*scene_);
+            }
+        }
+        initialized_ = false;
     }
     return std::move(scene_);
 }

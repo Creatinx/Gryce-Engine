@@ -28,6 +28,7 @@
 #include "math/camera.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
+#include "audio/audio_engine.h"
 
 namespace gryce_engine::render {
 
@@ -53,7 +54,7 @@ bool compute_world_mesh_bounds(const std::string& mesh_path, const math::Matrix4
         if (it != g_mesh_bounds_cache.end()) {
             local = it->second;
         } else {
-            const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(mesh_path);
+            auto mesh = assets::AssetManager::instance().load_mesh(mesh_path);
             if (!mesh || mesh->vertices.empty()) return false;
 
             math::Vector3f lo = mesh->vertices[0].position;
@@ -312,6 +313,43 @@ RHIShaderHandle RenderPipeline::load_shader(const std::string& name, RHIFramebuf
     return shader;
 }
 
+int RenderPipeline::poll_shader_hot_reload(RenderContext& ctx) {
+    if (!initialized_ || !ctx_) return 0;
+
+    std::vector<RHIShaderHandle> to_reload;
+    auto check = [&](RHIShaderHandle h) {
+        if (!h.is_valid()) return;
+        IShader* s = ctx_->shader(h);
+        if (s && s->shader_files_changed()) {
+            to_reload.push_back(h);
+        }
+    };
+    check(pbr_shader_);
+    check(shadow_shader_);
+    check(skinned_pbr_shader_);
+    check(grid_shader_);
+    check(skybox_shader_);
+    check(tonemap_shader_);
+
+    if (to_reload.empty()) return 0;
+
+    // 线程约束：pause 后 GL context 回到主线程，shader 的 GL/VK 调用在此执行
+    ctx.pause_render_thread();
+    int reloaded = 0;
+    for (RHIShaderHandle h : to_reload) {
+        IShader* s = ctx_->shader(h);
+        if (s && s->reload()) {
+            ++reloaded;
+        }
+    }
+    ctx.resume_render_thread();
+
+    if (reloaded > 0) {
+        GLOG_INFO("RenderPipeline: hot-reloaded {} shader(s)", reloaded);
+    }
+    return reloaded;
+}
+
 bool RenderPipeline::create_shadow_map(RenderContext* ctx) {
     shadow_map_ = ctx->create_texture();
     ITexture* shadow_map_ptr = ctx->texture(shadow_map_);
@@ -336,6 +374,10 @@ bool RenderPipeline::create_shadow_map(RenderContext* ctx) {
 
 void RenderPipeline::set_camera(const math::Camera& camera) {
     camera_ = const_cast<math::Camera*>(&camera);
+
+    // 3D 空间音频的监听点应跟随主摄像机；此函数每帧被调用。
+    // 未初始化时 set_listener_position 是安全的 no-op。
+    audio::AudioEngine::instance().set_listener_position(camera.position());
 }
 
 void RenderPipeline::set_lights(const std::vector<Light>& lights) {
@@ -1318,7 +1360,11 @@ void RenderPipeline::end_hdr_forward_pass(RenderContext& ctx) {
 }
 
 void RenderPipeline::render_tonemap(RenderContext& ctx) {
-    if (!tonemap_shader_.is_valid() || !hdr_color_.is_valid() || !fullscreen_mesh_.is_valid()) return;
+    if (!tonemap_shader_.is_valid() || !hdr_color_.is_valid() || !fullscreen_mesh_.is_valid()) {
+        GLOG_WARN("RenderPipeline::render_tonemap: skipped tonemap_shader={} hdr_color={} fullscreen_mesh={}",
+                  tonemap_shader_.is_valid(), hdr_color_.is_valid(), fullscreen_mesh_.is_valid());
+        return;
+    }
 
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。

@@ -36,6 +36,19 @@ render::Material* MeshRenderer::ensure_material() {
     return material.get();
 }
 
+void MeshRenderer::invalidate_gpu_mesh() {
+    if (gpu_mesh_handle_.is_valid() && ctx_) {
+        GLOG_INFO("MeshRenderer: invalidating gpu_mesh for '{}'", mesh_path);
+        ctx_->destroy_mesh(gpu_mesh_handle_);
+        gpu_mesh_handle_ = render::RHIMeshHandle{};
+    }
+    uploaded_.store(false, std::memory_order_release);
+    // 材质贴图一并销毁：下一帧 re-upload 时从 AssetManager 拉取最新数据重建
+    if (material && ctx_) {
+        material->destroy_gpu(ctx_);
+    }
+}
+
 void MeshRenderer::serialize(nlohmann::json& out) const {
     out["mesh_path"] = mesh_path;
     if (material) {

@@ -67,19 +67,51 @@ public:
     const char* backend_name() const override { return "Box2D"; }
 
 private:
+    // 句柄编码：低 20 位为 slot 索引+1，高 12 位为代际号。
+    // slot 被销毁并复用时代际号递增，使“悬垂句柄误触新对象”的 ABA 问题可被检出，
+    // 同时保证旧场景文件中 index+1 形式的句柄（代际 0）仍然兼容。
+    static constexpr uint32_t k_handle_index_bits = 20;
+    static constexpr uint32_t k_handle_index_mask = (1u << k_handle_index_bits) - 1;
+    static constexpr uint32_t k_handle_generation_mask = (1u << (32 - k_handle_index_bits)) - 1;
+
+    struct DecodedHandle {
+        uint32_t index = 0;       // 0-based slot 索引
+        uint32_t generation = 0;  // 代际号
+        bool ok = false;
+    };
+
+    // BodyHandle/ShapeHandle/JointHandle 均为 uint32_t，编码一致
+    static DecodedHandle decode_handle(uint32_t handle) {
+        DecodedHandle out;
+        if (handle == k_invalid_body) return out;
+        const uint32_t low = handle & k_handle_index_mask;
+        if (low == 0) return out; // 低 20 位为 0 不是合法编码
+        out.index = low - 1;
+        out.generation = (handle >> k_handle_index_bits) & k_handle_generation_mask;
+        out.ok = true;
+        return out;
+    }
+
+    static uint32_t encode_handle(uint32_t index, uint32_t generation) {
+        return (generation << k_handle_index_bits) | (index + 1);
+    }
+
     b2WorldId world_ = b2_nullWorldId;
     bool initialized_ = false;
 
     struct BodySlot {
         b2BodyId id = b2_nullBodyId;
+        uint32_t generation = 0;
         bool used = false;
     };
     struct ShapeSlot {
         b2ShapeId id = b2_nullShapeId;
+        uint32_t generation = 0;
         bool used = false;
     };
     struct JointSlot {
         b2JointId id = b2_nullJointId;
+        uint32_t generation = 0;
         bool used = false;
     };
 

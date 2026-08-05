@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <list>
 #include <memory>
@@ -8,6 +9,7 @@
 #include <string>
 #include <typeindex>
 #include <unordered_map>
+#include <vector>
 
 #include "assets/asset.h"
 #include "assets/asset_handle.h"
@@ -36,8 +38,9 @@ public:
     void load_async(const std::string& path,
                     std::function<void(AssetHandle<T>)> on_complete = nullptr);
 
-    // 兼容旧 API：加载/获取网格资源
-    const MeshData* load_mesh(const std::string& path);
+    // 兼容旧 API：加载/获取网格资源。
+    // 返回共享指针持有资源，避免 LRU 驱逐在调用方仍持有时释放内存。
+    std::shared_ptr<const MeshData> load_mesh(const std::string& path);
     std::shared_ptr<const MeshData> load_mesh_shared(const std::string& path);
 
     // 带骨骼/动画的模型（.gltf/.fbx，走 Assimp import_skinned）。
@@ -55,6 +58,12 @@ public:
 
     bool has(const std::string& path) const;
     bool has_mesh(const std::string& path) const;
+
+    // 资源热重载：检查缓存资源的源文件（res:/ 路径解析后的实际文件）是否变化，
+    // 有变化则重新导入并替换缓存。返回本次发生变化的 res:/ 路径列表，
+    // 调用方据此失效 GPU 副本（MeshRenderer::invalidate_gpu_mesh 等）。
+    // 主线程调用安全（纯 CPU 导入）。
+    std::vector<std::string> poll_hot_reload();
 
     // 异步加载状态查询
     LoadingState get_async_state(const std::string& path) const;
@@ -87,6 +96,9 @@ private:
         std::shared_ptr<Asset> asset;
         size_t memory_size = 0;
         std::chrono::steady_clock::time_point last_access;
+        // 热重载：源文件（resolved 实际路径）与其最后修改时间
+        std::string source_path;
+        std::filesystem::file_time_type source_mtime;
     };
 
     // 加载具体资源类型（特化实现）

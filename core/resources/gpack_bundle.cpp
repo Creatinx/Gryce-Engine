@@ -47,6 +47,24 @@ bool GPackReader::open(const std::string& path) {
         return false;
     }
 
+    // 记录文件大小，用于校验后续所有长度字段，防止恶意/损坏文件触发超大分配
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+        GLOG_ERROR("GPackReader: failed to seek end of '{}'", path);
+        std::fclose(f);
+        return false;
+    }
+    const long size_long = std::ftell(f);
+    if (size_long < 0) {
+        GLOG_ERROR("GPackReader: failed to query size of '{}'", path);
+        std::fclose(f);
+        return false;
+    }
+    const uint64_t file_size = static_cast<uint64_t>(size_long);
+    if (std::fseek(f, 0, SEEK_SET) != 0) {
+        std::fclose(f);
+        return false;
+    }
+
     char magic[4] = {};
     if (std::fread(magic, 1, 4, f) != 4 || std::memcmp(magic, "GPAK", 4) != 0) {
         GLOG_ERROR("GPackReader: invalid magic in '{}'", path);
@@ -69,10 +87,25 @@ bool GPackReader::open(const std::string& path) {
         return false;
     }
 
+    // 每个 entry 头至少 24 字节（path_len + 路径 + data_size + data_offset + crc32），
+    // 超出文件可容纳数量的 count 必然是损坏数据，避免恶意 count 触发超大分配。
+    if (file_size < 12 || static_cast<uint64_t>(count) > (file_size - 12) / 24u) {
+        GLOG_ERROR("GPackReader: entry count {} inconsistent with file size {} in '{}'",
+                   count, file_size, path);
+        std::fclose(f);
+        return false;
+    }
+
     entries_.resize(count);
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t path_len = 0;
         if (std::fread(&path_len, sizeof(path_len), 1, f) != 1) {
+            std::fclose(f);
+            entries_.clear();
+            return false;
+        }
+        if (static_cast<uint64_t>(path_len) > file_size) {
+            GLOG_ERROR("GPackReader: path_len {} exceeds file size in '{}'", path_len, path);
             std::fclose(f);
             entries_.clear();
             return false;
@@ -91,10 +124,20 @@ bool GPackReader::open(const std::string& path) {
             entries_.clear();
             return false;
         }
+        // 数据区间必须落在文件范围内
+        if (entries_[i].data_offset > file_size ||
+            entries_[i].data_size > file_size - entries_[i].data_offset) {
+            GLOG_ERROR("GPackReader: entry '{}' data range exceeds file size in '{}'",
+                       entries_[i].path, path);
+            std::fclose(f);
+            entries_.clear();
+            return false;
+        }
     }
 
     path_ = path;
     file_ = f;
+    file_size_ = file_size;
     return true;
 }
 
@@ -114,6 +157,16 @@ std::vector<uint8_t> GPackReader::read(const std::string& internal_path) const {
         }
     }
     if (!target || !file_) return {};
+
+    // fseek/fread 共享同一个 FILE* 光标，并发读取必须互斥
+    std::lock_guard<std::mutex> lock(read_mutex_);
+
+    // 数据区间在 open() 时已验证，这里再防御性检查一次
+    if (target->data_offset > file_size_ || target->data_size > file_size_ - target->data_offset) {
+        GLOG_ERROR("GPackReader: '{}' data range exceeds file size in '{}'",
+                   internal_path, path_);
+        return {};
+    }
 
     if (std::fseek(file_, static_cast<long>(target->data_offset), SEEK_SET) != 0) {
         GLOG_ERROR("GPackReader: failed to seek '{}' in '{}'", internal_path, path_);

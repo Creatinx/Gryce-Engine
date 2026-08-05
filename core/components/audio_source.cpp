@@ -80,11 +80,12 @@ void AudioSource::on_update(float dt) {
         last_is_3d_ = is_3d;
     }
 
-    // 实时同步 Inspector/脚本修改的音量、音高、循环、3D 属性到正在播放的实例
+    // 实时同步 Inspector/脚本修改的音量、音高、速度、循环、3D 属性到正在播放的实例
     for (auto& inst : instances_) {
         if (inst && inst->valid()) {
             inst->set_volume(volume);
             inst->set_pitch(pitch);
+            inst->set_speed(speed);
             inst->set_loop(loop);
             if (is_3d_changed) {
                 inst->set_3d(is_3d);
@@ -130,12 +131,13 @@ void AudioSource::play() {
     instances_.clear();
 
     auto inst = std::make_unique<audio::AudioInstance>();
-    if (!inst->create_from_clip(*clip_)) {
+    if (!inst->create_from_clip(clip_, speed)) {
         return;
     }
 
     inst->set_volume(volume);
     inst->set_pitch(pitch);
+    inst->set_speed(speed);
     inst->set_loop(loop);
     inst->set_3d(is_3d);
     // min_distance 为 0 时逆平方衰减在零距离处增益爆炸（削波），钳到安全下限

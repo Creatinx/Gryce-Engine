@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -55,6 +57,9 @@ private:
     std::string path_;
     mutable FILE* file_ = nullptr;
     std::vector<GPackEntry> entries_;
+    uint64_t file_size_ = 0;
+    // read() 使用 fseek/fread 共享同一 FILE* 光标，并发读取需互斥
+    mutable std::mutex read_mutex_;
 };
 
 class GPackWriter {

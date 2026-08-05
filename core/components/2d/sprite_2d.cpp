@@ -15,27 +15,41 @@ namespace gryce_engine::components::d2::sprite {
 
 namespace {
 
+// std::pair 没有 std::hash 特化，提供自定义哈希作为 unordered_map 键
+struct TextureCacheKeyHash {
+    std::size_t operator()(const std::pair<const void*, std::string>& key) const {
+        std::size_t h1 = std::hash<const void*>{}(key.first);
+        std::size_t h2 = std::hash<std::string>{}(key.second);
+        return h1 ^ (h2 << 1);
+    }
+};
+
 // 简单按路径共享 GPU 纹理，避免同一张贴图被重复上传（如 24 个金币生成 24 张 GPU 纹理）。
-// 注意：当前缓存跨 renderer 会话不自动失效；引擎示例通常只使用一个 renderer 会话。
+// 以 (renderer, path) 为键：不同渲染会话（Viewport / Game / 管线重建）各自持有独立的
+// GPU 纹理，避免跨上下文共享句柄；renderer 会话重建后旧句柄经 generation 校验失效，
+// 会自动重新上传。
 struct SpriteTextureCache {
     std::mutex mutex;
-    std::unordered_map<std::string, render::RHITextureHandle> handles;
+    std::unordered_map<std::pair<const void*, std::string>, render::RHITextureHandle, TextureCacheKeyHash> handles;
 
     render::RHITextureHandle get_or_create(render::IRenderer2D* renderer, const std::string& path) {
         if (path.empty() || !renderer) return render::RHITextureHandle{};
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            auto it = handles.find(path);
-            if (it != handles.end() && it->second.is_valid()) {
+        // 全程持锁：避免两个线程同时 miss 后重复创建（重复上传 + 泄漏一张 GPU 纹理）
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto key = std::make_pair(static_cast<const void*>(renderer), path);
+        auto it = handles.find(key);
+        if (it != handles.end()) {
+            // 句柄在当前 renderer 中仍有效（generation 校验）则直接复用
+            if (it->second.is_valid() && renderer->resolve_texture(it->second) != nullptr) {
                 return it->second;
             }
+            handles.erase(it);
         }
         auto data = AssetManager::instance().load<TextureData>(path);
         if (!data) return render::RHITextureHandle{};
         render::RHITextureHandle handle = renderer->create_texture_from_data(data.get());
         if (handle.is_valid()) {
-            std::lock_guard<std::mutex> lock(mutex);
-            handles[path] = handle;
+            handles[key] = handle;
         }
         return handle;
     }

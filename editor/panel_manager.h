@@ -35,8 +35,17 @@ public:
         return ptr;
     }
 
-    // 菜单栏扩展钩子：在 Window 菜单之前调用（EditorApp 注入 File 菜单）
+// 菜单栏扩展钩子：在 Logo 之后、Window 菜单之前调用（EditorApp 注入 File 菜单）
     void set_menu_bar_hook(std::function<void()> hook) { menu_bar_hook_ = std::move(hook); }
+
+    // 菜单栏左侧 Logo 钩子：最左侧绘制（EditorApp 注入应用 Logo）
+    void set_menu_bar_logo_hook(std::function<void()> hook) { menu_bar_logo_hook_ = std::move(hook); }
+
+    // 菜单栏右侧窗控钩子：在 Window 菜单之后调用（EditorApp 注入最小化/最大化/关闭）
+    void set_window_controls_hook(std::function<void()> hook) { window_controls_hook_ = std::move(hook); }
+
+    // 菜单栏拖拽钩子：在菜单栏开始时调用（EditorApp 注入无边框窗口拖拽/双击最大化）
+    void set_menu_bar_drag_hook(std::function<void()> hook) { menu_bar_drag_hook_ = std::move(hook); }
 
     // 每帧绘制：DockSpace 宿主窗口 + 菜单 + 所有面板
     void show();
@@ -46,7 +55,10 @@ private:
     void build_default_layout(ImGuiID dockspace_id);
 
     std::vector<std::unique_ptr<EditorPanel>> panels_;
+    std::function<void()> menu_bar_logo_hook_;
     std::function<void()> menu_bar_hook_;
+    std::function<void()> window_controls_hook_;
+    std::function<void()> menu_bar_drag_hook_;
     bool layout_checked_ = false;
     bool first_frame_ = true;
 };

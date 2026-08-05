@@ -2,6 +2,7 @@
 
 #include <string>
 #include <cstdint>
+#include <filesystem>
 #include <unordered_map>
 #include <vector>
 
@@ -50,10 +51,19 @@ public:
                       bool skinned = false) override;
     void set_post_process_params(float exposure, int mode) override;
 
+    bool shader_files_changed() const override;
+    bool reload() override;
+
     uint32_t program_id() const { return program_id_; }
 
 private:
     uint32_t program_id_ = 0;
+
+    // Shader 热重载：load_program 记录的源文件信息（resolved 目录 + 最后修改时间）
+    std::string source_name_;
+    std::string source_dir_;
+    std::filesystem::file_time_type vert_mtime_{};
+    std::filesystem::file_time_type frag_mtime_{};
 
     mutable float pp_exposure_ = 1.0f;
     mutable int pp_mode_ = 1;

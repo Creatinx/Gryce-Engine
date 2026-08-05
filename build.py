@@ -111,28 +111,20 @@ def find_msys2_mingw():
 
 
 def clean_build_artifacts(build_dir, keep_deps=True):
-    """Remove build artifacts but optionally preserve deps/ cache."""
+    """Remove build artifacts.
+
+    注意：依赖实际存放在 {args.build_dir}/deps/（源码根下，独立于各 config 子目录），
+    删除某个 config 目录不会影响它，因此这里的 keep_deps 参数已不再需要挪移依赖目录。
+    """
     bd = Path(build_dir)
     if not bd.exists():
         return
 
     if not keep_deps:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (including deps) ...")
-        shutil.rmtree(bd)
-        return
-
-    print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (preserving deps cache) ...")
-    deps_dir = bd / "deps"
-    if deps_dir.exists():
-        import tempfile
-        tmp = Path(tempfile.gettempdir()) / f"gryce_deps_{os.getpid()}"
-        shutil.move(str(deps_dir), str(tmp))
-        shutil.rmtree(bd)
-        bd.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(tmp), str(deps_dir))
-        print(f"{C_OK}[OK]{C_RESET} Preserved dependency cache: {deps_dir}")
     else:
-        shutil.rmtree(bd)
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaning {bd} (preserving deps cache) ...")
+    shutil.rmtree(bd)
 
 
 def ensure_deps():
@@ -275,17 +267,23 @@ def main():
         print(f"{C_OK}[OK]{C_RESET} ninja: {ninja}")
 
     # -----------------------------------------------------------------------
-    # 3. Ensure dependencies
+    # 3. Clean if requested (先于 ensure_deps，避免清完又立刻重新下载)
     # -----------------------------------------------------------------------
-    ensure_deps()
+    if args.clean_all:
+        if build_dir.exists():
+            clean_build_artifacts(build_dir)
+        # 真正的共享依赖目录位于源码根 build/deps/，必须一并删除才能强制重新下载
+        shared_deps = Path(args.build_dir) / "deps"
+        if shared_deps.exists():
+            print(f"{C_INFO}[Gryce Engine]{C_RESET} Removing shared dependency cache: {shared_deps} ...")
+            shutil.rmtree(shared_deps)
+    elif args.clean and build_dir.exists():
+        clean_build_artifacts(build_dir)
 
     # -----------------------------------------------------------------------
-    # 4. Clean if requested
+    # 4. Ensure dependencies
     # -----------------------------------------------------------------------
-    if args.clean_all and build_dir.exists():
-        clean_build_artifacts(build_dir, keep_deps=False)
-    elif args.clean and build_dir.exists():
-        clean_build_artifacts(build_dir, keep_deps=True)
+    ensure_deps()
 
     # -----------------------------------------------------------------------
     # 5. Configure

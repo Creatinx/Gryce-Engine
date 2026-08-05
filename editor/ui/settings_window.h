@@ -64,6 +64,9 @@ public:
     // 注入渲染上下文：VSync 提交时调用 set_swap_interval。
     void set_render_context(render::RenderContext* ctx) { render_ctx_ = ctx; }
 
+    using RebuildFontsFn = std::function<void()>;
+    void set_rebuild_fonts_callback(RebuildFontsFn fn) { rebuild_fonts_fn_ = std::move(fn); }
+
     // 注入快捷键管理器：快捷键页的展示与重绑定。
     void set_shortcut_manager(ShortcutManager* mgr) { shortcut_mgr_ = mgr; }
 
@@ -110,6 +113,7 @@ private:
     std::string project_root_;
     render::RenderContext* render_ctx_ = nullptr;
     ShortcutManager* shortcut_mgr_ = nullptr;
+    RebuildFontsFn rebuild_fonts_fn_;
     std::string rebinding_shortcut_;  // 正在捕获按键的快捷键名，空 = 未捕获
     std::string rebind_conflict_;     // 上一次重绑定的冲突提示
 };

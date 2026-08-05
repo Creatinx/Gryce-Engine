@@ -192,11 +192,12 @@ int run_demo(DemoApp& app, int argc, char* argv[]) {
     render_ctx.start();
 
     if (args.screenshot && args.screenshot_delay <= 0.0f) {
-        const std::string screenshot_path = args.vulkan
-                                                ? "D:/Gryce-Engine/screenshot_vulkan.bmp"
-                                                : "D:/Gryce-Engine/screenshot_opengl.bmp";
-        render_ctx.request_screenshot(screenshot_path);
-        GLOG_INFO("Screenshot requested on next frame: '{}'", screenshot_path);
+        // 截图输出到引擎根目录（.gitignore 已忽略 screenshot_*.bmp），
+        // 避免硬编码绝对路径导致在其他机器/目录上写入失败。
+        const std::filesystem::path screenshot_path =
+            find_project_root() / (args.vulkan ? "screenshot_vulkan.bmp" : "screenshot_opengl.bmp");
+        render_ctx.request_screenshot(screenshot_path.string());
+        GLOG_INFO("Screenshot requested on next frame: '{}'", screenshot_path.string());
     }
 
     platform::InputManager input;

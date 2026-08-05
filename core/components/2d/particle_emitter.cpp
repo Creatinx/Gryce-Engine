@@ -22,26 +22,38 @@ namespace {
 constexpr float k_pi = 3.14159265358979323846f;
 constexpr float k_deg2rad = k_pi / 180.0f;
 
+// std::pair 没有 std::hash 特化，提供自定义哈希作为 unordered_map 键
+struct TextureCacheKeyHash {
+    std::size_t operator()(const std::pair<const void*, std::string>& key) const {
+        std::size_t h1 = std::hash<const void*>{}(key.first);
+        std::size_t h2 = std::hash<std::string>{}(key.second);
+        return h1 ^ (h2 << 1);
+    }
+};
+
 // 粒子贴图共享缓存：同一路径的贴图只上传一次 GPU，按 RHITextureHandle 持有。
+// 以 (renderer, path) 为键，跨 renderer 会话自动失效（generation 校验 + 重新上传）。
 struct ParticleTextureCache {
     std::mutex mutex;
-    std::unordered_map<std::string, render::RHITextureHandle> handles;
+    std::unordered_map<std::pair<const void*, std::string>, render::RHITextureHandle, TextureCacheKeyHash> handles;
 
     render::RHITextureHandle get_or_create(render::IRenderer2D* renderer, const std::string& path) {
         if (path.empty() || !renderer) return render::RHITextureHandle{};
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            auto it = handles.find(path);
-            if (it != handles.end() && it->second.is_valid()) {
+        // 全程持锁，避免两个线程同时 miss 后重复创建
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto key = std::make_pair(static_cast<const void*>(renderer), path);
+        auto it = handles.find(key);
+        if (it != handles.end()) {
+            if (it->second.is_valid() && renderer->resolve_texture(it->second) != nullptr) {
                 return it->second;
             }
+            handles.erase(it);
         }
         auto data = AssetManager::instance().load<TextureData>(path);
         if (!data) return render::RHITextureHandle{};
         render::RHITextureHandle handle = renderer->create_texture_from_data(data.get());
         if (handle.is_valid()) {
-            std::lock_guard<std::mutex> lock(mutex);
-            handles[path] = handle;
+            handles[key] = handle;
         }
         return handle;
     }

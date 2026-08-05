@@ -6,13 +6,13 @@
 namespace gryce_engine::editor {
 
 // ---------------------------------------------------------------------------
-// EditorCamera — 编辑器自由飞行相机（M1-E1）
+// EditorCamera — 编辑器视口相机（M1-E1）
 // 不依赖场景相机实体，内部复用 math::Camera 的矩阵/向量计算。
 // 输入走 ImGui IO，只在 Viewport 面板悬停时响应：
 //   右键按住拖动   —— 旋转视角（yaw/pitch）
-//   W/A/S/D + Q/E  —— 平移（需右键按住，Q 降 E 升），Shift 加速
-//   滚轮           —— 沿视线方向缩放（推进/拉远）
+//   滚轮           —— 沿视线方向推进/拉远（移动视角）
 //   F              —— 聚焦选中实体（按 MeshRenderer/SkinnedMeshRenderer 的世界 AABB）
+//   （不使用 WASD 平移移动视角；移动仅通过滚轮沿视线方向）
 //
 // 相机预设：
 //   Static    — 固定视角，仅响应手动输入
@@ -57,7 +57,6 @@ private:
     math::Camera camera_;
     float move_speed_ = 5.0f;
     float look_sensitivity_ = 0.15f;  // 度/像素
-    float sprint_multiplier_ = 3.0f;
 
     CameraPreset preset_ = CameraPreset::Static;
 

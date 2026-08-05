@@ -91,6 +91,9 @@ uint32_t Box2DPhysicsWorld2D::alloc_body_slot() {
         uint32_t index = body_free_list_.back();
         body_free_list_.pop_back();
         bodies_[index].used = true;
+        // 复用 slot 时代际递增，使旧句柄立即失效
+        bodies_[index].generation =
+            (bodies_[index].generation + 1) & k_handle_generation_mask;
         return index;
     }
     uint32_t index = static_cast<uint32_t>(bodies_.size());
@@ -104,6 +107,8 @@ uint32_t Box2DPhysicsWorld2D::alloc_shape_slot() {
         uint32_t index = shape_free_list_.back();
         shape_free_list_.pop_back();
         shapes_[index].used = true;
+        shapes_[index].generation =
+            (shapes_[index].generation + 1) & k_handle_generation_mask;
         return index;
     }
     uint32_t index = static_cast<uint32_t>(shapes_.size());
@@ -117,6 +122,8 @@ uint32_t Box2DPhysicsWorld2D::alloc_joint_slot() {
         uint32_t index = joint_free_list_.back();
         joint_free_list_.pop_back();
         joints_[index].used = true;
+        joints_[index].generation =
+            (joints_[index].generation + 1) & k_handle_generation_mask;
         return index;
     }
     uint32_t index = static_cast<uint32_t>(joints_.size());
@@ -150,30 +157,27 @@ void Box2DPhysicsWorld2D::free_joint_slot(uint32_t index) {
 }
 
 b2BodyId Box2DPhysicsWorld2D::get_body_id(BodyHandle handle) const {
-    if (handle == k_invalid_body) return b2_nullBodyId;
-    uint32_t index = handle - 1;
-    if (index >= bodies_.size() || !bodies_[index].used) {
-        return b2_nullBodyId;
-    }
-    return bodies_[index].id;
+    DecodedHandle d = decode_handle(handle);
+    if (!d.ok || d.index >= bodies_.size()) return b2_nullBodyId;
+    const BodySlot& slot = bodies_[d.index];
+    if (!slot.used || slot.generation != d.generation) return b2_nullBodyId;
+    return slot.id;
 }
 
 b2ShapeId Box2DPhysicsWorld2D::get_shape_id(ShapeHandle handle) const {
-    if (handle == k_invalid_shape) return b2_nullShapeId;
-    uint32_t index = handle - 1;
-    if (index >= shapes_.size() || !shapes_[index].used) {
-        return b2_nullShapeId;
-    }
-    return shapes_[index].id;
+    DecodedHandle d = decode_handle(handle);
+    if (!d.ok || d.index >= shapes_.size()) return b2_nullShapeId;
+    const ShapeSlot& slot = shapes_[d.index];
+    if (!slot.used || slot.generation != d.generation) return b2_nullShapeId;
+    return slot.id;
 }
 
 b2JointId Box2DPhysicsWorld2D::get_joint_id(JointHandle handle) const {
-    if (handle == k_invalid_joint) return b2_nullJointId;
-    uint32_t index = handle - 1;
-    if (index >= joints_.size() || !joints_[index].used) {
-        return b2_nullJointId;
-    }
-    return joints_[index].id;
+    DecodedHandle d = decode_handle(handle);
+    if (!d.ok || d.index >= joints_.size()) return b2_nullJointId;
+    const JointSlot& slot = joints_[d.index];
+    if (!slot.used || slot.generation != d.generation) return b2_nullJointId;
+    return slot.id;
 }
 
 BodyHandle Box2DPhysicsWorld2D::create_body(BodyType type, const math::Vector2f& position, float angle) {
@@ -192,7 +196,7 @@ BodyHandle Box2DPhysicsWorld2D::create_body(BodyType type, const math::Vector2f&
 
     uint32_t index = alloc_body_slot();
     bodies_[index].id = id;
-    BodyHandle handle = static_cast<BodyHandle>(index + 1);
+    BodyHandle handle = encode_handle(index, bodies_[index].generation);
     b2Body_SetUserData(id, reinterpret_cast<void*>(static_cast<uintptr_t>(handle)));
     return handle;
 }
@@ -201,8 +205,8 @@ void Box2DPhysicsWorld2D::destroy_body(BodyHandle handle) {
     b2BodyId id = get_body_id(handle);
     if (!b2Body_IsValid(id)) return;
     b2DestroyBody(id);
-    if (handle == k_invalid_body) return;
-    free_body_slot(handle - 1);
+    DecodedHandle d = decode_handle(handle);
+    if (d.ok) free_body_slot(d.index);
 }
 
 BodyType Box2DPhysicsWorld2D::get_body_type(BodyHandle handle) const {
@@ -326,7 +330,7 @@ ShapeHandle Box2DPhysicsWorld2D::add_box_shape(BodyHandle body, const math::Vect
 
     uint32_t index = alloc_shape_slot();
     shapes_[index].id = shape_id;
-    return static_cast<ShapeHandle>(index + 1);
+    return encode_handle(index, shapes_[index].generation);
 }
 
 ShapeHandle Box2DPhysicsWorld2D::add_circle_shape(BodyHandle body, float radius,
@@ -349,7 +353,7 @@ ShapeHandle Box2DPhysicsWorld2D::add_circle_shape(BodyHandle body, float radius,
 
     uint32_t index = alloc_shape_slot();
     shapes_[index].id = shape_id;
-    return static_cast<ShapeHandle>(index + 1);
+    return encode_handle(index, shapes_[index].generation);
 }
 
 ShapeHandle Box2DPhysicsWorld2D::add_capsule_shape(BodyHandle body, const math::Vector2f& p1,
@@ -381,8 +385,8 @@ void Box2DPhysicsWorld2D::destroy_shape(ShapeHandle handle) {
     if (b2Shape_IsValid(id)) {
         b2DestroyShape(id);
     }
-    if (handle == k_invalid_shape) return;
-    free_shape_slot(handle - 1);
+    DecodedHandle d = decode_handle(handle);
+    if (d.ok) free_shape_slot(d.index);
 }
 
 std::optional<IPhysicsWorld2D::RaycastHit2D> Box2DPhysicsWorld2D::raycast(const math::Vector2f& origin, const math::Vector2f& direction, float max_distance) const {
@@ -469,7 +473,7 @@ JointHandle Box2DPhysicsWorld2D::create_joint(const JointDesc2D& desc) {
 
     uint32_t index = alloc_joint_slot();
     joints_[index].id = joint_id;
-    return static_cast<JointHandle>(index + 1);
+    return encode_handle(index, joints_[index].generation);
 }
 
 void Box2DPhysicsWorld2D::destroy_joint(JointHandle handle) {
@@ -477,8 +481,8 @@ void Box2DPhysicsWorld2D::destroy_joint(JointHandle handle) {
     if (b2Joint_IsValid(id)) {
         b2DestroyJoint(id);
     }
-    if (handle == k_invalid_joint) return;
-    free_joint_slot(handle - 1);
+    DecodedHandle d = decode_handle(handle);
+    if (d.ok) free_joint_slot(d.index);
 }
 
 } // namespace gryce_engine::physics

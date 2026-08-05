@@ -12,7 +12,7 @@
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
-#include "../asset/asset_database.h"
+#include "../assets_manager/asset_database.h"
 #include "../localization/localization.h"
 #include "../platform_utils.h"
 #include "../undo/command_stack.h"

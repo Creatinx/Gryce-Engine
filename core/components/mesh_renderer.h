@@ -53,6 +53,11 @@ public:
     // 才在渲染线程执行；token 供回调在执行前校验组件是否仍存活，防止 UAF。
     std::shared_ptr<std::atomic<bool>> alive_token() const { return alive_token_; }
 
+    // 资源热重载：销毁当前 GPU mesh 与材质贴图（push 到渲染线程延迟销毁），
+    // 并重置 uploaded_，使下一帧渲染系统重新从 AssetManager 拉取最新数据上传。
+    // 主线程调用安全（仅排队销毁命令，无 GPU 调用）。
+    void invalidate_gpu_mesh();
+
 private:
     render::RHIMeshHandle gpu_mesh_handle_;
     render::RenderContext* ctx_ = nullptr;

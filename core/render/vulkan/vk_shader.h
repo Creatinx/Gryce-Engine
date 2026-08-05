@@ -6,6 +6,7 @@
 
 #include <vulkan/vulkan.h>
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <vector>
 #include <string>
@@ -73,6 +74,9 @@ public:
         pp_mode_ = mode;
     }
 
+    bool shader_files_changed() const override;
+    bool reload() override;
+
     void update_ubo(VkCommandBuffer cmd) const;
     void push_constants(VkCommandBuffer cmd) const;
     void push_post_process_constants(VkCommandBuffer cmd, float exposure, int mode) const;
@@ -110,6 +114,12 @@ private:
 
     VulkanDevice* device_ = nullptr;
     VulkanSwapchain* swapchain_ = nullptr;
+
+    // Shader 热重载：load_program 记录的 SPIR-V 文件信息（resolved 目录 + mtime）
+    std::string source_name_;
+    std::string spirv_dir_;
+    std::filesystem::file_time_type vert_mtime_{};
+    std::filesystem::file_time_type frag_mtime_{};
 
     VkShaderModule vert_module_ = VK_NULL_HANDLE;
     VkShaderModule frag_module_ = VK_NULL_HANDLE;

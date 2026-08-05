@@ -30,25 +30,17 @@ void apply_theme(ThemePreset preset, const ThemeConfig& config) {
     // Dark/Light 预设即 Xcode 暗色/亮色主题
     if (preset == ThemePreset::Dark) {
         apply_xcode_dark();
-    } else if (preset == ThemePreset::Light) {
-        apply_xcode_light();
     } else {
-        EngineTheme::ModernLight::Apply();
+        apply_xcode_light();
     }
 
     const float safe_scale = std::max(config.ui_scale, 0.5f);
     EngineTheme::ScaleStyle(safe_scale);
 
     if (ImGui::GetCurrentContext()) {
-        if (preset == ThemePreset::ModernLight) {
-            // ModernLight 与 Light 使用相同基础字号 14px，避免整体大小差异过大
-            EngineTheme::LoadModernFonts(14.0f * safe_scale,
-                                         13.0f * safe_scale);
-        } else {
-            ThemeConfig scaled_config = config;
-            scaled_config.ui_scale = safe_scale;
-            load_editor_font(scaled_config);
-        }
+        ThemeConfig scaled_config = config;
+        scaled_config.ui_scale = safe_scale;
+        load_editor_font(scaled_config);
     }
 }
 
@@ -56,7 +48,6 @@ void save_theme_config(const std::string& project_root, const ThemeConfig& confi
     nlohmann::json j;
     std::string preset_name = "light";
     if (preset == ThemePreset::Dark)        preset_name = "dark";
-    else if (preset == ThemePreset::ModernLight) preset_name = "modern_light";
     j["preset"]      = preset_name;
     j["font_size"]   = config.font_size;
     j["ui_scale"]    = config.ui_scale;
@@ -90,7 +81,8 @@ bool load_theme_config(const std::string& project_root, ThemeConfig& out_config,
         }
         std::string preset_str = j.value("preset", "dark");
         if (preset_str == "light")        out_preset = ThemePreset::Light;
-        else if (preset_str == "modern_light") out_preset = ThemePreset::ModernLight;
+        // 兼容旧配置："modern_light" 已删除，回退到 Light
+        else if (preset_str == "modern_light") out_preset = ThemePreset::Light;
         // 兼容旧配置："xcode" 预设已并入 Dark
         else                              out_preset = ThemePreset::Dark;
     } catch (const std::exception& e) {

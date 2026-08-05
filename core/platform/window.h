@@ -71,6 +71,16 @@ public:
 
     void set_cursor_pos(double x, double y);
 
+    // 无边框窗口控制（自定义标题栏用）
+    void minimize();
+    void maximize();
+    void restore();
+    bool is_maximized() const;
+    // 无边框窗口拖动：将鼠标按下事件转换为系统标题栏拖动
+    void begin_caption_drag();
+    // 无边框窗口边缘缩放子类化：原始 WndProc（win32 专用，供 window.cpp 内 WndProc 使用）
+    void* native_wndproc() const { return original_wndproc_; }
+
     // 窗口大小变化回调
     using ResizeCallback = std::function<void(int width, int height)>;
     void set_resize_callback(ResizeCallback cb);
@@ -107,6 +117,15 @@ private:
     int height_ = 0;
     ResizeCallback resize_callback_;
     bool close_requested_ = false;
+
+#ifdef _WIN32
+    // 无边框窗口边缘缩放的 WndProc 子类化（GLFW 无边框用 WS_POPUP，无 WS_THICKFRAME
+    // 无系统缩放边框，必须由 WM_NCHITTEST 自行返回 HTLEFT/HTRIGHT/... 触发缩放）
+    void install_resize_border();
+    void remove_resize_border();
+    void* original_wndproc_ = nullptr;   // 原始 WndProc
+    void* win32_hwnd_ = nullptr;          // HWND 缓存，避免重复查询
+#endif
 
     double fps_ = 0.0;
     double delta_time_ = 0.0;

@@ -3,15 +3,21 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <mutex>
 
 namespace gryce_engine::scene {
 
 namespace {
 
 std::string generate_uuid_string() {
+    // gen/dis 是有状态且非线程安全的；多线程并发生成 UUID 时
+    // 对 std::mt19937 的并发调用是数据竞争，用互斥锁保护。
     static std::random_device rd;
     static std::mt19937 gen(rd());
     static std::uniform_int_distribution<> dis(0, 15);
+    static std::mutex mutex;
+
+    std::lock_guard<std::mutex> lock(mutex);
 
     // UUID v4 格式：xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx，其中 y = 8,9,a,b
     std::stringstream ss;

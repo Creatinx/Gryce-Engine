@@ -7,6 +7,8 @@
 
 #include <fstream>
 #include <sstream>
+#include <filesystem>
+#include <system_error>
 
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
@@ -54,6 +56,59 @@ const char* stage_name(ShaderStage stage) {
     case ShaderStage::Compute:  return "Compute";
     }
     return "Unknown";
+}
+
+// 从源码链接一个新 program（不触碰已有 program_id_）。
+// 成功返回新 program id，失败返回 0。用于热重载：先编译新程序，
+// 成功后再替换旧程序，避免重编译失败时破坏当前可用的 shader。
+uint32_t link_program(const std::string& vertex_src, const std::string& fragment_src) {
+    std::vector<ShaderStageDesc> stages;
+    stages.emplace_back(ShaderStage::Vertex, vertex_src);
+    stages.emplace_back(ShaderStage::Fragment, fragment_src);
+
+    std::vector<uint32_t> shader_ids;
+    shader_ids.reserve(stages.size());
+
+    int success = 0;
+    for (const auto& stage : stages) {
+        uint32_t shader = glCreateShader(to_gl_shader_stage(stage.stage));
+        const char* src = stage.source.c_str();
+        glShaderSource(shader, 1, &src, nullptr);
+        glCompileShader(shader);
+
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+        if (!success) {
+            char log[512];
+            glGetShaderInfoLog(shader, 512, nullptr, log);
+            GLOG_ERROR("{} shader compile failed: {}", stage_name(stage.stage), log);
+            glDeleteShader(shader);
+            for (uint32_t sid : shader_ids) {
+                glDeleteShader(sid);
+            }
+            return 0;
+        }
+        shader_ids.push_back(shader);
+    }
+
+    uint32_t program = glCreateProgram();
+    for (uint32_t shader : shader_ids) {
+        glAttachShader(program, shader);
+    }
+    glLinkProgram(program);
+
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char log[512];
+        glGetProgramInfoLog(program, 512, nullptr, log);
+        GLOG_ERROR("Shader link failed: {}", log);
+        glDeleteProgram(program);
+        program = 0;
+    }
+
+    for (uint32_t shader : shader_ids) {
+        glDeleteShader(shader);
+    }
+    return program;
 }
 
 } // namespace
@@ -166,6 +221,7 @@ void GLShader::set_int(const std::string& name, int value) {
 }
 
 void GLShader::set_int(const char* name, int value) {
+    if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_int: uniform '{}' not found (location={})", name, loc);
@@ -180,6 +236,7 @@ void GLShader::set_float(const std::string& name, float value) {
 }
 
 void GLShader::set_float(const char* name, float value) {
+    if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_float: uniform '{}' not found (location={})", name, loc);
@@ -194,6 +251,7 @@ void GLShader::set_vec2(const std::string& name, const gryce_engine::math::Vecto
 }
 
 void GLShader::set_vec2(const char* name, const gryce_engine::math::Vector2f& value) {
+    if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_vec2: uniform '{}' not found (location={})", name, loc);
@@ -208,6 +266,7 @@ void GLShader::set_vec3(const std::string& name, const gryce_engine::math::Vecto
 }
 
 void GLShader::set_vec3(const char* name, const gryce_engine::math::Vector3f& value) {
+    if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_vec3: uniform '{}' not found (location={})", name, loc);
@@ -222,6 +281,7 @@ void GLShader::set_vec4(const std::string& name, const gryce_engine::math::Vecto
 }
 
 void GLShader::set_vec4(const char* name, const gryce_engine::math::Vector4f& value) {
+    if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_vec4: uniform '{}' not found (location={})", name, loc);
@@ -236,6 +296,7 @@ void GLShader::set_mat4(const std::string& name, const gryce_engine::math::Matri
 }
 
 void GLShader::set_mat4(const char* name, const gryce_engine::math::Matrix4f& value) {
+    if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_mat4: uniform '{}' not found (location={})", name, loc);
@@ -247,7 +308,7 @@ void GLShader::set_mat4(const char* name, const gryce_engine::math::Matrix4f& va
 
 void GLShader::set_mat4_array(const char* name, const gryce_engine::math::Matrix4f* data,
                               uint32_t count) {
-    if (!data || count == 0) return;
+    if (!name || !data || count == 0) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
         GLOG_WARN("GLShader::set_mat4_array: uniform '{}' not found (location={})", name, loc);
@@ -292,7 +353,60 @@ bool GLShader::load_program(const std::string& name,
         GLOG_ERROR("GLShader::load_program: failed to load '{}.vert' or '{}.frag' from '{}'", name, name, dir);
         return false;
     }
+
+    // 记录源文件信息供热重载使用
+    source_name_ = name;
+    source_dir_ = dir;
+    std::error_code ec;
+    vert_mtime_ = std::filesystem::last_write_time(dir + name + ".vert", ec);
+    frag_mtime_ = std::filesystem::last_write_time(dir + name + ".frag", ec);
+
     return compile(vertex_src, fragment_src);
+}
+
+bool GLShader::shader_files_changed() const {
+    if (source_name_.empty() || source_dir_.empty()) return false;
+    std::error_code ec;
+    auto vert_mtime = std::filesystem::last_write_time(source_dir_ + source_name_ + ".vert", ec);
+    if (ec) return false;
+    auto frag_mtime = std::filesystem::last_write_time(source_dir_ + source_name_ + ".frag", ec);
+    if (ec) return false;
+    return vert_mtime != vert_mtime_ || frag_mtime != frag_mtime_;
+}
+
+bool GLShader::reload() {
+    if (source_name_.empty() || source_dir_.empty()) return false;
+
+    std::string vertex_src = load_file_text(source_dir_ + source_name_ + ".vert");
+    std::string fragment_src = load_file_text(source_dir_ + source_name_ + ".frag");
+    if (vertex_src.empty() || fragment_src.empty()) {
+        GLOG_ERROR("GLShader::reload: failed to re-read '{}'", source_name_);
+        return false;
+    }
+
+    // 先编译新程序，成功后再替换，避免失败时丢失当前可用程序
+    uint32_t new_program = link_program(vertex_src, fragment_src);
+    if (new_program == 0) {
+        GLOG_ERROR("GLShader::reload: recompile failed for '{}', keeping old program", source_name_);
+        return false;
+    }
+
+    if (program_id_) {
+        if (g_current_bound_program == program_id_) {
+            g_current_bound_program = 0;
+        }
+        glDeleteProgram(program_id_);
+    }
+    program_id_ = new_program;
+    uniform_cache_.clear();
+    pp_dirty_ = true; // 重编译后需重新应用 post-process 参数
+
+    std::error_code ec;
+    vert_mtime_ = std::filesystem::last_write_time(source_dir_ + source_name_ + ".vert", ec);
+    frag_mtime_ = std::filesystem::last_write_time(source_dir_ + source_name_ + ".frag", ec);
+
+    GLOG_INFO("GLShader: hot-reloaded '{}' (program={})", source_name_, program_id_);
+    return true;
 }
 
 void GLShader::set_post_process_params(float exposure, int mode) {

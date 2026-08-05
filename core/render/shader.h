@@ -91,6 +91,17 @@ public:
     virtual void set_post_process_params(float exposure, int mode) {}
 
     virtual bool is_valid() const = 0;
+
+    // -----------------------------------------------------------------------
+    // Shader 热重载
+    // -----------------------------------------------------------------------
+    // 检测着色器源文件（OpenGL 为 .vert/.frag，Vulkan 为 SPIR-V）是否已变化。
+    // 仅做文件 stat，主线程调用安全（不需要 GL/VK context）。
+    virtual bool shader_files_changed() const { return false; }
+
+    // 重新读取源文件并重新编译 / 重建管线。调用前必须 pause_render_thread()，
+    // 且调用方持有 GPU context。编译失败时保留旧程序/管线，返回 false。
+    virtual bool reload() { return false; }
 };
 
 } // namespace gryce_engine::render

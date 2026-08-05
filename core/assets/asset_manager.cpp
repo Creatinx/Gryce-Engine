@@ -110,6 +110,9 @@ std::shared_ptr<MeshData> AssetManager::load_mesh_internal(const std::string& pa
     entry.asset = data;
     entry.memory_size = data->memory_size();
     entry.last_access = std::chrono::steady_clock::now();
+    entry.source_path = resolved;
+    std::error_code ec;
+    entry.source_mtime = std::filesystem::last_write_time(resolved, ec);
     assets_[path] = std::move(entry);
     GLOG_INFO("AssetManager: cached mesh '{}' ({} vertices)", path, data->vertices.size());
     return data;
@@ -216,6 +219,9 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
     entry.asset = tex;
     entry.memory_size = tex->memory_size();
     entry.last_access = std::chrono::steady_clock::now();
+    entry.source_path = resolved;
+    std::error_code ec;
+    entry.source_mtime = std::filesystem::last_write_time(resolved, ec);
     assets_[path] = std::move(entry);
     maybe_evict_unlocked();
         GLOG_INFO("AssetManager: cached compressed texture '{}' ({}x{}, mips={})",
@@ -246,6 +252,9 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
     entry.asset = tex;
     entry.memory_size = tex->memory_size();
     entry.last_access = std::chrono::steady_clock::now();
+    entry.source_path = resolved;
+    std::error_code ec;
+    entry.source_mtime = std::filesystem::last_write_time(resolved, ec);
     assets_[path] = std::move(entry);
     maybe_evict_unlocked();
         GLOG_INFO("AssetManager: cached EXR '{}' ({}x{}, RGBA32F)", path, w, h);
@@ -274,6 +283,9 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
     entry.asset = tex;
     entry.memory_size = tex->memory_size();
     entry.last_access = std::chrono::steady_clock::now();
+    entry.source_path = resolved;
+    std::error_code ec;
+    entry.source_mtime = std::filesystem::last_write_time(resolved, ec);
     assets_[path] = std::move(entry);
     maybe_evict_unlocked();
         GLOG_INFO("AssetManager: cached HDR texture '{}' ({}x{}, RGBA32F)", path, width, height);
@@ -299,6 +311,9 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
     entry.asset = tex;
     entry.memory_size = tex->memory_size();
     entry.last_access = std::chrono::steady_clock::now();
+    entry.source_path = resolved;
+    std::error_code ec;
+    entry.source_mtime = std::filesystem::last_write_time(resolved, ec);
     assets_[path] = std::move(entry);
     maybe_evict_unlocked();
     GLOG_INFO("AssetManager: cached texture '{}' ({}x{}, {} channels)", path, width, height, channels);
@@ -308,26 +323,64 @@ std::shared_ptr<TextureData> AssetManager::load_texture_internal(const std::stri
 // ---------------------------------------------------------------------------
 // 兼容 API
 // ---------------------------------------------------------------------------
-const MeshData* AssetManager::load_mesh(const std::string& path) {
+std::vector<std::string> AssetManager::poll_hot_reload() {
+    struct ChangedAsset {
+        std::string path;
+        bool is_mesh = false;
+    };
+    std::vector<ChangedAsset> changed;
+
+    // 先收集变化路径：stat 需要源文件已 resolve，直接在缓存条目里比对 mtime
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& [path, entry] : assets_) {
+            if (entry.source_path.empty()) continue;
+            std::error_code ec;
+            auto now = std::filesystem::last_write_time(entry.source_path, ec);
+            if (ec) continue;
+            if (now != entry.source_mtime) {
+                changed.push_back({path, entry.asset->type() == "MeshData"});
+            }
+        }
+    }
+
+    if (changed.empty()) return {};
+
+    // 逐个重新导入：先移除旧缓存（可能被组件以 shared_ptr 引用着，安全），
+    // 再走既有 load 路径重新导入并写入新缓存。导入失败则资源暂时不可用，
+    // 下次 poll 该条目不存在，不会反复重试；修复文件后由正常 load 恢复。
+    std::vector<std::string> result;
+    result.reserve(changed.size());
+    for (const auto& item : changed) {
+        unload(item.path);
+        const std::string resolved = resources::ResourcePath::resolve(item.path);
+        if (!std::filesystem::exists(resolved)) continue;
+        if (item.is_mesh) {
+            if (load_mesh_internal(item.path)) result.push_back(item.path);
+        } else {
+            if (load_texture_internal(item.path)) result.push_back(item.path);
+        }
+    }
+
+    if (!result.empty()) {
+        GLOG_INFO("AssetManager: hot-reloaded {} asset(s)", result.size());
+    }
+    return result;
+}
+
+std::shared_ptr<const MeshData> AssetManager::load_mesh(const std::string& path) {
     auto shared = load_mesh_internal(path);
-    const MeshData* raw = shared ? shared.get() : nullptr;
-    shared.reset();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         touch_unlocked(path);
         maybe_evict_unlocked();
     }
-    return raw;
+    // shared 保持持有一个引用：调用方持有期间该条目不会被 LRU 驱逐
+    return shared;
 }
 
 std::shared_ptr<const MeshData> AssetManager::load_mesh_shared(const std::string& path) {
-    auto shared = load_mesh_internal(path);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        touch_unlocked(path);
-        maybe_evict_unlocked();
-    }
-    return shared;
+    return load_mesh(path);
 }
 
 void AssetManager::unload(const std::string& path) {

@@ -11,6 +11,7 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
@@ -107,9 +108,141 @@ static BodyType from_jolt_type(JPH::EMotionType t) {
 }
 
 std::atomic<int> g_jolt_ref_count{0};
-std::once_flag g_jolt_init_flag;
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// JoltContactListener — Jolt 接触回调 → 引擎 CollisionEvent 流
+// OnContactAdded/Removed 产生 BeginContact/EndContact 事件（含触发器）；
+// OnContactPersisted 只累计每个刚体本帧最大碰撞冲量（供碎裂等使用）。
+// 回调发生在 Update() 内部的作业线程上，因此所有累积容器都受互斥锁保护。
+// ---------------------------------------------------------------------------
+class JoltContactListener final : public JPH::ContactListener {
+public:
+    JoltContactListener() { events_.reserve(256); }
+
+    void OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2,
+                        const JPH::ContactManifold& inManifold,
+                        JPH::ContactSettings& /*ioSettings*/) override {
+        record_contact(inBody1, inBody2, inManifold, CollisionEventType::BeginContact);
+    }
+
+    void OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2,
+                            const JPH::ContactManifold& inManifold,
+                            JPH::ContactSettings& /*ioSettings*/) override {
+        // 持续接触：仅累计冲量，不产生事件，避免每步重复事件刷屏
+        const BodyHandle a = static_cast<BodyHandle>(inBody1.GetID().GetIndexAndSequenceNumber());
+        const BodyHandle b = static_cast<BodyHandle>(inBody2.GetID().GetIndexAndSequenceNumber());
+        const float impulse = estimate_impulse(inBody1, inBody2, inManifold);
+        std::lock_guard<std::mutex> lock(mutex_);
+        accumulate_impulse_locked(a, impulse);
+        accumulate_impulse_locked(b, impulse);
+    }
+
+    void OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair) override {
+        CollisionEvent ev;
+        ev.type = CollisionEventType::EndContact;
+        ev.body_a = static_cast<BodyHandle>(inSubShapePair.GetBody1ID().GetIndexAndSequenceNumber());
+        ev.body_b = static_cast<BodyHandle>(inSubShapePair.GetBody2ID().GetIndexAndSequenceNumber());
+        // is_trigger 由系统层根据实体碰撞体组件推导（Removed 回调不提供 body 引用）
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(ev);
+    }
+
+    void drain(std::vector<CollisionEvent>& out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!events_.empty()) {
+            out.insert(out.end(), events_.begin(), events_.end());
+            events_.clear();
+        }
+    }
+
+    void drain_impulses(std::unordered_map<BodyHandle, float>& out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (max_impulse_.empty()) return;
+        for (auto& [handle, impulse] : max_impulse_) {
+            auto it = out.find(handle);
+            if (it == out.end() || impulse > it->second) {
+                out[handle] = impulse;
+            }
+        }
+        max_impulse_.clear();
+    }
+
+private:
+    // 沿接触法线的闭合速度 × 有效质量（静态/运动学刚体质量为无穷 → 有效质量取对方）
+    static float estimate_impulse(const JPH::Body& b1, const JPH::Body& b2,
+                                  const JPH::ContactManifold& manifold) {
+        if (manifold.mRelativeContactPointsOn1.empty()) return 0.0f;
+
+        const JPH::Vec3 n = manifold.mWorldSpaceNormal.LengthSq() > 1e-12f
+                                ? manifold.mWorldSpaceNormal.Normalized()
+                                : JPH::Vec3(0.0f, 1.0f, 0.0f);
+        const JPH::Vec3 p = manifold.GetWorldSpaceContactPointOn1(0);
+        const JPH::Vec3 com1 = b1.GetCenterOfMassPosition();
+        const JPH::Vec3 com2 = b2.GetCenterOfMassPosition();
+
+        const JPH::Vec3 vel1 = b1.GetLinearVelocity() + b1.GetAngularVelocity().Cross(p - com1);
+        const JPH::Vec3 vel2 = b2.GetLinearVelocity() + b2.GetAngularVelocity().Cross(p - com2);
+        const float closing_speed = (vel1 - vel2).Dot(n); // >0 表示相互靠近
+
+        float inv_mass = 0.0f;
+        if (const JPH::MotionProperties* mp = b1.GetMotionPropertiesUnchecked()) {
+            inv_mass += mp->GetInverseMassUnchecked();
+        }
+        if (const JPH::MotionProperties* mp = b2.GetMotionPropertiesUnchecked()) {
+            inv_mass += mp->GetInverseMassUnchecked();
+        }
+        if (closing_speed <= 0.0f || inv_mass <= 1e-9f) return 0.0f;
+        return closing_speed / inv_mass;
+    }
+
+    void accumulate_impulse_locked(BodyHandle handle, float impulse) {
+        auto it = max_impulse_.find(handle);
+        if (it == max_impulse_.end()) {
+            max_impulse_[handle] = impulse;
+        } else if (impulse > it->second) {
+            it->second = impulse;
+        }
+    }
+
+    void record_contact(const JPH::Body& b1, const JPH::Body& b2,
+                        const JPH::ContactManifold& manifold, CollisionEventType type) {
+        CollisionEvent ev;
+        ev.type = type;
+        ev.body_a = static_cast<BodyHandle>(b1.GetID().GetIndexAndSequenceNumber());
+        ev.body_b = static_cast<BodyHandle>(b2.GetID().GetIndexAndSequenceNumber());
+        ev.is_trigger = b1.IsSensor() || b2.IsSensor();
+        ev.impulse = estimate_impulse(b1, b2, manifold);
+
+        if (ev.is_trigger) {
+            // 传感器无接触点/法线：point 取两刚体质心中点
+            const JPH::Vec3 mid = (b1.GetCenterOfMassPosition() + b2.GetCenterOfMassPosition()) * 0.5f;
+            ev.point = from_jolt(mid);
+            ev.normal = math::Vector3f::zero();
+            ev.impulse = 0.0f;
+        } else if (!manifold.mRelativeContactPointsOn1.empty()) {
+            ev.point = from_jolt(manifold.GetWorldSpaceContactPointOn1(0));
+            ev.normal = from_jolt(manifold.mWorldSpaceNormal.LengthSq() > 1e-12f
+                                      ? manifold.mWorldSpaceNormal.Normalized()
+                                      : JPH::Vec3(0.0f, 1.0f, 0.0f));
+        } else {
+            ev.point = from_jolt(b1.GetCenterOfMassPosition());
+            ev.normal = math::Vector3f::zero();
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(ev);
+        if (ev.impulse > 0.0f) {
+            accumulate_impulse_locked(ev.body_a, ev.impulse);
+            accumulate_impulse_locked(ev.body_b, ev.impulse);
+        }
+    }
+
+    std::mutex mutex_;
+    std::vector<CollisionEvent> events_;
+    std::unordered_map<BodyHandle, float> max_impulse_;
+};
 
 JoltPhysicsWorld3D::JoltPhysicsWorld3D() = default;
 JoltPhysicsWorld3D::~JoltPhysicsWorld3D() { shutdown(); }
@@ -117,11 +250,13 @@ JoltPhysicsWorld3D::~JoltPhysicsWorld3D() { shutdown(); }
 bool JoltPhysicsWorld3D::init(const math::Vector3f& gravity) {
     if (initialized_) return true;
 
-    std::call_once(g_jolt_init_flag, []() {
+    // shutdown() 在引用计数归零时销毁 Factory；std::call_once 无法在此场景下
+    // 再次初始化，因此改为空指针判断，支持场景 detach/attach 周期后的重新初始化。
+    if (JPH::Factory::sInstance == nullptr) {
         JPH::RegisterDefaultAllocator();
         JPH::Factory::sInstance = new JPH::Factory();
         JPH::RegisterTypes();
-    });
+    }
     ++g_jolt_ref_count;
 
     temp_allocator_ = std::make_unique<JPH::TempAllocatorImpl>(10 * 1024 * 1024);
@@ -141,6 +276,10 @@ bool JoltPhysicsWorld3D::init(const math::Vector3f& gravity) {
         *obj_pair_filter_);
 
     physics_system_->SetGravity(to_jolt(gravity));
+
+    contact_listener_ = std::make_unique<JoltContactListener>();
+    physics_system_->SetContactListener(contact_listener_.get());
+
     initialized_ = true;
     GLOG_INFO("JoltPhysicsWorld3D initialized (ref_count={})", g_jolt_ref_count.load());
     return true;
@@ -164,6 +303,7 @@ void JoltPhysicsWorld3D::shutdown() {
     physics_system_.reset();
     job_system_.reset();
     temp_allocator_.reset();
+    contact_listener_.reset();
 
     delete bp_layer_interface_;
     bp_layer_interface_ = nullptr;
@@ -217,6 +357,7 @@ BodyHandle JoltPhysicsWorld3D::create_body(const BodyDesc& desc) {
     settings.mLinearDamping = desc.linear_damping;
     settings.mAngularDamping = desc.angular_damping;
     settings.mAllowSleeping = desc.allow_sleep;
+    settings.mIsSensor = desc.is_sensor;
     // 启用 LinearCast CCD，防止高速物体穿模
     settings.mMotionQuality = JPH::EMotionQuality::LinearCast;
 
@@ -616,6 +757,16 @@ void JoltPhysicsWorld3D::destroy_joint(JointHandle handle) {
         physics_system_->RemoveConstraint(c);
     }
     c = nullptr;
+}
+
+void JoltPhysicsWorld3D::drain_collision_events(std::vector<CollisionEvent>& out) {
+    if (!contact_listener_) return;
+    contact_listener_->drain(out);
+}
+
+void JoltPhysicsWorld3D::drain_collision_impulses(std::unordered_map<BodyHandle, float>& out) {
+    if (!contact_listener_) return;
+    contact_listener_->drain_impulses(out);
 }
 
 } // namespace gryce_engine::physics

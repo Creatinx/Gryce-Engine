@@ -72,16 +72,8 @@ Entity* Scene::create_prefab(const std::string& scene_path) {
 
 void Scene::set_store_on_entity(Entity* entity) {
     if (!entity) return;
-    std::cerr << "[UNDO-TRACE] set_store_on_entity: " << entity->name() << std::endl;
-    std::cout.flush();
+    // set_store 会递归传播到子实体
     entity->set_store(&component_store_);
-    std::cerr << "[UNDO-TRACE] set_store_on_entity: " << entity->name() << " store set" << std::endl;
-    std::cout.flush();
-    for (const auto& child : entity->children()) {
-        set_store_on_entity(child.get());
-    }
-    std::cerr << "[UNDO-TRACE] set_store_on_entity: " << entity->name() << " children done" << std::endl;
-    std::cout.flush();
 }
 
 
@@ -254,10 +246,16 @@ bool Scene::hot_reload(const std::string& path) {
     });
 
     // 1) 删除当前场景中不在新场景中的实体
+    // 注意：只收集子树的根（其父实体保留在场景中），子实体由 destroy_entity
+    // 递归销毁。若父实体也要被移除，子实体会随父一并销毁，收集子实体指针会在
+    // 后续循环中变成悬垂指针（use-after-free）。
     std::vector<Entity*> to_remove;
     foreach([&](Entity* e) {
         if (new_uuids.find(e->uuid().str()) == new_uuids.end()) {
-            to_remove.push_back(e);
+            Entity* parent = e->parent();
+            if (!parent || new_uuids.find(parent->uuid().str()) != new_uuids.end()) {
+                to_remove.push_back(e);
+            }
         }
     });
     for (auto* e : to_remove) {

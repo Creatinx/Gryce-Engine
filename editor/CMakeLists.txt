@@ -10,6 +10,7 @@ target_sources(gryce_engine PRIVATE
     recorder.cpp
     editor_camera.cpp
     panel_manager.cpp
+    fluent_window.cpp
     panels/hierarchy_panel.cpp
     panels/inspector_panel.cpp
     panels/console_panel.cpp
@@ -34,7 +35,7 @@ target_sources(gryce_engine PRIVATE
     platform_utils.cpp
     project/project_settings.cpp
     import/gimport_settings.cpp
-    asset/asset_database.cpp
+    assets_manager/asset_database.cpp
     localization/localization.cpp
     shortcuts/shortcut_manager.cpp
     undo/command_stack.cpp
@@ -54,6 +55,11 @@ else()
 endif()
 
 target_link_libraries(gryce_engine PRIVATE gryce_core)
+
+# Windows: 链接 DWM API（FluentWindow 需要）
+if(WIN32)
+    target_link_libraries(gryce_engine PRIVATE dwmapi)
+endif()
 
 # MinGW: 静态链接 libgcc/libstdc++，避免运行时加载到 PATH 中不兼容的运行时 DLL
 #（典型症状：无法定位程序输入点 codecvt_utf8_utf16...）。

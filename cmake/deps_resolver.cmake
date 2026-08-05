@@ -275,9 +275,14 @@ if(GRYCE_BUILD_TESTS)
             message(STATUS "GTest: built from source at ${GRYCE_DEPS_ROOT}/googletest")
             set(GRYCE_HAS_GTEST TRUE)
         else()
-            message(STATUS "GTest source not found, disabling tests on MSVC")
-            set(GRYCE_HAS_GTEST FALSE)
-            set(GRYCE_BUILD_TESTS OFF)
+            # 显式报错而非静默禁用：GRYCE_BUILD_TESTS=ON 却跑不了测试会让人误以为
+            # 测试通过了。提示用 deps_manager 下载 googletest 源码。
+            message(FATAL_ERROR
+                "[deps] GRYCE_BUILD_TESTS=ON but GoogleTest source not found at "
+                "${GRYCE_DEPS_ROOT}/googletest\n"
+                "Please run: python tools/deps_manager.py download\n"
+                "Or pass -DGRYCE_BUILD_TESTS=OFF to disable tests."
+            )
         endif()
     else()
         find_package(GTest QUIET CONFIG)
@@ -285,9 +290,11 @@ if(GRYCE_BUILD_TESTS)
             message(STATUS "GTest found: ${GTest_DIR}")
             set(GRYCE_HAS_GTEST TRUE)
         else()
-            message(STATUS "GTest not found locally, disabling tests")
-            set(GRYCE_HAS_GTEST FALSE)
-            set(GRYCE_BUILD_TESTS OFF)
+            message(FATAL_ERROR
+                "[deps] GRYCE_BUILD_TESTS=ON but GoogleTest not found.\n"
+                "Please run: python tools/deps_manager.py download\n"
+                "Or pass -DGRYCE_BUILD_TESTS=OFF to disable tests."
+            )
         endif()
     endif()
 endif()

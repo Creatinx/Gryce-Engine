@@ -106,6 +106,10 @@ bool ComponentFieldCommand::apply_value(const FieldValue& value) {
         return reflection::write_field<T>(component, *field, v);
     }, value);
 
+    // 反射写入不经过 Entity 的 setter，必须显式标脏，
+    // 否则场景差异保存（serialize_delta）会静默丢弃该编辑。
+    if (ok) entity->mark_dirty();
+
     return ok;
 }
 
@@ -474,6 +478,10 @@ bool ComponentMultiFieldCommand::apply_value(const std::string& field_name,
         using T = std::decay_t<decltype(v)>;
         return reflection::write_field<T>(component, *field, v);
     }, value);
+
+    // 反射写入不经过 Entity 的 setter，必须显式标脏，
+    // 否则场景差异保存（serialize_delta）会静默丢弃该编辑。
+    if (ok) entity->mark_dirty();
 
     return ok;
 }

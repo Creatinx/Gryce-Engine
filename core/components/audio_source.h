@@ -18,6 +18,7 @@ public:
     std::string clip_path;
     float volume = 1.0f;
     float pitch = 1.0f;
+    float speed = 1.0f;       // 变速不变调（仅非流式音频）
     bool loop = false;
     bool play_on_awake = false;
     bool is_3d = true;
@@ -32,6 +33,7 @@ public:
         out["clip_path"] = clip_path;
         out["volume"] = volume;
         out["pitch"] = pitch;
+        out["speed"] = speed;
         out["loop"] = loop;
         out["play_on_awake"] = play_on_awake;
         out["is_3d"] = is_3d;
@@ -43,6 +45,7 @@ public:
         clip_path = in.value("clip_path", "");
         volume = in.value("volume", 1.0f);
         pitch = in.value("pitch", 1.0f);
+        speed = in.value("speed", 1.0f);
         loop = in.value("loop", false);
         play_on_awake = in.value("play_on_awake", false);
         is_3d = in.value("is_3d", true);

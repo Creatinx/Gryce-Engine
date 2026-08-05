@@ -136,6 +136,9 @@ void InspectorPanel::track_field_change(scene::Entity* entity,
             const FieldValue new_value = read_field_value(component, field);
             if (it->second != new_value) {
                 push_field_command(entity, component, field, it->second, new_value);
+                if (component_changed_handler_) {
+                    component_changed_handler_(entity);
+                }
             }
             active_fields_.erase(it);
         }
@@ -255,7 +258,7 @@ void InspectorPanel::draw_component(scene::Entity* entity, components::Component
     ImGui::PushID(static_cast<void*>(component));
     const bool header_open = ImGui::CollapsingHeader(display_type_name, ImGuiTreeNodeFlags_DefaultOpen);
 
-    // 记录当前聚焦的组件，用于 Delete 键删除
+    // 记录当前聚焦的组件，用于 Delete 键删除-【=】
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
         focused_component_type_ = raw_type_name;
     }
@@ -433,6 +436,10 @@ void InspectorPanel::draw_physical_material_section(scene::Entity* entity, compo
             undo_stack_->push(std::make_unique<ComponentMultiFieldCommand>(
                 *scene_, entity->uuid(), "PhysicalMaterial", std::move(changes)));
         }
+
+        if (component_changed_handler_) {
+            component_changed_handler_(entity);
+        }
     }
 
     ImGui::Separator();
@@ -481,6 +488,7 @@ void InspectorPanel::draw_audio_source_section(scene::Entity* entity, components
     // 倍速（Pitch）专用滑块：0.1x ~ 4.0x，拖动时即时同步到正在播放的实例。
     ImGui::BeginDisabled(read_only_);
     if (ImGui::SliderFloat(tr("inspector.audio_pitch"), &src->pitch, 0.1f, 4.0f, "%.2fx")) {
+        if (entity) entity->mark_dirty();
         if (playing) {
             src->on_update(0.0f);
         }
@@ -568,6 +576,9 @@ void InspectorPanel::draw_field(scene::Entity* entity,
                         const std::string new_value(buf);
                         write_field<std::string>(component, field, new_value);
                         push_field_command(entity, component, field, v, new_value);
+                        if (component_changed_handler_) {
+                            component_changed_handler_(entity);
+                        }
                     }
                     ImGui::EndTable();
                 }

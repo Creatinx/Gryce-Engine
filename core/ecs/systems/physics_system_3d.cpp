@@ -9,6 +9,9 @@
 #include "components/rigid_body.h"
 #include "components/static_body.h"
 #include "components/mesh_renderer.h"
+#include "components/box_collider.h"
+#include "components/sphere_collider.h"
+#include "components/plane_collider.h"
 #include "components/character_controller_3d.h"
 #include "components/joint_3d.h"
 #include "components/transform.h"
@@ -32,12 +35,27 @@ math::Vector3f mul_per_component(const math::Vector3f& a, const math::Vector3f& 
     return math::Vector3f(a.x * b.x, a.y * b.y, a.z * b.z);
 }
 
-float compute_mesh_volume(scene::Entity* entity) {
+// 实体碰撞体积（世界空间）：优先用原始碰撞体组件，无则回退到网格包围盒。
+// 用于把 rb->mass 换算成 shape 密度，保证 Jolt 计算出的刚体质量 ≈ 声明质量。
+float compute_body_volume(scene::Entity* entity) {
     auto* t = entity->transform();
     if (!t) return 1.0f;
+
+    math::Vector3f scale(std::abs(t->scale.x), std::abs(t->scale.y), std::abs(t->scale.z));
+
+    if (auto* box = entity->get_component<components::BoxCollider>()) {
+        math::Vector3f s = mul_per_component(box->size, scale);
+        return s.x * s.y * s.z;
+    }
+    if (auto* sphere = entity->get_component<components::SphereCollider>()) {
+        const float r = sphere->radius * std::max(scale.x, std::max(scale.y, scale.z));
+        return (4.0f / 3.0f) * k_pi * r * r * r;
+    }
+    // 无限平面视为零体积
+
     auto* mr = entity->get_component<components::MeshRenderer>();
     if (!mr || mr->mesh_path.empty()) return 1.0f;
-    const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+    auto mesh = assets::AssetManager::instance().load_mesh(mr->mesh_path);
     if (!mesh || mesh->vertices.empty()) return 1.0f;
 
     math::Vector3f min_p = mesh->vertices[0].position;
@@ -51,9 +69,7 @@ float compute_mesh_volume(scene::Entity* entity) {
                                std::max(max_p.z, v.position.z));
     }
     math::Vector3f local_size = max_p - min_p;
-    math::Vector3f world_size = math::Vector3f(std::abs(local_size.x * t->scale.x),
-                                               std::abs(local_size.y * t->scale.y),
-                                               std::abs(local_size.z * t->scale.z));
+    math::Vector3f world_size = mul_per_component(local_size, scale);
     return world_size.x * world_size.y * world_size.z;
 }
 
@@ -62,12 +78,37 @@ void apply_physical_material(scene::Entity* entity, components::RigidBody* rb) {
     auto* pm = entity->get_component<components::PhysicalMaterial>();
     if (!pm) return;
 
-    float volume = compute_mesh_volume(entity);
+    float volume = compute_body_volume(entity);
     rb->mass = std::max(0.001f, pm->density * volume * k_mass_scale);
     rb->restitution = math::clamp(1.0f - pm->softness, 0.0f, 1.0f);
     rb->friction = math::clamp(pm->friction, 0.0f, 1.0f);
     // 将风阻系数映射为线性阻尼（简化模型）
     rb->linear_damping = math::clamp(pm->drag_coefficient, 0.0f, 1.0f);
+}
+
+// 实体是否具备可用于物理模拟的形状：网格（MeshRenderer）或任一原始碰撞体组件。
+bool has_physics_shape(scene::Entity* entity) {
+    if (!entity) return false;
+    auto* mr = entity->get_component<components::MeshRenderer>();
+    if (mr && !mr->mesh_path.empty()) return true;
+    return entity->get_component<components::BoxCollider>() != nullptr ||
+           entity->get_component<components::SphereCollider>() != nullptr ||
+           entity->get_component<components::PlaneCollider>() != nullptr;
+}
+
+// 实体任一碰撞体标记为触发器（is_trigger）即为传感器。
+bool entity_has_trigger(scene::Entity* entity) {
+    if (!entity) return false;
+    if (auto* box = entity->get_component<components::BoxCollider>()) {
+        if (box->is_trigger) return true;
+    }
+    if (auto* sphere = entity->get_component<components::SphereCollider>()) {
+        if (sphere->is_trigger) return true;
+    }
+    if (auto* plane = entity->get_component<components::PlaneCollider>()) {
+        if (plane->is_trigger) return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -90,10 +131,26 @@ struct PhysicsSystem3D::Impl {
         // 碰撞体缓存
         std::string last_mesh_path;
 
+        // 原始碰撞体缓存（检测组件增删/参数变化，触发 body 重建）
+        bool has_box = false;
+        math::Vector3f last_box_size;
+        math::Vector3f last_box_center;
+        bool has_sphere = false;
+        float last_sphere_radius = 0.0f;
+        math::Vector3f last_sphere_center;
+        bool has_plane = false;
+        math::Vector3f last_plane_normal;
+        float last_plane_offset = 0.0f;
+
         // 材质/质量缓存，用于检测是否需要重建 body
         float last_mass = 0.0f;
         float last_friction = 0.5f;
         float last_restitution = 0.2f;
+        bool last_is_trigger = false;
+
+        // 速度/重力缓存：仅在变化时唤醒，避免每帧 wake_up 使睡眠机制失效
+        math::Vector3f last_velocity;
+        float last_gravity_scale = 1.0f;
 
         bool seen_this_frame = false;
     };
@@ -102,6 +159,9 @@ struct PhysicsSystem3D::Impl {
         physics::JointHandle handle = physics::k_invalid_joint;
         scene::UUID body_a_uuid;
         scene::UUID body_b_uuid;
+        // 创建时的 body 句柄：body 因 mass/shape 变化重建后句柄失效，需重建关节
+        physics::BodyHandle body_a_handle = physics::k_invalid_body;
+        physics::BodyHandle body_b_handle = physics::k_invalid_body;
         bool seen_this_frame = false;
     };
 
@@ -110,6 +170,72 @@ struct PhysicsSystem3D::Impl {
     bool initialized = false;
     bool create_failed = false;
     float time_accumulator = 0.0f;
+
+    // 本帧碰撞/触发事件缓冲
+    std::vector<physics::CollisionEvent> physics_events_;
+    std::vector<EntityCollisionEvent> frame_events_;
+
+    // 取回后端事件 → 映射为实体 UUID 级别事件，并更新 RigidBody::last_collision_impulse。
+    void drain_collision_events_internal() {
+        frame_events_.clear();
+        if (!world) return;
+
+        physics_events_.clear();
+        world->drain_collision_events(physics_events_);
+
+        std::unordered_map<physics::BodyHandle, float> impulses;
+        world->drain_collision_impulses(impulses);
+
+        // 每帧重置 last_collision_impulse，避免陈旧冲量持续触发碎裂。
+        // 只处理本帧仍存活（seen_this_frame）的槽位：实体可能已被销毁，
+        // slot.entity 是悬垂指针，不能再解引用。
+        for (auto& [uuid, slot] : slots) {
+            if (!slot.seen_this_frame) continue;
+            auto* rb = slot.entity ? slot.entity->get_component<components::RigidBody>() : nullptr;
+            if (rb) rb->last_collision_impulse = 0.0f;
+        }
+        if (!impulses.empty()) {
+            for (auto& [uuid, slot] : slots) {
+                if (!slot.seen_this_frame || slot.body == physics::k_invalid_body) continue;
+                auto it = impulses.find(slot.body);
+                if (it != impulses.end()) {
+                    auto* rb = slot.entity ? slot.entity->get_component<components::RigidBody>() : nullptr;
+                    if (rb) rb->last_collision_impulse = it->second;
+                }
+            }
+        }
+
+        if (physics_events_.empty()) return;
+
+        // body 句柄 → 实体（仅本帧存活实体，避免映射到悬垂指针）
+        std::unordered_map<physics::BodyHandle, scene::Entity*> handle_to_entity;
+        handle_to_entity.reserve(slots.size());
+        for (const auto& [uuid, slot] : slots) {
+            if (slot.seen_this_frame && slot.body != physics::k_invalid_body && slot.entity) {
+                handle_to_entity[slot.body] = slot.entity;
+            }
+        }
+
+        frame_events_.reserve(physics_events_.size());
+        for (const auto& ev : physics_events_) {
+            auto ita = handle_to_entity.find(ev.body_a);
+            auto itb = handle_to_entity.find(ev.body_b);
+            if (ita == handle_to_entity.end() || itb == handle_to_entity.end()) continue;
+
+            EntityCollisionEvent out;
+            out.type = ev.type;
+            out.body_a = ita->second->uuid();
+            out.body_b = itb->second->uuid();
+            out.point = ev.point;
+            out.normal = ev.normal;
+            out.impulse = ev.impulse;
+            // EndContact 后端不提供 body 引用，这里按实体碰撞体状态补全
+            out.is_trigger = ev.is_trigger ||
+                             entity_has_trigger(ita->second) ||
+                             entity_has_trigger(itb->second);
+            frame_events_.push_back(out);
+        }
+    }
 
     physics::IPhysicsWorld3D* ensure_world(const math::Vector3f& gravity) {
         if (create_failed) return nullptr;
@@ -167,7 +293,7 @@ struct PhysicsSystem3D::Impl {
             return;
         }
 
-        float volume = compute_mesh_volume(entity);
+        float volume = compute_body_volume(entity);
         float mass = rb->mass;
         if (volume > 1e-9f) {
             out_mass = mass;
@@ -183,9 +309,40 @@ struct PhysicsSystem3D::Impl {
         if (!t) return false;
         if (t->scale != slot.last_scale) return true;
 
+        auto* box = entity->get_component<components::BoxCollider>();
+        if (box) {
+            if (!slot.has_box || box->size != slot.last_box_size || box->center != slot.last_box_center) {
+                return true;
+            }
+        } else if (slot.has_box) {
+            return true;
+        }
+
+        auto* sphere = entity->get_component<components::SphereCollider>();
+        if (sphere) {
+            if (!slot.has_sphere || sphere->radius != slot.last_sphere_radius ||
+                sphere->center != slot.last_sphere_center) {
+                return true;
+            }
+        } else if (slot.has_sphere) {
+            return true;
+        }
+
+        auto* plane = entity->get_component<components::PlaneCollider>();
+        if (plane) {
+            if (!slot.has_plane || plane->normal != slot.last_plane_normal ||
+                plane->offset != slot.last_plane_offset) {
+                return true;
+            }
+        } else if (slot.has_plane) {
+            return true;
+        }
+
         auto* mr = entity->get_component<components::MeshRenderer>();
         const std::string current_mesh = mr ? mr->mesh_path : std::string();
         if (current_mesh != slot.last_mesh_path) return true;
+
+        if (entity_has_trigger(entity) != slot.last_is_trigger) return true;
 
         return false;
     }
@@ -231,41 +388,83 @@ struct PhysicsSystem3D::Impl {
         physics::ShapeDesc desc;
         desc.density = density;
 
+        const math::Vector3f scale(std::abs(t->scale.x), std::abs(t->scale.y), std::abs(t->scale.z));
+
+        // 先清空全部碰撞体缓存，实际使用的会重新写入
+        slot.has_box = false;
+        slot.has_sphere = false;
+        slot.has_plane = false;
+
         auto* mr = entity->get_component<components::MeshRenderer>();
-        if (!mr || mr->mesh_path.empty()) return;
-
-        const assets::MeshData* mesh_data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
-        if (!mesh_data || mesh_data->vertices.empty()) {
-            GLOG_WARN("PhysicsSystem3D: no mesh data for entity '{}'", entity->name());
-            return;
-        }
-
-        // 静态物体用精确三角网格，动态刚体用凸包（Jolt MeshShape 不能用于动态）
-        const bool is_static = entity->get_component<components::StaticBody>() != nullptr;
-        if (is_static) {
-            desc.type = physics::ShapeType::Mesh;
-            desc.points.reserve(mesh_data->vertices.size());
-            for (const auto& v : mesh_data->vertices) {
-                desc.points.push_back(v.position);
+        if (mr && !mr->mesh_path.empty()) {
+            auto mesh_data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            if (!mesh_data || mesh_data->vertices.empty()) {
+                GLOG_WARN("PhysicsSystem3D: no mesh data for entity '{}'", entity->name());
+                return;
             }
-            desc.indices = mesh_data->indices;
-            if (desc.indices.empty()) {
-                // 没有索引时从 vertices 顺序生成三角面（假设每 3 个顶点一组）
-                desc.indices.reserve((mesh_data->vertices.size() / 3) * 3);
-                for (uint32_t i = 0; i + 2 < mesh_data->vertices.size(); i += 3) {
-                    desc.indices.push_back(i);
-                    desc.indices.push_back(i + 1);
-                    desc.indices.push_back(i + 2);
+
+            // 静态物体用精确三角网格，动态刚体用凸包（Jolt MeshShape 不能用于动态）
+            // 顶点需乘 transform scale：Jolt body transform 只含位置/旋转（无 scale），
+            // 若不缩放顶点，碰撞体尺寸会与渲染（模型矩阵含 scale）不一致，导致物体穿透地面。
+            const bool is_static = entity->get_component<components::StaticBody>() != nullptr;
+            const auto scale_pos = [&scale](const math::Vector3f& p) {
+                return math::Vector3f(p.x * scale.x, p.y * scale.y, p.z * scale.z);
+            };
+            if (is_static) {
+                desc.type = physics::ShapeType::Mesh;
+                desc.points.reserve(mesh_data->vertices.size());
+                for (const auto& v : mesh_data->vertices) {
+                    desc.points.push_back(scale_pos(v.position));
+                }
+                desc.indices = mesh_data->indices;
+                if (desc.indices.empty()) {
+                    // 没有索引时从 vertices 顺序生成三角面（假设每 3 个顶点一组）
+                    desc.indices.reserve((mesh_data->vertices.size() / 3) * 3);
+                    for (uint32_t i = 0; i + 2 < mesh_data->vertices.size(); i += 3) {
+                        desc.indices.push_back(i);
+                        desc.indices.push_back(i + 1);
+                        desc.indices.push_back(i + 2);
+                    }
+                }
+            } else {
+                desc.type = physics::ShapeType::ConvexHull;
+                desc.points.reserve(mesh_data->vertices.size());
+                for (const auto& v : mesh_data->vertices) {
+                    desc.points.push_back(scale_pos(v.position));
                 }
             }
+            slot.last_mesh_path = mr->mesh_path;
         } else {
-            desc.type = physics::ShapeType::ConvexHull;
-            desc.points.reserve(mesh_data->vertices.size());
-            for (const auto& v : mesh_data->vertices) {
-                desc.points.push_back(v.position);
+            // 无网格：从原始碰撞体组件构建基本形状
+            slot.last_mesh_path.clear();
+            auto* box = entity->get_component<components::BoxCollider>();
+            auto* sphere = entity->get_component<components::SphereCollider>();
+            auto* plane = entity->get_component<components::PlaneCollider>();
+            if (box) {
+                desc.type = physics::ShapeType::Box;
+                // BoxCollider.size 是完整尺寸，Jolt BoxShape 需要半宽
+                desc.size = mul_per_component(box->size, scale) * 0.5f;
+                desc.offset = mul_per_component(box->center, scale);
+                slot.has_box = true;
+                slot.last_box_size = box->size;
+                slot.last_box_center = box->center;
+            } else if (sphere) {
+                desc.type = physics::ShapeType::Sphere;
+                desc.size = math::Vector3f(sphere->radius * std::max(scale.x, std::max(scale.y, scale.z)), 0.0f, 0.0f);
+                desc.offset = mul_per_component(sphere->center, scale);
+                slot.has_sphere = true;
+                slot.last_sphere_radius = sphere->radius;
+                slot.last_sphere_center = sphere->center;
+            } else if (plane) {
+                desc.type = physics::ShapeType::Plane;
+                slot.has_plane = true;
+                slot.last_plane_normal = plane->normal;
+                slot.last_plane_offset = plane->offset;
+            } else {
+                GLOG_WARN("PhysicsSystem3D: entity '{}' has no collider or mesh", entity->name());
+                return;
             }
         }
-        slot.last_mesh_path = mr->mesh_path;
 
         slot.shape = world->create_shape(desc);
     }
@@ -296,6 +495,7 @@ struct PhysicsSystem3D::Impl {
         desc.position = t->position;
         desc.rotation = t->rotation;
         desc.shape = slot.shape;
+        desc.is_sensor = entity_has_trigger(entity);
 
         if (rb) {
             desc.linear_velocity = rb->velocity;
@@ -328,6 +528,7 @@ struct PhysicsSystem3D::Impl {
         slot.last_mass = rb ? rb->mass : 0.0f;
         slot.last_friction = mat.friction;
         slot.last_restitution = mat.restitution;
+        slot.last_is_trigger = desc.is_sensor;
     }
 
     void sync_to_backend(Slot& slot) {
@@ -368,8 +569,16 @@ struct PhysicsSystem3D::Impl {
             if (!cc) {
                 world->set_linear_velocity(slot.body, rb->velocity);
             }
-            world->set_gravity_scale(slot.body, rb->use_gravity ? 1.0f : 0.0f);
-            world->wake_up(slot.body);
+            const float gravity_scale = rb->use_gravity ? 1.0f : 0.0f;
+            world->set_gravity_scale(slot.body, gravity_scale);
+            // 仅当速度/重力设置或变换实际变化时唤醒，避免每帧 wake_up 让睡眠机制失效
+            const bool vel_changed = rb->velocity != slot.last_velocity;
+            const bool grav_changed = gravity_scale != slot.last_gravity_scale;
+            if (vel_changed || grav_changed || pos_changed || rot_changed) {
+                world->wake_up(slot.body);
+            }
+            slot.last_velocity = rb->velocity;
+            slot.last_gravity_scale = gravity_scale;
         }
     }
 
@@ -610,7 +819,16 @@ struct PhysicsSystem3D::Impl {
 
             const scene::UUID& uuid = entity->uuid();
             auto it = joints.find(uuid);
-            if (it == joints.end()) {
+            const bool handles_changed =
+                it != joints.end() &&
+                (it->second.body_a_handle != handle_a || it->second.body_b_handle != handle_b);
+            if (it == joints.end() || handles_changed) {
+                // 关节不存在，或连接的 body 因 mass/shape 变化被重建（旧句柄失效），
+                // 需要销毁旧关节并基于当前句柄重新创建。
+                if (it != joints.end()) {
+                    world->destroy_joint(it->second.handle);
+                    joints.erase(it);
+                }
                 physics::JointDesc3D desc;
                 desc.type = joint->joint_type;
                 desc.body_a = handle_a;
@@ -629,6 +847,8 @@ struct PhysicsSystem3D::Impl {
                     jslot.handle = jh;
                     jslot.body_a_uuid = body_a->uuid();
                     jslot.body_b_uuid = body_b->uuid();
+                    jslot.body_a_handle = handle_a;
+                    jslot.body_b_handle = handle_b;
                     jslot.seen_this_frame = true;
                     joints[uuid] = jslot;
                 }
@@ -683,8 +903,7 @@ void PhysicsSystem3D::rebuild_body_for_entity(scene::Entity* entity) {
     bool has_rb = entity->get_component<components::RigidBody>() != nullptr;
     bool has_static = entity->get_component<components::StaticBody>() != nullptr;
     if (!has_rb && !has_static) return;
-    auto* mr = entity->get_component<components::MeshRenderer>();
-    if (!mr || mr->mesh_path.empty()) return;
+    if (!has_physics_shape(entity)) return;
 
     impl_->create_body(entity, uuid);
 }
@@ -706,8 +925,7 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
         bool has_rb = entity->get_component<components::RigidBody>() != nullptr;
         bool has_static = entity->get_component<components::StaticBody>() != nullptr;
         if (!has_rb && !has_static) return;
-        auto* mr = entity->get_component<components::MeshRenderer>();
-        if (!mr || mr->mesh_path.empty()) return;
+        if (!has_physics_shape(entity)) return;
 
         const scene::UUID& uuid = entity->uuid();
         current_uuids.insert(uuid);
@@ -786,6 +1004,9 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
         }
     });
 
+    // 取回本帧碰撞/触发事件并更新 last_collision_impulse
+    impl_->drain_collision_events_internal();
+
     // 清理已销毁实体对应的 body，同时级联销毁关联的关节
     for (auto it = impl_->slots.begin(); it != impl_->slots.end();) {
         if (!it->second.seen_this_frame) {
@@ -812,6 +1033,10 @@ std::optional<physics::RaycastHit> PhysicsSystem3D::raycast(const math::Vector3f
                                                             float max_distance) const {
     if (!impl_->world) return std::nullopt;
     return impl_->world->raycast(origin, direction, max_distance);
+}
+
+const std::vector<PhysicsSystem3D::EntityCollisionEvent>& PhysicsSystem3D::collision_events() const {
+    return impl_->frame_events_;
 }
 
 } // namespace gryce_engine::ecs

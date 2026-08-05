@@ -3,6 +3,7 @@
 #include <imgui_internal.h> // DockBuilder API（默认布局构建）
 
 #include "localization/localization.h"
+#include "fluent_window.h"
 
 namespace gryce_engine::editor {
 
@@ -24,10 +25,18 @@ ImGuiDockNode* find_central_node(ImGuiDockNode* node) {
 } // namespace
 
 void PanelManager::show() {
-    // 全屏宿主窗口：仅承载 DockSpace 与菜单栏
+    // 全屏宿主窗口：仅承载 DockSpace
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    
+    // 标题栏高度（FluentWindow 提供）
+    const float title_bar_h = FluentWindow_GetTitleBarHeight();
+    
+    // DockSpace 从标题栏下方开始
+    ImVec2 dock_pos = ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + title_bar_h);
+    ImVec2 dock_size = ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - title_bar_h);
+    
+    ImGui::SetNextWindowPos(dock_pos);
+    ImGui::SetNextWindowSize(dock_size);
     ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGuiWindowFlags host_flags = ImGuiWindowFlags_NoDocking |
@@ -36,8 +45,7 @@ void PanelManager::show() {
                                   ImGuiWindowFlags_NoResize |
                                   ImGuiWindowFlags_NoMove |
                                   ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                  ImGuiWindowFlags_NoNavFocus |
-                                  ImGuiWindowFlags_MenuBar;
+                                  ImGuiWindowFlags_NoNavFocus;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -55,28 +63,7 @@ void PanelManager::show() {
     }
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
 
-    // 菜单栏：应用菜单钩子（File 等） + Window 菜单切换面板可见性
-    // 单独增加菜单栏高度，让它在高 DPI/缩放时更易点击，而不影响全局 FramePadding。
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(ImGui::GetStyle().FramePadding.x,
-                               ImGui::GetStyle().FramePadding.y + 4.0f));
-    if (ImGui::BeginMenuBar()) {
-        if (menu_bar_hook_) {
-            menu_bar_hook_();
-        }
-        if (ImGui::BeginMenu(tr("menu.window"))) {
-            for (auto& panel : panels_) {
-                const char* display = panel->translation_key().empty()
-                                          ? panel->name().c_str()
-                                          : tr(panel->translation_key().c_str());
-                ImGui::MenuItem(display, nullptr, panel->visible_ptr());
-            }
-            ImGui::EndMenu();
-    }
-    ImGui::EndMenuBar();
-}
-ImGui::PopStyleVar();
-ImGui::End();
+    ImGui::End();
 
     for (auto& panel : panels_) {
         panel->show();

@@ -19,10 +19,12 @@ void RenderSystem3D::on_render(scene::Scene& scene, render::RenderContext& ctx) 
     // 在主线程收集未上传的 MeshRenderer 与对应 MeshData，推送到渲染线程执行上传。
     struct PendingUpload {
         components::MeshRenderer* mr = nullptr;
-        const assets::MeshData* data = nullptr;
+        // 持有 shared_ptr 防止 LRU 驱逐/重载在命令执行前释放 MeshData
+        std::shared_ptr<const assets::MeshData> data;
         render::RenderContext* ctx = nullptr;
-        // 生命周期 token：命令延迟 1~3 帧才在渲染线程执行，
-        // 期间组件析构则 token 失效，回调据此跳过，防止 UAF。
+        // 生命周期 token：命令延迟执行，期间组件析构则 token 失效，
+        // 回调据此跳过，防止 UAF。注意 present() 会 wait_for_idle 排空所有命令，
+        // 实体销毁（flush_deferred_ops）发生在 present 之后，token 为双层防护。
         std::shared_ptr<std::atomic<bool>> token;
     };
     std::vector<PendingUpload> pending;
@@ -31,7 +33,7 @@ void RenderSystem3D::on_render(scene::Scene& scene, render::RenderContext& ctx) 
         scene,
         [&](scene::Entity* /*entity*/, components::MeshRenderer* mr, components::Transform* /*transform*/) {
             if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
-            const assets::MeshData* data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
             if (data) {
                 pending.push_back({mr, data, &ctx, mr->alive_token()});
             }
@@ -43,7 +45,7 @@ void RenderSystem3D::on_render(scene::Scene& scene, render::RenderContext& ctx) 
         ctx.push_command([pending](render::IRenderBackend*) {
             for (const auto& p : pending) {
                 if (!p.token || !p.token->load(std::memory_order_acquire)) continue;
-                p.mr->upload_to_gpu(p.ctx, p.data, true);
+                p.mr->upload_to_gpu(p.ctx, p.data.get(), true);
             }
         });
     }

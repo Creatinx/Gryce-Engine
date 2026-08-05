@@ -14,6 +14,8 @@
 #include <cstring>
 #include <fstream>
 #include <vector>
+#include <filesystem>
+#include <system_error>
 
 namespace gryce_engine::render {
 
@@ -138,6 +140,13 @@ bool VulkanShader::load_program(const std::string& name,
         return false;
     }
 
+    // 记录 SPIR-V 文件信息供热重载使用
+    source_name_ = name;
+    spirv_dir_ = spirv_dir;
+    std::error_code ec;
+    vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
+    frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
+
     if (target) {
         auto* vk_target = dynamic_cast<VulkanFramebuffer*>(target);
         if (vk_target) {
@@ -150,6 +159,100 @@ bool VulkanShader::load_program(const std::string& name,
     set_skybox(skybox);
     skinned_ = skinned;
     return create_pipeline();
+}
+
+bool VulkanShader::shader_files_changed() const {
+    if (source_name_.empty() || spirv_dir_.empty()) return false;
+    std::error_code ec;
+    auto vert_mtime = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv", ec);
+    if (ec) return false;
+    auto frag_mtime = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv", ec);
+    if (ec) return false;
+    return vert_mtime != vert_mtime_ || frag_mtime != frag_mtime_;
+}
+
+bool VulkanShader::reload() {
+    if (source_name_.empty() || spirv_dir_.empty() || !device_ || !device_->is_valid()) {
+        return false;
+    }
+    VkDevice dev = device_->device();
+    std::string vert_path = spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv";
+    std::string frag_path = spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv";
+
+    // 先备份旧资源；重建成功后统一销毁，失败则回退，保证加载过程不出问题。
+    VkPipeline old_pipeline = pipeline_;
+    VkPipelineLayout old_layout = pipeline_layout_;
+    VkDescriptorPool old_pool = descriptor_pool_;
+    VkDescriptorSetLayout old_set_layout = descriptor_set_layout_;
+    VkShaderModule old_vert = vert_module_;
+    VkShaderModule old_frag = frag_module_;
+    auto old_fallback_texture = std::move(fallback_texture_);
+    auto old_fallback_cube = std::move(fallback_cube_);
+
+    pipeline_ = VK_NULL_HANDLE;
+    pipeline_layout_ = VK_NULL_HANDLE;
+    descriptor_pool_ = VK_NULL_HANDLE;
+    descriptor_set_layout_ = VK_NULL_HANDLE;
+    vert_module_ = VK_NULL_HANDLE;
+    frag_module_ = VK_NULL_HANDLE;
+    descriptor_sets_.clear();
+    cached_textures_.clear();
+    // create_ubo / create_descriptor_pool 内部会清空并重建这些容器，
+    // 旧句柄在成功路径统一销毁。
+    std::vector<VkDescriptorPool> old_per_frame_pools = descriptor_pools_;
+    descriptor_pools_.clear();
+    ubo_buffers_.clear();
+    palette_buffers_.clear();
+
+    if (!load_spirv_files(vert_path, frag_path) || !create_pipeline()) {
+        // 回退：销毁刚创建的部分资源，恢复旧资源
+        if (vert_module_) vkDestroyShaderModule(dev, vert_module_, nullptr);
+        if (frag_module_) vkDestroyShaderModule(dev, frag_module_, nullptr);
+        if (descriptor_set_layout_) vkDestroyDescriptorSetLayout(dev, descriptor_set_layout_, nullptr);
+        if (pipeline_layout_) vkDestroyPipelineLayout(dev, pipeline_layout_, nullptr);
+        if (descriptor_pool_) vkDestroyDescriptorPool(dev, descriptor_pool_, nullptr);
+        for (auto pool : descriptor_pools_) {
+            if (pool) vkDestroyDescriptorPool(dev, pool, nullptr);
+        }
+        for (auto pool : old_per_frame_pools) {
+            if (pool) vkDestroyDescriptorPool(dev, pool, nullptr);
+        }
+        ubo_buffers_.clear();
+        palette_buffers_.clear();
+
+        pipeline_ = old_pipeline;
+        pipeline_layout_ = old_layout;
+        descriptor_pool_ = old_pool;
+        descriptor_set_layout_ = old_set_layout;
+        vert_module_ = old_vert;
+        frag_module_ = old_frag;
+        fallback_texture_ = std::move(old_fallback_texture);
+        fallback_cube_ = std::move(old_fallback_cube);
+
+        GLOG_ERROR("VulkanShader::reload: rebuild failed for '{}', keeping old pipeline", source_name_);
+        return false;
+    }
+
+    // 成功：销毁旧资源
+    if (old_pipeline) vkDestroyPipeline(dev, old_pipeline, nullptr);
+    if (old_layout) vkDestroyPipelineLayout(dev, old_layout, nullptr);
+    if (old_pool) vkDestroyDescriptorPool(dev, old_pool, nullptr);
+    if (old_set_layout) vkDestroyDescriptorSetLayout(dev, old_set_layout, nullptr);
+    if (old_vert) vkDestroyShaderModule(dev, old_vert, nullptr);
+    if (old_frag) vkDestroyShaderModule(dev, old_frag, nullptr);
+    for (auto pool : old_per_frame_pools) {
+        if (pool) vkDestroyDescriptorPool(dev, pool, nullptr);
+    }
+    // fallback 贴图在 create_pipeline 中被重建，旧的自动释放
+    old_fallback_texture.reset();
+    old_fallback_cube.reset();
+
+    std::error_code ec;
+    vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
+    frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
+
+    GLOG_INFO("VulkanShader: hot-reloaded '{}'", source_name_);
+    return true;
 }
 
 bool VulkanShader::create_pipeline() {
@@ -516,7 +619,10 @@ void VulkanShader::set_int(const std::string& name, int value) {
     }
     ubo_dirty_ = true;
 }
-void VulkanShader::set_int(const char* name, int value) { set_int(std::string(name), value); }
+void VulkanShader::set_int(const char* name, int value) {
+    if (!name) return;
+    set_int(std::string(name), value);
+}
 
 void VulkanShader::set_float(const std::string& name, float value) {
     int light_index = -1;
@@ -532,7 +638,10 @@ void VulkanShader::set_float(const std::string& name, float value) {
     }
     ubo_dirty_ = true;
 }
-void VulkanShader::set_float(const char* name, float value) { set_float(std::string(name), value); }
+void VulkanShader::set_float(const char* name, float value) {
+    if (!name) return;
+    set_float(std::string(name), value);
+}
 
 void VulkanShader::set_vec2(const std::string& /*name*/, const math::Vector2f& /*value*/) {}
 void VulkanShader::set_vec2(const char* /*name*/, const math::Vector2f& /*value*/) {}
@@ -567,7 +676,10 @@ void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value
     }
     ubo_dirty_ = true;
 }
-void VulkanShader::set_vec3(const char* name, const math::Vector3f& value) { set_vec3(std::string(name), value); }
+void VulkanShader::set_vec3(const char* name, const math::Vector3f& value) {
+    if (!name) return;
+    set_vec3(std::string(name), value);
+}
 
 void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value) {
     int light_index = -1;
@@ -580,7 +692,10 @@ void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value
     }
     ubo_dirty_ = true;
 }
-void VulkanShader::set_vec4(const char* name, const math::Vector4f& value) { set_vec4(std::string(name), value); }
+void VulkanShader::set_vec4(const char* name, const math::Vector4f& value) {
+    if (!name) return;
+    set_vec4(std::string(name), value);
+}
 
 void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value) {
     if (name == "uModel") model_ = value;
@@ -603,7 +718,10 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
         light_space_matrix_ = vk_light;
     }
 }
-void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) { set_mat4(std::string(name), value); }
+void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) {
+    if (!name) return;
+    set_mat4(std::string(name), value);
+}
 
 void VulkanShader::set_mat4_array(const char* name, const math::Matrix4f* data, uint32_t count) {
     if (!name || std::strcmp(name, "uBonePalette") != 0) return;

@@ -215,6 +215,11 @@ void VulkanBackend::begin_frame() {
 
     frame_aborted_ = false;
 
+    if (!window_) {
+        frame_aborted_ = true;
+        return;
+    }
+
     // 窗口大小变化时重建 swapchain
     int width = 0, height = 0;
     glfwGetFramebufferSize(window_, &width, &height);
@@ -223,9 +228,15 @@ void VulkanBackend::begin_frame() {
         return;
     }
 
+    if (swapchain_.image_count() == 0) {
+        GLOG_ERROR("VulkanBackend::begin_frame: swapchain has no images");
+        frame_aborted_ = true;
+        return;
+    }
+
     VkExtent2D extent = swapchain_.extent();
     if (static_cast<uint32_t>(width) != extent.width ||
-        static_cast<uint32_t>(height) != extent.height) {
+        static_cast<uint32_t>(height) != extent.height || extent.width == 0 || extent.height == 0) {
         if (!swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
             GLOG_ERROR("VulkanBackend: failed to recreate swapchain");
             frame_aborted_ = true;

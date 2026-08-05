@@ -325,10 +325,14 @@ void SettingsWindow::commit(EditorSettings& settings) {
     settings = staged_;
 
     // 生效：先切语言，再应用主题/字体（确保 CJK 字体按需合并），最后 VSync
+    // 暂停渲染线程避免字体热重载导致 GPU 纹理竞争
+    if (render_ctx_) render_ctx_->pause_render_thread();
     Localization::instance().load(settings.appliance.language, project_root_);
     Localization::instance().set_light_theme(settings.theme_preset == ThemePreset::Light);
     apply_theme(settings.theme_preset, settings.theme);
+    if (rebuild_fonts_fn_) rebuild_fonts_fn_();
     if (render_ctx_) {
+        render_ctx_->resume_render_thread();
         render_ctx_->set_swap_interval(settings.editor.vsync ? 1 : 0);
     }
 
@@ -363,13 +367,10 @@ void SettingsWindow::cancel_and_close() {
 void SettingsWindow::draw_appearance_page() {
     int preset = 0;
     if (staged_.theme_preset == ThemePreset::Light)       preset = 1;
-    else if (staged_.theme_preset == ThemePreset::ModernLight) preset = 2;
-    const char* presets[] = {tr("menu.view_theme_dark"), tr("menu.view_theme_light"),
-                             tr("menu.view_theme_modern_light")};
+    const char* presets[] = {tr("menu.view_theme_dark"), tr("menu.view_theme_light")};
     if (ImGui::Combo(tr("settings.theme_preset"), &preset, presets, IM_ARRAYSIZE(presets))) {
         if (preset == 0)       staged_.theme_preset = ThemePreset::Dark;
-        else if (preset == 1)  staged_.theme_preset = ThemePreset::Light;
-        else                   staged_.theme_preset = ThemePreset::ModernLight;
+        else                   staged_.theme_preset = ThemePreset::Light;
         dirty_ = true;
     }
 

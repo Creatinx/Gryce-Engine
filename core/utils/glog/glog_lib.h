@@ -170,8 +170,9 @@ public:
     // 更换日志后端（默认 ConsoleLogger）
     void set_logger(std::unique_ptr<ILogger> logger);
 
-    // 获取当前后端
-    ILogger* logger() const;
+    // 获取当前后端。返回 shared_ptr 持有生命周期：
+    // 并发调用 set_logger 替换后端时，调用方持有的指针仍然有效。
+    std::shared_ptr<ILogger> logger() const;
 
     // 设置/获取最小日志级别，低于此级别的日志不会输出（默认 Info）
     void set_min_level(LogLevel level);
@@ -253,7 +254,7 @@ private:
     GLog(const GLog&) = delete;
     GLog& operator=(const GLog&) = delete;
 
-    std::unique_ptr<ILogger> logger_;
+    std::shared_ptr<ILogger> logger_;
     mutable std::mutex mutex_;
     LogLevel min_level_ = LogLevel::Info;
 };

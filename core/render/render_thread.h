@@ -31,6 +31,9 @@ public:
 
     bool is_running() const;
 
+    // 渲染线程已进入 thread_loop 并完成 context 绑定（可安全开始 submit）
+    bool is_ready() const { return ready_.load(); }
+
 private:
     void thread_loop();
 
@@ -42,6 +45,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> shutdown_backend_on_exit_{true};
+    std::atomic<bool> ready_{false};
 };
 
 } // namespace gryce_engine::render

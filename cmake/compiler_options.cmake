@@ -36,7 +36,10 @@ if(MSVC)
     # Debug
     add_compile_options($<$<CONFIG:Debug>:/Od>)
     add_compile_options($<$<CONFIG:Debug>:/Zi>)
-    add_compile_options($<$<CONFIG:Debug>:/RTC1>)
+    if(NOT GRYCE_ENABLE_SANITIZERS)
+        # ASan 与 /RTC1 冲突（/RTC1 会引入自己的运行时检查，且二者不兼容）
+        add_compile_options($<$<CONFIG:Debug>:/RTC1>)
+    endif()
 
     # Release
     add_compile_options($<$<CONFIG:Release>:/O2>)
@@ -49,7 +52,11 @@ if(MSVC)
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     endif()
 
-# ---------------------------------------------------------------------------
+    # Sanitizers (MSVC AddressSanitizer)
+    if(GRYCE_ENABLE_SANITIZERS)
+        add_compile_options(/fsanitize=address /Zi)
+        add_link_options(/fsanitize=address /DEBUG)
+    endif()# ---------------------------------------------------------------------------
 # GCC / Clang
 # ---------------------------------------------------------------------------
 else()

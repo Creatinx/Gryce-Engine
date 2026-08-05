@@ -31,8 +31,13 @@ font_atlas_debug.bmp
 screenshot_*.bmp
 screenshot_*.jpg
 *.png
+# 编辑器启动画面/图标是必需资源，不能忽略
+!editor/assets/**/*.png
 *.mp4
 *.avi
+
+# 崩溃转储
+*.dmp
 
 # Test textures (not referenced by source)
 checkerboard.bmp

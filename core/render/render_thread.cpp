@@ -223,9 +223,21 @@ RenderThread::~RenderThread() {
 
 void RenderThread::start() {
     if (running_.load()) return;
+    if (!cmd_buffer_ || !backend_) {
+        GLOG_ERROR("RenderThread::start: missing cmd_buffer or backend");
+        return;
+    }
     running_.store(true);
+    ready_.store(false);
     stop_requested_.store(false);
-    thread_ = std::thread(&RenderThread::thread_loop, this);
+    shutdown_backend_on_exit_.store(true);
+    try {
+        thread_ = std::thread(&RenderThread::thread_loop, this);
+    } catch (const std::exception& e) {
+        running_.store(false);
+        GLOG_ERROR("RenderThread::start: failed to create thread: {}", e.what());
+        return;
+    }
     if (thread_.joinable()) {
         GLOG_INFO("RenderThread thread is joinable");
     } else {
@@ -277,8 +289,13 @@ void RenderThread::thread_loop() {
         backend_->make_current(native_window_);
     }
     GLOG_INFO("RenderThread thread_loop entered");
+    ready_.store(true);
 
     while (!stop_requested_.load()) {
+        if (!cmd_buffer_ || !backend_) {
+            GLOG_ERROR("RenderThread: cmd_buffer or backend became null, exiting");
+            break;
+        }
         GLOG_DEBUG("RenderThread: waiting for commands");
         auto* commands = cmd_buffer_->acquire();
         if (!commands) {
@@ -307,7 +324,7 @@ void RenderThread::thread_loop() {
     }
 
     if (shutdown_backend_on_exit_.load()) {
-        backend_->shutdown();
+        if (backend_) backend_->shutdown();
     }
     if (backend_) {
         backend_->release_context();

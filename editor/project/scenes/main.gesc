@@ -12,7 +12,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 1000,
-          "text": "FPS: 242.3",
+          "text": "FPS: 176.9",
           "type": "Label"
         }
       ],
@@ -184,9 +184,9 @@
           ],
           "angular_damping": 0.0,
           "angular_velocity": [
-            -2.1156452037853803e-15,
-            -1.6579651540560292e-10,
-            -1.9145068863579695e-10
+            -1.787337168934755e-06,
+            -2.483165062461268e-10,
+            -7.153710612328723e-06
           ],
           "enabled": true,
           "friction": 0.8999999761581421,
@@ -215,9 +215,9 @@
           "type": "RigidBody",
           "use_gravity": true,
           "velocity": [
-            1.9189624889115464e-10,
-            -1.1044503892105e-15,
-            -1.0808065553646884e-10
+            3.5770224258158123e-06,
+            -4.470308340387419e-06,
+            -8.938803830460529e-07
           ]
         },
         {
@@ -241,15 +241,15 @@
       "parent": null,
       "transform": {
         "position": [
-          0.007863199338316917,
-          0.7903077006340027,
-          0.11389604955911636
+          -0.0001772445102687925,
+          0.5603076219558716,
+          0.0011896399082615972
         ],
         "rotation": [
-          2.847389453108917e-07,
-          0.02732865884900093,
-          -2.596199806248478e-07,
-          0.9996265172958374
+          1.2294886175823194e-07,
+          6.253424362512305e-05,
+          3.757304511964321e-08,
+          1.0
         ],
         "scale": [
           1.0,
@@ -339,155 +339,6 @@
           "enabled": true,
           "material": {
             "albedo_color": [
-              0.550000011920929,
-              0.800000011920929,
-              1.0
-            ],
-            "albedo_map_path": "",
-            "ao": 1.0,
-            "ao_map_path": "",
-            "blend_mode": 1,
-            "density": 26500.0,
-            "drag_coefficient": 0.0,
-            "emissive_color": [
-              0.0,
-              0.0,
-              0.0
-            ],
-            "emissive_map_path": "",
-            "metallic": 0.0,
-            "metallic_map_path": "",
-            "name": "ShowcaseGlass",
-            "normal_map_path": "",
-            "opacity": 0.3499999940395355,
-            "preset_name": "",
-            "roughness": 0.05000000074505806,
-            "roughness_map_path": "",
-            "softness": 1.0,
-            "two_sided": false,
-            "use_albedo_map": false,
-            "use_ao_map": false,
-            "use_emissive_map": false,
-            "use_metallic_map": false,
-            "use_normal_map": false,
-            "use_roughness_map": false,
-            "uv_offset": [
-              0.0,
-              0.0
-            ],
-            "uv_scale": [
-              1.0,
-              1.0
-            ]
-          },
-          "mesh_path": "res:/models/cube_pbr.obj",
-          "type": "MeshRenderer"
-        },
-        {
-          "anchor_a": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "anchor_b": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "axis_a": [
-            0.0,
-            0.0,
-            1.0
-          ],
-          "axis_b": [
-            0.0,
-            0.0,
-            1.0
-          ],
-          "body_a_uuid": "51e8c5b3-9375-4e00-abe7-b62774f80593",
-          "body_b_uuid": "014889e7-7288-4360-8cc7-761a4fba0b22",
-          "collide_connected": false,
-          "damping": 0.5,
-          "enabled": false,
-          "frequency": 2.0,
-          "joint_type": 1,
-          "length": 1.0,
-          "type": "Joint3D"
-        },
-        {
-          "acceleration": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "angular_damping": 0.0,
-          "angular_velocity": [
-            -10.137995719909668,
-            0.6488351821899414,
-            0.21440653502941132
-          ],
-          "enabled": true,
-          "friction": 0.5,
-          "inertia_tensor": [
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0
-          ],
-          "is_kinematic": false,
-          "linear_damping": 0.0,
-          "mass": 1.0,
-          "restitution": 0.30000001192092896,
-          "type": "RigidBody",
-          "use_gravity": false,
-          "velocity": [
-            -0.6955133080482483,
-            -224.5951690673828,
-            -3.9836671352386475
-          ]
-        }
-      ],
-      "enabled": true,
-      "name": "ShowcaseGlassCube",
-      "parent": null,
-      "transform": {
-        "position": [
-          -24.789888381958008,
-          -1700.6397705078125,
-          -142.75750732421875
-        ],
-        "rotation": [
-          -0.7140758633613586,
-          0.0569145530462265,
-          0.01970902644097805,
-          -0.6974726319313049
-        ],
-        "scale": [
-          3.0000011920928955,
-          3.000168561935425,
-          3.000159978866577
-        ]
-      },
-      "uuid": "dd1484d4-8444-4b88-98aa-15324b3e2a91"
-    },
-    {
-      "components": [
-        {
-          "enabled": true,
-          "material": {
-            "albedo_color": [
               1.0,
               1.0,
               1.0
@@ -554,7 +405,7 @@
         "position": [
           0.8710887432098389,
           7.894469261169434,
-          2.1098310947418213
+          2.108549118041992
         ],
         "rotation": [
           0.0,
@@ -631,15 +482,15 @@
       "parent": null,
       "transform": {
         "position": [
-          37.53108215332031,
-          40.39378356933594,
-          -3.1605639457702637
+          35.89313507080078,
+          37.389015197753906,
+          -1.5367937088012695
         ],
         "rotation": [
-          -0.3664786219596863,
-          0.623677134513855,
-          0.413194477558136,
-          0.5531641244888306
+          -0.2706969678401947,
+          0.653042733669281,
+          0.27049919962882996,
+          0.6535201668739319
         ],
         "scale": [
           1.0,
@@ -828,8 +679,9 @@
           "loop": false,
           "max_distance": 100.0,
           "min_distance": 1.0,
-          "pitch": 1.0,
+          "pitch": 3.640000104904175,
           "play_on_awake": false,
+          "speed": 1.0,
           "type": "AudioSource",
           "volume": 1.0
         }
@@ -856,6 +708,129 @@
         ]
       },
       "uuid": "9fccb093-1c44-472e-8066-56fa18d70487"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "type": "Node3D",
+          "visible": true
+        },
+        {
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "albedo_map_path": "",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 1.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "res:/textures/cube_normal.png",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.5,
+            "roughness_map_path": "",
+            "softness": 0.14499999582767487,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "acceleration": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "angular_damping": 0.0,
+          "angular_velocity": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "friction": 0.5,
+          "inertia_tensor": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "is_kinematic": true,
+          "linear_damping": 0.0,
+          "mass": 1.0,
+          "restitution": 0.30000001192092896,
+          "type": "RigidBody",
+          "use_gravity": true,
+          "velocity": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "enabled": true,
+      "name": "MeshInstance3D",
+      "parent": null,
+      "transform": {
+        "position": [
+          3.508405923843384,
+          0.5600000023841858,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "71a8da56-73c2-4ab7-b2ff-acf1efeaac39"
     }
   ],
   "name": "main",

@@ -34,10 +34,10 @@ render::Color Tilemap::tile_color(int index) {
 }
 
 void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
-    // 1) 按需解析 JSON（物理属性等）
+    // 1) 按需解析 JSON（物理属性等）。
+    // 注意：flags 只在加载/解析成功后才置位，失败会保留在未加载状态以便重试
+    // （临时性文件错误不应变成永久失败）。
     if (!tileset_json_loaded_ && !tileset_path.empty()) {
-        tileset_json_loaded_ = true;
-
         std::string resolved = resources::ResourcePath::resolve(tileset_path);
         std::ifstream file(resolved);
         if (file.is_open()) {
@@ -45,6 +45,7 @@ void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
                 nlohmann::json j;
                 file >> j;
                 tileset.deserialize(j);
+                tileset_json_loaded_ = true;
             } catch (const std::exception& e) {
                 GLOG_WARN("Tilemap: failed to parse tileset '{}': {}", tileset_path, e.what());
             }
@@ -55,7 +56,6 @@ void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
 
     // 2) 按需上传 GPU 纹理
     if (tileset_texture_loaded_ || tileset.texture_path.empty()) return;
-    tileset_texture_loaded_ = true;
 
     auto tex_data = assets::AssetManager::instance().load<assets::TextureData>(tileset.texture_path);
     if (!tex_data || tex_data->empty()) {
@@ -82,6 +82,7 @@ void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
     if (use_tileset_texture && renderer) {
         tileset.texture = renderer->create_texture_from_data(tex_data.get());
         if (tileset.texture.is_valid()) {
+            tileset_texture_loaded_ = true;
             GLOG_INFO("Tilemap: loaded tileset texture '{}' ({}x{}, {} channels)",
                       tileset.texture_path, tex_data->width, tex_data->height,
                       tex_data->channels);

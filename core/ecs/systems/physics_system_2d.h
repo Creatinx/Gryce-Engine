@@ -21,6 +21,8 @@ public:
     const char* name() const override { return "PhysicsSystem2D"; }
     Phase phase() const override { return Phase::Update; }
 
+    void on_init(scene::Scene& scene) override;
+    void on_shutdown(scene::Scene& scene) override;
     void on_update(scene::Scene& scene, float dt) override;
 
     // 射线检测：从 origin 沿 direction 发射射线，最大距离 max_distance（单位：米）

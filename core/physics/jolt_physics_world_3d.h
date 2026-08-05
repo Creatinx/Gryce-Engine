@@ -17,6 +17,8 @@
 
 namespace gryce_engine::physics {
 
+class JoltContactListener;
+
 // ---------------------------------------------------------------------------
 // JoltPhysicsWorld3D — Jolt Physics v5.x 封装的 3D 物理世界
 // ---------------------------------------------------------------------------
@@ -63,6 +65,9 @@ public:
     JointHandle create_joint(const JointDesc3D& desc) override;
     void destroy_joint(JointHandle handle) override;
 
+    void drain_collision_events(std::vector<CollisionEvent>& out) override;
+    void drain_collision_impulses(std::unordered_map<BodyHandle, float>& out) override;
+
     void foreach_body(std::function<void(BodyHandle, const math::Vector3f&, const math::Quaternionf&)> callback) const override;
 
     const char* backend_name() const override { return "Jolt"; }
@@ -85,6 +90,9 @@ private:
     std::vector<JPH::Ref<JPH::Shape>> shapes_;
     std::vector<JPH::Ref<JPH::Constraint>> joints_;
     std::unordered_map<BodyHandle, JPH::Body*> body_ptrs_;
+
+    // 碰撞/触发事件监听器（物理系统持有；多线程累积，由 drain_* 取回）
+    std::unique_ptr<JoltContactListener> contact_listener_;
 
     JPH::BodyInterface* body_interface() const;
     JPH::BodyID to_jolt_id(BodyHandle h) const;

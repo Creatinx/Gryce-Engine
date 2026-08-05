@@ -26,6 +26,10 @@ bool VulkanSwapchain::init(VkInstance instance, VulkanDevice* device,
     if (!create_secondary_command_buffer()) return false;
     if (!create_sync_objects()) return false;
 
+    // recreate 后帧索引必须重置，防止 image count / frames_in_flight 变化后越界。
+    current_frame_ = 0;
+    current_image_ = 0;
+
     GLOG_INFO("VulkanSwapchain created: {}x{} with depth attachment", width, height);
     return true;
 }
@@ -475,6 +479,19 @@ bool VulkanSwapchain::create_sync_objects() {
 }
 
 VkResult VulkanSwapchain::acquire_next_image(uint32_t* image_index) {
+    if (!device_ || !device_->device() || swapchain_ == VK_NULL_HANDLE || !image_index) {
+        GLOG_ERROR("VulkanSwapchain::acquire_next_image: invalid state (device={}, swapchain={})",
+                   reinterpret_cast<void*>(device_ ? device_->device() : VK_NULL_HANDLE),
+                   reinterpret_cast<void*>(swapchain_));
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    if (frame_fences_.empty() || image_available_semaphores_.empty() ||
+        current_frame_ < 0 || current_frame_ >= frames_in_flight_) {
+        GLOG_ERROR("VulkanSwapchain::acquire_next_image: frame index out of range (frame={}, frames_in_flight={})",
+                   current_frame_, frames_in_flight_);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
     // 等待当前 frame 上一帧的 GPU 工作完成，避免信号量/UBO/命令缓冲被复用时还在使用。
     VkFence frame_fence = frame_fences_[current_frame_];
     vkWaitForFences(device_->device(), 1, &frame_fence, VK_TRUE, UINT64_MAX);
@@ -494,6 +511,9 @@ VkResult VulkanSwapchain::acquire_next_image(uint32_t* image_index) {
 }
 
 VkResult VulkanSwapchain::present(uint32_t image_index, VkSemaphore wait_semaphore) {
+    if (!device_ || !device_->device() || swapchain_ == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
     VkPresentInfoKHR info{};
     info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     info.waitSemaphoreCount = 1;
@@ -506,6 +526,17 @@ VkResult VulkanSwapchain::present(uint32_t image_index, VkSemaphore wait_semapho
 }
 
 VkResult VulkanSwapchain::submit_and_present(uint32_t image_index, VkCommandBuffer cmd) {
+    if (!device_ || !device_->device() || swapchain_ == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    if (frame_fences_.empty() || image_available_semaphores_.empty() ||
+        render_finished_semaphores_.empty() || current_frame_ < 0 ||
+        current_frame_ >= frames_in_flight_ || image_index >= images_.size()) {
+        GLOG_ERROR("VulkanSwapchain::submit_and_present: invalid state (frame={}, frames_in_flight={}, image={})",
+                   current_frame_, frames_in_flight_, image_index);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         return VK_ERROR_DEVICE_LOST;
     }

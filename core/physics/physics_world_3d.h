@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace gryce_engine::physics {
 
@@ -58,6 +59,14 @@ public:
     // 关节
     virtual JointHandle create_joint(const JointDesc3D& desc) = 0;
     virtual void destroy_joint(JointHandle handle) = 0;
+
+    // 碰撞/触发事件：每次 step() 后调用，取回自上次调用以来累积的事件。
+    // out 采用追加语义（不清空，调用方自行管理）。
+    virtual void drain_collision_events(std::vector<CollisionEvent>& out) = 0;
+
+    // 取回并清零自上次调用以来的每个刚体最大碰撞冲量（含持续接触），
+    // 用于 DestructibleBody 等按冲量触发效果的组件。
+    virtual void drain_collision_impulses(std::unordered_map<BodyHandle, float>& out) = 0;
 
     // 查询
     virtual void foreach_body(std::function<void(BodyHandle, const math::Vector3f&, const math::Quaternionf&)> callback) const = 0;

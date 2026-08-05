@@ -1,13 +1,17 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include "components/rigid_body.h"
 #include "components/static_body.h"
 #include "components/box_collider.h"
 #include "components/sphere_collider.h"
 #include "components/plane_collider.h"
 #include "components/character_controller_3d.h"
+#include "components/destructible_body.h"
 #include "components/joint_3d.h"
 #include "ecs/systems/physics_system_3d.h"
+#include "ecs/systems/fracture_system.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "math/math.h"
@@ -333,3 +337,124 @@ TEST(Physics3D, JointDestroyedWhenBodyRemoved) {
 
     SUCCEED();
 }
+
+TEST(Physics3D, TriggerFiresEnterAndExitEvents) {
+    scene::Scene scene("test");
+
+    // 静态触发器盒子（is_trigger），动态小球穿过它
+    scene::Entity* zone = scene.create_entity("TriggerZone");
+    zone->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    zone->add_component<components::StaticBody>();
+    auto* zone_col = zone->add_component<components::BoxCollider>();
+    zone_col->size = math::Vector3f(3.0f, 2.0f, 3.0f);
+    zone_col->is_trigger = true;
+
+    scene::Entity* ball = scene.create_entity("Ball");
+    ball->transform()->position = math::Vector3f(0.0f, 10.0f, 0.0f);
+    ball->add_component<components::RigidBody>();
+    ball->add_component<components::SphereCollider>();
+
+    ecs::PhysicsSystem3D sys;
+    sys.max_steps_per_frame = 240;
+    sys.on_init(scene);
+
+    bool entered = false;
+    bool exited = false;
+    bool trigger_flag_ok = false;
+    for (int frame = 0; frame < 240; ++frame) {
+        sys.on_update(scene, 1.0f / 60.0f);
+        for (const auto& ev : sys.collision_events()) {
+            if (ev.is_trigger) {
+                trigger_flag_ok = true;
+                if (ev.type == physics::CollisionEventType::BeginContact) entered = true;
+                if (ev.type == physics::CollisionEventType::EndContact) exited = true;
+            }
+        }
+    }
+
+    // 小球应自由穿过触发器（无碰撞响应），因此最终会落到原点以下
+    EXPECT_LT(ball->transform()->position.y, -1.0f);
+    EXPECT_TRUE(entered);
+    EXPECT_TRUE(exited);
+    EXPECT_TRUE(trigger_flag_ok);
+}
+
+TEST(Physics3D, CollisionEventsReportImpulse) {
+    scene::Scene scene("test");
+
+    scene::Entity* a = scene.create_entity("A");
+    a->transform()->position = math::Vector3f(0.0f, 0.0f, 0.0f);
+    auto* rb_a = a->add_component<components::RigidBody>();
+    rb_a->velocity = math::Vector3f(5.0f, 0.0f, 0.0f);
+    rb_a->restitution = 0.5f;
+    a->add_component<components::SphereCollider>();
+
+    scene::Entity* b = scene.create_entity("B");
+    b->transform()->position = math::Vector3f(1.5f, 0.0f, 0.0f);
+    auto* rb_b = b->add_component<components::RigidBody>();
+    rb_b->velocity = math::Vector3f(-5.0f, 0.0f, 0.0f);
+    rb_b->restitution = 0.5f;
+    b->add_component<components::SphereCollider>();
+
+    ecs::PhysicsSystem3D sys;
+    sys.on_init(scene);
+
+    bool saw_begin = false;
+    bool saw_end = false;
+    float max_impulse = 0.0f;
+    for (int frame = 0; frame < 30; ++frame) {
+        sys.on_update(scene, 1.0f / 60.0f);
+        for (const auto& ev : sys.collision_events()) {
+            if (ev.is_trigger) continue;
+            if (ev.type == physics::CollisionEventType::BeginContact) {
+                saw_begin = true;
+                max_impulse = std::max(max_impulse, ev.impulse);
+            } else {
+                saw_end = true;
+            }
+        }
+        max_impulse = std::max(max_impulse, rb_a->last_collision_impulse);
+    }
+
+    EXPECT_TRUE(saw_begin);
+    EXPECT_TRUE(saw_end);
+    // 两个 1kg 球相向 5m/s 碰撞，冲量应在几 kg·m/s 量级
+    EXPECT_GT(max_impulse, 0.5f);
+}
+
+TEST(Physics3D, DestructibleBodyFracturesOnHardImpact) {
+    scene::Scene scene("test");
+
+    // 地面
+    scene::Entity* ground = scene.create_entity("Ground");
+    ground->add_component<components::StaticBody>();
+    auto* gc = ground->add_component<components::BoxCollider>();
+    gc->size = math::Vector3f(10.0f, 1.0f, 10.0f);
+
+    // 可碎裂盒子从高处砸向地面
+    scene::Entity* cube = scene.create_entity("Cube");
+    cube->transform()->position = math::Vector3f(0.0f, 8.0f, 0.0f);
+    auto* rb = cube->add_component<components::RigidBody>();
+    rb->restitution = 0.0f;
+    cube->add_component<components::BoxCollider>();
+    auto* destructible = cube->add_component<components::DestructibleBody>();
+    destructible->fracture_threshold = 0.5f;
+
+    ecs::PhysicsSystem3D sys;
+    ecs::FractureSystem fracture;
+    sys.max_steps_per_frame = 240;
+    sys.on_init(scene);
+
+    bool fractured = false;
+    for (int frame = 0; frame < 240 && !fractured; ++frame) {
+        sys.on_update(scene, 1.0f / 60.0f);
+        // 物理系统先写入 last_collision_impulse，FractureSystem 随后判定碎裂
+        fractured = destructible->fractured;
+        if (fractured) break;
+        fracture.on_update(scene, 1.0f / 60.0f);
+    }
+
+    // 高速落地应产生足够冲量触发碎裂（验证 last_collision_impulse 已接线）
+    EXPECT_TRUE(fractured);
+}
+

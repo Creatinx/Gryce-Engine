@@ -72,11 +72,11 @@ TEST_F(AssetTest, AssetManagerCacheMesh) {
     std::string path = "res:/models/cube.obj";
 
     EXPECT_FALSE(assets::AssetManager::instance().has_mesh(path));
-    const assets::MeshData* mesh1 = assets::AssetManager::instance().load_mesh(path);
+    auto mesh1 = assets::AssetManager::instance().load_mesh(path);
     ASSERT_NE(mesh1, nullptr);
     EXPECT_FALSE(mesh1->empty());
 
-    const assets::MeshData* mesh2 = assets::AssetManager::instance().load_mesh(path);
+    auto mesh2 = assets::AssetManager::instance().load_mesh(path);
     EXPECT_EQ(mesh1, mesh2);
     EXPECT_TRUE(assets::AssetManager::instance().has_mesh(path));
 
@@ -89,10 +89,14 @@ TEST_F(AssetTest, AssetManagerLRUMemoryEviction) {
 
     std::string path = "res:/models/cube.obj";
     assets::AssetManager::instance().set_max_cache_memory_mb(0.0001f); // ~100 bytes
-    const assets::MeshData* mesh = assets::AssetManager::instance().load_mesh(path);
-    ASSERT_NE(mesh, nullptr);
-
-    // cube 占用几百字节，超过限制后应被驱逐
+    {
+        // 调用方持有 shared_ptr 期间，资源不应被驱逐（load_mesh 返回共享指针持有资源）
+        auto mesh = assets::AssetManager::instance().load_mesh(path);
+        ASSERT_NE(mesh, nullptr);
+        EXPECT_TRUE(assets::AssetManager::instance().has_mesh(path));
+    }
+    // 外部引用释放后，触发一次驱逐即可释放超出限制的条目
+    assets::AssetManager::instance().set_max_cache_memory_mb(0.0001f);
     EXPECT_FALSE(assets::AssetManager::instance().has_mesh(path));
     EXPECT_EQ(assets::AssetManager::instance().resident_count(), 0u);
 

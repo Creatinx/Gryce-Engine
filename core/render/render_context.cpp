@@ -1,6 +1,7 @@
 #include "render_context.h"
 
 #include <future>
+#include <thread>
 
 #include "render_command_buffer.h"
 #include "render_thread.h"
@@ -200,7 +201,22 @@ void RenderContext::resume_render_thread() {
     GLOG_INFO("RenderContext::resume_render_thread: starting render thread");
     render_thread_ = std::make_unique<RenderThread>(backend_.get(), cmd_buffer_.get(), native_window_);
     render_thread_->start();
+    if (!render_thread_->is_running()) {
+        GLOG_ERROR("RenderContext::resume_render_thread: failed to start render thread");
+        render_thread_.reset();
+        cmd_buffer_.reset();
+        running_ = false;
+        return;
+    }
     running_ = true;
+
+    // 等待渲染线程完成 context 绑定并进入命令等待状态，避免主线程立即 submit 时发生竞态。
+    // 超时仅作保险，正常情况在 1~2 ms 内完成。
+    constexpr int k_max_wait_ms = 1000;
+    for (int i = 0; i < k_max_wait_ms; ++i) {
+        if (render_thread_->is_ready()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
     GLOG_INFO("RenderContext render thread resumed");
 }
@@ -395,6 +411,7 @@ void RenderContext::destroy_framebuffer(RHIFramebufferHandle handle) {
 }
 
 void RenderContext::set_shader(RHIShaderHandle shader) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_shader(shader));
 }
 
@@ -403,7 +420,8 @@ void RenderContext::set_uniform_int(RHIShaderHandle shader, const std::string& n
 }
 
 void RenderContext::set_uniform_int(RHIShaderHandle shader, const char* name, int value) {
-    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_int(shader, name, value));
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_int(shader, name ? name : "", value));
 }
 
 void RenderContext::set_uniform_float(RHIShaderHandle shader, const std::string& name, float value) {
@@ -411,7 +429,8 @@ void RenderContext::set_uniform_float(RHIShaderHandle shader, const std::string&
 }
 
 void RenderContext::set_uniform_float(RHIShaderHandle shader, const char* name, float value) {
-    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_float(shader, name, value));
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_float(shader, name ? name : "", value));
 }
 
 void RenderContext::set_uniform_vec3(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector3f& value) {
@@ -419,7 +438,8 @@ void RenderContext::set_uniform_vec3(RHIShaderHandle shader, const std::string& 
 }
 
 void RenderContext::set_uniform_vec3(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector3f& value) {
-    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_vec3(shader, name, value));
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_vec3(shader, name ? name : "", value));
 }
 
 void RenderContext::set_uniform_vec4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector4f& value) {
@@ -427,7 +447,8 @@ void RenderContext::set_uniform_vec4(RHIShaderHandle shader, const std::string& 
 }
 
 void RenderContext::set_uniform_vec4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector4f& value) {
-    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_vec4(shader, name, value));
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_vec4(shader, name ? name : "", value));
 }
 
 void RenderContext::set_uniform_mat4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Matrix4f& value) {
@@ -435,12 +456,14 @@ void RenderContext::set_uniform_mat4(RHIShaderHandle shader, const std::string& 
 }
 
 void RenderContext::set_uniform_mat4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Matrix4f& value) {
-    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_mat4(shader, name, value));
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_mat4(shader, name ? name : "", value));
 }
 
 void RenderContext::set_uniform_mat4_array(RHIShaderHandle shader, const char* name,
                                            std::shared_ptr<const std::vector<gryce_engine::math::Matrix4f>> values) {
     if (!values || values->empty()) return;
+    if (!cmd_buffer_) return;
     // 句柄 + shared_ptr 全部按值捕获；命令在渲染线程执行时通过 backend 解析 shader。
     // shader 句柄带 generation 校验：shader 已销毁则 shader(handle) 返回 nullptr，安全跳过。
     cmd_buffer_->push([shader, name = std::string(name ? name : ""), values = std::move(values)](IRenderBackend* backend) {
@@ -458,54 +481,67 @@ void RenderContext::set_texture(RHIShaderHandle shader, RHITextureHandle texture
 
 void RenderContext::set_texture(RHIShaderHandle shader, RHITextureHandle texture, int slot,
                                 const char* uniform_name) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_texture(shader, texture, slot, uniform_name ? uniform_name : ""));
 }
 
 void RenderContext::clear(float r, float g, float b, float a) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_clear(r, g, b, a));
 }
 
 void RenderContext::clear_depth() {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_clear_depth());
 }
 
 void RenderContext::set_viewport(int x, int y, int w, int h) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_viewport(x, y, w, h));
 }
 
 void RenderContext::set_depth_test(bool enabled) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_depth_test(enabled));
 }
 
 void RenderContext::set_depth_write(bool enabled) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_depth_write(enabled));
 }
 
 void RenderContext::set_blend(bool enabled) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_blend(enabled));
 }
 
 void RenderContext::set_cull_face(bool enabled) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_cull_face(enabled));
 }
 
 void RenderContext::set_framebuffer(RHIFramebufferHandle fb) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_bind_framebuffer(fb));
 }
 
 void RenderContext::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_draw_mesh(mesh, shader));
 }
 
 void RenderContext::draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_draw_indexed(mesh, shader));
 }
 
 void RenderContext::push_command(std::function<void(IRenderBackend*)>&& cmd) {
+    if (!cmd_buffer_) return;
     cmd_buffer_->push(std::move(cmd));
 }
 
 void RenderContext::present() {
+    if (!cmd_buffer_) return;
     cmd_buffer_->submit();
     // 等待渲染线程完成本帧所有已提交命令，避免 CPU 侧在 GPU 仍在引用资源时释放实体/材质。
     wait_for_idle();
@@ -577,6 +613,7 @@ bool RenderContext::capture_frame_rgba(std::vector<uint8_t>& out, int& width, in
 
     std::promise<bool> promise;
     std::future<bool> future = promise.get_future();
+    if (!cmd_buffer_) return false;
     cmd_buffer_->push([&out, &width, &height, &promise](IRenderBackend* backend) {
         bool ok = backend->capture_frame_rgba(out, width, height);
         promise.set_value(ok);

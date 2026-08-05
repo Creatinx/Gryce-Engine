@@ -10,8 +10,10 @@ find_program(GRYCE_GLSLANG_VALIDATOR glslangValidator
     PATHS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
 )
 
+# 注意：此处只提示；实际在 gryce_compile_vulkan_shaders 内，当确有
+# vulkan_*.vert/.frag 需要编译而 glslangValidator 缺失时才会 FATAL_ERROR。
 if(NOT GRYCE_GLSLANG_VALIDATOR)
-    message(WARNING
+    message(STATUS
         "[Gryce Engine] glslangValidator not found. "
         "Vulkan SPIR-V shaders will not be auto-compiled. "
         "Install the Vulkan SDK or add glslangValidator to PATH."
@@ -19,10 +21,6 @@ if(NOT GRYCE_GLSLANG_VALIDATOR)
 endif()
 
 function(gryce_compile_vulkan_shaders shader_dir)
-    if(NOT GRYCE_GLSLANG_VALIDATOR)
-        return()
-    endif()
-
     if(NOT IS_DIRECTORY "${shader_dir}")
         message(WARNING "[Gryce Engine] Shader directory does not exist: ${shader_dir}")
         return()
@@ -33,10 +31,25 @@ function(gryce_compile_vulkan_shaders shader_dir)
 
     file(MAKE_DIRECTORY "${spirv_dir}")
 
-    file(GLOB shader_sources
+    # CONFIGURE_DEPENDS：.vert/.frag 增删后重新 configure，
+    # 避免新增着色器不参与编译导致运行时缺 SPIR-V。
+    file(GLOB shader_sources CONFIGURE_DEPENDS
         "${shader_dir}/vulkan_*.vert"
         "${shader_dir}/vulkan_*.frag"
     )
+
+    # 有着色器源码却没有编译器时，产物缺失会导致运行时着色器加载失败，
+    # 这里直接报错而非静默跳过，避免把问题留到运行时才暴露。
+    if(NOT GRYCE_GLSLANG_VALIDATOR AND shader_sources)
+        message(FATAL_ERROR
+            "[Gryce Engine] glslangValidator not found, but shaders exist in "
+            "${shader_dir}. Install the Vulkan SDK or add glslangValidator to PATH."
+        )
+    endif()
+
+    if(NOT GRYCE_GLSLANG_VALIDATOR)
+        return()
+    endif()
 
     set(spirv_outputs)
     foreach(source IN LISTS shader_sources)
