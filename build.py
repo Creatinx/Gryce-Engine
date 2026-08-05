@@ -127,17 +127,21 @@ def clean_build_artifacts(build_dir, keep_deps=True):
     shutil.rmtree(bd)
 
 
-def ensure_deps():
+def ensure_deps(offline: bool = False):
     """Ensure all dependencies are downloaded via deps_manager.py."""
     deps_script = Path(__file__).parent / "tools" / "deps_manager.py"
     if not deps_script.exists():
         print(f"{C_ERR}[ERROR]{C_RESET} deps_manager.py not found at {deps_script}")
         sys.exit(1)
 
-    print(f"{C_INFO}[Gryce Engine]{C_RESET} Checking dependencies ...")
-    ok, output = run([sys.executable, str(deps_script), "download"], check=False)
+    mode = " (offline mode — no network)" if offline else ""
+    print(f"{C_INFO}[Gryce Engine]{C_RESET} Checking dependencies{mode} ...")
+    cmd = [sys.executable, str(deps_script), "download"]
+    if offline:
+        cmd.append("--offline")
+    ok, output = run(cmd, check=False)
     if not ok:
-        print(f"{C_ERR}[ERROR]{C_RESET} Dependency download failed:")
+        print(f"{C_ERR}[ERROR]{C_RESET} Dependency check failed:")
         print(output)
         sys.exit(1)
 
@@ -182,6 +186,10 @@ def main():
         "--no-lock", action="store_true",
         help="Do NOT auto-lock compiler (use CMake default detection)"
     )
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="Skip network downloads; use only local cached dependencies"
+    )
     args = parser.parse_args()
 
     config = args.config
@@ -192,7 +200,7 @@ def main():
     # 0. Setup deps only mode
     # -----------------------------------------------------------------------
     if args.setup_deps:
-        ensure_deps()
+        ensure_deps(offline=args.offline)
         print(f"{C_OK}[Gryce Engine]{C_RESET} Dependencies ready.")
         sys.exit(0)
 
@@ -283,7 +291,7 @@ def main():
     # -----------------------------------------------------------------------
     # 4. Ensure dependencies
     # -----------------------------------------------------------------------
-    ensure_deps()
+    ensure_deps(offline=args.offline)
 
     # -----------------------------------------------------------------------
     # 5. Configure

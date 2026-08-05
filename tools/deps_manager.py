@@ -52,7 +52,7 @@ GITHUB_MIRRORS = [
     "https://mirror.ghproxy.com/https://github.com",
 ]
 
-_URL_TIMEOUT_SEC = 600  # 10 min: some mirrors/GitHub are very slow
+_URL_TIMEOUT_SEC = 60  # 60s: fast-fail on bad network
 
 
 def _mirror_url(original_url: str) -> list[str]:
@@ -318,7 +318,7 @@ def extract_tarball(tarball: Path, dest: Path, extracted_dir: str) -> bool:
 # ---------------------------------------------------------------------------
 # Dependency management
 # ---------------------------------------------------------------------------
-def ensure_dependency(dep: dict) -> bool:
+def ensure_dependency(dep: dict, offline: bool = False) -> bool:
     """Download and extract a single dependency if needed."""
     name = dep["name"]
     url = dep["url"]
@@ -350,7 +350,16 @@ def ensure_dependency(dep: dict) -> bool:
             print(f"{C_WARN}[WARN]{C_RESET} {name}: SHA256 mismatch, will try re-download or use cache as fallback")
     
     if not cache_ok:
-        if not download_file(_mirror_url(url), cache_file, f"Downloading {name}"):
+        if offline:
+            if cache_file.exists():
+                print(f"{C_WARN}[WARN]{C_RESET} {name}: offline mode, using existing cache without verification")
+            elif required:
+                print(f"{C_ERR}[ERROR]{C_RESET} {name}: offline mode but no cache available (required)")
+                return False
+            else:
+                print(f"{C_WARN}[WARN]{C_RESET} {name}: offline mode, no cache available (optional, skipping)")
+                return False
+        elif not download_file(_mirror_url(url), cache_file, f"Downloading {name}"):
             if cache_file.exists():
                 print(f"{C_WARN}[WARN]{C_RESET} {name}: download failed, attempting to use existing cache as fallback")
             elif required:
@@ -375,17 +384,19 @@ def ensure_dependency(dep: dict) -> bool:
         return False
 
 
-def download_all() -> bool:
+def download_all(offline: bool = False) -> bool:
     """Download and extract all dependencies."""
     print(f"{C_INFO}[deps]{C_RESET} Dependency root: {deps_root()}")
     print(f"{C_INFO}[deps]{C_RESET} Cache directory: {cache_dir()}")
+    if offline:
+        print(f"{C_WARN}[deps]{C_RESET} OFFLINE MODE: skipping all network downloads")
     
     deps_root().mkdir(parents=True, exist_ok=True)
     cache_dir().mkdir(parents=True, exist_ok=True)
     
     all_ok = True
     for dep in DEPENDENCIES:
-        if not ensure_dependency(dep):
+        if not ensure_dependency(dep, offline=offline):
             if dep["required"]:
                 all_ok = False
     
@@ -433,10 +444,14 @@ def main():
         choices=["download", "status", "clean", "clean-all"],
         help="Command to run (default: download)"
     )
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="Skip network downloads; use only local cached dependencies"
+    )
     args = parser.parse_args()
     
     if args.command == "download":
-        ok = download_all()
+        ok = download_all(offline=args.offline)
         sys.exit(0 if ok else 1)
     elif args.command == "status":
         status()
