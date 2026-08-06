@@ -342,4 +342,8 @@ int GCore_GetLogMessages(char* out_buf, int buf_size) {
     return 0;
 }
 
+void* GCore_GetInternalWorldPtr(void) {
+    return gryce_core::g_core_state.world.get();
+}
+
 } // extern "C"

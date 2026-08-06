@@ -548,6 +548,26 @@ void RenderContext::present() {
     process_pending_destroys();
 }
 
+void RenderContext::present_sync() {
+    if (!cmd_buffer_ || !backend_) return;
+
+    cmd_buffer_->submit();
+
+    auto* commands = cmd_buffer_->acquire();
+    if (commands) {
+        for (auto& item : *commands) {
+            if (item.is_typed()) {
+                execute_typed_command(backend_.get(), item.typed());
+            } else {
+                item.lambda()(backend_.get());
+            }
+        }
+        cmd_buffer_->release();
+    }
+
+    process_pending_destroys(true);
+}
+
 void RenderContext::wait_for_idle() {
     if (cmd_buffer_) {
         cmd_buffer_->wait_for_idle();

@@ -134,6 +134,11 @@ public:
     // 高层便捷方法：委托给 backend 或在运行期推入命令缓冲
     void request_screenshot(const std::string& path);
 
+    // 同步模式 present：提交、获取、执行、释放，全部在主线程内完成（无 RenderThread）
+    void present_sync();
+
+    // 同步读取当前帧为 top-down RGBA。阻塞直到渲染线程完成本帧。
+
     // 同步读取当前帧为 top-down RGBA。阻塞直到渲染线程完成本帧。
     bool capture_frame_rgba(std::vector<uint8_t>& out, int& w, int& h);
 

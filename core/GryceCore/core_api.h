@@ -52,6 +52,9 @@ GRYCE_CORE_API void GCore_RegisterCallback_OnLogMessage(GOnLogMessage cb);
 
 GRYCE_CORE_API int GCore_GetLogMessages(char* out_buf, int buf_size);
 
+// 内部访问：供同进程其他 DLL 模块获取 World 指针（不透明，模块内部再 cast）
+GRYCE_CORE_API void* GCore_GetInternalWorldPtr(void);
+
 #ifdef __cplusplus
 }
 #endif
