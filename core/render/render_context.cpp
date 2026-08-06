@@ -74,12 +74,12 @@ RenderContext::~RenderContext() {
     lifetime_->alive.store(false);
 }
 
-bool RenderContext::init(void* native_window, RenderAPI api) {
+bool RenderContext::init(void* native_window, std::unique_ptr<IRenderBackend> backend) {
     native_window_ = native_window;
 
-    backend_ = create_render_backend(api);
+    backend_ = std::move(backend);
     if (!backend_) {
-        GLOG_ERROR("RenderContext::init: unsupported API");
+        GLOG_ERROR("RenderContext::init: backend is null");
         return false;
     }
 

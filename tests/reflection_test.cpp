@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "components/component_factory.h"
 #include "components/transform.h"
 #include "components/mesh_renderer.h"
 #include "components/light.h"
@@ -30,6 +31,14 @@ struct LocalWidget {
     bool locked = false;
 };
 
+} // namespace
+
+// 确保内建组件反射已注册（与 scene_test / prefab_test 一致）
+namespace {
+struct ReflectionTestInit {
+    ReflectionTestInit() { components::register_builtin_components(); }
+};
+static ReflectionTestInit s_init;
 } // namespace
 
 GRYCE_REFLECT_CLASS(LocalWidget, )

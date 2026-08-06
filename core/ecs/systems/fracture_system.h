@@ -1,5 +1,6 @@
 #pragma once
 
+#include "export.h"
 #include "ecs/system.h"
 
 namespace gryce_engine::ecs {
@@ -8,7 +9,7 @@ namespace gryce_engine::ecs {
 // FractureSystem — 碎裂系统
 // 在 PhysicsSystem 之后运行，处理带 DestructibleBody 的 Entity 的碎裂。
 // ---------------------------------------------------------------------------
-class FractureSystem : public ISystem {
+class GRYCE_API FractureSystem : public ISystem {
 public:
     const char* name() const override { return "FractureSystem"; }
     Phase phase() const override { return Phase::PostUpdate; }

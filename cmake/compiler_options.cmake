@@ -7,6 +7,9 @@
 add_library(gryce_compile_options INTERFACE)
 add_library(gryce::compile_options ALIAS gryce_compile_options)
 
+# 所有 target 都是 SHARED 库，启用 DLL 导出/导入宏
+target_compile_definitions(gryce_compile_options INTERFACE GRYCE_BUILD_SHARED)
+
 # ---------------------------------------------------------------------------
 # MSVC (Visual Studio)
 # ---------------------------------------------------------------------------

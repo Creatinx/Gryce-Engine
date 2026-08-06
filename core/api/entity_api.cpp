@@ -1,23 +1,144 @@
 #include "GryceCore/entity_api.h"
+#include "internal_state.h"
+
+#include "ecs/world.h"
+#include "scene/scene.h"
+#include "scene/entity.h"
+#include "components/transform.h"
+
+using gryce_engine::scene::Scene;
+using gryce_engine::scene::Entity;
+
+namespace gc = gryce_core;
 
 extern "C" {
 
-int GEntity_GetCount(void) { return 0; }
-GEntityHandle GEntity_GetAt(int index) { (void)index; return 0; }
-int GEntity_GetName(GEntityHandle entity, char* out_buf, int buf_size) { (void)entity; (void)out_buf; (void)buf_size; return 0; }
-int GEntity_GetPath(GEntityHandle entity, char* out_buf, int buf_size) { (void)entity; (void)out_buf; (void)buf_size; return 0; }
-GEntityHandle GEntity_GetParent(GEntityHandle entity) { (void)entity; return 0; }
-int GEntity_GetChildCount(GEntityHandle entity) { (void)entity; return 0; }
-GEntityHandle GEntity_GetChildAt(GEntityHandle entity, int index) { (void)entity; (void)index; return 0; }
-int GEntity_GetSiblingIndex(GEntityHandle entity) { (void)entity; return -1; }
+int GEntity_GetCount(void) {
+    if (!gc::g_core_state.world || !gc::g_core_state.world->scene()) return 0;
+    int count = 0;
+    gc::g_core_state.world->scene()->foreach([&](Entity* e) {
+        if (e && e->parent() != nullptr) ++count;
+    });
+    return count;
+}
 
-GEntityHandle GEntity_GetSelected(void) { return 0; }
+GEntityHandle GEntity_GetAt(int index) {
+    if (!gc::g_core_state.world || !gc::g_core_state.world->scene() || index < 0) return 0;
+    GEntityHandle result = 0;
+    int i = 0;
+    gc::g_core_state.world->scene()->foreach([&](Entity* e) {
+        if (e && e->parent() != nullptr) {
+            if (i == index) {
+                result = gc::g_core_state.entity_map.lookup(e->uuid());
+            }
+            ++i;
+        }
+    });
+    return result;
+}
 
-int GEntity_GetLocalPosition(GEntityHandle entity, GVec3* out_pos) { (void)entity; (void)out_pos; return -1; }
-int GEntity_GetLocalRotation(GEntityHandle entity, GQuat* out_rot) { (void)entity; (void)out_rot; return -1; }
-int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale) { (void)entity; (void)out_scale; return -1; }
-int GEntity_GetWorldPosition(GEntityHandle entity, GVec3* out_pos) { (void)entity; (void)out_pos; return -1; }
-int GEntity_GetWorldRotation(GEntityHandle entity, GQuat* out_rot) { (void)entity; (void)out_rot; return -1; }
-int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale) { (void)entity; (void)out_scale; return -1; }
+int GEntity_GetName(GEntityHandle entity, char* out_buf, int buf_size) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !out_buf || buf_size <= 0) return -1;
+    std::strncpy(out_buf, e->name().c_str(), static_cast<size_t>(buf_size) - 1);
+    out_buf[buf_size - 1] = '\0';
+    return static_cast<int>(std::strlen(out_buf));
+}
+
+int GEntity_GetPath(GEntityHandle entity, char* out_buf, int buf_size) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !out_buf || buf_size <= 0) return -1;
+    std::string path = e->name();
+    Entity* cur = e->parent();
+    while (cur && cur->parent() != nullptr) {
+        path = cur->name() + "/" + path;
+        cur = cur->parent();
+    }
+    std::strncpy(out_buf, path.c_str(), static_cast<size_t>(buf_size) - 1);
+    out_buf[buf_size - 1] = '\0';
+    return static_cast<int>(std::strlen(out_buf));
+}
+
+GEntityHandle GEntity_GetParent(GEntityHandle entity) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e) return 0;
+    Entity* p = e->parent();
+    if (!p || p->parent() == nullptr) return 0;
+    return gc::g_core_state.entity_map.lookup(p->uuid());
+}
+
+int GEntity_GetChildCount(GEntityHandle entity) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e) return 0;
+    return static_cast<int>(e->children().size());
+}
+
+GEntityHandle GEntity_GetChildAt(GEntityHandle entity, int index) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || index < 0 || static_cast<size_t>(index) >= e->children().size()) return 0;
+    return gc::g_core_state.entity_map.lookup(e->children()[index]->uuid());
+}
+
+int GEntity_GetSiblingIndex(GEntityHandle entity) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !e->parent()) return -1;
+    const auto& siblings = e->parent()->children();
+    for (size_t i = 0; i < siblings.size(); ++i) {
+        if (siblings[i].get() == e) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+GEntityHandle GEntity_GetSelected(void) {
+    return gc::g_core_state.selected_entity;
+}
+
+// --- Transform ---
+int GEntity_GetLocalPosition(GEntityHandle entity, GVec3* out_pos) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !out_pos) return -1;
+    auto* t = e->transform();
+    if (!t) return -1;
+    out_pos->x = t->position.x;
+    out_pos->y = t->position.y;
+    out_pos->z = t->position.z;
+    return 0;
+}
+
+int GEntity_GetLocalRotation(GEntityHandle entity, GQuat* out_rot) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !out_rot) return -1;
+    auto* t = e->transform();
+    if (!t) return -1;
+    out_rot->x = t->rotation.x;
+    out_rot->y = t->rotation.y;
+    out_rot->z = t->rotation.z;
+    out_rot->w = t->rotation.w;
+    return 0;
+}
+
+int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !out_scale) return -1;
+    auto* t = e->transform();
+    if (!t) return -1;
+    out_scale->x = t->scale.x;
+    out_scale->y = t->scale.y;
+    out_scale->z = t->scale.z;
+    return 0;
+}
+
+int GEntity_GetWorldPosition(GEntityHandle entity, GVec3* out_pos) {
+    (void)entity; (void)out_pos;
+    return -1; // TODO
+}
+int GEntity_GetWorldRotation(GEntityHandle entity, GQuat* out_rot) {
+    (void)entity; (void)out_rot;
+    return -1; // TODO
+}
+int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale) {
+    (void)entity; (void)out_scale;
+    return -1; // TODO
+}
 
 } // extern "C"

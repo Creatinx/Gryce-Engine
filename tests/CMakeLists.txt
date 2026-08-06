@@ -32,15 +32,6 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             GTest::gtest_main
     )
     target_compile_definitions(gryce_tests PRIVATE
-        PRIVATE
-            GryceCore GryceRenderer GrycePlatform GrycePhysics
-            GTest::gtest_main
-    )
-        PRIVATE
-            gryce_core
-            GTest::gtest_main
-    )
-    target_compile_definitions(gryce_tests PRIVATE
         GRYCE_TEST_PROJECT_ROOT="${CMAKE_SOURCE_DIR}"
     )
     target_include_directories(gryce_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

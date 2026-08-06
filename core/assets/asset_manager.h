@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "export.h"
 #include "assets/asset.h"
 #include "assets/asset_handle.h"
 #include "assets/async_loader.h"
@@ -25,7 +26,7 @@ namespace gryce_engine::assets {
 // AssetManager — 通用资源管理器（CPU 侧资源缓存）
 // 按 res:/ 路径缓存 Asset，避免重复导入。
 // ---------------------------------------------------------------------------
-class AssetManager {
+class GRYCE_API AssetManager {
 public:
     static AssetManager& instance();
 

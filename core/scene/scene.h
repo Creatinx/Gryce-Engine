@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,7 +17,7 @@ namespace gryce_engine::scene {
 // ---------------------------------------------------------------------------
 // Scene — 场景，Godot 风格单根节点树：所有实体都挂在合成根节点 root() 下
 // ---------------------------------------------------------------------------
-class Scene {
+class GRYCE_API Scene {
 public:
     explicit Scene(const std::string& name = "Scene");
     ~Scene();

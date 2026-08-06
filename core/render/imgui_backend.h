@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "export.h"
+#include "render/export.h"
 
 struct ImDrawData;
 
@@ -19,7 +19,7 @@ class ITexture;
 // 因此必须导出，否则 MSVC/Windows 下会出现 ABI/vtable 不匹配，导致返回槽
 // 地址为 null，进而在 unique_ptr 内部构造 _Compressed_pair 时崩溃。
 // ---------------------------------------------------------------------------
-class GRYCE_API IImGuiBackend {
+class GRYCE_RENDERER_API IImGuiBackend {
 public:
     virtual ~IImGuiBackend() = default;
 

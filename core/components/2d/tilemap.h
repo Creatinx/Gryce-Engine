@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 
+#include "export.h"
 #include "components/2d/component_2d.h"
 #include "resources/tileset.h"
 #include "assets/texture_data.h"
@@ -18,7 +19,7 @@ namespace gryce_engine::components::d2::tilemap {
 // 以网格方式组织瓦片索引，使用关联的 Tileset 资源渲染。
 // 当前渲染后端若不支持图集 UV 裁剪，则使用索引对应颜色绘制纯色方块。
 // ---------------------------------------------------------------------------
-class Tilemap : public Component2D {
+class GRYCE_API Tilemap : public Component2D {
 public:
     std::string tileset_path;   // Tileset 资源路径（res:/tilesets/xxx.json）
 

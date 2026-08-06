@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "export.h"
 #include "components/2d/component_2d.h"
 #include "render/rhi_handle.h"
 
@@ -11,7 +12,7 @@ namespace gryce_engine::components::d2::sprite {
 // Sprite2D — 2D 精灵组件，支持 albedo 贴图与法线贴图。
 // 没有贴图时使用纯色矩形。
 // ---------------------------------------------------------------------------
-class Sprite2D : public Component2D {
+class GRYCE_API Sprite2D : public Component2D {
 public:
     std::string texture_path;        // albedo / diffuse 贴图路径（res:/...）
     std::string normal_map_path;     // 法线贴图路径（空表示使用默认平面法线）

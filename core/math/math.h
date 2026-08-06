@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <cmath>
 #include <algorithm>
 
@@ -19,7 +21,7 @@ constexpr float saturate(float v) { return clamp(v, 0.0f, 1.0f); }
 // ---------------------------------------------------------------------------
 // Vector2f
 // ---------------------------------------------------------------------------
-struct Vector2f {
+struct GRYCE_API Vector2f {
     float x = 0.0f;
     float y = 0.0f;
 
@@ -72,7 +74,7 @@ struct Vector3i {
 // ---------------------------------------------------------------------------
 // Vector3f
 // ---------------------------------------------------------------------------
-struct Vector3f {
+struct GRYCE_API Vector3f {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
@@ -158,7 +160,7 @@ struct Quaternionf;
 // ---------------------------------------------------------------------------
 // Matrix4f（列主序：m[col * 4 + row]）
 // ---------------------------------------------------------------------------
-struct Matrix4f {
+struct GRYCE_API Matrix4f {
     // 默认构造初始化为 identity（原实现 m 未初始化，为未定义值）。
     // 渲染类成员大量直接默认构造使用，identity 比全零/垃圾值更安全；
     // 聚合初始化（identity()/from_diagonal() 等）不受影响。
@@ -253,7 +255,7 @@ struct Matrix4f {
 // ---------------------------------------------------------------------------
 // Quaternionf
 // ---------------------------------------------------------------------------
-struct Quaternionf {
+struct GRYCE_API Quaternionf {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;

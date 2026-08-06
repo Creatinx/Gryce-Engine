@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "export.h"
+#include "render/export.h"
 #include "math/math.h"
 #include "render/rhi_handle.h"
 
@@ -92,7 +92,7 @@ enum class BlendMode {
 // 所有坐标系以屏幕左上角为原点，向右为 +X，向下为 +Y
 // 注意：以 std::unique_ptr<IRenderer2D> 跨 DLL 边界返回，必须导出。
 // ---------------------------------------------------------------------------
-class GRYCE_API IRenderer2D {
+class GRYCE_RENDERER_API IRenderer2D {
 public:
     virtual ~IRenderer2D() = default;
 

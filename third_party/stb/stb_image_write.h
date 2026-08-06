@@ -6,11 +6,15 @@
 #ifndef INCLUDE_STB_IMAGE_WRITE_H
 #define INCLUDE_STB_IMAGE_WRITE_H
 
+#ifndef STBI_WRITE_EXPORT
+#define STBI_WRITE_EXPORT
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int stbi_write_png(char const *filename, int w, int h, int comp, const void *data, int stride_in_bytes);
+STBI_WRITE_EXPORT int stbi_write_png(char const *filename, int w, int h, int comp, const void *data, int stride_in_bytes);
 
 #ifdef __cplusplus
 }
@@ -85,7 +89,7 @@ static void stbiw__wpcrc(std::vector<unsigned char>& out, int len_at) {
     stbiw__wp32(out, crc);
 }
 
-int stbi_write_png(char const *filename, int w, int h, int comp, const void *data, int stride_in_bytes) {
+STBI_WRITE_EXPORT int stbi_write_png(char const *filename, int w, int h, int comp, const void *data, int stride_in_bytes) {
     if (!filename || !data || w <= 0 || h <= 0 || comp != 4) return 0;
     if (stride_in_bytes == 0) stride_in_bytes = w * comp;
 

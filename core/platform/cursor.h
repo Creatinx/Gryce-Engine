@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
+
 struct GLFWcursor;
 
 namespace gryce_engine::platform {
@@ -10,7 +12,7 @@ namespace gryce_engine::platform {
 // ---------------------------------------------------------------------------
 // Cursor — 自定义鼠标光标（基于 GLFWcursor）
 // ---------------------------------------------------------------------------
-class Cursor {
+class GRYCE_API Cursor {
 public:
     Cursor();
     ~Cursor();

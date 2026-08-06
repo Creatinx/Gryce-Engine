@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "export.h"
 #include "components/component.h"
 #include "assets/mesh_data.h"
 #include "render/render_context.h"
@@ -17,7 +18,7 @@ namespace gryce_engine::components {
 // MeshRenderer — 3D 网格渲染组件
 // 通过 res:/ 路径引用模型资源，上传 GPU 后渲染。
 // ---------------------------------------------------------------------------
-class MeshRenderer : public Component {
+class GRYCE_API MeshRenderer : public Component {
 public:
     std::string mesh_path;
     std::unique_ptr<render::Material> material;

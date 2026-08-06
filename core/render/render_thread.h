@@ -3,7 +3,7 @@
 #include <thread>
 #include <atomic>
 
-#include "export.h"
+#include "render/export.h"
 
 namespace gryce_engine::render {
 
@@ -15,7 +15,7 @@ class RenderCommandBuffer;
 // 持有 GL context，消费 CMDBUFFER 中的命令并执行
 // 预留扩展：可在内部启动更多子线程用于并行运算
 // ---------------------------------------------------------------------------
-class GRYCE_API RenderThread {
+class GRYCE_RENDERER_API RenderThread {
 public:
     RenderThread(IRenderBackend* backend, RenderCommandBuffer* cmd_buffer, void* native_window);
     ~RenderThread();

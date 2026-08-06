@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <string>
 
 namespace gryce_engine::resources {
@@ -8,7 +10,7 @@ namespace gryce_engine::resources {
 // ResourcePath — 资源路径处理
 // res:/path/to/file 表示相对于项目根目录的路径。
 // ---------------------------------------------------------------------------
-class ResourcePath {
+class GRYCE_API ResourcePath {
 public:
     // 判断是否为 res:/ 开头的资源路径
     static bool is_resource_path(const std::string& path);

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "components/component.h"
 #include "assets/skinned_mesh_data.h"
 #include "math/math.h"
@@ -26,7 +27,7 @@ namespace gryce_engine::components {
 // 生命周期/上传模式与 MeshRenderer 相同：alive_token 防 UAF，
 // upload_to_gpu 在渲染线程命令中执行（allow_while_running=true）。
 // ---------------------------------------------------------------------------
-class SkinnedMeshRenderer : public Component {
+class GRYCE_API SkinnedMeshRenderer : public Component {
 public:
     std::string model_path;
     std::unique_ptr<render::Material> material;

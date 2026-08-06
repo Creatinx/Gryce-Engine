@@ -1,5 +1,6 @@
 #pragma once
 
+#include "export.h"
 #include "ecs/system.h"
 #include "math/math.h"
 #include "physics/physics_types.h"
@@ -17,7 +18,7 @@ namespace gryce_engine::ecs {
 // 底层委托给 IPhysicsWorld3D（当前默认 Jolt），支持 RigidBody / StaticBody +
 // BoxCollider / SphereCollider / PlaneCollider，含重力、阻尼、睡眠。
 // ---------------------------------------------------------------------------
-class PhysicsSystem3D : public ISystem {
+class GRYCE_API PhysicsSystem3D : public ISystem {
 public:
     // 本帧发生的碰撞/触发事件（进入/离开）。触发器（is_trigger）事件无冲量，
     // 普通碰撞事件的 impulse 为沿接触法线估计的碰撞冲量。

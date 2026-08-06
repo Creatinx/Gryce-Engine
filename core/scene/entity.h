@@ -6,6 +6,7 @@
 #include <functional>
 #include <type_traits>
 
+#include "export.h"
 #include "components/component.h"
 #include "components/transform.h"
 #include "ecs/component_store.h"
@@ -20,7 +21,7 @@ namespace gryce_engine::scene {
 // - 可挂载多个 Component
 // - 支持父子层级
 // ---------------------------------------------------------------------------
-class Entity {
+class GRYCE_API Entity {
 public:
     explicit Entity(const std::string& name = "Entity");
 

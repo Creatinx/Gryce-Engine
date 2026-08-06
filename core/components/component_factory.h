@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -49,6 +51,6 @@ struct ComponentRegistrar {
 };
 
 // 注册引擎内置组件（Transform、2D 形状、Label 等）
-void register_builtin_components();
+GRYCE_API void register_builtin_components();
 
 } // namespace gryce_engine::components

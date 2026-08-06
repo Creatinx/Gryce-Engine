@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,7 +46,7 @@ struct FontSource {
 // FontAtlas — 字体纹理图集
 // 使用 stb_truetype 生成，支持多字体源合并与任意 Unicode 范围
 // ---------------------------------------------------------------------------
-class FontAtlas {
+class GRYCE_API FontAtlas {
 public:
     FontAtlas() = default;
     ~FontAtlas();

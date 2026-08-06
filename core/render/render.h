@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include "export.h"
+#include "render/export.h"
 #include "render/render2d.h"
 #include "render/imgui_backend.h"
 #include "render/rhi_handle.h"
@@ -47,7 +47,7 @@ struct RenderBackendCapabilities {
 // 注意：以 std::unique_ptr<IRenderBackend> 跨 DLL 边界传递，必须导出以保证
 // vtable/析构函数在模块间一致。
 // ---------------------------------------------------------------------------
-class GRYCE_API IRenderBackend {
+class GRYCE_RENDERER_API IRenderBackend {
 public:
     virtual ~IRenderBackend() = default;
 
@@ -173,6 +173,6 @@ enum class RenderAPI {
 };
 
 // 根据 API 创建对应后端；DX11/DX12 为预留项，当前返回 nullptr。
-std::unique_ptr<IRenderBackend> create_render_backend(RenderAPI api);
+GRYCE_RENDERER_API std::unique_ptr<IRenderBackend> create_render_backend(RenderAPI api);
 
 } // namespace gryce_engine::render

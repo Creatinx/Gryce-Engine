@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "export.h"
 #include "ecs/system.h"
 #include "ecs/types.h"
 
@@ -20,7 +21,7 @@ namespace gryce_engine::ecs {
 // World — ECS 世界
 // 持有 Scene 和一组 Systems，按阶段驱动所有 System。
 // ---------------------------------------------------------------------------
-class World {
+class GRYCE_API World {
 public:
     World();
     ~World();

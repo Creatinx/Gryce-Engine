@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "math/math.h"
 
 namespace gryce_engine::animation {
@@ -31,7 +32,7 @@ struct Bone {
 // ---------------------------------------------------------------------------
 // Skeleton — 骨架（骨骼列表 + 按名索引）
 // ---------------------------------------------------------------------------
-class Skeleton {
+class GRYCE_API Skeleton {
 public:
     std::vector<Bone> bones;
 

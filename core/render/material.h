@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "render/export.h"
 #include "math/math.h"
 #include "render/rhi_handle.h"
 #include <nlohmann/json.hpp>
@@ -18,7 +19,7 @@ class RenderContext;
 // 支持 PBR 工作流：albedo、normal、roughness、metallic、ao、emissive 贴图 + 标量参数，
 // 以及透明混合、双面渲染、UV 平铺/偏移。
 // ---------------------------------------------------------------------------
-class Material {
+class GRYCE_RENDERER_API Material {
 public:
     // 透明混合模式：Opaque 不透明（默认）；Blend 半透明（alpha 混合，
     // 由渲染管线在透明 pass 中按深度从远到近排序绘制）。

@@ -141,8 +141,9 @@ int run_demo(DemoApp& app, int argc, char* argv[]) {
 
     render::RenderContext render_ctx;
     render_ctx.set_validation_enabled(args.vulkan_validation);
-    if (!render_ctx.init(window.native_handle(),
-                         args.vulkan ? render::RenderAPI::Vulkan : render::RenderAPI::OpenGL)) {
+    auto render_api = args.vulkan ? render::RenderAPI::Vulkan : render::RenderAPI::OpenGL;
+    auto backend = render::create_render_backend(render_api);
+    if (!backend || !render_ctx.init(window.native_handle(), std::move(backend))) {
         GLOG_ERROR("Failed to initialize render context");
         platform::Window::shutdown_sdk();
         return -1;

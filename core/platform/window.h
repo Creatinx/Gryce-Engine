@@ -3,6 +3,8 @@
 #include <functional>
 #include <string>
 
+#include "export.h"
+
 struct GLFWwindow; // 前向声明，避免暴露 GLFW 头文件
 
 namespace gryce_engine::platform {
@@ -28,7 +30,7 @@ enum class WindowContextType {
 // ---------------------------------------------------------------------------
 // Window — GLFW 窗口封装
 // ---------------------------------------------------------------------------
-class Window {
+class GRYCE_API Window {
 public:
     Window(const std::string& title, int width, int height, WindowMode mode,
            WindowContextType context_type = WindowContextType::OpenGL);

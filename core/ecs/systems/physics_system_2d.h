@@ -1,5 +1,6 @@
 #pragma once
 
+#include "export.h"
 #include "ecs/system.h"
 #include "math/math.h"
 #include "physics/physics_world_2d.h"
@@ -13,7 +14,7 @@ namespace gryce_engine::ecs {
 // 底层委托给 IPhysicsWorld2D（当前默认 Box2D），支持 RigidBody2D +
 // BoxCollider2D / CircleCollider2D，含重力、阻尼、睡眠。
 // ---------------------------------------------------------------------------
-class PhysicsSystem2D : public ISystem {
+class GRYCE_API PhysicsSystem2D : public ISystem {
 public:
     PhysicsSystem2D();
     ~PhysicsSystem2D() override;

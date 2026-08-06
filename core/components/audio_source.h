@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "components/component.h"
 #include "audio/audio_engine.h"
 
@@ -13,7 +14,7 @@ namespace gryce_engine::components {
 // AudioSource — 音频源组件。
 // 负责在 Entity 位置播放音频片段，支持 2D/3D 空间化、音量、音高、循环。
 // ---------------------------------------------------------------------------
-class AudioSource : public Component {
+class GRYCE_API AudioSource : public Component {
 public:
     std::string clip_path;
     float volume = 1.0f;

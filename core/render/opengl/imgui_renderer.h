@@ -4,6 +4,8 @@
 #include <memory>
 #include <future>
 
+#include "render/export.h"
+
 struct ImDrawData;
 struct GLFWwindow;
 
@@ -15,7 +17,7 @@ class IImGuiBackend;
 // ImGuiRenderer — Dear ImGui GLFW 平台封装 + 可切换渲染后端
 // 注意：end_frame 生成 draw data 后通过回调把实际渲染提交到渲染线程。
 // ---------------------------------------------------------------------------
-class ImGuiRenderer {
+class GRYCE_RENDERER_API ImGuiRenderer {
 public:
     ImGuiRenderer();
     ~ImGuiRenderer();

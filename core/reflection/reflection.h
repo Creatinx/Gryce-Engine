@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "export.h"
 #include "math/math.h"
 #include "render/render2d.h"
 
@@ -112,12 +113,9 @@ struct TypeInfo {
 // ---------------------------------------------------------------------------
 // Registry — 类型注册表（函数内 static，跨 TU 初始化顺序安全）
 // ---------------------------------------------------------------------------
-class Registry {
+class GRYCE_API Registry {
 public:
-    static Registry& instance() {
-        static Registry registry;
-        return registry;
-    }
+    static Registry& instance();
 
     TypeInfo& register_type(const std::string& name, const std::string& parent_name) {
         auto& info = types_[name];

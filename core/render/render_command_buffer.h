@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <variant>
 
-#include "export.h"
+#include "render/export.h"
 #include "render/render_commands.h"
 
 namespace gryce_engine::render {
@@ -46,7 +46,7 @@ struct RenderCommandItem {
 //
 // 三缓冲保证：主线程可以准备 N+1 帧，渲染线程处理 N 帧，同时有一帧 pending。
 // ---------------------------------------------------------------------------
-class GRYCE_API RenderCommandBuffer {
+class GRYCE_RENDERER_API RenderCommandBuffer {
 public:
     static constexpr int kFrameCount = 3;
 

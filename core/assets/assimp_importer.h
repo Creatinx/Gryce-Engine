@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "assets/mesh_data.h"
 #include "assets/skinned_mesh_data.h"
 
@@ -12,7 +13,7 @@ namespace gryce_engine::assets {
 // AssimpImporter — 基于 Assimp 的模型导入器
 // 支持 OBJ/FBX/glTF/DAE/PLY/STL。
 // ---------------------------------------------------------------------------
-class AssimpImporter {
+class GRYCE_API AssimpImporter {
 public:
     std::vector<MeshData> import(const std::string& path) const;
 

@@ -793,7 +793,8 @@ int main(int argc, char* argv[]) {
 
     render::RenderContext render_ctx;
     render_ctx.set_validation_enabled(vulkan_validation);
-    if (!render_ctx.init(window.native_handle(), selected_api)) {
+    auto backend = render::create_render_backend(selected_api);
+    if (!backend || !render_ctx.init(window.native_handle(), std::move(backend))) {
         GLOG_ERROR("Failed to initialize render context");
         platform::Window::shutdown_sdk();
         return -1;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <string>
 #include <memory>
 #include <chrono>
@@ -62,7 +64,7 @@ public:
 // ---------------------------------------------------------------------------
 // ConsoleLogger — 默认后端，输出到 stderr，带 ANSI 颜色
 // ---------------------------------------------------------------------------
-class ConsoleLogger : public ILogger {
+class GRYCE_API ConsoleLogger : public ILogger {
 public:
     ConsoleLogger();
     void log(LogLevel level, const std::string& message) override;
@@ -162,7 +164,7 @@ private:
 // ---------------------------------------------------------------------------
 // GLog — 全局日志管理器（单例），公开 API 入口
 // ---------------------------------------------------------------------------
-class GLog {
+class GRYCE_API GLog {
 public:
     // 获取单例
     static GLog& instance();
@@ -260,8 +262,8 @@ private:
 };
 
 // 初始化/关闭（管理生命周期，非必须，但推荐）
-void glog_initialize();
-void glog_shutdown();
+GRYCE_API void glog_initialize();
+GRYCE_API void glog_shutdown();
 
 } // namespace gryce_engine::utils
 

@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "export.h"
+#include "render/export.h"
 #include "render/render.h"
 #include "math/math.h"
 
@@ -23,7 +23,7 @@ class IFramebuffer;
 // 组合 backend + CMDBUFFER + RenderThread
 // 主线程通过 push 命令与渲染线程通信
 // ---------------------------------------------------------------------------
-class GRYCE_API RenderContext {
+class GRYCE_RENDERER_API RenderContext {
 public:
     // 用于外部对象（如 Renderer2D）安全检测 RenderContext 是否仍存活
     struct Lifetime {
@@ -34,7 +34,8 @@ public:
     ~RenderContext();
 
     // 初始化 backend（context 绑定到主线程）
-    bool init(void* native_window, RenderAPI api = RenderAPI::OpenGL);
+    // 调用者通过 create_render_backend() 创建 backend 后传入
+    bool init(void* native_window, std::unique_ptr<IRenderBackend> backend);
 
     // 返回一个与 RenderContext 生命周期绑定的标志，供外部对象弱引用
     std::shared_ptr<Lifetime> lifetime() const { return lifetime_; }

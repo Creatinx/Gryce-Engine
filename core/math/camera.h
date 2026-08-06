@@ -1,5 +1,6 @@
 #pragma once
 
+#include "export.h"
 #include "math/math.h"
 
 namespace gryce_engine::math {
@@ -8,7 +9,7 @@ namespace gryce_engine::math {
 // Camera — FPS 自由摄像机
 // 主线程更新位置/旋转，渲染线程使用 view/projection 矩阵
 // ---------------------------------------------------------------------------
-class Camera {
+class GRYCE_API Camera {
 public:
     Camera();
 

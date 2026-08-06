@@ -23,6 +23,12 @@ target_sources(GryceCore
         api/component_api.cpp
         api/scene_api.cpp
         api/asset_api.cpp
+        api/command_buffer.cpp
+        api/entity_handle_map.cpp
+        api/entity_api.cpp
+        api/component_api.cpp
+        api/scene_api.cpp
+        api/asset_api.cpp
         # 内部模块
         math/math.cpp
         math/camera.cpp
@@ -53,10 +59,14 @@ target_sources(GryceCore
         components/2d/particle_emitter.cpp
         components/2d/skybox_2d.cpp
         components/audio_source.cpp
+        audio/audio_engine.cpp
+        audio/time_stretcher.cpp
+        audio/miniaudio_impl.cpp
         components/mesh_renderer.cpp
         components/skinned_mesh_renderer.cpp
         components/terrain.cpp
         reflection/builtin_reflections.cpp
+        reflection/reflection.cpp
         components/physical_material.cpp
         scene/uuid.cpp
         scene/entity.cpp
@@ -67,6 +77,19 @@ target_sources(GryceCore
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
         ecs/systems/fracture_system.cpp
+        # Render 核心（与 backend 无关）
+        render/render_context.cpp
+        render/material.cpp
+        render/render_command_buffer.cpp
+        render/render_thread.cpp
+        render/mesh.cpp
+        render/shader.cpp
+        render/texture.cpp
+        render/framebuffer.cpp
+        render/render2d.cpp
+        render/font_atlas.cpp
+        render/ibl_generator.cpp
+        render/render_pipeline.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -156,6 +179,7 @@ target_sources(GryceCore
             math/camera.h
             utils/glog/glog_lib.h
             utils/frame_limiter.h
+            reflection/reflection.h
 )
 
 target_include_directories(GryceCore
@@ -168,6 +192,9 @@ target_include_directories(GryceCore
 )
 
 target_link_libraries(GryceCore PUBLIC gryce::compile_options)
+
+# 不导出所有符号，避免 libstdc++ 等静态库符号污染
+# 导出由各头文件中的 GRYCE_API / __declspec(dllexport) 控制
 
 target_compile_definitions(GryceCore PUBLIC
     $<$<BOOL:${GRYCE_HAS_ASSIMP}>:GRYCE_HAS_ASSIMP>
@@ -207,19 +234,7 @@ target_sources(GryceRenderer
     PRIVATE
         api/render_api.cpp
         render/render.cpp
-        render/mesh.cpp
-        render/shader.cpp
-        render/texture.cpp
-        render/material.cpp
-        render/framebuffer.cpp
-        render/render_pipeline.cpp
-        render/render_command_buffer.cpp
-        render/render_thread.cpp
-        render/render_context.cpp
-        render/render2d.cpp
-        render/font_atlas.cpp
         render/renderer2d_impl.cpp
-        render/ibl_generator.cpp
         render/opengl/gl_backend.cpp
         render/opengl/gl_frame_pacing.cpp
         render/opengl/gl_buffer.cpp
@@ -228,6 +243,8 @@ target_sources(GryceRenderer
         render/opengl/gl_framebuffer.cpp
         render/opengl/gl_imgui_backend.cpp
         render/opengl/imgui_renderer.cpp
+        ecs/systems/render_system_2d.cpp
+        ecs/systems/render_system_3d.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -292,6 +309,12 @@ if(GRYCE_HAS_IMGUI)
             ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
     )
     target_include_directories(GryceRenderer PUBLIC ${IMGUI_DIR})
+
+    # ImGui 符号导出/导入：编译 GryceRenderer 时导出，消费时导入
+    if(WIN32)
+        target_compile_definitions(GryceRenderer PRIVATE IMGUI_API=__declspec\(dllexport\))
+        target_compile_definitions(GryceRenderer INTERFACE IMGUI_API=__declspec\(dllimport\))
+    endif()
 
     set(_imgui_sources
         ${IMGUI_DIR}/imgui.cpp
@@ -477,6 +500,8 @@ target_sources(GrycePhysics
         physics/physics_factory.cpp
         physics/box2d_world_2d.cpp
         physics/jolt_physics_world_3d.cpp
+        ecs/systems/physics_system_3d.cpp
+        ecs/systems/physics_system_2d.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}

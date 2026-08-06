@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "export.h"
 #include "components/2d/component_2d.h"
 #include "render/rhi_handle.h"
 
@@ -14,7 +15,7 @@ namespace gryce_engine::components::d2::skybox {
 // - color: 无贴图时的纯色，或有贴图时的叠加色调
 // - scroll_factor: 0 = 完全跟随摄像机（默认天空盒），1 = 与摄像机同步移动
 // ---------------------------------------------------------------------------
-class Skybox2D : public Component2D {
+class GRYCE_API Skybox2D : public Component2D {
 public:
     std::string texture_path;
     render::Color color = render::Color(0.05f, 0.05f, 0.10f, 1.0f);

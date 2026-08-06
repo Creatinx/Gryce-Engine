@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <string>
 
 namespace gryce_engine::resources {
@@ -8,7 +10,7 @@ namespace gryce_engine::resources {
 // Project — 项目根目录上下文
 // 单例，保存当前项目根路径，用于把 res:/ 解析为绝对路径。
 // ---------------------------------------------------------------------------
-class Project {
+class GRYCE_API Project {
 public:
     static Project& instance();
 

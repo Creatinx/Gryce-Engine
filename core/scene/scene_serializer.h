@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "export.h"
 #include "scene/scene.h"
 
 namespace gryce_engine::scene {
@@ -13,7 +14,7 @@ namespace gryce_engine::scene {
 // SceneSerializer — 场景 JSON 序列化器
 // 保存/加载 .gesc 文件，支持 res:/ 路径。
 // ---------------------------------------------------------------------------
-class SceneSerializer {
+class GRYCE_API SceneSerializer {
 public:
     static nlohmann::json serialize(const Scene& scene);
     static nlohmann::json serialize_entity(const Entity& entity);

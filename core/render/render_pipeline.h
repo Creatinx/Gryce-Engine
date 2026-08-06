@@ -7,6 +7,7 @@
 
 #include "math/math.h"
 #include "render/rhi_handle.h"
+#include "render/export.h"
 
 namespace gryce_engine {
 namespace math { class Camera; }
@@ -28,7 +29,7 @@ class IImGuiBackend;
 // Shadow Map -> Skybox -> Forward PBR Lighting（多光源：方向光/点光/聚光，
 // 不透明 + 透明两阶段）-> HDR Tone Mapping
 // ---------------------------------------------------------------------------
-class RenderPipeline {
+class GRYCE_RENDERER_API RenderPipeline {
 public:
     enum class LightType { Directional = 0, Point = 1, Spot = 2 };
 

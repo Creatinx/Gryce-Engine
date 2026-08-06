@@ -3,13 +3,15 @@
 #include <chrono>
 #include <atomic>
 
+#include "export.h"
+
 namespace gryce_engine::utils {
 
 // ---------------------------------------------------------------------------
 // FrameLimiter — CPU 侧帧率限制器
 // 提供高精度目标帧时间控制，支持 0 表示无上限。
 // ---------------------------------------------------------------------------
-class FrameLimiter {
+class GRYCE_API FrameLimiter {
 public:
     FrameLimiter();
     ~FrameLimiter();

@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "export.h"
 #include "scene/entity.h"
 
 namespace gryce_engine::components {
@@ -43,7 +44,7 @@ class Scene;
 //   "remove": ["<tpl-uuid-or-name>", ...]    // 从实例中移除模板成员
 // }
 // ---------------------------------------------------------------------------
-class Prefab {
+class GRYCE_API Prefab {
 public:
     Prefab() = default;
     ~Prefab() = default;

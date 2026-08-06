@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "export.h"
+
 namespace gryce_engine::scene {
 
 // ---------------------------------------------------------------------------
@@ -9,7 +11,7 @@ namespace gryce_engine::scene {
 // 格式：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 // 先用字符串实现，后续可优化为 128-bit 整数。
 // ---------------------------------------------------------------------------
-class UUID {
+class GRYCE_API UUID {
 public:
     UUID();
     explicit UUID(const std::string& str);

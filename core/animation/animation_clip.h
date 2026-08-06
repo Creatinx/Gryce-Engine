@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "math/math.h"
 
 namespace gryce_engine::animation {
@@ -35,7 +36,7 @@ struct BoneTrack {
 // ---------------------------------------------------------------------------
 // AnimationClip — 一段动画剪辑（关键帧集合 + 采样）
 // ---------------------------------------------------------------------------
-class AnimationClip {
+class GRYCE_API AnimationClip {
 public:
     std::string name;
     // 时长（秒）；0 表示静态/单帧

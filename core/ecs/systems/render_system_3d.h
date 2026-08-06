@@ -1,5 +1,6 @@
 #pragma once
 
+#include "export.h"
 #include "ecs/system.h"
 
 namespace gryce_engine {
@@ -12,7 +13,7 @@ namespace gryce_engine::ecs {
 // RenderSystem3D — 3D 网格渲染系统
 // 通过 RenderPipeline 渲染所有 MeshRenderer + Transform 实体。
 // ---------------------------------------------------------------------------
-class RenderSystem3D : public ISystem {
+class GRYCE_API RenderSystem3D : public ISystem {
 public:
     explicit RenderSystem3D(render::RenderPipeline* pipeline)
         : pipeline_(pipeline) {}

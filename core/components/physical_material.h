@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "components/component.h"
 
 namespace gryce_engine::components {
@@ -48,7 +49,7 @@ constexpr int k_physical_material_preset_count =
 // PhysicalMaterial — 物理材质组件
 // 可挂载到任意 Entity，与渲染材质解耦，2D/3D 通用。
 // ---------------------------------------------------------------------------
-class PhysicalMaterial : public Component {
+class GRYCE_API PhysicalMaterial : public Component {
 public:
     std::string preset_name;
     float softness = 0.0f;          // 0~1

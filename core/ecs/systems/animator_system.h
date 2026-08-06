@@ -1,5 +1,6 @@
 #pragma once
 
+#include "export.h"
 #include "ecs/system.h"
 
 namespace gryce_engine::ecs {
@@ -16,7 +17,7 @@ namespace gryce_engine::ecs {
 // 多 clip 切换最小支持：修改组件 clip_name 即生效（resolve_clip 按名解析）。
 // 状态机 / 混合（crossfade）不在本轮（M4）。
 // ---------------------------------------------------------------------------
-class AnimatorSystem : public ISystem {
+class GRYCE_API AnimatorSystem : public ISystem {
 public:
     const char* name() const override { return "AnimatorSystem"; }
     Phase phase() const override { return Phase::Update; }

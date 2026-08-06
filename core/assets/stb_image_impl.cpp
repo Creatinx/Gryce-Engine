@@ -7,6 +7,14 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wdouble-promotion"
+
+// 导出 stb_image 的 C 函数（MinGW DLL 需要显式 dllexport）
+#ifdef GRYCE_CORE_BUILDING
+    #ifdef _WIN32
+        #define STBIDEF extern __declspec(dllexport)
+    #endif
+#endif
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 #pragma GCC diagnostic pop

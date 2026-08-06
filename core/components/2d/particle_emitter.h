@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "components/2d/component_2d.h"
 #include "render/render2d.h"
 
@@ -14,7 +15,7 @@ namespace gryce_engine::components::d2 {
 // 支持持续发射、瞬间爆发、颜色/尺寸插值、重力、生命周期。
 // 默认用于尘土、碎屑等效果。
 // ---------------------------------------------------------------------------
-class ParticleEmitter2D : public Component2D {
+class GRYCE_API ParticleEmitter2D : public Component2D {
 public:
     struct Particle {
         math::Vector2f position;

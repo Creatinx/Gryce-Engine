@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "export.h"
 #include "components/2d/component_2d.h"
 #include "render/render2d.h"
 #include "render/rhi_handle.h"
@@ -43,7 +44,7 @@ struct ParallaxLayer {
 // ParallaxBackground — 多层视差滚动背景。
 // 绘制时根据当前 Camera2D 中心计算每层偏移，产生深度感。
 // ---------------------------------------------------------------------------
-class ParallaxBackground : public Component2D {
+class GRYCE_API ParallaxBackground : public Component2D {
 public:
     std::vector<ParallaxLayer> layers;
 

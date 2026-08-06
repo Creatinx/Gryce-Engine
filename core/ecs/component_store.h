@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
@@ -22,7 +24,7 @@ namespace gryce_engine::ecs {
 // 注意：本实现是 ECS 的“稀疏集/按类型分池”简化版，尚未使用 archetype。
 // 当前阶段优先满足：快速查询、运行时增删、清晰的生命周期。
 // ---------------------------------------------------------------------------
-class ComponentStore {
+class GRYCE_API ComponentStore {
 public:
     ComponentStore() = default;
     ~ComponentStore() = default;

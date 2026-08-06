@@ -1,5 +1,6 @@
 #pragma once
 
+#include "export.h"
 #include "ecs/system.h"
 #include "render/render2d.h"
 
@@ -9,7 +10,7 @@ namespace gryce_engine::ecs {
 // RenderSystem2D — 2D 渲染系统
 // 遍历所有挂载 Component2D 的 Entity 并绘制。
 // ---------------------------------------------------------------------------
-class RenderSystem2D : public ISystem {
+class GRYCE_API RenderSystem2D : public ISystem {
 public:
     explicit RenderSystem2D(render::IRenderer2D* renderer)
         : renderer_(renderer) {}

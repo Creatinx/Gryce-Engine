@@ -1,5 +1,7 @@
 #pragma once
 
+#include "export.h"
+
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -28,7 +30,7 @@ struct Transform2D {
 //   语义：top_level 节点不受父级 2D 变换影响，世界变换 == 本地变换）；
 // - 组合公式：world.pos = parent.pos + parent.rot * (parent.scale * local.pos)，
 //   world.rot = parent.rot + local.rot，world.scale = parent.scale * local.scale。
-Transform2D world_transform_2d(const scene::Entity* entity);
+GRYCE_API Transform2D world_transform_2d(const scene::Entity* entity);
 
 
 // ---------------------------------------------------------------------------
@@ -55,7 +57,7 @@ inline uint64_t hash_string(const std::string& s) {
 // 继承 Component，可挂载到 Entity 上。
 // 位置/旋转/缩放来自 owner Entity 的 Transform 组件。
 // ---------------------------------------------------------------------------
-class Component2D : public Component {
+class GRYCE_API Component2D : public Component {
 public:
     // 2D 绘制顺序，数值越大越靠上（后绘制）。
     // Label 等 UI 元素应设在 ColorRect/Shape 之上。
