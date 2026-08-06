@@ -82,7 +82,7 @@ DEPENDENCIES = [
         "filename": "assimp-v5.4.3.tar.gz",
         "sha256": "66dfbaee288f2bc43172440a55d0235dfc7bf885dda6435c038e8000e79582cb",
         "extracted_dir": "assimp-5.4.3",
-        "required": True,
+        "required": False,  # optional: engine has built-in OBJ loader
     },
     {
         "name": "glew",
