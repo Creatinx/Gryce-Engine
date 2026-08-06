@@ -47,6 +47,14 @@ else:
 # Mirror configuration — GitHub downloads are slow from mainland China
 # ---------------------------------------------------------------------------
 GITHUB_MIRRORS = [
+    "https://ghfast.top/https://github.com",
+    "https://ghproxy.cn/https://github.com",
+    "https://github.moeyy.xyz/https://github.com",
+    "https://ghps.cc/https://github.com",
+    "https://ghproxy.com/https://github.com",
+]
+
+_URL_TIMEOUT_SEC = 20  # 20s per URL: fast-fail, try many mirrors quickly
     "https://ghps.cc/https://github.com",
     "https://ghproxy.com/https://github.com",
     "https://mirror.ghproxy.com/https://github.com",
