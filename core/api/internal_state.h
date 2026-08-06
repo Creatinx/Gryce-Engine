@@ -10,6 +10,7 @@
 #include <mutex>
 
 namespace gryce_engine { namespace ecs { class World; } }
+namespace gryce_engine { namespace components { class Component; } }
 
 namespace gryce_core {
 
@@ -52,5 +53,8 @@ extern GlobalState g_core_state;
 struct EntityResolver {
     static gryce_engine::scene::Entity* resolve(GEntityHandle h);
 };
+
+// Helper: get type name string from a Component* pointer (defined in core_api.cpp)
+std::string get_component_type_name(gryce_engine::components::Component* comp);
 
 } // namespace gryce_core

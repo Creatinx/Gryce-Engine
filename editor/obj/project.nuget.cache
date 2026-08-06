@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "OrbpL8hZ1U0=",
+  "success": true,
+  "projectFilePath": "D:\\Gryce-Engine\\Editor\\Editor.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Creatinx\\.nuget\\packages\\inkore.ui.wpf\\1.2.8\\inkore.ui.wpf.1.2.8.nupkg.sha512",
+    "C:\\Users\\Creatinx\\.nuget\\packages\\inkore.ui.wpf.modern\\0.10.2.1\\inkore.ui.wpf.modern.0.10.2.1.nupkg.sha512"
+  ],
+  "logs": []
+}

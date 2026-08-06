@@ -6,6 +6,7 @@
 #include "scene/entity.h"
 #include "scene/scene_serializer.h"
 #include "scene/uuid.h"
+#include "reflection/reflection.h"
 #include "components/component_factory.h"
 #include "resources/project.h"
 #include "utils/glog/glog_lib.h"
@@ -36,6 +37,9 @@ Entity* EntityResolver::resolve(GEntityHandle h) {
     if (!s) return nullptr;
     return s->find_entity_by_uuid(static_cast<const gryce_engine::scene::UUID&>(*uuid));
 }
+
+// Forward: defined in component_api.cpp
+std::string get_component_type_name(gryce_engine::components::Component* comp);
 
 static void fire_callback_entity_selected(GEntityHandle h) {
     if (g_core_state.callbacks.on_entity_selected) {
@@ -197,6 +201,74 @@ static void process_command(const GCommand& cmd) {
         case ECMD_PAUSE_MODE: {
             g_core_state.paused = !g_core_state.paused;
             fire_callback_play_mode_changed();
+            break;
+        }
+        case ECMD_ADD_COMPONENT: {
+            struct Payload { GEntityHandle h; char type_name[128]; };
+            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->h);
+            if (e) {
+                auto comp = gryce_engine::components::ComponentFactory::instance().create(p->type_name);
+                if (comp) {
+                    e->add_component(std::move(comp));
+                    g_core_state.deferred_entity_list_changed = true;
+                }
+            }
+            break;
+        }
+        case ECMD_REMOVE_COMPONENT: {
+            struct Payload { GEntityHandle h; uint64_t type_hash; };
+            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->h);
+            if (e) {
+                for (const auto& comp : e->components()) {
+                    std::string type_name = get_component_type_name(comp.get());
+                    if (std::hash<std::string>{}(type_name) == p->type_hash) {
+                        e->remove_component(comp.get());
+                        g_core_state.deferred_entity_list_changed = true;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+        case ECMD_SET_PROPERTY: {
+            struct Payload { GEntityHandle h; uint64_t type_hash; char prop_name[64]; uint8_t value[128]; };
+            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->h);
+            if (e) {
+                for (const auto& comp : e->components()) {
+                    std::string type_name = get_component_type_name(comp.get());
+                    if (std::hash<std::string>{}(type_name) == p->type_hash) {
+                        auto fields = gryce_engine::reflection::Registry::instance().all_fields(type_name);
+                        for (const auto* f : fields) {
+                            if (f->name == p->prop_name && f->write && !f->read_only) {
+                                f->write(comp.get(), p->value);
+                                e->mark_dirty();
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+        case ECMD_SET_TRANSFORM: {
+            struct Payload { GEntityHandle h; GVec3 pos; GQuat rot; GVec3 scale; };
+            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->h);
+            if (e && e->transform()) {
+                auto* t = e->transform();
+                t->position.x = p->pos.x; t->position.y = p->pos.y; t->position.z = p->pos.z;
+                t->rotation.x = p->rot.x; t->rotation.y = p->rot.y; t->rotation.z = p->rot.z; t->rotation.w = p->rot.w;
+                t->scale.x = p->scale.x; t->scale.y = p->scale.y; t->scale.z = p->scale.z;
+                e->mark_dirty();
+            }
             break;
         }
         default:

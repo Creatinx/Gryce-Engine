@@ -141,4 +141,42 @@ int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale) {
     return -1; // TODO
 }
 
+// --- Transform Setters ---
+int GEntity_SetLocalPosition(GEntityHandle entity, const GVec3* pos) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !pos) return -1;
+    auto* t = e->transform();
+    if (!t) return -1;
+    t->position.x = pos->x;
+    t->position.y = pos->y;
+    t->position.z = pos->z;
+    e->mark_dirty();
+    return 0;
+}
+
+int GEntity_SetLocalRotation(GEntityHandle entity, const GQuat* rot) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !rot) return -1;
+    auto* t = e->transform();
+    if (!t) return -1;
+    t->rotation.x = rot->x;
+    t->rotation.y = rot->y;
+    t->rotation.z = rot->z;
+    t->rotation.w = rot->w;
+    e->mark_dirty();
+    return 0;
+}
+
+int GEntity_SetLocalScale(GEntityHandle entity, const GVec3* scale) {
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e || !scale) return -1;
+    auto* t = e->transform();
+    if (!t) return -1;
+    t->scale.x = scale->x;
+    t->scale.y = scale->y;
+    t->scale.z = scale->z;
+    e->mark_dirty();
+    return 0;
+}
+
 } // extern "C"
