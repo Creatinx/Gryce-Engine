@@ -31,6 +31,11 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             GryceCore GryceRenderer GrycePlatform GrycePhysics
             GTest::gtest_main
     )
+    target_compile_definitions(gryce_tests PRIVATE
+        PRIVATE
+            GryceCore GryceRenderer GrycePlatform GrycePhysics
+            GTest::gtest_main
+    )
         PRIVATE
             gryce_core
             GTest::gtest_main
