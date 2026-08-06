@@ -55,12 +55,10 @@ GITHUB_MIRRORS = [
 ]
 
 _URL_TIMEOUT_SEC = 20  # 20s per URL: fast-fail, try many mirrors quickly
-    "https://ghps.cc/https://github.com",
-    "https://ghproxy.com/https://github.com",
-    "https://mirror.ghproxy.com/https://github.com",
-]
 
-_URL_TIMEOUT_SEC = 60  # 60s: fast-fail on bad network
+
+def _mirror_url(original_url: str) -> list[str]:
+    """Generate a list of URLs to try: mirrors first, then original."""
 
 
 def _mirror_url(original_url: str) -> list[str]:
