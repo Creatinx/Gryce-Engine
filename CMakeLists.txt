@@ -107,6 +107,17 @@ add_subdirectory(examples)
 # add_subdirectory(editor)
 
 # ---------------------------------------------------------------------------
+# WPF Editor 集成到 VS 解决方案（仅 Visual Studio Generator 生效）
+# ---------------------------------------------------------------------------
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    include_external_msproject(
+        GryceEngine.Editor
+        ${CMAKE_SOURCE_DIR}/editor/GryceEngine.Editor.csproj
+        TYPE FAE04EC0-301F-11D3-BF4B-00C04F79EFBC
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # IDE 分组
 # ---------------------------------------------------------------------------
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)

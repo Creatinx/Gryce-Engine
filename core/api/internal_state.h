@@ -44,6 +44,9 @@ struct GlobalState {
     bool deferred_entity_list_changed = false;
     bool deferred_selection_changed = false;
     bool deferred_scene_loaded = false;
+
+    // Console: number of MemoryLogSink entries already delivered to the editor
+    size_t log_delivered_count = 0;
 };
 
 // Defined in core_api.cpp

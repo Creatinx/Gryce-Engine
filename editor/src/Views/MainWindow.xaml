@@ -1,0 +1,313 @@
+﻿<Window x:Class="GryceEngine.Editor.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
+        xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
+        xmlns:views="clr-namespace:GryceEngine.Editor.Views"
+        ui:ThemeManager.IsThemeAware="True"
+        ui:WindowHelper.UseModernWindowStyle="True"
+        Title="{Binding Title}"
+        Width="1240" Height="760"
+        MinWidth="980" MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
+
+    <Window.InputBindings>
+        <KeyBinding Key="Z" Modifiers="Ctrl" Command="{Binding UndoCommand}" />
+        <KeyBinding Key="Y" Modifiers="Ctrl" Command="{Binding RedoCommand}" />
+        <KeyBinding Key="S" Modifiers="Ctrl" Command="{Binding SaveSceneCommand}" />
+        <KeyBinding Key="N" Modifiers="Ctrl" Command="{Binding NewSceneCommand}" />
+        <KeyBinding Key="Delete" Command="{Binding DeleteEntityCommand}" />
+        <KeyBinding Key="F2" Command="{Binding RenameCommand}" />
+        <KeyBinding Key="F5" Command="{Binding RefreshCommand}" />
+        <KeyBinding Key="F" Command="{Binding FocusCommand}" />
+        <KeyBinding Key="W" Command="{Binding GizmoTranslateCommand}" />
+        <KeyBinding Key="E" Command="{Binding GizmoRotateCommand}" />
+        <KeyBinding Key="R" Command="{Binding GizmoScaleCommand}" />
+        <KeyBinding Key="P" Modifiers="Ctrl" Command="{Binding TogglePlayModeCommand}" />
+        <KeyBinding Key="D" Modifiers="Ctrl" Command="{Binding DuplicateCommand}" />
+        <KeyBinding Key="X" Modifiers="Ctrl" Command="{Binding CutCommand}" />
+        <KeyBinding Key="C" Modifiers="Ctrl" Command="{Binding CopyCommand}" />
+        <KeyBinding Key="V" Modifiers="Ctrl" Command="{Binding PasteCommand}" />
+    </Window.InputBindings>
+
+    <!-- ================================================================
+         Main Layout — Unity-style Editor
+         Menu | Toolbar | [Hierarchy | Viewport | Inspector] | ...
+         ================================================================ -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- Menu Bar -->
+            <RowDefinition Height="Auto"/>  <!-- Toolbar -->
+            <RowDefinition Height="*"/>     <!-- Main Content -->
+            <RowDefinition Height="4"/>     <!-- Splitter -->
+            <RowDefinition Height="190" MinHeight="90"/> <!-- Bottom Panels -->
+            <RowDefinition Height="Auto"/>  <!-- Status Bar -->
+        </Grid.RowDefinitions>
+
+        <!-- ════════════════════════════════════════════════════════════
+             Menu Bar — Unity-style compact menu
+             ════════════════════════════════════════════════════════════ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource LayerFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="2,0">
+            <Menu FontSize="11.5" Background="Transparent"
+                  Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                  VerticalAlignment="Center">
+                <Menu.Resources>
+                    <Style TargetType="MenuItem">
+                        <Setter Property="Padding" Value="8,2"/>
+                        <Setter Property="MinHeight" Value="24"/>
+                        <Setter Property="Margin" Value="0,0,1,0"/>
+                    </Style>
+                </Menu.Resources>
+                <MenuItem Header="{loc:Loc menu.file}">
+                    <MenuItem Header="{loc:Loc menu.new_scene}" InputGestureText="Ctrl+N"
+                              Command="{Binding NewSceneCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.save_scene}" InputGestureText="Ctrl+S"
+                              Command="{Binding SaveSceneCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.load_scene}" Click="OnLoadSceneClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.import_asset}" Click="OnImportAssetClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8B5;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.exit}" Click="OnExitClick" InputGestureText="Alt+F4"/>
+                </MenuItem>
+
+                <MenuItem Header="{loc:Loc menu.edit}">
+                    <MenuItem Header="{loc:Loc menu.undo}" InputGestureText="Ctrl+Z"
+                              Command="{Binding UndoCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE7A7;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.redo}" InputGestureText="Ctrl+Y"
+                              Command="{Binding RedoCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE7A6;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.cut}" InputGestureText="Ctrl+X"
+                              Command="{Binding CutCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.copy}" InputGestureText="Ctrl+C"
+                              Command="{Binding CopyCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.paste}" InputGestureText="Ctrl+V"
+                              Command="{Binding PasteCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE77F;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.duplicate}" InputGestureText="Ctrl+D"
+                              Command="{Binding DuplicateCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.create_entity}" Click="OnCreateEntityClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.delete}" InputGestureText="Del"
+                              Command="{Binding DeleteEntityCommand}"/>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.rename}" InputGestureText="F2"
+                              Command="{Binding RenameCommand}"/>
+                    <MenuItem Header="{loc:Loc menu.focus}" InputGestureText="F"
+                              Command="{Binding FocusCommand}"/>
+                </MenuItem>
+
+                <MenuItem Header="{loc:Loc menu.view}">
+                    <MenuItem Header="{loc:Loc menu.refresh}" InputGestureText="F5"
+                              Click="OnRefreshViewClick"/>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.theme}">
+                        <MenuItem Header="{loc:Loc menu.theme_dark}" Click="OnThemeDarkClick">
+                            <MenuItem.Icon>
+                                <TextBlock Text="&#xE708;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                        <MenuItem Header="{loc:Loc menu.theme_light}" Click="OnThemeLightClick">
+                            <MenuItem.Icon>
+                                <TextBlock Text="&#xE706;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.settings}" Click="OnSettingsClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                </MenuItem>
+
+                <MenuItem Header="{loc:Loc menu.help}">
+                    <MenuItem Header="{loc:Loc menu.about}" Click="OnAboutClick"/>
+                </MenuItem>
+            </Menu>
+        </Border>
+
+        <!-- ════════════════════════════════════════════════════════════
+             Toolbar
+             ════════════════════════════════════════════════════════════ -->
+        <views:ToolbarView Grid.Row="1" DataContext="{Binding}"/>
+
+        <!-- ════════════════════════════════════════════════════════════
+             Main Work Area — Unity-style 3-panel layout
+             Hierarchy (Left) | Viewport (Center) | Inspector (Right)
+             ════════════════════════════════════════════════════════════ -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="220" MinWidth="150"/>
+                <ColumnDefinition Width="4"/>
+                <ColumnDefinition Width="*" MinWidth="380"/>
+                <ColumnDefinition Width="4"/>
+                <ColumnDefinition Width="280" MinWidth="180"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: Hierarchy -->
+            <Border Grid.Column="0"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
+                <views:HierarchyView/>
+            </Border>
+
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
+                          ResizeBehavior="PreviousAndNext"/>
+
+            <!-- Center: Viewport -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
+                <views:ViewportView/>
+            </Border>
+
+            <GridSplitter Grid.Column="3" Width="4" HorizontalAlignment="Stretch"
+                          ResizeBehavior="PreviousAndNext"/>
+
+            <!-- Right: Inspector -->
+            <Border Grid.Column="4"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
+                <views:InspectorView/>
+            </Border>
+        </Grid>
+
+        <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch"
+                      ResizeBehavior="PreviousAndNext"/>
+
+        <!-- ════════════════════════════════════════════════════════════
+             Bottom Panels — Project | Console
+             ════════════════════════════════════════════════════════════ -->
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="160"/>
+                <ColumnDefinition Width="4"/>
+                <ColumnDefinition Width="*" MinWidth="160"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Project -->
+            <Border Grid.Column="0"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="0,1,0,0">
+                <views:ProjectView/>
+            </Border>
+
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
+                          ResizeBehavior="PreviousAndNext"/>
+
+            <!-- Console -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="0,1,0,0">
+                <views:ConsoleView/>
+            </Border>
+        </Grid>
+
+        <!-- ════════════════════════════════════════════════════════════
+             Status Bar — Unity-style bottom bar
+             ════════════════════════════════════════════════════════════ -->
+        <Border Grid.Row="5"
+                Background="{DynamicResource LayerFillColorAltBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="12,3">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Left: Status -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <Border Width="7" Height="7" CornerRadius="4" VerticalAlignment="Center" Margin="0,0,6,0">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="#FF8CFF8C"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsPlaying}" Value="True">
+                                        <Setter Property="Background" Value="#FFCCAA00"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                    </Border>
+                    <TextBlock Text="{Binding StatusText}" FontSize="10.5"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               VerticalAlignment="Center"/>
+                    <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="8,2"/>
+                    <TextBlock FontSize="10.5"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               VerticalAlignment="Center">
+                        <Run Text="{loc:Loc status.entities}"/>
+                        <Run Text=": "/>
+                        <Run Text="{Binding EntityCount, Mode=OneWay}" FontWeight="SemiBold"/>
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Center: Gizmo mode -->
+                <TextBlock Grid.Column="1" FontSize="10.5"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           VerticalAlignment="Center" HorizontalAlignment="Center"
+                           Text="{Binding GizmoModeLabel}"
+                           Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}"/>
+
+                <!-- Right: version info -->
+                <TextBlock Grid.Column="3" FontSize="10"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           VerticalAlignment="Center"
+                           FontFamily="Consolas">
+                    GryceEngine v0.1.0
+                </TextBlock>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

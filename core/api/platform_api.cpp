@@ -7,6 +7,10 @@
 #endif
 
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+    #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
+#endif
 
 #include "platform/window.h"
 #include "platform/input.h"
@@ -38,6 +42,7 @@ struct PlatformState {
     void* external_hwnd = nullptr;
     int ext_width = 0;
     int ext_height = 0;
+    GLFWwindow* embedded_window = nullptr;
 
     // Shared input state (updated by injection or GLFW polling)
     struct InputState {
@@ -56,6 +61,12 @@ struct PlatformState {
 };
 
 static PlatformState g_platform;
+
+// GLFW 错误默认是静默的；注册回调把上下文创建/窗口错误暴露到日志，
+// 方便编辑器 Console 面板直接看到底层失败原因。
+static void glfw_error_callback(int code, const char* desc) {
+    GLOG_ERROR("GLFW error {}: {}", code, desc ? desc : "(no description)");
+}
 
 static void copy_input_prev_to_current() {
     std::memcpy(g_platform.input.keys_prev, g_platform.input.keys, sizeof(g_platform.input.keys));
@@ -111,11 +122,51 @@ int GWindow_InitExternal(GWindowHandle hwnd, int w, int h) {
         GLOG_WARN("GWindow_InitExternal: platform already initialized, shutting down first");
         GWindow_Destroy();
     }
+
+    if (!Window::init_sdk()) {
+        GLOG_ERROR("GWindow_InitExternal: GLFW init failed");
+        return -1;
+    }
+
+    glfwSetErrorCallback(glfw_error_callback);
+
+    // 为外部 HWND 创建一个隐藏的 GLFW 子窗口，用于提供 OpenGL 上下文并实际渲染。
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    GLFWwindow* embedded = glfwCreateWindow(w > 0 ? w : 640, h > 0 ? h : 480,
+                                            "GryceEditorViewport", nullptr, nullptr);
+    if (!embedded) {
+        GLOG_ERROR("GWindow_InitExternal: failed to create embedded GLFW window");
+        Window::shutdown_sdk();
+        return -1;
+    }
+
+    // 诊断：确认嵌入窗口是否真的带有 OpenGL 上下文（GLFW 默认创建）。
+    GLOG_INFO("Embedded window client_api={} ctx={}.{}",
+              glfwGetWindowAttrib(embedded, GLFW_CLIENT_API),
+              glfwGetWindowAttrib(embedded, GLFW_CONTEXT_VERSION_MAJOR),
+              glfwGetWindowAttrib(embedded, GLFW_CONTEXT_VERSION_MINOR));
+
+#ifdef _WIN32
+    HWND embedded_hwnd = glfwGetWin32Window(embedded);
+    if (embedded_hwnd) {
+        SetParent(embedded_hwnd, static_cast<HWND>(hwnd));
+        LONG style = GetWindowLong(embedded_hwnd, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
+                   WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_POPUP);
+        style |= WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        SetWindowLong(embedded_hwnd, GWL_STYLE, style);
+        SetWindowPos(embedded_hwnd, nullptr, 0, 0,
+                     w > 0 ? w : 640, h > 0 ? h : 480,
+                     SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+#endif
+
     g_platform.mode = PlatformState::Mode::External;
     g_platform.external_hwnd = hwnd;
     g_platform.ext_width = w;
     g_platform.ext_height = h;
-    GLOG_INFO("Platform: external HWND initialized ({}x{})", w, h);
+    g_platform.embedded_window = embedded;
+    GLOG_INFO("Platform: external HWND initialized ({}x{}) with embedded GLFW window", w, h);
     return 0;
 }
 
@@ -129,6 +180,8 @@ int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
         GLOG_ERROR("GWindow_Create: GLFW init failed");
         return -1;
     }
+
+    glfwSetErrorCallback(glfw_error_callback);
 
     g_platform.window = std::make_unique<Window>(
         title ? title : "Gryce Engine", w, h, to_internal_mode(mode));
@@ -151,6 +204,12 @@ void GWindow_Destroy(void) {
             g_platform.window.reset();
         }
         g_platform.input_mgr.reset();
+        Window::shutdown_sdk();
+    } else if (g_platform.mode == PlatformState::Mode::External) {
+        if (g_platform.embedded_window) {
+            glfwDestroyWindow(g_platform.embedded_window);
+            g_platform.embedded_window = nullptr;
+        }
         Window::shutdown_sdk();
     }
     g_platform.mode = PlatformState::Mode::None;
@@ -175,8 +234,12 @@ void GWindow_GetSize(int* out_w, int* out_h) {
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
         g_platform.window->get_size(*out_w, *out_h);
     } else if (g_platform.mode == PlatformState::Mode::External) {
-        *out_w = g_platform.ext_width;
-        *out_h = g_platform.ext_height;
+        if (g_platform.embedded_window) {
+            glfwGetWindowSize(g_platform.embedded_window, out_w, out_h);
+        } else {
+            *out_w = g_platform.ext_width;
+            *out_h = g_platform.ext_height;
+        }
     } else {
         *out_w = 0;
         *out_h = 0;
@@ -189,6 +252,16 @@ void GWindow_SetSize(int w, int h) {
     } else if (g_platform.mode == PlatformState::Mode::External) {
         g_platform.ext_width = w;
         g_platform.ext_height = h;
+        if (g_platform.embedded_window) {
+            glfwSetWindowSize(g_platform.embedded_window, w, h);
+#ifdef _WIN32
+            HWND embedded_hwnd = glfwGetWin32Window(g_platform.embedded_window);
+            if (embedded_hwnd) {
+                SetWindowPos(embedded_hwnd, nullptr, 0, 0, w, h,
+                             SWP_FRAMECHANGED | SWP_NOZORDER);
+            }
+#endif
+        }
     }
 }
 
@@ -198,6 +271,16 @@ GWindowHandle GWindow_GetNativeHandle(void) {
     }
     if (g_platform.mode == PlatformState::Mode::External) {
         return g_platform.external_hwnd;
+    }
+    return nullptr;
+}
+
+GWindowHandle GWindow_GetRenderHandle(void) {
+    if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
+        return g_platform.window->native_handle();
+    }
+    if (g_platform.mode == PlatformState::Mode::External) {
+        return g_platform.embedded_window;
     }
     return nullptr;
 }

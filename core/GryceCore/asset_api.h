@@ -9,7 +9,11 @@
     #else
         #define GRYCE_CORE_API __declspec(dllimport)
         #ifdef _MSC_VER
-            #pragma comment(lib, "GryceCore.lib")
+            #ifdef _DEBUG
+                #pragma comment(lib, "GryceCored.lib")
+            #else
+                #pragma comment(lib, "GryceCore.lib")
+            #endif
         #endif
     #endif
 #else

@@ -3,15 +3,30 @@ build/
 build_vs*/
 cmake-build-*/
 out/
+x64/
+
+# WPF Editor build outputs
+editor/bin/
+editor/obj/
+editor/lib/
+editor/*.user
+editor/obj/*/
 
 # Dependency cache (downloaded tar.gz, local only)
 deps_cache/
 
 # Build logs
 *.log
+*.pdb
+*.ilk
+*.exp
 
 # Compiled SPIR-V shaders
 *.spv
+
+# Python
+__pycache__/
+*.pyc
 
 # IDE
 .idea/
@@ -21,6 +36,11 @@ deps_cache/
 *.sln
 *.vcxproj
 *.vcxproj.filters
+
+# Temporary / scratch directories
+_temp_inkore/
+.uploads/
+_scratch/
 
 # ImGui runtime layout
 imgui.ini

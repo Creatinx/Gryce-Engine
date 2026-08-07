@@ -1,14 +1,58 @@
-﻿using System.Configuration;
-using System.Data;
+﻿using GryceEngine.Editor.Native;
+using GryceEngine.Editor.Services;
+using GryceEngine.Editor.ViewModels;
+using GryceEngine.Editor.Views;
 using System.Windows;
 
-namespace Editor
+namespace GryceEngine.Editor;
+
+public partial class App : Application
 {
-    /// <summary>
-    /// Interaction logic for App.xaml
-    /// </summary>
-    public partial class App : Application
+    public static EngineService Engine { get; private set; } = null!;
+    public static EditorViewModel EditorVM { get; private set; } = null!;
+
+    protected override void OnStartup(StartupEventArgs e)
     {
+        base.OnStartup(e);
+
+        Engine = new EngineService();
+
+        // Initialize engine core (empty root => auto-detect examples/3dtest project)
+        Engine.Initialize("");
+
+        // Restore persisted editor settings (language must be applied before the
+        // ViewModel is created so localized VM strings use the right language).
+        var settings = Services.EditorSettingsService.Load();
+        if (settings.Language == "zh")
+            Services.LocalizationService.Instance.Language = EditorLanguage.Chinese;
+
+        // The ViewModel queries the C API (registered component types, callbacks),
+        // so it must be constructed after the engine core is initialized.
+        EditorVM = new EditorViewModel(Engine);
+
+        // 首次打开（空场景）时加载默认可编辑场景，保证用户一进来就能看到内容。
+        if (EditorVM.EntityCount == 0)
+        {
+            int rc = SceneAPI.GScene_Load("res:/scenes/editor_default.gesc");
+            if (rc != 0)
+                EditorVM.AppendConsole("Failed to load default scene (editor_default.gesc).");
+        }
+
+        var window = new MainWindow(EditorVM);
+        window.Show();
+
+        // Apply persisted theme after the window exists.
+        if (settings.Theme == "Light")
+        {
+            iNKORE.UI.WPF.Modern.ThemeManager.SetRequestedTheme(
+                window, iNKORE.UI.WPF.Modern.ElementTheme.Light);
+        }
     }
 
+    protected override void OnExit(ExitEventArgs e)
+    {
+        EditorVM?.DetachCallbacks();
+        Engine?.Shutdown();
+        base.OnExit(e);
+    }
 }

@@ -28,6 +28,12 @@ public:
 
     AudioSource() = default;
 
+    // unique_ptr 成员不可复制，显式禁用复制并允许移动。
+    AudioSource(const AudioSource&) = delete;
+    AudioSource& operator=(const AudioSource&) = delete;
+    AudioSource(AudioSource&&) = default;
+    AudioSource& operator=(AudioSource&&) = default;
+
     const char* type() const override { return "AudioSource"; }
 
     void serialize(nlohmann::json& out) const override {

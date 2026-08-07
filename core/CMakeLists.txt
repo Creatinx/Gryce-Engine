@@ -25,10 +25,6 @@ target_sources(GryceCore
         api/asset_api.cpp
         api/command_buffer.cpp
         api/entity_handle_map.cpp
-        api/entity_api.cpp
-        api/component_api.cpp
-        api/scene_api.cpp
-        api/asset_api.cpp
         # 内部模块
         math/math.cpp
         math/camera.cpp
@@ -294,7 +290,7 @@ target_include_directories(GryceRenderer
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/stb>
 )
 
-target_link_libraries(GryceRenderer PUBLIC GryceCore gryce::compile_options)
+target_link_libraries(GryceRenderer PUBLIC GryceCore GrycePlatform gryce::compile_options)
 
 # ImGui 源文件
 if(GRYCE_HAS_IMGUI)

@@ -1,5 +1,10 @@
 #pragma once
 
+// 先引入 core/export.h，确保 GRYCE_API 在任意包含路径下都有定义。
+// （例如 core/math/math.h 被 core/render/ 下的源文件包含时，
+//  #include "export.h" 会优先定位到本文件，导致 GRYCE_API 缺失。）
+#include "../export.h"
+
 // GryceRenderer / GryceCore 导出宏
 // GryceCore 和 GryceRenderer 都可能定义这些 render 类型，
 // 因此当编译 GryceCore 或 GryceRenderer 时都视为导出。

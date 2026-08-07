@@ -9,7 +9,11 @@
     #else
         #define GRYCE_CORE_API __declspec(dllimport)
         #ifdef _MSC_VER
-            #pragma comment(lib, "GryceCore.lib")
+            #ifdef _DEBUG
+                #pragma comment(lib, "GryceCored.lib")
+            #else
+                #pragma comment(lib, "GryceCore.lib")
+            #endif
         #endif
     #endif
 #else
@@ -32,6 +36,9 @@ GRYCE_CORE_API int GComponent_GetProperty(GEntityHandle entity, uint64_t comp_ty
                                            void* out_value, int value_size);
 GRYCE_CORE_API int GComponent_SetProperty(GEntityHandle entity, uint64_t comp_type_hash, const char* prop_name,
                                            const void* value, int value_size);
+
+GRYCE_CORE_API int GComponent_AddComponent(GEntityHandle entity, uint64_t comp_type_hash);
+GRYCE_CORE_API int GComponent_RemoveComponent(GEntityHandle entity, uint64_t comp_type_hash);
 
 GRYCE_CORE_API int GComponent_GetRegisteredTypeCount(void);
 GRYCE_CORE_API int GComponent_GetRegisteredTypeInfo(int index, uint64_t* out_hash, char* out_name, int name_buf_size);

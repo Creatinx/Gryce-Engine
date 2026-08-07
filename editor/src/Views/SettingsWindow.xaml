@@ -1,0 +1,173 @@
+<Window x:Class="GryceEngine.Editor.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
+        xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
+        xmlns:vm="clr-namespace:GryceEngine.Editor.ViewModels"
+        ui:ThemeManager.IsThemeAware="True"
+        ui:WindowHelper.UseModernWindowStyle="True"
+        Title="{loc:Loc settings.title}"
+        Width="600" Height="450"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Tab-based settings -->
+        <TabControl Grid.Row="0" Margin="12,12,12,0">
+            <!-- Theme Tab -->
+            <TabItem Header="{loc:Loc settings.theme}">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="{loc:Loc settings.appearance}" FontWeight="SemiBold" FontSize="14"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                               Margin="0,0,0,12"/>
+                    <StackPanel Grid.Row="1" Margin="0,0,0,16">
+                        <RadioButton IsChecked="{Binding IsDarkTheme}" GroupName="Theme" Margin="0,4"
+                                     Content="{loc:Loc settings.dark_theme}" FontSize="12"
+                                     Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <RadioButton IsChecked="{Binding IsLightTheme}" GroupName="Theme" Margin="0,4"
+                                     Content="{loc:Loc settings.light_theme}" FontSize="12"
+                                     Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="2" Text="{loc:Loc settings.language}" FontWeight="SemiBold" FontSize="14"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                               Margin="0,0,0,12"/>
+                    <ComboBox Grid.Row="3" VerticalAlignment="Top"
+                              ItemsSource="{Binding Languages}"
+                              SelectedIndex="{Binding SelectedLanguageIndex}"
+                              FontSize="12" Width="200"/>
+                </Grid>
+            </TabItem>
+
+            <!-- Editor Tab -->
+            <TabItem Header="{loc:Loc settings.editor}">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="{loc:Loc settings.general}" FontWeight="SemiBold" FontSize="14"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                               Margin="0,0,0,12"/>
+
+                    <CheckBox Grid.Row="1" IsChecked="{Binding VSyncEnabled}" FontSize="12" Margin="0,4"
+                              Content="{loc:Loc settings.vsync}"
+                              Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+
+                    <Grid Grid.Row="2" Margin="0,8,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="80"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{loc:Loc settings.autosave}"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                   VerticalAlignment="Center" FontSize="12"/>
+                        <TextBox Grid.Column="1" Text="{Binding AutoSaveInterval, UpdateSourceTrigger=LostFocus}"
+                                 FontSize="12" Margin="8,0,0,0" Width="60"/>
+                        <TextBlock Grid.Column="2" Text="{loc:Loc settings.autosave_disabled}" VerticalAlignment="Center" FontSize="11"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}" Margin="4,0,0,0"/>
+                    </Grid>
+
+                    <TextBlock Grid.Row="3" Text="{loc:Loc settings.viewport}" FontWeight="SemiBold" FontSize="14"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                               Margin="0,16,0,12"/>
+
+                    <StackPanel Grid.Row="4">
+                        <CheckBox IsChecked="{Binding ShowGrid}" FontSize="12" Margin="0,4"
+                                  Content="{loc:Loc settings.show_grid}"
+                                  Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                        <CheckBox IsChecked="{Binding ShowGizmos}" FontSize="12" Margin="0,4"
+                                  Content="{loc:Loc settings.show_gizmos}"
+                                  Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                        <CheckBox IsChecked="{Binding ShowStats}" FontSize="12" Margin="0,4"
+                                  Content="{loc:Loc settings.show_stats}"
+                                  Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- About Tab -->
+            <TabItem Header="{loc:Loc settings.about}">
+                <Grid Margin="16">
+                    <StackPanel>
+                        <TextBlock Text="Gryce Engine Editor" FontWeight="Bold" FontSize="18"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                   Margin="0,0,0,8"/>
+                        <TextBlock Text="{loc:Loc settings.version}" FontSize="13"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                   Margin="0,0,0,16"/>
+                        <TextBlock Text="A modern game engine built with C++ and WPF." FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   Margin="0,0,0,4" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding WorkspaceText}" FontSize="11"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                   Margin="0,12,0,0"/>
+
+                        <TextBlock Text="Technology Stack" FontWeight="SemiBold" FontSize="13"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                   Margin="0,16,0,8"/>
+                        <TextBlock Text="C++ Engine Core (CMake)" FontSize="11"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                        <TextBlock Text="WPF Editor (.NET Framework 4.8)" FontSize="11"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                        <TextBlock Text="OpenGL / Vulkan Rendering" FontSize="11"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                        <TextBlock Text="Jolt Physics / Box2D" FontSize="11"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                        <TextBlock Text="ImGui Integration" FontSize="11"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <!-- Bottom buttons -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource LayerFillColorAltBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="12,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="{loc:Loc settings.reset_defaults}"
+                        Command="{Binding ResetCommand}"
+                        FontSize="11" Padding="8,4"/>
+
+                <Button Grid.Column="2"
+                        Content="{loc:Loc settings.cancel}"
+                        Command="{Binding CancelCommand}"
+                        FontSize="12" Padding="16,6" Margin="0,0,8,0"/>
+
+                <Button Grid.Column="3"
+                        Style="{StaticResource AccentButtonStyle}"
+                        Content="{loc:Loc settings.apply}"
+                        Command="{Binding ApplyCommand}"
+                        FontSize="12" Padding="16,6"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

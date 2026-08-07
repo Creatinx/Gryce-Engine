@@ -13,6 +13,7 @@
 """
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -147,6 +148,156 @@ def ensure_deps(offline: bool = False):
 
 
 # ---------------------------------------------------------------------------
+# Solution sync
+# ---------------------------------------------------------------------------
+def _fix_project_path(path, project_root):
+    """把解决方案中的项目路径修正为相对于项目根目录的路径。
+
+    CMake 生成的 .slnx 中，所有相对路径都是相对于 build/（二进制目录）的。
+    将 .slnx 从 build/ 移到项目根目录时，所有相对路径都需要加上 build/ 前缀。
+
+    规则：
+      - 绝对路径（且位于项目根下）-> 相对路径
+      - 所有相对路径 -> 加上 build/ 前缀
+    """
+    path = path.replace('\\', '/')
+    p = Path(path)
+    if p.is_absolute():
+        try:
+            rel = p.relative_to(project_root)
+            return str(rel.as_posix())
+        except ValueError:
+            return path
+    return 'build/' + path
+
+
+def _sync_sln_text(project_root, build_dir, build_sln, root_sln):
+    """同步旧版文本格式 .sln。"""
+    content = build_sln.read_text(encoding='utf-8-sig')
+
+    # 修正所有 .vcxproj 路径：添加 build\ 前缀
+    def fix_vcxproj_path(match):
+        prefix = match.group(1)  # ="Name", "
+        path = match.group(2)    # 文件路径
+        suffix = match.group(3)  # ", {GUID}
+        if ':' in path:  # 绝对路径，跳过
+            return match.group(0)
+        if path.startswith('build\\') or path.startswith('build/'):
+            return match.group(0)
+        return f'{prefix}build\\{path}{suffix}'
+
+    content = re.sub(
+        r'(= "[^"]+", ")([^"]+\.vcxproj)(",)',
+        fix_vcxproj_path,
+        content
+    )
+
+    # 修正 GryceEngine.Editor 路径：绝对路径 -> 相对路径
+    content = re.sub(
+        r'"' + re.escape(str(project_root)) + r'[\\/]editor[\\/]GryceEngine\.Editor\.csproj"',
+        '"editor\\GryceEngine.Editor.csproj"',
+        content
+    )
+    # 也处理正斜杠版本
+    content = re.sub(
+        r'"' + re.escape(project_root.as_posix()) + r'/editor/GryceEngine\.Editor\.csproj"',
+        '"editor\\GryceEngine.Editor.csproj"',
+        content
+    )
+
+    root_sln.write_text(content, encoding='utf-8-sig')
+    print(f"{C_OK}[Gryce Engine]{C_RESET} Synced root solution: {root_sln}")
+
+    # 修正 .sln 文件头版本号为 VS2026
+    for sln_file in [root_sln, build_sln]:
+        if sln_file.exists():
+            sln_content = sln_file.read_text(encoding='utf-8-sig')
+            if '# Visual Studio Version 17' in sln_content:
+                sln_content = sln_content.replace(
+                    '# Visual Studio Version 17',
+                    '# Visual Studio Version 18'
+                )
+                sln_file.write_text(sln_content, encoding='utf-8-sig')
+
+
+def _sync_slnx_xml(project_root, build_dir, build_slnx, root_slnx):
+    """同步新版 XML 格式 .slnx（VS2026 默认生成）。"""
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(build_slnx)
+    root = tree.getroot()
+
+    # .slnx 没有命名空间时 ElementTree 直接解析标签；有则保留前缀。
+    # 只修正 <Project Path="..."> 和 <BuildDependency Project="...">，
+    # 不要碰 <Platform Project="x64"> 或 <Build Project="false">。
+    def fix_elem(elem):
+        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+        if tag == 'Project' and 'Path' in elem.attrib:
+            elem.set('Path', _fix_project_path(elem.attrib['Path'], project_root))
+        if tag == 'BuildDependency' and 'Project' in elem.attrib:
+            elem.set('Project', _fix_project_path(elem.attrib['Project'], project_root))
+        for child in elem:
+            fix_elem(child)
+
+    fix_elem(root)
+
+    # 保持 XML 声明和缩进
+    root_slnx.write_bytes(b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='UTF-8'))
+    print(f"{C_OK}[Gryce Engine]{C_RESET} Synced root solution: {root_slnx}")
+
+
+def sync_solution_to_root(project_root, build_dir):
+    """将 CMake 生成的解决方案文件同步到项目根目录，修正路径使其可从根目录打开。
+
+    支持旧版 .sln 与 VS2026 默认生成的 .slnx。
+    """
+    build_sln = build_dir / "GryceEngine.sln"
+    build_slnx = build_dir / "GryceEngine.slnx"
+    root_sln = project_root / "GryceEngine.sln"
+    root_slnx = project_root / "GryceEngine.slnx"
+
+    if build_sln.exists():
+        _sync_sln_text(project_root, build_dir, build_sln, root_sln)
+    elif build_slnx.exists():
+        _sync_slnx_xml(project_root, build_dir, build_slnx, root_slnx)
+    else:
+        return
+
+    # 替换 vcxproj 中的 PlatformToolset 和 ToolsVersion 为 VS2026 标准，
+    # 避免 VS 显示升级标识
+    for base_dir in [build_dir, project_root / "out" / "vs"]:
+        if not base_dir.exists():
+            continue
+        for vcxproj in base_dir.glob("**/*.vcxproj"):
+            try:
+                vcx_content = vcxproj.read_text(encoding='utf-8')
+                changed = False
+                # 统一 PlatformToolset 为 v145（VS2026）
+                if '<PlatformToolset>v143</PlatformToolset>' in vcx_content:
+                    vcx_content = vcx_content.replace(
+                        '<PlatformToolset>v143</PlatformToolset>',
+                        '<PlatformToolset>v145</PlatformToolset>'
+                    )
+                    changed = True
+                # 统一 ToolsVersion 为 18.0（VS2026）
+                if 'ToolsVersion="17.0"' in vcx_content:
+                    vcx_content = vcx_content.replace(
+                        'ToolsVersion="17.0"', 'ToolsVersion="18.0"'
+                    )
+                    changed = True
+                if changed:
+                    vcxproj.write_text(vcx_content, encoding='utf-8')
+            except Exception:
+                pass
+
+    # 清理 .vs 缓存目录
+    for vs_dir in [project_root / ".vs", project_root / "out" / "vs" / ".vs"]:
+        if vs_dir.exists():
+            shutil.rmtree(vs_dir, ignore_errors=True)
+    print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaned VS solution cache")
+
+
+# ---------------------------------------------------------------------------
 # Build logic
 # ---------------------------------------------------------------------------
 def main():
@@ -187,13 +338,22 @@ def main():
         help="Do NOT auto-lock compiler (use CMake default detection)"
     )
     parser.add_argument(
+        "--msvc", action="store_true",
+        help="Force MSVC compiler and Visual Studio 2026 generator"
+    )
+    parser.add_argument(
         "--offline", action="store_true",
         help="Skip network downloads; use only local cached dependencies"
     )
     args = parser.parse_args()
 
     config = args.config
-    build_dir = Path(args.build_dir) / config
+    # Visual Studio is a multi-config generator: use a single build root.
+    # Ninja is single-config: keep per-config subdirectories.
+    if args.msvc:
+        build_dir = Path(args.build_dir)
+    else:
+        build_dir = Path(args.build_dir) / config
     project_root = Path(__file__).parent.resolve()
 
     # -----------------------------------------------------------------------
@@ -215,7 +375,15 @@ def main():
     msys_bin = None
     compiler_family = None
 
-    if not args.no_lock:
+    if args.msvc:
+        if not cl_path:
+            print(f"{C_ERR}[ERROR] --msvc requested but cl.exe not found in PATH.{C_RESET}")
+            print('    Open "x64 Native Tools Command Prompt for VS 2026" and run:')
+            print("        python build.py --msvc")
+            sys.exit(1)
+        print(f"{C_OK}[OK]{C_RESET} Forced MSVC cl.exe: {cl_path}")
+        compiler_family = "msvc"
+    elif not args.no_lock:
         if gcc_path and gxx_path:
             print(f"{C_OK}[OK]{C_RESET} Found gcc in PATH: {gcc_path}")
             compiler_family = "gcc"
@@ -235,7 +403,7 @@ def main():
                 f"\n{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}\n\n"
                 "This project supports:\n"
                 "  * MSYS2 UCRT64 MinGW-w64 (recommended)\n"
-                "  * MSVC (Visual Studio 2022+)\n\n"
+                "  * MSVC (Visual Studio 2026+)\n\n"
                 "For MinGW (MSYS2 UCRT64 terminal):\n"
                 "    pacman -S mingw-w64-ucrt-x86_64-gcc "
                 "mingw-w64-ucrt-x86_64-cmake "
@@ -246,8 +414,8 @@ def main():
                 "    1. Run this script from the MSYS2 UCRT64 terminal.\n"
                 "    2. Add C:\\msys64\\ucrt64\\bin to your system PATH and retry.\n\n"
                 "For MSVC:\n"
-                '    Open "x64 Native Tools Command Prompt for VS 2022" and run:\n'
-                "        python build.py\n"
+                '    Open "x64 Native Tools Command Prompt for VS 2026" and run:\n'
+                "        python build.py --msvc"
             )
             sys.exit(1)
     else:
@@ -255,7 +423,7 @@ def main():
         compiler_family = "auto"
 
     # -----------------------------------------------------------------------
-    # 2. Detect cmake and ninja
+    # 2. Detect cmake, ninja and select generator
     # -----------------------------------------------------------------------
     cmake = find_in_path("cmake")
     ninja = find_in_path("ninja")
@@ -264,15 +432,21 @@ def main():
         print(f"{C_ERR}[ERROR] cmake not found.{C_RESET}")
         print(f"Install: pacman -S mingw-w64-ucrt-x86_64-cmake")
         sys.exit(1)
-    if not ninja:
-        print(f"{C_WARN}[WARN] ninja not found, falling back to default generator.{C_RESET}")
-        generator = None
-    else:
+
+    # Prefer Visual Studio 2026 when using MSVC so the generated solution
+    # opens in VS2026 without upgrade prompts.
+    generator = None
+    if compiler_family == "msvc":
+        generator = "Visual Studio 18 2026"
+        print(f"{C_OK}[OK]{C_RESET} Using generator: {generator} (MSVC)")
+    elif ninja:
         generator = "Ninja"
+        print(f"{C_OK}[OK]{C_RESET} ninja: {ninja}")
+        print(f"{C_OK}[OK]{C_RESET} Using generator: {generator}")
+    else:
+        print(f"{C_WARN}[WARN] ninja not found, falling back to default generator.{C_RESET}")
 
     print(f"{C_OK}[OK]{C_RESET} cmake: {cmake}")
-    if ninja:
-        print(f"{C_OK}[OK]{C_RESET} ninja: {ninja}")
 
     # -----------------------------------------------------------------------
     # 3. Clean if requested (先于 ensure_deps，避免清完又立刻重新下载)
@@ -296,9 +470,20 @@ def main():
     # -----------------------------------------------------------------------
     # 5. Configure
     # -----------------------------------------------------------------------
-    if not (build_dir / "build.ninja").exists():
+    def needs_reconfigure():
+        cache = build_dir / "CMakeCache.txt"
+        if not cache.exists():
+            return True
+        if generator:
+            expected = f"CMAKE_GENERATOR:INTERNAL={generator}"
+            content = cache.read_text(encoding='utf-8', errors='ignore')
+            if expected not in content:
+                return True
+        return False
+
+    if needs_reconfigure():
         if build_dir.exists():
-            print(f"{C_WARN}[Gryce Engine]{C_RESET} {build_dir} exists but has no build.ninja, reconfiguring ...")
+            print(f"{C_WARN}[Gryce Engine]{C_RESET} {build_dir} exists but generator/cache mismatch, reconfiguring ...")
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Configuring with CMake ...")
         configure_cmd = [
             cmake, "-B", str(build_dir),
@@ -342,6 +527,11 @@ def main():
 
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
+
+    # -----------------------------------------------------------------------
+    # 7. Sync root solution
+    # -----------------------------------------------------------------------
+    sync_solution_to_root(project_root, Path(args.build_dir))
 
 
 if __name__ == "__main__":

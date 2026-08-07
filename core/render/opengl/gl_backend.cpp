@@ -36,6 +36,14 @@ bool GLBackend::init(void* native_window) {
 
     make_current(native_window);
 
+    GLFWwindow* current = glfwGetCurrentContext();
+    GLOG_ERROR("GLBackend::init: window={} current context={}",
+               static_cast<void*>(window_), static_cast<void*>(current));
+    if (!current) {
+        GLOG_ERROR("GLBackend::init: no current OpenGL context after make_current");
+        return false;
+    }
+
     GLenum err = glewInit();
     if (err != GLEW_OK) {
         GLOG_ERROR("glewInit failed: {}", reinterpret_cast<const char*>(glewGetErrorString(err)));

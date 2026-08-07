@@ -9,7 +9,11 @@
     #else
         #define GRYCE_PLATFORM_API __declspec(dllimport)
         #ifdef _MSC_VER
-            #pragma comment(lib, "GrycePlatform.lib")
+            #ifdef _DEBUG
+                #pragma comment(lib, "GrycePlatformd.lib")
+            #else
+                #pragma comment(lib, "GrycePlatform.lib")
+            #endif
         #endif
     #endif
 #else
@@ -28,6 +32,7 @@ GRYCE_PLATFORM_API bool GWindow_IsValid(void);
 GRYCE_PLATFORM_API void GWindow_GetSize(int* out_w, int* out_h);
 GRYCE_PLATFORM_API void GWindow_SetSize(int w, int h);
 GRYCE_PLATFORM_API GWindowHandle GWindow_GetNativeHandle(void);
+GRYCE_PLATFORM_API GWindowHandle GWindow_GetRenderHandle(void);
 GRYCE_PLATFORM_API bool GWindow_ShouldClose(void);
 GRYCE_PLATFORM_API void GWindow_PollEvents(void);
 GRYCE_PLATFORM_API void GWindow_SwapBuffers(void);

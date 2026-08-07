@@ -1,0 +1,391 @@
+<UserControl x:Class="GryceEngine.Editor.Views.InspectorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
+             xmlns:models="clr-namespace:GryceEngine.Editor.Models"
+             xmlns:vm="clr-namespace:GryceEngine.Editor.ViewModels"
+             x:Name="InspectorControl">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- ══ Panel Header ══ -->
+        <Border Grid.Row="0" Style="{StaticResource PanelHeaderStyle}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{loc:Loc panel.inspector}"
+                           Style="{StaticResource PanelHeaderTextStyle}"/>
+                <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="10.5"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Text="{Binding SelectedEntity.Name, TargetNullValue='No Selection'}"
+                           TextTrimming="CharacterEllipsis" MaxWidth="140"/>
+            </Grid>
+        </Border>
+
+        <!-- ══ Inspector Content ══ -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel>
+
+                <!-- ── Entity Header ── -->
+                <Border Style="{StaticResource InspectorSectionStyle}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <CheckBox Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
+                                  VerticalAlignment="Center" Margin="0,0,10,0"
+                                  IsChecked="{Binding SelectedEntity.Enabled}"/>
+
+                        <TextBox Grid.Row="0" Grid.Column="1"
+                                 Text="{Binding SelectedEntity.Name, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                 FontSize="13" FontWeight="SemiBold"
+                                 Background="Transparent" BorderThickness="0"
+                                 Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                 CaretBrush="{DynamicResource TextFillColorPrimaryBrush}"
+                                 LostFocus="OnEntityNameChanged"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="Entity"
+                                   FontSize="10" Margin="0,2,0,0"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                    </Grid>
+                </Border>
+
+                <!-- ── Transform Section ── -->
+                <Border Style="{StaticResource InspectorSectionStyle}">
+                    <StackPanel>
+                        <TextBlock Text="Transform"
+                                   Style="{StaticResource InspectorSectionHeaderStyle}"/>
+
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- Position -->
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Position"
+                                       Style="{StaticResource PropertyLabelStyle}" Width="50"/>
+                            <Grid Grid.Row="0" Grid.Column="1" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="X" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FFE06C75"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.PositionX, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+                            <Grid Grid.Row="0" Grid.Column="2" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Y" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FF98C379"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.PositionY, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+                            <Grid Grid.Row="0" Grid.Column="3" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Z" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FF61AFEF"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.PositionZ, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+
+                            <!-- Rotation -->
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Rotation"
+                                       Style="{StaticResource PropertyLabelStyle}" Width="50"/>
+                            <Grid Grid.Row="1" Grid.Column="1" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="X" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FFE06C75"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.RotationX, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+                            <Grid Grid.Row="1" Grid.Column="2" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Y" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FF98C379"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.RotationY, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+                            <Grid Grid.Row="1" Grid.Column="3" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Z" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FF61AFEF"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.RotationZ, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+
+                            <!-- Scale -->
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Scale"
+                                       Style="{StaticResource PropertyLabelStyle}" Width="50"/>
+                            <Grid Grid.Row="2" Grid.Column="1" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="X" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FFE06C75"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.ScaleX, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+                            <Grid Grid.Row="2" Grid.Column="2" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Y" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FF98C379"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.ScaleY, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+                            <Grid Grid.Row="2" Grid.Column="3" Margin="1,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Z" FontSize="9" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,2,0"
+                                           Foreground="#FF61AFEF"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
+                                         Text="{Binding SelectedEntity.ScaleZ, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="OnTransformValueChanged"/>
+                            </Grid>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ── Components ── -->
+                <ItemsControl ItemsSource="{Binding SelectedEntity.Components}" Margin="0,0,0,0">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type models:ComponentModel}">
+                            <Border Style="{StaticResource InspectorSectionStyle}">
+                                <StackPanel>
+                                    <!-- Collapsible Component Header -->
+                                    <Border Background="Transparent" Cursor="Hand"
+                                            MouseLeftButtonDown="OnComponentHeaderClick"
+                                            Tag="{Binding}">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <!-- Expand/Collapse Arrow -->
+                                            <TextBlock Grid.Column="0" FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="9" VerticalAlignment="Center"
+                                                       Margin="0,0,6,0"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Text" Value="&#xE70D;"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsExpanded}" Value="False">
+                                                                <Setter Property="Text" Value="&#xE76C;"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                            <!-- Component Icon (colored by type) -->
+                                            <Border Grid.Column="1" Width="18" Height="18" CornerRadius="3"
+                                                    VerticalAlignment="Center" Margin="0,0,6,0">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding TypeName}" Value="MeshRenderer">
+                                                                <Setter Property="Background" Value="#3377BBDD"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding TypeName}" Value="Camera">
+                                                                <Setter Property="Background" Value="#33DD7777"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding TypeName}" Value="Light">
+                                                                <Setter Property="Background" Value="#33DDCC44"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding TypeName}" Value="RigidBody">
+                                                                <Setter Property="Background" Value="#33DD8844"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Text" Value="&#xE950;"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding TypeName}" Value="MeshRenderer">
+                                                                    <Setter Property="Text" Value="&#xE8B8;"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding TypeName}" Value="Camera">
+                                                                    <Setter Property="Text" Value="&#xE722;"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding TypeName}" Value="Light">
+                                                                    <Setter Property="Text" Value="&#xE793;"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding TypeName}" Value="RigidBody">
+                                                                    <Setter Property="Text" Value="&#xE8B7;"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </Border>
+                                            <!-- Enable Toggle -->
+                                            <CheckBox Grid.Column="2" VerticalAlignment="Center"
+                                                      Margin="0,0,8,0"
+                                                      IsChecked="{Binding Enabled}"/>
+                                            <!-- Component Name -->
+                <TextBlock Grid.Column="2" Text="{Binding DisplayName}"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="11.5" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                                       Margin="20,0,0,0"/>
+                                            <!-- Context Menu Button -->
+                                            <Button Grid.Column="3" Width="20" Height="20"
+                                                    FontSize="10" Padding="0"
+                                                    Style="{StaticResource ToolbarButtonStyle}"
+                                                    Click="OnComponentContextMenuClick"
+                                                    Tag="{Binding TypeHash}">
+                                                <TextBlock Text="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="10"/>
+                                            </Button>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- Component Properties -->
+                                    <ItemsControl ItemsSource="{Binding Properties}"
+                                                  Margin="8,0,0,0"
+                                                  Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVisibility}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type models:PropertyModel}">
+                                                <Grid Margin="0,2">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" MinWidth="80"/>
+                                                        <ColumnDefinition Width="*" MinWidth="100"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding Name}"
+                                                               Style="{StaticResource PropertyLabelStyle}"
+                                                               Margin="0,0,8,0"/>
+                                                    <TextBox Grid.Column="1"
+                                                             Style="{StaticResource PropertyTextBoxStyle}"
+                                                             Text="{Binding FloatValue, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                             Visibility="{Binding PropType, Converter={StaticResource IsFloatToVisibility}}"
+                                                             LostFocus="OnPropertyValueChanged"
+                                                             Tag="{Binding}"/>
+                                                    <CheckBox Grid.Column="1"
+                                                              IsChecked="{Binding BoolValue, Mode=TwoWay}"
+                                                              VerticalAlignment="Center"
+                                                              Visibility="{Binding PropType, Converter={StaticResource IsBoolToVisibility}}"
+                                                              Checked="OnPropertyBoolChanged"
+                                                              Unchecked="OnPropertyBoolChanged"
+                                                              Tag="{Binding}"/>
+                                                    <TextBox Grid.Column="1"
+                                                             Style="{StaticResource PropertyTextBoxStyle}"
+                                                             Text="{Binding StringValue, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                             Visibility="{Binding PropType, Converter={StaticResource IsStringToVisibility}}"
+                                                             LostFocus="OnPropertyStringChanged"
+                                                             Tag="{Binding}"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- ── Add Component ── -->
+                <Border Margin="10,10,10,14" Padding="10"
+                        Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="6">
+                    <StackPanel>
+                        <TextBlock Text="Add Component" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                   Margin="0,0,0,8"/>
+                        <ComboBox x:Name="AddComponentCombo" FontSize="11"
+                                  ItemsSource="{Binding RegisteredTypes}"
+                                  DisplayMemberPath="TypeName"
+                                  SelectedIndex="0"
+                                  Margin="0,0,0,8"
+                                  IsEditable="True"
+                                  IsTextSearchEnabled="True"
+                                  Text="Search..."/>
+                        <Button Content="Add Component" FontSize="11"
+                                Style="{StaticResource SmallAccentButtonStyle}"
+                                Click="OnAddComponentClick"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ══ Empty State ══ -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibilityInverse}}">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
+                           FontSize="40"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Opacity="0.12" HorizontalAlignment="Center"/>
+                <TextBlock Text="Select an entity to inspect"
+                           HorizontalAlignment="Center" FontSize="12.5"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Opacity="0.35" Margin="0,10,0,0"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

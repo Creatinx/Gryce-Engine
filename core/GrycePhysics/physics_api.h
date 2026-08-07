@@ -9,7 +9,11 @@
     #else
         #define GRYCE_PHYSICS_API __declspec(dllimport)
         #ifdef _MSC_VER
-            #pragma comment(lib, "GrycePhysics.lib")
+            #ifdef _DEBUG
+                #pragma comment(lib, "GrycePhysicsd.lib")
+            #else
+                #pragma comment(lib, "GrycePhysics.lib")
+            #endif
         #endif
     #endif
 #else

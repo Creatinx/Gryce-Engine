@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../export.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -35,7 +37,7 @@ struct GPackEntry {
     uint32_t crc32 = 0;
 };
 
-class GPackReader {
+class GRYCE_API GPackReader {
 public:
     GPackReader() = default;
     ~GPackReader();
@@ -62,7 +64,7 @@ private:
     mutable std::mutex read_mutex_;
 };
 
-class GPackWriter {
+class GRYCE_API GPackWriter {
 public:
     // 添加一个文件到包中；internal_path 是包内路径（如 "models/cube.obj"）
     bool add_file(const std::string& internal_path, const std::string& source_path);

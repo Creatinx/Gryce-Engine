@@ -9,7 +9,11 @@
     #else
         #define GRYCE_RENDERER_API __declspec(dllimport)
         #ifdef _MSC_VER
-            #pragma comment(lib, "GryceRenderer.lib")
+            #ifdef _DEBUG
+                #pragma comment(lib, "GryceRendererd.lib")
+            #else
+                #pragma comment(lib, "GryceRenderer.lib")
+            #endif
         #endif
     #endif
 #else
@@ -36,6 +40,7 @@ GRYCE_RENDERER_API bool GRender_IsInitialized(void);
 GRYCE_RENDERER_API void GRender_BeginFrame(void);
 GRYCE_RENDERER_API void GRender_RenderWorld(void);
 GRYCE_RENDERER_API void GRender_RenderGizmo(void);
+GRYCE_RENDERER_API void GRender_RenderGameView(void);
 GRYCE_RENDERER_API void GRender_EndFrame(void);
 
 GRYCE_RENDERER_API GTextureHandle GRender_GetViewportTexture(void);
@@ -44,6 +49,7 @@ GRYCE_RENDERER_API int            GRender_GetViewportSize(int* out_w, int* out_h
 GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h);
 
 GRYCE_RENDERER_API void GRender_SetVSync(bool enabled);
+GRYCE_RENDERER_API void GRender_SetDisplayMode(const char* mode);
 
 #ifdef __cplusplus
 }

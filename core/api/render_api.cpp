@@ -1,16 +1,28 @@
 #include "GryceRenderer/render_api.h"
 #include "GryceRenderer/viewport_api.h"
 #include "GryceCore/core_api.h"
+#include "GrycePlatform/window_api.h"
 
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
 #include "render/render.h"
+#include "assets/asset_manager.h"
+#include "components/camera.h"
+#include "components/light.h"
+#include "components/mesh_renderer.h"
+#include "components/skinned_mesh_renderer.h"
 #include "ecs/world.h"
+#include "ecs/query.h"
+#include "math/camera.h"
+#include "math/math.h"
 #include "scene/scene.h"
 #include "utils/glog/glog_lib.h"
 
+#include <cmath>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
 
 using gryce_engine::render::RenderContext;
 using gryce_engine::render::RenderPipeline;
@@ -18,8 +30,13 @@ using gryce_engine::render::IRenderBackend;
 using gryce_engine::render::create_render_backend;
 using gryce_engine::render::RenderAPI;
 using gryce_engine::ecs::World;
+// 让 scene/components/math 等嵌套命名空间名在本文档中可见；
+// Camera 存在 math::Camera 与 components::Camera 两个类型，调用处显式限定。
+using namespace gryce_engine;
 
 namespace {
+
+constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
 
 struct RendererState {
     bool initialized = false;
@@ -34,6 +51,7 @@ struct RendererState {
     int gameview_h = 720;
     GEntityHandle viewport_camera = 0;
     GEntityHandle gameview_camera = 0;
+    std::string display_mode = "Shaded";
 
     std::mutex mutex;
 };
@@ -54,6 +72,93 @@ static World* get_world() {
     return static_cast<World*>(ptr);
 }
 
+// 在场景中查找主摄像机：优先 is_main，其次名字为 MainCamera，最后任意启用的摄像机。
+static scene::Entity* find_main_camera_entity(scene::Scene& scn) {
+    scene::Entity* result = nullptr;
+    scene::Entity* fallback_by_name = nullptr;
+    scene::Entity* any_enabled = nullptr;
+    scn.foreach([&](scene::Entity* entity) {
+        if (!entity) return;
+        auto* cam = entity->get_component<components::Camera>();
+        if (!cam || !cam->enabled) return;
+        if (!any_enabled) any_enabled = entity;
+        if (!fallback_by_name && entity->name() == "MainCamera") fallback_by_name = entity;
+        if (cam->is_main && !result) result = entity;
+    });
+    if (result) return result;
+    if (fallback_by_name) return fallback_by_name;
+    return any_enabled;
+}
+
+// 用实体 Transform + Camera 组件构造渲染管线所需的 math::Camera。
+static bool build_scene_camera(scene::Entity* entity, int viewport_w, int viewport_h,
+                               math::Camera& out) {
+    if (!entity) return false;
+    auto* cam = entity->get_component<components::Camera>();
+    if (!cam || !cam->enabled) return false;
+    auto* t = entity->transform();
+    if (!t) return false;
+
+    // 摄像机默认看向 -Z；用实体旋转把该方向变换到世界空间，再反解 yaw/pitch。
+    math::Vector3f fwd = t->rotation.rotate_vector(math::Vector3f(0.0f, 0.0f, -1.0f));
+    if (fwd.length_sq() < 1e-6f) fwd = math::Vector3f(0.0f, 0.0f, -1.0f);
+    fwd = fwd.normalized();
+
+    const float pitch = std::asin(math::clamp(fwd.y, -1.0f, 1.0f));
+    const float yaw = std::atan2(fwd.z, fwd.x);
+
+    out.set_position(t->position);
+    out.set_yaw(yaw * kRadToDeg);
+    out.set_pitch(pitch * kRadToDeg);
+    out.set_fov(cam->fov);
+    out.set_near_far(cam->near_plane, cam->far_plane);
+    out.set_aspect(viewport_h > 0
+                       ? static_cast<float>(viewport_w) / static_cast<float>(viewport_h)
+                       : 16.0f / 9.0f);
+    return true;
+}
+
+// 收集场景中的全部光源（最多 8 盏），供 PBR 多光源渲染使用。
+static void collect_scene_lights(scene::Scene& scn,
+                                 std::vector<RenderPipeline::Light>& out) {
+    out.clear();
+    scn.foreach([&](scene::Entity* entity) {
+        if (!entity || out.size() >= RenderPipeline::k_max_lights) return;
+        auto* light = entity->get_component<components::Light>();
+        if (!light || !light->enabled) return;
+        RenderPipeline::Light l;
+        l.type = static_cast<RenderPipeline::LightType>(light->light_type);
+        l.direction = light->direction;
+        l.color = light->color;
+        l.intensity = light->intensity;
+        l.range = light->range;
+        l.spot_angle = light->spot_angle;
+        l.spot_softness = light->spot_softness;
+        auto* t = entity->transform();
+        l.position = t ? t->position : math::Vector3f::zero();
+        out.push_back(l);
+    });
+}
+
+// 同步模式下渲染线程未运行，RenderSystem3D 的上传路径不会执行；
+// 这里在绘制前把尚未上传 GPU 的 MeshRenderer / SkinnedMeshRenderer 补传上去。
+static void upload_pending_meshes(scene::Scene& scn, RenderContext& ctx) {
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
+            if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
+            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            if (data && !data->empty()) {
+                mr->upload_to_gpu(&ctx, data.get(), /*allow_while_running=*/false);
+            }
+        });
+
+    ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::SkinnedMeshRenderer* mr, components::Transform*) {
+            if (!mr || !mr->enabled || mr->model_path.empty() || mr->gpu_mesh()) return;
+            mr->upload_to_gpu(&ctx, /*allow_while_running=*/false);
+        });
+}
+
 } // namespace
 
 extern "C" {
@@ -72,8 +177,15 @@ int GRender_Init(const GRenderInitDesc* desc) {
         return -1;
     }
 
+    // 优先使用平台层提供的渲染句柄（External HWND 模式下为嵌入的 GLFW 窗口）
+    GWindowHandle render_handle = desc->native_window;
+    if (GWindow_IsValid()) {
+        GWindowHandle platform_render = GWindow_GetRenderHandle();
+        if (platform_render) render_handle = platform_render;
+    }
+
     g_renderer.ctx = std::make_unique<RenderContext>();
-    if (!g_renderer.ctx->init(desc->native_window, std::move(backend))) {
+    if (!g_renderer.ctx->init(render_handle, std::move(backend))) {
         GLOG_ERROR("GRender_Init: RenderContext::init failed");
         g_renderer.ctx.reset();
         return -1;
@@ -139,8 +251,8 @@ void GRender_BeginFrame(void) {
     // Async mode: render thread handles begin_frame
 }
 
-void GRender_RenderWorld(void) {
-    std::lock_guard lock(g_renderer.mutex);
+// Renders the current world through the pipeline (shared by SceneView / GameView).
+static void render_world_internal() {
     if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
 
     auto* world = get_world();
@@ -165,7 +277,22 @@ void GRender_RenderWorld(void) {
 
     // Render via pipeline if available
     if (g_renderer.pipeline && g_renderer.pipeline->is_valid()) {
+        // 同步模式：先补传网格，再解析摄像机/光源，最后渲染。
+        if (g_renderer.sync_mode) {
+            upload_pending_meshes(*world->scene(), *g_renderer.ctx);
+        }
         g_renderer.pipeline->set_viewport(g_renderer.viewport_w, g_renderer.viewport_h);
+        // 从场景中解析主摄像机与光源，喂给渲染管线（此前未设置 camera_，
+        // render_scene 直接 return，场景始终画不出来）。
+        math::Camera camera;
+        if (build_scene_camera(
+                find_main_camera_entity(*world->scene()),
+                g_renderer.viewport_w, g_renderer.viewport_h, camera)) {
+            g_renderer.pipeline->set_camera(camera);
+        }
+        std::vector<RenderPipeline::Light> lights;
+        collect_scene_lights(*world->scene(), lights);
+        g_renderer.pipeline->set_lights(lights);
         g_renderer.pipeline->render_scene(*world->scene(), *g_renderer.ctx);
     } else {
         // No pipeline — fallback: let world render systems push commands
@@ -173,8 +300,28 @@ void GRender_RenderWorld(void) {
     }
 }
 
+void GRender_RenderWorld(void) {
+    std::lock_guard lock(g_renderer.mutex);
+    render_world_internal();
+}
+
 void GRender_RenderGizmo(void) {
     // TODO(Phase 4): ImGuizmo + Viewport Toolbar
+}
+
+void GRender_RenderGameView(void) {
+    std::lock_guard lock(g_renderer.mutex);
+    // TODO(Phase): 独立 GameView FBO 与独立相机。目前与 SceneView 共用同一管线/纹理，
+    // 与 GRender_GetGameViewTexture() 返回视口纹理的行为保持一致。
+    render_world_internal();
+}
+
+void GRender_SetDisplayMode(const char* mode) {
+    std::lock_guard lock(g_renderer.mutex);
+    if (!mode || mode[0] == '\0') return;
+    g_renderer.display_mode = mode;
+    GLOG_INFO("GRender_SetDisplayMode: {}", g_renderer.display_mode);
+    // TODO(Phase): 在下层后端/管线应用线框模式（当前仅记录，UI 已正确接线）。
 }
 
 void GRender_EndFrame(void) {

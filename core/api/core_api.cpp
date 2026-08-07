@@ -11,6 +11,7 @@
 #include "resources/project.h"
 #include "utils/glog/glog_lib.h"
 
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 
@@ -69,6 +70,29 @@ static void fire_callback_play_mode_changed() {
     if (g_core_state.callbacks.on_play_mode_changed) {
         g_core_state.callbacks.on_play_mode_changed(g_core_state.play_mode, g_core_state.paused, g_core_state.callback_user_data);
     }
+}
+
+// ============================================================================
+// Log forwarding — MemoryLogSink -> editor Console callback
+// ============================================================================
+static void drain_log_messages() {
+    if (!g_core_state.callbacks.on_log_message) return;
+    auto* sink = utils::MemoryLogSink::from_glog();
+    if (!sink) return;
+
+    auto snap = sink->snapshot();
+    const size_t total = snap.size();
+    if (total < g_core_state.log_delivered_count) {
+        // Sink was cleared or rewound; resync.
+        g_core_state.log_delivered_count = 0;
+    }
+    for (size_t i = g_core_state.log_delivered_count; i < total; ++i) {
+        g_core_state.callbacks.on_log_message(
+            static_cast<int>(snap[i].level),
+            snap[i].message.c_str(),
+            g_core_state.callback_user_data);
+    }
+    g_core_state.log_delivered_count = total;
 }
 
 // ============================================================================
@@ -292,6 +316,11 @@ int GCore_Init(const GCoreInitDesc* desc) {
     utils::glog_initialize();
     utils::GLog::instance().set_min_level(utils::LogLevel::Info);
 
+    // Install the memory-backed sink so the editor console can receive engine
+    // logs (set_logger wraps the given logger in an AsyncLogger).
+    utils::GLog::instance().set_logger(
+        std::make_unique<utils::MemoryLogSink>(std::make_unique<utils::ConsoleLogger>()));
+
     if (desc->project_root && desc->project_root[0]) {
         Project::instance().set_root(desc->project_root);
     }
@@ -346,6 +375,10 @@ void GCore_BeginFrame(float dt) {
 }
 
 void GCore_EndFrame(void) {
+    // Forward new engine log entries to the editor console before firing
+    // deferred callbacks, so UI updates happen on the same frame.
+    gryce_core::drain_log_messages();
+
     if (gryce_core::g_core_state.deferred_scene_loaded) {
         gryce_core::g_core_state.deferred_scene_loaded = false;
         gryce_core::fire_callback_scene_loaded(gryce_core::g_core_state.current_scene_path.c_str());
@@ -410,8 +443,25 @@ void GCore_RegisterCallback_OnLogMessage(GOnLogMessage cb) {
 }
 
 int GCore_GetLogMessages(char* out_buf, int buf_size) {
-    (void)out_buf; (void)buf_size;
-    return 0;
+    if (!out_buf || buf_size <= 0) return -1;
+    auto* sink = utils::MemoryLogSink::from_glog();
+    if (!sink) {
+        out_buf[0] = '\0';
+        return 0;
+    }
+    auto snap = sink->snapshot();
+    std::string joined;
+    joined.reserve(static_cast<size_t>(buf_size));
+    for (const auto& entry : snap) {
+        if (!joined.empty()) joined += '\n';
+        joined += entry.message;
+        if (joined.size() + 8 >= static_cast<size_t>(buf_size)) break;
+    }
+    if (joined.size() >= static_cast<size_t>(buf_size)) {
+        joined.resize(static_cast<size_t>(buf_size) - 1);
+    }
+    std::memcpy(out_buf, joined.c_str(), joined.size() + 1);
+    return static_cast<int>(joined.size());
 }
 
 void* GCore_GetInternalWorldPtr(void) {

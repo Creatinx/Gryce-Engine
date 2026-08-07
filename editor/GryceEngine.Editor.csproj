@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>GryceEngine.Editor</RootNamespace>
+    <AssemblyName>GryceEngine.Editor</AssemblyName>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="iNKORE.UI.WPF.Modern" Version="0.10.0" />
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+
+  <!-- Embedded locale tables (en / zh) for the editor localization service -->
+  <ItemGroup>
+    <EmbeddedResource Include="project\locales\en.json" />
+    <EmbeddedResource Include="project\locales\zh.json" />
+  </ItemGroup>
+
+  <!-- Copy native DLLs from CMake build to output directory -->
+  <ItemGroup>
+    <!-- Debug -->
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceCored.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceCored.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceRendererd.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceRendererd.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePlatformd.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePlatformd.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePhysicsd.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePhysicsd.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\glfw3d.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\glfw3d.dll')" />
+    <!-- Release -->
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GryceCore.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GryceCore.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GryceRenderer.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GryceRenderer.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePlatform.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePlatform.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePhysics.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePhysics.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\glfw3.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\glfw3.dll')" />
+  </ItemGroup>
+
+  <Target Name="CopyNativeDlls" AfterTargets="Build">
+    <Copy SourceFiles="@(NativeDll)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

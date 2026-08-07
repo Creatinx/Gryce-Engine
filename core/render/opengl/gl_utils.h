@@ -1,7 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -74,6 +79,26 @@ inline void gl_debug_callback(GLenum source, GLenum type, GLuint id,
                                GLenum severity, GLsizei length,
                                const GLchar* message, const void* user_param) {
     (void)source; (void)type; (void)id; (void)length; (void)user_param;
+
+    // 同一 GL 调试消息 2 秒内只记录一次，避免逐帧刷屏淹没编辑器 Console。
+    // 每个唯一消息仍会首次输出；恢复真实错误时再重新记录。
+    {
+        static std::mutex s_mutex;
+        static std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> s_recent;
+        static constexpr auto kDedupeWindow = std::chrono::seconds(2);
+        std::lock_guard<std::mutex> lock(s_mutex);
+        const auto now = std::chrono::steady_clock::now();
+        auto it = std::find_if(s_recent.begin(), s_recent.end(),
+                               [&](const auto& p) { return p.first == message; });
+        if (it != s_recent.end()) {
+            if (now - it->second < kDedupeWindow) return;
+            it->second = now;
+        } else {
+            s_recent.emplace_back(message, now);
+            if (s_recent.size() > 24) s_recent.erase(s_recent.begin());
+        }
+    }
+
     if (severity == GL_DEBUG_SEVERITY_HIGH) {
         GLOG_ERROR("GL DEBUG: {}", message);
     } else if (severity == GL_DEBUG_SEVERITY_MEDIUM) {

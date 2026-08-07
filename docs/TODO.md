@@ -351,3 +351,67 @@
 11. **Node 架构 + 渲染后端分层 + 编辑器可用性 + 性能批次**（已完成：场景单根 Entity（`.gesc` v2）+ 2D 父链变换（`world_transform_2d` / `top_level` / `z_index`）；Vulkan 设为默认后端、OpenGL 降为兼容后端、DX11/12 预留；阴影贴合视锥 + 边缘淡出 + 自适应 bias；Create Entity 对话框、Hierarchy/File Explorer 右键菜单、Settings 四分区（含快捷键改绑、VSync、自动保存）、Project Settings 渲染质量；异步日志 AsyncLogger + 热路径性能优化）。
 12. 之后进入 M3（渲染补完）：IBL、后处理栈、CSM、抗锯齿、材质预设库，
    渲染新特性直接在编辑器里做预览面板，边开发边验证；脚本系统（M4）的前置 Node 架构已就绪，可提前启动脚本语言选型。
+
+---
+
+## WPF Editor C API 路线图（当前进行中）
+
+> ImGui 编辑器已完成，现迁移到 WPF 编辑器架构。WPF 编辑器通过 C API 桥接 Core DLL，
+> 实现 Editor 与 Core 的完全分离。
+
+### Phase 1 — 基础架构 + WPF Shell（已完成）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| Core/Platform/Renderer/Physics 编译为 DLL | 已完成 | `libGryceCored.dll` 等 |
+| `core/c_api.h` 统一 C API 入口 + 宏 | 已完成 | `GRYCE_C_API` 导出宏 |
+| `GConfig_Init()` / `GConfig_Shutdown()` | 已完成 | Core  DLL 加载/卸载 |
+| `GCommand` 命令队列（`GCommandType` + `GCore_PushCommand`） | 已完成 | 主线程安全命令队列 |
+| `GEntity_*` 实体操作 API | 已完成 | Create/Destroy/GetName/SetName/GetParent/GetChild* |
+| `GComponent_AddComponent` / `RemoveComponent` | 已完成 | 组件增删 |
+| `GScene_New` / `Save` / `Load` | 已完成 | 场景管理 |
+| `GCore_SetCallback_*` 回调注册（实体列表/选中/PlayMode/日志） | 已完成 | C# 侧 delegate 回调 |
+| WPF Shell（MainWindow + Docking 布局面板） | 已完成 | 解决方案 `GryceEngine.sln`，项目名 `GryceEngine.Editor` |
+| WPF P/Invoke 封装（Native/*.cs） | 已完成 | C# 侧所有 C API 的 P/Invoke 声明 |
+| WPF 面板：Hierarchy / Inspector / Toolbar / Settings / Console / Project | 已完成 | 基础功能可用 |
+| 构建通过 + 运行无 XamlParseException | 已完成 | 0 错误，WPF 正常启动 |
+
+### Phase 2 — GryceRenderer + GrycePlatform C API（⬜ 待做）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `GWindow_InitExternal(hwnd)` — 接收外部 HWND，不创建 GLFW | ⬜ 待做 | WPF 提供 HWND，Renderer 嵌入 |
+| `GRender_Init` — `init_with_hwnd` + `sync_mode=true`（禁用内部 RenderThread） | ⬜ 待做 | 同步模式，WPF 主线程驱动渲染 |
+| `GRender_BeginFrame` / `RenderWorld` / `RenderGizmo` / `EndFrame` | ⬜ 待做 | 逐帧渲染 API |
+| Viewport texture 输出：`GRender_GetViewportTexture` | ⬜ 待做 | WPF 获取渲染结果纹理 |
+| Standalone test：HWND → 清屏色 + 空场景 | ⬜ 待做 | 验证渲染管线嵌入外部 HWND |
+
+### Phase 3 — Component 反射桥接 + WPF Editor 接入（⬜ 待做）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `ECMD_ADD_COMPONENT` / `ECMD_REMOVE_COMPONENT` / `ECMD_SET_PROPERTY` | ⬜ 待做 | 命令类型扩展 |
+| `GComponent_GetProperty` / `SetProperty`（通过 reflection 桥接） | ⬜ 待做 | Inspector 属性读写 |
+| `GComponent_GetPropertyCount` / `GetPropertyInfo`（Inspector 自动发现字段） | ⬜ 待做 | 反射自动生成 Inspector |
+| `GComponent_GetRegisteredTypeCount` / `GetRegisteredTypeInfo`（Add Component 下拉菜单） | ⬜ 待做 | 组件类型列表 |
+| WPF Editor P/Invoke 封装（C# 侧 GryceCoreAPI / GryceRendererAPI） | ⬜ 待做 | 封装新增 API |
+| WPF SwapChainPanel / WindowsFormsHost 提供 HWND → Renderer | ⬜ 待做 | Viewport 嵌入 |
+| 闭环验证：加载场景 → Hierarchy → 选中 → Inspector 改属性 → Viewport 更新 | ⬜ 待做 | 端到端验证 |
+
+### Phase 4 — PlayMode + 物理 + Gizmo（⬜ 待做）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `ECMD_PLAY_MODE` / `ECMD_STOP_MODE` + Scene 快照/回滚 | ⬜ 待做 | Play Mode 命令 |
+| GrycePhysics.dll C API：`GPhysics_Init` / `Step` / `Raycast` / `CreateBody` | ⬜ 待做 | 物理 C API |
+| GrycePlatform.dll 输入注入：`GInput_InjectKey` / `MouseMove` / `MouseButton` | ⬜ 待做 | WPF 输入转发到 Core |
+| Core 内部 Viewport Toolbar + ImGuizmo | ⬜ 待做 | Gizmo 操作 |
+| `ECMD_GIZMO_MANIPULATE` 写回 Transform | ⬜ 待做 | Gizmo 拖拽写回 |
+
+### Phase 5 — 资产 + 完整闭环（⬜ 待做）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| GryceCore/asset_api.h + `ECMD_IMPORT_ASSET` | ⬜ 待做 | 资产导入命令 |
+| 日志转发：`GCore_GetLogMessages`（Console 窗口） | ⬜ 待做 | Console 面板日志 |
+| 完整 Editor ↔ Core 闭环验证 | ⬜ 待做 | 全功能端到端测试 |

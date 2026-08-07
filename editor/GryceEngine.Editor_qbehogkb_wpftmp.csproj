@@ -1,0 +1,97 @@
+<Project>
+  <PropertyGroup>
+    <AssemblyName>GryceEngine.Editor</AssemblyName>
+    <IntermediateOutputPath>obj\x64\Debug\</IntermediateOutputPath>
+    <BaseIntermediateOutputPath>obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>D:\Gryce-Engine\editor\obj\</MSBuildProjectExtensionsPath>
+    <_TargetAssemblyProjectName>GryceEngine.Editor</_TargetAssemblyProjectName>
+    <RootNamespace>GryceEngine.Editor</RootNamespace>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>GryceEngine.Editor</RootNamespace>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="iNKORE.UI.WPF.Modern" Version="0.10.0" />
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+  <!-- Embedded locale tables (en / zh) for the editor localization service -->
+  <ItemGroup>
+    <EmbeddedResource Include="project\locales\en.json" />
+    <EmbeddedResource Include="project\locales\zh.json" />
+  </ItemGroup>
+  <!-- Copy native DLLs from CMake build to output directory -->
+  <ItemGroup>
+    <!-- Debug -->
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceCored.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceCored.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceRendererd.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GryceRendererd.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePlatformd.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePlatformd.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePhysicsd.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\GrycePhysicsd.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Debug\glfw3d.dll" Condition="'$(Configuration)' == 'Debug' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Debug\glfw3d.dll')" />
+    <!-- Release -->
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GryceCore.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GryceCore.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GryceRenderer.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GryceRenderer.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePlatform.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePlatform.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePhysics.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\GrycePhysics.dll')" />
+    <NativeDll Include="$(MSBuildProjectDirectory)\..\build\bin\Release\glfw3.dll" Condition="'$(Configuration)' == 'Release' And Exists('$(MSBuildProjectDirectory)\..\build\bin\Release\glfw3.dll')" />
+  </ItemGroup>
+  <Target Name="CopyNativeDlls" AfterTargets="Build">
+    <Copy SourceFiles="@(NativeDll)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <ItemGroup>
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\inkore.ui.wpf\1.2.8\lib\net452\iNKORE.UI.WPF.dll" />
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\inkore.ui.wpf.modern\0.10.0\lib\net452\iNKORE.UI.WPF.Modern.Controls.dll" />
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\inkore.ui.wpf.modern\0.10.0\lib\net452\iNKORE.UI.WPF.Modern.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\mscorlib.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\Facades\netstandard.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\PresentationCore.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\PresentationFramework.dll" />
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\system.buffers\4.5.1\ref\net45\System.Buffers.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Core.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Data.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Drawing.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.IO.Compression.FileSystem.dll" />
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\system.memory\4.5.5\lib\net461\System.Memory.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Numerics.dll" />
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\system.numerics.vectors\4.5.0\ref\net46\System.Numerics.Vectors.dll" />
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\system.runtime.compilerservices.unsafe\4.5.3\ref\net461\System.Runtime.CompilerServices.Unsafe.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Runtime.Serialization.dll" />
+    <ReferencePath Include="C:\Users\Creatinx\.nuget\packages\system.valuetuple\4.5.0\ref\net47\System.ValueTuple.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Windows.Controls.Ribbon.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Xaml.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Xml.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\System.Xml.Linq.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\UIAutomationClient.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\UIAutomationClientsideProviders.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\UIAutomationProvider.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\UIAutomationTypes.dll" />
+    <ReferencePath Include="C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\WindowsBase.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\ConsoleView.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\CreateEntityDialog.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\HierarchyView.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\InspectorView.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\MainWindow.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\ProjectView.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\SettingsWindow.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\ToolbarView.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\src\Views\ViewportView.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\App.g.cs" />
+    <Compile Include="D:\Gryce-Engine\editor\obj\x64\Debug\net48\GeneratedInternalTypeHelper.g.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Analyzer Include="C:\Program Files\dotnet\sdk\10.0.302\Sdks\Microsoft.NET.Sdk\targets\..\analyzers\Microsoft.CodeAnalysis.CSharp.NetAnalyzers.dll" />
+    <Analyzer Include="C:\Program Files\dotnet\sdk\10.0.302\Sdks\Microsoft.NET.Sdk\targets\..\analyzers\Microsoft.CodeAnalysis.NetAnalyzers.dll" />
+  </ItemGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

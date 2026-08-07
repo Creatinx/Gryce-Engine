@@ -9,7 +9,11 @@
     #else
         #define GRYCE_CORE_API __declspec(dllimport)
         #ifdef _MSC_VER
-            #pragma comment(lib, "GryceCore.lib")
+            #ifdef _DEBUG
+                #pragma comment(lib, "GryceCored.lib")
+            #else
+                #pragma comment(lib, "GryceCore.lib")
+            #endif
         #endif
     #endif
 #else
@@ -37,11 +41,6 @@ GRYCE_CORE_API int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale)
 GRYCE_CORE_API int GEntity_SetLocalPosition(GEntityHandle entity, const GVec3* pos);
 GRYCE_CORE_API int GEntity_SetLocalRotation(GEntityHandle entity, const GQuat* rot);
 GRYCE_CORE_API int GEntity_SetLocalScale(GEntityHandle entity, const GVec3* scale);
-GRYCE_CORE_API int GEntity_GetWorldPosition(GEntityHandle entity, GVec3* out_pos);
-GRYCE_CORE_API int GEntity_GetWorldRotation(GEntityHandle entity, GQuat* out_rot);
-GRYCE_CORE_API int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale);
-GRYCE_CORE_API int GEntity_GetLocalRotation(GEntityHandle entity, GQuat* out_rot);
-GRYCE_CORE_API int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale);
 GRYCE_CORE_API int GEntity_GetWorldPosition(GEntityHandle entity, GVec3* out_pos);
 GRYCE_CORE_API int GEntity_GetWorldRotation(GEntityHandle entity, GQuat* out_rot);
 GRYCE_CORE_API int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale);

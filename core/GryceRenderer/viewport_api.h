@@ -9,7 +9,11 @@
     #else
         #define GRYCE_RENDERER_API __declspec(dllimport)
         #ifdef _MSC_VER
-            #pragma comment(lib, "GryceRenderer.lib")
+            #ifdef _DEBUG
+                #pragma comment(lib, "GryceRendererd.lib")
+            #else
+                #pragma comment(lib, "GryceRenderer.lib")
+            #endif
         #endif
     #endif
 #else

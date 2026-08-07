@@ -46,9 +46,11 @@ if(GRYCE_HAS_GLFW)
     set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
     set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
-    if(MSVC)
-        set(GLFW_LIBRARY_TYPE STATIC CACHE STRING "" FORCE)
-    endif()
+    # GLFW 必须构建为共享库：GrycePlatform（窗口创建）与 GryceRenderer
+    # （OpenGL 上下文/ImGui 后端）会分别链接 glfw。若为静态库，两个 DLL
+    # 各自持有一份 GLFW 全局状态，platform 创建的窗口在 renderer 中
+    # glfwMakeContextCurrent 会失效（current context 恒为 null）。
+    set(GLFW_LIBRARY_TYPE SHARED CACHE STRING "" FORCE)
     add_subdirectory("${GRYCE_DEPS_ROOT}/glfw" EXCLUDE_FROM_ALL)
     message(STATUS "glfw3: built from source at ${GRYCE_DEPS_ROOT}/glfw")
 else()

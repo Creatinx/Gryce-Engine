@@ -1,4 +1,5 @@
 #include "GryceCore/component_api.h"
+#include "GryceCore/core_api.h"
 
 #include "internal_state.h"
 
@@ -432,6 +433,76 @@ int GComponent_GetRegisteredTypeInfo(int index, uint64_t* out_hash, char* out_na
     out_name[name_buf_size - 1] = '\0';
 
     return 0;
+
+}
+
+int GComponent_AddComponent(GEntityHandle entity, uint64_t comp_type_hash) {
+
+    // Find the type name from the hash by searching registered types
+
+    auto types = ComponentFactory::instance().all_types();
+
+    std::string type_name;
+
+    for (const auto& t : types) {
+
+        if (hash_type_name(t) == comp_type_hash) {
+
+            type_name = t;
+
+            break;
+
+        }
+
+    }
+
+    if (type_name.empty()) return -1;
+
+    // Push AddComponent command via command buffer
+
+    struct Payload { GEntityHandle h; char type_name[128]; };
+
+    Payload payload;
+
+    payload.h = entity;
+
+    std::strncpy(payload.type_name, type_name.c_str(), sizeof(payload.type_name) - 1);
+
+    payload.type_name[sizeof(payload.type_name) - 1] = '\0';
+
+    GCommand cmd;
+
+    cmd.type = ECMD_ADD_COMPONENT;
+
+    cmd.seq = 0;
+
+    std::memcpy(cmd.payload, &payload, sizeof(payload));
+
+    return GCore_PushCommand(&cmd);
+
+}
+
+int GComponent_RemoveComponent(GEntityHandle entity, uint64_t comp_type_hash) {
+
+    // Push RemoveComponent command via command buffer
+
+    struct Payload { GEntityHandle h; uint64_t type_hash; };
+
+    Payload payload;
+
+    payload.h = entity;
+
+    payload.type_hash = comp_type_hash;
+
+    GCommand cmd;
+
+    cmd.type = ECMD_REMOVE_COMPONENT;
+
+    cmd.seq = 0;
+
+    std::memcpy(cmd.payload, &payload, sizeof(payload));
+
+    return GCore_PushCommand(&cmd);
 
 }
 
