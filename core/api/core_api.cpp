@@ -2,6 +2,8 @@
 #include "internal_state.h"
 
 #include "ecs/world.h"
+#include "ecs/systems/animator_system.h"
+#include "ecs/systems/fracture_system.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "scene/scene_serializer.h"
@@ -93,6 +95,12 @@ static void drain_log_messages() {
             g_core_state.callback_user_data);
     }
     g_core_state.log_delivered_count = total;
+}
+
+std::string reflection_lookup_name(const std::string& full_name) {
+    const std::string prefix = "gryce_engine::components::";
+    if (full_name.rfind(prefix, 0) == 0) return full_name.substr(prefix.size());
+    return full_name;
 }
 
 // ============================================================================
@@ -267,7 +275,8 @@ static void process_command(const GCommand& cmd) {
                 for (const auto& comp : e->components()) {
                     std::string type_name = get_component_type_name(comp.get());
                     if (std::hash<std::string>{}(type_name) == p->type_hash) {
-                        auto fields = gryce_engine::reflection::Registry::instance().all_fields(type_name);
+                        auto fields = gryce_engine::reflection::Registry::instance().all_fields(
+                            gryce_core::reflection_lookup_name(type_name));
                         for (const auto* f : fields) {
                             if (f->name == p->prop_name && f->write && !f->read_only) {
                                 f->write(comp.get(), p->value);
@@ -328,10 +337,15 @@ int GCore_Init(const GCoreInitDesc* desc) {
     components::register_builtin_components();
 
     gryce_core::g_core_state.world = std::make_unique<World>();
-    gryce_core::g_core_state.world->init();
-
     auto default_scene = std::make_unique<Scene>("Untitled");
     gryce_core::g_core_state.world->attach_scene(std::move(default_scene));
+
+    // 编辑器/运行时统一注册核心系统：动画驱动、碎裂。
+    // （物理系统位于 GrycePhysics.dll，由 GPhysics_AttachSystems 注册。）
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::AnimatorSystem>());
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::FractureSystem>());
+    gryce_core::g_core_state.world->init();
+
     gryce_core::g_core_state.entity_map.rebuild(gryce_core::g_core_state.world->scene());
 
     gryce_core::g_core_state.initialized = true;

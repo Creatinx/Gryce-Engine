@@ -17,6 +17,7 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{loc:Loc panel.inspector}"
                            Style="{StaticResource PanelHeaderTextStyle}"/>
@@ -24,6 +25,14 @@
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            Text="{Binding SelectedEntity.Name, TargetNullValue='No Selection'}"
                            TextTrimming="CharacterEllipsis" MaxWidth="140"/>
+                <Button Grid.Column="2" Width="24" Height="24" Margin="6,0,0,0" Padding="0"
+                        Style="{StaticResource ToolbarButtonStyle}"
+                        AutomationProperties.Name="EditMaterial"
+                        ToolTip="{loc:Loc inspector.edit_material}"
+                        Visibility="{Binding HasRendererComponent, Converter={StaticResource BoolToVisibility}}"
+                        Click="OnEditMaterialClick">
+                    <TextBlock Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="13"/>
+                </Button>
             </Grid>
         </Border>
 

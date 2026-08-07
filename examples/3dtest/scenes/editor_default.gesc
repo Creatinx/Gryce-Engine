@@ -52,6 +52,18 @@
           "enabled": true,
           "mesh_path": "res:/models/cube_pbr.obj",
           "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [0.0, 0.0, 0.0],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [1.0, 1.0, 1.0],
+          "type": "BoxCollider"
         }
       ],
       "enabled": true,
@@ -81,6 +93,62 @@
         "scale": [1.0, 1.0, 1.0]
       },
       "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000004"
+    },
+    {
+      "components": [
+        {
+          "enabled": true,
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "friction": 0.5,
+          "is_kinematic": false,
+          "mass": 1.0,
+          "type": "RigidBody",
+          "use_gravity": true
+        },
+        {
+          "center": [0.0, 0.0, 0.0],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [1.0, 1.0, 1.0],
+          "type": "BoxCollider"
+        }
+      ],
+      "enabled": true,
+      "name": "DynamicCube",
+      "parent": null,
+      "transform": {
+        "position": [0.0, 4.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000005"
+    },
+    {
+      "components": [
+        {
+          "clip_name": "",
+          "enabled": true,
+          "loop": true,
+          "model_path": "res:/models/skinned_triangle.gltf",
+          "playing": true,
+          "speed": 1.0,
+          "time": 0.0,
+          "type": "SkinnedMeshRenderer"
+        }
+      ],
+      "enabled": true,
+      "name": "AnimatedFigure",
+      "parent": null,
+      "transform": {
+        "position": [3.0, 1.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000006"
     }
   ]
 }

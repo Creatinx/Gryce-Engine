@@ -5,6 +5,9 @@
 #include "physics/physics_world_3d.h"
 #include "physics/physics_world_2d.h"
 #include "physics/physics_types.h"
+#include "ecs/world.h"
+#include "ecs/systems/physics_system_2d.h"
+#include "ecs/systems/physics_system_3d.h"
 #include "utils/glog/glog_lib.h"
 
 #include <memory>
@@ -90,6 +93,18 @@ void GPhysics_Shutdown(void) {
     g_physics.body_map.clear();
     g_physics.next_body_handle = 1;
     g_physics.initialized = false;
+}
+
+int GPhysics_AttachSystems(void* world_ptr) {
+    auto* world = static_cast<gryce_engine::ecs::World*>(world_ptr);
+    if (!world) {
+        GLOG_ERROR("GPhysics_AttachSystems: null world pointer");
+        return -1;
+    }
+    world->register_system(std::make_unique<gryce_engine::ecs::PhysicsSystem3D>());
+    world->register_system(std::make_unique<gryce_engine::ecs::PhysicsSystem2D>());
+    GLOG_INFO("GPhysics_AttachSystems: PhysicsSystem3D + PhysicsSystem2D attached");
+    return 0;
 }
 
 void GPhysics_SetGravity(const GVec3* gravity) {

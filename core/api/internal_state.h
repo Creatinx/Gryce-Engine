@@ -60,4 +60,8 @@ struct EntityResolver {
 // Helper: get type name string from a Component* pointer (defined in core_api.cpp)
 std::string get_component_type_name(gryce_engine::components::Component* comp);
 
+// 反射注册表使用短名，组件类型名是完整命名空间名；查询前剥离前缀。
+// （defined in core_api.cpp）
+std::string reflection_lookup_name(const std::string& full_name);
+
 } // namespace gryce_core

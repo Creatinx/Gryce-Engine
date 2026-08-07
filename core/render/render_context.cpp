@@ -565,6 +565,12 @@ void RenderContext::present_sync() {
         cmd_buffer_->release();
     }
 
+    // 同步模式（编辑器视口）没有渲染线程，present_sync 需要亲自完成
+    // end_frame（截图 + glfwSwapBuffers），否则 GLFW 窗口永远显示首帧。
+    if (backend_) {
+        backend_->end_frame();
+    }
+
     process_pending_destroys(true);
 }
 

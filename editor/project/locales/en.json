@@ -51,6 +51,16 @@
     "panel.project": "Project",
     "panel.console": "Console",
     "panel.game": "Game",
+    "panel.animation": "Animation",
+
+    "animation.no_animator": "Select an entity with a SkinnedMeshRenderer to edit its animation.",
+    "animation.no_clips": "(no animation clips)",
+    "animation.clip": "Clip",
+    "animation.play": "Play / Pause",
+    "animation.stop": "Stop",
+    "animation.loop": "Loop",
+    "animation.speed": "Speed",
+    "animation.time": "Time",
 
     "hierarchy.search_hint": "Search",
     "hierarchy.create_entity": "Create Entity",
@@ -66,6 +76,7 @@
     "inspector.add_component": "Add Component",
     "inspector.name": "Name",
     "inspector.no_fields": "(No reflected fields)",
+    "inspector.edit_material": "Edit Material",
 
     "inspector.type.Transform": "Transform",
     "inspector.type.MeshRenderer": "Mesh Renderer",
@@ -204,4 +215,25 @@
     "common.delete": "Delete",
     "common.rename": "Rename",
     "common.duplicate": "Duplicate"
+    ,
+    "common.close": "Close",
+
+    "material_editor.title": "Material Editor",
+    "material_editor.surface_inputs": "Surface Inputs",
+    "material_editor.albedo": "Albedo",
+    "material_editor.roughness": "Roughness",
+    "material_editor.metallic": "Metallic",
+    "material_editor.ao": "Ambient Occlusion",
+    "material_editor.emissive": "Emissive",
+    "material_editor.opacity": "Opacity",
+    "material_editor.two_sided": "Two-Sided",
+    "material_editor.blend_mode": "Blend Mode",
+    "material_editor.maps": "Textures",
+    "material_editor.albedo_map": "Albedo Map",
+    "material_editor.normal_map": "Normal Map",
+    "material_editor.roughness_map": "Roughness Map",
+    "material_editor.metallic_map": "Metallic Map",
+    "material_editor.ao_map": "Ambient Occlusion Map",
+    "material_editor.emissive_map": "Emissive Map",
+    "material_editor.use_map": "Use"
 }

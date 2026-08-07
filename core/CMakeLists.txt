@@ -23,6 +23,8 @@ target_sources(GryceCore
         api/component_api.cpp
         api/scene_api.cpp
         api/asset_api.cpp
+        api/material_api.cpp
+        api/animator_api.cpp
         api/command_buffer.cpp
         api/entity_handle_map.cpp
         # 内部模块
@@ -96,6 +98,8 @@ target_sources(GryceCore
             GryceCore/component_api.h
             GryceCore/scene_api.h
             GryceCore/asset_api.h
+            GryceCore/material_api.h
+            GryceCore/animator_api.h
             export.h
             components/component.h
             components/component_factory.h

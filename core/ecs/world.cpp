@@ -18,13 +18,11 @@ void World::attach_scene(std::unique_ptr<scene::Scene> scene) {
         shutdown();
     }
     scene_ = std::move(scene);
-    if (scene_ && initialized_) {
-        scene_->init();
-        for (const auto& sys : systems_) {
-            if (sys->enabled) {
-                sys->on_init(*scene_);
-            }
-        }
+    if (scene_) {
+        // 替换场景后重新初始化：shutdown() 已把 initialized_ 置 false，
+        // 必须再次 init()，否则 update()/render() 会因未初始化而直接返回，
+        // 播放模式下的物理/动画系统将完全不运行。
+        init();
     }
 }
 
@@ -51,6 +49,12 @@ void World::register_system(std::unique_ptr<ISystem> system) {
     }
     system_map_[system->name()] = system.get();
     systems_.push_back(std::move(system));
+
+    // 支持在 World::init() 之后挂载系统（例如编辑器经 C API 后接物理系统）：
+    // 立即对新系统执行 on_init，避免错过场景初始化阶段。
+    if (initialized_ && scene_) {
+        systems_.back()->on_init(*scene_);
+    }
 }
 
 ISystem* World::get_system(const std::string& name) const {

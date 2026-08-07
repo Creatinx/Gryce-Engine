@@ -221,34 +221,25 @@
                       ResizeBehavior="PreviousAndNext"/>
 
         <!-- ════════════════════════════════════════════════════════════
-             Bottom Panels — Project | Console
+             Bottom Panels — Project | Console | Animation
              ════════════════════════════════════════════════════════════ -->
-        <Grid Grid.Row="4">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" MinWidth="160"/>
-                <ColumnDefinition Width="4"/>
-                <ColumnDefinition Width="*" MinWidth="160"/>
-            </Grid.ColumnDefinitions>
-
-            <!-- Project -->
-            <Border Grid.Column="0"
-                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="0,1,0,0">
-                <views:ProjectView/>
-            </Border>
-
-            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
-                          ResizeBehavior="PreviousAndNext"/>
-
-            <!-- Console -->
-            <Border Grid.Column="2"
-                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="0,1,0,0">
-                <views:ConsoleView/>
-            </Border>
-        </Grid>
+        <Border Grid.Row="4"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0">
+            <TabControl x:Name="BottomTabs" BorderThickness="0" Background="Transparent"
+                        Padding="6,2,6,0">
+                <TabItem Header="{loc:Loc panel.project}">
+                    <views:ProjectView/>
+                </TabItem>
+                <TabItem Header="{loc:Loc panel.console}">
+                    <views:ConsoleView/>
+                </TabItem>
+                <TabItem Header="{loc:Loc panel.animation}">
+                    <views:AnimationPanelView/>
+                </TabItem>
+            </TabControl>
+        </Border>
 
         <!-- ════════════════════════════════════════════════════════════
              Status Bar — Unity-style bottom bar

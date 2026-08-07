@@ -36,6 +36,11 @@ public class EditorViewModel : INotifyPropertyChanged
 
     public bool HasSelection => _selectedEntity != null;
 
+    /// <summary>Selected entity has a MeshRenderer / SkinnedMeshRenderer (material editable).</summary>
+    public bool HasRendererComponent => _selectedEntity?.Components != null &&
+        System.Linq.Enumerable.Any(_selectedEntity.Components,
+            c => c.TypeName is "MeshRenderer" or "SkinnedMeshRenderer");
+
     // Registered component types for Add Component dropdown
     public ObservableCollection<RegisteredTypeItem> RegisteredTypes { get; } = new();
 
@@ -707,6 +712,7 @@ public class EditorViewModel : INotifyPropertyChanged
         {
             comp.RefreshProperties();
         }
+        OnPropertyChanged(nameof(HasRendererComponent));
     }
 
     public void WritePropertyValue(ComponentModel comp, PropertyModel prop)

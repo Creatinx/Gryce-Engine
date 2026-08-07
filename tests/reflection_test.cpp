@@ -81,7 +81,8 @@ TEST(ReflectionTest, FieldMetadataRangeAndReadOnly) {
 
     const auto* time = find_field("SkinnedMeshRenderer", "time");
     ASSERT_NE(time, nullptr);
-    EXPECT_TRUE(time->read_only);
+    // time 可写：动画面板需要支持时间轴拖动（seek）。
+    EXPECT_FALSE(time->read_only);
 }
 
 // ---------------------------------------------------------------------------

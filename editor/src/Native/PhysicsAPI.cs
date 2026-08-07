@@ -8,6 +8,9 @@ public static class PhysicsAPI
     public static extern int GPhysics_Init(GPhysicsBackend backend);
 
     [DllImport(NativeLibrary.Physics, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GPhysics_AttachSystems(nint worldPtr);
+
+    [DllImport(NativeLibrary.Physics, CallingConvention = CallingConvention.Cdecl)]
     public static extern void GPhysics_Shutdown();
 
     [DllImport(NativeLibrary.Physics, CallingConvention = CallingConvention.Cdecl)]

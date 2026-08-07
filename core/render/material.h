@@ -60,6 +60,9 @@ public:
     bool use_ao_map = true;
     bool use_emissive_map = true;
 
+    // 贴图路径/use 标志被编辑器修改后置位；渲染线程在下一帧重新 upload_to_gpu。
+    bool textures_dirty = false;
+
     Material() = default;
     explicit Material(const std::string& material_name) : name(material_name) {}
 

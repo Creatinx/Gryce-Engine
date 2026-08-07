@@ -46,6 +46,11 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
         if (result != 0)
             throw new InvalidOperationException($"GCore_Init failed with code {result}");
 
+        // 挂载物理系统（Jolt 3D + Box2D 2D），让 Play Mode 能真实模拟场景物理。
+        nint worldPtr = CoreAPI.GCore_GetInternalWorldPtr();
+        PhysicsAPI.GPhysics_Init(GPhysicsBackend.Jolt);
+        PhysicsAPI.GPhysics_AttachSystems(worldPtr);
+
         IsInitialized = true;
         _frameTimer.Start();
     }

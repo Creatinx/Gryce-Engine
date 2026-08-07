@@ -1,5 +1,6 @@
 using GryceEngine.Editor.Native;
 using GryceEngine.Editor.Services;
+using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -126,6 +127,19 @@ public class PropertyModel : INotifyPropertyChanged
     /// <summary>Read property value from the engine.</summary>
     public unsafe void ReadFromEngine(GEntityHandle entity, ulong typeHash)
     {
+        if (PropType == PropertyType.String)
+        {
+            var buffer = new byte[256];
+            fixed (byte* pb = buffer)
+            {
+                ComponentAPI.GComponent_GetProperty(entity, typeHash, Name, (nint)pb, buffer.Length);
+            }
+            int len = Array.IndexOf(buffer, (byte)0);
+            _stringValue = Encoding.UTF8.GetString(buffer, 0, len < 0 ? buffer.Length : len);
+            OnPropertyChanged(nameof(StringValue));
+            return;
+        }
+
         fixed (float* pf = &_floatValue)
         fixed (int* pi = &_intValue)
         fixed (bool* pb = &_boolValue)
@@ -144,6 +158,20 @@ public class PropertyModel : INotifyPropertyChanged
     /// <summary>Write property value back to the engine.</summary>
     public unsafe void WriteToEngine(GEntityHandle entity, ulong typeHash)
     {
+        if (PropType == PropertyType.String)
+        {
+            // 反射字符串字段固定 256 字节缓冲；写入端按 C 字符串读取。
+            var buffer = new byte[256];
+            int count = Encoding.UTF8.GetBytes(_stringValue ?? string.Empty, 0,
+                Math.Min(_stringValue?.Length ?? 0, 254), buffer, 0);
+            buffer[count] = 0;
+            fixed (byte* pb = buffer)
+            {
+                ComponentAPI.GComponent_SetProperty(entity, typeHash, Name, (nint)pb, buffer.Length);
+            }
+            return;
+        }
+
         fixed (float* pf = &_floatValue)
         fixed (int* pi = &_intValue)
         fixed (bool* pb = &_boolValue)

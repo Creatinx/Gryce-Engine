@@ -157,6 +157,23 @@ static void upload_pending_meshes(scene::Scene& scn, RenderContext& ctx) {
             if (!mr || !mr->enabled || mr->model_path.empty() || mr->gpu_mesh()) return;
             mr->upload_to_gpu(&ctx, /*allow_while_running=*/false);
         });
+
+    // 编辑器修改材质贴图路径/use 标志后，material 被标记 textures_dirty；
+    // 在这里统一重新 upload，让改动下一帧生效。
+    auto refresh_dirty_material = [&](render::Material* mat) {
+        if (mat && mat->textures_dirty) {
+            mat->upload_to_gpu(&ctx);
+            mat->textures_dirty = false;
+        }
+    };
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
+            if (mr) refresh_dirty_material(mr->material.get());
+        });
+    ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::SkinnedMeshRenderer* mr, components::Transform*) {
+            if (mr) refresh_dirty_material(mr->material.get());
+        });
 }
 
 } // namespace
@@ -198,7 +215,10 @@ int GRender_Init(const GRenderInitDesc* desc) {
 
     // Init render pipeline for 3D scene rendering
     g_renderer.pipeline = std::make_unique<RenderPipeline>();
-    g_renderer.pipeline->set_viewport_output_enabled(true);
+    // WPF 编辑器通过嵌入的 GLFW HWND 直接显示场景（ViewportHwndHost），
+    // 因此 tonemap 必须写入默认帧缓冲（交换链），而不是离屏 viewport FBO。
+    // 离屏输出留给需要采样纹理的宿主（如旧 ImGui 编辑器）使用。
+    g_renderer.pipeline->set_viewport_output_enabled(false);
     if (!g_renderer.pipeline->init(g_renderer.ctx.get(), "res:/shaders")) {
         GLOG_WARN("GRender_Init: RenderPipeline init failed (shaders may be missing), falling back to clear-only");
         g_renderer.pipeline.reset();
@@ -298,6 +318,7 @@ static void render_world_internal() {
         // No pipeline — fallback: let world render systems push commands
         world->render(*g_renderer.ctx);
     }
+
 }
 
 void GRender_RenderWorld(void) {

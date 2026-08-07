@@ -242,7 +242,7 @@ int GComponent_GetPropertyCount(GEntityHandle entity, uint64_t comp_type_hash) {
 
         if (hash_type_name(type_name) == comp_type_hash) {
 
-            auto fields = Registry::instance().all_fields(type_name);
+        auto fields = Registry::instance().all_fields(gryce_core::reflection_lookup_name(type_name));
 
             return static_cast<int>(fields.size());
 
@@ -274,7 +274,7 @@ int GComponent_GetPropertyInfo(GEntityHandle entity, uint64_t comp_type_hash, in
 
         if (hash_type_name(type_name) == comp_type_hash) {
 
-            auto fields = Registry::instance().all_fields(type_name);
+        auto fields = Registry::instance().all_fields(gryce_core::reflection_lookup_name(type_name));
 
             if (prop_index < 0 || prop_index >= static_cast<int>(fields.size())) return -1;
 
@@ -316,7 +316,7 @@ int GComponent_GetProperty(GEntityHandle entity, uint64_t comp_type_hash, const 
 
         if (hash_type_name(type_name) == comp_type_hash) {
 
-            auto fields = Registry::instance().all_fields(type_name);
+        auto fields = Registry::instance().all_fields(gryce_core::reflection_lookup_name(type_name));
 
             for (const auto* f : fields) {
 
@@ -364,7 +364,7 @@ int GComponent_SetProperty(GEntityHandle entity, uint64_t comp_type_hash, const 
 
         if (hash_type_name(type_name) == comp_type_hash) {
 
-            auto fields = Registry::instance().all_fields(type_name);
+        auto fields = Registry::instance().all_fields(gryce_core::reflection_lookup_name(type_name));
 
             for (const auto* f : fields) {
 
@@ -507,4 +507,3 @@ int GComponent_RemoveComponent(GEntityHandle entity, uint64_t comp_type_hash) {
 }
 
 } // extern "C"
-

@@ -38,16 +38,14 @@
   - 2D：Box2D v3.0.0，刚体/静态体、圆形/多边形碰撞体、Distance/Spring 关节、角色控制器。
   - 统一 `IPhysicsWorld2D/3D` 抽象 + Raycast。
 - **编辑器（MVP）**
-  - ImGui Docking 布局：Scene / Game / Hierarchy / Inspector / Project / Console / Animation / Material / Terrain。
-  - 场景编辑：自由飞行相机、网格线、AABB 点选拾取、ImGuizmo 移动/旋转/缩放。
-  - Play Mode：进入/退出时场景快照与恢复。
-  - 资源拖放：模型/纹理/Prefab/场景到视口或 Inspector。
-  - 主题系统：Fluent Design 深色/浅色 + 强调色 + 自定义字体，持久化配置。
-  - 多语言：中文/英文/日文运行时切换。
-  - Godot 风格 Create Entity 对话框（收藏/最近/搜索/过滤/描述）。
-  - Hierarchy / File Explorer 右键菜单与全局快捷键（Ctrl+X/C/V/D、F2、Del）。
-  - Settings 四分区：主题、语言、VSync + 场景自动保存、快捷键改绑（冲突检测）。
-  - Undo/Redo、快捷键体系（Ctrl+S/Z/Y、F 聚焦、Ctrl+P Play Mode）。
+  - **WPF 编辑器**（`editor/GryceEngine.Editor.csproj`，iNKORE Fluent），仅通过模块 DLL 的 **C API** 与 Core 通信（`GCore_*` / `GEntity_*` / `GComponent_*` / `GScene_*` / `GMaterial_*` / `GAnimator_*` / `GPhysics_*`），Core 与 Editor 完全分离。
+  - Hierarchy / Inspector（反射字段编辑）/ Viewport / Project / Console / Animation 面板。
+  - Play Mode：播放模式真实驱动物理（Jolt/Box2D）与骨骼动画。
+  - 材质编辑器：PBR 参数 + 贴图槽，改动即时生效。
+  - Godot 风格 Create Entity 对话框（搜索/最近/分类/描述）。
+  - 主题（深色/浅色）与中文/英文本地化运行时切换，均持久化。
+  - 快捷键体系（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D）。
+  - 旧 ImGui C++ 编辑器已封存至 `backup/editor/`。
 - **日志与性能**
   - 异步日志 AsyncLogger：`log()` 入队、worker 线程写出，`GLog` 自动包装 logger。
   - 热路径优化：每帧日志降为 DEBUG、Release 剔除 `GL_CHECK_ERROR`、DrawItem 跨帧复用、重复材质绑定跳过。

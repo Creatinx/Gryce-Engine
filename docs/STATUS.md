@@ -305,29 +305,29 @@
 
 ## 9. 编辑器
 
+> 当前编辑器为 **WPF（.NET Framework 4.8）+ C API 桥接** 实现
+> （`editor/GryceEngine.Editor.csproj`），完全通过模块 DLL 的 C API 与 Core 通信，
+> 不直接引用任何引擎内部头文件。旧的 ImGui C++ 编辑器已封存至 `backup/editor/`。
+
 | 功能 | 状态 |
 |---|---|
-| Docking 布局 + 面板管理框架 | 已实现 |
-| 场景视图（Scene View） | 已实现（自由飞行相机 + F 聚焦 + 网格线 + ImGuizmo） |
-| 游戏视图（Game View） | 已实现（独立渲染管线 + 主摄像机视角 + Viewport/Game 标签页） |
-| 层级面板（Hierarchy） | 已实现（Entity 树、增删、拖拽换父、Prefab 标记、延迟删除、合成根顶行显示场景名） |
-| Hierarchy 右键菜单与全局快捷键 | 已实现（新建/Cut/Copy/Paste/Duplicate/Rename/Focus/Prefab/Delete；Ctrl+X/C/V/D、F2、Del 注册于 ShortcutManager） |
-| Create Entity 对话框（Godot 风格） | 已实现（`editor/ui/create_entity_dialog.*`：收藏/最近/搜索/过滤/描述，持久化到 `create_entity_dialog.json`） |
-| File Explorer 右键菜单 | 已实现（新建文件夹/场景/材质、重命名、删除确认、复制路径） |
-| Inspector 面板 | 已实现（反射自动生成字段编辑、enum 下拉、只读灰显） |
-| 项目面板（Project） | 已实现（目录树、资源图标、双击加载、拖放） |
-| 控制台面板（Console） | 已实现（日志过滤、颜色区分、自动滚动、点击定位） |
-| 动画编辑器 | 已实现（剪辑选择、播放/暂停/循环/速度、时间滑块） |
-| 材质编辑器 | 已实现（PBR 参数、贴图槽、物理属性、保存后即时 GPU 上传） |
-| 地形编辑器 | 已实现（基础高度图编辑 + MeshRenderer 导出；完整 Terrain 渲染/LOD 留 M5） |
-| 编辑器设置保存 | 已实现（`imgui.ini` 布局 + `editor_theme.json` / `editor_settings.json` 主题/语言/VSync/快捷键） |
-| Settings 窗口分区 | 已实现（Theme / Appliance 语言 / Editor：VSync 持久化 + 场景自动保存间隔（分钟，0=关）/ Shortcuts：按键捕获改绑、冲突检测、重置，持久化到 `editor_settings.json` 的 `shortcuts` 组） |
-| 启动时应用 VSync | 已实现 |
-| 场景自动保存 | 已实现（按间隔保存脏场景，Play Mode 下跳过） |
-| Project Settings 窗口 | 已实现（File > Project Settings：渲染 API（DX 显示为预留）+ Render Quality：shadow map 尺寸/bias/area、环境光、HDR、tone map、exposure、IBL 强度；持久化到 `project_settings.json` 的 `graphics` 组，重启生效） |
-| 快捷键体系 | 已实现（Ctrl+S/Z/Y、Delete、F、Ctrl+P Play Mode、Ctrl+X/C/V/D、F2，支持改绑） |
-| 命令行参数（CLI） | 已实现（`--vulkan`（默认）/`--opengl`/`--vulkan-validation`、`--scene`、`--record`、`--camera`、`--headless` 等） | 详见 `docs/CLI.md` |
-| Undo/Redo | 已实现（属性修改、增删实体、Transform） |
+| 架构 | 已实现（WPF + iNKORE Fluent；Editor 仅通过 `GCore_*` / `GEntity_*` / `GComponent_*` / `GScene_*` / `GMaterial_*` / `GAnimator_*` / `GPhysics_*` C API 驱动 Core） |
+| 布局 | 已实现（菜单/工具栏 + Hierarchy / Viewport / Inspector + 底部 Project / Console / Animation 标签页） |
+| 层级面板（Hierarchy） | 已实现（Entity 树、搜索、右键创建子实体/重命名/副本/删除、新建自动选中并展开祖先） |
+| Create Entity 对话框 | 已实现（搜索 + 最近使用 + 类型分类 + 描述，创建时可附带组件） |
+| Inspector 面板 | 已实现（反射自动生成字段编辑；修复短名/全名反射查询不一致导致属性不可编辑的问题） |
+| 项目面板（Project） | 已实现（目录树、文件列表、新建文件夹、刷新） |
+| 控制台面板（Console） | 已实现（引擎 GLog → MemoryLogSink → 编辑器回调；GL 调试消息去重防刷屏） |
+| 动画面板 | 已实现（片段下拉/播放/暂停/停止/循环/速度/时间轴拖动；`GAnimator_*` 查询片段与时长） |
+| 材质编辑器 | 已实现（PBR 参数 + 贴图路径 + use 开关；`GMaterial_*` C API，贴图改动自动重传 GPU） |
+| Play Mode | 已实现（进入/退出；物理系统挂载后真实模拟：刚体/碰撞体/重力） |
+| 物理 | 已实现（`GPhysics_AttachSystems` 把 PhysicsSystem3D/2D 挂入 Core World，播放模式真实步进） |
+| 动画 | 已实现（`AnimatorSystem` 已注册进 Core World，播放模式推进骨骼动画时间） |
+| 主题 | 已实现（深色/浅色 + 标题栏配色修复 + 持久化） |
+| 本地化 | 已实现（中文/英文运行时切换 + 持久化，`editor/project/locales/{en,zh}.json`） |
+| 快捷键 | 已实现（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D） |
+| Undo/Redo | 部分实现（创建/删除/重命名实体） |
+| 已知限制 | OpenGL 视口下网格片段渲染异常（数据/绘制/交换正确但不可见，待排查）；编辑器相机/Gizmo 拖拽尚未移植 |
 
 ---
 

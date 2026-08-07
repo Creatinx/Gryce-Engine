@@ -27,6 +27,11 @@ extern "C" {
 GRYCE_PHYSICS_API int  GPhysics_Init(GPhysicsBackend backend);
 GRYCE_PHYSICS_API void GPhysics_Shutdown(void);
 
+// 把场景物理系统（PhysicsSystem3D / PhysicsSystem2D）注册进 Core World。
+// world_ptr 由 GCore_GetInternalWorldPtr() 提供；注册后播放模式下
+// RigidBody/StaticBody/碰撞体/关节等组件会真实模拟。
+GRYCE_PHYSICS_API int  GPhysics_AttachSystems(void* world_ptr);
+
 GRYCE_PHYSICS_API void GPhysics_SetGravity(const GVec3* gravity);
 GRYCE_PHYSICS_API void GPhysics_Step(float dt, int substeps);
 
