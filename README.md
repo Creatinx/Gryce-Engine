@@ -234,7 +234,12 @@ cmake -S . -B out/vs -G "Visual Studio 18 2026" -A x64
 ```
 Gryce-Engine/
 ├── cmake/                  # CMake 工具脚本（编译器选项、依赖解析）
-├── core/                   # 引擎核心静态库（gryce_core）
+├── core/                   # 引擎核心（模块化 DLL：GryceCore / GryceRenderer / GrycePlatform / GrycePhysics）
+│   ├── api/                # C API 实现（GCore_* / GEntity_* / GComponent_* / GRender_* 等）
+│   ├── GryceCore/          # GryceCore.dll 公共 C API 头文件
+│   ├── GryceRenderer/      # GryceRenderer.dll 公共 C API 头文件
+│   ├── GrycePlatform/      # GrycePlatform.dll 公共 C API 头文件
+│   ├── GrycePhysics/       # GrycePhysics.dll 公共 C API 头文件
 │   ├── animation/          # 骨骼动画数据结构与 GPU Skinning
 │   ├── assets/             # 资源加载器（OBJ、Assimp、纹理、字体）
 │   ├── audio/              # 音频系统（miniaudio）
@@ -249,10 +254,11 @@ Gryce-Engine/
 │   ├── scene/              # Scene、Entity、Transform 层级、Prefab
 │   └── utils/              # 日志（异步 AsyncLogger）、帧率限制、工具类
 ├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API、TODO、CLI）
-├── editor/                 # 编辑器可执行文件（gryce-engine.exe）
-│   ├── panels/             # 编辑器面板
-│   ├── ui/                 # 编辑器窗口与主题
-│   └── import/             # 导入设置编辑器
+├── editor/                 # WPF 编辑器（GryceEngine.Editor.csproj，.NET Framework 4.8）
+│   ├── src/Native/         # C API 的 P/Invoke 包装
+│   ├── src/Services/       # EngineService（引擎生命周期、命令下发）
+│   ├── src/ViewModels/     # EditorViewModel（回调注册、面板刷新）
+│   └── src/Views/          # 面板 XAML（Hierarchy/Inspector/Viewport/Project/Console/Animation）
 ├── examples/               # 示例游戏项目
 │   ├── common/             # 示例公共框架
 │   ├── 3dtest/             # 3D 综合演示
@@ -287,33 +293,34 @@ Gryce-Engine/
 ## 架构概览
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Application                          |
-│                (3dtest / gt2dDemo / Editor)                 │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-┌-────────────────────────────▼───────────────────────────────┐
-│                      gryce_core                             │
-│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────────┐  │
-│   │  Scene  │  │   ECS   │  │  Assets │  │    Input      │  │
-│   │Entity   │  │Systems  │  │Pipeline │  │   Window      │  │
-│   └────┬────┘  └────┬────┘  └────┬────┘  └───────┬───────┘  │
-│        │            │            │               │          │
-│        └────────────┴────────────┘               │          │
-│                     │                            │          │
-│        ┌────────────▼────────────┐               │          │
-│        │    RenderContext        │◄──────────────┘          │
-│        │  (Command Buffer Queue) │                          │
-│        └────────────┬────────────┘                          │
-│                    │                                        │
-│        ┌────────────▼────────────┐                          │
-│        │      Render Thread      │                          │
-│        └────────────┬────────────┘                          │
-│                     |                                       │
-│        ┌────────────▼────────────┐                          │
-│        │  RHI: Vulkan（默认）/ OpenGL（兼容）│                          │
-│        └─────────────────────────┘                          │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│  Application（3dtest / gt2dDemo）— C++，直接链接引擎内部 API   │
+└───────────────────────────────┬───────────────────────────────┘
+                                │
+┌───────────────────────────────▼───────────────────────────────┐
+│  WPF Editor（C#）: Views → ViewModels → EngineService          │
+│                      → Native (P/Invoke)                       │
+└───────────────────────────────┬───────────────────────────────┘
+                                │  C ABI（extern "C"）
+┌───────────────────────────────▼───────────────────────────────┐
+│  GryceCore.dll  GryceRenderer.dll  GrycePlatform.dll  GrycePhysics.dll │
+│  ┌──────────┐  ┌───────────┐  ┌───────────┐  ┌─────────────┐   │
+│  │  Scene   │  │    ECS    │  │  Assets   │  │  Physics    │   │
+│  │  Entity  │  │  Systems  │  │  Pipeline │  │(Jolt/Box2D) │   │
+│  └────┬─────┘  └─────┬─────┘  └─────┬─────┘  └─────────────┘   │
+│       └──────────────┴─────────────┘                           │
+│                     │                                          │
+│        ┌────────────▼────────────┐                             │
+│        │    RenderContext        │                             │
+│        │  (Command Buffer Queue) │                             │
+│        └────────────┬────────────┘                             │
+│        ┌────────────▼────────────┐                             │
+│        │      Render Thread      │                             │
+│        └────────────┬────────────┘                             │
+│        ┌────────────▼────────────┐                             │
+│        │ RHI: Vulkan（默认）/ OpenGL（兼容）│                     │
+│        └─────────────────────────┘                             │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 更多细节参见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)。

@@ -1,4 +1,5 @@
 #include "GryceCore/core_api.h"
+#include "GryceCore/api_guard.h"
 #include "internal_state.h"
 
 #include "ecs/world.h"
@@ -28,6 +29,14 @@ namespace gryce_core {
 
 // Definition of the global state (declared in internal_state.h)
 GlobalState g_core_state;
+
+// Shared recursive mutex backing the GRYCE_API_GUARD() macro. A free function
+// (instead of a GlobalState member) so the other Gryce DLLs (Platform /
+// Renderer / Physics) can lock the same instance.
+std::recursive_mutex& api_mutex() {
+    static std::recursive_mutex instance;
+    return instance;
+}
 
 // ============================================================================
 // Helpers
@@ -98,6 +107,7 @@ static void drain_log_messages() {
 }
 
 std::string reflection_lookup_name(const std::string& full_name) {
+    GRYCE_API_GUARD();
     const std::string prefix = "gryce_engine::components::";
     if (full_name.rfind(prefix, 0) == 0) return full_name.substr(prefix.size());
     return full_name;
@@ -317,6 +327,7 @@ static void process_command(const GCommand& cmd) {
 extern "C" {
 
 int GCore_Init(const GCoreInitDesc* desc) {
+    GRYCE_API_GUARD();
     if (!desc || desc->version != sizeof(GCoreInitDesc)) return -1;
 
     std::lock_guard lock(gryce_core::g_core_state.init_mutex);
@@ -353,6 +364,7 @@ int GCore_Init(const GCoreInitDesc* desc) {
 }
 
 void GCore_Shutdown(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(gryce_core::g_core_state.init_mutex);
     if (!gryce_core::g_core_state.initialized) return;
 
@@ -370,10 +382,12 @@ void GCore_Shutdown(void) {
 }
 
 bool GCore_IsInitialized(void) {
+    GRYCE_API_GUARD();
     return gryce_core::g_core_state.initialized;
 }
 
 void GCore_BeginFrame(float dt) {
+    GRYCE_API_GUARD();
     if (!gryce_core::g_core_state.initialized || !gryce_core::g_core_state.world) return;
 
     gryce_core::g_core_state.cmdbuf.swap();
@@ -389,6 +403,7 @@ void GCore_BeginFrame(float dt) {
 }
 
 void GCore_EndFrame(void) {
+    GRYCE_API_GUARD();
     // Forward new engine log entries to the editor console before firing
     // deferred callbacks, so UI updates happen on the same frame.
     gryce_core::drain_log_messages();
@@ -407,12 +422,14 @@ void GCore_EndFrame(void) {
 }
 
 int GCore_PushCommand(const GCommand* cmd) {
+    GRYCE_API_GUARD();
     if (!cmd || !gryce_core::g_core_state.initialized) return -1;
     bool ok = gryce_core::g_core_state.cmdbuf.push(*cmd);
     return ok ? 0 : -1;
 }
 
 int GCore_PushCommands(const GCommand* cmds, int count) {
+    GRYCE_API_GUARD();
     if (!cmds || count <= 0 || !gryce_core::g_core_state.initialized) return -1;
     int dropped = 0;
     gryce_core::g_core_state.cmdbuf.push_batch(cmds, count, &dropped);
@@ -420,10 +437,12 @@ int GCore_PushCommands(const GCommand* cmds, int count) {
 }
 
 int GCore_GetCmdQueueCapacity(void) {
+    GRYCE_API_GUARD();
     return gryce_core::g_core_state.cmdbuf.capacity_remaining();
 }
 
 int GCore_GetDroppedCmdCount(void) {
+    GRYCE_API_GUARD();
     return gryce_core::g_core_state.cmdbuf.dropped_since_last_call();
 }
 
@@ -431,32 +450,41 @@ bool GCore_IsPlaying(void) { return gryce_core::g_core_state.play_mode; }
 bool GCore_IsPaused(void) { return gryce_core::g_core_state.paused; }
 
 void GCore_SetCallback_UserData(void* user_data) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callback_user_data = user_data;
 }
 
 void GCore_RegisterCallback_OnEntitySelected(GOnEntitySelected cb) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_entity_selected = cb;
 }
 void GCore_RegisterCallback_OnEntityDeselected(GOnEntityDeselected cb) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_entity_deselected = cb;
 }
 void GCore_RegisterCallback_OnSceneLoaded(GOnSceneLoaded cb) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_scene_loaded = cb;
 }
 void GCore_RegisterCallback_OnPlayModeChanged(GOnPlayModeChanged cb) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_play_mode_changed = cb;
 }
 void GCore_RegisterCallback_OnEntityListChanged(GOnEntityListChanged cb) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_entity_list_changed = cb;
 }
 void GCore_RegisterCallback_OnComponentChanged(GOnComponentChanged cb) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_component_changed = cb;
 }
 void GCore_RegisterCallback_OnLogMessage(GOnLogMessage cb) {
+    GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_log_message = cb;
 }
 
 int GCore_GetLogMessages(char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
     if (!out_buf || buf_size <= 0) return -1;
     auto* sink = utils::MemoryLogSink::from_glog();
     if (!sink) {
@@ -479,6 +507,7 @@ int GCore_GetLogMessages(char* out_buf, int buf_size) {
 }
 
 void* GCore_GetInternalWorldPtr(void) {
+    GRYCE_API_GUARD();
     return gryce_core::g_core_state.world.get();
 }
 

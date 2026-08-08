@@ -1,4 +1,5 @@
 #include "GryceRenderer/render_api.h"
+#include "GryceCore/api_guard.h"
 #include "GryceRenderer/viewport_api.h"
 #include "GryceCore/core_api.h"
 #include "GrycePlatform/window_api.h"
@@ -181,6 +182,7 @@ static void upload_pending_meshes(scene::Scene& scn, RenderContext& ctx) {
 extern "C" {
 
 int GRender_Init(const GRenderInitDesc* desc) {
+    GRYCE_API_GUARD();
     if (!desc || desc->version != sizeof(GRenderInitDesc)) return -1;
 
     std::lock_guard lock(g_renderer.mutex);
@@ -237,6 +239,7 @@ int GRender_Init(const GRenderInitDesc* desc) {
 }
 
 void GRender_Shutdown(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     if (!g_renderer.initialized) return;
 
@@ -256,11 +259,13 @@ void GRender_Shutdown(void) {
 }
 
 bool GRender_IsInitialized(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.initialized;
 }
 
 void GRender_BeginFrame(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
 
@@ -322,15 +327,18 @@ static void render_world_internal() {
 }
 
 void GRender_RenderWorld(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     render_world_internal();
 }
 
 void GRender_RenderGizmo(void) {
+    GRYCE_API_GUARD();
     // TODO(Phase 4): ImGuizmo + Viewport Toolbar
 }
 
 void GRender_RenderGameView(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     // TODO(Phase): 独立 GameView FBO 与独立相机。目前与 SceneView 共用同一管线/纹理，
     // 与 GRender_GetGameViewTexture() 返回视口纹理的行为保持一致。
@@ -338,6 +346,7 @@ void GRender_RenderGameView(void) {
 }
 
 void GRender_SetDisplayMode(const char* mode) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     if (!mode || mode[0] == '\0') return;
     g_renderer.display_mode = mode;
@@ -346,6 +355,7 @@ void GRender_SetDisplayMode(const char* mode) {
 }
 
 void GRender_EndFrame(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
 
@@ -357,6 +367,7 @@ void GRender_EndFrame(void) {
 }
 
 GTextureHandle GRender_GetViewportTexture(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     if (!g_renderer.pipeline || !g_renderer.pipeline->is_valid()) return nullptr;
     auto* tex = g_renderer.pipeline->viewport_color_texture();
@@ -364,11 +375,13 @@ GTextureHandle GRender_GetViewportTexture(void) {
 }
 
 GTextureHandle GRender_GetGameViewTexture(void) {
+    GRYCE_API_GUARD();
     // TODO: separate GameView FBO when PlayMode is active
     return GRender_GetViewportTexture();
 }
 
 int GRender_GetViewportSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
     if (!out_w || !out_h) return -1;
     std::lock_guard lock(g_renderer.mutex);
     *out_w = g_renderer.viewport_w;
@@ -377,6 +390,7 @@ int GRender_GetViewportSize(int* out_w, int* out_h) {
 }
 
 int GRender_GetGameViewSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
     if (!out_w || !out_h) return -1;
     std::lock_guard lock(g_renderer.mutex);
     *out_w = g_renderer.gameview_w;
@@ -385,6 +399,7 @@ int GRender_GetGameViewSize(int* out_w, int* out_h) {
 }
 
 void GRender_SetVSync(bool enabled) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     if (!g_renderer.ctx) return;
     g_renderer.ctx->set_swap_interval(enabled ? 1 : 0);
@@ -393,6 +408,7 @@ void GRender_SetVSync(bool enabled) {
 // ========== Viewport API ==========
 
 void GViewport_SetSize(int w, int h) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.viewport_w = w > 0 ? w : 1;
     g_renderer.viewport_h = h > 0 ? h : 1;
@@ -402,32 +418,38 @@ void GViewport_SetSize(int w, int h) {
 }
 
 void GViewport_GetSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
     if (out_w) *out_w = g_renderer.viewport_w;
     if (out_h) *out_h = g_renderer.viewport_h;
 }
 
 void GViewport_SetCamera(GEntityHandle camera_entity) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.viewport_camera = camera_entity;
 }
 
 GEntityHandle GViewport_GetCamera(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.viewport_camera;
 }
 
 void GGameView_SetSize(int w, int h) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.gameview_w = w > 0 ? w : 1;
     g_renderer.gameview_h = h > 0 ? h : 1;
 }
 
 void GGameView_GetSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
     if (out_w) *out_w = g_renderer.gameview_w;
     if (out_h) *out_h = g_renderer.gameview_h;
 }
 
 void GGameView_SetCamera(GEntityHandle camera_entity) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.gameview_camera = camera_entity;
 }

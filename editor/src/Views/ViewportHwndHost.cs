@@ -125,20 +125,23 @@ public class ViewportHwndHost : HwndHost
             switch (msg)
             {
                 case 0x0200: // WM_MOUSEMOVE
-                    host.NativeMouseMove?.Invoke(LoWord(lParam), HiWord(lParam));
+                    // lParam carries signed 16-bit client coordinates. Without
+                    // the sign conversion a captured drag that leaves the
+                    // viewport wraps to ~65535 and the camera "teleports".
+                    host.NativeMouseMove?.Invoke(SignedLo(lParam), SignedHi(lParam));
                     break;
                 case 0x0201: // WM_LBUTTONDOWN
                 case 0x0204: // WM_RBUTTONDOWN
                 case 0x0207: // WM_MBUTTONDOWN
-                    host.NativeMouseButton?.Invoke(ToButton(msg), true, LoWord(lParam), HiWord(lParam));
+                    host.NativeMouseButton?.Invoke(ToButton(msg), true, SignedLo(lParam), SignedHi(lParam));
                     break;
                 case 0x0202: // WM_LBUTTONUP
                 case 0x0205: // WM_RBUTTONUP
                 case 0x0208: // WM_MBUTTONUP
-                    host.NativeMouseButton?.Invoke(ToButton(msg), false, LoWord(lParam), HiWord(lParam));
+                    host.NativeMouseButton?.Invoke(ToButton(msg), false, SignedLo(lParam), SignedHi(lParam));
                     break;
                 case 0x020A: // WM_MOUSEWHEEL
-                    host.NativeMouseWheel?.Invoke((short)HiWord(wParam));
+                    host.NativeMouseWheel?.Invoke(SignedHi(wParam));
                     break;
                 case 0x0100: // WM_KEYDOWN
                     host.NativeKey?.Invoke((int)wParam, true);
@@ -165,8 +168,8 @@ public class ViewportHwndHost : HwndHost
         }
     }
 
-    private static int LoWord(IntPtr v) => (int)((long)v & 0xFFFF);
-    private static int HiWord(IntPtr v) => (int)(((long)v >> 16) & 0xFFFF);
+    private static int SignedLo(IntPtr v) => (short)((long)v & 0xFFFF);
+    private static int SignedHi(IntPtr v) => (short)(((long)v >> 16) & 0xFFFF);
 
     private static IntPtr FindGlfwChild(IntPtr parent)
     {

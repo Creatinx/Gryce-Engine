@@ -1,4 +1,5 @@
 #include "GryceCore/entity_api.h"
+#include "GryceCore/api_guard.h"
 #include "internal_state.h"
 
 #include "ecs/world.h"
@@ -14,6 +15,7 @@ namespace gc = gryce_core;
 extern "C" {
 
 int GEntity_GetCount(void) {
+    GRYCE_API_GUARD();
     if (!gc::g_core_state.world || !gc::g_core_state.world->scene()) return 0;
     int count = 0;
     gc::g_core_state.world->scene()->foreach([&](Entity* e) {
@@ -23,6 +25,7 @@ int GEntity_GetCount(void) {
 }
 
 GEntityHandle GEntity_GetAt(int index) {
+    GRYCE_API_GUARD();
     if (!gc::g_core_state.world || !gc::g_core_state.world->scene() || index < 0) return 0;
     GEntityHandle result = 0;
     int i = 0;
@@ -38,6 +41,7 @@ GEntityHandle GEntity_GetAt(int index) {
 }
 
 int GEntity_GetName(GEntityHandle entity, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !out_buf || buf_size <= 0) return -1;
     std::strncpy(out_buf, e->name().c_str(), static_cast<size_t>(buf_size) - 1);
@@ -46,6 +50,7 @@ int GEntity_GetName(GEntityHandle entity, char* out_buf, int buf_size) {
 }
 
 int GEntity_GetPath(GEntityHandle entity, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !out_buf || buf_size <= 0) return -1;
     std::string path = e->name();
@@ -60,6 +65,7 @@ int GEntity_GetPath(GEntityHandle entity, char* out_buf, int buf_size) {
 }
 
 GEntityHandle GEntity_GetParent(GEntityHandle entity) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e) return 0;
     Entity* p = e->parent();
@@ -68,18 +74,21 @@ GEntityHandle GEntity_GetParent(GEntityHandle entity) {
 }
 
 int GEntity_GetChildCount(GEntityHandle entity) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e) return 0;
     return static_cast<int>(e->children().size());
 }
 
 GEntityHandle GEntity_GetChildAt(GEntityHandle entity, int index) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || index < 0 || static_cast<size_t>(index) >= e->children().size()) return 0;
     return gc::g_core_state.entity_map.lookup(e->children()[index]->uuid());
 }
 
 int GEntity_GetSiblingIndex(GEntityHandle entity) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !e->parent()) return -1;
     const auto& siblings = e->parent()->children();
@@ -90,11 +99,13 @@ int GEntity_GetSiblingIndex(GEntityHandle entity) {
 }
 
 GEntityHandle GEntity_GetSelected(void) {
+    GRYCE_API_GUARD();
     return gc::g_core_state.selected_entity;
 }
 
 // --- Transform ---
 int GEntity_GetLocalPosition(GEntityHandle entity, GVec3* out_pos) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !out_pos) return -1;
     auto* t = e->transform();
@@ -106,6 +117,7 @@ int GEntity_GetLocalPosition(GEntityHandle entity, GVec3* out_pos) {
 }
 
 int GEntity_GetLocalRotation(GEntityHandle entity, GQuat* out_rot) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !out_rot) return -1;
     auto* t = e->transform();
@@ -118,6 +130,7 @@ int GEntity_GetLocalRotation(GEntityHandle entity, GQuat* out_rot) {
 }
 
 int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !out_scale) return -1;
     auto* t = e->transform();
@@ -129,20 +142,24 @@ int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale) {
 }
 
 int GEntity_GetWorldPosition(GEntityHandle entity, GVec3* out_pos) {
+    GRYCE_API_GUARD();
     (void)entity; (void)out_pos;
     return -1; // TODO
 }
 int GEntity_GetWorldRotation(GEntityHandle entity, GQuat* out_rot) {
+    GRYCE_API_GUARD();
     (void)entity; (void)out_rot;
     return -1; // TODO
 }
 int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale) {
+    GRYCE_API_GUARD();
     (void)entity; (void)out_scale;
     return -1; // TODO
 }
 
 // --- Transform Setters ---
 int GEntity_SetLocalPosition(GEntityHandle entity, const GVec3* pos) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !pos) return -1;
     auto* t = e->transform();
@@ -155,6 +172,7 @@ int GEntity_SetLocalPosition(GEntityHandle entity, const GVec3* pos) {
 }
 
 int GEntity_SetLocalRotation(GEntityHandle entity, const GQuat* rot) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !rot) return -1;
     auto* t = e->transform();
@@ -168,6 +186,7 @@ int GEntity_SetLocalRotation(GEntityHandle entity, const GQuat* rot) {
 }
 
 int GEntity_SetLocalScale(GEntityHandle entity, const GVec3* scale) {
+    GRYCE_API_GUARD();
     Entity* e = gc::EntityResolver::resolve(entity);
     if (!e || !scale) return -1;
     auto* t = e->transform();

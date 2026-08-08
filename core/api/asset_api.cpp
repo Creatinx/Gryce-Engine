@@ -1,4 +1,5 @@
 #include "GryceCore/asset_api.h"
+#include "GryceCore/api_guard.h"
 #include "internal_state.h"
 
 #include "assets/asset_manager.h"
@@ -28,6 +29,7 @@ static int s_next_asset_id = 1;
 extern "C" {
 
 GAssetHandle GAsset_Import(const char* source_path) {
+    GRYCE_API_GUARD();
     if (!source_path || !source_path[0]) return -1;
 
     std::lock_guard lock(s_asset_mutex);
@@ -46,6 +48,7 @@ GAssetHandle GAsset_Import(const char* source_path) {
 }
 
 GAssetHandle GAsset_Load(const char* path) {
+    GRYCE_API_GUARD();
     if (!path || !path[0]) return -1;
 
     std::lock_guard lock(s_asset_mutex);
@@ -64,6 +67,7 @@ GAssetHandle GAsset_Load(const char* path) {
 }
 
 int GAsset_GetPath(GAssetHandle handle, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
     if (handle <= 0 || !out_buf || buf_size <= 0) return -1;
 
     std::lock_guard lock(s_asset_mutex);
@@ -76,6 +80,7 @@ int GAsset_GetPath(GAssetHandle handle, char* out_buf, int buf_size) {
 }
 
 void GAsset_Unload(GAssetHandle handle) {
+    GRYCE_API_GUARD();
     if (handle <= 0) return;
 
     std::lock_guard lock(s_asset_mutex);

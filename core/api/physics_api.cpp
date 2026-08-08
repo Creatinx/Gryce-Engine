@@ -1,4 +1,5 @@
 #include "GrycePhysics/physics_api.h"
+#include "GryceCore/api_guard.h"
 #include "GryceCore/core_api.h"
 
 #include "physics/physics_factory.h"
@@ -47,6 +48,7 @@ static PhysicsState g_physics;
 extern "C" {
 
 int GPhysics_Init(GPhysicsBackend backend) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_physics.mutex);
     if (g_physics.initialized) return 0;
 
@@ -78,6 +80,7 @@ int GPhysics_Init(GPhysicsBackend backend) {
 }
 
 void GPhysics_Shutdown(void) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_physics.mutex);
     if (!g_physics.initialized) return;
 
@@ -96,6 +99,7 @@ void GPhysics_Shutdown(void) {
 }
 
 int GPhysics_AttachSystems(void* world_ptr) {
+    GRYCE_API_GUARD();
     auto* world = static_cast<gryce_engine::ecs::World*>(world_ptr);
     if (!world) {
         GLOG_ERROR("GPhysics_AttachSystems: null world pointer");
@@ -108,6 +112,7 @@ int GPhysics_AttachSystems(void* world_ptr) {
 }
 
 void GPhysics_SetGravity(const GVec3* gravity) {
+    GRYCE_API_GUARD();
     if (!gravity) return;
     std::lock_guard lock(g_physics.mutex);
     if (g_physics.world_3d) {
@@ -116,6 +121,7 @@ void GPhysics_SetGravity(const GVec3* gravity) {
 }
 
 void GPhysics_Step(float dt, int substeps) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_physics.mutex);
     if (g_physics.world_3d) {
         g_physics.world_3d->step(dt, substeps > 0 ? substeps : 1);
@@ -126,6 +132,7 @@ void GPhysics_Step(float dt, int substeps) {
 }
 
 GBodyHandle GPhysics_CreateBody(GEntityHandle entity, bool is_static) {
+    GRYCE_API_GUARD();
     (void)entity;
     std::lock_guard lock(g_physics.mutex);
     if (!g_physics.world_3d) return 0;
@@ -143,6 +150,7 @@ GBodyHandle GPhysics_CreateBody(GEntityHandle entity, bool is_static) {
 }
 
 void GPhysics_DestroyBody(GBodyHandle body) {
+    GRYCE_API_GUARD();
     if (body <= 0) return;
     std::lock_guard lock(g_physics.mutex);
     auto it = g_physics.body_map.find(body);
@@ -155,6 +163,7 @@ void GPhysics_DestroyBody(GBodyHandle body) {
 }
 
 void GPhysics_SetBodyTransform(GBodyHandle body, const GVec3* pos, const GQuat* rot) {
+    GRYCE_API_GUARD();
     if (body <= 0 || !pos || !rot) return;
     std::lock_guard lock(g_physics.mutex);
     auto it = g_physics.body_map.find(body);
@@ -166,6 +175,7 @@ void GPhysics_SetBodyTransform(GBodyHandle body, const GVec3* pos, const GQuat* 
 }
 
 void GPhysics_GetBodyTransform(GBodyHandle body, GVec3* out_pos, GQuat* out_rot) {
+    GRYCE_API_GUARD();
     if (body <= 0 || !out_pos || !out_rot) return;
     std::lock_guard lock(g_physics.mutex);
     auto it = g_physics.body_map.find(body);
@@ -179,6 +189,7 @@ void GPhysics_GetBodyTransform(GBodyHandle body, GVec3* out_pos, GQuat* out_rot)
 }
 
 void GPhysics_AddForce(GBodyHandle body, const GVec3* force) {
+    GRYCE_API_GUARD();
     if (body <= 0 || !force) return;
     std::lock_guard lock(g_physics.mutex);
     auto it = g_physics.body_map.find(body);
@@ -190,6 +201,7 @@ void GPhysics_AddForce(GBodyHandle body, const GVec3* force) {
 }
 
 void GPhysics_AddImpulse(GBodyHandle body, const GVec3* impulse) {
+    GRYCE_API_GUARD();
     if (body <= 0 || !impulse) return;
     std::lock_guard lock(g_physics.mutex);
     auto it = g_physics.body_map.find(body);

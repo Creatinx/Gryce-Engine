@@ -27,6 +27,9 @@ public static class WindowAPI
     public static extern GWindowHandle GWindow_GetNativeHandle();
 
     [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
+    public static extern GWindowHandle GWindow_GetRenderHandle();
+
+    [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.U1)]
     public static extern bool GWindow_ShouldClose();
 

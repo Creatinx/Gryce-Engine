@@ -1,4 +1,5 @@
 #include "GryceCore/animator_api.h"
+#include "GryceCore/api_guard.h"
 #include "internal_state.h"
 
 #include "assets/skinned_mesh_data.h"
@@ -14,6 +15,7 @@ using gryce_engine::components::SkinnedMeshRenderer;
 namespace {
 
 SkinnedMeshRenderer* find_skinned_renderer(GEntityHandle entity_handle, uint64_t comp_hash) {
+    GRYCE_API_GUARD();
     gryce_engine::scene::Entity* e = gryce_core::EntityResolver::resolve(entity_handle);
     if (!e) return nullptr;
     for (const auto& comp : e->components()) {
@@ -29,6 +31,7 @@ SkinnedMeshRenderer* find_skinned_renderer(GEntityHandle entity_handle, uint64_t
 extern "C" {
 
 int GAnimator_GetClipCount(GEntityHandle entity, uint64_t comp_type_hash) {
+    GRYCE_API_GUARD();
     auto* smr = find_skinned_renderer(entity, comp_type_hash);
     if (!smr || !smr->model()) return -1;
     return static_cast<int>(smr->model()->animations.size());
@@ -48,6 +51,7 @@ int GAnimator_GetClipName(GEntityHandle entity, uint64_t comp_type_hash,
 }
 
 float GAnimator_GetClipDuration(GEntityHandle entity, uint64_t comp_type_hash, int index) {
+    GRYCE_API_GUARD();
     auto* smr = find_skinned_renderer(entity, comp_type_hash);
     if (!smr || !smr->model()) return -1.0f;
     const auto& clips = smr->model()->animations;

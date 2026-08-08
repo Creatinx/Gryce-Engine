@@ -1,24 +1,35 @@
 # Gryce Engine — Core API Specification
 
-> 本文档面向使用 Gryce Engine `core` 模块的外部开发者，定义公共 API 接口、使用规范与集成方式。
+> 本文档定义引擎核心的公共接口：**模块化 DLL 的 C API**（编辑器与外部工具集成）
+> 与引擎内部 C++ API（引擎扩展开发）。C API 是 Editor ↔ Core 之间唯一的公共边界。
 
 ---
 
-## 1. 库类型
+## 1. 模块化 DLL 与 C API
 
-`gryce_core` 默认构建为**静态库**（`.lib` / `.a`）。
+引擎核心按模块拆分为 4 个 DLL（见 `core/CMakeLists.txt`），模块之间及对外部
+（WPF 编辑器、CLI、测试）的唯一公共边界是 **C API**（`extern "C"` 导出，
+`__declspec(dllexport)` / `__attribute__((visibility("default")))`）：
 
-通过 CMake 选项可切换为动态库：
+| DLL | 导出宏 | 职责 |
+|---|---|---|
+| `GryceCore.dll` | `GRYCE_CORE_API` | ECS、场景/实体/组件、反射、资源管线、动画与碎裂系统 |
+| `GryceRenderer.dll` | `GRYCE_RENDERER_API` | 渲染后端、视口/游戏视图 |
+| `GrycePlatform.dll` | `GRYCE_PLATFORM_API` | GLFW 窗口（外部 HWND 附着）、输入注入 |
+| `GrycePhysics.dll` | `GRYCE_PHYSICS_API` | Jolt/Box2D 物理世界 + 物理系统注册 |
 
-```cmake
-set(GRYCE_BUILD_SHARED ON)  # 默认 OFF
-```
+Debug 构建产物带 `d` 后缀（`GryceCored.dll` 等），Release 为原名。
 
-静态库模式下，`GRYCE_API` 宏为空，所有符号直接内联到最终可执行文件中。
+头文件约定：
+
+- `core/GryceCore/*.h`、`core/GryceRenderer/*.h`、`core/GrycePlatform/*.h`、
+  `core/GrycePhysics/*.h`：**纯 C 公共接口**，跨语言（C# P/Invoke）唯一可靠边界。
+- `core/` 其余目录（`scene/`、`ecs/`、`components/`、`render/` 等）：引擎内部
+  C++ 接口（`gryce_engine` 命名空间），仅面向引擎扩展开发，不对外部消费者保证稳定。
 
 ---
 
-## 2. CMake 集成
+## 2. 构建与集成
 
 ### 2.0 构建环境
 
@@ -36,41 +47,164 @@ set(GRYCE_BUILD_SHARED ON)  # 默认 OFF
 
 根 CMakeLists.txt 已内置自动检测：如果未指定编译器，会尝试在 `C:/msys64/ucrt64/bin` 或 `C:/msys64/mingw64/bin` 中自动找到 MinGW GCC 并锁定。
 
-### 2.1 作为子目录引入
+### 2.1 构建产物
 
-```cmake
-# 在你的 CMakeLists.txt 中
-add_subdirectory(path/to/Gryce-Engine/core)
+推荐使用一键构建脚本：
 
-target_link_libraries(your_app PRIVATE gryce_core)
+```powershell
+python build.py            # Debug（默认）
+python build.py Release
 ```
 
-### 2.2 作为 install target 引入
+产物输出到 `build/bin/{Debug,Release}/`：
 
-```cmake
-# 在 Gryce-Engine 中安装
-cmake --install . --prefix /path/to/install
-
-# 在你的项目中
-find_package(GryceCore REQUIRED)
-target_link_libraries(your_app PRIVATE Gryce::GryceCore)
+```
+GryceCore.dll / GryceCored.dll
+GryceRenderer.dll / GryceRendererd.dll
+GrycePlatform.dll / GrycePlatformd.dll
+GrycePhysics.dll / GrycePhysicsd.dll
+glfw3.dll / glfw3d.dll
+3dtest.exe / gt2dDemo.exe / gryce_tests.exe
 ```
 
-### 2.3 头文件包含路径
+### 2.2 编辑器集成
 
-`gryce_core` 的 `target_include_directories` 已自动暴露以下目录：
+WPF 编辑器（`editor/GryceEngine.Editor.csproj`，.NET Framework 4.8，x64）通过
+`NativeDll` ItemGroup 把上述 DLL 复制到输出目录（`editor/src/Native/NativeLibrary.cs`
+按 `DEBUG` 符号选择带 `d` 后缀的 DLL），再经 `editor/src/Native/*.cs` 的 P/Invoke
+声明调用 C API。P/Invoke 约定：
 
-- `core/` 本身（`#include "scene/entity.h"`）
-- `third_party/`（ImGui、nlohmann/json、stb）
-- `third_party/stb/`（stb_image、stb_truetype）
-
-外部项目无需额外指定 include 路径。
+- `CallingConvention.Cdecl`；
+- C 结构体用 `[StructLayout(LayoutKind.Sequential)]` 一比一复刻（见 `Types.cs`）；
+- 字符串按 UTF-8 `LPStr` 编组，缓冲类函数（如 `GEntity_GetName`）传
+  `StringBuilder` + 容量；
+- 回调函数指针用 `[UnmanagedFunctionPointer(CallingConvention.Cdecl)]` delegate，
+  且 C# 侧必须持有 delegate 字段防 GC。
 
 ---
 
-## 3. 命名空间
+## 3. 模块化 C API（编辑器 ↔ Core 桥接）
 
-所有公共 API 位于 `gryce_engine` 命名空间及其子命名空间下：
+> 本节是 Editor ↔ Core 通信的规范描述。实现位于 `core/api/*.cpp`，
+> 编辑器侧一一对应的 P/Invoke 包装位于 `editor/src/Native/*.cs`。
+
+### 3.1 公共类型（`core/GryceCore/types.h`）
+
+**句柄**（不透明整数/指针，编辑器永远接触不到引擎内部对象）：
+
+| 类型 | 底层 | 说明 |
+|---|---|---|
+| `GEntityHandle` | `int` | 实体句柄（0 = null），经 `EntityHandleMap` 映射到 UUID |
+| `GComponentHandle` | `int` | 组件句柄（当前以 `{entity, type_hash}` 组合寻址） |
+| `GAssetHandle` | `int` | 资源句柄 |
+| `GWindowHandle` / `GTextureHandle` | `void*` | 原生窗口 / 纹理句柄 |
+| `GBodyHandle` | `int` | 物理刚体句柄 |
+
+**数学结构**：`GVec3` / `GVec4` / `GQuat` / `GMat4` / `GColor`（`LayoutKind.Sequential` 可直接编组）。
+
+**枚举**：`GRenderAPI`（OpenGL/Vulkan/DX11/DX12）、`GWindowMode`、`GInputAction`、`GPhysicsBackend`。
+
+**命令结构**：
+
+```c
+typedef struct {
+    GCommandType type;          // 见 3.3
+    uint64_t     seq;
+    uint8_t      payload[256];  // 各命令的负载布局，见 3.3
+} GCommand;
+```
+
+### 3.2 模块 API 总览
+
+| 模块 | API 族 | 主要函数 |
+|---|---|---|
+| GryceCore | `GCore_*` | `GCore_Init/Shutdown`、`GCore_BeginFrame/EndFrame`、`GCore_PushCommand(s)`、`GCore_IsPlaying/IsPaused`、`GCore_RegisterCallback_*`、`GCore_GetLogMessages` |
+| GryceCore | `GEntity_*` | `GEntity_GetCount/GetAt/GetName/GetPath`、`GetParent/GetChildAt`、`Get/SetLocalPosition/Rotation/Scale`、`GetWorldPosition` |
+| GryceCore | `GComponent_*` | `GetPropertyCount/GetPropertyInfo/GetProperty/SetProperty`、`Add/RemoveComponent`、`GetRegisteredTypeCount/GetRegisteredTypeInfo` |
+| GryceCore | `GScene_*` | `GScene_Load/Save/New/GetCurrentPath` |
+| GryceCore | `GAsset_*` | `GAsset_Import/Load/GetPath/Unload` |
+| GryceCore | `GMaterial_*` | `GMaterial_GetField/SetField`（`GMaterialField` 枚举按字段寻址） |
+| GryceCore | `GAnimator_*` | `GAnimator_GetClipCount/GetClipName/GetClipDuration` |
+| GryceRenderer | `GRender_*` | `GRender_Init/Shutdown`、`GRender_BeginFrame/EndFrame`、`GRender_RenderWorld/RenderGameView/RenderGizmo` |
+| GryceRenderer | `GViewport_*` | `GViewport_SetSize/GetSize/SetCamera`、`GGameView_SetSize/SetCamera` |
+| GrycePlatform | `GWindow_*` | `GWindow_InitExternal(hwnd)`、`GWindow_GetRenderHandle`、`GWindow_SetSize/ShouldClose` |
+| GrycePlatform | `GInput_*` | `GInput_InjectKey/MouseMove/MouseButton/MouseScroll`、`GInput_IsKeyHeld` 等查询 |
+| GrycePhysics | `GPhysics_*` | `GPhysics_Init/Shutdown`、`GPhysics_AttachSystems(world_ptr)`、`GPhysics_Step/SetGravity`、`CreateBody/SetBodyTransform`、`Raycast` |
+
+### 3.3 命令协议
+
+`GCommandType` 按功能分组（编号见 `types.h`）：
+
+| 分组 | 命令 |
+|---|---|
+| 0~99 场景/实体编辑 | `LOAD_SCENE`、`SAVE_SCENE`、`CREATE_ENTITY`、`DESTROY_ENTITY`、`RENAME_ENTITY`、`REPARENT_ENTITY`、`SELECT_ENTITY`、`SET_TRANSFORM`、`SET_PROPERTY`、`ADD/REMOVE_COMPONENT`、`PLAY/STOP/PAUSE_MODE`、`STEP_FRAME`、`IMPORT_ASSET` |
+| 100~199 渲染 | `SET_RENDER_TARGET`、`SET_VIEWPORT_SIZE`、`SET_GAMEVIEW_SIZE`、`SET_MATERIAL` |
+| 200~299 输入 | `INPUT_KEY`、`INPUT_MOUSE_MOVE`、`INPUT_MOUSE_BUTTON`、`INPUT_MOUSE_SCROLL` |
+| 300~399 物理 | `PHYSICS_SET_GRAVITY`、`PHYSICS_ADD_FORCE` |
+| 400~499 Gizmo | `GIZMO_SET_OPERATION`、`GIZMO_SET_SPACE`、`GIZMO_MANIPULATE` |
+
+**执行模型**：命令进入 Core 的 `CommandBuffer`（双缓冲），**不在调用线程即时执行**，
+而是由 `GCore_BeginFrame(dt)` 在帧边界统一消费（先 `swap()` 再逐条 `process_command`），
+Play 模式下随后执行 `world->update(dt)`。队列满时丢弃并计数，可经
+`GCore_GetCmdQueueCapacity` / `GCore_GetDroppedCmdCount` 监控。
+
+**payload 布局约定**（C# 与 C++ 双方手写对齐，如 `CREATE_ENTITY` = `char name[128] + GEntityHandle parent`、
+`SET_PROPERTY` = `GEntityHandle h + uint64_t type_hash + char prop_name[64] + uint8_t value[128]`）。
+
+### 3.4 回调协议
+
+编辑器通过 `GCore_RegisterCallback_*` 注册函数指针（C# 侧 delegate 须存字段防 GC）：
+
+| 回调 | 触发时机 |
+|---|---|
+| `OnEntityListChanged` | 实体增删/改名/换父后 |
+| `OnEntitySelected` / `OnEntityDeselected` | 选中/取消选中 |
+| `OnSceneLoaded` | 场景加载完成 |
+| `OnPlayModeChanged` | Play/Stop/Pause 状态变化 |
+| `OnLogMessage` | 引擎日志（`MemoryLogSink` 增量转发） |
+| `OnComponentChanged` | 组件字段被 `SetProperty` 修改后 |
+
+回调**非即时**：命令执行时只置 `deferred_*` 标志，`GCore_EndFrame()` 统一触发，
+并顺带 `drain_log_messages()` 推送日志。编辑器侧再 `Dispatcher.Invoke` 回 UI 线程刷新
+Hierarchy / Inspector / Console。
+
+### 3.5 句柄模型
+
+`GEntityHandle`（int）是编辑器对实体的唯一引用。Core 内部 `EntityHandleMap`
+维护 handle ↔ UUID 双向映射，`EntityResolver::resolve(h)` 先查 UUID 再在场景中
+`find_entity_by_uuid`。场景重载后 map 重建，句柄不再有效但绝不悬垂。
+
+`GCore_GetInternalWorldPtr()` 返回 `World*`，**仅供同进程其他 DLL 使用**
+（GrycePhysics 经 `GPhysics_AttachSystems` 把物理系统注册进 World），
+不作为编辑器公共接口。
+
+### 3.6 编辑器接入流程
+
+```csharp
+// EngineService.Initialize(projectRoot)
+GCore_Init(ref desc);                          // desc.ProjectRoot 作为 res:/ 根
+GPhysics_Init(GPhysicsBackend.Jolt);           // 创建 3D/2D 物理世界
+GPhysics_AttachSystems(GCore_GetInternalWorldPtr()); // 物理系统挂入 World
+
+// EditorViewModel 构造：注册回调
+GCore_RegisterCallback_OnEntityListChanged(_onEntityListChanged); // 等 7 个
+
+// 每帧（UI 线程 60Hz DispatcherTimer）
+GCore_BeginFrame(dt);
+GCore_EndFrame();
+
+// 渲染（专用线程）：见 ARCHITECTURE.md §14.4
+GRender_BeginFrame(); GRender_RenderWorld(); GRender_RenderGizmo(); GRender_EndFrame();
+```
+
+---
+
+## 4. 内部 C++ API（引擎扩展开发）
+
+> 以下章节描述引擎内部 C++ 接口（编译进各 DLL 的 `gryce_engine` 命名空间）。
+> 编辑器与外部工具**不直接使用**这些接口，只通过第 3 节的 C API 通信。
+
+所有公共 C++ API 位于 `gryce_engine` 命名空间及其子命名空间下：
 
 | 命名空间 | 内容 |
 |---|---|
@@ -89,9 +223,10 @@ target_link_libraries(your_app PRIVATE Gryce::GryceCore)
 
 ---
 
-## 4. 公共头文件清单
+## 5. 内部公共头文件清单
 
-以下头文件为 `gryce_core` 的公共接口，可通过 `#include "<path>"` 直接引用：
+以下头文件为引擎内部 C++ 接口（编译进各 DLL），供 C++ 扩展开发通过
+`#include "<path>"` 引用：
 
 ### 场景与 ECS
 
@@ -238,7 +373,7 @@ export.h                     # GRYCE_API 宏
 
 ---
 
-## 5. API 使用规范
+## 6. API 使用规范
 
 ### 5.1 Entity 与 Component
 
@@ -384,7 +519,7 @@ pipeline.render_scene(scene, render_ctx);              // shadow -> skybox -> �
 
 ---
 
-## 6. 扩展规范
+## 7. 扩展规范
 
 ### 6.1 自定义组件
 
@@ -462,7 +597,13 @@ render::register_backend("myapi", []() { return std::make_unique<MyBackend>(); }
 
 ---
 
-## 7. 线程安全
+## 8. 线程安全
+
+所有导出的 **C API 入口**（`GCore_*` / `GEntity_*` / `GScene_*` / `GComponent_*` /
+`GRender_*` / `GWindow_*` / `GPhysics_*` 等，四个 DLL 内约 110 个函数）在内部统一持有
+同一把递归互斥锁（`GRYCE_API_GUARD()`，见 `core/GryceCore/api_guard.h`），因此编辑器
+的 UI 线程（60Hz tick、输入、Hierarchy/Inspector 读取）与专用渲染线程（vsync 240Hz）
+可以并发安全地调用 C API；递归锁允许 API 互调及回调在持锁线程上重入。
 
 | 接口 | 线程安全 |
 |---|---|
@@ -474,7 +615,7 @@ render::register_backend("myapi", []() { return std::make_unique<MyBackend>(); }
 
 ---
 
-## 8. 编译宏
+## 9. 编译宏
 
 | 宏 | 条件 | 说明 |
 |---|---|---|
@@ -483,13 +624,13 @@ render::register_backend("myapi", []() { return std::make_unique<MyBackend>(); }
 | `GRYCE_HAS_BOX2D` | Box2D 可用 | 启用 Box2D 物理后端 |
 | `GRYCE_HAS_JOLT` | Jolt Physics 可用 | 启用 Jolt 物理后端 |
 | `GRYCE_HAS_ASSIMP` | Assimp 可用 | 启用 Assimp 模型导入 |
-| `GRYCE_BUILD_SHARED` | 显式设置 ON | 构建动态库而非静态库 |
+| `GRYCE_CORE_BUILDING` 等 | DLL 构建方 | 各 DLL 的导出宏定义（`GryceCore` 编译时定义 `GRYCE_CORE_BUILDING` 等，使 `*_API` 展开为 `dllexport`） |
 
 ---
 
-## 9. 依赖清单
+## 10. 依赖清单
 
-构建 `gryce_core` 所需的外部依赖：
+构建引擎 DLL 所需的外部依赖：
 
 | 依赖 | 用途 | 是否必须 |
 |---|---|---|

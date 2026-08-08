@@ -1,4 +1,5 @@
 #include "GryceCore/material_api.h"
+#include "GryceCore/api_guard.h"
 #include "internal_state.h"
 
 #include "components/mesh_renderer.h"
@@ -58,6 +59,7 @@ struct FieldSpec {
 };
 
 FieldSpec spec_of(int field) {
+    GRYCE_API_GUARD();
     switch (field) {
         case GMAT_ALBEDO_COLOR:
         case GMAT_EMISSIVE_COLOR: return {3, false, false, false};

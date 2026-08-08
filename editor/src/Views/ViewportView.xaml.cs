@@ -18,14 +18,17 @@ public partial class ViewportView : UserControl, IDisposable
 {
     private ViewportHwndHost? _hwndHost;
     private GizmoOverlayWindow? _overlay;
-    private DispatcherTimer? _renderTimer;
+    private DispatcherTimer? _gizmoTimer;
+    private EditorViewModel? _vmCached;
+    private System.Threading.Thread? _renderThread;
+    private volatile bool _renderThreadRunning;
+    private readonly object _cameraLock = new();
+    private nint _renderHandle;
     private bool _rendererInitialized;
-    private bool _isGameView;
+    private volatile bool _isGameView;
     private string _displayMode = "Shaded";
-    private readonly Stopwatch _fpsStopwatch = Stopwatch.StartNew();
-    private int _frameCount;
-    private int _lastFps;
-    private (int W, int H) _lastPixelSize = (0, 0);
+    private (int W, int H) _pendingPixelSize;
+    private (int W, int H) _appliedPixelSize;
 
     // ---- editor viewport interaction ----
     private readonly ViewportCamera _sceneCamera = new();
@@ -35,7 +38,7 @@ public partial class ViewportView : UserControl, IDisposable
     private double _trackedMouseX, _trackedMouseY;
     private readonly HashSet<Key> _heldKeys = new();
     private readonly HashSet<int> _nativeKeys = new();
-    private bool _pointerLocked;
+    private volatile bool _pointerLocked;
     private GEntityHandle _mainCamera = GEntityHandle.Null;
     private int _cameraResolveCounter;
 
@@ -135,6 +138,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        _vmCached = DataContext as EditorViewModel;
         int w = Math.Max((int)ActualWidth, 100);
         int h = Math.Max((int)ActualHeight, 100);
         var px = GetPixelSize();
@@ -146,13 +150,6 @@ public partial class ViewportView : UserControl, IDisposable
         _hwndHost.NativeMouseWheel += OnNativeMouseWheel;
         _hwndHost.NativeKey += OnNativeKey;
         HostContainer.Content = _hwndHost;
-
-        _renderTimer = new DispatcherTimer(DispatcherPriority.Render)
-        {
-            Interval = TimeSpan.FromSeconds(1.0 / 250.0)
-        };
-        _renderTimer.Tick += OnRenderTick;
-        _renderTimer.Start();
 
         var win = Window.GetWindow(this);
         if (win != null)
@@ -167,13 +164,21 @@ public partial class ViewportView : UserControl, IDisposable
             UpdateSceneHint();
         }
 
+        _gizmoTimer = new DispatcherTimer(DispatcherPriority.Render)
+        {
+            Interval = TimeSpan.FromSeconds(1.0 / 30.0)
+        };
+        _gizmoTimer.Tick += OnGizmoTick;
+        _gizmoTimer.Start();
+
         UpdateResolutionDisplay(px.W, px.H);
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        _renderTimer?.Stop();
-        _renderTimer = null;
+        StopRenderThread();
+        _gizmoTimer?.Stop();
+        _gizmoTimer = null;
 
         var win = Window.GetWindow(this);
         if (win != null)
@@ -209,15 +214,12 @@ public partial class ViewportView : UserControl, IDisposable
         var px = GetPixelSize(e.NewSize.Width, e.NewSize.Height);
         UpdateResolutionDisplay(px.W, px.H);
 
-        if (px != _lastPixelSize && WindowAPI.GWindow_IsValid())
+        // Defer window/resize GL work to the render thread, which owns the
+        // GL context; calling GWindow_SetSize / GViewport_SetSize here would
+        // run GL/GLFW code on the UI thread without a current context.
+        lock (_cameraLock)
         {
-            try
-            {
-                WindowAPI.GWindow_SetSize(px.W, px.H);
-                ViewportAPI.GViewport_SetSize(px.W, px.H);
-                _lastPixelSize = px;
-            }
-            catch { /* ignore during init */ }
+            _pendingPixelSize = px;
         }
     }
 
@@ -233,7 +235,6 @@ public partial class ViewportView : UserControl, IDisposable
             : GetPixelSize();
         int w = px.W;
         int h = px.H;
-        _lastPixelSize = (0, 0);
 
         try
         {
@@ -271,15 +272,22 @@ public partial class ViewportView : UserControl, IDisposable
             InitStatusText.Text = "Renderer initialized.";
             VM?.AppendConsole("[Viewport] Renderer initialized successfully");
 
+            // Move rendering to a dedicated thread so the UI thread (menu,
+            // panels, input) is never blocked by GL work.
+            _renderHandle = WindowAPI.GWindow_GetRenderHandle().Value;
+            // Hand the GL context over cleanly: release it on the UI thread
+            // before the render thread makes it current (mirrors the core's
+            // async-mode handoff and prevents driver-level thread confusion).
+            GlfwNative.glfwMakeContextCurrent(IntPtr.Zero);
+            StartRenderThread();
+
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 var finalPx = GetPixelSize();
-                if (WindowAPI.GWindow_IsValid())
+                lock (_cameraLock)
                 {
-                    WindowAPI.GWindow_SetSize(finalPx.W, finalPx.H);
-                    ViewportAPI.GViewport_SetSize(finalPx.W, finalPx.H);
+                    _pendingPixelSize = finalPx;
                 }
-                _lastPixelSize = finalPx;
                 UpdateResolutionDisplay(finalPx.W, finalPx.H);
             }), DispatcherPriority.Loaded);
         }
@@ -290,66 +298,175 @@ public partial class ViewportView : UserControl, IDisposable
         }
     }
 
-    private void OnRenderTick(object? sender, EventArgs e)
+    private void OnGizmoTick(object? sender, EventArgs e)
     {
         if (!_rendererInitialized) return;
-
         try
         {
-            ProcessViewportInput();
-            if (_isGameView)
-            {
-                UpdateGameFlyCamera();
-            }
-            UpdateViewportCamera();
-
-            RenderAPI.GRender_BeginFrame();
-            if (_isGameView)
-            {
-                RenderAPI.GRender_RenderGameView();
-            }
-            else
-            {
-                RenderAPI.GRender_RenderWorld();
-                RenderAPI.GRender_RenderGizmo();
-            }
-            RenderAPI.GRender_EndFrame();
-
             UpdateGizmoOverlay();
+        }
+        catch { /* best-effort overlay refresh */ }
+    }
 
-            _frameCount++;
-            if (_fpsStopwatch.ElapsedMilliseconds >= 1000)
+    private void StartRenderThread()
+    {
+        if (_renderThread != null) return;
+        _renderThreadRunning = true;
+        _renderThread = new System.Threading.Thread(RenderLoop)
+        {
+            IsBackground = true,
+            Name = "GryceRender"
+        };
+        _renderThread.Start();
+    }
+
+    private void StopRenderThread()
+    {
+        _renderThreadRunning = false;
+        var thread = _renderThread;
+        _renderThread = null;
+        thread?.Join(1000);
+    }
+
+    /// <summary>Logs from the render thread: console output is marshaled to
+    /// the UI thread (AppendConsole touches WPF collections).</summary>
+    private void LogFromRenderThread(string message)
+    {
+        try
+        {
+            Dispatcher.BeginInvoke(new Action(() => _vmCached?.AppendConsole(message)),
+                                   DispatcherPriority.Background);
+        }
+        catch { /* app is shutting down */ }
+    }
+
+    /// <summary>
+    /// Dedicated render loop: GLFW context is made current here and the frame
+    /// is produced at the monitor refresh rate (vsync on a 240Hz display
+    /// yields 240 FPS). Game-mode fly movement is integrated once per rendered
+    /// frame so motion stays smooth instead of stepping at the UI timer rate.
+    /// The UI thread stays free for menus/panels.
+    /// </summary>
+    private void RenderLoop()
+    {
+        int frames = 0;
+        var sw = Stopwatch.StartNew();
+        double lastTick = sw.Elapsed.TotalSeconds;
+        try
+        {
+            GlfwNative.glfwMakeContextCurrent(_renderHandle);
+            GlfwNative.glfwSwapInterval(1); // vsync: present at monitor refresh
+            while (_renderThreadRunning)
             {
-                _lastFps = _frameCount;
-                _frameCount = 0;
-                _fpsStopwatch.Restart();
-                FpsCounter.Text = $"{_lastFps} FPS";
+                double now = sw.Elapsed.TotalSeconds;
+                double dt = Math.Min(now - lastTick, 0.05);
+                lastTick = now;
+
+                // Apply deferred viewport resizes on this thread (the owner of
+                // the GL context): GWindow_SetSize / GViewport_SetSize do
+                // GLFW/GL work and must not run on the UI thread.
+                (int W, int H) pending;
+                lock (_cameraLock)
+                {
+                    pending = _pendingPixelSize;
+                }
+                if (pending != (0, 0) && pending != _appliedPixelSize)
+                {
+                    try
+                    {
+                        WindowAPI.GWindow_SetSize(pending.W, pending.H);
+                        ViewportAPI.GViewport_SetSize(pending.W, pending.H);
+                        _appliedPixelSize = pending;
+                    }
+                    catch { /* ignore transient resize errors */ }
+                }
+
+                if (_isGameView) UpdateGameFlyCamera(dt);
+
+                frames++;
+                PushSharedCamera();
+
+                RenderAPI.GRender_BeginFrame();
+                if (_isGameView)
+                {
+                    RenderAPI.GRender_RenderGameView();
+                }
+                else
+                {
+                    RenderAPI.GRender_RenderWorld();
+                    RenderAPI.GRender_RenderGizmo();
+                }
+                RenderAPI.GRender_EndFrame();
+
+                if (sw.ElapsedMilliseconds >= 1000)
+                {
+                    int fps = frames;
+                    frames = 0;
+                    sw.Restart();
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        FpsCounter.Text = $"{fps} FPS";
+                    }), DispatcherPriority.Background);
+                }
             }
         }
         catch (Exception ex)
         {
-            VM?.AppendConsole($"[Viewport] Render error: {ex.Message}");
+            LogFromRenderThread($"[Viewport] Render thread error: {ex.Message}");
+        }
+        finally
+        {
+            try { GlfwNative.glfwMakeContextCurrent(IntPtr.Zero); } catch { }
         }
     }
 
-    private void UpdateGameFlyCamera()
+    private void PushSharedCamera()
     {
-        double dt = _renderTimer?.Interval.TotalSeconds ?? 1.0 / 60.0;
-        bool w = _heldKeys.Contains(Key.W) || _nativeKeys.Contains(0x57);
-        bool s = _heldKeys.Contains(Key.S) || _nativeKeys.Contains(0x53);
-        bool a = _heldKeys.Contains(Key.A) || _nativeKeys.Contains(0x41);
-        bool d = _heldKeys.Contains(Key.D) || _nativeKeys.Contains(0x44);
-        bool space = _heldKeys.Contains(Key.Space) || _nativeKeys.Contains(0x20);
-        bool ctrl = _heldKeys.Contains(Key.LeftCtrl) || _nativeKeys.Contains(0x11);
-        bool shift = _heldKeys.Contains(Key.LeftShift) || _heldKeys.Contains(Key.RightShift) || _nativeKeys.Contains(0x10);
+        if (++_cameraResolveCounter >= 120 || _mainCamera == GEntityHandle.Null)
+        {
+            _mainCamera = FindMainCamera();
+            _cameraResolveCounter = 0;
+        }
+        if (_mainCamera == GEntityHandle.Null) return;
+        double px, py, pz, fwdX, fwdY, fwdZ;
+        lock (_cameraLock)
+        {
+            var cam = _isGameView ? _gameCamera : _sceneCamera;
+            px = cam.PositionX; py = cam.PositionY; pz = cam.PositionZ;
+            fwdX = cam.ForwardX; fwdY = cam.ForwardY; fwdZ = cam.ForwardZ;
+        }
+        try
+        {
+            var pos = new GVec3((float)px, (float)py, (float)pz);
+            EntityAPI.GEntity_SetLocalPosition(_mainCamera, ref pos);
+            var q = QuatFromLookAt(fwdX, fwdY, fwdZ);
+            EntityAPI.GEntity_SetLocalRotation(_mainCamera, ref q);
+        }
+        catch { /* ignore */ }
+    }
+
+    private void UpdateGameFlyCamera(double dt)
+    {
+        // Poll the physical keyboard on the render thread so fly movement is
+        // integrated at render frequency, not at the UI timer rate.
+        bool w = KeyHeld(0x57);
+        bool s = KeyHeld(0x53);
+        bool a = KeyHeld(0x41);
+        bool d = KeyHeld(0x44);
+        bool space = KeyHeld(0x20);
+        bool ctrl = KeyHeld(0x11);
+        bool shift = KeyHeld(0x10);
 
         double fwd = (w ? 1 : 0) - (s ? 1 : 0);
         double strafe = (d ? 1 : 0) - (a ? 1 : 0);
         double up = (space ? 1 : 0) - (ctrl ? 1 : 0);
-        double baseSpeed = _gameCamera.FlyMoveSpeed;
-        if (shift) _gameCamera.FlyMoveSpeed = baseSpeed * 2.5;
-        _gameCamera.FlyMove(fwd, strafe, up, dt);
-        _gameCamera.FlyMoveSpeed = baseSpeed;
+        lock (_cameraLock)
+        {
+            double baseSpeed = _gameCamera.FlyMoveSpeed;
+            if (shift) _gameCamera.FlyMoveSpeed = baseSpeed * 2.5;
+            _gameCamera.FlyMove(fwd, strafe, up, dt);
+            _gameCamera.FlyMoveSpeed = baseSpeed;
+        }
     }
 
     /// <summary>
@@ -566,9 +683,34 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnNativeMouseMove(double x, double y)
     {
         if (!_rendererInitialized) return;
-        _trackedMouseX = x;
-        _trackedMouseY = y;
+        double dx = x - _lastMouseX;
+        double dy = y - _lastMouseY;
+        _lastMouseX = x;
+        _lastMouseY = y;
         InputAPI.GInput_InjectMouseMove((float)x, (float)y);
+
+        if (_isGameView)
+        {
+            if (_pointerLocked)
+            {
+                lock (_cameraLock) _gameCamera.Look(dx, dy);
+                WarpToViewportCenter();
+            }
+            return;
+        }
+
+        if (_rightDown)
+        {
+            lock (_cameraLock) _sceneCamera.Orbit(dx, dy);
+        }
+        else if (_middleDown)
+        {
+            lock (_cameraLock) _sceneCamera.Pan(dx, dy);
+        }
+        else if (_leftDown && _dragCaptured)
+        {
+            UpdateGizmoDrag(x, y);
+        }
     }
 
     private void OnNativeMouseButton(int button, bool down, double x, double y)
@@ -580,7 +722,11 @@ public partial class ViewportView : UserControl, IDisposable
 
         if (_isGameView)
         {
-            if (button == 0) _pointerLocked = down;
+            if (button == 0)
+            {
+                _pointerLocked = down;
+                if (down) WarpToViewportCenter();
+            }
             return;
         }
 
@@ -600,6 +746,11 @@ public partial class ViewportView : UserControl, IDisposable
                 EndGizmoDrag();
             }
         }
+
+        // Capture while dragging so orbit/pan/gizmo deltas keep flowing even
+        // when the cursor leaves the viewport (no jump on re-entry).
+        bool dragging = _rightDown || _middleDown || (_leftDown && _dragCaptured);
+        SetViewportCapture(dragging);
     }
 
     private void OnNativeMouseWheel(int delta)
@@ -620,6 +771,65 @@ public partial class ViewportView : UserControl, IDisposable
     {
         if (down) _nativeKeys.Add(vk);
         else _nativeKeys.Remove(vk);
+        if (down && vk == 0x1B) // Escape
+        {
+            _pointerLocked = false;
+            SetViewportCapture(false);
+        }
+    }
+
+    // =====================================================================
+    //  Native mouse capture / pointer lock helpers
+    // =====================================================================
+
+    private IntPtr ViewportHwnd => _hwndHost?.GlfwChildHandle ?? IntPtr.Zero;
+
+    /// <summary>Captures the GLFW child while dragging so mouse-move messages
+    /// keep arriving even when the cursor leaves the viewport.</summary>
+    private void SetViewportCapture(bool capture)
+    {
+        var h = ViewportHwnd;
+        if (h == IntPtr.Zero) return;
+        if (capture) SetCapture(h);
+        else ReleaseCapture();
+    }
+
+    /// <summary>Wraps the OS cursor back to the viewport center (FPS pointer
+    /// lock). The warp delta is suppressed by resetting the baseline.</summary>
+    private void WarpToViewportCenter()
+    {
+        var h = ViewportHwnd;
+        if (h == IntPtr.Zero) return;
+        if (!GetClientRect(h, out var rc)) return;
+        var pt = new NativePoint { X = rc.Right / 2, Y = rc.Bottom / 2 };
+        if (!ClientToScreen(h, ref pt)) return;
+        SetCursorPos(pt.X, pt.Y);
+        _lastMouseX = rc.Right / 2.0;
+        _lastMouseY = rc.Bottom / 2.0;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SetCapture(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint pt);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    private static bool KeyHeld(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
     }
 
 
@@ -653,6 +863,7 @@ public partial class ViewportView : UserControl, IDisposable
     {
         _heldKeys.Clear();
         _pointerLocked = false;
+        SetViewportCapture(false);
     }
 
     // =====================================================================
@@ -1194,8 +1405,9 @@ public partial class ViewportView : UserControl, IDisposable
 
     public void Dispose()
     {
-        _renderTimer?.Stop();
-        _renderTimer = null;
+        StopRenderThread();
+        _gizmoTimer?.Stop();
+        _gizmoTimer = null;
         if (_rendererInitialized)
         {
             try { RenderAPI.GRender_Shutdown(); } catch { }

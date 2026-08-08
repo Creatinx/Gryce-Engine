@@ -23,7 +23,12 @@
 ```
 Gryce-Engine/
 ├── cmake/                  # 编译器选项、依赖解析脚本
-├── core/                   # 引擎核心静态库（gryce_core）
+├── core/                   # 引擎核心（模块化 DLL：GryceCore / GryceRenderer / GrycePlatform / GrycePhysics）
+│   ├── api/                # C API 实现（GCore_* / GEntity_* / GComponent_* / GRender_* 等）
+│   ├── GryceCore/          # GryceCore.dll 公共 C API 头文件（ECS、场景、组件、资源、反射）
+│   ├── GryceRenderer/      # GryceRenderer.dll 公共 C API 头文件（渲染、视口）
+│   ├── GrycePlatform/      # GrycePlatform.dll 公共 C API 头文件（窗口、输入）
+│   ├── GrycePhysics/       # GrycePhysics.dll 公共 C API 头文件（物理）
 │   ├── animation/          # 骨骼动画数据结构
 │   ├── assets/             # 资源加载器
 │   ├── audio/              # 音频系统
@@ -42,10 +47,11 @@ Gryce-Engine/
 │   ├── scene/              # Scene、Entity、Transform、UUID、Prefab
 │   └── utils/              # 日志、帧率限制
 ├── docs/                   # 文档
-├── editor/                 # 编辑器入口
-│   ├── panels/             # 编辑器面板
-│   ├── ui/                 # 编辑器窗口与主题
-│   └── import/             # 导入设置编辑器
+├── editor/                 # WPF 编辑器（GryceEngine.Editor.csproj，.NET Framework 4.8）
+│   ├── src/Native/         # C API 的 P/Invoke 包装（CoreAPI.cs、EntityAPI.cs、RenderAPI.cs 等）
+│   ├── src/Services/       # EngineService（引擎生命周期、命令下发、项目根解析）
+│   ├── src/ViewModels/     # EditorViewModel（回调注册、Hierarchy/Inspector 刷新）
+│   └── src/Views/          # 面板 XAML（Hierarchy/Inspector/Viewport/Project/Console/Animation）
 ├── examples/               # 示例游戏项目
 │   ├── common/             # 示例公共框架（app_launcher、debug_panel）
 │   ├── 3dtest/             # 3D 综合演示项目
@@ -106,8 +112,11 @@ MinGW 下构建后自动复制：
 
 | 目标 | 类型 | 说明 |
 |---|---|---|
-| `gryce_core` | 静态库 | 引擎核心（默认，可通过 `GRYCE_BUILD_SHARED=ON` 切换为动态库） |
-| `gryce_editor` | 可执行文件 | 编辑器 |
+| `GryceCore.dll` | 动态库 | 引擎核心：ECS、场景、组件、反射、资源、动画/碎裂系统 |
+| `GryceRenderer.dll` | 动态库 | 渲染后端 + 视口/游戏视图 |
+| `GrycePlatform.dll` | 动态库 | GLFW 窗口（外部 HWND 附着）、输入注入 |
+| `GrycePhysics.dll` | 动态库 | Jolt/Box2D 物理封装 + 物理系统注册 |
+| `GryceEngine.Editor.exe` | 可执行文件 | WPF 编辑器（.NET Framework 4.8，P/Invoke 加载上述 DLL） |
 | `examples_common` | 静态库 | 示例公共框架（app_launcher、debug_panel） |
 | `3dtest` | 可执行文件 | 3D 综合演示（物理、碎裂、光照、关节、角色控制器、场景保存） |
 | `gt2dDemo` | 可执行文件 | 2D 综合演示（平台跑酷、光照、粒子、瓦片地图、关节桥、形状） |
@@ -566,6 +575,27 @@ for (int i = 0; i < 10; ++i) {
 - `GLog` 会自动用 `AsyncLogger` 包装默认与自定义 logger；`MemoryLogSink::from_glog()` 可穿透包装拿到内层 sink（供 Console 面板读取）。
 - `flush()` 会等待队列排空；每帧热路径的日志已降级为 `GLOG_DEBUG`，减少日志开销。
 
+### 12.5 C API 全局互斥锁（编辑器双线程模型）
+
+编辑器运行两条线程同时调用 Core：
+
+- **UI 线程**：60Hz `GCore_BeginFrame/EndFrame`（消费命令队列、Play 时 `world->update`）、输入、
+  Hierarchy/Inspector 同步读取、gizmo 拖拽写入。
+- **专用渲染线程**：按显示器刷新率（vsync，240Hz 显示器上约 240 FPS）执行
+  `PushSharedCamera → GRender_BeginFrame → RenderWorld/GameView → GRender_EndFrame`。
+
+为了让两条线程安全共享场景数据，所有导出的 C API 入口统一持有同一把递归互斥锁
+（`GRYCE_API_GUARD()`，见 `core/GryceCore/api_guard.h`；实例由
+`core/api/core_api.cpp` 的 `gryce_core::api_mutex()` 提供，跨 GryceCore /
+GryceRenderer / GrycePlatform / GrycePhysics 四个 DLL 共享）。递归锁保证：
+
+- API 函数之间互相调用不会自死锁；
+- UI 线程持有锁时触发的 `Dispatcher` 回调（同线程重入）可以继续安全读取场景。
+
+渲染线程接管 GL 上下文前，UI 线程先执行 `glfwMakeContextCurrent(nullptr)` 释放；
+窗口缩放等 GL 操作（`GWindow_SetSize` / `GViewport_SetSize`）也统一延迟到渲染线程执行，
+避免无 current context 的线程误调 GL。
+
 ---
 
 ## 13. 关键数据流
@@ -619,22 +649,162 @@ Scene::serialize()
 
 ---
 
-## 14. 扩展点
+## 14. 编辑器 ↔ Core 桥接架构
 
-### 14.1 添加新组件
+> 本节描述 WPF 编辑器与引擎核心之间的完整关系与通信机制，是“Editor 与 Core
+> 完全分离”设计原则的具体实现。核心代码见 `core/api/*.cpp` 与 `core/Gryce*/` 头文件，
+> 编辑器侧对应 `editor/src/Native/*.cs`（P/Invoke）与 `editor/src/Services/EngineService.cs`。
+
+### 14.1 进程模型与模块边界
+
+WPF 编辑器（`GryceEngine.Editor.exe`，.NET Framework 4.8 + iNKORE Fluent）是宿主进程，
+四个原生 DLL（GryceCore / GryceRenderer / GrycePlatform / GrycePhysics）直接加载进
+编辑器进程。**不存在跨进程通信**，唯一的边界是一条 C ABI：
+
+```
+Views (XAML) → ViewModels → Services/EngineService → Native (P/Invoke)
+     ↑ Dispatcher.Invoke 回 UI 线程            ↓
+     GryceCored.dll │ GryceRendererd.dll │ GrycePlatformd.dll │ GrycePhysicsd.dll
+                    （extern "C" 纯 C 结构体 + 函数指针）
+```
+
+- 编辑器不 include 任何引擎 C++ 头文件，只依赖 `core/Gryce*/` 下声明的纯 C 接口。
+- C# 侧用 `[StructLayout(LayoutKind.Sequential)]` 一比一复刻 C 结构体（`editor/src/Native/Types.cs`）。
+- DLL 名按构建配置区分：Debug 带 `d` 后缀（`GryceCored.dll`），Release 为原名（`GryceCore.dll`），
+  由 `editor/src/Native/NativeLibrary.cs` 统一管理。
+
+各 DLL 职责与公共头：
+
+| DLL | 职责 | 公共 C API 头 |
+|---|---|---|
+| GryceCore | ECS / 场景 / 实体 / 组件、反射、资源管线、动画与碎裂系统 | `core/GryceCore/*.h` |
+| GryceRenderer | 渲染后端、视口 / 游戏视图 | `core/GryceRenderer/*.h` |
+| GrycePlatform | GLFW 窗口（外部 HWND 附着）、输入注入 | `core/GrycePlatform/*.h` |
+| GrycePhysics | Jolt/Box2D 物理世界 + 物理系统注册 | `core/GrycePhysics/*.h` |
+
+### 14.2 三层通信通道
+
+编辑器与 Core 之间并非单一通信方式，而是三条分工明确的通道：
+
+**通道 A：命令队列（编辑器 → Core，结构性写操作）**
+
+UI 操作（创建/删除实体、加载/保存场景、选中、播放/暂停、改属性、gizmo 操作）打包成
+`GCommand { type, seq, payload[256] }`（见 `core/GryceCore/types.h`），由
+`EngineService.PushCommand` 压入 Core 的 `CommandBuffer`（双缓冲，满则丢弃并计数）。
+命令**不在调用线程即时执行**，而是在 `GCore_BeginFrame(dt)` 的帧边界统一消费：
+先 `cmdbuf.swap()` 取出上一帧积累的命令逐条执行，Play 模式下再 `world->update(dt)`。
+这保证 UI 线程永远不会与 World 的 update 并发修改场景数据。
+
+**通道 B：回调（Core → 编辑器，事件通知）**
+
+Core 持有 `CallbackTable`（`core/api/internal_state.h`），编辑器在
+`EditorViewModel` 构造时注册 7 个回调：实体列表变化、选中/取消选中、场景加载、
+Play 状态变化、日志。回调**不是即时触发**的：命令执行时只设置 `deferred_*` 标志，
+`GCore_EndFrame()` 统一转发，并顺带把异步日志（`MemoryLogSink`）增量推给 Console 面板。
+C# 侧再用 `Dispatcher.Invoke` 切回 UI 线程刷新 Hierarchy / Inspector / Console，
+实现“命令 → 执行 → 通知 → 刷新”每帧一轮的批量模式。
+
+**通道 C：同步查询（编辑器 → Core，只读直调）**
+
+Hierarchy 枚举、Inspector 读字段、取实体名/Transform 等**读操作**直接调用
+`GEntity_*` / `GComponent_*` 等函数同步返回，不走命令队列。因为只读、不修改
+World 状态，所以可以安全同步调用。
+
+### 14.3 句柄与反射桥
+
+编辑器拿到的实体只是 `int` 句柄，永远接触不到裸指针。Core 内部
+`EntityHandleMap` 维护 **handle ↔ UUID 双向映射**（`core/api/entity_handle_map.cpp`），
+`EntityResolver::resolve(handle)` 先查 UUID 再在场景里 `find_entity_by_uuid`。
+场景重载时整个 map 重建，句柄失效但不会悬垂。
+
+Inspector 字段编辑走**反射桥**：Core 的 `reflection::Registry` 暴露每个组件类型的
+字段（类型码 + 读写回调），C API 侧翻译成字段枚举码（`GComponent_GetPropertyInfo` /
+`GetProperty` / `SetProperty`）。改值也可发 `ECMD_SET_PROPERTY` 命令，payload 携带
+`{ entity, type_hash, prop_name, value[128] }`，其中 `type_hash` 是
+`std::hash<std::string>(类型名)`——这是 C# 与 C++ 之间约定的类型标识协议。
+
+### 14.4 视口渲染链路
+
+编辑器自己不渲染，只向渲染器提供一个原生窗口：
+
+```
+ViewportView (XAML)
+  └─ ViewportHwndHost (HwndHost) → 创建 native child HWND
+       └─ GWindow_InitExternal(hwnd)      ← GLFW 附着到外部窗口（GrycePlatform）
+       └─ GRender_Init(OpenGL, sync_mode) ← GryceRenderer 创建后端
+       └─ 专用渲染线程 RenderLoop（vsync 跟随显示器刷新率，240Hz 屏约 240 FPS）:
+            PushSharedCamera → GRender_BeginFrame
+            → RenderWorld / RenderGameView / RenderGizmo → GRender_EndFrame
+```
+
+关键设计：
+
+- **相机所有权在编辑器**：编辑器维护自己的 `ViewportCamera`（orbit / pan / fly），
+  每帧通过 `GEntity_SetLocalPosition/Rotation` 把相机状态写回场景里的 MainCamera 实体；
+  渲染管线再从实体 Transform + Camera 组件构建 `math::Camera`。编辑器视角与游戏视角
+  共用同一套场景相机机制。
+- **输入是“绕路”的**：GLFW 子窗口盖住 WPF，WPF 鼠标事件收不到，所以
+  `ViewportHwndHost` 用 `SetWindowLongPtr` **subclass GLFW 子窗口的 WndProc**，
+  把原生 WM_MOUSE / WM_KEY 消息转发到编辑器；编辑器一边驱动自己的相机，
+  一边用 `GInput_InjectMouseMove/Button/Key` 回灌给引擎。
+- **Gizmo 是 WPF overlay**：`GizmoOverlayWindow` 透明置顶画在视口上方（纯 WPF 图形），
+  拖拽结果通过 `ECMD_GIZMO_MANIPULATE` 命令让 Core 修改实体 Transform。
+- **同步渲染模式**：`GRender_Init` 的 `sync_mode = true` 表示渲染与场景查询在同一
+  调用内完成（无独立渲染线程消费命令队列），GL 上下文由编辑器自己的渲染线程驱动；
+  `render_api.cpp` 还会在绘制前补传未上传的 MeshRenderer / 脏材质
+  （`upload_pending_meshes`），因为同步模式下 ECS 的异步上传路径不运行。
+- **GLFW 实例必须唯一**：编辑器的 `GlfwNative`（P/Invoke）必须绑定到 Core 使用的
+  `glfw3d.dll`，不能绑定 `glfw3.dll`——否则会加载第二份未初始化的 GLFW，
+  `glfwMakeContextCurrent` 报 `GLFW_NOT_INITIALIZED`，渲染线程所有 GL 调用静默失效，
+  视口呈现纯黑。
+- **上下文交接**：`GRender_Init` 完成后 UI 线程先 `glfwMakeContextCurrent(nullptr)`
+  释放上下文，渲染线程再接管；`GWindow_SetSize` / `GViewport_SetSize` 等 GL/GLFW
+  操作延迟到渲染线程帧首执行（`_pendingPixelSize`），避免无 current context 的调用。
+
+### 14.5 生命周期
+
+```
+App.OnStartup
+  └─ EngineService.Initialize("")     → 自动探测项目根（优先 examples/3dtest）
+  └─ GCore_Init(desc)                 → 建 World、注册 Animator/Fracture 系统、init
+  └─ GPhysics_Init + AttachSystems    → 把物理系统挂入 Core World（见 14.6）
+  └─ new EditorViewModel              → 注册 7 个回调
+  └─ GScene_Load("res:/scenes/editor_default.gesc")
+
+每帧（UI 线程 60Hz DispatcherTimer）：
+  GCore_BeginFrame(dt) → 消费命令队列 → Play 则 world->update(dt)
+  GCore_EndFrame()     → 转发日志 → fire deferred 回调 → UI 刷新
+
+渲染线程（独立，~250Hz）：PushSharedCamera → GRender_BeginFrame
+  → RenderWorld / RenderGameView / RenderGizmo → GRender_EndFrame
+
+App.OnExit → DetachCallbacks → GCore_Shutdown
+```
+
+### 14.6 物理接入（DLL 间内部通道）
+
+GrycePhysics.dll 不走 C API 回调：编辑器初始化时通过 `GCore_GetInternalWorldPtr()`
+拿到 Core 的 `World*`，再 `GPhysics_AttachSystems(worldPtr)` 把
+`PhysicsSystem3D / PhysicsSystem2D` 直接注册进 World。这是**同进程 DLL 之间共享同一
+C++ ABI 的内部通道**（同编译器、同构建），而编辑器只见 `GPhysics_*` 的 C 函数。
+`GCore_GetInternalWorldPtr` 仅限同进程其他 DLL 使用，不作为编辑器公共接口。
+
+## 15. 扩展点
+
+### 15.1 添加新组件
 
 1. 在 `core/components/`（或 `core/components/2d/`）新建头文件。
 2. 继承 `Component`，实现 `type()`、`serialize()`、`deserialize()`、`on_update()`（可选）。
 3. 在 `core/components/component_factory.cpp` 注册类型。
 4. 在对应 System 中处理该组件。
 
-### 14.2 添加新渲染后端
+### 15.2 添加新渲染后端
 
 1. 实现 `IRenderBackend`、`IShader`、`ITexture`、`IMesh`、`IFramebuffer`、`IRenderer2D`、`IRenderer3D`。
 2. 在 `RenderContext` 中注册后端创建函数。
 3. 添加命令行参数切换后端。
 
-### 14.3 添加新系统
+### 15.3 添加新系统
 
 1. 继承 `ecs::ISystem`。
 2. 在 `World` 构造或初始化时注册。

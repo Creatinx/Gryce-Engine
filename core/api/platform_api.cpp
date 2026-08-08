@@ -1,4 +1,5 @@
 #include "GrycePlatform/window_api.h"
+#include "GryceCore/api_guard.h"
 #include "GrycePlatform/input_api.h"
 
 #ifdef _WIN32
@@ -117,6 +118,7 @@ extern "C" {
 // ========== Window ==========
 
 int GWindow_InitExternal(GWindowHandle hwnd, int w, int h) {
+    GRYCE_API_GUARD();
     if (!hwnd) return -1;
     if (g_platform.mode != PlatformState::Mode::None) {
         GLOG_WARN("GWindow_InitExternal: platform already initialized, shutting down first");
@@ -171,6 +173,7 @@ int GWindow_InitExternal(GWindowHandle hwnd, int w, int h) {
 }
 
 int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
+    GRYCE_API_GUARD();
     if (g_platform.mode != PlatformState::Mode::None) {
         GLOG_WARN("GWindow_Create: platform already initialized, shutting down first");
         GWindow_Destroy();
@@ -198,6 +201,7 @@ int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
 }
 
 void GWindow_Destroy(void) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW) {
         if (g_platform.window) {
             g_platform.window->destroy();
@@ -220,6 +224,7 @@ void GWindow_Destroy(void) {
 }
 
 bool GWindow_IsValid(void) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW) {
         return g_platform.window && g_platform.window->is_valid();
     }
@@ -230,6 +235,7 @@ bool GWindow_IsValid(void) {
 }
 
 void GWindow_GetSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
     if (!out_w || !out_h) return;
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
         g_platform.window->get_size(*out_w, *out_h);
@@ -247,6 +253,7 @@ void GWindow_GetSize(int* out_w, int* out_h) {
 }
 
 void GWindow_SetSize(int w, int h) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
         g_platform.window->set_size(w, h);
     } else if (g_platform.mode == PlatformState::Mode::External) {
@@ -266,6 +273,7 @@ void GWindow_SetSize(int w, int h) {
 }
 
 GWindowHandle GWindow_GetNativeHandle(void) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
         return g_platform.window->native_handle();
     }
@@ -276,6 +284,7 @@ GWindowHandle GWindow_GetNativeHandle(void) {
 }
 
 GWindowHandle GWindow_GetRenderHandle(void) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
         return g_platform.window->native_handle();
     }
@@ -286,6 +295,7 @@ GWindowHandle GWindow_GetRenderHandle(void) {
 }
 
 bool GWindow_ShouldClose(void) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
         return g_platform.window->should_close();
     }
@@ -293,6 +303,7 @@ bool GWindow_ShouldClose(void) {
 }
 
 void GWindow_PollEvents(void) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW) {
         glfwPollEvents();
         if (g_platform.input_mgr && g_platform.window) {
@@ -304,6 +315,7 @@ void GWindow_PollEvents(void) {
 }
 
 void GWindow_SwapBuffers(void) {
+    GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
         g_platform.window->swap_buffers();
     }
@@ -313,12 +325,14 @@ void GWindow_SwapBuffers(void) {
 // ========== Input ==========
 
 void GInput_InjectKey(int key_code, GInputAction action) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
     if (key_code < 0 || key_code >= 512) return;
     g_platform.input.keys[key_code] = (action == GINPUT_ACTION_PRESS || action == GINPUT_ACTION_REPEAT);
 }
 
 void GInput_InjectMouseMove(float x, float y) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
     if (g_platform.input.first_mouse) {
         g_platform.input.mouse_delta_x = 0.0f;
@@ -333,6 +347,7 @@ void GInput_InjectMouseMove(float x, float y) {
 }
 
 void GInput_InjectMouseButton(int button, GInputAction action, float x, float y) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
     if (button < 0 || button >= 8) return;
     g_platform.input.mouse_buttons[button] = (action == GINPUT_ACTION_PRESS || action == GINPUT_ACTION_REPEAT);
@@ -341,29 +356,34 @@ void GInput_InjectMouseButton(int button, GInputAction action, float x, float y)
 }
 
 void GInput_InjectMouseScroll(float delta_x, float delta_y) {
+    GRYCE_API_GUARD();
     // Scroll is event-based; for now, store in a separate field if needed
     (void)delta_x; (void)delta_y;
 }
 
 bool GInput_IsKeyPressed(int key_code) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
     if (key_code < 0 || key_code >= 512) return false;
     return g_platform.input.keys[key_code] && !g_platform.input.keys_prev[key_code];
 }
 
 bool GInput_IsKeyHeld(int key_code) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
     if (key_code < 0 || key_code >= 512) return false;
     return g_platform.input.keys[key_code];
 }
 
 bool GInput_IsMouseButtonPressed(int button) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
     if (button < 0 || button >= 8) return false;
     return g_platform.input.mouse_buttons[button] && !g_platform.input.mouse_buttons_prev[button];
 }
 
 void GInput_GetMousePosition(float* out_x, float* out_y) {
+    GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
     if (out_x) *out_x = g_platform.input.mouse_x;
     if (out_y) *out_y = g_platform.input.mouse_y;

@@ -354,64 +354,64 @@
 
 ---
 
-## WPF Editor C API 路线图（当前进行中）
+## WPF Editor C API 路线图（已完成）
 
-> ImGui 编辑器已完成，现迁移到 WPF 编辑器架构。WPF 编辑器通过 C API 桥接 Core DLL，
-> 实现 Editor 与 Core 的完全分离。
+> ImGui 编辑器已封存至 `backup/editor/`，现迁移到 WPF 编辑器架构。WPF 编辑器通过
+> C API 桥接 Core DLL，实现 Editor 与 Core 的完全分离。完整桥接架构见
+> [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) §14「编辑器 ↔ Core 桥接架构」。
 
 ### Phase 1 — 基础架构 + WPF Shell（已完成）
 
 | 任务 | 状态 | 说明 |
 |---|---|---|
-| Core/Platform/Renderer/Physics 编译为 DLL | 已完成 | `libGryceCored.dll` 等 |
-| `core/c_api.h` 统一 C API 入口 + 宏 | 已完成 | `GRYCE_C_API` 导出宏 |
-| `GConfig_Init()` / `GConfig_Shutdown()` | 已完成 | Core  DLL 加载/卸载 |
-| `GCommand` 命令队列（`GCommandType` + `GCore_PushCommand`） | 已完成 | 主线程安全命令队列 |
-| `GEntity_*` 实体操作 API | 已完成 | Create/Destroy/GetName/SetName/GetParent/GetChild* |
-| `GComponent_AddComponent` / `RemoveComponent` | 已完成 | 组件增删 |
-| `GScene_New` / `Save` / `Load` | 已完成 | 场景管理 |
-| `GCore_SetCallback_*` 回调注册（实体列表/选中/PlayMode/日志） | 已完成 | C# 侧 delegate 回调 |
-| WPF Shell（MainWindow + Docking 布局面板） | 已完成 | 解决方案 `GryceEngine.sln`，项目名 `GryceEngine.Editor` |
-| WPF P/Invoke 封装（Native/*.cs） | 已完成 | C# 侧所有 C API 的 P/Invoke 声明 |
-| WPF 面板：Hierarchy / Inspector / Toolbar / Settings / Console / Project | 已完成 | 基础功能可用 |
-| 构建通过 + 运行无 XamlParseException | 已完成 | 0 错误，WPF 正常启动 |
+| Core/Platform/Renderer/Physics 编译为 DLL | 已完成 | `GryceCore.dll` / `GryceRenderer.dll` / `GrycePlatform.dll` / `GrycePhysics.dll` |
+| 模块化 C API 头文件 + 导出宏 | 已完成 | `core/GryceCore/*.h` 等，`GRYCE_CORE_API` / `GRYCE_RENDERER_API` / `GRYCE_PLATFORM_API` / `GRYCE_PHYSICS_API` |
+| `GCore_Init()` / `GCore_Shutdown()` | 已完成 | Core DLL 初始化（建 World、注册组件与核心系统） |
+| `GCommand` 命令队列（`GCommandType` + `GCore_PushCommand`） | 已完成 | 双缓冲命令队列，帧边界执行（`GCore_BeginFrame`） |
+| `GEntity_*` 实体操作 API | 已完成 | GetCount/GetAt/GetName/GetParent/GetChild*、Transform 读写 |
+| `GComponent_*` 组件 API | 已完成 | 组件增删、属性读写、注册类型列表 |
+| `GScene_New` / `Save` / `Load` | 已完成 | 场景管理（`.gesc`） |
+| `GCore_RegisterCallback_*` 回调注册（实体列表/选中/PlayMode/日志） | 已完成 | C# 侧 delegate 回调 + `Dispatcher` 回 UI 线程 |
+| WPF Shell（MainWindow + 面板布局） | 已完成 | 项目 `GryceEngine.Editor`（.NET Framework 4.8 + iNKORE Fluent） |
+| WPF P/Invoke 封装（Native/*.cs） | 已完成 | C# 侧所有 C API 的 P/Invoke 声明（`CallingConvention.Cdecl`） |
+| WPF 面板：Hierarchy / Inspector / Toolbar / Settings / Console / Project / Animation | 已完成 | 基础功能可用 |
 
-### Phase 2 — GryceRenderer + GrycePlatform C API（⬜ 待做）
-
-| 任务 | 状态 | 说明 |
-|---|---|---|
-| `GWindow_InitExternal(hwnd)` — 接收外部 HWND，不创建 GLFW | ⬜ 待做 | WPF 提供 HWND，Renderer 嵌入 |
-| `GRender_Init` — `init_with_hwnd` + `sync_mode=true`（禁用内部 RenderThread） | ⬜ 待做 | 同步模式，WPF 主线程驱动渲染 |
-| `GRender_BeginFrame` / `RenderWorld` / `RenderGizmo` / `EndFrame` | ⬜ 待做 | 逐帧渲染 API |
-| Viewport texture 输出：`GRender_GetViewportTexture` | ⬜ 待做 | WPF 获取渲染结果纹理 |
-| Standalone test：HWND → 清屏色 + 空场景 | ⬜ 待做 | 验证渲染管线嵌入外部 HWND |
-
-### Phase 3 — Component 反射桥接 + WPF Editor 接入（⬜ 待做）
+### Phase 2 — GryceRenderer + GrycePlatform C API（已完成）
 
 | 任务 | 状态 | 说明 |
 |---|---|---|
-| `ECMD_ADD_COMPONENT` / `ECMD_REMOVE_COMPONENT` / `ECMD_SET_PROPERTY` | ⬜ 待做 | 命令类型扩展 |
-| `GComponent_GetProperty` / `SetProperty`（通过 reflection 桥接） | ⬜ 待做 | Inspector 属性读写 |
-| `GComponent_GetPropertyCount` / `GetPropertyInfo`（Inspector 自动发现字段） | ⬜ 待做 | 反射自动生成 Inspector |
-| `GComponent_GetRegisteredTypeCount` / `GetRegisteredTypeInfo`（Add Component 下拉菜单） | ⬜ 待做 | 组件类型列表 |
-| WPF Editor P/Invoke 封装（C# 侧 GryceCoreAPI / GryceRendererAPI） | ⬜ 待做 | 封装新增 API |
-| WPF SwapChainPanel / WindowsFormsHost 提供 HWND → Renderer | ⬜ 待做 | Viewport 嵌入 |
-| 闭环验证：加载场景 → Hierarchy → 选中 → Inspector 改属性 → Viewport 更新 | ⬜ 待做 | 端到端验证 |
+| `GWindow_InitExternal(hwnd)` — 接收外部 HWND，不创建 GLFW | 已完成 | GLFW 附着到 WPF `HwndHost` 提供的原生子窗口 |
+| `GRender_Init` — `sync_mode=true`（禁用内部 RenderThread） | 已完成 | 同步模式；编辑器开专用渲染线程驱动 GL 上下文 |
+| `GRender_BeginFrame` / `RenderWorld` / `RenderGameView` / `RenderGizmo` / `EndFrame` | 已完成 | 逐帧渲染 API |
+| Viewport texture 输出 | 已完成 | 改为直接渲染到嵌入 HWND（未走纹理采样路线） |
+| 端到端验证：HWND → 场景渲染 | 已完成 | 编辑器视口场景/网格/物体正常显示，高 DPI 按物理像素缩放 |
 
-### Phase 4 — PlayMode + 物理 + Gizmo（⬜ 待做）
+### Phase 3 — Component 反射桥接 + WPF Editor 接入（已完成）
 
 | 任务 | 状态 | 说明 |
 |---|---|---|
-| `ECMD_PLAY_MODE` / `ECMD_STOP_MODE` + Scene 快照/回滚 | ⬜ 待做 | Play Mode 命令 |
-| GrycePhysics.dll C API：`GPhysics_Init` / `Step` / `Raycast` / `CreateBody` | ⬜ 待做 | 物理 C API |
-| GrycePlatform.dll 输入注入：`GInput_InjectKey` / `MouseMove` / `MouseButton` | ⬜ 待做 | WPF 输入转发到 Core |
-| Core 内部 Viewport Toolbar + ImGuizmo | ⬜ 待做 | Gizmo 操作 |
-| `ECMD_GIZMO_MANIPULATE` 写回 Transform | ⬜ 待做 | Gizmo 拖拽写回 |
+| `ECMD_ADD_COMPONENT` / `ECMD_REMOVE_COMPONENT` / `ECMD_SET_PROPERTY` | 已完成 | 命令类型扩展（payload 对齐：`{entity, type_hash, ...}`） |
+| `GComponent_GetProperty` / `SetProperty`（通过 reflection 桥接） | 已完成 | Inspector 属性读写 |
+| `GComponent_GetPropertyCount` / `GetPropertyInfo`（Inspector 自动发现字段） | 已完成 | 反射自动生成 Inspector |
+| `GComponent_GetRegisteredTypeCount` / `GetRegisteredTypeInfo`（Add Component 下拉菜单） | 已完成 | 组件类型列表 |
+| WPF Editor P/Invoke 封装（Native/*.cs） | 已完成 | `ComponentAPI.cs` / `EntityAPI.cs` 等全量封装 |
+| WPF `HwndHost` 提供 HWND → Renderer | 已完成 | `ViewportHwndHost` + GLFW 外部窗口（非 SwapChainPanel） |
+| 闭环验证：加载场景 → Hierarchy → 选中 → Inspector 改属性 → Viewport 更新 | 已完成 | 端到端可用 |
 
-### Phase 5 — 资产 + 完整闭环（⬜ 待做）
+### Phase 4 — PlayMode + 物理 + Gizmo（已完成）
 
 | 任务 | 状态 | 说明 |
 |---|---|---|
-| GryceCore/asset_api.h + `ECMD_IMPORT_ASSET` | ⬜ 待做 | 资产导入命令 |
-| 日志转发：`GCore_GetLogMessages`（Console 窗口） | ⬜ 待做 | Console 面板日志 |
-| 完整 Editor ↔ Core 闭环验证 | ⬜ 待做 | 全功能端到端测试 |
+| `ECMD_PLAY_MODE` / `ECMD_STOP_MODE` / `ECMD_PAUSE_MODE` | 已完成 | Play Mode 状态 + `world->set_updates_enabled` 切换 |
+| GrycePhysics.dll C API：`GPhysics_Init` / `AttachSystems` / `Step` / `CreateBody` / `Raycast` | 已完成 | 物理 C API；`GPhysics_AttachSystems` 把 PhysicsSystem3D/2D 挂入 Core World |
+| GrycePlatform.dll 输入注入：`GInput_InjectKey` / `MouseMove` / `MouseButton` / `MouseScroll` | 已完成 | GLFW 子窗口 WndProc subclass 捕获原生消息 → 编辑器 → 回灌 Core |
+| Viewport Gizmo | 已完成 | 改为 WPF `GizmoOverlayWindow` 透明 overlay（纯 WPF 图形，替代 ImGuizmo） |
+| `ECMD_GIZMO_MANIPULATE` 写回 Transform | 已完成 | Gizmo 拖拽写回实体 Transform |
+
+### Phase 5 — 资产 + 完整闭环（已完成）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `core/GryceCore/asset_api.h` + `ECMD_IMPORT_ASSET` | 已完成 | `GAsset_Import/Load/GetPath/Unload` |
+| 日志转发：`GCore_GetLogMessages` + `OnLogMessage` 回调 | 已完成 | Console 面板：GLog → MemoryLogSink → 编辑器回调（增量投递） |
+| 完整 Editor ↔ Core 闭环验证 | 已完成 | 编辑器全功能走 C API；性能打磨：250Hz 渲染定时器、HwndHost airspace 输入捕获、gizmo 点击穿透修复 |

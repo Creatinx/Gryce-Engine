@@ -1,4 +1,5 @@
 #include "GryceCore/component_api.h"
+#include "GryceCore/api_guard.h"
 #include "GryceCore/core_api.h"
 
 #include "internal_state.h"
@@ -163,6 +164,7 @@ static std::string get_component_type_name(gryce_engine::components::Component* 
 
 namespace gryce_core {
 std::string get_component_type_name(gryce_engine::components::Component* comp) {
+    GRYCE_API_GUARD();
     if (!comp) return "";
     const char* raw = typeid(*comp).name();
     // MSVC: prefix "class " or "struct " -- strip it
@@ -175,6 +177,7 @@ std::string get_component_type_name(gryce_engine::components::Component* comp) {
 extern "C" {
 
 int GComponent_GetCount(GEntityHandle entity) {
+    GRYCE_API_GUARD();
 
     Entity* e = resolve_entity(entity);
 
@@ -187,6 +190,7 @@ int GComponent_GetCount(GEntityHandle entity) {
 }
 
 int GComponent_GetTypeHashAt(GEntityHandle entity, int index, uint64_t* out_hash) {
+    GRYCE_API_GUARD();
 
     if (!out_hash) return -1;
 
@@ -207,6 +211,7 @@ int GComponent_GetTypeHashAt(GEntityHandle entity, int index, uint64_t* out_hash
 }
 
 int GComponent_GetTypeNameAt(GEntityHandle entity, int index, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
 
     if (!out_buf || buf_size <= 0) return -1;
 
@@ -229,6 +234,7 @@ int GComponent_GetTypeNameAt(GEntityHandle entity, int index, char* out_buf, int
 }
 
 int GComponent_GetPropertyCount(GEntityHandle entity, uint64_t comp_type_hash) {
+    GRYCE_API_GUARD();
 
     Entity* e = resolve_entity(entity);
 
@@ -411,12 +417,14 @@ int GComponent_SetProperty(GEntityHandle entity, uint64_t comp_type_hash, const 
 }
 
 int GComponent_GetRegisteredTypeCount(void) {
+    GRYCE_API_GUARD();
 
     return static_cast<int>(ComponentFactory::instance().all_types().size());
 
 }
 
 int GComponent_GetRegisteredTypeInfo(int index, uint64_t* out_hash, char* out_name, int name_buf_size) {
+    GRYCE_API_GUARD();
 
     if (!out_hash || !out_name || name_buf_size <= 0) return -1;
 
@@ -437,6 +445,7 @@ int GComponent_GetRegisteredTypeInfo(int index, uint64_t* out_hash, char* out_na
 }
 
 int GComponent_AddComponent(GEntityHandle entity, uint64_t comp_type_hash) {
+    GRYCE_API_GUARD();
 
     // Find the type name from the hash by searching registered types
 
@@ -483,6 +492,7 @@ int GComponent_AddComponent(GEntityHandle entity, uint64_t comp_type_hash) {
 }
 
 int GComponent_RemoveComponent(GEntityHandle entity, uint64_t comp_type_hash) {
+    GRYCE_API_GUARD();
 
     // Push RemoveComponent command via command buffer
 
