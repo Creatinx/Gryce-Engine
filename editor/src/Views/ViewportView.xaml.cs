@@ -28,7 +28,6 @@ public partial class ViewportView : UserControl, IDisposable
     private volatile bool _isGameView;
     private volatile bool _windowMinimized;
     private string _displayMode = "Shaded";
-    private (int W, int H) _pendingPixelSize;
     private (int W, int H) _appliedPixelSize;
 
     // ---- editor viewport interaction ----
@@ -216,14 +215,10 @@ public partial class ViewportView : UserControl, IDisposable
     {
         var px = GetPixelSize(e.NewSize.Width, e.NewSize.Height);
         UpdateResolutionDisplay(px.W, px.H);
-
-        // Defer window/resize GL work to the render thread, which owns the
-        // GL context; calling GWindow_SetSize / GViewport_SetSize here would
-        // run GL/GLFW code on the UI thread without a current context.
-        lock (_cameraLock)
-        {
-            _pendingPixelSize = px;
-        }
+        // The embedded GLFW child is resized automatically by ViewportHwndHost
+        // (host WM_SIZE -> SetWindowPos on the GLFW child), so the rendered
+        // content tracks the window frame with no lag. Only the GL render
+        // targets need to be resized on the render thread (throttled below).
     }
 
     private void UpdateResolutionDisplay(int w, int h)
@@ -287,10 +282,6 @@ public partial class ViewportView : UserControl, IDisposable
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 var finalPx = GetPixelSize();
-                lock (_cameraLock)
-                {
-                    _pendingPixelSize = finalPx;
-                }
                 UpdateResolutionDisplay(finalPx.W, finalPx.H);
             }), DispatcherPriority.Loaded);
         }
@@ -356,6 +347,7 @@ public partial class ViewportView : UserControl, IDisposable
         var sw = Stopwatch.StartNew();
         double lastTick = sw.Elapsed.TotalSeconds;
         var frameSw = Stopwatch.StartNew();
+        var resizeSw = Stopwatch.StartNew();
         try
         {
             // The core owns the single GLFW instance; taking the context here
@@ -374,21 +366,19 @@ public partial class ViewportView : UserControl, IDisposable
                 double dt = Math.Min(now - lastTick, 0.05);
                 lastTick = now;
 
-                // Apply deferred viewport resizes on this thread (the owner of
-                // the GL context): GWindow_SetSize / GViewport_SetSize do
-                // GLFW/GL work and must not run on the UI thread.
-                (int W, int H) pending;
-                lock (_cameraLock)
-                {
-                    pending = _pendingPixelSize;
-                }
-                if (pending != (0, 0) && pending != _appliedPixelSize)
+                // Resize GL render targets on this thread (the owner of the GL
+                // context), reading the host's live client size. The embedded
+                // GLFW child window is already resized in lockstep by the host
+                // subclass; only the GPU targets lag here, throttled to ~12Hz
+                // so interactive resizing does not churn allocations per frame.
+                var livePx = GetPixelSize();
+                if (livePx != _appliedPixelSize && resizeSw.ElapsedMilliseconds >= 80)
                 {
                     try
                     {
-                        WindowAPI.GWindow_SetSize(pending.W, pending.H);
-                        ViewportAPI.GViewport_SetSize(pending.W, pending.H);
-                        _appliedPixelSize = pending;
+                        ViewportAPI.GViewport_SetSize(livePx.W, livePx.H);
+                        _appliedPixelSize = livePx;
+                        resizeSw.Restart();
                     }
                     catch { /* ignore transient resize errors */ }
                 }

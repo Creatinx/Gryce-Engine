@@ -763,8 +763,11 @@ ViewportView (XAML)
   在 API 锁内执行渲染命令、**锁外**调用 `present_swap()`（glfwSwapBuffers），
   因此即使 vsync 卡死（窗口遮挡 / 显示器状态变化），UI 线程也永远不会被冻结。
   窗口最小化时渲染线程跳过 GL 工作（`_windowMinimized`），避免隐藏窗口的
-  vsync 交换停滞并节省 CPU/GPU；`GWindow_SetSize` / `GViewport_SetSize` 等
-  GL/GLFW 操作延迟到渲染线程帧首执行（`_pendingPixelSize`）。
+  vsync 交换停滞并节省 CPU/GPU。
+- **窗口缩放零延迟**：`ViewportHwndHost` 子类化宿主窗口，在宿主 `WM_SIZE` 里用
+  消息自带的客户区尺寸直接 `SetWindowPos` 同步 GLFW 子窗口，渲染画面与窗口边框
+  始终同步（不依赖 GetClientRect 时序）；GL 渲染目标缩放（`GViewport_SetSize`）
+  由渲染线程按实时宿主尺寸执行并节流到 ~12Hz，避免拖拽缩放时每帧重分配 GPU 资源。
 
 ### 14.5 生命周期
 

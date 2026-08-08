@@ -29,11 +29,14 @@ public class ViewportHwndHost : HwndHost
 
     private IntPtr _glfwChild;
     private IntPtr _oldWndProc;
+    private IntPtr _oldHostWndProc;
 
     /// <summary>HWND of the embedded GLFW render window (valid after AttachGlfwChild).</summary>
     public IntPtr GlfwChildHandle => _glfwChild;
     private static readonly Dictionary<IntPtr, ViewportHwndHost> s_hosts = new();
+    private static readonly Dictionary<IntPtr, ViewportHwndHost> s_hostProcs = new();
     private static readonly WndProcDelegate s_proc = WndProc;
+    private static readonly WndProcDelegate s_hostProc = HostWndProc;
 
     private delegate IntPtr WndProcDelegate(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
@@ -50,12 +53,28 @@ public class ViewportHwndHost : HwndHost
         _hwnd = CreateWindowEx(0, "static", "", style,
             0, 0, _width, _height,
             hwndParent.Handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        // Subclass the host window so the embedded GLFW child can be resized
+        // in lockstep with the host: WPF resizes the host HWND during layout,
+        // and its WM_SIZE carries the exact client size, which we apply to the
+        // GLFW child immediately (no GetClientRect timing races, no lag while
+        // moving/resizing the editor window).
+        _oldHostWndProc = SetWindowLongPtr(_hwnd, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(s_hostProc));
+        if (_oldHostWndProc != IntPtr.Zero)
+        {
+            s_hostProcs[_hwnd] = this;
+        }
         HwndCreated?.Invoke(this, _hwnd);
         return new HandleRef(this, _hwnd);
     }
 
     protected override void DestroyWindowCore(HandleRef hwnd)
     {
+        if (_hwnd != IntPtr.Zero && _oldHostWndProc != IntPtr.Zero)
+        {
+            SetWindowLongPtr(_hwnd, GWLP_WNDPROC, _oldHostWndProc);
+            s_hostProcs.Remove(_hwnd);
+            _oldHostWndProc = IntPtr.Zero;
+        }
         if (_glfwChild != IntPtr.Zero && _oldWndProc != IntPtr.Zero)
         {
             SetWindowLongPtr(_glfwChild, GWLP_WNDPROC, _oldWndProc);
@@ -116,6 +135,38 @@ public class ViewportHwndHost : HwndHost
         {
             s_hosts[_glfwChild] = this;
         }
+
+        // Match the GLFW child to the host's current client size (the host
+        // WM_SIZE handler keeps it in sync afterwards).
+        if (TryGetClientSize(_hwnd, out int cw, out int ch))
+        {
+            SetWindowPos(_glfwChild, IntPtr.Zero, 0, 0, cw, ch,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    /// <summary>Host WndProc: on WM_SIZE, resize the embedded GLFW child to the
+    /// host's client size so the rendered viewport tracks the window frame
+    /// during move/resize without lag.</summary>
+    private static IntPtr HostWndProc(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam)
+    {
+        if (s_hostProcs.TryGetValue(hWnd, out var host))
+        {
+            if (msg == 0x0005) // WM_SIZE
+            {
+                int w = (int)((long)lParam & 0xFFFF);
+                int h = (int)(((long)lParam >> 16) & 0xFFFF);
+                host.ResizeGlfwChild(w, h);
+            }
+        }
+        return CallWindowProc(host?._oldHostWndProc ?? IntPtr.Zero, hWnd, msg, wParam, lParam);
+    }
+
+    private void ResizeGlfwChild(int w, int h)
+    {
+        if (_glfwChild == IntPtr.Zero || w <= 0 || h <= 0) return;
+        SetWindowPos(_glfwChild, IntPtr.Zero, 0, 0, w, h,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     private static IntPtr WndProc(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam)
@@ -220,4 +271,30 @@ public class ViewportHwndHost : HwndHost
 
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hWnd, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int x, int y, int cx, int cy, uint flags);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    private static bool TryGetClientSize(nint hwnd, out int w, out int h)
+    {
+        w = 0;
+        h = 0;
+        if (hwnd == IntPtr.Zero || !GetClientRect(hwnd, out var r)) return false;
+        w = r.Right - r.Left;
+        h = r.Bottom - r.Top;
+        return w > 0 && h > 0;
+    }
+
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOACTIVATE = 0x0010;
 }
