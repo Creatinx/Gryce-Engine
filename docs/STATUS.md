@@ -312,19 +312,21 @@
 | 功能 | 状态 |
 |---|---|
 | 架构 | 已实现（WPF + iNKORE Fluent；Editor 仅通过 `GCore_*` / `GEntity_*` / `GComponent_*` / `GScene_*` / `GMaterial_*` / `GAnimator_*` / `GPhysics_*` C API 驱动 Core） |
-| 布局 | 已实现（菜单/工具栏 + Hierarchy / Viewport / Inspector + 底部 Project / Console / Animation 标签页） |
-| 视口嵌入（HwndHost + GLFW 外部窗口） | 已实现（按物理像素创建/缩放，适配高 DPI；尺寸随窗口与分割条实时同步） |
+| 布局 | 已实现（菜单/工具栏 + Hierarchy / Viewport / Inspector + 底部 Project / Console / Animation 标签页；底部面板压缩为 2 行头部 + 内容区，去除冗余分隔与独立状态栏） |
+| 视口嵌入（HwndHost + GLFW 外部窗口） | 已实现（按物理像素创建/缩放，适配高 DPI；尺寸随窗口与分割条实时同步；同步模式命令执行完整，场景/网格/物体正常显示） |
+| 渲染（Tonemapping） | 已实现（修复 HDR tonemap 默认曝光 2.0 导致视口整体灰白、场景不可见的问题，曝光调整为 1.0） |
 | 层级面板（Hierarchy） | 已实现（Entity 树、搜索、右键创建子实体/重命名/副本/删除、新建自动选中并展开祖先） |
 | Create Entity 对话框 | 已实现（搜索 + 最近使用 + 类型分类 + 描述，创建时可附带组件） |
 | Inspector 面板 | 已实现（反射自动生成字段编辑；修复短名/全名反射查询不一致导致属性不可编辑的问题） |
-| 项目面板（Project） | 已实现（目录树、文件列表、新建文件夹、刷新） |
-| 控制台面板（Console） | 已实现（引擎 GLog → MemoryLogSink → 编辑器回调；GL 调试消息去重防刷屏） |
+| 项目面板（Project） | 已实现（目录树 + 文件列表 + 新建文件夹/刷新；文件夹树使用 Fluent 黄色文件夹图标；头部整合路径/状态/统计，搜索栏独立一行不重叠） |
+| 控制台面板（Console） | 已实现（引擎 GLog → MemoryLogSink → 编辑器回调；GL 调试消息去重防刷屏；标题/过滤/计数/复制/清空合并为一行） |
 | 动画面板 | 已实现（片段下拉/播放/暂停/停止/循环/速度/时间轴拖动；`GAnimator_*` 查询片段与时长） |
 | 材质编辑器 | 已实现（PBR 参数 + 贴图路径 + use 开关；`GMaterial_*` C API，贴图改动自动重传 GPU） |
 | Play Mode | 已实现（进入/退出；物理系统挂载后真实模拟：刚体/碰撞体/重力） |
 | 物理 | 已实现（`GPhysics_AttachSystems` 把 PhysicsSystem3D/2D 挂入 Core World，播放模式真实步进） |
 | 动画 | 已实现（`AnimatorSystem` 已注册进 Core World，播放模式推进骨骼动画时间） |
-| 主题 | 已实现（深色/浅色 + 标题栏配色修复 + 持久化） |
+| 主题 | 已实现（全局 `ThemeManager.Current.ApplicationTheme` 深色/浅色 + 持久化；菜单栏/Hierarchy/Inspector/底部面板统一深色） |
+| 右键菜单 | 已实现（全局 MenuItem/Separator 模板重写为 Fluent 风格：深色圆角 + 阴影 + 高亮/禁用态 + 子菜单箭头） |
 | 本地化 | 已实现（中文/英文运行时切换 + 持久化，`editor/project/locales/{en,zh}.json`） |
 | 快捷键 | 已实现（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D） |
 | Undo/Redo | 部分实现（创建/删除/重命名实体） |
@@ -506,3 +508,18 @@
 **验证**
 - 重新编译后，OpenGL 后端下编辑器 Viewport 与 Game View 的 3D 场景方向一致，且 2D / 物理调试绘制方向不受影响。
 - 按 F 聚焦 Ground 后视角不再“临时反转”，离开聚焦状态也能保持与 Game View 同向。
+
+### 13.4 WPF 嵌入视口渲染灰白、场景不可见（HDR tonemap 曝光过高）
+
+**现象**
+- 编辑器（同步模式，`SyncMode=true`）视口显示为整体灰白（天空约 `#83838B`、地面约 `#D0D0D0`），看不到场景物体；原生帧缓冲截图与 HDR 颜色纹理内容不一致。
+- 把 tonemap shader 临时改为直接输出 HDR 采样值后，场景（深色天空 + 地面 + 物体）完整可见，说明 HDR 场景 pass 与纹理绑定均正常，问题仅在 tonemap 数学。
+
+**根因**
+- `RenderPipeline::exposure_` 默认值为 `2.0f`，导致 Reinhard tonemap 前 HDR 值被整体提亮约一倍：天空 `0.149×2→0.298`（输出 `#83838B`）、地面 `0.894×2→1.788`（输出 `#D0D0D0`），与实测输出逐像素吻合。
+
+**修复**
+- `core/render/render_pipeline.h`：`exposure_` 默认值改为 `1.0f`。
+
+**验证**
+- 重建 GryceCore 并复制 `GryceCored.dll` 后，视口显示正确 tonemap 结果：天空 `#65656C`、地面 `#B5B5B5`，物体轮廓清晰；Play Mode 下骨骼动画/物理正常推进（视口像素持续变化）。
