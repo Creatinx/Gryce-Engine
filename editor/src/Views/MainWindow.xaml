@@ -7,10 +7,9 @@
         xmlns:views="clr-namespace:GryceEngine.Editor.Views"
         ui:ThemeManager.IsThemeAware="True"
         Title="{Binding Title}"
-        Width="1240" Height="760"
+        Width="1280" Height="720"
         MinWidth="980" MinHeight="620"
         WindowStartupLocation="CenterScreen"
-        WindowState="Maximized"
         WindowStyle="SingleBorderWindow"
         Background="{DynamicResource LayerFillColorDefaultBrush}">
 
@@ -48,7 +47,7 @@
             <RowDefinition Height="Auto"/>  <!-- Toolbar -->
             <RowDefinition Height="*"/>     <!-- Main Content -->
             <RowDefinition Height="4"/>     <!-- Splitter -->
-            <RowDefinition Height="172" MinHeight="90"/> <!-- Bottom Panels -->
+            <RowDefinition Height="210" MinHeight="120"/> <!-- Bottom Panels -->
             <RowDefinition Height="Auto"/>  <!-- Status Bar -->
         </Grid.RowDefinitions>
 

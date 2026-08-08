@@ -7,7 +7,6 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -34,6 +33,12 @@
                     <TextBlock x:Name="StatusText" FontSize="10"
                                Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <Button x:Name="BtnUp" Width="24" Height="24"
+                            ToolTip="{loc:Loc project.up}" Padding="0" Margin="0,0,2,0"
+                            Style="{StaticResource ToolbarButtonStyle}"
+                            Click="OnUpClick">
+                        <TextBlock Text="&#xE74A;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                    </Button>
                     <Button x:Name="BtnNewFolder" Width="24" Height="24"
                             ToolTip="{loc:Loc project.new_folder}" Padding="0" Margin="0,0,2,0"
                             Style="{StaticResource ToolbarButtonStyle}"
@@ -99,32 +104,31 @@
             <Border Grid.Column="0"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="0,0,1,0">
-                <ScrollViewer VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Auto">
-                    <TreeView x:Name="FolderTree" BorderThickness="0"
-                              Background="Transparent"
-                              Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                              SelectedItemChanged="OnFolderTreeSelectionChanged"
-                              FontSize="11"
-                              Padding="0,2,0,6">
-                        <TreeView.ItemContainerStyle>
-                            <Style TargetType="TreeViewItem">
-                                <Setter Property="IsExpanded" Value="False"/>
-                                <Setter Property="Padding" Value="4,3"/>
-                                <Setter Property="MinHeight" Value="24"/>
-                                <Setter Property="Foreground"
-                                        Value="{DynamicResource TextFillColorPrimaryBrush}"/>
-                                <Setter Property="Background" Value="Transparent"/>
-                                <Setter Property="BorderThickness" Value="0"/>
-                                <Style.Triggers>
-                                    <Trigger Property="IsSelected" Value="True">
-                                        <Setter Property="Background" Value="Transparent"/>
-                                    </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TreeView.ItemContainerStyle>
-                    </TreeView>
-                </ScrollViewer>
+                <TreeView x:Name="FolderTree" BorderThickness="0"
+                          Background="Transparent"
+                          Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                          SelectedItemChanged="OnFolderTreeSelectionChanged"
+                          FontSize="11"
+                          Padding="0,2,0,6"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                    <TreeView.ItemContainerStyle>
+                        <Style TargetType="TreeViewItem">
+                            <Setter Property="IsExpanded" Value="False"/>
+                            <Setter Property="Padding" Value="4,3"/>
+                            <Setter Property="MinHeight" Value="24"/>
+                            <Setter Property="Foreground"
+                                    Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Setter Property="BorderThickness" Value="0"/>
+                            <Style.Triggers>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TreeView.ItemContainerStyle>
+                </TreeView>
             </Border>
 
             <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
@@ -137,13 +141,15 @@
                 </Grid.RowDefinitions>
 
                 <!-- File list -->
-                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
-                    <ListBox x:Name="FileListBox"
-                             BorderThickness="0" Background="Transparent"
-                             Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                             SelectionMode="Single"
-                             SelectionChanged="OnFileSelectionChanged"
-                             MouseDoubleClick="OnFileDoubleClick">
+                <ListBox Grid.Row="0" x:Name="FileListBox"
+                         BorderThickness="0" Background="Transparent"
+                         Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                         SelectionMode="Single"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ScrollViewer.CanContentScroll="False"
+                         SelectionChanged="OnFileSelectionChanged"
+                         MouseDoubleClick="OnFileDoubleClick">
                         <ListBox.ContextMenu>
                             <ContextMenu>
                                 <MenuItem Header="{loc:Loc project.new_folder}" Click="OnNewFolderClick">
@@ -215,8 +221,7 @@
                                 </Border>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
-                    </ListBox>
-                </ScrollViewer>
+                </ListBox>
 
                 <!-- Empty state -->
                 <Border Grid.Row="0"

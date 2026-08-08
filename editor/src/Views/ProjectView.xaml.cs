@@ -87,7 +87,7 @@ public partial class ProjectView : UserControl
 
         // Select root and show its contents
         _currentPath = ProjectRoot;
-        PathLabel.Text = LocalizationService.Instance.T("project.root");
+        UpdatePathLabel(ProjectRoot);
         RefreshFileList(ProjectRoot);
         StatusText.Text = string.Format(
             LocalizationService.Instance.T("project.project_root"), ProjectRoot);
@@ -155,6 +155,7 @@ public partial class ProjectView : UserControl
 
     private void UpdatePathLabel(string path)
     {
+        BtnUp.IsEnabled = path != ProjectRoot;
         if (path == ProjectRoot)
         {
             PathLabel.Text = LocalizationService.Instance.T("project.root");
@@ -361,6 +362,16 @@ public partial class ProjectView : UserControl
     private void OnClearSearchClick(object sender, RoutedEventArgs e)
     {
         SearchBox.Text = string.Empty;
+    }
+
+    private void OnUpClick(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_currentPath) || _currentPath == ProjectRoot) return;
+        var parent = Path.GetDirectoryName(_currentPath);
+        if (string.IsNullOrEmpty(parent)) return;
+        _currentPath = parent;
+        UpdatePathLabel(parent);
+        RefreshFileList(parent);
     }
 
     private void OnNewFolderClick(object sender, RoutedEventArgs e)
