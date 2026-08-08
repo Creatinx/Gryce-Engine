@@ -48,9 +48,6 @@ public partial class ViewportView : UserControl, IDisposable
     private double _dragStartScreenX, _dragStartScreenY;
     private GQuat _dragStartRot;
     private bool _dragCaptured;
-    private System.Windows.Interop.HwndSource? _windowHwndSource;
-    private (int X, int Y, int W, int H) _viewportInWindow;
-    private (int X, int Y, int W, int H) _viewportScreenRect;
 
     // ---- gizmo visuals (reused shapes) ----
     private readonly Line[] _axisLines = new Line[3];
@@ -110,9 +107,6 @@ public partial class ViewportView : UserControl, IDisposable
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetClientRect(IntPtr hWnd, out NativeRect rect);
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
-
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct NativeRect
     {
@@ -146,6 +140,10 @@ public partial class ViewportView : UserControl, IDisposable
 
         _hwndHost = new ViewportHwndHost(w, h);
         _hwndHost.HwndCreated += OnHwndCreated;
+        _hwndHost.NativeMouseMove += OnNativeMouseMove;
+        _hwndHost.NativeMouseButton += OnNativeMouseButton;
+        _hwndHost.NativeMouseWheel += OnNativeMouseWheel;
+        _hwndHost.NativeKey += OnNativeKey;
         HostContainer.Content = _hwndHost;
 
         _renderTimer = new DispatcherTimer(DispatcherPriority.Render)
@@ -164,8 +162,6 @@ public partial class ViewportView : UserControl, IDisposable
 
             _overlay = new GizmoOverlayWindow { Owner = win };
             _overlay.Show();
-            _windowHwndSource = PresentationSource.FromVisual(win) as System.Windows.Interop.HwndSource;
-            _windowHwndSource?.AddHook(OnWindowMouseHook);
 
             UpdateSceneHint();
         }
@@ -186,12 +182,6 @@ public partial class ViewportView : UserControl, IDisposable
             win.Deactivated -= OnWindowDeactivated;
         }
 
-        if (_windowHwndSource != null)
-        {
-            _windowHwndSource.RemoveHook(OnWindowMouseHook);
-            _windowHwndSource = null;
-        }
-
         _overlay?.Close();
         _overlay = null;
 
@@ -204,6 +194,10 @@ public partial class ViewportView : UserControl, IDisposable
         if (_hwndHost != null)
         {
             _hwndHost.HwndCreated -= OnHwndCreated;
+            _hwndHost.NativeMouseMove -= OnNativeMouseMove;
+            _hwndHost.NativeMouseButton -= OnNativeMouseButton;
+            _hwndHost.NativeMouseWheel -= OnNativeMouseWheel;
+            _hwndHost.NativeKey -= OnNativeKey;
             _hwndHost.Dispose();
             _hwndHost = null;
         }
@@ -553,7 +547,10 @@ public partial class ViewportView : UserControl, IDisposable
             return;
         }
 
-        if (_rightDown) _sceneCamera.Orbit(dx, dy);
+        if (_rightDown)
+        {
+            _sceneCamera.Orbit(dx, dy);
+        }
         else if (_middleDown) _sceneCamera.Pan(dx, dy);
         else if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
     }
@@ -609,49 +606,6 @@ public partial class ViewportView : UserControl, IDisposable
         else _nativeKeys.Remove(vk);
     }
 
-    /// <summary>
-    /// WndProc-level mouse capture for the viewport. Mouse messages for the
-    /// editor window land here (the embedded GLFW child is skipped by WPF
-    /// HwndHost hit-testing), so this is the reliable input path.
-    /// </summary>
-    private IntPtr OnWindowMouseHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
-    {
-        if (msg == 0x020A) // WM_MOUSEWHEEL: lParam is screen coords
-        {
-            var v = _viewportScreenRect;
-            int sx = LoWord(lParam), sy = HiWord(lParam);
-            if (sx >= v.X && sx < v.X + v.W && sy >= v.Y && sy < v.Y + v.H)
-            {
-                OnNativeMouseWheel((short)HiWord(wParam));
-                handled = true;
-            }
-            return IntPtr.Zero;
-        }
-
-        if (msg is 0x0200 or 0x0201 or 0x0202 or 0x0204 or 0x0205 or 0x0207 or 0x0208)
-        {
-            var v = _viewportInWindow;
-            int x = LoWord(lParam), y = HiWord(lParam);
-            if (x < v.X || x >= v.X + v.W || y < v.Y || y >= v.Y + v.H) return IntPtr.Zero;
-            double vx = x - v.X, vy = y - v.Y;
-            switch (msg)
-            {
-                case 0x0200: OnNativeMouseMove(vx, vy); break;
-                case 0x0201: OnNativeMouseButton(0, true, vx, vy); break;
-                case 0x0202: OnNativeMouseButton(0, false, vx, vy); break;
-                case 0x0204: OnNativeMouseButton(1, true, vx, vy); break;
-                case 0x0205: OnNativeMouseButton(1, false, vx, vy); break;
-                case 0x0207: OnNativeMouseButton(2, true, vx, vy); break;
-                case 0x0208: OnNativeMouseButton(2, false, vx, vy); break;
-            }
-            handled = true;
-            return IntPtr.Zero;
-        }
-        return IntPtr.Zero;
-    }
-
-    private static int LoWord(IntPtr v) => (int)((long)v & 0xFFFF);
-    private static int HiWord(IntPtr v) => (int)(((long)v >> 16) & 0xFFFF);
 
 
     // =====================================================================
@@ -1091,6 +1045,7 @@ public partial class ViewportView : UserControl, IDisposable
 
 
 
+
     private void PositionOverlay()
     {
         var overlay = _overlay;
@@ -1102,16 +1057,6 @@ public partial class ViewportView : UserControl, IDisposable
             var topLeft = ViewportBorder.PointToScreen(new Point(0, 0));
             var dip = src.CompositionTarget.TransformFromDevice.Transform(topLeft);
             var px = GetPixelSize();
-            _viewportScreenRect = ((int)topLeft.X, (int)topLeft.Y, px.W, px.H);
-            var win = Window.GetWindow(this);
-            if (win != null && _hwndHost != null && _hwndHost.Handle != IntPtr.Zero &&
-                GetWindowRect(_hwndHost.Handle, out var hr))
-            {
-                var winOrigin = win.PointToScreen(new Point(0, 0));
-                _viewportInWindow = (
-                    (int)(hr.Left - winOrigin.X), (int)(hr.Top - winOrigin.Y),
-                    hr.Right - hr.Left, hr.Bottom - hr.Top);
-            }
             double scale = px.W / Math.Max(ViewportBorder.ActualWidth, 1.0);
             overlay.Canvas.LayoutTransform = new ScaleTransform(1.0 / scale, 1.0 / scale);
             overlay.Canvas.Width = px.W;

@@ -28,10 +28,7 @@ public sealed class GizmoOverlayWindow : Window
     {
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
-        // A nearly-invisible (alpha=1) background makes the layered window
-        // hit-testable everywhere; fully transparent layered windows let
-        // clicks fall through to the window below.
-        Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
+        Background = Brushes.Transparent;
         ShowInTaskbar = false;
         ShowActivated = false;
         Focusable = false;
@@ -78,5 +75,26 @@ public sealed class GizmoOverlayWindow : Window
         root.Children.Add(_modeBadge);
         Content = root;
     }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        // Click-through: this window only draws the gizmo; input must reach the
+        // editor window below so the viewport mouse handler can work.
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+    }
+
+    private const int GWL_EXSTYLE = -20;
+    private const int WS_EX_TRANSPARENT = 0x00000020;
+    private const int WS_EX_LAYERED = 0x00080000;
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
 }
