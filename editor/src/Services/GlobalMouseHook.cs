@@ -22,6 +22,7 @@ public sealed class GlobalMouseHook : IDisposable
 
     private readonly HookProc _proc;
     private IntPtr _hook;
+    private bool _captured;
 
     // Active capture region in physical screen pixels.
     public int RegionLeft { get; set; }
@@ -32,6 +33,9 @@ public sealed class GlobalMouseHook : IDisposable
     public event Action<int, int>? ScreenMouseMove;
     public event Action<int, bool, int, int>? ScreenMouseButton;
     public event Action<int>? MouseWheel;
+
+    /// <summary>Currently held mouse buttons (1=left, 2=right, 4=middle).</summary>
+    public int CurrentButtons { get; private set; }
 
     public GlobalMouseHook()
     {
@@ -51,33 +55,58 @@ public sealed class GlobalMouseHook : IDisposable
     {
         if (nCode >= 0)
         {
-            var info = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
-            int x = info.pt.x;
-            int y = info.pt.y;
-            bool inside = x >= RegionLeft && x <= RegionRight && y >= RegionTop && y <= RegionBottom;
-            int msg = (int)wParam;
-
-            if (inside)
+            try
             {
+                var info = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+                int x = info.pt.x;
+                int y = info.pt.y;
+                bool inside = x >= RegionLeft && x <= RegionRight && y >= RegionTop && y <= RegionBottom;
+                int msg = (int)wParam;
+
                 switch (msg)
                 {
-                    case WM_MOUSEMOVE:
-                        ScreenMouseMove?.Invoke(x, y);
-                        return (IntPtr)1; // swallow
                     case WM_LBUTTONDOWN:
                     case WM_RBUTTONDOWN:
                     case WM_MBUTTONDOWN:
-                        ScreenMouseButton?.Invoke(ToButton(msg), true, x, y);
-                        return (IntPtr)1;
+                        CurrentButtons |= ToButtonFlag(msg);
+                        if (inside) _captured = true;
+                        if (_captured)
+                        {
+                            ScreenMouseButton?.Invoke(ToButton(msg), true, x, y);
+                            return (IntPtr)1;
+                        }
+                        break;
                     case WM_LBUTTONUP:
                     case WM_RBUTTONUP:
                     case WM_MBUTTONUP:
-                        ScreenMouseButton?.Invoke(ToButton(msg), false, x, y);
-                        return (IntPtr)1;
+                        CurrentButtons &= ~ToButtonFlag(msg);
+                        if (_captured)
+                        {
+                            ScreenMouseButton?.Invoke(ToButton(msg), false, x, y);
+                            if (CurrentButtons == 0) _captured = false;
+                            return (IntPtr)1;
+                        }
+                        break;
+                    case WM_MOUSEMOVE:
+                        if (inside && CurrentButtons != 0 && !_captured) _captured = true;
+                        if (_captured || inside)
+                        {
+                            ScreenMouseMove?.Invoke(x, y);
+                            return (IntPtr)1; // swallow
+                        }
+                        break;
                     case WM_MOUSEWHEEL:
-                        MouseWheel?.Invoke((short)(info.mouseData >> 16));
-                        return (IntPtr)1;
+                        if (_captured || inside)
+                        {
+                            MouseWheel?.Invoke((short)(info.mouseData >> 16));
+                            return (IntPtr)1;
+                        }
+                        break;
                 }
+            }
+            catch
+            {
+                // Never let a handler exception crash the process from inside a hook.
             }
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);
@@ -92,6 +121,18 @@ public sealed class GlobalMouseHook : IDisposable
             case WM_RBUTTONDOWN:
             case WM_RBUTTONUP: return 1;
             default: return 2;
+        }
+    }
+
+    private static int ToButtonFlag(int msg)
+    {
+        switch (msg)
+        {
+            case WM_LBUTTONDOWN:
+            case WM_LBUTTONUP: return 1;
+            case WM_RBUTTONDOWN:
+            case WM_RBUTTONUP: return 2;
+            default: return 4;
         }
     }
 

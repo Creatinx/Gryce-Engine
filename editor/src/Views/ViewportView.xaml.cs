@@ -42,11 +42,11 @@ public partial class ViewportView : UserControl, IDisposable
     // ---- picking / gizmo drag ----
     private int _dragAxis = -1;          // 0=X, 1=Y, 2=Z
     private string _dragMode = "";       // "Translate" | "Rotate" | "Scale"
-    private double _dragStartX, _dragStartY;
     private double _dragStartPosX, _dragStartPosY, _dragStartPosZ;
     private double _dragStartScaleX, _dragStartScaleY, _dragStartScaleZ;
-    private double _dragHitX, _dragHitY, _dragHitZ;
-    private double _dragRadius;
+    private double _dragStartScreenDist;
+    private double _gizmoScreenX, _gizmoScreenY;
+    private double _dragStartScreenX, _dragStartScreenY;
     private GQuat _dragStartRot;
     private bool _dragCaptured;
     private (double X, double Y) _viewportScreenOrigin;
@@ -535,6 +535,15 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnNativeMouseMove(double x, double y)
     {
         if (!_rendererInitialized) return;
+        // Keep local button state in sync with the hook (handles drags that
+        // start outside the viewport and enter it with a button held).
+        if (_mouseHook != null)
+        {
+            int btns = _mouseHook.CurrentButtons;
+            _leftDown = (btns & 1) != 0;
+            _rightDown = (btns & 2) != 0;
+            _middleDown = (btns & 4) != 0;
+        }
         double dx = x - _lastMouseX;
         double dy = y - _lastMouseY;
         _lastMouseX = x;
@@ -928,8 +937,10 @@ public partial class ViewportView : UserControl, IDisposable
 
         _dragAxis = bestAxis;
         _dragMode = VM.GizmoMode;
-        _dragStartX = sx;
-        _dragStartY = sy;
+        _dragStartScreenX = sx;
+        _dragStartScreenY = sy;
+        _gizmoScreenX = center.X;
+        _gizmoScreenY = center.Y;
         _dragStartPosX = pos.X; _dragStartPosY = pos.Y; _dragStartPosZ = pos.Z;
         EntityAPI.GEntity_GetLocalScale(selected.Handle, out var scl);
         _dragStartScaleX = scl.X; _dragStartScaleY = scl.Y; _dragStartScaleZ = scl.Z;
@@ -944,16 +955,8 @@ public partial class ViewportView : UserControl, IDisposable
             (axes.UpX, axes.UpY, axes.UpZ),
             (axes.FwdX, axes.FwdY, axes.FwdZ)
         };
-        var ray = cam.ScreenToRay(sx, sy, px.W, px.H);
-        var hit = ViewportCamera.ClosestPointOnLine(
-            _dragStartPosX, _dragStartPosY, _dragStartPosZ,
-            axisDirs[_dragAxis].Item1, axisDirs[_dragAxis].Item2, axisDirs[_dragAxis].Item3,
-            ray.Ox, ray.Oy, ray.Oz, ray.Dx, ray.Dy, ray.Dz);
-        _dragHitX = hit.X; _dragHitY = hit.Y; _dragHitZ = hit.Z;
-        _dragRadius = Math.Sqrt(
-            (hit.X - _dragStartPosX) * (hit.X - _dragStartPosX) +
-            (hit.Y - _dragStartPosY) * (hit.Y - _dragStartPosY) +
-            (hit.Z - _dragStartPosZ) * (hit.Z - _dragStartPosZ));
+        _dragStartScreenDist = Math.Sqrt(
+            (sx - center.X) * (sx - center.X) + (sy - center.Y) * (sy - center.Y));
     }
 
     private void UpdateGizmoDrag(double sx, double sy)
@@ -975,28 +978,34 @@ public partial class ViewportView : UserControl, IDisposable
         double ady = axisDirs[_dragAxis].Item2;
         double adz = axisDirs[_dragAxis].Item3;
 
-        var ray = cam.ScreenToRay(sx, sy, px.W, px.H);
-        var hit = ViewportCamera.ClosestPointOnLine(
-            _dragStartPosX, _dragStartPosY, _dragStartPosZ, adx, ady, adz,
-            ray.Ox, ray.Oy, ray.Oz, ray.Dx, ray.Dy, ray.Dz);
+        // Screen-space projection of the drag axis direction.
+        double sxDir = adx * cam.RightX + ady * cam.RightY + adz * cam.RightZ;
+        double syDir = -(adx * cam.UpX + ady * cam.UpY + adz * cam.UpZ);
+        double slen = Math.Sqrt(sxDir * sxDir + syDir * syDir);
+        if (slen < 1e-6) return;
+        sxDir /= slen; syDir /= slen;
+
+        double sdx = sx - _dragStartScreenX;
+        double sdy = sy - _dragStartScreenY;
+        double screenDelta = sdx * sxDir + sdy * syDir;
+        double worldPerScreen = ScreenLengthToWorld(
+            1.0, cam, new GVec3((float)_dragStartPosX, (float)_dragStartPosY, (float)_dragStartPosZ));
+        double worldDelta = screenDelta * worldPerScreen;
 
         if (_dragMode == "Translate")
         {
-            double nx = _dragStartPosX + (hit.X - _dragHitX);
-            double ny = _dragStartPosY + (hit.Y - _dragHitY);
-            double nz = _dragStartPosZ + (hit.Z - _dragHitZ);
+            double nx = _dragStartPosX + adx * worldDelta;
+            double ny = _dragStartPosY + ady * worldDelta;
+            double nz = _dragStartPosZ + adz * worldDelta;
             var p = new GVec3((float)nx, (float)ny, (float)nz);
             EntityAPI.GEntity_SetLocalPosition(selected.Handle, ref p);
             VM.RaiseTransformChanged(selected.Handle);
         }
         else if (_dragMode == "Scale")
         {
-            double d0 = _dragRadius;
-            double d1 = Math.Sqrt(
-                (hit.X - _dragStartPosX) * (hit.X - _dragStartPosX) +
-                (hit.Y - _dragStartPosY) * (hit.Y - _dragStartPosY) +
-                (hit.Z - _dragStartPosZ) * (hit.Z - _dragStartPosZ));
-            double factor = d0 > 1e-6 ? d1 / d0 : 1.0;
+            double factor = _dragStartScreenDist > 1e-6
+                ? (_dragStartScreenDist + screenDelta) / _dragStartScreenDist
+                : 1.0;
             var sc = new GVec3((float)_dragStartScaleX, (float)_dragStartScaleY, (float)_dragStartScaleZ);
             if (_dragAxis == 0) sc.X = (float)(_dragStartScaleX * factor);
             else if (_dragAxis == 1) sc.Y = (float)(_dragStartScaleY * factor);
@@ -1006,22 +1015,11 @@ public partial class ViewportView : UserControl, IDisposable
         }
         else if (_dragMode == "Rotate")
         {
-            // Rotation around the axis: use the tangent of the orbit ring.
-            double rx = hit.X - _dragStartPosX;
-            double ry = hit.Y - _dragStartPosY;
-            double rz = hit.Z - _dragStartPosZ;
-            double radius = Math.Sqrt(rx * rx + ry * ry + rz * rz);
-            if (radius < 1e-6) return;
-
-            // tangent = axis x radius
-            double tx = ady * rz - adz * ry;
-            double ty = adz * rx - adx * rz;
-            double tz = adx * ry - ady * rx;
-            double tl = Math.Sqrt(tx * tx + ty * ty + tz * tz);
-            if (tl < 1e-9) return;
-            tx /= tl; ty /= tl; tz /= tl;
-
-            double angle = Math.Asin(Clamp((rx * tx + ry * ty + rz * tz) / radius, -1, 1));
+            // Rotate by the mouse's angular displacement around the gizmo center
+            // on screen. Stable and intuitive (no 180° snapping).
+            double currentAngle = Math.Atan2(sy - _gizmoScreenY, sx - _gizmoScreenX);
+            double startAngle = Math.Atan2(_dragStartScreenY - _gizmoScreenY, _dragStartScreenX - _gizmoScreenX);
+            double angle = currentAngle - startAngle;
             var axisQuat = QuatAxisAngle(adx, ady, adz, angle);
             var result = MulQuat(axisQuat, _dragStartRot);
             EntityAPI.GEntity_SetLocalRotation(selected.Handle, ref result);
@@ -1063,6 +1061,8 @@ public partial class ViewportView : UserControl, IDisposable
 
     private static double Clamp(double v, double lo, double hi)
         => v < lo ? lo : (v > hi ? hi : v);
+
+
 
     private void PositionOverlay()
     {

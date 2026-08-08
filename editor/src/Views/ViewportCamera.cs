@@ -276,7 +276,9 @@ public sealed class ViewportCamera
 
     private static double[] Inverse(double[] view, double[] proj)
     {
-        var vp = Mul(view, proj);
+        // World -> view -> clip is proj * view (column-major). The unproject
+        // matrix must invert that product, not view * proj.
+        var vp = Mul(proj, view);
         return Invert4(vp);
     }
 
