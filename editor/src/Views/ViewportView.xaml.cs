@@ -1032,6 +1032,7 @@ public partial class ViewportView : UserControl, IDisposable
         var selected = VM?.SelectedEntity;
         if (_isGameView || selected == null || VM == null)
         {
+            _overlay?.SetMode(LocalizationService.Instance.T("viewport.tool_none"));
             HideGizmoShapes();
             return;
         }

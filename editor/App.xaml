@@ -681,8 +681,72 @@
                 <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}"/>
                 <Setter Property="BorderThickness" Value="1"/>
-                <Setter Property="Padding" Value="8,4"/>
+                <Setter Property="Padding" Value="10,5"/>
                 <Setter Property="FontSize" Value="12"/>
+                <Setter Property="MinHeight" Value="30"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ComboBox">
+                            <Grid>
+                                <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                        CornerRadius="6">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <ContentPresenter Grid.Column="0"
+                                                          Content="{TemplateBinding SelectionBoxItem}"
+                                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                          ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                                          Margin="{TemplateBinding Padding}"
+                                                          VerticalAlignment="Center"
+                                                          IsHitTestVisible="False"/>
+                                        <TextBlock Grid.Column="1" Text="&#xE70D;"
+                                                   FontFamily="Segoe MDL2 Assets"
+                                                   FontSize="10"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                   Margin="6,0,10,0" VerticalAlignment="Center"
+                                                   IsHitTestVisible="False"/>
+                                    </Grid>
+                                </Border>
+                                <Popup x:Name="PART_Popup" Placement="Bottom"
+                                       IsOpen="{TemplateBinding IsDropDownOpen}"
+                                       AllowsTransparency="True" PopupAnimation="Fade"
+                                       Focusable="False" VerticalOffset="4"
+                                       MinWidth="{TemplateBinding ActualWidth}">
+                                    <Border Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"
+                                            BorderBrush="{DynamicResource SurfaceStrokeColorDefaultBrush}"
+                                            BorderThickness="1" CornerRadius="8" Padding="4">
+                                        <Border.Effect>
+                                            <DropShadowEffect ShadowDepth="4" BlurRadius="12"
+                                                              Opacity="0.3" Color="#000000"/>
+                                        </Border.Effect>
+                                        <ScrollViewer MaxHeight="260">
+                                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="BorderBrush"
+                                            Value="{DynamicResource ControlStrokeColorSecondaryBrush}"/>
+                                </Trigger>
+                                <Trigger Property="IsDropDownOpen" Value="True">
+                                    <Setter TargetName="Bd" Property="BorderBrush"
+                                            Value="{DynamicResource AccentFillColorDefaultBrush}"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Opacity" Value="0.45"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
             </Style>
 
         </ResourceDictionary>

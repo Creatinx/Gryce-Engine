@@ -116,25 +116,25 @@
                         <TextBlock Text="{loc:Loc settings.version}" FontSize="13"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                    Margin="0,0,0,16"/>
-                        <TextBlock Text="A modern game engine built with C++ and WPF." FontSize="12"
+                        <TextBlock Text="{loc:Loc settings.about_desc}" FontSize="12"
                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                    Margin="0,0,0,4" TextWrapping="Wrap"/>
                         <TextBlock Text="{Binding WorkspaceText}" FontSize="11"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                    Margin="0,12,0,0"/>
 
-                        <TextBlock Text="Technology Stack" FontWeight="SemiBold" FontSize="13"
+                        <TextBlock Text="{loc:Loc settings.tech_stack}" FontWeight="SemiBold" FontSize="13"
                                    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                    Margin="0,16,0,8"/>
-                        <TextBlock Text="C++ Engine Core (CMake)" FontSize="11"
+                        <TextBlock Text="{loc:Loc settings.tech_cpp}" FontSize="11"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
-                        <TextBlock Text="WPF Editor (.NET Framework 4.8)" FontSize="11"
+                        <TextBlock Text="{loc:Loc settings.tech_wpf}" FontSize="11"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
-                        <TextBlock Text="OpenGL / Vulkan Rendering" FontSize="11"
+                        <TextBlock Text="{loc:Loc settings.tech_render}" FontSize="11"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
-                        <TextBlock Text="Jolt Physics / Box2D" FontSize="11"
+                        <TextBlock Text="{loc:Loc settings.tech_physics}" FontSize="11"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
-                        <TextBlock Text="ImGui Integration" FontSize="11"
+                        <TextBlock Text="{loc:Loc settings.tech_imgui}" FontSize="11"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
                     </StackPanel>
                 </Grid>

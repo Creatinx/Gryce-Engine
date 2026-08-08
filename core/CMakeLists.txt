@@ -539,3 +539,31 @@ endif()
 # ============================================================================
 # TODO: 音频模块拆分（Phase 2+）
 # add_library(GryceAudio SHARED ...)
+
+# ============================================================================
+# WPF editor: auto-copy runtime DLLs into the editor output folder
+# ----------------------------------------------------------------------------
+# Rule: whenever a native library is manually copied for the editor, the copy
+# must also be expressed here so a fresh CMake build deploys everything.
+# Output layout matches the csproj: editor/bin/x64/<Config>/net48.
+# ============================================================================
+set(GRYCE_EDITOR_BIN "${CMAKE_SOURCE_DIR}/editor/bin/x64/$<CONFIG>/net48")
+
+function(gryce_copy_dll_to_editor TARGET_NAME)
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GRYCE_EDITOR_BIN}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:${TARGET_NAME}>"
+            "${GRYCE_EDITOR_BIN}/"
+        COMMENT "Copying $<TARGET_FILE_NAME:${TARGET_NAME}> to editor output"
+    )
+endfunction()
+
+gryce_copy_dll_to_editor(GryceCore)
+gryce_copy_dll_to_editor(GryceRenderer)
+gryce_copy_dll_to_editor(GrycePlatform)
+gryce_copy_dll_to_editor(GrycePhysics)
+
+if(TARGET glfw)
+    gryce_copy_dll_to_editor(glfw)
+endif()

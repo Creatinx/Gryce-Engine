@@ -146,6 +146,16 @@ public class EditorViewModel : INotifyPropertyChanged
     public ICommand GizmoRotateCommand { get; }
     public ICommand GizmoScaleCommand { get; }
     public ICommand GizmoToggleSpaceCommand { get; }
+    public ICommand BackCommand { get; }
+    public ICommand ForwardCommand { get; }
+
+    // Selection navigation history (title-bar Back / Forward buttons)
+    private readonly List<GEntityHandle> _selectionHistory = new();
+    private int _historyIndex = -1;
+    private bool _historySuppress;
+
+    public bool CanNavigateBack => _historyIndex > 0;
+    public bool CanNavigateForward => _historyIndex >= 0 && _historyIndex < _selectionHistory.Count - 1;
 
     // Clipboard for Cut/Copy/Paste
     private GEntityHandle _clipboardEntity = GEntityHandle.Null;
@@ -198,6 +208,8 @@ public class EditorViewModel : INotifyPropertyChanged
         GizmoTranslateCommand = new RelayCommand(() => SetGizmoMode("Translate"));
         GizmoRotateCommand = new RelayCommand(() => SetGizmoMode("Rotate"));
         GizmoScaleCommand = new RelayCommand(() => SetGizmoMode("Scale"));
+        BackCommand = new RelayCommand(NavigateBack, () => CanNavigateBack);
+        ForwardCommand = new RelayCommand(NavigateForward, () => CanNavigateForward);
         GizmoToggleSpaceCommand = new RelayCommand(() =>
         {
             IsGizmoLocal = !IsGizmoLocal;
@@ -535,7 +547,48 @@ public class EditorViewModel : INotifyPropertyChanged
 
             entity.IsSelected = true;
             SelectedEntity = entity;
+
+            if (!_historySuppress)
+            {
+                // Record the selection in the Back/Forward navigation history
+                // (trim any forward entries first, browser-style).
+                if (_historyIndex >= 0 && _historyIndex < _selectionHistory.Count - 1)
+                {
+                    _selectionHistory.RemoveRange(
+                        _historyIndex + 1, _selectionHistory.Count - _historyIndex - 1);
+                }
+                _selectionHistory.Add(handle);
+                _historyIndex = _selectionHistory.Count - 1;
+                OnPropertyChanged(nameof(CanNavigateBack));
+                OnPropertyChanged(nameof(CanNavigateForward));
+            }
         }
+    }
+
+    /// <summary>Goes back to the previously selected entity.</summary>
+    public void NavigateBack()
+    {
+        if (!CanNavigateBack) return;
+        _historyIndex--;
+        _historySuppress = true;
+        try { SelectEntityByHandle(_selectionHistory[_historyIndex]); }
+        finally { _historySuppress = false; }
+        OnPropertyChanged(nameof(CanNavigateBack));
+        OnPropertyChanged(nameof(CanNavigateForward));
+        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+    }
+
+    /// <summary>Goes forward to the next selected entity in the history.</summary>
+    public void NavigateForward()
+    {
+        if (!CanNavigateForward) return;
+        _historyIndex++;
+        _historySuppress = true;
+        try { SelectEntityByHandle(_selectionHistory[_historyIndex]); }
+        finally { _historySuppress = false; }
+        OnPropertyChanged(nameof(CanNavigateBack));
+        OnPropertyChanged(nameof(CanNavigateForward));
+        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
     }
 
     /// <summary>

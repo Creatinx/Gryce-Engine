@@ -93,8 +93,10 @@ public sealed class ViewportCamera
     /// <summary>Right-button drag orbit.</summary>
     public void Orbit(double dx, double dy)
     {
-        Yaw -= dx * 0.2;
-        Pitch += dy * 0.2;
+        // Drag right/down rotates the view so the scene follows the cursor
+        // (standard editor convention). Earlier both signs were flipped.
+        Yaw += dx * 0.2;
+        Pitch -= dy * 0.2;
         Pitch = Clamp(Pitch, -89.0, 89.0);
         ApplyOrbit();
     }

@@ -30,13 +30,15 @@ public partial class SettingsWindow : Window
         // Apply language (enum order matches the Languages array in the ViewModel)
         LocalizationService.Instance.Language = (EditorLanguage)_viewModel.SelectedLanguageIndex;
 
-        // Apply theme to the main window
+        // Apply the theme globally so every window and control reloads its
+        // DynamicResource brushes together (per-window SetRequestedTheme left
+        // part of the UI on the OS default and mixed dark/light elements).
+        ThemeManager.Current.ApplicationTheme =
+            _viewModel.IsDarkTheme ? ApplicationTheme.Dark : ApplicationTheme.Light;
+
+        // Apply Mica backdrop to the editor window.
         if (Application.Current.MainWindow is Window mainWindow)
         {
-            ThemeManager.SetRequestedTheme(mainWindow,
-                _viewModel.IsDarkTheme ? ElementTheme.Dark : ElementTheme.Light);
-
-            // Apply Mica backdrop to the editor window.
             var mainHwnd = new WindowInteropHelper(mainWindow).Handle;
             if (_viewModel.MicaBackdrop)
                 Services.MicaHelper.TryApplyMica(mainHwnd);

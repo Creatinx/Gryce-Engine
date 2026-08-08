@@ -72,7 +72,7 @@
         <!-- ══ Viewport Render Surface ══ -->
         <Border Grid.Row="1"
                 x:Name="ViewportBorder"
-                Background="#1E1E1E"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 ClipToBounds="True">
             <Grid>
                 <!-- Main render host (HWND child window) -->
@@ -83,7 +83,8 @@
                         IsHitTestVisible="False"
                         VerticalAlignment="Top" HorizontalAlignment="Right"
                         Margin="8" Padding="8,4" CornerRadius="4"
-                        Background="#BB1E1E1E">
+                        Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                        Opacity="0.9">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock x:Name="GizmoIcon" Text="&#xE8AB;"
                                    FontFamily="Segoe MDL2 Assets" FontSize="13"
@@ -123,7 +124,7 @@
 
                 <!-- No renderer / loading state -->
                 <Border x:Name="NoRendererMessage"
-                        Background="#1E1E1E"
+                        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                         Visibility="Visible">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                         <TextBlock Text="&#xE7C1;" FontFamily="Segoe MDL2 Assets"
@@ -175,7 +176,7 @@
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            VerticalAlignment="Center"
                            FontFamily="Consolas">
-                    Gryce Renderer
+                    <Run Text="{loc:Loc viewport.renderer}"/>
                 </TextBlock>
             </Grid>
         </Border>

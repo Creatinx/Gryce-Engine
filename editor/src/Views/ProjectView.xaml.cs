@@ -1,3 +1,4 @@
+using GryceEngine.Editor.Services;
 using GryceEngine.Editor.ViewModels;
 using System;
 using System.Collections.Generic;
@@ -71,20 +72,25 @@ public partial class ProjectView : UserControl
         FolderTree.Items.Clear();
         if (!Directory.Exists(ProjectRoot))
         {
-            FolderTree.Items.Add(new TreeViewItem { Header = "(Project folder not found)" });
-            StatusText.Text = "Project folder not found";
+            FolderTree.Items.Add(new TreeViewItem
+            {
+                Header = LocalizationService.Instance.T("project.folder_not_found")
+            });
+            StatusText.Text = LocalizationService.Instance.T("project.folder_not_found");
             return;
         }
 
-        var rootItem = CreateFolderTreeNode(ProjectRoot, Path.GetFileName(ProjectRoot));
+        var rootItem = CreateFolderTreeNode(ProjectRoot,
+            LocalizationService.Instance.T("project.root"));
         rootItem.IsExpanded = true;
         FolderTree.Items.Add(rootItem);
 
         // Select root and show its contents
         _currentPath = ProjectRoot;
-        PathLabel.Text = Path.GetFileName(ProjectRoot);
+        PathLabel.Text = LocalizationService.Instance.T("project.root");
         RefreshFileList(ProjectRoot);
-        StatusText.Text = $"Project: {ProjectRoot}";
+        StatusText.Text = string.Format(
+            LocalizationService.Instance.T("project.project_root"), ProjectRoot);
     }
 
     private static TreeViewItem CreateFolderTreeNode(string path, string name)
@@ -151,11 +157,12 @@ public partial class ProjectView : UserControl
     {
         if (path == ProjectRoot)
         {
-            PathLabel.Text = Path.GetFileName(ProjectRoot);
+            PathLabel.Text = LocalizationService.Instance.T("project.root");
             return;
         }
         var relative = path.Replace(ProjectRoot, "").TrimStart(Path.DirectorySeparatorChar);
-        PathLabel.Text = Path.GetFileName(ProjectRoot) + "/" + relative.Replace('\\', '/');
+        PathLabel.Text = LocalizationService.Instance.T("project.root") + "/" +
+                         relative.Replace('\\', '/');
     }
 
     private void RefreshFileList(string path)
@@ -223,7 +230,9 @@ public partial class ProjectView : UserControl
     {
         int folderCount = _allItems.Count(f => f.IsDirectory);
         int fileCount = _allItems.Count(f => !f.IsDirectory);
-        ItemCount.Text = $"{_allItems.Count} items ({folderCount} folders, {fileCount} files)";
+        ItemCount.Text = string.Format(
+            LocalizationService.Instance.T("project.items_count"),
+            _allItems.Count, folderCount, fileCount);
 
         // Apply search filter
         ApplySearchFilter();
@@ -253,13 +262,24 @@ public partial class ProjectView : UserControl
         return ext switch
         {
             ".gesc" => "\uE7C1",
-            ".obj" or ".fbx" or ".gltf" or ".glb" => "\uE8B8",
-            ".png" or ".jpg" or ".jpeg" or ".dds" or ".bmp" => "\uE8B9",
+            ".obj" or ".fbx" or ".gltf" or ".glb" or ".dae" or ".blend" or ".3ds" => "\uE8B8",
+            ".png" or ".jpg" or ".jpeg" or ".dds" or ".bmp" or ".tga" or ".svg" or ".webp" => "\uE8B9",
             ".gmat" => "\uE791",
-            ".gimport" => "\uE8A5",
-            ".wav" or ".ogg" or ".mp3" => "\uE8D6",
-            ".glsl" or ".vert" or ".frag" => "\uE943",
-            ".cs" or ".cpp" or ".h" or ".hpp" => "\uE943",
+            ".gimport" or ".meta" => "\uE8A5",
+            ".wav" or ".ogg" or ".mp3" or ".flac" or ".aac" or ".wma" => "\uE8D6",
+            ".mp4" or ".avi" or ".mov" or ".mkv" or ".webm" => "\uE714",
+            ".glsl" or ".vert" or ".frag" or ".geom" or ".shader" or ".hlsl" => "\uE943",
+            ".cs" or ".cpp" or ".cc" or ".cxx" or ".h" or ".hpp" or ".hxx" or ".c" => "\uE943",
+            ".py" or ".js" or ".ts" or ".lua" or ".gd" => "\uE7FC",
+            ".json" or ".xml" or ".yaml" or ".yml" or ".toml" or ".ini" or ".cfg" or ".csv" => "\uE8A5",
+            ".md" or ".txt" or ".log" => "\uE8A5",
+            ".ttf" or ".otf" => "\uE8D2",
+            ".zip" or ".rar" or ".7z" or ".tar" or ".gz" => "\uE7B8",
+            ".exe" or ".dll" or ".lib" or ".so" => "\uE950",
+            ".sln" or ".csproj" or ".vcxproj" or ".slnx" or ".cmake" => "\uE943",
+            ".prefab" or ".tscn" or ".tres" => "\uE8B8",
+            ".scene" => "\uE7C1",
+            ".html" or ".htm" or ".css" => "\uE774",
             _ => "\uE8A5",
         };
     }
@@ -269,13 +289,24 @@ public partial class ProjectView : UserControl
         var color = ext switch
         {
             ".gesc" => Color.FromRgb(0x80, 0xC0, 0xFF),
-            ".obj" or ".fbx" or ".gltf" or ".glb" => Color.FromRgb(0x8C, 0xCB, 0xFF),
-            ".png" or ".jpg" or ".jpeg" or ".dds" or ".bmp" => Color.FromRgb(0xFF, 0x8C, 0x8C),
+            ".obj" or ".fbx" or ".gltf" or ".glb" or ".dae" or ".blend" or ".3ds" => Color.FromRgb(0x8C, 0xCB, 0xFF),
+            ".png" or ".jpg" or ".jpeg" or ".dds" or ".bmp" or ".tga" or ".svg" or ".webp" => Color.FromRgb(0xFF, 0x8C, 0x8C),
             ".gmat" => Color.FromRgb(0x8C, 0xFF, 0x8C),
-            ".gimport" => Color.FromRgb(0xDC, 0xB6, 0x7A),
-            ".wav" or ".ogg" or ".mp3" => Color.FromRgb(0xFF, 0xCC, 0x8C),
-            ".glsl" or ".vert" or ".frag" => Color.FromRgb(0xC0, 0x80, 0xFF),
-            ".cs" or ".cpp" or ".h" or ".hpp" => Color.FromRgb(0x80, 0xC0, 0xFF),
+            ".gimport" or ".meta" => Color.FromRgb(0xDC, 0xB6, 0x7A),
+            ".wav" or ".ogg" or ".mp3" or ".flac" or ".aac" or ".wma" => Color.FromRgb(0xFF, 0xCC, 0x8C),
+            ".mp4" or ".avi" or ".mov" or ".mkv" or ".webm" => Color.FromRgb(0xFF, 0xAA, 0xDD),
+            ".glsl" or ".vert" or ".frag" or ".geom" or ".shader" or ".hlsl" => Color.FromRgb(0xC0, 0x80, 0xFF),
+            ".cs" or ".cpp" or ".cc" or ".cxx" or ".h" or ".hpp" or ".hxx" or ".c" => Color.FromRgb(0x80, 0xC0, 0xFF),
+            ".py" or ".js" or ".ts" or ".lua" or ".gd" => Color.FromRgb(0xCC, 0xCC, 0x66),
+            ".json" or ".xml" or ".yaml" or ".yml" or ".toml" or ".ini" or ".cfg" or ".csv" => Color.FromRgb(0xAA, 0xAA, 0xAA),
+            ".md" or ".txt" or ".log" => Color.FromRgb(0xBB, 0xBB, 0xBB),
+            ".ttf" or ".otf" => Color.FromRgb(0x9C, 0xD8, 0xFF),
+            ".zip" or ".rar" or ".7z" or ".tar" or ".gz" => Color.FromRgb(0xFF, 0xD0, 0x66),
+            ".exe" or ".dll" or ".lib" or ".so" => Color.FromRgb(0x8C, 0xFF, 0xD0),
+            ".sln" or ".csproj" or ".vcxproj" or ".slnx" or ".cmake" => Color.FromRgb(0xC0, 0x80, 0xFF),
+            ".prefab" or ".tscn" or ".tres" => Color.FromRgb(0x8C, 0xCB, 0xFF),
+            ".scene" => Color.FromRgb(0x80, 0xC0, 0xFF),
+            ".html" or ".htm" or ".css" => Color.FromRgb(0xFF, 0x8C, 0x66),
             _ => Color.FromRgb(0xAA, 0xAA, 0xAA),
         };
         return new SolidColorBrush(color);
@@ -287,8 +318,9 @@ public partial class ProjectView : UserControl
         {
             _selectedFilePath = item.Path;
             StatusText.Text = item.IsDirectory
-                ? $"Folder: {item.Name}"
-                : $"File: {item.Name} ({Path.GetExtension(item.Name)})";
+                ? string.Format(LocalizationService.Instance.T("project.folder"), item.Name)
+                : string.Format(LocalizationService.Instance.T("project.file"),
+                    item.Name, Path.GetExtension(item.Name));
         }
     }
 

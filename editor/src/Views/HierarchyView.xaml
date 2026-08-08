@@ -157,26 +157,26 @@
 
                 <TreeView.ContextMenu>
                     <ContextMenu>
-                        <MenuItem Header="Create Empty" Command="{Binding CreateEntityCommand}">
+                        <MenuItem Header="{loc:Loc menu.create_empty}" Command="{Binding CreateEntityCommand}">
                             <MenuItem.Icon>
                                 <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                             </MenuItem.Icon>
                         </MenuItem>
                         <Separator/>
-                        <MenuItem Header="Duplicate" InputGestureText="Ctrl+D"
+                        <MenuItem Header="{loc:Loc common.duplicate}" InputGestureText="Ctrl+D"
                                   Command="{Binding DuplicateCommand}">
                             <MenuItem.Icon>
                                 <TextBlock Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                             </MenuItem.Icon>
                         </MenuItem>
-                        <MenuItem Header="Rename" InputGestureText="F2"
+                        <MenuItem Header="{loc:Loc common.rename}" InputGestureText="F2"
                                   Click="OnRenameEntityClick">
                             <MenuItem.Icon>
                                 <TextBlock Text="&#xE8AC;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                             </MenuItem.Icon>
                         </MenuItem>
                         <Separator/>
-                        <MenuItem Header="Delete" InputGestureText="Del"
+                        <MenuItem Header="{loc:Loc common.delete}" InputGestureText="Del"
                                   Click="OnDeleteEntityClick">
                             <MenuItem.Icon>
                                 <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>

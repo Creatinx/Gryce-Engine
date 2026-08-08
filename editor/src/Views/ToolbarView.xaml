@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern">
-    <Border Background="#E6262626"
+    <Border Background="{DynamicResource LayerFillColorAltBrush}"
             BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
             BorderThickness="0,0,0,1"
             Padding="6,1">

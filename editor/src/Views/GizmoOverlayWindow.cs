@@ -37,37 +37,40 @@ public sealed class GizmoOverlayWindow : Window
         _hintText = new TextBlock
         {
             FontSize = 10.5,
-            Foreground = new SolidColorBrush(Color.FromArgb(0xC8, 0xB8, 0xB8, 0xB8)),
             VerticalAlignment = VerticalAlignment.Center
         };
         _hint = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(0xAA, 0x1E, 0x1E, 0x1E)),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(8, 4, 8, 4),
+            Opacity = 0.9,
             Child = _hintText,
             VerticalAlignment = VerticalAlignment.Bottom,
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(8, 0, 0, 8)
         };
+        _hint.SetResourceReference(BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
+        _hintText.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
 
         _modeText = new TextBlock
         {
             FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromArgb(0xFF, 0x8C, 0xFF, 0x8C)),
+            Text = "None",
             VerticalAlignment = VerticalAlignment.Center
         };
         _modeBadge = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(0xBB, 0x1E, 0x1E, 0x1E)),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(8, 4, 8, 4),
+            Opacity = 0.9,
             Child = _modeText,
             VerticalAlignment = VerticalAlignment.Top,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 8, 8, 0)
         };
+        _modeBadge.SetResourceReference(BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
 
         var root = new Grid();
         root.Children.Add(Canvas);

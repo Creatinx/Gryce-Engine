@@ -69,16 +69,15 @@ public partial class MainWindow
     private void OnPlayClick(object sender, RoutedEventArgs e)
     {
         if (VM == null) return;
-        if (VM.IsPlaying && VM.IsPaused) VM.Play();
-        else if (VM.IsPlaying) VM.Pause();
-        else VM.Play();
+        // Play and Pause are separate buttons: Play only starts/resumes.
+        if (!VM.IsPlaying || VM.IsPaused) VM.Play();
     }
 
     private void OnPauseClick(object sender, RoutedEventArgs e)
     {
         if (VM == null) return;
+        // Play and Pause are separate buttons: Pause only pauses.
         if (VM.IsPlaying && !VM.IsPaused) VM.Pause();
-        else if (VM.IsPlaying && VM.IsPaused) VM.Play();
     }
 
     private void OnStopClick(object sender, RoutedEventArgs e) => VM?.Stop();

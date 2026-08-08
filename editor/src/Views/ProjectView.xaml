@@ -35,13 +35,13 @@
                                Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <Button x:Name="BtnNewFolder" Width="24" Height="24"
-                            ToolTip="Create Folder" Padding="0" Margin="0,0,2,0"
+                            ToolTip="{loc:Loc project.new_folder}" Padding="0" Margin="0,0,2,0"
                             Style="{StaticResource ToolbarButtonStyle}"
                             Click="OnNewFolderClick">
                         <TextBlock Text="&#xE838;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                     </Button>
                     <Button x:Name="BtnRefresh" Width="24" Height="24"
-                            ToolTip="Refresh" Padding="0"
+                            ToolTip="{loc:Loc project.refresh}" Padding="0"
                             Style="{StaticResource ToolbarButtonStyle}"
                             Click="OnRefreshClick">
                         <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
@@ -110,7 +110,8 @@
                         <TreeView.ItemContainerStyle>
                             <Style TargetType="TreeViewItem">
                                 <Setter Property="IsExpanded" Value="False"/>
-                                <Setter Property="Padding" Value="2,2"/>
+                                <Setter Property="Padding" Value="4,3"/>
+                                <Setter Property="MinHeight" Value="24"/>
                                 <Setter Property="Foreground"
                                         Value="{DynamicResource TextFillColorPrimaryBrush}"/>
                                 <Setter Property="Background" Value="Transparent"/>
@@ -145,25 +146,25 @@
                              MouseDoubleClick="OnFileDoubleClick">
                         <ListBox.ContextMenu>
                             <ContextMenu>
-                                <MenuItem Header="New Folder" Click="OnNewFolderClick">
+                                <MenuItem Header="{loc:Loc project.new_folder}" Click="OnNewFolderClick">
                                     <MenuItem.Icon>
                                         <TextBlock Text="&#xE838;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                                     </MenuItem.Icon>
                                 </MenuItem>
                                 <Separator/>
-                                <MenuItem Header="Rename" Click="OnRenameClick">
+                                <MenuItem Header="{loc:Loc common.rename}" Click="OnRenameClick">
                                     <MenuItem.Icon>
                                         <TextBlock Text="&#xE8AC;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                                     </MenuItem.Icon>
                                 </MenuItem>
-                                <MenuItem Header="Delete" Click="OnDeleteClick">
+                                <MenuItem Header="{loc:Loc common.delete}" Click="OnDeleteClick">
                                     <MenuItem.Icon>
                                         <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                                     </MenuItem.Icon>
                                 </MenuItem>
                                 <Separator/>
-                                <MenuItem Header="Copy Path" Click="OnCopyPathClick"/>
-                                <MenuItem Header="Open in Explorer" Click="OnOpenInExplorerClick"/>
+                                <MenuItem Header="{loc:Loc project.copy_path}" Click="OnCopyPathClick"/>
+                                <MenuItem Header="{loc:Loc project.open_in_explorer}" Click="OnOpenInExplorerClick"/>
                             </ContextMenu>
                         </ListBox.ContextMenu>
                         <ListBox.ItemsPanel>
@@ -227,7 +228,7 @@
                                    FontSize="36" Opacity="0.12"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                    HorizontalAlignment="Center"/>
-                        <TextBlock Text="This folder is empty"
+                        <TextBlock Text="{loc:Loc project.empty}"
                                    FontSize="12"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                    Opacity="0.35" HorizontalAlignment="Center"
