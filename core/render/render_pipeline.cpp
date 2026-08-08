@@ -1348,11 +1348,14 @@ void RenderPipeline::begin_hdr_forward_pass(RenderContext& ctx) {
     ctx.set_shader(pbr_shader_);
     ctx.set_framebuffer(hdr_fbo_);
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
-    ctx.clear(0.15f, 0.15f, 0.18f, 1.0f);
-    ctx.clear_depth();
+    // 深度清除受 glDepthMask 影响：上一帧 grid/透明 pass 会把深度写关闭，
+    // 必须先恢复深度写，否则 glClear(DEPTH_BUFFER_BIT) 是空操作，深度缓冲
+    // 保留旧值，场景物体全部被深度测试剔除（OpenGL 视口网格可见但物体不可见）。
     ctx.set_depth_test(true);
     ctx.set_depth_write(true);
     ctx.set_cull_face(!cull_disabled_);
+    ctx.clear(0.15f, 0.15f, 0.18f, 1.0f);
+    ctx.clear_depth();
 }
 
 void RenderPipeline::end_hdr_forward_pass(RenderContext& ctx) {
