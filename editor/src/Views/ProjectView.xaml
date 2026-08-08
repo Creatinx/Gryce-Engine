@@ -9,19 +9,31 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- ══ Panel Header ══ -->
         <Border Grid.Row="0" Style="{StaticResource PanelHeaderStyle}">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{loc:Loc panel.project}"
                            Style="{StaticResource PanelHeaderTextStyle}"/>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <TextBlock Grid.Column="1" Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets"
+                           FontSize="9" VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Margin="8,0,3,0"/>
+                <TextBlock Grid.Column="2" x:Name="PathLabel" Text="Assets"
+                           FontSize="10.5" TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="8,0,0,0">
+                    <TextBlock x:Name="StatusText" FontSize="10"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <Button x:Name="BtnNewFolder" Width="24" Height="24"
                             ToolTip="Create Folder" Padding="0" Margin="0,0,2,0"
                             Style="{StaticResource ToolbarButtonStyle}"
@@ -38,35 +50,8 @@
             </Grid>
         </Border>
 
-        <!-- ══ Breadcrumb / Path Bar ══ -->
-        <Border Grid.Row="1"
-                Background="{DynamicResource LayerFillColorDefaultBrush}"
-                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                BorderThickness="0,0,0,1"
-                Padding="8,3">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets"
-                           FontSize="12" VerticalAlignment="Center"
-                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                           Margin="0,0,4,0"/>
-                <TextBlock Grid.Column="1" x:Name="PathLabel" Text="Assets"
-                           FontSize="11"
-                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                           VerticalAlignment="Center"/>
-                <TextBlock Grid.Column="2" x:Name="ItemCount" Text=""
-                           FontSize="10"
-                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                           VerticalAlignment="Center" Margin="4,0"/>
-            </Grid>
-        </Border>
-
         <!-- ══ Search Bar ══ -->
-        <Border Grid.Row="2"
+        <Border Grid.Row="1"
                 Background="{DynamicResource LayerFillColorDefaultBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,0,0,1"
@@ -75,6 +60,7 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="&#xE721;"
@@ -94,11 +80,15 @@
                         Visibility="Collapsed" Padding="0"
                         Style="{StaticResource ToolbarButtonStyle}"
                         Click="OnClearSearchClick"/>
+                <TextBlock Grid.Column="3" x:Name="ItemCount" Text=""
+                           FontSize="10" Margin="6,0,4,0"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           VerticalAlignment="Center"/>
             </Grid>
         </Border>
 
         <!-- ══ Two-Pane Layout ══ -->
-        <Grid Grid.Row="3">
+        <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="160" MinWidth="100"/>
                 <ColumnDefinition Width="4"/>
@@ -201,7 +191,7 @@
                                         </Border>
                                         <!-- Icon overlay -->
                                         <TextBlock Text="{Binding Icon}"
-                                                   FontFamily="Segoe MDL2 Assets"
+                                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
                                                    FontSize="24"
                                                    HorizontalAlignment="Center"
                                                    Foreground="{Binding IconColor}"
@@ -242,16 +232,5 @@
             </Grid>
         </Grid>
 
-        <!-- ══ Bottom Status Bar ══ -->
-        <Border Grid.Row="4"
-                Background="{DynamicResource LayerFillColorAltBrush}"
-                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                BorderThickness="0,1,0,0"
-                Padding="8,2">
-            <TextBlock x:Name="StatusText"
-                       FontSize="10"
-                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                       VerticalAlignment="Center"/>
-        </Border>
     </Grid>
 </UserControl>

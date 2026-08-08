@@ -428,30 +428,75 @@
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="MenuItem">
-                            <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                                    CornerRadius="4" Padding="{TemplateBinding Padding}"
-                                    Margin="2,1">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" SharedSizeGroup="Icon"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto" SharedSizeGroup="Shortcut"/>
-                                    </Grid.ColumnDefinitions>
-                                    <ContentPresenter Grid.Column="0" ContentSource="Icon"
-                                                      Margin="0,0,8,0"
-                                                      VerticalAlignment="Center"
-                                                      Width="16" Height="16"/>
-                                    <ContentPresenter Grid.Column="1" ContentSource="Header"
-                                                      VerticalAlignment="Center"
-                                                      RecognizesAccessKey="True"/>
-                                    <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}"
-                                               Margin="24,0,0,0"
-                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                                               FontSize="11" VerticalAlignment="Center"/>
-                                </Grid>
-                            </Border>
+                            <Grid>
+                                <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                        CornerRadius="4" Padding="{TemplateBinding Padding}"
+                                        Margin="2,1" MinHeight="28">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="MenuItemIcon"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="MenuItemShortcut"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <ContentPresenter Grid.Column="0" ContentSource="Icon"
+                                                          Margin="0,0,8,0"
+                                                          VerticalAlignment="Center"
+                                                          Width="16" Height="16"/>
+                                        <ContentPresenter Grid.Column="1" ContentSource="Header"
+                                                          VerticalAlignment="Center"
+                                                          RecognizesAccessKey="True"/>
+                                        <TextBlock x:Name="ShortcutText" Grid.Column="2"
+                                                   Text="{TemplateBinding InputGestureText}"
+                                                   Margin="24,0,0,0"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   FontSize="11" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="SubmenuArrow" Grid.Column="3"
+                                                   Text="&#xE76C;" FontFamily="Segoe MDL2 Assets"
+                                                   FontSize="10" Margin="10,0,0,0"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                   VerticalAlignment="Center" Visibility="Collapsed"/>
+                                    </Grid>
+                                </Border>
+                                <Popup x:Name="PART_Popup" Placement="Right"
+                                       IsOpen="{TemplateBinding IsSubmenuOpen}"
+                                       AllowsTransparency="True" Focusable="False"
+                                       PopupAnimation="Fade"
+                                       HorizontalOffset="-4" VerticalOffset="-3">
+                                    <Border Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"
+                                            BorderBrush="{DynamicResource SurfaceStrokeColorDefaultBrush}"
+                                            BorderThickness="1" CornerRadius="8"
+                                            Padding="4" MinWidth="180">
+                                        <Border.Effect>
+                                            <DropShadowEffect ShadowDepth="4" BlurRadius="12"
+                                                              Opacity="0.3" Color="#000000"/>
+                                        </Border.Effect>
+                                        <ItemsPresenter x:Name="ItemsHost"
+                                                        KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                    </Border>
+                                </Popup>
+                            </Grid>
                             <ControlTemplate.Triggers>
+                                <Trigger Property="Role" Value="TopLevelHeader">
+                                    <Setter TargetName="PART_Popup" Property="Placement" Value="Bottom"/>
+                                    <Setter TargetName="PART_Popup" Property="HorizontalOffset" Value="0"/>
+                                    <Setter TargetName="PART_Popup" Property="VerticalOffset" Value="2"/>
+                                    <Setter TargetName="ShortcutText" Property="Visibility" Value="Collapsed"/>
+                                    <Setter TargetName="SubmenuArrow" Property="Visibility" Value="Collapsed"/>
+                                </Trigger>
+                                <Trigger Property="Role" Value="TopLevelItem">
+                                    <Setter TargetName="PART_Popup" Property="IsOpen" Value="False"/>
+                                    <Setter TargetName="ShortcutText" Property="Visibility" Value="Collapsed"/>
+                                    <Setter TargetName="SubmenuArrow" Property="Visibility" Value="Collapsed"/>
+                                </Trigger>
+                                <Trigger Property="Role" Value="SubmenuHeader">
+                                    <Setter TargetName="SubmenuArrow" Property="Visibility" Value="Visible"/>
+                                </Trigger>
                                 <Trigger Property="IsHighlighted" Value="True">
+                                    <Setter TargetName="Bd" Property="Background"
+                                            Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
+                                </Trigger>
+                                <Trigger Property="IsSubmenuOpen" Value="True">
                                     <Setter TargetName="Bd" Property="Background"
                                             Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
                                 </Trigger>
@@ -460,6 +505,18 @@
                                             Value="{DynamicResource TextFillColorDisabledBrush}"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Fluent separator used everywhere (menus, toolbars) -->
+            <Style TargetType="Separator">
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Separator">
+                            <Border Height="1" Background="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    Margin="10,3"/>
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>

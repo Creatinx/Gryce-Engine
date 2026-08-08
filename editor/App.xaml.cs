@@ -41,12 +41,13 @@ public partial class App : Application
         var window = new MainWindow(EditorVM);
         window.Show();
 
-        // Apply persisted theme after the window exists.
-        if (settings.Theme == "Light")
-        {
-            iNKORE.UI.WPF.Modern.ThemeManager.SetRequestedTheme(
-                window, iNKORE.UI.WPF.Modern.ElementTheme.Light);
-        }
+        // Apply persisted theme globally (ThemeManager.Current.ApplicationTheme
+        // switches the app-wide ThemeResources; per-window SetRequestedTheme is
+        // only a local override and left the rest of the UI in the OS default).
+        iNKORE.UI.WPF.Modern.ThemeManager.Current.ApplicationTheme =
+            settings.Theme == "Light"
+                ? iNKORE.UI.WPF.Modern.ApplicationTheme.Light
+                : iNKORE.UI.WPF.Modern.ApplicationTheme.Dark;
     }
 
     protected override void OnExit(ExitEventArgs e)

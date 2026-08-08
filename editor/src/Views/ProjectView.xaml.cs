@@ -91,7 +91,7 @@ public partial class ProjectView : UserControl
     {
         var item = new TreeViewItem
         {
-            Header = name,
+            Header = CreateFolderHeader(name),
             Tag = path
         };
 
@@ -114,6 +114,27 @@ public partial class ProjectView : UserControl
         };
 
         return item;
+    }
+
+    /// <summary>Folder tree node header: Fluent folder glyph + name.</summary>
+    private static object CreateFolderHeader(string name)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "\uE8B7",
+            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xB6, 0x7A)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0)
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = name,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        return panel;
     }
 
     private void OnFolderTreeSelectionChanged(object sender, RoutedPropertyChangedEventArgs<object> e)

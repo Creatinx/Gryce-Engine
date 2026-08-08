@@ -268,7 +268,7 @@ private:
 
     // HDR rendering targets
     bool hdr_enabled_ = true;
-    float exposure_ = 2.0f;
+    float exposure_ = 1.0f;
     int tone_map_mode_ = 1; // 0: none, 1: reinhard, 2: aces
     RHITextureHandle hdr_color_;
     RHITextureHandle hdr_depth_;
