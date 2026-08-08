@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace GryceEngine.Editor.Views;
@@ -20,6 +21,7 @@ public partial class ViewportView : UserControl, IDisposable
     private readonly Stopwatch _fpsStopwatch = Stopwatch.StartNew();
     private int _frameCount;
     private int _lastFps;
+    private (int W, int H) _lastPixelSize = (0, 0);
 
     public ViewportView()
     {
@@ -31,10 +33,28 @@ public partial class ViewportView : UserControl, IDisposable
 
     private EditorViewModel? VM => DataContext as EditorViewModel;
 
+    /// <summary>
+    /// 把 WPF 布局尺寸（DIP）换算为物理像素。
+    /// 嵌入的 GLFW 窗口按物理像素创建，否则在高 DPI 下只覆盖视口的一部分。
+    /// </summary>
+    private (int W, int H) GetPixelSize(double? width = null, double? height = null)
+    {
+        // 渲染表面是 ViewportBorder（中间的视口区域），不是整个 UserControl
+        // （后者还包含标签栏和底栏）。以 ViewportBorder 的实际尺寸为准。
+        double w = width ?? (ViewportBorder != null && ViewportBorder.ActualWidth > 0
+            ? ViewportBorder.ActualWidth : ActualWidth);
+        double h = height ?? (ViewportBorder != null && ViewportBorder.ActualHeight > 0
+            ? ViewportBorder.ActualHeight : ActualHeight);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        return (Math.Max((int)Math.Round(w * dpi.DpiScaleX), 100),
+                Math.Max((int)Math.Round(h * dpi.DpiScaleY), 100));
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         int w = Math.Max((int)ActualWidth, 100);
         int h = Math.Max((int)ActualHeight, 100);
+        var px = GetPixelSize();
 
         _hwndHost = new ViewportHwndHost(w, h);
         _hwndHost.HwndCreated += OnHwndCreated;
@@ -51,7 +71,7 @@ public partial class ViewportView : UserControl, IDisposable
         _renderTimer.Tick += OnRenderTick;
         _renderTimer.Start();
 
-        UpdateResolutionDisplay(w, h);
+        UpdateResolutionDisplay(px.W, px.H);
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -79,13 +99,17 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        int w = Math.Max((int)e.NewSize.Width, 100);
-        int h = Math.Max((int)e.NewSize.Height, 100);
-        UpdateResolutionDisplay(w, h);
+        var px = GetPixelSize(e.NewSize.Width, e.NewSize.Height);
+        UpdateResolutionDisplay(px.W, px.H);
 
-        if (_rendererInitialized)
+        if (px != _lastPixelSize && WindowAPI.GWindow_IsValid())
         {
-            try { ViewportAPI.GViewport_SetSize(w, h); }
+            try
+            {
+                WindowAPI.GWindow_SetSize(px.W, px.H);
+                ViewportAPI.GViewport_SetSize(px.W, px.H);
+                _lastPixelSize = px;
+            }
             catch { /* ignore during init */ }
         }
     }
@@ -97,8 +121,12 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnHwndCreated(object? sender, nint hwnd)
     {
-        int w = Math.Max((int)ActualWidth, 100);
-        int h = Math.Max((int)ActualHeight, 100);
+        var px = GetPixelSize();
+        int w = px.W;
+        int h = px.H;
+        // 不在初始化阶段锁定尺寸：OnLoaded/BuildWindowCore 时的 Actual* 可能不是
+        // 最终布局值，交由后续 SizeChanged / 布局完成后的校正来设定。
+        _lastPixelSize = (0, 0);
 
         try
         {
@@ -132,6 +160,18 @@ public partial class ViewportView : UserControl, IDisposable
             NoRendererMessage.Visibility = Visibility.Collapsed;
             InitStatusText.Text = "Renderer initialized.";
             VM?.AppendConsole("[Viewport] Renderer initialized successfully");
+            // 布局完成后再取一次最终尺寸，确保嵌入窗口与视口像素一致。
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var finalPx = GetPixelSize();
+                if (WindowAPI.GWindow_IsValid())
+                {
+                    WindowAPI.GWindow_SetSize(finalPx.W, finalPx.H);
+                    ViewportAPI.GViewport_SetSize(finalPx.W, finalPx.H);
+                }
+                _lastPixelSize = finalPx;
+                UpdateResolutionDisplay(finalPx.W, finalPx.H);
+            }), DispatcherPriority.Loaded);
         }
         catch (Exception ex)
         {

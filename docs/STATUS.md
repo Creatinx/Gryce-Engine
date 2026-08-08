@@ -313,6 +313,7 @@
 |---|---|
 | 架构 | 已实现（WPF + iNKORE Fluent；Editor 仅通过 `GCore_*` / `GEntity_*` / `GComponent_*` / `GScene_*` / `GMaterial_*` / `GAnimator_*` / `GPhysics_*` C API 驱动 Core） |
 | 布局 | 已实现（菜单/工具栏 + Hierarchy / Viewport / Inspector + 底部 Project / Console / Animation 标签页） |
+| 视口嵌入（HwndHost + GLFW 外部窗口） | 已实现（按物理像素创建/缩放，适配高 DPI；尺寸随窗口与分割条实时同步） |
 | 层级面板（Hierarchy） | 已实现（Entity 树、搜索、右键创建子实体/重命名/副本/删除、新建自动选中并展开祖先） |
 | Create Entity 对话框 | 已实现（搜索 + 最近使用 + 类型分类 + 描述，创建时可附带组件） |
 | Inspector 面板 | 已实现（反射自动生成字段编辑；修复短名/全名反射查询不一致导致属性不可编辑的问题） |
@@ -327,7 +328,7 @@
 | 本地化 | 已实现（中文/英文运行时切换 + 持久化，`editor/project/locales/{en,zh}.json`） |
 | 快捷键 | 已实现（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D） |
 | Undo/Redo | 部分实现（创建/删除/重命名实体） |
-| 已知限制 | OpenGL 视口下网格片段渲染异常（数据/绘制/交换正确但不可见，待排查）；编辑器相机/Gizmo 拖拽尚未移植 |
+| 已知限制 | 编辑器相机/Gizmo 拖拽尚未移植 |
 
 ---
 
