@@ -32,6 +32,7 @@ public partial class ViewportView : UserControl, IDisposable
     private readonly ViewportCamera _gameCamera = new();
     private bool _leftDown, _rightDown, _middleDown;
     private double _lastMouseX, _lastMouseY;
+    private double _trackedMouseX, _trackedMouseY;
     private readonly HashSet<Key> _heldKeys = new();
     private readonly HashSet<int> _nativeKeys = new();
     private bool _pointerLocked;
@@ -148,7 +149,7 @@ public partial class ViewportView : UserControl, IDisposable
 
         _renderTimer = new DispatcherTimer(DispatcherPriority.Render)
         {
-            Interval = TimeSpan.FromSeconds(1.0 / 60.0)
+            Interval = TimeSpan.FromSeconds(1.0 / 250.0)
         };
         _renderTimer.Tick += OnRenderTick;
         _renderTimer.Start();
@@ -295,6 +296,7 @@ public partial class ViewportView : UserControl, IDisposable
 
         try
         {
+            ProcessViewportInput();
             if (_isGameView)
             {
                 UpdateGameFlyCamera();
@@ -348,6 +350,36 @@ public partial class ViewportView : UserControl, IDisposable
         if (shift) _gameCamera.FlyMoveSpeed = baseSpeed * 2.5;
         _gameCamera.FlyMove(fwd, strafe, up, dt);
         _gameCamera.FlyMoveSpeed = baseSpeed;
+    }
+
+    /// <summary>
+    /// Applies tracked mouse input inside the render tick so camera movement
+    /// stays in sync with rendering (no teleporting when input and render race).
+    /// </summary>
+    private void ProcessViewportInput()
+    {
+        if (_isGameView)
+        {
+            if (_pointerLocked)
+            {
+                double lookDx = _trackedMouseX - _lastMouseX;
+                double lookDy = _trackedMouseY - _lastMouseY;
+                _lastMouseX = _trackedMouseX;
+                _lastMouseY = _trackedMouseY;
+                _gameCamera.Look(lookDx, lookDy);
+            }
+            return;
+        }
+
+        double x = _trackedMouseX, y = _trackedMouseY;
+        double dx = x - _lastMouseX;
+        double dy = y - _lastMouseY;
+        _lastMouseX = x;
+        _lastMouseY = y;
+
+        if (_rightDown) _sceneCamera.Orbit(dx, dy);
+        else if (_middleDown) _sceneCamera.Pan(dx, dy);
+        else if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
     }
 
     // =====================================================================
@@ -534,25 +566,9 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnNativeMouseMove(double x, double y)
     {
         if (!_rendererInitialized) return;
-        double dx = x - _lastMouseX;
-        double dy = y - _lastMouseY;
-        _lastMouseX = x;
-        _lastMouseY = y;
-
+        _trackedMouseX = x;
+        _trackedMouseY = y;
         InputAPI.GInput_InjectMouseMove((float)x, (float)y);
-
-        if (_isGameView)
-        {
-            if (_pointerLocked) _gameCamera.Look(dx, dy);
-            return;
-        }
-
-        if (_rightDown)
-        {
-            _sceneCamera.Orbit(dx, dy);
-        }
-        else if (_middleDown) _sceneCamera.Pan(dx, dy);
-        else if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
     }
 
     private void OnNativeMouseButton(int button, bool down, double x, double y)
@@ -1041,6 +1057,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private static double Clamp(double v, double lo, double hi)
         => v < lo ? lo : (v > hi ? hi : v);
+
 
 
 
