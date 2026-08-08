@@ -355,14 +355,29 @@ void GRender_SetDisplayMode(const char* mode) {
 }
 
 void GRender_EndFrame(void) {
-    GRYCE_API_GUARD();
-    std::lock_guard lock(g_renderer.mutex);
-    if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
-
-    if (g_renderer.sync_mode) {
-        g_renderer.ctx->present_sync();
-    } else {
-        g_renderer.ctx->present();
+    render::RenderContext* ctx = nullptr;
+    bool sync_mode = false;
+    {
+        std::lock_guard api(gryce_core::api_mutex());
+        std::lock_guard lock(g_renderer.mutex);
+        if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
+        ctx = g_renderer.ctx.get();
+        sync_mode = g_renderer.sync_mode;
+        if (g_renderer.sync_mode) {
+            // Execute queued render commands under both locks, but defer the
+            // swap to present_swap() below so a vsync stall inside
+            // glfwSwapBuffers can never block the editor UI thread, which
+            // needs the API lock for its 60Hz tick.
+            ctx->execute_pending_sync();
+        } else {
+            g_renderer.ctx->present();
+        }
+    }
+    // Swap outside the API/renderer locks: glfwSwapBuffers can block on vsync
+    // indefinitely (e.g. window occluded / display mode change) and must not
+    // starve the UI thread.
+    if (ctx && sync_mode) {
+        ctx->present_swap();
     }
 }
 

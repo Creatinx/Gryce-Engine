@@ -137,6 +137,12 @@ public:
     // 同步模式 present：提交、获取、执行、释放，全部在主线程内完成（无 RenderThread）
     void present_sync();
 
+    // 同步模式拆分：execute_pending_sync() 只在当前线程执行已提交命令（不交换缓冲），
+    // present_swap() 只做交换缓冲 + 处理延迟销毁。编辑器渲染线程用它把可能阻塞的
+    // glfwSwapBuffers 移到 API 锁之外，避免 vsync 卡死时冻结 UI 线程。
+    void execute_pending_sync();
+    void present_swap();
+
     // 同步读取当前帧为 top-down RGBA。阻塞直到渲染线程完成本帧。
 
     // 同步读取当前帧为 top-down RGBA。阻塞直到渲染线程完成本帧。

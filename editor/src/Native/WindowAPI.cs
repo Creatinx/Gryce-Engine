@@ -30,6 +30,15 @@ public static class WindowAPI
     public static extern GWindowHandle GWindow_GetRenderHandle();
 
     [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GWindow_MakeContextCurrent();
+
+    [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GWindow_ReleaseContext();
+
+    [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GWindow_SetSwapInterval(int interval);
+
+    [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.U1)]
     public static extern bool GWindow_ShouldClose();
 

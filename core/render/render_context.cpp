@@ -593,6 +593,11 @@ void RenderContext::present() {
 }
 
 void RenderContext::present_sync() {
+    execute_pending_sync();
+    present_swap();
+}
+
+void RenderContext::execute_pending_sync() {
     if (!cmd_buffer_ || !backend_) return;
 
     cmd_buffer_->submit();
@@ -608,7 +613,9 @@ void RenderContext::present_sync() {
         }
         cmd_buffer_->release();
     }
+}
 
+void RenderContext::present_swap() {
     // 同步模式（编辑器视口）没有渲染线程，present_sync 需要亲自完成
     // end_frame（截图 + glfwSwapBuffers），否则 GLFW 窗口永远显示首帧。
     if (backend_) {

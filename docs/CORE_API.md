@@ -605,6 +605,9 @@ render::register_backend("myapi", []() { return std::make_unique<MyBackend>(); }
 的 UI 线程（60Hz tick、输入、Hierarchy/Inspector 读取）与专用渲染线程（vsync 240Hz）
 可以并发安全地调用 C API；递归锁允许 API 互调及回调在持锁线程上重入。
 
+注意：`GRender_EndFrame` 在锁内执行渲染命令，但 `glfwSwapBuffers`（present_swap）
+在**锁外**进行，因此 vsync 停滞最多让渲染线程等待，不会冻结编辑器 UI 线程。
+
 | 接口 | 线程安全 |
 |---|---|
 | `World::update()` | 主线程 |

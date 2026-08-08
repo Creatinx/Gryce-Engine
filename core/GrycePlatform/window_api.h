@@ -37,6 +37,14 @@ GRYCE_PLATFORM_API bool GWindow_ShouldClose(void);
 GRYCE_PLATFORM_API void GWindow_PollEvents(void);
 GRYCE_PLATFORM_API void GWindow_SwapBuffers(void);
 
+// GL context ownership lives inside the core (single GLFW instance). The
+// editor render thread uses these to take/release/pace the context so it never
+// needs to P/Invoke GLFW directly (which would risk binding a second,
+// uninitialized GLFW copy in mixed toolchain layouts).
+GRYCE_PLATFORM_API void GWindow_MakeContextCurrent(void);
+GRYCE_PLATFORM_API void GWindow_ReleaseContext(void);
+GRYCE_PLATFORM_API void GWindow_SetSwapInterval(int interval);
+
 #ifdef __cplusplus
 }
 #endif

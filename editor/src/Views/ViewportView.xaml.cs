@@ -26,6 +26,7 @@ public partial class ViewportView : UserControl, IDisposable
     private nint _renderHandle;
     private bool _rendererInitialized;
     private volatile bool _isGameView;
+    private volatile bool _windowMinimized;
     private string _displayMode = "Shaded";
     private (int W, int H) _pendingPixelSize;
     private (int W, int H) _appliedPixelSize;
@@ -157,6 +158,7 @@ public partial class ViewportView : UserControl, IDisposable
             win.PreviewKeyDown += OnWindowKeyDown;
             win.PreviewKeyUp += OnWindowKeyUp;
             win.Deactivated += OnWindowDeactivated;
+            win.StateChanged += OnWindowStateChanged;
 
             _overlay = new GizmoOverlayWindow { Owner = win };
             _overlay.Show();
@@ -186,6 +188,7 @@ public partial class ViewportView : UserControl, IDisposable
             win.PreviewKeyDown -= OnWindowKeyDown;
             win.PreviewKeyUp -= OnWindowKeyUp;
             win.Deactivated -= OnWindowDeactivated;
+            win.StateChanged -= OnWindowStateChanged;
         }
 
         _overlay?.Close();
@@ -278,7 +281,7 @@ public partial class ViewportView : UserControl, IDisposable
             // Hand the GL context over cleanly: release it on the UI thread
             // before the render thread makes it current (mirrors the core's
             // async-mode handoff and prevents driver-level thread confusion).
-            GlfwNative.glfwMakeContextCurrent(IntPtr.Zero);
+            WindowAPI.GWindow_ReleaseContext();
             StartRenderThread();
 
             Dispatcher.BeginInvoke(new Action(() =>
@@ -352,12 +355,21 @@ public partial class ViewportView : UserControl, IDisposable
         int frames = 0;
         var sw = Stopwatch.StartNew();
         double lastTick = sw.Elapsed.TotalSeconds;
+        var frameSw = Stopwatch.StartNew();
         try
         {
-            GlfwNative.glfwMakeContextCurrent(_renderHandle);
-            GlfwNative.glfwSwapInterval(1); // vsync: present at monitor refresh
+            // The core owns the single GLFW instance; taking the context here
+            // guarantees the same instance the renderer was initialized with,
+            // regardless of Debug/Release or toolchain layout.
+            WindowAPI.GWindow_MakeContextCurrent();
+            // vsync paces the loop at the monitor refresh rate (240 FPS on a
+            // 240Hz display) with zero CPU spin. GRender_EndFrame now swaps
+            // OUTSIDE the API lock, so even if a driver/display stall blocks
+            // glfwSwapBuffers, the editor UI thread stays fully responsive.
+            WindowAPI.GWindow_SetSwapInterval(1);
             while (_renderThreadRunning)
             {
+                frameSw.Restart();
                 double now = sw.Elapsed.TotalSeconds;
                 double dt = Math.Min(now - lastTick, 0.05);
                 lastTick = now;
@@ -383,14 +395,19 @@ public partial class ViewportView : UserControl, IDisposable
 
                 if (_isGameView) UpdateGameFlyCamera(dt);
 
+                if (_windowMinimized)
+                {
+                    // While minimized, skip GL work entirely: avoids vsync
+                    // swap stalls on hidden windows and saves CPU/GPU.
+                    System.Threading.Thread.Sleep(16);
+                    continue;
+                }
+
                 frames++;
                 PushSharedCamera();
 
                 RenderAPI.GRender_BeginFrame();
-                if (_isGameView)
-                {
-                    RenderAPI.GRender_RenderGameView();
-                }
+                if (_isGameView) RenderAPI.GRender_RenderGameView();
                 else
                 {
                     RenderAPI.GRender_RenderWorld();
@@ -416,7 +433,7 @@ public partial class ViewportView : UserControl, IDisposable
         }
         finally
         {
-            try { GlfwNative.glfwMakeContextCurrent(IntPtr.Zero); } catch { }
+            try { WindowAPI.GWindow_ReleaseContext(); } catch { }
         }
     }
 
@@ -864,6 +881,12 @@ public partial class ViewportView : UserControl, IDisposable
         _heldKeys.Clear();
         _pointerLocked = false;
         SetViewportCapture(false);
+    }
+
+    private void OnWindowStateChanged(object? sender, EventArgs e)
+    {
+        var win = Window.GetWindow(this);
+        _windowMinimized = win != null && win.WindowState == WindowState.Minimized;
     }
 
     // =====================================================================

@@ -294,6 +294,29 @@ GWindowHandle GWindow_GetRenderHandle(void) {
     return nullptr;
 }
 
+void GWindow_MakeContextCurrent(void) {
+    GRYCE_API_GUARD();
+    GLFWwindow* w = nullptr;
+    if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
+        w = g_platform.window->native_handle();
+    } else if (g_platform.mode == PlatformState::Mode::External) {
+        w = g_platform.embedded_window;
+    }
+    if (w) glfwMakeContextCurrent(w);
+}
+
+void GWindow_ReleaseContext(void) {
+    GRYCE_API_GUARD();
+    glfwMakeContextCurrent(nullptr);
+}
+
+void GWindow_SetSwapInterval(int interval) {
+    GRYCE_API_GUARD();
+    if (glfwGetCurrentContext()) {
+        glfwSwapInterval(interval);
+    }
+}
+
 bool GWindow_ShouldClose(void) {
     GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {

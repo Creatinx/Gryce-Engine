@@ -753,13 +753,18 @@ ViewportView (XAML)
   调用内完成（无独立渲染线程消费命令队列），GL 上下文由编辑器自己的渲染线程驱动；
   `render_api.cpp` 还会在绘制前补传未上传的 MeshRenderer / 脏材质
   （`upload_pending_meshes`），因为同步模式下 ECS 的异步上传路径不运行。
-- **GLFW 实例必须唯一**：编辑器的 `GlfwNative`（P/Invoke）必须绑定到 Core 使用的
-  `glfw3d.dll`，不能绑定 `glfw3.dll`——否则会加载第二份未初始化的 GLFW，
-  `glfwMakeContextCurrent` 报 `GLFW_NOT_INITIALIZED`，渲染线程所有 GL 调用静默失效，
-  视口呈现纯黑。
-- **上下文交接**：`GRender_Init` 完成后 UI 线程先 `glfwMakeContextCurrent(nullptr)`
-  释放上下文，渲染线程再接管；`GWindow_SetSize` / `GViewport_SetSize` 等 GL/GLFW
-  操作延迟到渲染线程帧首执行（`_pendingPixelSize`），避免无 current context 的调用。
+- **编辑器不直接碰 GLFW**：上下文接管、交换间隔全部走 Core 的 C API
+  （`GWindow_MakeContextCurrent` / `GWindow_ReleaseContext` /
+  `GWindow_SetSwapInterval`，见 `core/GrycePlatform/window_api.h`），避免在
+  Debug/Release、MSVC/GCC 等不同构建布局下绑定到第二份未初始化 GLFW 实例
+  （曾导致 `GLFW_NOT_INITIALIZED`、视口纯黑）。
+- **上下文交接与交换锁**：`GRender_Init` 完成后 UI 线程先
+  `GWindow_ReleaseContext()` 释放上下文，渲染线程再接管；`GRender_EndFrame`
+  在 API 锁内执行渲染命令、**锁外**调用 `present_swap()`（glfwSwapBuffers），
+  因此即使 vsync 卡死（窗口遮挡 / 显示器状态变化），UI 线程也永远不会被冻结。
+  窗口最小化时渲染线程跳过 GL 工作（`_windowMinimized`），避免隐藏窗口的
+  vsync 交换停滞并节省 CPU/GPU；`GWindow_SetSize` / `GViewport_SetSize` 等
+  GL/GLFW 操作延迟到渲染线程帧首执行（`_pendingPixelSize`）。
 
 ### 14.5 生命周期
 
