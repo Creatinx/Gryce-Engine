@@ -163,6 +163,86 @@
                 </Setter>
             </Style>
 
+            <!-- Caption / title-bar window buttons -->
+            <Style x:Key="CaptionButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="46"/>
+                <Setter Property="Height" Value="34"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="FontSize" Value="10"/>
+                <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background"
+                                            Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background"
+                                            Value="{DynamicResource SubtleFillColorTertiaryBrush}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Compact CheckBox (the default WinUI box is oversized for dense panels) -->
+            <Style TargetType="CheckBox">
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="CheckBox">
+                            <Grid Background="Transparent" VerticalAlignment="Center">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="Box" Width="15" Height="15" CornerRadius="3"
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                        BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center" HorizontalAlignment="Center">
+                                    <TextBlock x:Name="CheckMark" Text="&#xE73E;"
+                                               FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                               Foreground="{DynamicResource TextOnAccentFillColorPrimaryBrush}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               Visibility="Collapsed"/>
+                                </Border>
+                                <ContentPresenter Grid.Column="1" Margin="6,0,0,0"
+                                                  VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter TargetName="Box" Property="Background"
+                                            Value="{DynamicResource AccentFillColorDefaultBrush}"/>
+                                    <Setter TargetName="Box" Property="BorderBrush"
+                                            Value="{DynamicResource AccentFillColorDefaultBrush}"/>
+                                    <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Box" Property="BorderBrush"
+                                            Value="{DynamicResource ControlStrokeColorSecondaryBrush}"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Opacity" Value="0.45"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <!-- ════════════════════════════════════════════════════════════════
                  Viewport Tab Toggle
                  ════════════════════════════════════════════════════════════════ -->
@@ -422,16 +502,16 @@
             <Style TargetType="MenuItem">
                 <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
-                <Setter Property="Padding" Value="12,5"/>
+                <Setter Property="Padding" Value="10,4"/>
                 <Setter Property="FontSize" Value="12"/>
-                <Setter Property="Height" Value="32"/>
+                <Setter Property="Height" Value="30"/>
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="MenuItem">
                             <Grid>
                                 <Border x:Name="Bd" Background="{TemplateBinding Background}"
                                         CornerRadius="4" Padding="{TemplateBinding Padding}"
-                                        Margin="2,1" MinHeight="28">
+                                        Margin="2,1" MinHeight="26">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto" SharedSizeGroup="MenuItemIcon"/>
@@ -440,7 +520,7 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <ContentPresenter Grid.Column="0" ContentSource="Icon"
-                                                          Margin="0,0,8,0"
+                                                          Margin="0,0,6,0"
                                                           VerticalAlignment="Center"
                                                           Width="16" Height="16"/>
                                         <ContentPresenter Grid.Column="1" ContentSource="Header"
@@ -448,12 +528,12 @@
                                                           RecognizesAccessKey="True"/>
                                         <TextBlock x:Name="ShortcutText" Grid.Column="2"
                                                    Text="{TemplateBinding InputGestureText}"
-                                                   Margin="24,0,0,0"
+                                                   Margin="14,0,0,0"
                                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                                    FontSize="11" VerticalAlignment="Center"/>
                                         <TextBlock x:Name="SubmenuArrow" Grid.Column="3"
                                                    Text="&#xE76C;" FontFamily="Segoe MDL2 Assets"
-                                                   FontSize="10" Margin="10,0,0,0"
+                                                   FontSize="10" Margin="6,0,0,0"
                                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                                    VerticalAlignment="Center" Visibility="Collapsed"/>
                                     </Grid>

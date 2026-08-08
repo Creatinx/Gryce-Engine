@@ -538,6 +538,20 @@ public class EditorViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Refreshes the selected entity's transform + inspector after the viewport
+    /// gizmo modifies it, so Inspector and node stay in sync.
+    /// </summary>
+    public void RaiseTransformChanged(GEntityHandle handle)
+    {
+        if (_selectedEntity != null && _selectedEntity.Handle == handle)
+        {
+            _selectedEntity.RefreshTransform();
+            RefreshInspector();
+            OnPropertyChanged(nameof(SelectedEntity));
+        }
+    }
+
     private void SelectPendingNewEntity()
     {
         var name = _pendingSelectEntityName;

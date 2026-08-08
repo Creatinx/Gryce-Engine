@@ -315,6 +315,8 @@
 | 布局 | 已实现（菜单/工具栏 + Hierarchy / Viewport / Inspector + 底部 Project / Console / Animation 标签页；底部面板压缩为 2 行头部 + 内容区，去除冗余分隔与独立状态栏） |
 | 视口嵌入（HwndHost + GLFW 外部窗口） | 已实现（按物理像素创建/缩放，适配高 DPI；尺寸随窗口与分割条实时同步；同步模式命令执行完整，场景/网格/物体正常显示） |
 | 渲染（Tonemapping） | 已实现（修复 HDR tonemap 默认曝光 2.0 导致视口整体灰白、场景不可见的问题，曝光调整为 1.0） |
+| 场景视图交互 | 已实现（编辑器相机：右键环绕、中键平移、滚轮缩放；左键拾取/选中实体；Transform Gizmo 拖动（平移/旋转/缩放，局部/全局空间）；HwndHost airspace 通过全局鼠标钩子 + 独立覆盖窗口解决） |
+| 游戏视图交互 | 已实现（WASD 移动、鼠标拖动视角、Space/Ctrl 上下、Shift 加速、滚轮调整速度；控制器驱动场景 MainCamera） |
 | 层级面板（Hierarchy） | 已实现（Entity 树、搜索、右键创建子实体/重命名/副本/删除、新建自动选中并展开祖先） |
 | Create Entity 对话框 | 已实现（搜索 + 最近使用 + 类型分类 + 描述，创建时可附带组件） |
 | Inspector 面板 | 已实现（反射自动生成字段编辑；修复短名/全名反射查询不一致导致属性不可编辑的问题） |
@@ -326,11 +328,12 @@
 | 物理 | 已实现（`GPhysics_AttachSystems` 把 PhysicsSystem3D/2D 挂入 Core World，播放模式真实步进） |
 | 动画 | 已实现（`AnimatorSystem` 已注册进 Core World，播放模式推进骨骼动画时间） |
 | 主题 | 已实现（全局 `ThemeManager.Current.ApplicationTheme` 深色/浅色 + 持久化；菜单栏/Hierarchy/Inspector/底部面板统一深色） |
+| Mica 背景 | 已实现（Windows 11 DWM `DWMSBT_MAINWINDOW`；标题栏/编辑器背景；可在设置中开关并持久化） |
 | 右键菜单 | 已实现（全局 MenuItem/Separator 模板重写为 Fluent 风格：深色圆角 + 阴影 + 高亮/禁用态 + 子菜单箭头） |
 | 本地化 | 已实现（中文/英文运行时切换 + 持久化，`editor/project/locales/{en,zh}.json`） |
 | 快捷键 | 已实现（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D） |
 | Undo/Redo | 部分实现（创建/删除/重命名实体） |
-| 已知限制 | 编辑器相机/Gizmo 拖拽尚未移植 |
+| 窗口布局 | 已实现（菜单栏 + 项目名进入标题栏；播放/暂停/停止居中位于标题栏下一层；操作栏移除模式徽标；设置入口移入文件菜单） |
 
 ---
 

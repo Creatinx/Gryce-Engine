@@ -1,16 +1,25 @@
-﻿<Window x:Class="GryceEngine.Editor.Views.MainWindow"
+<Window x:Class="GryceEngine.Editor.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
         xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
         xmlns:views="clr-namespace:GryceEngine.Editor.Views"
         ui:ThemeManager.IsThemeAware="True"
-        ui:WindowHelper.UseModernWindowStyle="True"
         Title="{Binding Title}"
         Width="1240" Height="760"
         MinWidth="980" MinHeight="620"
         WindowStartupLocation="CenterScreen"
-        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
+        WindowStyle="SingleBorderWindow"
+        Background="#EE1F1F1F">
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="34"
+                            ResizeBorderThickness="6"
+                            GlassFrameThickness="0"
+                            CornerRadius="0"
+                            UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
 
     <Window.InputBindings>
         <KeyBinding Key="Z" Modifiers="Ctrl" Command="{Binding UndoCommand}" />
@@ -31,13 +40,10 @@
         <KeyBinding Key="V" Modifiers="Ctrl" Command="{Binding PasteCommand}" />
     </Window.InputBindings>
 
-    <!-- ================================================================
-         Main Layout — Unity-style Editor
-         Menu | Toolbar | [Hierarchy | Viewport | Inspector] | ...
-         ================================================================ -->
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>  <!-- Menu Bar -->
+            <RowDefinition Height="34"/>    <!-- Title Bar: menu + project name + window buttons -->
+            <RowDefinition Height="38"/>    <!-- Playback bar (centered) -->
             <RowDefinition Height="Auto"/>  <!-- Toolbar -->
             <RowDefinition Height="*"/>     <!-- Main Content -->
             <RowDefinition Height="4"/>     <!-- Splitter -->
@@ -45,21 +51,26 @@
             <RowDefinition Height="Auto"/>  <!-- Status Bar -->
         </Grid.RowDefinitions>
 
-        <!-- ════════════════════════════════════════════════════════════
-             Menu Bar — Unity-style compact menu
-             ════════════════════════════════════════════════════════════ -->
-        <Border Grid.Row="0"
-                Background="{DynamicResource LayerFillColorDefaultBrush}"
-                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                BorderThickness="0,0,0,1"
-                Padding="2,0">
-            <Menu FontSize="11.5" Background="Transparent"
+        <!-- ================================================================
+             Title Bar — menu lives in the caption area (Mica backdrop),
+             project name follows the menus, window buttons on the right.
+             ================================================================ -->
+        <Grid Grid.Row="0" Background="Transparent">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <Menu Grid.Column="0" x:Name="MainMenu"
+                  FontSize="11.5" Background="Transparent"
                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                  VerticalAlignment="Center">
+                  VerticalAlignment="Center" Margin="2,0,0,0">
                 <Menu.Resources>
                     <Style TargetType="MenuItem">
-                        <Setter Property="Padding" Value="8,2"/>
-                        <Setter Property="MinHeight" Value="24"/>
+                        <Setter Property="Padding" Value="9,3"/>
+                        <Setter Property="MinHeight" Value="26"/>
                         <Setter Property="Margin" Value="0,0,1,0"/>
                     </Style>
                 </Menu.Resources>
@@ -85,6 +96,12 @@
                     <MenuItem Header="{loc:Loc menu.import_asset}" Click="OnImportAssetClick">
                         <MenuItem.Icon>
                             <TextBlock Text="&#xE8B5;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.settings}" Click="OnSettingsClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                         </MenuItem.Icon>
                     </MenuItem>
                     <Separator/>
@@ -147,43 +164,73 @@
                 <MenuItem Header="{loc:Loc menu.view}">
                     <MenuItem Header="{loc:Loc menu.refresh}" InputGestureText="F5"
                               Click="OnRefreshViewClick"/>
-                    <Separator/>
-                    <MenuItem Header="{loc:Loc menu.theme}">
-                        <MenuItem Header="{loc:Loc menu.theme_dark}" Click="OnThemeDarkClick">
-                            <MenuItem.Icon>
-                                <TextBlock Text="&#xE708;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                            </MenuItem.Icon>
-                        </MenuItem>
-                        <MenuItem Header="{loc:Loc menu.theme_light}" Click="OnThemeLightClick">
-                            <MenuItem.Icon>
-                                <TextBlock Text="&#xE706;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                            </MenuItem.Icon>
-                        </MenuItem>
-                    </MenuItem>
-                    <Separator/>
-                    <MenuItem Header="{loc:Loc menu.settings}" Click="OnSettingsClick">
-                        <MenuItem.Icon>
-                            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                        </MenuItem.Icon>
-                    </MenuItem>
                 </MenuItem>
 
                 <MenuItem Header="{loc:Loc menu.help}">
                     <MenuItem Header="{loc:Loc menu.about}" Click="OnAboutClick"/>
                 </MenuItem>
             </Menu>
+
+            <!-- Project name after the menus -->
+            <TextBlock Grid.Column="1" x:Name="ProjectNameText"
+                       Text="{Binding SceneName}"
+                       FontSize="11.5" FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                       VerticalAlignment="Center" Margin="10,0,0,0"
+                       TextTrimming="CharacterEllipsis" MaxWidth="280"/>
+
+            <!-- Window buttons -->
+            <StackPanel Grid.Column="3" Orientation="Horizontal"
+                        shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button x:Name="BtnMinimize" Style="{StaticResource CaptionButtonStyle}"
+                        Content="&#xE921;" Click="OnMinimizeClick"/>
+                <Button x:Name="BtnMaximize" Style="{StaticResource CaptionButtonStyle}"
+                        Content="&#xE922;" Click="OnMaximizeClick"/>
+                <Button x:Name="BtnClose" Style="{StaticResource CaptionButtonStyle}"
+                        Content="&#xE8BB;" Click="OnCloseClick"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- ================================================================
+             Playback Bar — centered below the title bar
+             ================================================================ -->
+        <Border Grid.Row="1"
+                Background="#E6262626"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,0,0,1">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Button x:Name="BtnPlay"
+                        Style="{StaticResource PlayButtonStyle}"
+                        AutomationProperties.Name="PlayButton"
+                        ToolTip="{loc:Loc toolbar.play}"
+                        Content="&#xE768;"
+                        Click="OnPlayClick"/>
+                <Button x:Name="BtnPause"
+                        Style="{StaticResource ToolbarButtonStyle}"
+                        AutomationProperties.Name="PauseButton"
+                        ToolTip="{loc:Loc toolbar.pause}"
+                        Content="&#xE769;"
+                        Click="OnPauseClick"/>
+                <Button x:Name="BtnStop"
+                        Style="{StaticResource ToolbarButtonStyle}"
+                        AutomationProperties.Name="StopButton"
+                        ToolTip="{loc:Loc toolbar.stop}"
+                        Content="&#xE71A;"
+                        Click="OnStopClick"/>
+                <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="10,3"/>
+                <TextBlock x:Name="PlaybackStateText" FontSize="10.5"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           VerticalAlignment="Center" Margin="4,0,0,0"/>
+            </StackPanel>
         </Border>
 
-        <!-- ════════════════════════════════════════════════════════════
-             Toolbar
-             ════════════════════════════════════════════════════════════ -->
-        <views:ToolbarView Grid.Row="1" DataContext="{Binding}"/>
+        <!-- Toolbar -->
+        <views:ToolbarView Grid.Row="2" DataContext="{Binding}"/>
 
-        <!-- ════════════════════════════════════════════════════════════
-             Main Work Area — Unity-style 3-panel layout
-             Hierarchy (Left) | Viewport (Center) | Inspector (Right)
-             ════════════════════════════════════════════════════════════ -->
-        <Grid Grid.Row="2">
+        <!-- ================================================================
+             Main Work Area — Hierarchy (Left) | Viewport (Center) | Inspector (Right)
+             ================================================================ -->
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="220" MinWidth="150"/>
                 <ColumnDefinition Width="4"/>
@@ -192,7 +239,6 @@
                 <ColumnDefinition Width="280" MinWidth="180"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left: Hierarchy -->
             <Border Grid.Column="0"
                     Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
                 <views:HierarchyView/>
@@ -201,7 +247,6 @@
             <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
                           ResizeBehavior="PreviousAndNext"/>
 
-            <!-- Center: Viewport -->
             <Border Grid.Column="2"
                     Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
                 <views:ViewportView/>
@@ -210,20 +255,19 @@
             <GridSplitter Grid.Column="3" Width="4" HorizontalAlignment="Stretch"
                           ResizeBehavior="PreviousAndNext"/>
 
-            <!-- Right: Inspector -->
             <Border Grid.Column="4"
                     Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
                 <views:InspectorView/>
             </Border>
         </Grid>
 
-        <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch"
+        <GridSplitter Grid.Row="4" Height="4" HorizontalAlignment="Stretch"
                       ResizeBehavior="PreviousAndNext"/>
 
-        <!-- ════════════════════════════════════════════════════════════
+        <!-- ================================================================
              Bottom Panels — Project | Console | Animation
-             ════════════════════════════════════════════════════════════ -->
-        <Border Grid.Row="4"
+             ================================================================ -->
+        <Border Grid.Row="5"
                 Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0">
@@ -241,10 +285,10 @@
             </TabControl>
         </Border>
 
-        <!-- ════════════════════════════════════════════════════════════
-             Status Bar — Unity-style bottom bar
-             ════════════════════════════════════════════════════════════ -->
-        <Border Grid.Row="5"
+        <!-- ================================================================
+             Status Bar
+             ================================================================ -->
+        <Border Grid.Row="6"
                 Background="{DynamicResource LayerFillColorAltBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
@@ -257,7 +301,6 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Left: Status -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
                     <Border Width="7" Height="7" CornerRadius="4" VerticalAlignment="Center" Margin="0,0,6,0">
                         <Border.Style>
@@ -284,14 +327,12 @@
                     </TextBlock>
                 </StackPanel>
 
-                <!-- Center: Gizmo mode -->
                 <TextBlock Grid.Column="1" FontSize="10.5"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            VerticalAlignment="Center" HorizontalAlignment="Center"
                            Text="{Binding GizmoModeLabel}"
                            Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}"/>
 
-                <!-- Right: version info -->
                 <TextBlock Grid.Column="3" FontSize="10"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            VerticalAlignment="Center"

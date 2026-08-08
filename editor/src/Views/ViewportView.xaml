@@ -2,7 +2,10 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
-             xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern">
+             xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
+             Focusable="True"
+             PreviewKeyDown="OnPreviewKeyDown"
+             PreviewKeyUp="OnPreviewKeyUp">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>

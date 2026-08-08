@@ -99,22 +99,31 @@
             <Border Grid.Column="0"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="0,0,1,0">
-                <TreeView x:Name="FolderTree" BorderThickness="0"
-                          Background="Transparent"
-                          Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                          SelectedItemChanged="OnFolderTreeSelectionChanged"
-                          FontSize="11">
-                    <TreeView.ItemContainerStyle>
-                        <Style TargetType="TreeViewItem">
-                            <Setter Property="IsExpanded" Value="False"/>
-                            <Setter Property="Padding" Value="2,1"/>
-                            <Setter Property="Foreground"
-                                    Value="{DynamicResource TextFillColorPrimaryBrush}"/>
-                            <Setter Property="Background" Value="Transparent"/>
-                            <Setter Property="BorderThickness" Value="0"/>
-                        </Style>
-                    </TreeView.ItemContainerStyle>
-                </TreeView>
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Auto">
+                    <TreeView x:Name="FolderTree" BorderThickness="0"
+                              Background="Transparent"
+                              Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                              SelectedItemChanged="OnFolderTreeSelectionChanged"
+                              FontSize="11"
+                              Padding="0,2,0,6">
+                        <TreeView.ItemContainerStyle>
+                            <Style TargetType="TreeViewItem">
+                                <Setter Property="IsExpanded" Value="False"/>
+                                <Setter Property="Padding" Value="2,2"/>
+                                <Setter Property="Foreground"
+                                        Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="BorderThickness" Value="0"/>
+                                <Style.Triggers>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TreeView.ItemContainerStyle>
+                    </TreeView>
+                </ScrollViewer>
             </Border>
 
             <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
@@ -179,32 +188,28 @@
                                         </Style>
                                     </Border.Style>
                                     <StackPanel>
-                                        <!-- Icon background with file type color -->
-                                        <Border Width="44" Height="44" CornerRadius="6"
+                                        <!-- Solid icon tile covers the item background -->
+                                        <Border Width="46" Height="46" CornerRadius="8"
                                                 HorizontalAlignment="Center"
-                                                Opacity="0.15">
-                                            <Border.Style>
-                                                <Style TargetType="Border">
-                                                    <Setter Property="Background" Value="{Binding IconColor}"/>
-                                                </Style>
-                                            </Border.Style>
+                                                Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+                                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1">
+                                            <TextBlock Text="{Binding Icon}"
+                                                       FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                       FontSize="24"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{Binding IconColor}"/>
                                         </Border>
-                                        <!-- Icon overlay -->
-                                        <TextBlock Text="{Binding Icon}"
-                                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                                   FontSize="24"
-                                                   HorizontalAlignment="Center"
-                                                   Foreground="{Binding IconColor}"
-                                                   Margin="0,-44,0,0"/>
                                         <!-- File name -->
                                         <TextBlock Text="{Binding Name}"
                                                    FontSize="9.5"
                                                    HorizontalAlignment="Center"
                                                    TextAlignment="Center"
                                                    TextWrapping="Wrap"
-                                                   MaxHeight="28"
+                                                   MaxHeight="24"
                                                    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                                                   Margin="0,8,0,0"/>
+                                                   Margin="0,5,0,0"/>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>

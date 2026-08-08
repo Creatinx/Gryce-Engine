@@ -38,6 +38,9 @@
                         <RadioButton IsChecked="{Binding IsLightTheme}" GroupName="Theme" Margin="0,4"
                                      Content="{loc:Loc settings.light_theme}" FontSize="12"
                                      Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <CheckBox IsChecked="{Binding MicaBackdrop}" Margin="0,8,0,0" FontSize="12"
+                                  Content="{loc:Loc settings.mica}"
+                                  Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
                     </StackPanel>
 
                     <TextBlock Grid.Row="2" Text="{loc:Loc settings.language}" FontWeight="SemiBold" FontSize="14"

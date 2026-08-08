@@ -1,10 +1,13 @@
 using GryceEngine.Editor.Native;
+using GryceEngine.Editor.Services;
 using GryceEngine.Editor.ViewModels;
 using iNKORE.UI.WPF.Modern;
 using iNKORE.UI.WPF.Modern.Controls;
 using Microsoft.Win32;
 using System;
+using System.ComponentModel;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Media;
 
 namespace GryceEngine.Editor.Views;
@@ -17,8 +20,68 @@ public partial class MainWindow
     {
         DataContext = viewModel;
         InitializeComponent();
+        SourceInitialized += OnSourceInitialized;
         viewModel.RefreshHierarchy();
+        viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        UpdatePlaybackState(viewModel);
     }
+
+    private void OnSourceInitialized(object? sender, EventArgs e)
+    {
+        // Apply the persisted Mica backdrop to the title bar + editor background.
+        var settings = Services.EditorSettingsService.Load();
+        if (settings.MicaBackdrop)
+        {
+            Services.MicaHelper.TryApplyMica(this);
+        }
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(VM.IsPlaying) || e.PropertyName == nameof(VM.IsPaused))
+        {
+            UpdatePlaybackState(VM);
+        }
+    }
+
+    private void UpdatePlaybackState(EditorViewModel? vm)
+    {
+        if (vm == null) return;
+        if (vm.IsPlaying && vm.IsPaused)
+            PlaybackStateText.Text = LocalizationService.Instance.T("status.paused");
+        else if (vm.IsPlaying)
+            PlaybackStateText.Text = LocalizationService.Instance.T("status.playing");
+        else
+            PlaybackStateText.Text = LocalizationService.Instance.T("status.editor");
+    }
+
+    // === Window Buttons ===
+
+    private void OnMinimizeClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void OnMaximizeClick(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    // === Playback Bar ===
+
+    private void OnPlayClick(object sender, RoutedEventArgs e)
+    {
+        if (VM == null) return;
+        if (VM.IsPlaying && VM.IsPaused) VM.Play();
+        else if (VM.IsPlaying) VM.Pause();
+        else VM.Play();
+    }
+
+    private void OnPauseClick(object sender, RoutedEventArgs e)
+    {
+        if (VM == null) return;
+        if (VM.IsPlaying && !VM.IsPaused) VM.Pause();
+        else if (VM.IsPlaying && VM.IsPaused) VM.Play();
+    }
+
+    private void OnStopClick(object sender, RoutedEventArgs e) => VM?.Stop();
 
     // === File Menu ===
 

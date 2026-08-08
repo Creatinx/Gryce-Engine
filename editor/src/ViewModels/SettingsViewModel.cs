@@ -60,6 +60,13 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _showStats = value; OnPropertyChanged(); }
     }
 
+    private bool _micaBackdrop = true;
+    public bool MicaBackdrop
+    {
+        get => _micaBackdrop;
+        set { _micaBackdrop = value; OnPropertyChanged(); }
+    }
+
     // Language
     private int _selectedLanguageIndex;
     public int SelectedLanguageIndex
@@ -119,6 +126,7 @@ public class SettingsViewModel : INotifyPropertyChanged
         ShowGrid = true;
         ShowGizmos = true;
         ShowStats = false;
+        MicaBackdrop = true;
         SelectedLanguageIndex = 0;
     }
 
