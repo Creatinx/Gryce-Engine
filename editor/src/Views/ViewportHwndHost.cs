@@ -29,6 +29,10 @@ public class ViewportHwndHost : HwndHost
 
     private IntPtr _glfwChild;
     private IntPtr _oldWndProc;
+    private IntPtr _oldHostWndProc;
+
+    /// <summary>HWND of the embedded GLFW render window (valid after AttachGlfwChild).</summary>
+    public IntPtr GlfwChildHandle => _glfwChild;
     private static readonly Dictionary<IntPtr, ViewportHwndHost> s_hosts = new();
     private static readonly WndProcDelegate s_proc = WndProc;
 
@@ -53,6 +57,12 @@ public class ViewportHwndHost : HwndHost
 
     protected override void DestroyWindowCore(HandleRef hwnd)
     {
+        if (_hwnd != IntPtr.Zero && _oldHostWndProc != IntPtr.Zero)
+        {
+            SetWindowLongPtr(_hwnd, GWLP_WNDPROC, _oldHostWndProc);
+            s_hosts.Remove(_hwnd);
+            _oldHostWndProc = IntPtr.Zero;
+        }
         if (_glfwChild != IntPtr.Zero && _oldWndProc != IntPtr.Zero)
         {
             SetWindowLongPtr(_glfwChild, GWLP_WNDPROC, _oldWndProc);
@@ -98,6 +108,18 @@ public class ViewportHwndHost : HwndHost
     /// </summary>
     public void AttachGlfwChild()
     {
+        // WPF HwndHost airspace keeps the embedded GLFW window out of
+        // hit-testing, so mouse messages land on the host window. Subclass the
+        // host as well and forward them from there.
+        if (_hwnd != IntPtr.Zero)
+        {
+            _oldHostWndProc = SetWindowLongPtr(_hwnd, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(s_proc));
+            if (_oldHostWndProc != IntPtr.Zero)
+            {
+                s_hosts[_hwnd] = this;
+            }
+        }
+
         _glfwChild = FindGlfwChild(_hwnd);
         if (_glfwChild == IntPtr.Zero) return;
 
