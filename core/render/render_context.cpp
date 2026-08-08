@@ -60,6 +60,50 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
         case RenderCommandType::SetGpuBusySpin:
             backend->set_gpu_busy_spin(cmd.gpu_busy_spin.enabled, cmd.gpu_busy_spin.iterations);
             break;
+        case RenderCommandType::SetShader: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->bind();
+            break;
+        }
+        case RenderCommandType::SetTexture: {
+            IShader* s = backend->shader(cmd.shader);
+            ITexture* t = backend->texture(cmd.texture);
+            if (!s || !t) break;
+            t->bind(cmd.uniform_int);
+            if (!cmd.uniform_name.empty()) {
+                s->set_int(cmd.uniform_name, cmd.uniform_int);
+            }
+            s->set_texture(cmd.uniform_int, t);
+            break;
+        }
+        case RenderCommandType::SetUniformInt: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->set_int(cmd.uniform_name, cmd.uniform_int);
+            break;
+        }
+        case RenderCommandType::SetUniformFloat: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->set_float(cmd.uniform_name, cmd.uniform_float);
+            break;
+        }
+        case RenderCommandType::SetUniformVec3: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->set_vec3(cmd.uniform_name, cmd.uniform_vec3);
+            break;
+        }
+        case RenderCommandType::SetUniformVec4: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->set_vec4(cmd.uniform_name, cmd.uniform_vec4);
+            break;
+        }
+        case RenderCommandType::SetUniformMat4: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->set_mat4(cmd.uniform_name, cmd.uniform_mat4);
+            break;
+        }
+        case RenderCommandType::SetScissor:
+            backend->set_scissor(cmd.scissor.x, cmd.scissor.y, cmd.scissor.w, cmd.scissor.h);
+            break;
         default:
             break;
     }

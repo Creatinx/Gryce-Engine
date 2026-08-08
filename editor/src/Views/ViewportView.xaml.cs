@@ -37,17 +37,62 @@ public partial class ViewportView : UserControl, IDisposable
     /// 把 WPF 布局尺寸（DIP）换算为物理像素。
     /// 嵌入的 GLFW 窗口按物理像素创建，否则在高 DPI 下只覆盖视口的一部分。
     /// </summary>
+    /// <summary>
+    /// 获取视口宿主窗口的物理像素尺寸。
+    /// 直接测量 HwndHost 的 Win32 窗口，避免 DPI 换算误差：
+    /// 进程在 system-DPI-aware 下 GetDpi() 可能返回显示器 DPI（如 144），
+    /// 而 WPF 布局实际按系统 DPI 1:1 进行，乘缩放系数会把尺寸放大
+    /// （例如 732x391 -&gt; 1098x587），导致嵌入 GL 窗口与视口区域不一致。
+    /// </summary>
     private (int W, int H) GetPixelSize(double? width = null, double? height = null)
     {
-        // 渲染表面是 ViewportBorder（中间的视口区域），不是整个 UserControl
-        // （后者还包含标签栏和底栏）。以 ViewportBorder 的实际尺寸为准。
+        // 优先使用 HwndHost 的真实 Win32 尺寸（物理像素，最准确）。
+        if (_hwndHost != null && _hwndHost.Handle != IntPtr.Zero)
+        {
+            if (TryGetHostClientSize(out int cw, out int ch) && cw > 0 && ch > 0)
+            {
+                return (Math.Max(cw, 100), Math.Max(ch, 100));
+            }
+        }
+
+        // 兜底：使用布局尺寸（WPF 在该环境下 1 DIP ≈ 1 物理像素）。
         double w = width ?? (ViewportBorder != null && ViewportBorder.ActualWidth > 0
             ? ViewportBorder.ActualWidth : ActualWidth);
         double h = height ?? (ViewportBorder != null && ViewportBorder.ActualHeight > 0
             ? ViewportBorder.ActualHeight : ActualHeight);
-        var dpi = VisualTreeHelper.GetDpi(this);
-        return (Math.Max((int)Math.Round(w * dpi.DpiScaleX), 100),
-                Math.Max((int)Math.Round(h * dpi.DpiScaleY), 100));
+        return (Math.Max((int)Math.Round(w), 100),
+                Math.Max((int)Math.Round(h), 100));
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hWnd, out NativeRect rect);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    private bool TryGetHostClientSize(out int w, out int h)
+    {
+        w = 0;
+        h = 0;
+        if (_hwndHost == null || _hwndHost.Handle == IntPtr.Zero) return false;
+        return TryGetClientSize(_hwndHost.Handle, out w, out h);
+    }
+
+    private static bool TryGetClientSize(nint hwnd, out int w, out int h)
+    {
+        w = 0;
+        h = 0;
+        if (hwnd == IntPtr.Zero) return false;
+        if (!GetClientRect(hwnd, out var r)) return false;
+        w = r.Right - r.Left;
+        h = r.Bottom - r.Top;
+        return w > 0 && h > 0;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -121,7 +166,10 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnHwndCreated(object? sender, nint hwnd)
     {
-        var px = GetPixelSize();
+        // BuildWindowCore 期间 HwndHost.Handle 尚未赋值，直接测量传入的 hwnd。
+        var px = TryGetClientSize(hwnd, out int hw, out int hh)
+            ? (W: hw, H: hh)
+            : GetPixelSize();
         int w = px.W;
         int h = px.H;
         // 不在初始化阶段锁定尺寸：OnLoaded/BuildWindowCore 时的 Actual* 可能不是
