@@ -29,6 +29,7 @@ public partial class ViewportView : UserControl, IDisposable
     private volatile bool _windowMinimized;
     private string _displayMode = "Shaded";
     private (int W, int H) _appliedPixelSize;
+    private double _overlayScale = -1.0;
 
     // ---- editor viewport interaction ----
     private readonly ViewportCamera _sceneCamera = new();
@@ -158,10 +159,15 @@ public partial class ViewportView : UserControl, IDisposable
             win.PreviewKeyUp += OnWindowKeyUp;
             win.Deactivated += OnWindowDeactivated;
             win.StateChanged += OnWindowStateChanged;
+            win.LocationChanged += OnWindowLocationChanged;
 
             _overlay = new GizmoOverlayWindow { Owner = win };
             _overlay.Show();
 
+            if (_vmCached != null)
+            {
+                _vmCached.PropertyChanged += OnVmPropertyChanged;
+            }
             UpdateSceneHint();
         }
 
@@ -188,6 +194,12 @@ public partial class ViewportView : UserControl, IDisposable
             win.PreviewKeyUp -= OnWindowKeyUp;
             win.Deactivated -= OnWindowDeactivated;
             win.StateChanged -= OnWindowStateChanged;
+            win.LocationChanged -= OnWindowLocationChanged;
+        }
+
+        if (_vmCached != null)
+        {
+            _vmCached.PropertyChanged -= OnVmPropertyChanged;
         }
 
         _overlay?.Close();
@@ -219,6 +231,7 @@ public partial class ViewportView : UserControl, IDisposable
         // (host WM_SIZE -> SetWindowPos on the GLFW child), so the rendered
         // content tracks the window frame with no lag. Only the GL render
         // targets need to be resized on the render thread (throttled below).
+        PositionOverlay();
     }
 
     private void UpdateResolutionDisplay(int w, int h)
@@ -565,9 +578,13 @@ public partial class ViewportView : UserControl, IDisposable
         if (dot < -0.99999)
             return new GQuat(0, 1, 0, 0); // 180° about Y
 
-        double ax = fy * 0 - fz * 0;   // cross((0,0,-1), F)
-        double ay = fz * 0 - fx * (-1);
-        double az = fx * 0 - fy * 0;
+        // Rotation axis = cross((0,0,-1), F) = (fy, -fx, 0). The previous
+        // implementation computed (0, fx, 0), which rotated the camera about
+        // the wrong axis once the view pitched/orbited, so the rendered
+        // MainCamera transform diverged from the editor camera.
+        double ax = fy;
+        double ay = -fx;
+        double az = 0.0;
         double alen = Math.Sqrt(ax * ax + ay * ay + az * az);
         if (alen < 1e-9) return new GQuat(0, 0, 0, 1);
         ax /= alen; ay /= alen; az /= alen;
@@ -877,6 +894,23 @@ public partial class ViewportView : UserControl, IDisposable
     {
         var win = Window.GetWindow(this);
         _windowMinimized = win != null && win.WindowState == WindowState.Minimized;
+    }
+
+    /// <summary>Repositions the gizmo overlay immediately when the editor
+    /// window moves, instead of waiting for the 30Hz overlay tick.</summary>
+    private void OnWindowLocationChanged(object? sender, EventArgs e)
+    {
+        PositionOverlay();
+    }
+
+    /// <summary>Updates the top-right gizmo mode badge as soon as the mode
+    /// changes (W/E/R), instead of waiting for the 30Hz overlay tick.</summary>
+    private void OnVmPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(EditorViewModel.GizmoMode))
+        {
+            _overlay?.SetMode(_vmCached?.GizmoMode ?? "Translate");
+        }
     }
 
     // =====================================================================
@@ -1299,9 +1333,14 @@ public partial class ViewportView : UserControl, IDisposable
             var dip = src.CompositionTarget.TransformFromDevice.Transform(topLeft);
             var px = GetPixelSize();
             double scale = px.W / Math.Max(ViewportBorder.ActualWidth, 1.0);
-            overlay.Canvas.LayoutTransform = new ScaleTransform(1.0 / scale, 1.0 / scale);
-            overlay.Canvas.Width = px.W;
-            overlay.Canvas.Height = px.H;
+            if (Math.Abs(_overlayScale - scale) > 0.001 ||
+                Math.Abs(overlay.Canvas.Width - px.W) > 0.5)
+            {
+                overlay.Canvas.LayoutTransform = new ScaleTransform(1.0 / scale, 1.0 / scale);
+                overlay.Canvas.Width = px.W;
+                overlay.Canvas.Height = px.H;
+                _overlayScale = scale;
+            }
             if (Math.Abs(overlay.Left - dip.X) > 0.5 || Math.Abs(overlay.Top - dip.Y) > 0.5 ||
                 Math.Abs(overlay.Width - ViewportBorder.ActualWidth) > 0.5 ||
                 Math.Abs(overlay.Height - ViewportBorder.ActualHeight) > 0.5)
