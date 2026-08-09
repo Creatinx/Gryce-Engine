@@ -565,5 +565,15 @@ gryce_copy_dll_to_editor(GrycePlatform)
 gryce_copy_dll_to_editor(GrycePhysics)
 
 if(TARGET glfw)
-    gryce_copy_dll_to_editor(glfw)
+    # glfw is created in the deps subdirectory, so a TARGET rule here would
+    # fail ("TARGET 'glfw' was not created in this directory"). Attach the
+    # copy to GrycePlatform, which links glfw; the $<TARGET_FILE:glfw> genex
+    # resolves the DLL path globally.
+    add_custom_command(TARGET GrycePlatform POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GRYCE_EDITOR_BIN}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:glfw>"
+            "${GRYCE_EDITOR_BIN}/"
+        COMMENT "Copying $<TARGET_FILE_NAME:glfw> to editor output"
+    )
 endif()
