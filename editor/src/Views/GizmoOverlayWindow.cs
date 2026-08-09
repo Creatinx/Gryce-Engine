@@ -48,6 +48,7 @@ public sealed class GizmoOverlayWindow : Window
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(8, 4, 8, 4),
             Opacity = 0.9,
+            Visibility = Visibility.Collapsed,
             Child = _hintText,
             VerticalAlignment = VerticalAlignment.Bottom,
             HorizontalAlignment = HorizontalAlignment.Left,

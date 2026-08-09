@@ -100,19 +100,9 @@ public partial class ViewportView : UserControl, IDisposable
         SizeChanged += OnSizeChanged;
         _sceneCamera.LookAtTarget(0, 2.5, 8, 0, 1, 0);
         _gameCamera.Reset(0, 2.5, 8, -90, 0);
-        UpdateSceneHint();
     }
 
     private EditorViewModel? VM => DataContext as EditorViewModel;
-
-    private void UpdateSceneHint()
-    {
-        _overlay?.SetHint(_isGameView
-            ? LocalizationService.Instance.T("viewport.game_hint")
-            : _is2DMode
-                ? LocalizationService.Instance.T("viewport.mode_2d_hint")
-                : LocalizationService.Instance.T("viewport.scene_hint"));
-    }
 
     /// <summary>
     /// Converts WPF layout size (DIP) to physical pixels.
@@ -211,7 +201,6 @@ public partial class ViewportView : UserControl, IDisposable
             {
                 _vmCached.PropertyChanged += OnVmPropertyChanged;
             }
-            UpdateSceneHint();
         }
 
         _gizmoTimer = new DispatcherTimer(DispatcherPriority.Render)
@@ -1627,7 +1616,6 @@ public partial class ViewportView : UserControl, IDisposable
         TabGame.IsChecked = false;
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.scene_view");
         GizmoOverlay.Visibility = Visibility.Visible;
-        UpdateSceneHint();
     }
 
     private void On2DTabClick(object sender, RoutedEventArgs e)
@@ -1640,7 +1628,6 @@ public partial class ViewportView : UserControl, IDisposable
         TabGame.IsChecked = false;
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.scene_2d");
         GizmoOverlay.Visibility = Visibility.Visible;
-        UpdateSceneHint();
     }
 
     private void OnGameTabClick(object sender, RoutedEventArgs e)
@@ -1652,7 +1639,6 @@ public partial class ViewportView : UserControl, IDisposable
         TabGame.IsChecked = true;
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.game_view");
         GizmoOverlay.Visibility = Visibility.Collapsed;
-        UpdateSceneHint();
     }
 
     private void OnRelease3DSceneClick(object sender, RoutedEventArgs e)
