@@ -244,6 +244,9 @@ int GRender_Init(const GRenderInitDesc* desc) {
     g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
     if (g_renderer.renderer2d) {
         g_renderer.renderer2d->init(g_renderer.ctx.get());
+        GLOG_INFO("GRender_Init: 2D overlay renderer initialized");
+    } else {
+        GLOG_WARN("GRender_Init: create_renderer2d returned nullptr");
     }
 
     // Async mode: start render thread
