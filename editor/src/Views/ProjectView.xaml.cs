@@ -98,11 +98,12 @@ public partial class ProjectView : UserControl
         var item = new TreeViewItem
         {
             Header = CreateFolderHeader(name),
-            Tag = path
+            Tag = path,
+            Style = CompactTreeItemStyle()
         };
 
         // Add a placeholder to enable expand arrow
-        item.Items.Add(new TreeViewItem { Header = "..." });
+        item.Items.Add(new TreeViewItem { Header = "...", Style = CompactTreeItemStyle() });
 
         item.Expanded += (_, _) =>
         {
@@ -120,6 +121,16 @@ public partial class ProjectView : UserControl
         };
 
         return item;
+    }
+
+    /// <summary>
+    /// The compact tree style must be assigned as a local Style: the iNKORE
+    /// theme's TreeViewItem look is not overridden by ItemContainerStyle alone,
+    /// so explicitly-created containers get it directly here.
+    /// </summary>
+    private static Style CompactTreeItemStyle()
+    {
+        return (Style)System.Windows.Application.Current.FindResource("CompactTreeItemStyle");
     }
 
     /// <summary>Folder tree node header: Fluent folder glyph + name.</summary>
