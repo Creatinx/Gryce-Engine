@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
         xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
+        xmlns:views="clr-namespace:GryceEngine.Editor.Views"
         ui:ThemeManager.IsThemeAware="True"
         ui:WindowHelper.UseModernWindowStyle="True"
         Title="{loc:Loc create_entity.dialog_title}"
@@ -85,43 +86,51 @@
                              TextChanged="OnSearchTextChanged"/>
                 </Grid>
 
-                <!-- Type list -->
-                <ListBox x:Name="TypeList" Grid.Row="2"
-                         BorderThickness="0" Background="Transparent"
-                         FontSize="12"
-                         VirtualizingPanel.IsVirtualizing="False"
-                         VirtualizingPanel.VirtualizationMode="Standard"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                         MouseDoubleClick="OnTypeListDoubleClick"
-                         SelectionChanged="OnTypeSelectionChanged">
-                    <ListBox.ItemContainerStyle>
-                        <Style TargetType="ListBoxItem">
-                            <Setter Property="Padding" Value="8,4"/>
-                            <Setter Property="Margin" Value="0,1"/>
-                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <!-- Type tree (Empty Entity + category -> component types) -->
+                <TreeView x:Name="TypeTree" Grid.Row="2"
+                          BorderThickness="0" Background="Transparent"
+                          FontSize="12"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          MouseDoubleClick="OnTypeTreeDoubleClick"
+                          SelectedItemChanged="OnTypeSelectionChanged">
+                    <TreeView.ItemContainerStyle>
+                        <Style TargetType="TreeViewItem">
+                            <Setter Property="Padding" Value="4,3"/>
+                            <Setter Property="MinHeight" Value="24"/>
+                            <Setter Property="IsExpanded" Value="True"/>
                         </Style>
-                    </ListBox.ItemContainerStyle>
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
+                    </TreeView.ItemContainerStyle>
+                    <TreeView.Resources>
+                        <!-- Category node (parent) -->
+                        <HierarchicalDataTemplate DataType="{x:Type views:CreateEntityCategory}"
+                                                  ItemsSource="{Binding Children}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding Icon}" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                        </HierarchicalDataTemplate>
+                        <!-- Component type leaf -->
+                        <DataTemplate DataType="{x:Type views:CreateTypeItem}">
                             <Grid>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="{Binding Name}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
-                                <Border Grid.Column="1" Padding="6,1" CornerRadius="3"
-                                        Background="{DynamicResource SubtleFillColorSecondaryBrush}"
-                                        Visibility="{Binding CategoryVisibility}">
-                                    <TextBlock Text="{Binding Category}"
-                                               FontSize="9.5"
-                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
-                                </Border>
+                                <TextBlock Grid.Column="0" Text="{Binding Icon}"
+                                           FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                           Foreground="{Binding IconColor}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Name}"
+                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                           VerticalAlignment="Center"/>
                             </Grid>
                         </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
+                    </TreeView.Resources>
+                </TreeView>
 
                 <!-- Description -->
                 <Border Grid.Row="4" Padding="10,8" CornerRadius="6"

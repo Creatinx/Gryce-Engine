@@ -63,11 +63,72 @@
         </Border>
 
         <!-- ══ Entity Tree ══ -->
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                      PreviewMouseRightButtonDown="OnTreePreviewRightClick">
             <TreeView x:Name="EntityTree"
                       BorderThickness="0" Background="Transparent"
                       ItemsSource="{Binding RootEntities}"
                       Padding="0,2">
+                <TreeView.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="{loc:Loc menu.create_entity}" Click="OnCreateEntityClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc hierarchy.create_child}" Click="OnCreateChildClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE739;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc common.rename}" InputGestureText="F2"
+                              Click="OnRenameEntityClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8AC;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc common.duplicate}" InputGestureText="Ctrl+D"
+                              Command="{Binding DuplicateCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.copy}" InputGestureText="Ctrl+C"
+                              Command="{Binding CopyCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.cut}" InputGestureText="Ctrl+X"
+                              Command="{Binding CutCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.paste}" InputGestureText="Ctrl+V"
+                              Command="{Binding PasteCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE77F;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc menu.focus}" InputGestureText="F"
+                              Command="{Binding FocusCommand}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE71E;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc common.delete}" InputGestureText="Del"
+                              Click="OnDeleteEntityClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                </ContextMenu>
+                </TreeView.ContextMenu>
                 <TreeView.ItemContainerStyle>
                     <Style TargetType="TreeViewItem">
                         <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
@@ -154,36 +215,6 @@
                         </Grid>
                     </HierarchicalDataTemplate>
                 </TreeView.Resources>
-
-                <TreeView.ContextMenu>
-                    <ContextMenu>
-                        <MenuItem Header="{loc:Loc menu.create_empty}" Command="{Binding CreateEntityCommand}">
-                            <MenuItem.Icon>
-                                <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                            </MenuItem.Icon>
-                        </MenuItem>
-                        <Separator/>
-                        <MenuItem Header="{loc:Loc common.duplicate}" InputGestureText="Ctrl+D"
-                                  Command="{Binding DuplicateCommand}">
-                            <MenuItem.Icon>
-                                <TextBlock Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                            </MenuItem.Icon>
-                        </MenuItem>
-                        <MenuItem Header="{loc:Loc common.rename}" InputGestureText="F2"
-                                  Click="OnRenameEntityClick">
-                            <MenuItem.Icon>
-                                <TextBlock Text="&#xE8AC;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                            </MenuItem.Icon>
-                        </MenuItem>
-                        <Separator/>
-                        <MenuItem Header="{loc:Loc common.delete}" InputGestureText="Del"
-                                  Click="OnDeleteEntityClick">
-                            <MenuItem.Icon>
-                                <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                            </MenuItem.Icon>
-                        </MenuItem>
-                    </ContextMenu>
-                </TreeView.ContextMenu>
             </TreeView>
         </ScrollViewer>
     </Grid>

@@ -14,6 +14,10 @@ namespace GryceEngine.Editor.Views;
 /// </summary>
 public sealed class GizmoOverlayWindow : Window
 {
+    /// <summary>While a modal dialog is open the overlay must stay hidden;
+    /// the gizmo tick honors this flag instead of re-showing the window.</summary>
+    public bool Suppressed { get; set; }
+
     public Canvas Canvas { get; } = new Canvas { ClipToBounds = true };
     private readonly Border _hint;
     private readonly Border _modeBadge;

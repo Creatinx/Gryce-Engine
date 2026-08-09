@@ -1,5 +1,6 @@
 using GryceEngine.Editor.Models;
 using GryceEngine.Editor.Native;
+using GryceEngine.Editor.Services;
 using GryceEngine.Editor.ViewModels;
 using System.Windows;
 using System.Windows.Controls;
@@ -29,11 +30,7 @@ public partial class InspectorView : UserControl
     private void OnAddComponentClick(object sender, RoutedEventArgs e)
     {
         if (VM == null) return;
-        var dialog = new AddComponentDialog(VM)
-        {
-            Owner = Window.GetWindow(this)
-        };
-        dialog.ShowDialog();
+        ModalDialog.Show(new AddComponentDialog(VM), Window.GetWindow(this));
     }
 
     private void OnComponentHeaderClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -50,12 +47,19 @@ public partial class InspectorView : UserControl
         if (sender is FrameworkElement fe && fe.Tag is ulong typeHash)
         {
             var contextMenu = new ContextMenu();
-            var removeItem = new MenuItem { Header = "Remove Component" };
+            var removeItem = new MenuItem
+            {
+                Header = LocalizationService.Instance.T("inspector.remove_component"),
+                InputGestureText = "Del"
+            };
+            removeItem.Icon = new TextBlock
+            {
+                Text = "\uE74D",
+                FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
+                FontSize = 12
+            };
             removeItem.Click += (_, _) => VM.RemoveComponent(typeHash);
             contextMenu.Items.Add(removeItem);
-
-            var resetItem = new MenuItem { Header = "Reset" };
-            contextMenu.Items.Add(resetItem);
 
             contextMenu.IsOpen = true;
         }

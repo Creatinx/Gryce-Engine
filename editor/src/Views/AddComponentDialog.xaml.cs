@@ -50,15 +50,6 @@ public partial class AddComponentDialog : Window
     private readonly EditorViewModel _vm;
     private ComponentTypeEntry? _selected;
 
-    // 2D/UI components that do not belong in this 3D editor (removed per user).
-    private static readonly HashSet<string> ExcludedTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Node2D", "Sprite2D", "Label", "ColorRect", "Circle", "Polygon", "Camera2D",
-        "Tilemap", "ParticleEmitter2D", "ParallaxBackground", "Skybox2D",
-        "RigidBody2D", "StaticBody2D", "BoxCollider2D", "CircleCollider2D",
-        "CharacterController2D", "Joint2D"
-    };
-
     public AddComponentDialog(EditorViewModel vm)
     {
         InitializeComponent();
@@ -86,14 +77,14 @@ public partial class AddComponentDialog : Window
 
         foreach (var t in _vm.RegisteredTypes)
         {
-            if (ExcludedTypes.Contains(t.TypeName)) continue;
+            if (ComponentTypeFilter.IsExcluded(t.TypeName)) continue;
             if (!string.IsNullOrWhiteSpace(filter) &&
                 t.TypeName.IndexOf(filter.Trim(), StringComparison.OrdinalIgnoreCase) < 0)
                 continue;
 
-            var (category, icon, color) = Categorize(t.TypeName);
+            var (category, icon, color) = ComponentCatalog.Categorize(t.TypeName);
             GroupOf(category, icon).Children.Add(new ComponentTypeEntry(
-                t.TypeName, t.TypeHash, icon, color, Describe(t.TypeName)));
+                t.TypeName, t.TypeHash, icon, color, ComponentCatalog.Describe(t.TypeName)));
         }
 
         foreach (var g in groups)
@@ -115,39 +106,6 @@ public partial class AddComponentDialog : Window
 
         SelectFirstType();
         AddButton.IsEnabled = true;
-    }
-
-    private static (string Category, string Icon, Brush Color) Categorize(string typeName)
-    {
-        if (typeName.IndexOf("MeshRenderer", StringComparison.Ordinal) >= 0)
-            return ("Rendering", "\uE8B8", NewBrush(0x8C, 0xCB, 0xFF));
-        if (typeName.IndexOf("Camera", StringComparison.Ordinal) >= 0)
-            return ("Camera & Light", "\uE722", NewBrush(0x80, 0xC0, 0xFF));
-        if (typeName.IndexOf("Light", StringComparison.Ordinal) >= 0)
-            return ("Camera & Light", "\uE706", NewBrush(0xFF, 0xD0, 0x66));
-        if (typeName.IndexOf("Body", StringComparison.Ordinal) >= 0 ||
-            typeName.IndexOf("Collider", StringComparison.Ordinal) >= 0 ||
-            typeName.IndexOf("Joint", StringComparison.Ordinal) >= 0)
-            return ("Physics", "\uE8B5", NewBrush(0x8C, 0xFF, 0xD0));
-        if (typeName.IndexOf("Audio", StringComparison.Ordinal) >= 0)
-            return ("Audio", "\uE8D6", NewBrush(0xFF, 0xCC, 0x8C));
-        if (typeName.IndexOf("Terrain", StringComparison.Ordinal) >= 0 ||
-            typeName.IndexOf("Material", StringComparison.Ordinal) >= 0 ||
-            typeName.IndexOf("Destructible", StringComparison.Ordinal) >= 0 ||
-            typeName.IndexOf("Fragment", StringComparison.Ordinal) >= 0)
-            return ("World", "\uE8B9", NewBrush(0x8C, 0xFF, 0x8C));
-        return ("Node", "\uE8B7", NewBrush(0xAA, 0xAA, 0xAA));
-    }
-
-    private static SolidColorBrush NewBrush(byte r, byte g, byte b)
-        => new(Color.FromRgb(r, g, b));
-
-    private string Describe(string typeName)
-    {
-        string key = "create_entity.desc." + typeName;
-        string localized = T(key);
-        if (localized != key) return localized;
-        return string.Format(T("create_entity.generic_desc"), typeName);
     }
 
     private void SelectFirstType()

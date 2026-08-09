@@ -456,8 +456,8 @@ public class EditorViewModel : INotifyPropertyChanged
         if (_selectedEntity == null) return;
         var entity = _selectedEntity;
         var dialog = new Views.InputDialog("Rename Entity", "Enter new name:", entity.Name);
-        dialog.Owner = System.Windows.Application.Current.MainWindow;
-        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.InputText))
+        if (ModalDialog.Show(dialog, System.Windows.Application.Current.MainWindow) == true &&
+            !string.IsNullOrWhiteSpace(dialog.InputText))
         {
             var oldName = entity.Name;
             RenameEntity(entity.Handle, dialog.InputText);

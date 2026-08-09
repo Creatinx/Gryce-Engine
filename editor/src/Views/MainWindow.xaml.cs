@@ -2,12 +2,10 @@ using GryceEngine.Editor.Native;
 using GryceEngine.Editor.Services;
 using GryceEngine.Editor.ViewModels;
 using iNKORE.UI.WPF.Modern;
-using iNKORE.UI.WPF.Modern.Controls;
 using Microsoft.Win32;
 using System;
 using System.ComponentModel;
 using System.Windows;
-using System.Windows.Interop;
 using System.Windows.Media;
 
 namespace GryceEngine.Editor.Views;
@@ -133,11 +131,7 @@ public partial class MainWindow
 
     private void OnCreateEntityClick(object sender, RoutedEventArgs e)
     {
-        var dialog = new CreateEntityDialog(VM!, GEntityHandle.Null)
-        {
-            Owner = this
-        };
-        dialog.ShowDialog();
+        ModalDialog.Show(new CreateEntityDialog(VM!, GEntityHandle.Null), this);
     }
 
     // === View Menu ===
@@ -174,8 +168,7 @@ public partial class MainWindow
 
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
-        var settingsWindow = new SettingsWindow { Owner = this };
-        if (settingsWindow.ShowDialog() == true)
+        if (ModalDialog.Show(new SettingsWindow(), this) == true)
         {
             VM?.AppendConsole("Settings applied.");
         }
@@ -183,13 +176,8 @@ public partial class MainWindow
 
     private void OnAboutClick(object sender, RoutedEventArgs e)
     {
-        var dialog = new ContentDialog
-        {
-            Title = "About Gryce Engine",
-            Content = "Gryce Engine Editor\n\nA modern game engine built with C++ and WPF.\nFluent Design | Unity-style Layout\n\nVersion 0.1.0",
-            CloseButtonText = "OK",
-            DefaultButton = ContentDialogButton.Close
-        };
-        _ = dialog.ShowAsync();
+        // A real modal window: the previous in-window ContentDialog was covered
+        // by the native GLFW viewport (WPF airspace).
+        ModalDialog.Show(new AboutWindow(), this);
     }
 }

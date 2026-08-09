@@ -191,6 +191,7 @@ public partial class ViewportView : UserControl, IDisposable
 
             _overlay = new GizmoOverlayWindow { Owner = win };
             _overlay.Show();
+            ViewportOverlayManager.Overlay = _overlay;
 
             if (_vmCached != null)
             {
@@ -230,6 +231,10 @@ public partial class ViewportView : UserControl, IDisposable
             _vmCached.PropertyChanged -= OnVmPropertyChanged;
         }
 
+        if (ReferenceEquals(ViewportOverlayManager.Overlay, _overlay))
+        {
+            ViewportOverlayManager.Overlay = null;
+        }
         _overlay?.Close();
         _overlay = null;
 
@@ -1068,6 +1073,10 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void UpdateGizmoOverlayCore()
     {
+        // While a modal dialog is open the overlay must stay hidden (it is a
+        // top-level transparent window and could otherwise cover the dialog).
+        if (_overlay?.Suppressed == true) return;
+
         PositionOverlay();
         var selected = VM?.SelectedEntity;
         if (_isGameView || selected == null || VM == null)

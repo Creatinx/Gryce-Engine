@@ -377,8 +377,8 @@ public partial class ProjectView : UserControl
     private void OnNewFolderClick(object sender, RoutedEventArgs e)
     {
         var dialog = new InputDialog("New Folder", "Enter folder name:", "NewFolder");
-        dialog.Owner = Window.GetWindow(this);
-        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.InputText))
+        if (ModalDialog.Show(dialog, Window.GetWindow(this)) == true &&
+            !string.IsNullOrWhiteSpace(dialog.InputText))
         {
             try
             {
@@ -399,8 +399,8 @@ public partial class ProjectView : UserControl
         if (string.IsNullOrEmpty(_selectedFilePath)) return;
         var currentName = Path.GetFileName(_selectedFilePath);
         var dialog = new InputDialog("Rename", "Enter new name:", currentName);
-        dialog.Owner = Window.GetWindow(this);
-        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.InputText))
+        if (ModalDialog.Show(dialog, Window.GetWindow(this)) == true &&
+            !string.IsNullOrWhiteSpace(dialog.InputText))
         {
             try
             {

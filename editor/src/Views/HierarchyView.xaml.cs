@@ -17,33 +17,6 @@ public partial class HierarchyView : UserControl
     public HierarchyView()
     {
         InitializeComponent();
-        EntityTree.ContextMenu = BuildContextMenu();
-    }
-
-    private ContextMenu BuildContextMenu()
-    {
-        var menu = new ContextMenu();
-        AddMenuItem(menu, "hierarchy.create_child", () =>
-        {
-            if (VM?.SelectedEntity != null)
-                VM.CreateChildEntity(VM.SelectedEntity.Handle);
-        });
-        menu.Items.Add(new Separator());
-        AddMenuItem(menu, "hierarchy.rename", RenameSelected);
-        AddMenuItem(menu, "hierarchy.duplicate", () => VM?.DuplicateSelectedEntity());
-        menu.Items.Add(new Separator());
-        AddMenuItem(menu, "hierarchy.delete", () => VM?.DeleteSelectedEntity());
-        return menu;
-    }
-
-    private static void AddMenuItem(ContextMenu menu, string key, Action action)
-    {
-        var item = new MenuItem
-        {
-            Header = LocalizationService.Instance.T(key)
-        };
-        item.Click += (_, _) => action();
-        menu.Items.Add(item);
     }
 
     private void RenameSelected()
@@ -53,11 +26,9 @@ public partial class HierarchyView : UserControl
         var dialog = new InputDialog(
             LocalizationService.Instance.T("menu.rename"),
             LocalizationService.Instance.T("common.name"),
-            entity.Name)
-        {
-            Owner = Window.GetWindow(this)
-        };
-        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.InputText))
+            entity.Name);
+        if (ModalDialog.Show(dialog, Window.GetWindow(this)) == true &&
+            !string.IsNullOrWhiteSpace(dialog.InputText))
         {
             VM.RenameEntity(entity.Handle, dialog.InputText);
         }
@@ -79,6 +50,34 @@ public partial class HierarchyView : UserControl
             item.IsSelected = true;
             VM!.SelectedEntity = entity;
         }
+    }
+
+    /// <summary>
+    /// Right-clicking empty space inside the hierarchy opens the same
+    /// context menu (Create Entity / Create Child), while right-clicking an
+    /// entity row lets the ContextMenuService open the menu normally.
+    /// </summary>
+    private void OnTreePreviewRightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source) return;
+        if (FindAncestor<TreeViewItem>(source) != null) return;
+
+        var menu = EntityTree.ContextMenu;
+        if (menu == null) return;
+        menu.PlacementTarget = sender as UIElement ?? EntityTree;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? child) where T : DependencyObject
+    {
+        while (child != null)
+        {
+            if (child is T match) return match;
+            child = VisualTreeHelper.GetParent(child);
+        }
+        return null;
     }
 
     private void OnEntityKeyDown(object sender, KeyEventArgs e)
@@ -114,7 +113,7 @@ public partial class HierarchyView : UserControl
     private void OnCreateChildClick(object sender, RoutedEventArgs e)
     {
         if (VM?.SelectedEntity != null)
-            VM.CreateChildEntity(VM.SelectedEntity.Handle);
+            OpenCreateEntityDialog(VM.SelectedEntity.Handle);
     }
 
     private void OnDuplicateEntityClick(object sender, RoutedEventArgs e)
@@ -129,7 +128,7 @@ public partial class HierarchyView : UserControl
         {
             Owner = Window.GetWindow(this)
         };
-        dialog.ShowDialog();
+        ModalDialog.Show(dialog, Window.GetWindow(this));
     }
 
     private void OnRenameEntityClick(object sender, RoutedEventArgs e)
