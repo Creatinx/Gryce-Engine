@@ -51,6 +51,10 @@ GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h
 GRYCE_RENDERER_API void GRender_SetVSync(bool enabled);
 GRYCE_RENDERER_API void GRender_SetDisplayMode(const char* mode);
 
+// 2D 场景编辑器模式：GRender_RenderWorld 只渲染 2D 画布
+//（清屏 + 2D 覆盖层，不跑 3D 管线）。false = 3D 场景 + 2D 覆盖。
+GRYCE_RENDERER_API void GRender_SetScene2D(bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

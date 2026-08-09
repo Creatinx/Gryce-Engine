@@ -56,6 +56,7 @@ struct RendererState {
     GEntityHandle viewport_camera = 0;
     GEntityHandle gameview_camera = 0;
     std::string display_mode = "Shaded";
+    bool scene_2d_only = false;
 
     std::mutex mutex;
 };
@@ -74,6 +75,18 @@ static RenderAPI to_internal_api(GRenderAPI api) {
 static World* get_world() {
     void* ptr = GCore_GetInternalWorldPtr();
     return static_cast<World*>(ptr);
+}
+
+// 2D 覆盖层 pass：begin_frame -> RenderSystem2D -> end_frame
+static void render_2d_overlay() {
+    if (!g_renderer.renderer2d || !g_renderer.ctx) return;
+    g_renderer.renderer2d->begin_frame(g_renderer.viewport_w, g_renderer.viewport_h);
+    World* world = get_world();
+    if (world && world->scene()) {
+        ecs::RenderSystem2D sys(g_renderer.renderer2d.get());
+        sys.on_render(*world->scene(), *g_renderer.ctx);
+    }
+    g_renderer.renderer2d->end_frame();
 }
 
 // 在场景中查找主摄像机：优先 is_main，其次名字为 MainCamera，最后任意启用的摄像机。
@@ -328,6 +341,18 @@ static void render_world_internal() {
         g_renderer.ctx->set_viewport(0, 0, g_renderer.viewport_w, g_renderer.viewport_h);
     }
 
+    // 2D 场景编辑器：只渲染 2D 画布（不混 3D）
+    if (g_renderer.scene_2d_only) {
+        if (g_renderer.sync_mode) {
+            auto* backend = g_renderer.ctx->backend();
+            if (backend) backend->clear(0.12f, 0.14f, 0.18f, 1.0f);
+        } else {
+            g_renderer.ctx->clear(0.12f, 0.14f, 0.18f, 1.0f);
+        }
+        render_2d_overlay();
+        return;
+    }
+
     // Render via pipeline if available
     if (g_renderer.pipeline && g_renderer.pipeline->is_valid()) {
         // 同步模式：先补传网格，再解析摄像机/光源，最后渲染。
@@ -350,12 +375,7 @@ static void render_world_internal() {
 
         // 2D 覆盖层：在 3D 场景（tonemap 到默认帧缓冲）之上绘制 2D 组件
         //（Sprite2D / Label / ColorRect / TileMap 等，按 CanvasLayer 分层）。
-        if (g_renderer.renderer2d) {
-            g_renderer.renderer2d->begin_frame(g_renderer.viewport_w, g_renderer.viewport_h);
-            ecs::RenderSystem2D sys(g_renderer.renderer2d.get());
-            sys.on_render(*world->scene(), *g_renderer.ctx);
-            g_renderer.renderer2d->end_frame();
-        }
+        render_2d_overlay();
     } else {
         // No pipeline — fallback: let world render systems push commands
         world->render(*g_renderer.ctx);
@@ -416,6 +436,13 @@ void GRender_EndFrame(void) {
     if (ctx && sync_mode) {
         ctx->present_swap();
     }
+}
+
+void GRender_SetScene2D(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.scene_2d_only = enabled;
+    GLOG_INFO("GRender_SetScene2D: {}", enabled);
 }
 
 GTextureHandle GRender_GetViewportTexture(void) {

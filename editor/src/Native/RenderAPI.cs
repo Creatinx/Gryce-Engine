@@ -46,4 +46,7 @@ public static class RenderAPI
 
     [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
     public static extern void GRender_SetDisplayMode([MarshalAs(UnmanagedType.LPUTF8Str)] string mode);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetScene2D([MarshalAs(UnmanagedType.U1)] bool enabled);
 }

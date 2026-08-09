@@ -29,6 +29,16 @@ public partial class ViewportView : UserControl, IDisposable
     private volatile bool _windowMinimized;
     private bool _is2DMode;
     private string _displayMode = "Shaded";
+
+    // ---- 2D 场景编辑器 ----
+    private GEntityHandle _editor2DCamera = GEntityHandle.Null;
+    private string? _pending2DCameraName;
+    private bool _editor2DCameraCreated;
+    private bool _2dCameraReady;
+    private double _2dCenterX, _2dCenterY;
+    private float _2dZoom = 1.0f;
+    private readonly List<Line> _gridLines = new();
+    private bool _gridBuilt;
     private (int W, int H) _appliedPixelSize;
     private double _overlayScale = -1.0;
     private DateTime _lastResizeTime = DateTime.MinValue;
@@ -98,7 +108,9 @@ public partial class ViewportView : UserControl, IDisposable
     {
         _overlay?.SetHint(_isGameView
             ? LocalizationService.Instance.T("viewport.game_hint")
-            : LocalizationService.Instance.T("viewport.scene_hint"));
+            : _is2DMode
+                ? "2D Scene Editor — middle/right drag: pan, wheel: zoom"
+                : LocalizationService.Instance.T("viewport.scene_hint"));
     }
 
     /// <summary>
@@ -347,6 +359,11 @@ public partial class ViewportView : UserControl, IDisposable
         if (!_rendererInitialized) return;
         try
         {
+            if (_is2DMode)
+            {
+                Update2DCameraSetup();
+                Update2DGrid();
+            }
             UpdateGizmoOverlay();
             // Refresh the inspector transform fields at the UI rate while a
             // gizmo drag is in progress (the render loop applies the values).
@@ -488,6 +505,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void PushSharedCamera()
     {
+        if (_is2DMode) return; // 2D 画布不受 3D 相机影响
         if (++_cameraResolveCounter >= 120 || _mainCamera == GEntityHandle.Null)
         {
             _mainCamera = FindMainCamera();
@@ -563,6 +581,7 @@ public partial class ViewportView : UserControl, IDisposable
         if (_is2DMode)
         {
             if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
+            else if (_middleDown || _rightDown) Pan2DView(dx, dy);
         }
         else
         {
@@ -578,6 +597,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void UpdateViewportCamera()
     {
+        if (_is2DMode) return; // 2D 画布不受 3D 相机影响
         if (++_cameraResolveCounter >= 60 || _mainCamera == GEntityHandle.Null)
         {
             _mainCamera = FindMainCamera();
@@ -676,6 +696,7 @@ public partial class ViewportView : UserControl, IDisposable
         if (_is2DMode)
         {
             if (_leftDown && _dragCaptured) UpdateGizmoDrag(pos.X, pos.Y);
+            else if (_middleDown || _rightDown) Pan2DView(dx, dy);
         }
         else
         {
@@ -756,7 +777,10 @@ public partial class ViewportView : UserControl, IDisposable
         }
         else
         {
-            _sceneCamera.Zoom(e.Delta);
+            if (_is2DMode)
+                Zoom2DView(e.Delta);
+            else
+                _sceneCamera.Zoom(e.Delta);
         }
     }
 
@@ -986,7 +1010,9 @@ public partial class ViewportView : UserControl, IDisposable
         // 直接按实体原点屏幕距离拾取最近者。
         if (_is2DMode)
         {
-            double best = 22.0;
+            double worldX = _2dCenterX + (sx - px.W * 0.5) / _2dZoom;
+            double worldY = _2dCenterY + (sy - px.H * 0.5) / _2dZoom;
+            double best = 22.0 / _2dZoom;
             GEntityHandle bestHandle = GEntityHandle.Null;
             try
             {
@@ -996,7 +1022,8 @@ public partial class ViewportView : UserControl, IDisposable
                     var h = EntityAPI.GEntity_GetAt(i);
                     if (h == GEntityHandle.Null || h == _mainCamera) continue;
                     if (EntityAPI.GEntity_GetLocalPosition(h, out var p) != 0) continue;
-                    double d = Math.Sqrt((p.X - sx) * (p.X - sx) + (p.Y - sy) * (p.Y - sy));
+                    double d = Math.Sqrt((p.X - worldX) * (p.X - worldX) +
+                                         (p.Y - worldY) * (p.Y - worldY));
                     if (d < best)
                     {
                         best = d;
@@ -1320,8 +1347,8 @@ public partial class ViewportView : UserControl, IDisposable
 
         if (_dragMode == "Translate2D")
         {
-            double nx = _dragStartPosX + (sx - _dragStartScreenX);
-            double ny = _dragStartPosY + (sy - _dragStartScreenY);
+            double nx = _dragStartPosX + (sx - _dragStartScreenX) / _2dZoom;
+            double ny = _dragStartPosY + (sy - _dragStartScreenY) / _2dZoom;
             lock (_gizmoApplyLock)
             {
                 _gizmoApplyEntity = selected.Handle;
@@ -1579,9 +1606,23 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnSceneTabClick(object sender, RoutedEventArgs e)
     {
         _isGameView = false;
+        Set2DMode(false);
         TabScene.IsChecked = true;
+        Tab2D.IsChecked = false;
         TabGame.IsChecked = false;
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.scene_view");
+        GizmoOverlay.Visibility = Visibility.Visible;
+        UpdateSceneHint();
+    }
+
+    private void On2DTabClick(object sender, RoutedEventArgs e)
+    {
+        _isGameView = false;
+        Set2DMode(true);
+        TabScene.IsChecked = false;
+        Tab2D.IsChecked = true;
+        TabGame.IsChecked = false;
+        GizmoInfo.Text = "2D Scene";
         GizmoOverlay.Visibility = Visibility.Visible;
         UpdateSceneHint();
     }
@@ -1589,11 +1630,266 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnGameTabClick(object sender, RoutedEventArgs e)
     {
         _isGameView = true;
+        Set2DMode(false);
         TabScene.IsChecked = false;
+        Tab2D.IsChecked = false;
         TabGame.IsChecked = true;
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.game_view");
         GizmoOverlay.Visibility = Visibility.Collapsed;
         UpdateSceneHint();
+    }
+
+    // =====================================================================
+    //  2D 场景编辑器：只渲染 2D 画布 + 编辑器 2D 相机 + 网格
+    // =====================================================================
+
+    private void Set2DMode(bool on)
+    {
+        if (_is2DMode == on) return;
+        _is2DMode = on;
+        try { RenderAPI.GRender_SetScene2D(on); } catch { /* ignore */ }
+        _overlay?.SetMode(on ? "2D" : (_vmCached?.GizmoMode ?? "Translate"));
+        if (on) Enter2DView(); else Exit2DView();
+        VM?.AppendConsole(on
+            ? "[Viewport] 2D Scene Editor: 2D canvas only (pan: middle/right drag, zoom: wheel)"
+            : "[Viewport] 3D Scene Editor");
+    }
+
+    private void Enter2DView()
+    {
+        // 优先使用场景已有活动 Camera2D；否则创建编辑器 2D 相机实体
+        _editor2DCamera = FindActiveCamera2D();
+        _editor2DCameraCreated = false;
+        _2dCameraReady = false;
+        if (_editor2DCamera != GEntityHandle.Null)
+        {
+            Read2DCameraView();
+        }
+        else
+        {
+            _2dCenterX = 0; _2dCenterY = 0; _2dZoom = 1.0f;
+            _pending2DCameraName = "Editor2DCamera";
+            CreateEditor2DCameraEntity();
+        }
+    }
+
+    private void Exit2DView()
+    {
+        if (_editor2DCameraCreated && _editor2DCamera != GEntityHandle.Null)
+        {
+            Span<byte> payload = stackalloc byte[sizeof(int)];
+            BitConverterCompat.TryWriteBytes(payload, (int)_editor2DCamera);
+            var cmd = GCommand.Create(GCommandType.DestroyEntity, payload);
+            CoreAPI.GCore_PushCommand(ref cmd);
+            _editor2DCameraCreated = false;
+        }
+        _editor2DCamera = GEntityHandle.Null;
+        _pending2DCameraName = null;
+        _2dCameraReady = false;
+        Update2DGrid();
+    }
+
+    private void CreateEditor2DCameraEntity()
+    {
+        Span<byte> payload = stackalloc byte[128 + sizeof(int)];
+        var nameBytes = Encoding.UTF8.GetBytes("Editor2DCamera");
+        nameBytes.AsSpan().CopyTo(payload);
+        BitConverterCompat.TryWriteBytes(payload.Slice(128), (int)0);
+        var cmd = GCommand.Create(GCommandType.CreateEntity, payload);
+        CoreAPI.GCore_PushCommand(ref cmd);
+        _editor2DCameraCreated = true;
+    }
+
+    private GEntityHandle FindActiveCamera2D()
+    {
+        int count = EntityAPI.GEntity_GetCount();
+        for (int i = 0; i < count; i++)
+        {
+            var h = EntityAPI.GEntity_GetAt(i);
+            if (h == GEntityHandle.Null) continue;
+            int comps = ComponentAPI.GComponent_GetCount(h);
+            for (int c = 0; c < comps; c++)
+            {
+                var sb = new StringBuilder(128);
+                if (ComponentAPI.GComponent_GetTypeNameAt(h, c, sb, sb.Capacity) > 0 &&
+                    sb.ToString().EndsWith("Camera2D", StringComparison.Ordinal))
+                {
+                    return h;
+                }
+            }
+        }
+        return GEntityHandle.Null;
+    }
+
+    private GEntityHandle FindEntityByName(string name)
+    {
+        int count = EntityAPI.GEntity_GetCount();
+        for (int i = 0; i < count; i++)
+        {
+            var h = EntityAPI.GEntity_GetAt(i);
+            if (h == GEntityHandle.Null) continue;
+            var n = EntityAPI.GetNameUtf8(h);
+            if (n == name) return h;
+        }
+        return GEntityHandle.Null;
+    }
+
+    private ulong FindRegisteredTypeHash(string typeName)
+    {
+        int count = ComponentAPI.GComponent_GetRegisteredTypeCount();
+        for (int i = 0; i < count; i++)
+        {
+            var sb = new StringBuilder(128);
+            if (ComponentAPI.GComponent_GetRegisteredTypeInfo(i, out ulong hash, sb, sb.Capacity) >= 0 &&
+                sb.ToString() == typeName)
+            {
+                return hash;
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>每 30Hz tick 完成编辑器 2D 相机的创建/组件挂载/参数写入。</summary>
+    private void Update2DCameraSetup()
+    {
+        if (!_is2DMode) return;
+
+        if (_pending2DCameraName != null)
+        {
+            var h = FindEntityByName(_pending2DCameraName);
+            if (h != GEntityHandle.Null)
+            {
+                _editor2DCamera = h;
+                _pending2DCameraName = null;
+                ulong hash = FindRegisteredTypeHash("Camera2D");
+                if (hash != 0) ComponentAPI.GComponent_AddComponent(h, hash);
+            }
+            return;
+        }
+
+        if (_editor2DCamera != GEntityHandle.Null && !_2dCameraReady)
+        {
+            if (ComponentAPI.GComponent_GetTypeHashAt(_editor2DCamera, 0, out ulong hash) == 0 && hash != 0)
+            {
+                Apply2DCameraView(hash);
+                _2dCameraReady = true;
+            }
+        }
+    }
+
+    private void Read2DCameraView()
+    {
+        if (EntityAPI.GEntity_GetLocalPosition(_editor2DCamera, out var pos) == 0)
+        {
+            _2dCenterX = pos.X; _2dCenterY = pos.Y;
+        }
+        if (ComponentAPI.GComponent_GetTypeHashAt(_editor2DCamera, 0, out ulong hash) == 0 && hash != 0)
+        {
+            _2dZoom = GetComponentFloat(_editor2DCamera, hash, "zoom");
+            if (_2dZoom <= 0.01f) _2dZoom = 1.0f;
+            _2dCameraReady = true;
+        }
+    }
+
+    private void Apply2DCameraView(ulong hash)
+    {
+        var pos = new GVec3((float)_2dCenterX, (float)_2dCenterY, 0.0f);
+        EntityAPI.GEntity_SetLocalPosition(_editor2DCamera, ref pos);
+        SetComponentFloat(_editor2DCamera, hash, "zoom", _2dZoom);
+        // is_active 默认 true、offset (0,0)、canvas_layer 0（世界层），无需写入
+    }
+
+    private void Apply2DCameraView()
+    {
+        if (!_2dCameraReady || _editor2DCamera == GEntityHandle.Null) return;
+        if (ComponentAPI.GComponent_GetTypeHashAt(_editor2DCamera, 0, out ulong hash) != 0 || hash == 0) return;
+        Apply2DCameraView(hash);
+    }
+
+    private void Pan2DView(double dx, double dy)
+    {
+        _2dCenterX -= dx / _2dZoom;
+        _2dCenterY -= dy / _2dZoom;
+        Apply2DCameraView();
+    }
+
+    private void Zoom2DView(double wheelDelta)
+    {
+        _2dZoom = (float)Clamp(_2dZoom * (wheelDelta > 0 ? 1.1 : 0.9), 0.1, 20.0);
+        Apply2DCameraView();
+    }
+
+    private static void SetComponentFloat(GEntityHandle entity, ulong hash, string name, float value)
+    {
+        var buf = BitConverter.GetBytes(value);
+        var pin = System.Runtime.InteropServices.GCHandle.Alloc(buf, System.Runtime.InteropServices.GCHandleType.Pinned);
+        try { ComponentAPI.GComponent_SetProperty(entity, hash, name, pin.AddrOfPinnedObject(), buf.Length); }
+        finally { pin.Free(); }
+    }
+
+    private static float GetComponentFloat(GEntityHandle entity, ulong hash, string name)
+    {
+        var buf = new byte[4];
+        var pin = System.Runtime.InteropServices.GCHandle.Alloc(buf, System.Runtime.InteropServices.GCHandleType.Pinned);
+        try
+        {
+            if (ComponentAPI.GComponent_GetProperty(entity, hash, name, pin.AddrOfPinnedObject(), 4) == 0)
+                return BitConverter.ToSingle(buf, 0);
+        }
+        finally { pin.Free(); }
+        return 1.0f;
+    }
+
+    // ---- 2D 网格（overlay 屏幕空间）----
+
+    private void Update2DGrid()
+    {
+        if (_is2DMode)
+        {
+            if (!_gridBuilt) Build2DGrid();
+        }
+        else if (_gridBuilt)
+        {
+            foreach (var line in _gridLines)
+            {
+                _overlay?.Canvas.Children.Remove(line);
+            }
+            _gridLines.Clear();
+            _gridBuilt = false;
+        }
+    }
+
+    private void Build2DGrid()
+    {
+        var px = GetPixelSize();
+        const int spacing = 64;
+        var brush = new SolidColorBrush(Color.FromArgb(40, 160, 160, 160));
+        var axisBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255));
+        for (int x = 0; x <= px.W; x += spacing)
+        {
+            var line = new Line
+            {
+                X1 = x, Y1 = 0, X2 = x, Y2 = px.H,
+                Stroke = x == 0 ? axisBrush : brush,
+                StrokeThickness = 1,
+                IsHitTestVisible = false
+            };
+            _overlay?.Canvas.Children.Add(line);
+            _gridLines.Add(line);
+        }
+        for (int y = 0; y <= px.H; y += spacing)
+        {
+            var line = new Line
+            {
+                X1 = 0, Y1 = y, X2 = px.W, Y2 = y,
+                Stroke = y == 0 ? axisBrush : brush,
+                StrokeThickness = 1,
+                IsHitTestVisible = false
+            };
+            _overlay?.Canvas.Children.Add(line);
+            _gridLines.Add(line);
+        }
+        _gridBuilt = true;
     }
 
     private void OnDisplayModeClick(object sender, RoutedEventArgs e)
@@ -1619,17 +1915,6 @@ public partial class ViewportView : UserControl, IDisposable
         catch { /* ignore if not supported */ }
 
         VM?.AppendConsole($"[Viewport] Display mode: {_displayMode}");
-    }
-
-    private void OnMode2D3DClick(object sender, RoutedEventArgs e)
-    {
-        _is2DMode = !_is2DMode;
-        BtnMode2D3D.Content = _is2DMode ? "2D" : "3D";
-        _overlay?.SetMode(_is2DMode ? "2D" : (_vmCached?.GizmoMode ?? "Translate"));
-        UpdateSceneHint();
-        VM?.AppendConsole(_is2DMode
-            ? "[Viewport] 2D editing mode: screen-space pick + XY translate gizmo"
-            : "[Viewport] 3D editing mode");
     }
 
     public void Dispose()

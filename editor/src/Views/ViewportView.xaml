@@ -34,7 +34,17 @@
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
                                        FontSize="11" Margin="0,0,6,0"/>
-                            <TextBlock Text="{loc:Loc viewport.scene}"/>
+                            <TextBlock Text="3D"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="Tab2D"
+                                  IsChecked="False"
+                                  Style="{StaticResource ViewportTabStyle}"
+                                  Click="On2DTabClick">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets"
+                                       FontSize="11" Margin="0,0,6,0"/>
+                            <TextBlock Text="2D"/>
                         </StackPanel>
                     </ToggleButton>
                     <ToggleButton x:Name="TabGame"
@@ -47,15 +57,6 @@
                             <TextBlock Text="{loc:Loc viewport.game}"/>
                         </StackPanel>
                     </ToggleButton>
-                    <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="4,3"/>
-                    <Button x:Name="BtnMode2D3D"
-                            Style="{StaticResource ToolbarButtonStyle}"
-                            Width="Auto" MinWidth="34"
-                            FontSize="10.5" FontFamily="Segoe UI"
-                            ToolTip="Toggle 2D / 3D editing mode"
-                            Padding="6,0" Margin="4,0,0,0"
-                            Content="3D"
-                            Click="OnMode2D3DClick"/>
                 </StackPanel>
 
                 <!-- Right: Display Mode + Resolution -->
