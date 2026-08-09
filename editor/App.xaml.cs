@@ -23,6 +23,7 @@ public partial class App : Application
         // Restore persisted editor settings (language must be applied before the
         // ViewModel is created so localized VM strings use the right language).
         var settings = Services.EditorSettingsService.Load();
+        Engine.UpdateAutoSaveInterval(settings.AutoSaveInterval);
         if (settings.Language == "zh")
             Services.LocalizationService.Instance.Language = EditorLanguage.Chinese;
 

@@ -119,11 +119,11 @@ typedef struct {
 | 模块 | API 族 | 主要函数 |
 |---|---|---|
 | GryceCore | `GCore_*` | `GCore_Init/Shutdown`、`GCore_BeginFrame/EndFrame`、`GCore_PushCommand(s)`、`GCore_IsPlaying/IsPaused`、`GCore_RegisterCallback_*`、`GCore_GetLogMessages` |
-| GryceCore | `GEntity_*` | `GEntity_GetCount/GetAt/GetName/GetPath`、`GetParent/GetChildAt`、`Get/SetLocalPosition/Rotation/Scale`、`GetWorldPosition` |
+| GryceCore | `GEntity_*` | `GEntity_GetCount/GetAt/GetName/GetPath`、`GetParent/GetChildAt`、`Get/SetLocalPosition/Rotation/Scale`、`GetWorldPosition`、`ExportJson/ImportJson`（实体子树 JSON 导出/导入，Undo/Prefab 基础）、`SaveAsPrefab/CreatePrefabInstance/ApplyPrefab/RevertPrefab` |
 | GryceCore | `GComponent_*` | `GetPropertyCount/GetPropertyInfo/GetProperty/SetProperty`、`Add/RemoveComponent`、`GetRegisteredTypeCount/GetRegisteredTypeInfo` |
-| GryceCore | `GScene_*` | `GScene_Load/Save/New/GetCurrentPath` |
+| GryceCore | `GScene_*` | `GScene_Load/Save/New/GetCurrentPath`、`PickScreen/PickRay`（网格世界 AABB 射线拾取） |
 | GryceCore | `GAsset_*` | `GAsset_Import/Load/GetPath/Unload` |
-| GryceCore | `GMaterial_*` | `GMaterial_GetField/SetField`（`GMaterialField` 枚举按字段寻址） |
+| GryceCore | `GMaterial_*` | `GMaterial_GetField/SetField`（`GMaterialField` 枚举按字段寻址）、`LoadFromFile`（.gmat 应用到渲染组件） |
 | GryceCore | `GAnimator_*` | `GAnimator_GetClipCount/GetClipName/GetClipDuration` |
 | GryceRenderer | `GRender_*` | `GRender_Init/Shutdown`、`GRender_BeginFrame/EndFrame`、`GRender_RenderWorld/RenderGameView/RenderGizmo` |
 | GryceRenderer | `GViewport_*` | `GViewport_SetSize/GetSize/SetCamera`、`GGameView_SetSize/SetCamera` |

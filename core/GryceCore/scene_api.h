@@ -29,6 +29,18 @@ GRYCE_CORE_API int GScene_Save(const char* path);
 GRYCE_CORE_API int GScene_GetCurrentPath(char* out_buf, int buf_size);
 GRYCE_CORE_API int GScene_New(void);
 
+// 屏幕拾取：从 camera_entity 的 Transform + Camera 组件发射射线，对带
+// MeshRenderer / SkinnedMeshRenderer 的实体做世界 AABB 求交，返回最近命中
+// 实体句柄（未命中返回 0）。
+GRYCE_CORE_API GEntityHandle GScene_PickScreen(float sx, float sy,
+                                               int viewport_w, int viewport_h,
+                                               GEntityHandle camera_entity);
+
+// 世界空间射线拾取（direction 无需归一化）。max_dist <= 0 表示不限距离。
+GRYCE_CORE_API GEntityHandle GScene_PickRay(const GVec3* origin,
+                                            const GVec3* direction,
+                                            float max_dist);
+
 #ifdef __cplusplus
 }
 #endif

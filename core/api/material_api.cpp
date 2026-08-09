@@ -87,6 +87,14 @@ FieldSpec spec_of(int field) {
 
 extern "C" {
 
+int GMaterial_LoadFromFile(GEntityHandle entity, uint64_t comp_type_hash, const char* path) {
+    GRYCE_API_GUARD();
+    if (!gryce_core::g_core_state.initialized || !path || !path[0]) return -1;
+    MaterialOwner owner = find_material_owner(entity, comp_type_hash, /*create_if_missing=*/true);
+    if (!owner.material) return -1;
+    return owner.material->load_from_file(path) ? 0 : -1;
+}
+
 int GMaterial_GetField(GEntityHandle entity, uint64_t comp_type_hash,
                        int field, float* out_floats, int float_capacity,
                        char* out_str, int str_capacity) {

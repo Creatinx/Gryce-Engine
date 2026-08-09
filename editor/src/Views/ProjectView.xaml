@@ -135,6 +135,7 @@
                          BorderThickness="0" Background="Transparent"
                          Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                          SelectionMode="Single"
+                         PreviewMouseMove="OnFileListPreviewMouseMove"
                          ScrollViewer.VerticalScrollBarVisibility="Auto"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.CanContentScroll="False"
@@ -150,6 +151,16 @@
                                 <MenuItem Header="{loc:Loc project.new_folder}" Click="OnNewFolderClick">
                                     <MenuItem.Icon>
                                         <TextBlock Text="&#xE838;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="{loc:Loc project.new_scene}" Click="OnNewSceneClick">
+                                    <MenuItem.Icon>
+                                        <TextBlock Text="&#xE7C1;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="{loc:Loc project.new_material}" Click="OnNewMaterialClick">
+                                    <MenuItem.Icon>
+                                        <TextBlock Text="&#xE791;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                                     </MenuItem.Icon>
                                 </MenuItem>
                                 <Separator Style="{StaticResource ContextMenuSeparatorStyle}"/>

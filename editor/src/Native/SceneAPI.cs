@@ -16,4 +16,12 @@ public static class SceneAPI
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GScene_New();
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern GEntityHandle GScene_PickScreen(
+        float sx, float sy, int viewportW, int viewportH, GEntityHandle cameraEntity);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern GEntityHandle GScene_PickRay(
+        ref GVec3 origin, ref GVec3 direction, float maxDist);
 }

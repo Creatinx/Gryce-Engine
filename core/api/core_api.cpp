@@ -27,6 +27,13 @@ using gryce_engine::resources::Project;
 
 namespace gryce_core {
 
+// 有界 strlen（不依赖平台是否提供 std::strnlen）
+static size_t bounded_strlen(const char* s, size_t max_len) {
+    size_t n = 0;
+    while (n < max_len && s[n] != '\0') ++n;
+    return n;
+}
+
 // Definition of the global state (declared in internal_state.h)
 GlobalState g_core_state;
 
@@ -103,6 +110,8 @@ static void drain_log_messages() {
         g_core_state.callbacks.on_log_message(
             static_cast<int>(snap[i].level),
             snap[i].message.c_str(),
+            snap[i].source_file.c_str(),
+            snap[i].source_line,
             g_core_state.callback_user_data);
     }
     g_core_state.log_delivered_count = total;
@@ -139,12 +148,17 @@ static void cmd_load_scene(const char* path) {
 static void cmd_create_entity(const char* name, GEntityHandle parent_handle) {
     Scene* s = g_core_state.world ? g_core_state.world->scene() : nullptr;
     if (!s) return;
-    Entity* e = s->create_entity(name && name[0] ? name : "Entity");
+    Entity* e = nullptr;
     if (parent_handle != 0) {
         if (Entity* parent = EntityResolver::resolve(parent_handle)) {
-            e->set_parent(parent);
+            // 直接挂在目标父级下（add_child 接管所有权），
+            // 避免 create_entity + set_parent 的销毁性 remove_child 悬垂。
+            if (parent != s->root()) {
+                e = parent->add_child(std::make_unique<Entity>(name && name[0] ? name : "Entity"));
+            }
         }
     }
+    if (!e) e = s->create_entity(name && name[0] ? name : "Entity");
     g_core_state.entity_map.alloc(e->uuid());
     g_core_state.deferred_entity_list_changed = true;
 }
@@ -186,8 +200,21 @@ static void cmd_rename_entity(GEntityHandle h, const char* new_name) {
 static void cmd_reparent_entity(GEntityHandle h, GEntityHandle new_parent) {
     Entity* e = EntityResolver::resolve(h);
     if (!e) return;
+    Scene* s = g_core_state.world ? g_core_state.world->scene() : nullptr;
+    if (!s) return;
     Entity* parent = (new_parent == 0) ? nullptr : EntityResolver::resolve(new_parent);
-    e->set_parent(parent);
+    if (parent == e || e->parent() == parent) return; // 自挂 / 原地重挂
+    if (!e->parent()) return;
+    // 安全重挂：detach_child 转移所有权后再 add_child / add_root_entity，
+    // 不能走 set_parent（remove_child 会销毁被挂实体）。
+    auto owned = e->parent()->detach_child(e);
+    if (!owned) return;
+    Entity* raw = owned.get();
+    if (parent && parent != s->root()) {
+        parent->add_child(std::move(owned));
+    } else {
+        s->add_root_entity(std::move(owned));
+    }
     g_core_state.deferred_entity_list_changed = true;
 }
 
@@ -229,6 +256,12 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_PLAY_MODE: {
+            // 进入 Play 前保存场景快照，Stop 时恢复到播放前状态
+            //（播放期间的物理/动画/编辑改动全部丢弃，类 Unity 行为）。
+            if (!g_core_state.play_mode && g_core_state.world && g_core_state.world->scene()) {
+                g_core_state.play_snapshot_json =
+                    SceneSerializer::serialize(*g_core_state.world->scene()).dump();
+            }
             g_core_state.play_mode = true;
             g_core_state.paused = false;
             if (g_core_state.world) g_core_state.world->set_updates_enabled(true);
@@ -236,9 +269,32 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_STOP_MODE: {
+            const bool was_playing = g_core_state.play_mode;
             g_core_state.play_mode = false;
             g_core_state.paused = false;
-            if (g_core_state.world) g_core_state.world->set_updates_enabled(false);
+            if (g_core_state.world) {
+                if (was_playing && !g_core_state.play_snapshot_json.empty()) {
+                    try {
+                        auto restored = SceneSerializer::deserialize(
+                            nlohmann::json::parse(g_core_state.play_snapshot_json));
+                        if (restored) {
+                            // attach_scene 会 shutdown 旧场景（物理/动画系统清理）并
+                            // 重新 init，Play 期间产生的刚体/动画状态随之复位。
+                            g_core_state.world->attach_scene(std::move(restored));
+                            g_core_state.entity_map.rebuild(g_core_state.world->scene());
+                            g_core_state.selected_entity = 0;
+                            g_core_state.deferred_entity_list_changed = true;
+                            utils::GLog::instance().info(
+                                "[Core] Play Mode stopped: scene restored from snapshot");
+                        }
+                    } catch (const std::exception& ex) {
+                        utils::GLog::instance().warn(
+                            "[Core] Play Mode restore failed: {}", ex.what());
+                    }
+                }
+                g_core_state.world->set_updates_enabled(false);
+            }
+            g_core_state.play_snapshot_json.clear();
             fire_callback_play_mode_changed();
             break;
         }
@@ -291,7 +347,14 @@ static void process_command(const GCommand& cmd) {
                             gryce_core::reflection_lookup_name(type_name));
                         for (const auto* f : fields) {
                             if (f->name == p->prop_name && f->write && !f->read_only) {
-                                f->write(comp.get(), p->value);
+                                if (f->type == gryce_engine::reflection::FieldType::String) {
+                                    const char* cstr = reinterpret_cast<const char*>(p->value);
+                                    const size_t len = bounded_strlen(cstr, sizeof(p->value));
+                                    std::string tmp(cstr, len);
+                                    f->write(comp.get(), &tmp);
+                                } else {
+                                    f->write(comp.get(), p->value);
+                                }
                                 e->mark_dirty();
                                 break;
                             }

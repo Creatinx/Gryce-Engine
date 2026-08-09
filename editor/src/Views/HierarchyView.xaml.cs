@@ -121,6 +121,81 @@ public partial class HierarchyView : UserControl
         VM?.DuplicateSelectedEntity();
     }
 
+    private void OnCreatePrefabClick(object sender, RoutedEventArgs e)
+    {
+        VM?.CreatePrefabFromSelection();
+    }
+
+    private void OnInstantiatePrefabClick(object sender, RoutedEventArgs e)
+    {
+        VM?.InstantiatePrefabDialog();
+    }
+
+    private void OnApplyPrefabClick(object sender, RoutedEventArgs e)
+    {
+        VM?.ApplySelectedPrefab();
+    }
+
+    private void OnRevertPrefabClick(object sender, RoutedEventArgs e)
+    {
+        VM?.RevertSelectedPrefab();
+    }
+
+    // === 资源拖放（来自 Project 面板） ===
+
+    private void OnDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnDrop(object sender, DragEventArgs e)
+    {
+        if (VM == null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+        if (files == null || files.Length == 0) return;
+
+        GEntityHandle parent = (sender as TreeViewItem)?.DataContext is EntityModel em
+            ? em.Handle
+            : VM.SelectedEntity?.Handle ?? GEntityHandle.Null;
+
+        foreach (var file in files)
+        {
+            HandleDroppedFile(file, parent);
+        }
+        e.Handled = true;
+    }
+
+    private void HandleDroppedFile(string file, GEntityHandle parent)
+    {
+        string ext = System.IO.Path.GetExtension(file).ToLowerInvariant();
+        switch (ext)
+        {
+            case ".obj":
+            case ".fbx":
+            case ".gltf":
+            case ".glb":
+            case ".dae":
+            case ".ply":
+            case ".stl":
+                VM?.InstantiateModel(file, parent);
+                break;
+            case ".gesc":
+            case ".geprefab":
+            case ".geprefabvariant":
+                VM?.InstantiatePrefab(file, parent);
+                break;
+            case ".gmat":
+                VM?.ApplyMaterialFileToSelection(file);
+                break;
+            default:
+                VM?.AppendConsole($"Unsupported drop: {file}");
+                break;
+        }
+    }
+
     private void OnRenameEntityClick(object sender, RoutedEventArgs e)
     {
         RenameSelected();

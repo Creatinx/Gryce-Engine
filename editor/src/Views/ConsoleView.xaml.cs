@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
 
 namespace GryceEngine.Editor.Views;
 
@@ -42,6 +43,35 @@ public partial class ConsoleView : UserControl
         if (_selectedEntry != null)
         {
             Clipboard.SetText($"[{_selectedEntry.Timestamp:HH:mm:ss}] [{_selectedEntry.LevelText}] {_selectedEntry.Message}");
+        }
+    }
+
+    /// <summary>Double-click a log entry to open its source location in VSCode
+    /// (falls back to the OS default editor).</summary>
+    private void OnLogDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_selectedEntry == null || string.IsNullOrEmpty(_selectedEntry.SourceFile)) return;
+        string file = _selectedEntry.SourceFile;
+        int line = _selectedEntry.SourceLine;
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("code")
+            {
+                Arguments = $"--goto \"{file}:{line}\"",
+                UseShellExecute = false
+            };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(file)
+                {
+                    UseShellExecute = true
+                });
+            }
+            catch { /* no default handler */ }
         }
     }
 

@@ -17,6 +17,7 @@ public partial class SettingsWindow : Window
         _viewModel.IsDarkTheme = saved.Theme != "Light";
         _viewModel.IsLightTheme = saved.Theme == "Light";
         _viewModel.MicaBackdrop = saved.MicaBackdrop;
+        _viewModel.AutoSaveInterval = saved.AutoSaveInterval;
         _viewModel.SelectedLanguageIndex =
             string.Equals(saved.Language, "zh", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         _viewModel.ApplyRequested += OnApply;
@@ -50,7 +51,11 @@ public partial class SettingsWindow : Window
         Services.EditorSettingsService.Save(
             LocalizationService.Instance.LanguageCode,
             _viewModel.IsDarkTheme ? "Dark" : "Light",
-            _viewModel.MicaBackdrop);
+            _viewModel.MicaBackdrop,
+            _viewModel.AutoSaveInterval);
+
+        // Apply auto-save interval to the engine service (minutes, 0 = off).
+        App.Engine?.UpdateAutoSaveInterval(_viewModel.AutoSaveInterval);
 
         // Apply VSync setting to renderer
         try

@@ -5,7 +5,14 @@
 #include "ecs/world.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
+#include "scene/scene_serializer.h"
+#include "scene/prefab.h"
 #include "components/transform.h"
+#include "components/prefab_instance.h"
+#include "utils/glog/glog_lib.h"
+
+#include <nlohmann/json.hpp>
+#include <cstring>
 
 using gryce_engine::scene::Scene;
 using gryce_engine::scene::Entity;
@@ -196,6 +203,149 @@ int GEntity_SetLocalScale(GEntityHandle entity, const GVec3* scale) {
     t->scale.z = scale->z;
     e->mark_dirty();
     return 0;
+}
+
+int GEntity_ExportJson(GEntityHandle entity, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
+    if (!gc::g_core_state.initialized || !out_buf || buf_size <= 0) return -1;
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e) return -1;
+
+    nlohmann::json out;
+    out["version"] = 1;
+    out["type"] = "entity";
+    out["name"] = e->name();
+    nlohmann::json entities = nlohmann::json::array();
+    bool first = true;
+    e->foreach([&](Entity* ent) {
+        if (!ent) return;
+        auto j = gryce_engine::scene::SceneSerializer::serialize_entity(*ent);
+        if (first) {
+            j["parent"] = nullptr; // 截断根的外部父引用
+            first = false;
+        }
+        entities.push_back(std::move(j));
+    });
+    out["entities"] = std::move(entities);
+
+    const std::string dump = out.dump();
+    if (dump.size() >= static_cast<size_t>(buf_size)) return -1;
+    std::strncpy(out_buf, dump.c_str(), static_cast<size_t>(buf_size) - 1);
+    out_buf[buf_size - 1] = '\0';
+    return static_cast<int>(dump.size());
+}
+
+GEntityHandle GEntity_ImportJson(const char* json, GEntityHandle parent_handle) {
+    GRYCE_API_GUARD();
+    if (!gc::g_core_state.initialized || !json || !json[0]) return 0;
+    Scene* s = gc::g_core_state.world ? gc::g_core_state.world->scene() : nullptr;
+    if (!s) return 0;
+
+    try {
+        auto parsed = nlohmann::json::parse(json);
+        auto temp = gryce_engine::scene::SceneSerializer::deserialize(parsed);
+        if (!temp) return 0;
+
+        // 解除临时场景的 store 引用，避免析构时悬垂；数据随后经 clone 深拷贝。
+        temp->foreach([](Entity* ent) { if (ent) ent->set_store(nullptr); });
+
+        Entity* parent = gc::EntityResolver::resolve(parent_handle);
+        GEntityHandle first_handle = 0;
+        for (const auto& root : temp->roots()) {
+            if (!root) continue;
+            auto cloned = root->clone();
+            Entity* raw = cloned.get();
+
+            // 有指定父级：直接挂到父节点下（接管所有权并继承 store）；
+            // 无父级（0 或场景根）：作为根级实体加入。
+            if (parent && parent != s->root()) {
+                parent->add_child(std::move(cloned));
+            } else {
+                s->add_root_entity(std::move(cloned));
+            }
+
+            // 为子树内所有实体分配句柄（含子孙），否则子实体无法被编辑器寻址。
+            GEntityHandle root_handle = 0;
+            raw->foreach([&](Entity* ent) {
+                if (!ent) return;
+                GEntityHandle h = gc::g_core_state.entity_map.alloc(ent->uuid());
+                if (!root_handle) root_handle = h;
+            });
+            if (!first_handle) first_handle = root_handle;
+        }
+
+        if (first_handle) {
+            gc::g_core_state.deferred_entity_list_changed = true;
+        }
+        return first_handle;
+    } catch (const std::exception& ex) {
+        gryce_engine::utils::GLog::instance().warn("[Core] GEntity_ImportJson failed: {}", ex.what());
+        return 0;
+    }
+}
+
+int GEntity_SaveAsPrefab(GEntityHandle entity, const char* path) {
+    GRYCE_API_GUARD();
+    if (!gc::g_core_state.initialized || !path || !path[0]) return -1;
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e) return -1;
+    return gryce_engine::scene::Prefab::save(e, path) ? 0 : -1;
+}
+
+GEntityHandle GEntity_CreatePrefabInstance(const char* prefab_path, GEntityHandle parent_handle) {
+    GRYCE_API_GUARD();
+    if (!gc::g_core_state.initialized || !prefab_path || !prefab_path[0]) return 0;
+    Scene* s = gc::g_core_state.world ? gc::g_core_state.world->scene() : nullptr;
+    if (!s) return 0;
+
+    Entity* root = gryce_engine::scene::Prefab::instantiate(s, prefab_path);
+    if (!root) {
+        gryce_engine::utils::GLog::instance().warn(
+            "[Core] GEntity_CreatePrefabInstance failed: '{}'", prefab_path);
+        return 0;
+    }
+
+    // 可选：移到指定父级下（安全路径 detach + add_child）
+    Entity* parent = gc::EntityResolver::resolve(parent_handle);
+    if (parent && parent != s->root() && root->parent() == s->root()) {
+        auto owned = s->root()->detach_child(root);
+        if (owned) {
+            Entity* raw = owned.get();
+            parent->add_child(std::move(owned));
+            root = raw;
+        }
+    }
+
+    GEntityHandle first_handle = 0;
+    root->foreach([&](Entity* ent) {
+        if (!ent) return;
+        GEntityHandle h = gc::g_core_state.entity_map.alloc(ent->uuid());
+        if (!first_handle) first_handle = h;
+    });
+    if (first_handle) gc::g_core_state.deferred_entity_list_changed = true;
+    return first_handle;
+}
+
+int GEntity_ApplyPrefab(GEntityHandle entity) {
+    GRYCE_API_GUARD();
+    if (!gc::g_core_state.initialized) return -1;
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e) return -1;
+    auto* inst = gryce_engine::scene::Prefab::get_instance(e);
+    if (!inst || inst->prefab_path.empty()) return -1;
+    const bool ok = gryce_engine::scene::Prefab::save(e, inst->prefab_path);
+    if (ok) gc::g_core_state.deferred_entity_list_changed = true;
+    return ok ? 0 : -1;
+}
+
+int GEntity_RevertPrefab(GEntityHandle entity) {
+    GRYCE_API_GUARD();
+    if (!gc::g_core_state.initialized) return -1;
+    Entity* e = gc::EntityResolver::resolve(entity);
+    if (!e) return -1;
+    const bool ok = gryce_engine::scene::Prefab::revert(e);
+    if (ok) gc::g_core_state.deferred_entity_list_changed = true;
+    return ok ? 0 : -1;
 }
 
 } // extern "C"

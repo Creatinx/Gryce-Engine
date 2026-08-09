@@ -78,6 +78,7 @@
         <!-- ══ Log Output List ══ -->
         <ListBox Grid.Row="1"
                  x:Name="LogListBox"
+                 MouseDoubleClick="OnLogDoubleClick"
                  BorderThickness="0"
                  Background="Transparent"
                  Foreground="{DynamicResource TextFillColorPrimaryBrush}"

@@ -11,22 +11,40 @@ namespace GryceEngine.Editor.Services;
 
 public sealed class EngineService : INotifyPropertyChanged, IDisposable
 {
+    /// <summary>Last constructed service instance, so models/views can flag
+    /// scene mutations that bypass the command queue (Inspector, gizmo).</summary>
+    public static EngineService? Current { get; private set; }
+
     private readonly DispatcherTimer _frameTimer;
+    private readonly DispatcherTimer _autoSaveTimer;
     private bool _isPlaying;
     private bool _isPaused;
     private bool _initialized;
+    private bool _sceneDirty;
 
     public bool IsPlaying { get => _isPlaying; private set { _isPlaying = value; OnPropertyChanged(); } }
     public bool IsPaused { get => _isPaused; private set { _isPaused = value; OnPropertyChanged(); } }
     public bool IsInitialized { get => _initialized; private set { _initialized = value; OnPropertyChanged(); } }
+    public bool IsSceneDirty => _sceneDirty;
+    public string ProjectRoot { get; private set; } = "";
+
+    /// <summary>Raised for editor-level engine messages (e.g. auto-save).</summary>
+    public event Action<string>? LogMessage;
+
+    /// <summary>Raised after the active project root changes (core re-initialized).</summary>
+    public event Action<string>? ProjectChanged;
 
     public EngineService()
     {
+        Current = this;
         _frameTimer = new DispatcherTimer(DispatcherPriority.Render)
         {
             Interval = TimeSpan.FromSeconds(1.0 / 60.0)
         };
         _frameTimer.Tick += OnFrameTick;
+
+        _autoSaveTimer = new DispatcherTimer(DispatcherPriority.Background);
+        _autoSaveTimer.Tick += OnAutoSaveTick;
     }
 
     public void Initialize(string projectRoot)
@@ -34,6 +52,7 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
         if (IsInitialized) return;
 
         string resolvedRoot = ResolveProjectRoot(projectRoot);
+        ProjectRoot = resolvedRoot;
 
         var desc = new GCoreInitDesc
         {
@@ -53,6 +72,23 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
 
         IsInitialized = true;
         _frameTimer.Start();
+    }
+
+    /// <summary>
+    /// Switches to another game project: shuts down the core and re-initializes
+    /// it with the new project root (res:/ namespace base). Editor callbacks
+    /// registered on the core survive the re-init (callback table persists).
+    /// </summary>
+    public void ReloadProject(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        {
+            LogMessage?.Invoke($"Project root not found: {root}");
+            return;
+        }
+        Shutdown();
+        Initialize(root);
+        ProjectChanged?.Invoke(ProjectRoot);
     }
 
     /// <summary>
@@ -90,10 +126,50 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
     public void Shutdown()
     {
         _frameTimer.Stop();
+        _autoSaveTimer.Stop();
         if (IsInitialized)
         {
             CoreAPI.GCore_Shutdown();
             IsInitialized = false;
+        }
+    }
+
+    /// <summary>Marks the current scene as having unsaved changes.</summary>
+    public void MarkSceneDirty() => _sceneDirty = true;
+
+    /// <summary>Clears the dirty flag (after save / load / new scene).</summary>
+    public void ClearDirty() => _sceneDirty = false;
+
+    /// <summary>
+    /// Restarts the auto-save timer with the given interval in minutes.
+    /// 0 or negative disables auto-save entirely.
+    /// </summary>
+    public void UpdateAutoSaveInterval(int minutes)
+    {
+        _autoSaveTimer.Stop();
+        if (minutes <= 0) return;
+        _autoSaveTimer.Interval = TimeSpan.FromMinutes(minutes);
+        _autoSaveTimer.Start();
+    }
+
+    private void OnAutoSaveTick(object? sender, EventArgs e)
+    {
+        if (!IsInitialized || IsPlaying || !_sceneDirty) return;
+
+        var sb = new StringBuilder(512);
+        string path = SceneAPI.GScene_GetCurrentPath(sb, sb.Capacity) > 0
+            ? sb.ToString()
+            : "res:/scenes/main.gesc";
+
+        int result = SceneAPI.GScene_Save(path);
+        if (result == 0)
+        {
+            ClearDirty();
+            LogMessage?.Invoke($"Auto-saved scene: {path}");
+        }
+        else
+        {
+            LogMessage?.Invoke($"Auto-save failed: {path}");
         }
     }
 

@@ -110,6 +110,11 @@
                             <TextBlock Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                         </MenuItem.Icon>
                     </MenuItem>
+                    <MenuItem Header="{loc:Loc menu.open_project}" Click="OnOpenProjectClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8DA;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <Separator/>
                     <MenuItem Header="{loc:Loc menu.import_asset}" Click="OnImportAssetClick">
                         <MenuItem.Icon>

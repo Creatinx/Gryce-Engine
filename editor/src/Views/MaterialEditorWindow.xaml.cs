@@ -154,14 +154,23 @@ public partial class MaterialEditorWindow : Window
         return MaterialAPI.GetFieldStringUtf8(_entity, _compHash, (int)field) ?? string.Empty;
     }
 
-    private void SetFloat(GMaterialField field, float value) =>
+    private void SetFloat(GMaterialField field, float value)
+    {
         MaterialAPI.GMaterial_SetField(_entity, _compHash, (int)field, new[] { value }, 1, null);
+        App.Engine?.MarkSceneDirty();
+    }
 
-    private void SetVec3(GMaterialField field, float x, float y, float z) =>
+    private void SetVec3(GMaterialField field, float x, float y, float z)
+    {
         MaterialAPI.GMaterial_SetField(_entity, _compHash, (int)field, new[] { x, y, z }, 3, null);
+        App.Engine?.MarkSceneDirty();
+    }
 
-    private void SetString(GMaterialField field, string value) =>
+    private void SetString(GMaterialField field, string value)
+    {
         MaterialAPI.GMaterial_SetField(_entity, _compHash, (int)field, null!, 0, value);
+        App.Engine?.MarkSceneDirty();
+    }
 
     // === 即时写回引擎 ===
 

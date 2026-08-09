@@ -18,7 +18,15 @@ public partial class ProjectView : UserControl
 {
     private EditorViewModel? VM => DataContext as EditorViewModel;
 
-    private static readonly string ProjectRoot = ResolveProjectRoot();
+    // 项目根跟随 EngineService（File > Open Project 切换后自动刷新）
+    private string ProjectRoot
+    {
+        get
+        {
+            var root = App.Engine?.ProjectRoot;
+            return !string.IsNullOrWhiteSpace(root) ? root! : ResolveProjectRoot();
+        }
+    }
 
     // 在文件浏览器中隐藏的顶层目录，避免把 build/out 等构建产物暴露给用户
     private static readonly HashSet<string> IgnoredTopDirs = new()
@@ -60,6 +68,11 @@ public partial class ProjectView : UserControl
     {
         InitializeComponent();
         Loaded += (_, _) => RefreshProjectTree();
+        if (App.Engine != null)
+        {
+            App.Engine.ProjectChanged += _ =>
+                Dispatcher.Invoke(() => RefreshProjectTree());
+        }
     }
 
     private void OnRefreshClick(object sender, RoutedEventArgs e)
@@ -351,16 +364,92 @@ public partial class ProjectView : UserControl
         var ext = Path.GetExtension(item.Name).ToLowerInvariant();
         if (ext == ".gesc")
         {
-            int result = Native.SceneAPI.GScene_Load(item.Path);
-            if (result == 0)
-                VM?.AppendConsole($"Scene loaded: {item.Path}");
-            else
-                VM?.AppendConsole($"Failed to load scene: {item.Path}");
+            VM?.LoadSceneFromPath(item.Path);
+        }
+        else if (ext is ".gimport" or ".gmat" or ".json" or ".txt" or ".md" or ".glsl" or ".vert" or ".frag")
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(item.Path) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                VM?.AppendConsole($"Failed to open {item.Path}: {ex.Message}");
+            }
         }
         else
         {
             VM?.AppendConsole($"Opened: {item.Path}");
         }
+    }
+
+    private void OnNewSceneClick(object sender, RoutedEventArgs e)
+    {
+        string dir = string.IsNullOrEmpty(_currentPath) ? ProjectRoot : _currentPath;
+        string path = UniquePath(System.IO.Path.Combine(dir, "new_scene.gesc"));
+        try
+        {
+            System.IO.File.WriteAllText(path,
+                "{\n  \"name\": \"new_scene\",\n  \"version\": 2,\n  \"entities\": []\n}\n");
+            RefreshFileList(dir);
+            VM?.LoadSceneFromPath(path);
+        }
+        catch (Exception ex)
+        {
+            VM?.AppendConsole($"Failed to create scene: {ex.Message}");
+        }
+    }
+
+    private void OnNewMaterialClick(object sender, RoutedEventArgs e)
+    {
+        string dir = string.IsNullOrEmpty(_currentPath) ? ProjectRoot : _currentPath;
+        string path = UniquePath(System.IO.Path.Combine(dir, "new_material.gmat"));
+        try
+        {
+            System.IO.File.WriteAllText(path,
+                "{\n  \"albedo_color\": [0.8, 0.8, 0.8],\n  \"roughness\": 0.5,\n  \"metallic\": 0.0\n}\n");
+            RefreshFileList(dir);
+            VM?.AppendConsole($"Created material: {path}");
+        }
+        catch (Exception ex)
+        {
+            VM?.AppendConsole($"Failed to create material: {ex.Message}");
+        }
+    }
+
+    private static string UniquePath(string path)
+    {
+        if (!File.Exists(path)) return path;
+        string dir = Path.GetDirectoryName(path) ?? ".";
+        string name = Path.GetFileNameWithoutExtension(path);
+        string ext = Path.GetExtension(path);
+        for (int i = 1; ; i++)
+        {
+            var candidate = Path.Combine(dir, $"{name}_{i}{ext}");
+            if (!File.Exists(candidate)) return candidate;
+        }
+    }
+
+    /// <summary>Starts a drag of the selected file from the Project panel.</summary>
+    private void OnFileListPreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+        if (FileListBox.SelectedItem is not FileItem item || item.IsDirectory) return;
+        if (e.OriginalSource is not DependencyObject src ||
+            FindAncestor<ListBoxItem>(src) == null) return;
+
+        var data = new DataObject(DataFormats.FileDrop, new[] { item.Path });
+        DragDrop.DoDragDrop(FileListBox, data, DragDropEffects.Copy);
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? child) where T : DependencyObject
+    {
+        while (child != null)
+        {
+            if (child is T match) return match;
+            child = System.Windows.Media.VisualTreeHelper.GetParent(child);
+        }
+        return null;
     }
 
     private void OnSearchTextChanged(object sender, TextChangedEventArgs e)

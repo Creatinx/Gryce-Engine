@@ -966,35 +966,19 @@ public partial class ViewportView : UserControl, IDisposable
     {
         if (VM == null) return;
         var px = GetPixelSize();
-        var cam = _sceneCamera;
-        double best = 22.0;
-        GEntityHandle bestHandle = GEntityHandle.Null;
+        if (_mainCamera == GEntityHandle.Null) _mainCamera = FindMainCamera();
+        if (_mainCamera == GEntityHandle.Null) return;
 
         try
         {
-            int count = EntityAPI.GEntity_GetCount();
-            for (int i = 0; i < count; i++)
-            {
-                var h = EntityAPI.GEntity_GetAt(i);
-                if (h == GEntityHandle.Null || h == _mainCamera) continue;
-                if (EntityAPI.GEntity_GetLocalPosition(h, out var p) != 0) continue;
-
-                var sp = cam.ProjectToScreen(p.X, p.Y, p.Z, px.W, px.H);
-                if (double.IsNaN(sp.X)) continue;
-                double d = Math.Sqrt((sp.X - sx) * (sp.X - sx) + (sp.Y - sy) * (sp.Y - sy));
-                if (d < best)
-                {
-                    best = d;
-                    bestHandle = h;
-                }
-            }
+            var hit = SceneAPI.GScene_PickScreen(
+                (float)sx, (float)sy, px.W, px.H, _mainCamera);
+            if (hit != GEntityHandle.Null)
+                VM.SelectEntityByHandle(hit);
+            else
+                VM.SelectedEntity = null; // 空白处取消选中
         }
         catch { /* ignore */ }
-
-        if (bestHandle != GEntityHandle.Null)
-        {
-            VM.SelectEntityByHandle(bestHandle);
-        }
     }
 
     // =====================================================================
@@ -1376,6 +1360,14 @@ public partial class ViewportView : UserControl, IDisposable
         GEntityHandle h;
         lock (_gizmoApplyLock) { h = _gizmoApplyEntity; }
         if (h != GEntityHandle.Null) VM?.RaiseTransformChanged(h);
+        if (h != GEntityHandle.Null)
+        {
+            // 记录一次拖拽的 Undo：起点值在拖拽开始时已捕获，终点值从引擎读回。
+            VM?.PushTransformAction(h,
+                new GVec3((float)_dragStartPosX, (float)_dragStartPosY, (float)_dragStartPosZ),
+                _dragStartRot,
+                new GVec3((float)_dragStartScaleX, (float)_dragStartScaleY, (float)_dragStartScaleZ));
+        }
         _dragCaptured = false;
         _dragAxis = -1;
     }

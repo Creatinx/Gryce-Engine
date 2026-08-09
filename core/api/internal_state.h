@@ -38,6 +38,8 @@ struct GlobalState {
 
     bool play_mode = false;
     bool paused = false;
+    // Play Mode 进入时保存的场景快照（JSON）；Stop 时据此恢复场景。
+    std::string play_snapshot_json;
     GEntityHandle selected_entity = 0;
     std::string current_scene_path;
 

@@ -11,6 +11,8 @@ public class LogEntry : INotifyPropertyChanged
     public DateTime Timestamp { get; }
     public LogLevel Level { get; }
     public string Message { get; }
+    public string SourceFile { get; }
+    public int SourceLine { get; }
     public string LevelText => Level switch
     {
         LogLevel.Warning => "Warning",
@@ -18,11 +20,13 @@ public class LogEntry : INotifyPropertyChanged
         _ => "Info"
     };
 
-    public LogEntry(LogLevel level, string message)
+    public LogEntry(LogLevel level, string message, string sourceFile = "", int sourceLine = 0)
     {
         Timestamp = DateTime.Now;
         Level = level;
         Message = message;
+        SourceFile = sourceFile;
+        SourceLine = sourceLine;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

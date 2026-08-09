@@ -12,6 +12,8 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             math_test.cpp
             glog_test.cpp
             scene_test.cpp
+            entity_io_test.cpp
+            play_mode_test.cpp
             transform2d_test.cpp
             asset_test.cpp
             physics_3d_test.cpp
@@ -25,6 +27,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             skinned_renderer_test.cpp
             reflection_test.cpp
             ray_test.cpp
+            pick_test.cpp
     )
     target_link_libraries(gryce_tests
         PRIVATE

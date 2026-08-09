@@ -65,6 +65,11 @@ GRYCE_CORE_API int GMaterial_SetField(GEntityHandle entity, uint64_t comp_type_h
                                       int field, const float* in_floats, int float_count,
                                       const char* in_str);
 
+// 从 .gmat 文件加载材质到实体上的渲染组件（MeshRenderer / SkinnedMeshRenderer）。
+// 返回 0 成功，-1 失败（实体/组件无效或文件不存在）。
+GRYCE_CORE_API int GMaterial_LoadFromFile(GEntityHandle entity, uint64_t comp_type_hash,
+                                          const char* path);
+
 #ifdef __cplusplus
 }
 #endif

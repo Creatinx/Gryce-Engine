@@ -34,6 +34,21 @@ public static class EntityAPI
     public static string? GetPathUtf8(GEntityHandle entity)
         => ReadUtf8(entity, 1024, GEntity_GetPathBytes);
 
+    /// <summary>Exports the entity subtree (including descendants) as JSON.</summary>
+    public static string? ExportJsonUtf8(GEntityHandle entity)
+    {
+        int capacity = 8192;
+        while (capacity <= 1024 * 1024)
+        {
+            var buf = new byte[capacity];
+            int len = GEntity_ExportJson(entity, buf, buf.Length);
+            if (len > 0) return Encoding.UTF8.GetString(buf, 0, len).TrimEnd('\0');
+            if (len == 0) return null;
+            capacity *= 4;
+        }
+        return null;
+    }
+
     private static string? ReadUtf8(GEntityHandle entity, int capacity,
         Func<GEntityHandle, byte[], int, int> call)
     {
@@ -75,4 +90,25 @@ public static class EntityAPI
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GEntity_SetLocalScale(GEntityHandle entity, ref GVec3 scale);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GEntity_ExportJson(GEntityHandle entity, byte[] outBuf, int bufSize);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern GEntityHandle GEntity_ImportJson(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string json, GEntityHandle parentHandle);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GEntity_SaveAsPrefab(
+        GEntityHandle entity, [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern GEntityHandle GEntity_CreatePrefabInstance(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string prefabPath, GEntityHandle parentHandle);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GEntity_ApplyPrefab(GEntityHandle entity);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GEntity_RevertPrefab(GEntityHandle entity);
 }

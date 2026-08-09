@@ -30,6 +30,13 @@ using gryce_engine::components::ComponentFactory;
 
 namespace {
 
+// 有界 strlen（不依赖平台是否提供 std::strnlen）
+static size_t bounded_strlen(const char* s, size_t max_len) {
+    size_t n = 0;
+    while (n < max_len && s[n] != '\0') ++n;
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 
 // Type hash: use std::hash<std::string> on the type name
@@ -334,7 +341,17 @@ int GComponent_GetProperty(GEntityHandle entity, uint64_t comp_type_hash, const 
 
                     if (value_size < expected_size) return -1;
 
-                    f->read(comp, out_value);
+                    if (f->type == FieldType::String) {
+                        // 字符串字段：反射 read 目标类型是 std::string，
+                        // 桥接层先读入真实 std::string 再按 C 字符串写出。
+                        std::string tmp;
+                        f->read(comp, &tmp);
+                        std::strncpy(static_cast<char*>(out_value), tmp.c_str(),
+                                     static_cast<size_t>(value_size) - 1);
+                        static_cast<char*>(out_value)[value_size - 1] = '\0';
+                    } else {
+                        f->read(comp, out_value);
+                    }
 
                     return 0;
 
@@ -382,7 +399,16 @@ int GComponent_SetProperty(GEntityHandle entity, uint64_t comp_type_hash, const 
 
                     if (value_size < expected_size) return -1;
 
-                    bool ok = f->write(comp, value);
+                    bool ok = false;
+                    if (f->type == FieldType::String) {
+                        // 字符串字段：从 C 字符串构造 std::string 再走反射写
+                        const char* cstr = static_cast<const char*>(value);
+                        const size_t len = bounded_strlen(cstr, static_cast<size_t>(value_size));
+                        std::string tmp(cstr, len);
+                        ok = f->write(comp, &tmp);
+                    } else {
+                        ok = f->write(comp, value);
+                    }
 
                     if (ok) {
 

@@ -103,6 +103,19 @@ public partial class MainWindow
         }
     }
 
+    private void OnOpenProjectClick(object sender, RoutedEventArgs e)
+    {
+        using var dialog = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "Select Game Project Root",
+            ShowNewFolderButton = false
+        };
+        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+        {
+            App.Engine.ReloadProject(dialog.SelectedPath);
+        }
+    }
+
     private void OnImportAssetClick(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog

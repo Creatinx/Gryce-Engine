@@ -42,6 +42,10 @@ public static class MaterialAPI
         [In] float[] inFloats, int floatCount,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? inStr);
 
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GMaterial_LoadFromFile(GEntityHandle entity, ulong compTypeHash,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
     // UTF-8-safe read for string material fields (paths may contain Chinese).
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "GMaterial_GetField")]

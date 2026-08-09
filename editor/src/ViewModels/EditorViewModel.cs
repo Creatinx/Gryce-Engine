@@ -4,6 +4,7 @@ using GryceEngine.Editor.Services;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Input;
 
@@ -40,6 +41,11 @@ public class EditorViewModel : INotifyPropertyChanged
     public bool HasRendererComponent => _selectedEntity?.Components != null &&
         System.Linq.Enumerable.Any(_selectedEntity.Components,
             c => c.TypeName is "MeshRenderer" or "SkinnedMeshRenderer");
+
+    /// <summary>Selected entity is a Prefab instance root (Apply/Revert enabled).</summary>
+    public bool HasPrefabInstance => _selectedEntity?.Components != null &&
+        System.Linq.Enumerable.Any(_selectedEntity.Components,
+            c => c.TypeName == "PrefabInstance");
 
     // Registered component types for Add Component dropdown
     public ObservableCollection<RegisteredTypeItem> RegisteredTypes { get; } = new();
@@ -227,6 +233,7 @@ public class EditorViewModel : INotifyPropertyChanged
                 RefreshHierarchy();
                 AttachPendingComponentToNewEntity();
                 SelectPendingNewEntity();
+                ApplyPendingModelSetup();
                 OnPropertyChanged(nameof(EntityCount));
             });
         };
@@ -240,10 +247,10 @@ public class EditorViewModel : INotifyPropertyChanged
                 IsPaused = paused;
             });
         };
-        _onLogMessage = (level, msg, _) =>
+        _onLogMessage = (level, msg, sourceFile, sourceLine, _) =>
         {
             System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                AppendConsole($"[{level}] {msg}"));
+                AppendConsole($"[{level}] {msg}", (LogLevel)level, sourceFile, sourceLine));
         };
         _onSceneLoaded = (path, _) =>
         {
@@ -251,6 +258,7 @@ public class EditorViewModel : INotifyPropertyChanged
             {
                 SceneName = System.IO.Path.GetFileNameWithoutExtension(path ?? "Untitled");
                 AppendConsole($"Scene loaded: {path}");
+                _engine.ClearDirty();
             });
         };
 
@@ -266,6 +274,22 @@ public class EditorViewModel : INotifyPropertyChanged
         {
             if (e.PropertyName == nameof(EngineService.IsPlaying)) IsPlaying = engine.IsPlaying;
             if (e.PropertyName == nameof(EngineService.IsPaused)) IsPaused = engine.IsPaused;
+        };
+        engine.LogMessage += msg => AppendConsole(msg);
+        engine.ProjectChanged += root =>
+        {
+            System.Windows.Application.Current.Dispatcher.Invoke(() =>
+            {
+                _undoStack.Clear();
+                _redoStack.Clear();
+                RefreshHierarchy();
+                RefreshInspector();
+                OnPropertyChanged(nameof(EntityCount));
+                int rc = SceneAPI.GScene_Load("res:/scenes/editor_default.gesc");
+                if (rc != 0) rc = SceneAPI.GScene_Load("res:/scenes/main.gesc");
+                if (rc != 0) SceneAPI.GScene_New();
+                AppendConsole($"Project switched: {root}");
+            });
         };
 
         LocalizationService.Instance.LanguageChanged += (_, _) =>
@@ -287,6 +311,7 @@ public class EditorViewModel : INotifyPropertyChanged
     {
         SceneAPI.GScene_New();
         AppendConsole("New scene created.");
+        _engine.ClearDirty();
         _undoStack.Clear();
         _redoStack.Clear();
         OnPropertyChanged(nameof(EntityCount));
@@ -296,9 +321,27 @@ public class EditorViewModel : INotifyPropertyChanged
     {
         int result = SceneAPI.GScene_Save("res:/scenes/main.gesc");
         if (result == 0)
+        {
             AppendConsole("Scene saved.");
+            _engine.ClearDirty();
+        }
         else
             AppendConsole("Failed to save scene.");
+    }
+
+    /// <summary>Saves the scene to the given path (used by Save As / auto-save UI).</summary>
+    public void SaveSceneTo(string path)
+    {
+        int result = SceneAPI.GScene_Save(path);
+        if (result == 0)
+        {
+            AppendConsole($"Scene saved: {path}");
+            _engine.ClearDirty();
+        }
+        else
+        {
+            AppendConsole($"Failed to save scene: {path}");
+        }
     }
 
     public void CreateEntity()
@@ -320,6 +363,7 @@ public class EditorViewModel : INotifyPropertyChanged
 
         var cmd = GCommand.Create(GCommandType.CreateEntity, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
+        _engine.MarkSceneDirty();
         _undoStack.Push(new CreateEntityAction(this));
         _redoStack.Clear();
         AppendConsole($"Entity created: {name}");
@@ -362,11 +406,15 @@ public class EditorViewModel : INotifyPropertyChanged
         if (_selectedEntity == null) return;
         var handle = _selectedEntity.Handle;
         var name = _selectedEntity.Name;
+        // 删除前导出完整实体树（含子层级/组件），Undo 时原样恢复。
+        string? json = EntityAPI.ExportJsonUtf8(handle);
+        var parent = EntityAPI.GEntity_GetParent(handle);
         Span<byte> payload = stackalloc byte[sizeof(int)];
         BitConverterCompat.TryWriteBytes(payload, (int)handle);
         var cmd = GCommand.Create(GCommandType.DestroyEntity, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
-        _undoStack.Push(new DeleteEntityAction(this, handle, name));
+        _engine.MarkSceneDirty();
+        _undoStack.Push(new DeleteEntityAction(this, handle, name, json, parent));
         _redoStack.Clear();
         AppendConsole($"Deleted entity: {name}");
     }
@@ -374,9 +422,24 @@ public class EditorViewModel : INotifyPropertyChanged
     public void DuplicateSelectedEntity()
     {
         if (_selectedEntity == null) return;
+        var handle = _selectedEntity.Handle;
         var name = _selectedEntity.Name;
-        var parent = EntityAPI.GEntity_GetParent(_selectedEntity.Handle);
+        var parent = EntityAPI.GEntity_GetParent(handle);
         string copyName = name + LocalizationService.Instance.T("hierarchy.duplicate_suffix");
+        string? json = EntityAPI.ExportJsonUtf8(handle);
+        if (!string.IsNullOrEmpty(json))
+        {
+            var newHandle = EntityAPI.GEntity_ImportJson(json!, parent);
+            if (newHandle != GEntityHandle.Null)
+            {
+                _engine.MarkSceneDirty();
+                _undoStack.Push(new DeleteEntityAction(this, newHandle, copyName, null, parent));
+                _redoStack.Clear();
+                AppendConsole($"Duplicated: {name}");
+                SelectEntityByHandle(newHandle);
+                return;
+            }
+        }
         CreateEntity(copyName, parent);
         AppendConsole($"Duplicated: {name}");
     }
@@ -415,12 +478,16 @@ public class EditorViewModel : INotifyPropertyChanged
         if (_clipboardIsCut)
         {
             // For cut, reparent the clipboard entity to the selected entity (or root)
+            var oldParent = EntityAPI.GEntity_GetParent(_clipboardEntity);
             var parentHandle = _selectedEntity?.Handle ?? GEntityHandle.Null;
             Span<byte> payload = stackalloc byte[sizeof(int) * 2];
             BitConverterCompat.TryWriteBytes(payload, (int)_clipboardEntity);
             BitConverterCompat.TryWriteBytes(payload.Slice(sizeof(int)), (int)parentHandle);
             var cmd = GCommand.Create(GCommandType.ReparentEntity, payload);
             CoreAPI.GCore_PushCommand(ref cmd);
+            _engine.MarkSceneDirty();
+            _undoStack.Push(new ReparentAction(_clipboardEntity, oldParent, parentHandle));
+            _redoStack.Clear();
             _clipboardEntity = GEntityHandle.Null;
             _clipboardEntityName = string.Empty;
             _clipboardIsCut = false;
@@ -428,8 +495,22 @@ public class EditorViewModel : INotifyPropertyChanged
         }
         else
         {
-            // For copy, create a named copy under the selected parent (or root)
+            // For copy, deep-copy the whole subtree (new UUIDs, hierarchy preserved)
             var parentHandle = _selectedEntity?.Handle ?? GEntityHandle.Null;
+            string? json = EntityAPI.ExportJsonUtf8(_clipboardEntity);
+            if (!string.IsNullOrEmpty(json))
+            {
+                var newHandle = EntityAPI.GEntity_ImportJson(json!, parentHandle);
+                if (newHandle != GEntityHandle.Null)
+                {
+                    _engine.MarkSceneDirty();
+                    _undoStack.Push(new DeleteEntityAction(this, newHandle, _clipboardEntityName, null, parentHandle));
+                    _redoStack.Clear();
+                    AppendConsole($"Pasted: {_clipboardEntityName}");
+                    SelectEntityByHandle(newHandle);
+                    return;
+                }
+            }
             CreateEntity(_clipboardEntityName, parentHandle);
             AppendConsole($"Pasted: {_clipboardEntityName}");
         }
@@ -488,6 +569,7 @@ public class EditorViewModel : INotifyPropertyChanged
         var action = _undoStack.Pop();
         action.Undo();
         _redoStack.Push(action);
+        _engine.MarkSceneDirty();
         AppendConsole("Undo: " + action.Description);
     }
 
@@ -497,6 +579,7 @@ public class EditorViewModel : INotifyPropertyChanged
         var action = _redoStack.Pop();
         action.Execute();
         _undoStack.Push(action);
+        _engine.MarkSceneDirty();
         AppendConsole("Redo: " + action.Description);
     }
 
@@ -612,6 +695,7 @@ public class EditorViewModel : INotifyPropertyChanged
     /// </summary>
     public void RaiseTransformChanged(GEntityHandle handle)
     {
+        _engine.MarkSceneDirty();
         if (_selectedEntity != null && _selectedEntity.Handle == handle)
         {
             _selectedEntity.RefreshTransform();
@@ -695,6 +779,7 @@ public class EditorViewModel : INotifyPropertyChanged
             int result = ComponentAPI.GComponent_AddComponent(created.Handle, hash);
             if (result == 0)
             {
+                _engine.MarkSceneDirty();
                 AppendConsole($"Component '{typeName}' added to '{created.Name}'");
                 if (_selectedEntity?.Handle == created.Handle) RefreshInspector();
             }
@@ -741,6 +826,7 @@ public class EditorViewModel : INotifyPropertyChanged
         int result = ComponentAPI.GComponent_AddComponent(_selectedEntity.Handle, typeHash);
         if (result == 0)
         {
+            _engine.MarkSceneDirty();
             AppendConsole($"Added component to '{_selectedEntity.Name}'");
             RefreshInspector();
         }
@@ -757,6 +843,7 @@ public class EditorViewModel : INotifyPropertyChanged
         int result = ComponentAPI.GComponent_RemoveComponent(_selectedEntity.Handle, typeHash);
         if (result == 0)
         {
+            _engine.MarkSceneDirty();
             AppendConsole($"Removed component from '{_selectedEntity.Name}'");
             RefreshInspector();
         }
@@ -799,6 +886,7 @@ public class EditorViewModel : INotifyPropertyChanged
 
         var cmd = GCommand.Create(GCommandType.SetTransform, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
+        _engine.MarkSceneDirty();
     }
 
     public void RefreshInspector()
@@ -811,13 +899,72 @@ public class EditorViewModel : INotifyPropertyChanged
             comp.RefreshProperties();
         }
         OnPropertyChanged(nameof(HasRendererComponent));
+        OnPropertyChanged(nameof(HasPrefabInstance));
     }
 
     public void WritePropertyValue(ComponentModel comp, PropertyModel prop)
     {
         if (_selectedEntity == null) return;
-        prop.WriteToEngine(_selectedEntity.Handle, comp.TypeHash);
+        var entity = _selectedEntity.Handle;
+        byte[]? oldBytes = ReadPropertyBytes(entity, comp.TypeHash, prop.Name, prop.Size);
+        prop.WriteToEngine(entity, comp.TypeHash);
+        _engine.MarkSceneDirty();
+        byte[]? newBytes = ReadPropertyBytes(entity, comp.TypeHash, prop.Name, prop.Size);
+        if (oldBytes != null && newBytes != null &&
+            !System.Linq.Enumerable.SequenceEqual(oldBytes, newBytes))
+        {
+            _undoStack.Push(new PropertyAction(this, entity, comp.TypeHash, prop.Name, oldBytes, newBytes));
+            _redoStack.Clear();
+        }
     }
+
+    /// <summary>Reads a raw reflection property value from the engine.</summary>
+    internal static byte[]? ReadPropertyBytes(GEntityHandle entity, ulong typeHash, string propName, int size)
+    {
+        int len = Math.Max(size, 4);
+        var buf = new byte[len];
+        var pin = GCHandle.Alloc(buf, GCHandleType.Pinned);
+        try
+        {
+            return ComponentAPI.GComponent_GetProperty(entity, typeHash, propName, pin.AddrOfPinnedObject(), len) == 0
+                ? buf
+                : null;
+        }
+        finally { pin.Free(); }
+    }
+
+    /// <summary>Writes a raw reflection property value to the engine.</summary>
+    internal static void WritePropertyBytes(GEntityHandle entity, ulong typeHash, string propName, byte[] value)
+    {
+        var pin = GCHandle.Alloc(value, GCHandleType.Pinned);
+        try
+        {
+            ComponentAPI.GComponent_SetProperty(entity, typeHash, propName, pin.AddrOfPinnedObject(), value.Length);
+        }
+        finally { pin.Free(); }
+    }
+
+    /// <summary>
+    /// Pushes a Transform undo action for a gizmo drag (called at drag end with
+    /// the values captured at drag start).
+    /// </summary>
+    public void PushTransformAction(GEntityHandle handle, GVec3 oldPos, GQuat oldRot, GVec3 oldScale)
+    {
+        if (handle == GEntityHandle.Null) return;
+        if (EntityAPI.GEntity_GetLocalPosition(handle, out var newPos) != 0) return;
+        if (EntityAPI.GEntity_GetLocalRotation(handle, out var newRot) != 0) return;
+        if (EntityAPI.GEntity_GetLocalScale(handle, out var newScale) != 0) return;
+        if (Vec3Close(oldPos, newPos) && QuatClose(oldRot, newRot) && Vec3Close(oldScale, newScale)) return;
+        _undoStack.Push(new TransformAction(this, handle, oldPos, oldRot, oldScale, newPos, newRot, newScale));
+        _redoStack.Clear();
+    }
+
+    private static bool Vec3Close(GVec3 a, GVec3 b)
+        => Math.Abs(a.X - b.X) < 1e-5f && Math.Abs(a.Y - b.Y) < 1e-5f && Math.Abs(a.Z - b.Z) < 1e-5f;
+
+    private static bool QuatClose(GQuat a, GQuat b)
+        => Math.Abs(a.X - b.X) < 1e-5f && Math.Abs(a.Y - b.Y) < 1e-5f &&
+           Math.Abs(a.Z - b.Z) < 1e-5f && Math.Abs(a.W - b.W) < 1e-5f;
 
     public void RenameEntity(GEntityHandle handle, string newName)
     {
@@ -827,14 +974,191 @@ public class EditorViewModel : INotifyPropertyChanged
         nameBytes.AsSpan().CopyTo(payload.Slice(sizeof(int)));
         var cmd = GCommand.Create(GCommandType.RenameEntity, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
+        _engine.MarkSceneDirty();
+    }
+
+    // === 资源拖放 / 导入 ===
+
+    private string? _pendingModelPath;
+    private string? _pendingModelName;
+    private GEntityHandle _pendingMeshHandle;
+
+    /// <summary>Creates an entity from a model file and attaches a MeshRenderer
+    /// (setup completes over the next engine frames via ApplyPendingModelSetup).</summary>
+    public void InstantiateModel(string filePath, GEntityHandle parent = GEntityHandle.Null)
+    {
+        if (string.IsNullOrWhiteSpace(filePath)) return;
+        string name = System.IO.Path.GetFileNameWithoutExtension(filePath);
+        CreateEntity(name, parent);
+        _pendingModelPath = filePath;
+        _pendingModelName = name;
+        _pendingMeshHandle = GEntityHandle.Null;
+    }
+
+    private void ApplyPendingModelSetup()
+    {
+        if (_pendingModelPath == null) return;
+
+        // 第一帧：实体已出现 → 挂 MeshRenderer
+        if (_pendingMeshHandle == GEntityHandle.Null)
+        {
+            var entity = FindNewestEntityByName(_pendingModelName ?? "", RootEntities);
+            if (entity == null) return;
+            _pendingMeshHandle = entity.Handle;
+            SelectEntityByHandle(entity.Handle);
+            ulong hash = FindRegisteredTypeHash("MeshRenderer");
+            if (hash != 0)
+            {
+                ComponentAPI.GComponent_AddComponent(entity.Handle, hash);
+            }
+            return;
+        }
+
+        // 第二帧：组件已挂上 → 设置 mesh_path（反射字符串字段）
+        if (ComponentAPI.GComponent_GetTypeHashAt(_pendingMeshHandle, 0, out ulong typeHash) == 0 &&
+            typeHash != 0)
+        {
+            var buf = new byte[256];
+            string path = _pendingModelPath ?? "";
+            int count = Encoding.UTF8.GetBytes(path, 0, Math.Min(path.Length, 250), buf, 0);
+            buf[count] = 0;
+            WritePropertyBytes(_pendingMeshHandle, typeHash, "mesh_path", buf);
+            _engine.MarkSceneDirty();
+            AppendConsole($"Imported model: {_pendingModelPath}");
+            _pendingModelPath = null;
+            _pendingModelName = null;
+            _pendingMeshHandle = GEntityHandle.Null;
+        }
+    }
+
+    private ulong FindRegisteredTypeHash(string typeName)
+    {
+        foreach (var t in RegisteredTypes)
+        {
+            if (t.TypeName == typeName) return t.TypeHash;
+        }
+        return 0;
+    }
+
+    /// <summary>Applies a .gmat material file to the selected renderer component.</summary>
+    public void ApplyMaterialFileToSelection(string path)
+    {
+        if (_selectedEntity == null || !System.IO.File.Exists(path)) return;
+        foreach (var comp in _selectedEntity.Components)
+        {
+            if (comp.TypeName is "MeshRenderer" or "SkinnedMeshRenderer")
+            {
+                int rc = MaterialAPI.GMaterial_LoadFromFile(_selectedEntity.Handle, comp.TypeHash, path);
+                if (rc == 0)
+                {
+                    _engine.MarkSceneDirty();
+                    AppendConsole($"Material applied: {path}");
+                    RefreshInspector();
+                }
+                else
+                {
+                    AppendConsole($"Failed to apply material: {path}");
+                }
+                return;
+            }
+        }
+        AppendConsole("Selected entity has no MeshRenderer / SkinnedMeshRenderer.");
+    }
+
+    public void LoadSceneFromPath(string path)
+    {
+        int rc = SceneAPI.GScene_Load(path);
+        AppendConsole(rc == 0 ? $"Scene loaded: {path}" : $"Failed to load scene: {path}");
+    }
+
+    // === Prefab 工作流 ===
+
+    public void CreatePrefabFromSelection()
+    {
+        if (_selectedEntity == null) return;
+        string defaultDir = System.IO.Path.Combine(_engine.ProjectRoot, "prefabs");
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Save Prefab",
+            Filter = "Prefab (*.gesc)|*.gesc|All Files (*.*)|*.*",
+            FileName = _selectedEntity.Name + ".gesc",
+            InitialDirectory = System.IO.Directory.Exists(defaultDir) ? defaultDir : _engine.ProjectRoot
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            int rc = EntityAPI.GEntity_SaveAsPrefab(_selectedEntity.Handle, dialog.FileName);
+            AppendConsole(rc == 0 ? $"Prefab saved: {dialog.FileName}" : $"Failed to save prefab: {dialog.FileName}");
+        }
+    }
+
+    public void InstantiatePrefabDialog()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Instantiate Prefab",
+            Filter = "Prefab (*.gesc;*.geprefab;*.geprefabvariant)|*.gesc;*.geprefab;*.geprefabvariant|All Files (*.*)|*.*"
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            InstantiatePrefab(dialog.FileName);
+        }
+    }
+
+    public void InstantiatePrefab(string prefabPath, GEntityHandle parent = GEntityHandle.Null)
+    {
+        GEntityHandle handle = EntityAPI.GEntity_CreatePrefabInstance(prefabPath, parent);
+        if (handle != GEntityHandle.Null)
+        {
+            _engine.MarkSceneDirty();
+            _undoStack.Push(new DeleteEntityAction(this, handle,
+                System.IO.Path.GetFileNameWithoutExtension(prefabPath), null, parent));
+            _redoStack.Clear();
+            AppendConsole($"Instantiated prefab: {prefabPath}");
+            SelectEntityByHandle(handle);
+        }
+        else
+        {
+            AppendConsole($"Failed to instantiate prefab: {prefabPath}");
+        }
+    }
+
+    public void ApplySelectedPrefab()
+    {
+        if (_selectedEntity == null) return;
+        int rc = EntityAPI.GEntity_ApplyPrefab(_selectedEntity.Handle);
+        if (rc == 0)
+        {
+            _engine.MarkSceneDirty();
+            AppendConsole("Prefab applied (template updated).");
+        }
+        else
+        {
+            AppendConsole("Failed to apply prefab (not a prefab instance?).");
+        }
+    }
+
+    public void RevertSelectedPrefab()
+    {
+        if (_selectedEntity == null) return;
+        int rc = EntityAPI.GEntity_RevertPrefab(_selectedEntity.Handle);
+        if (rc == 0)
+        {
+            _engine.MarkSceneDirty();
+            AppendConsole("Prefab reverted.");
+        }
+        else
+        {
+            AppendConsole("Failed to revert prefab (not a prefab instance?).");
+        }
     }
 
     // === Console ===
 
-    public void AppendConsole(string text, LogLevel level = LogLevel.Info)
+    public void AppendConsole(string text, LogLevel level = LogLevel.Info,
+                              string sourceFile = "", int sourceLine = 0)
     {
         ConsoleText += text + Environment.NewLine;
-        LogEntries.Add(new LogEntry(level, text));
+        LogEntries.Add(new LogEntry(level, text, sourceFile, sourceLine));
     }
 
     public void ClearConsole()
@@ -876,19 +1200,49 @@ internal class CreateEntityAction(EditorViewModel vm) : IUndoableAction
     public void Undo() => vm.DeleteSelectedEntity();
 }
 
-internal class DeleteEntityAction(EditorViewModel vm, GEntityHandle handle, string name) : IUndoableAction
+internal class DeleteEntityAction : IUndoableAction
 {
-    public string Description => $"Delete '{name}'";
+    private readonly EditorViewModel _vm;
+    private readonly GEntityHandle _originalHandle;
+    private readonly string _name;
+    private readonly string? _json;
+    private readonly GEntityHandle _parent;
+    private GEntityHandle _restoredHandle;
+
+    public string Description => $"Delete '{_name}'";
+
+    public DeleteEntityAction(EditorViewModel vm, GEntityHandle handle, string name,
+                              string? json, GEntityHandle parent)
+    {
+        _vm = vm;
+        _originalHandle = handle;
+        _name = name;
+        _json = json;
+        _parent = parent;
+    }
+
     public void Execute()
     {
+        GEntityHandle target = _restoredHandle != GEntityHandle.Null ? _restoredHandle : _originalHandle;
         Span<byte> payload = stackalloc byte[sizeof(int)];
-        BitConverterCompat.TryWriteBytes(payload, (int)handle);
+        BitConverterCompat.TryWriteBytes(payload, (int)target);
         var cmd = GCommand.Create(GCommandType.DestroyEntity, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
+        _restoredHandle = GEntityHandle.Null;
     }
+
     public void Undo()
     {
-        vm.CreateEntity();
+        if (!string.IsNullOrEmpty(_json))
+        {
+            _restoredHandle = EntityAPI.GEntity_ImportJson(_json!, _parent);
+            if (_restoredHandle != GEntityHandle.Null)
+            {
+                _vm.SelectEntityByHandle(_restoredHandle);
+                return;
+            }
+        }
+        _vm.CreateEntity();
     }
 }
 
@@ -897,4 +1251,95 @@ internal class RenameEntityAction(EditorViewModel vm, GEntityHandle handle, stri
     public string Description => $"Rename to '{newName}'";
     public void Execute() => vm.RenameEntity(handle, newName);
     public void Undo() => vm.RenameEntity(handle, oldName);
+}
+
+internal class TransformAction : IUndoableAction
+{
+    private readonly EditorViewModel _vm;
+    private readonly GEntityHandle _handle;
+    private readonly GVec3 _oldPos, _newPos;
+    private readonly GQuat _oldRot, _newRot;
+    private readonly GVec3 _oldScale, _newScale;
+
+    public string Description => "Transform";
+
+    public TransformAction(EditorViewModel vm, GEntityHandle handle,
+                           GVec3 oldPos, GQuat oldRot, GVec3 oldScale,
+                           GVec3 newPos, GQuat newRot, GVec3 newScale)
+    {
+        _vm = vm;
+        _handle = handle;
+        _oldPos = oldPos; _newPos = newPos;
+        _oldRot = oldRot; _newRot = newRot;
+        _oldScale = oldScale; _newScale = newScale;
+    }
+
+    public void Execute() => Apply(_newPos, _newRot, _newScale);
+    public void Undo() => Apply(_oldPos, _oldRot, _oldScale);
+
+    private void Apply(GVec3 p, GQuat r, GVec3 s)
+    {
+        EntityAPI.GEntity_SetLocalPosition(_handle, ref p);
+        EntityAPI.GEntity_SetLocalRotation(_handle, ref r);
+        EntityAPI.GEntity_SetLocalScale(_handle, ref s);
+        _vm.RaiseTransformChanged(_handle);
+    }
+}
+
+internal class PropertyAction : IUndoableAction
+{
+    private readonly EditorViewModel _vm;
+    private readonly GEntityHandle _entity;
+    private readonly ulong _typeHash;
+    private readonly string _propName;
+    private readonly byte[] _oldValue, _newValue;
+
+    public string Description => $"Property '{_propName}'";
+
+    public PropertyAction(EditorViewModel vm, GEntityHandle entity, ulong typeHash,
+                          string propName, byte[] oldValue, byte[] newValue)
+    {
+        _vm = vm;
+        _entity = entity;
+        _typeHash = typeHash;
+        _propName = propName;
+        _oldValue = oldValue;
+        _newValue = newValue;
+    }
+
+    public void Execute() => Write(_newValue);
+    public void Undo() => Write(_oldValue);
+
+    private void Write(byte[] value)
+    {
+        EditorViewModel.WritePropertyBytes(_entity, _typeHash, _propName, value);
+        _vm.RefreshInspector();
+    }
+}
+
+internal class ReparentAction : IUndoableAction
+{
+    private readonly GEntityHandle _handle;
+    private readonly GEntityHandle _oldParent, _newParent;
+
+    public string Description => "Reparent";
+
+    public ReparentAction(GEntityHandle handle, GEntityHandle oldParent, GEntityHandle newParent)
+    {
+        _handle = handle;
+        _oldParent = oldParent;
+        _newParent = newParent;
+    }
+
+    public void Execute() => Reparent(_newParent);
+    public void Undo() => Reparent(_oldParent);
+
+    private void Reparent(GEntityHandle parent)
+    {
+        Span<byte> payload = stackalloc byte[sizeof(int) * 2];
+        BitConverterCompat.TryWriteBytes(payload, (int)_handle);
+        BitConverterCompat.TryWriteBytes(payload.Slice(sizeof(int)), (int)parent);
+        var cmd = GCommand.Create(GCommandType.ReparentEntity, payload);
+        CoreAPI.GCore_PushCommand(ref cmd);
+    }
 }

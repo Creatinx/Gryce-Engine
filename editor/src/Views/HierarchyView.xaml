@@ -68,7 +68,10 @@
             <TreeView x:Name="EntityTree"
                       BorderThickness="0" Background="Transparent"
                       ItemsSource="{Binding RootEntities}"
-                      Padding="0,2">
+                      Padding="0,2"
+                      AllowDrop="True"
+                      PreviewDragOver="OnDragOver"
+                      Drop="OnDrop">
                 <TreeView.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="{loc:Loc menu.create_entity}" Click="OnCreateEntityClick">
@@ -94,6 +97,21 @@
                             <TextBlock Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                         </MenuItem.Icon>
                     </MenuItem>
+                    <Separator/>
+                    <MenuItem Header="{loc:Loc hierarchy.create_prefab}" Click="OnCreatePrefabClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8B8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc hierarchy.instantiate_prefab}" Click="OnInstantiatePrefabClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE8B8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="{loc:Loc hierarchy.apply_prefab}" Click="OnApplyPrefabClick"
+                              IsEnabled="{Binding HasPrefabInstance}"/>
+                    <MenuItem Header="{loc:Loc hierarchy.revert_prefab}" Click="OnRevertPrefabClick"
+                              IsEnabled="{Binding HasPrefabInstance}"/>
                     <Separator/>
                     <MenuItem Header="{loc:Loc menu.copy}" InputGestureText="Ctrl+C"
                               Command="{Binding CopyCommand}">

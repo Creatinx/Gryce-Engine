@@ -136,7 +136,10 @@ public delegate void GOnEntityListChanged(nint userData);
 public delegate void GOnComponentChanged(GEntityHandle entity, ulong compTypeHash, nint userData);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-public delegate void GOnLogMessage(int level, [MarshalAs(UnmanagedType.LPUTF8Str)] string msg, nint userData);
+public delegate void GOnLogMessage(int level,
+    [MarshalAs(UnmanagedType.LPUTF8Str)] string msg,
+    [MarshalAs(UnmanagedType.LPUTF8Str)] string sourceFile,
+    int sourceLine, nint userData);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public delegate void GOnViewportTextureReady(GTextureHandle handle, int w, int h, nint userData);

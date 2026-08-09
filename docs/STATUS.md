@@ -315,16 +315,16 @@
 | 布局 | 已实现（菜单/工具栏 + Hierarchy / Viewport / Inspector + 底部 Project / Console / Animation 标签页；底部面板压缩为 2 行头部 + 内容区，去除冗余分隔与独立状态栏） |
 | 视口嵌入（HwndHost + GLFW 外部窗口） | 已实现（按物理像素创建/缩放，适配高 DPI；尺寸随窗口与分割条实时同步；同步模式命令执行完整，场景/网格/物体正常显示） |
 | 渲染（Tonemapping） | 已实现（修复 HDR tonemap 默认曝光 2.0 导致视口整体灰白、场景不可见的问题，曝光调整为 1.0） |
-| 场景视图交互 | 已实现（编辑器相机：右键环绕、中键平移、滚轮缩放；左键拾取/选中实体；Transform Gizmo 拖动（平移/旋转/缩放，局部/全局空间）；HwndHost airspace 通过全局鼠标钩子 + 独立覆盖窗口解决） |
+| 场景视图交互 | 已实现（编辑器相机：右键环绕、中键平移、滚轮缩放；左键网格 AABB 射线拾取/选中实体（`GScene_PickScreen`，空白处取消选中）；Transform Gizmo 拖动（平移/旋转/缩放，局部/全局空间，一次拖拽一条 Undo）；HwndHost airspace 通过全局鼠标钩子 + 独立覆盖窗口解决） |
 | 游戏视图交互 | 已实现（WASD 移动、鼠标拖动视角、Space/Ctrl 上下、Shift 加速、滚轮调整速度；控制器驱动场景 MainCamera） |
-| 层级面板（Hierarchy） | 已实现（Entity 树、搜索、右键创建子实体/重命名/副本/删除、新建自动选中并展开祖先） |
+| 层级面板（Hierarchy） | 已实现（Entity 树、搜索、右键创建子实体/重命名/副本/删除、新建自动选中并展开祖先；Prefab：从选中实体创建 / 实例化 / Apply / Revert；支持从 Project 面板拖放模型/.gesc/.gmat） |
 | Create Entity 对话框 | 已实现（搜索 + 最近使用 + 类型分类 + 描述，创建时可附带组件） |
 | Inspector 面板 | 已实现（反射自动生成字段编辑；修复短名/全名反射查询不一致导致属性不可编辑的问题） |
-| 项目面板（Project） | 已实现（目录树 + 文件列表 + 新建文件夹/刷新；文件夹树使用 Fluent 黄色文件夹图标；头部整合路径/状态/统计，搜索栏独立一行不重叠） |
-| 控制台面板（Console） | 已实现（引擎 GLog → MemoryLogSink → 编辑器回调；GL 调试消息去重防刷屏；标题/过滤/计数/复制/清空合并为一行） |
+| 项目面板（Project） | 已实现（目录树 + 文件列表 + 新建文件夹/场景/材质/刷新；双击 .gesc 打开场景、.gimport/.gmat/.json 用系统编辑器打开；可作为拖放源拖资源到 Hierarchy；文件夹树使用 Fluent 黄色文件夹图标；头部整合路径/状态/统计，搜索栏独立一行不重叠） |
+| 控制台面板（Console） | 已实现（引擎 GLog → MemoryLogSink → 编辑器回调（带 file/line）；双击日志在 VSCode 中打开源码位置（无 VSCode 则回退系统编辑器）；GL 调试消息去重防刷屏；标题/过滤/计数/复制/清空合并为一行） |
 | 动画面板 | 已实现（片段下拉/播放/暂停/停止/循环/速度/时间轴拖动；`GAnimator_*` 查询片段与时长） |
 | 材质编辑器 | 已实现（PBR 参数 + 贴图路径 + use 开关；`GMaterial_*` C API，贴图改动自动重传 GPU） |
-| Play Mode | 已实现（进入/退出；物理系统挂载后真实模拟：刚体/碰撞体/重力） |
+| Play Mode | 已实现（进入时场景快照、退出时从快照恢复——播放期间的物理/动画/编辑改动全部丢弃，类 Unity 行为；物理系统挂载后真实模拟：刚体/碰撞体/重力） |
 | 物理 | 已实现（`GPhysics_AttachSystems` 把 PhysicsSystem3D/2D 挂入 Core World，播放模式真实步进） |
 | 动画 | 已实现（`AnimatorSystem` 已注册进 Core World，播放模式推进骨骼动画时间） |
 | 主题 | 已实现（全局 `ThemeManager.Current.ApplicationTheme` 深色/浅色 + 持久化；菜单栏/Hierarchy/Inspector/底部面板统一深色） |
@@ -332,7 +332,9 @@
 | 右键菜单 | 已实现（全局 MenuItem/Separator 模板重写为 Fluent 风格：深色圆角 + 阴影 + 高亮/禁用态 + 子菜单箭头） |
 | 本地化 | 已实现（中文/英文运行时切换 + 持久化，`editor/project/locales/{en,zh}.json`） |
 | 快捷键 | 已实现（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D） |
-| Undo/Redo | 部分实现（创建/删除/重命名实体） |
+| Undo/Redo | 已实现（创建/删除/重命名/Transform（Gizmo 拖拽）/Inspector 属性/换父/复制粘贴/重复；删除与粘贴基于实体子树 JSON 导出/导入（`GEntity_ExportJson/ImportJson`），Delete 的 Undo 完整还原实体树） |
+| 自动保存 | 已实现（EngineService 定时器按分钟自动保存脏场景；设置窗口可调间隔（0=关闭）并持久化到 `editor_settings.json`；Play Mode 中跳过；保存/加载/新建后清除脏标记） |
+| 项目切换 | 已实现（File > Open Project 选择项目根；Core 整体重初始化后 Project/Hierarchy/Inspector/Viewport 全部刷新） |
 | 窗口布局 | 已实现（菜单栏 + 项目名进入标题栏；播放/暂停/停止居中位于标题栏下一层；操作栏移除模式徽标；设置入口移入文件菜单） |
 
 ---
