@@ -57,7 +57,7 @@ public sealed class GizmoOverlayWindow : Window
             FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromArgb(0xFF, 0x8C, 0xFF, 0x8C)),
-            Text = "None",
+            Text = "No Mode",
             VerticalAlignment = VerticalAlignment.Center
         };
         _modeBadge = new Border

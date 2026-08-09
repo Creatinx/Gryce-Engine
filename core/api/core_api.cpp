@@ -393,8 +393,16 @@ void GCore_BeginFrame(float dt) {
     gryce_core::g_core_state.cmdbuf.swap();
     int count = 0;
     const GCommand* cmds = gryce_core::g_core_state.cmdbuf.consume(count);
-    for (int i = 0; i < count; ++i) {
+    // Process at most 30 commands per frame; a burst of editor commands (e.g.
+    // gizmo drags at high mouse rate) must not stall the frame with one long
+    // serialized batch. Overflow is re-queued and runs next frame.
+    constexpr int k_max_commands_per_frame = 30;
+    int to_process = count < k_max_commands_per_frame ? count : k_max_commands_per_frame;
+    for (int i = 0; i < to_process; ++i) {
         gryce_core::process_command(cmds[i]);
+    }
+    for (int i = to_process; i < count; ++i) {
+        gryce_core::g_core_state.cmdbuf.push(cmds[i]);
     }
 
     if (gryce_core::g_core_state.play_mode && !gryce_core::g_core_state.paused) {

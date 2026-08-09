@@ -144,19 +144,29 @@ static void collect_scene_lights(scene::Scene& scn,
 // 同步模式下渲染线程未运行，RenderSystem3D 的上传路径不会执行；
 // 这里在绘制前把尚未上传 GPU 的 MeshRenderer / SkinnedMeshRenderer 补传上去。
 static void upload_pending_meshes(scene::Scene& scn, RenderContext& ctx) {
+    // Per-frame budget: uploading dozens of meshes/materials at once (e.g.
+    // after an import) would stall the render frame; cap it and let the rest
+    // stay pending so they upload over the next frames.
+    constexpr int k_max_uploads_per_frame = 30;
+    int uploaded = 0;
+
     ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
         scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
+            if (uploaded >= k_max_uploads_per_frame) return;
             if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
             auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
             if (data && !data->empty()) {
                 mr->upload_to_gpu(&ctx, data.get(), /*allow_while_running=*/false);
+                ++uploaded;
             }
         });
 
     ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
         scn, [&](scene::Entity*, components::SkinnedMeshRenderer* mr, components::Transform*) {
+            if (uploaded >= k_max_uploads_per_frame) return;
             if (!mr || !mr->enabled || mr->model_path.empty() || mr->gpu_mesh()) return;
             mr->upload_to_gpu(&ctx, /*allow_while_running=*/false);
+            ++uploaded;
         });
 
     // 编辑器修改材质贴图路径/use 标志后，material 被标记 textures_dirty；

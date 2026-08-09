@@ -241,7 +241,7 @@
     "material_editor.use_map": "Use"
     ,"nav.back": "Back"
     ,"nav.forward": "Forward"
-    ,"viewport.tool_none": "None"
+    ,"viewport.tool_none": "No Mode"
     ,"project.root": "resource://"
     ,"project.empty": "This folder is empty"
     ,"project.folder": "Folder: {0}"

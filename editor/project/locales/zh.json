@@ -240,7 +240,7 @@
     "material_editor.use_map": "使用"
     ,"nav.back": "返回"
     ,"nav.forward": "前进"
-    ,"viewport.tool_none": "无"
+    ,"viewport.tool_none": "无模式"
     ,"project.root": "resource://"
     ,"project.empty": "此文件夹为空"
     ,"project.folder": "文件夹：{0}"

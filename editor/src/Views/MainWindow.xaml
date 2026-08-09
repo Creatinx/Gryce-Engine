@@ -7,8 +7,8 @@
         xmlns:views="clr-namespace:GryceEngine.Editor.Views"
         ui:ThemeManager.IsThemeAware="True"
         Title="{Binding Title}"
-        Width="1280" Height="720"
-        MinWidth="980" MinHeight="620"
+        Width="1800" Height="1100"
+        MinWidth="1280" MinHeight="760"
         WindowStartupLocation="CenterScreen"
         WindowStyle="SingleBorderWindow"
         Background="{DynamicResource LayerFillColorDefaultBrush}">
@@ -47,7 +47,7 @@
             <RowDefinition Height="Auto"/>  <!-- Toolbar -->
             <RowDefinition Height="*"/>     <!-- Main Content -->
             <RowDefinition Height="4"/>     <!-- Splitter -->
-            <RowDefinition Height="210" MinHeight="120"/> <!-- Bottom Panels -->
+            <RowDefinition Height="240" MinHeight="140"/> <!-- Bottom Panels -->
             <RowDefinition Height="Auto"/>  <!-- Status Bar -->
         </Grid.RowDefinitions>
 
@@ -189,13 +189,29 @@
                 </MenuItem>
             </Menu>
 
-            <!-- Project name after the menus -->
-            <TextBlock Grid.Column="2" x:Name="ProjectNameText"
-                       Text="{Binding SceneName}"
-                       FontSize="11.5" FontWeight="SemiBold"
-                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                       VerticalAlignment="Center" Margin="10,0,0,0"
-                       TextTrimming="CharacterEllipsis" MaxWidth="280"/>
+            <!-- Project name chip (rounded background) after the menus -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="10,3"
+                    Margin="10,0,0,0"
+                    VerticalAlignment="Center"
+                    MaxWidth="320">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
+                               FontSize="11" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               Margin="0,0,6,0"/>
+                    <TextBlock x:Name="ProjectNameText"
+                               Text="{Binding SceneName}"
+                               FontSize="11.5" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </Border>
 
             <!-- Window buttons -->
             <StackPanel Grid.Column="4" Orientation="Horizontal"

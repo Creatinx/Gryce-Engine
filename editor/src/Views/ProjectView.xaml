@@ -115,8 +115,8 @@
                     <TreeView.ItemContainerStyle>
                         <Style TargetType="TreeViewItem">
                             <Setter Property="IsExpanded" Value="False"/>
-                            <Setter Property="Padding" Value="4,3"/>
-                            <Setter Property="MinHeight" Value="24"/>
+                            <Setter Property="Padding" Value="2,1"/>
+                            <Setter Property="MinHeight" Value="22"/>
                             <Setter Property="Foreground"
                                     Value="{DynamicResource TextFillColorPrimaryBrush}"/>
                             <Setter Property="Background" Value="Transparent"/>
