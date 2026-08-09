@@ -234,6 +234,12 @@ public class EditorViewModel : INotifyPropertyChanged
                 AttachPendingComponentToNewEntity();
                 SelectPendingNewEntity();
                 ApplyPendingModelSetup();
+                if (_entityTypeSwitchPending)
+                {
+                    _entityTypeSwitchPending = false;
+                    RefreshEntityType();
+                    RefreshInspector();
+                }
                 OnPropertyChanged(nameof(EntityCount));
             });
         };
@@ -900,6 +906,122 @@ public class EditorViewModel : INotifyPropertyChanged
         }
         OnPropertyChanged(nameof(HasRendererComponent));
         OnPropertyChanged(nameof(HasPrefabInstance));
+        RefreshEntityType();
+    }
+
+    // === 实体类型（None / Node2D / Node3D 热切换）===
+
+    private int _selectedEntityType; // 0=None, 1=Node2D, 2=Node3D
+    private bool _entityTypeSwitchPending;
+
+    public int SelectedEntityType
+    {
+        get => _selectedEntityType;
+        set
+        {
+            if (_selectedEntityType == value) return;
+            _selectedEntityType = value;
+            OnPropertyChanged();
+            ApplyEntityType(value);
+        }
+    }
+
+    private void ApplyEntityType(int target)
+    {
+        if (_selectedEntity == null) return;
+        _selectedEntity.RefreshComponents();
+
+        bool has2d = false, has3d = false;
+        ulong node2dHash = 0, node3dHash = 0;
+        foreach (var c in _selectedEntity.Components)
+        {
+            if (c.TypeName == "Node2D") { has2d = true; node2dHash = c.TypeHash; }
+            else if (c.TypeName == "Node3D") { has3d = true; node3dHash = c.TypeHash; }
+        }
+
+        bool changed = false;
+        switch (target)
+        {
+            case 1: // Node2D
+                if (has3d)
+                {
+                    ComponentAPI.GComponent_RemoveComponent(_selectedEntity.Handle, node3dHash);
+                    changed = true;
+                }
+                if (!has2d)
+                {
+                    ulong h = FindRegisteredTypeHash("Node2D");
+                    if (h != 0)
+                    {
+                        ComponentAPI.GComponent_AddComponent(_selectedEntity.Handle, h);
+                        changed = true;
+                    }
+                }
+                break;
+            case 2: // Node3D
+                if (has2d)
+                {
+                    ComponentAPI.GComponent_RemoveComponent(_selectedEntity.Handle, node2dHash);
+                    changed = true;
+                }
+                if (!has3d)
+                {
+                    ulong h = FindRegisteredTypeHash("Node3D");
+                    if (h != 0)
+                    {
+                        ComponentAPI.GComponent_AddComponent(_selectedEntity.Handle, h);
+                        changed = true;
+                    }
+                }
+                break;
+            default: // None：移除两个类型组件
+                if (has2d)
+                {
+                    ComponentAPI.GComponent_RemoveComponent(_selectedEntity.Handle, node2dHash);
+                    changed = true;
+                }
+                if (has3d)
+                {
+                    ComponentAPI.GComponent_RemoveComponent(_selectedEntity.Handle, node3dHash);
+                    changed = true;
+                }
+                break;
+        }
+
+        if (changed)
+        {
+            _entityTypeSwitchPending = true;
+            _engine.MarkSceneDirty();
+        }
+    }
+
+    /// <summary>从当前组件推导实体类型；切换命令未处理完时保持目标值。</summary>
+    private void RefreshEntityType()
+    {
+        if (_entityTypeSwitchPending) return;
+        if (_selectedEntity == null)
+        {
+            if (_selectedEntityType != 0)
+            {
+                _selectedEntityType = 0;
+                OnPropertyChanged(nameof(SelectedEntityType));
+            }
+            return;
+        }
+
+        _selectedEntity.RefreshComponents();
+        bool has2d = false, has3d = false;
+        foreach (var c in _selectedEntity.Components)
+        {
+            if (c.TypeName == "Node2D") has2d = true;
+            else if (c.TypeName == "Node3D") has3d = true;
+        }
+        int value = has2d ? 1 : has3d ? 2 : 0;
+        if (_selectedEntityType != value)
+        {
+            _selectedEntityType = value;
+            OnPropertyChanged(nameof(SelectedEntityType));
+        }
     }
 
     public void WritePropertyValue(ComponentModel comp, PropertyModel prop)

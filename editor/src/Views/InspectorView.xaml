@@ -65,9 +65,15 @@
                                  CaretBrush="{DynamicResource TextFillColorPrimaryBrush}"
                                  LostFocus="OnEntityNameChanged"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="1" Text="Entity"
-                                   FontSize="10" Margin="0,2,0,0"
-                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                        <ComboBox Grid.Row="1" Grid.Column="1"
+                                  SelectedIndex="{Binding SelectedEntityType}"
+                                  Width="110" HorizontalAlignment="Left"
+                                  FontSize="10" Margin="0,2,0,0" Padding="2,1"
+                                  ToolTip="Entity type (hot-switch Node2D / Node3D)">
+                            <ComboBoxItem Content="None"/>
+                            <ComboBoxItem Content="Node2D"/>
+                            <ComboBoxItem Content="Node3D"/>
+                        </ComboBox>
                     </Grid>
                 </Border>
 

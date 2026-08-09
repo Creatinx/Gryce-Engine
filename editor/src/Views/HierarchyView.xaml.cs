@@ -13,6 +13,8 @@ namespace GryceEngine.Editor.Views;
 public partial class HierarchyView : UserControl
 {
     private EditorViewModel? VM => DataContext as EditorViewModel;
+    // 右键是否落在实体行上：决定"新建实体"创建为子实体还是根级实体
+    private bool _contextOnEntity;
 
     public HierarchyView()
     {
@@ -47,6 +49,7 @@ public partial class HierarchyView : UserControl
     {
         if (sender is TreeViewItem item && item.DataContext is EntityModel entity)
         {
+            _contextOnEntity = true;
             item.IsSelected = true;
             VM!.SelectedEntity = entity;
         }
@@ -61,6 +64,9 @@ public partial class HierarchyView : UserControl
     {
         if (e.OriginalSource is not DependencyObject source) return;
         if (FindAncestor<TreeViewItem>(source) != null) return;
+
+        // 空白处右键：新建实体将作为根级实体
+        _contextOnEntity = false;
 
         var menu = EntityTree.ContextMenu;
         if (menu == null) return;
@@ -107,13 +113,10 @@ public partial class HierarchyView : UserControl
 
     private void OnCreateEntityClick(object sender, RoutedEventArgs e)
     {
-        VM?.CreateEntityThenOpenComponentPicker();
-    }
-
-    private void OnCreateChildClick(object sender, RoutedEventArgs e)
-    {
-        if (VM?.SelectedEntity != null)
+        if (_contextOnEntity && VM?.SelectedEntity != null)
             VM.CreateEntityThenOpenComponentPicker(VM.SelectedEntity.Handle);
+        else
+            VM?.CreateEntityThenOpenComponentPicker();
     }
 
     private void OnDuplicateEntityClick(object sender, RoutedEventArgs e)

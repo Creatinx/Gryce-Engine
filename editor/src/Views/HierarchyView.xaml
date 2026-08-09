@@ -79,11 +79,6 @@
                             <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                         </MenuItem.Icon>
                     </MenuItem>
-                    <MenuItem Header="{loc:Loc hierarchy.create_child}" Click="OnCreateChildClick">
-                        <MenuItem.Icon>
-                            <TextBlock Text="&#xE739;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
-                        </MenuItem.Icon>
-                    </MenuItem>
                     <Separator/>
                     <MenuItem Header="{loc:Loc common.rename}" InputGestureText="F2"
                               Click="OnRenameEntityClick">
