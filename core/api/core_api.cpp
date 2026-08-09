@@ -13,6 +13,7 @@
 #include "reflection/reflection.h"
 #include "components/component_factory.h"
 #include "resources/project.h"
+#include "script/lua_runtime.h"
 #include "utils/glog/glog_lib.h"
 
 #include <cstddef>
@@ -429,6 +430,9 @@ int GCore_Init(const GCoreInitDesc* desc) {
 
     gryce_core::g_core_state.entity_map.rebuild(gryce_core::g_core_state.world->scene());
 
+    // GryceSRT: bring up the Lua runtime together with the core.
+    script::LuaRuntime::instance().init();
+
     gryce_core::g_core_state.initialized = true;
     return 0;
 }
@@ -437,6 +441,8 @@ void GCore_Shutdown(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(gryce_core::g_core_state.init_mutex);
     if (!gryce_core::g_core_state.initialized) return;
+
+    script::LuaRuntime::instance().shutdown();
 
     if (gryce_core::g_core_state.world) {
         gryce_core::g_core_state.world->shutdown();

@@ -4,6 +4,8 @@
 # ============================================================================
 # GryceCore.dll — ECS、Scene、Entity、Component、Math、UUID、Reflection、Assets
 # ============================================================================
+add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/lua ${CMAKE_BINARY_DIR}/third_party/lua)
+
 add_library(GryceCore SHARED)
 
 set_target_properties(GryceCore PROPERTIES
@@ -25,6 +27,7 @@ target_sources(GryceCore
         api/asset_api.cpp
         api/material_api.cpp
         api/animator_api.cpp
+        api/script_api.cpp
         api/command_buffer.cpp
         api/entity_handle_map.cpp
         # 内部模块
@@ -71,6 +74,7 @@ target_sources(GryceCore
         scene/scene.cpp
         scene/prefab.cpp
         scene/scene_serializer.cpp
+        script/lua_runtime.cpp
         ecs/world.cpp
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
@@ -193,6 +197,9 @@ target_include_directories(GryceCore
 )
 
 target_link_libraries(GryceCore PUBLIC gryce::compile_options)
+
+# GryceSRT 脚本运行时：链接 Lua 静态库
+target_link_libraries(GryceCore PRIVATE GryceLua)
 
 # 不导出所有符号，避免 libstdc++ 等静态库符号污染
 # 导出由各头文件中的 GRYCE_API / __declspec(dllexport) 控制
