@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <unordered_map>
 
 #include "ecs/system.h"
 
@@ -41,6 +42,9 @@ private:
 
     std::vector<components::ScriptComponent*> loaded_;
     std::vector<components::ScriptComponent*> seen_;
+    // Cached script source per res: path, so N entities sharing one script
+    // read + compile from memory instead of touching the disk every frame.
+    std::unordered_map<std::string, std::string> source_cache_;
 };
 
 } // namespace gryce_engine::ecs

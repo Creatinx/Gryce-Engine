@@ -174,6 +174,94 @@ int GWindow_InitExternal(GWindowHandle hwnd, int w, int h) {
     return 0;
 }
 
+namespace {
+
+// Creates (or recreates) the embedded GLFW child window for the given render
+// API. Vulkan requires GLFW_CLIENT_API = GLFW_NO_API, OpenGL uses the default.
+GLFWwindow* create_embedded_window(HWND parent, int w, int h, GRenderAPI api) {
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    if (api == GRYCE_RENDER_API_VULKAN) {
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    } else {
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    }
+    GLFWwindow* embedded = glfwCreateWindow(w > 0 ? w : 640, h > 0 ? h : 480,
+                                            "GryceEditorViewport", nullptr, nullptr);
+    if (!embedded) return nullptr;
+
+    HWND embedded_hwnd = glfwGetWin32Window(embedded);
+    if (embedded_hwnd && parent) {
+        SetParent(embedded_hwnd, parent);
+        LONG style = GetWindowLong(embedded_hwnd, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
+                   WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_POPUP);
+        style |= WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        SetWindowLong(embedded_hwnd, GWL_STYLE, style);
+        SetWindowPos(embedded_hwnd, nullptr, 0, 0,
+                     w > 0 ? w : 640, h > 0 ? h : 480,
+                     SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+    return embedded;
+}
+
+} // namespace
+
+int GWindow_InitExternalEx(GWindowHandle hwnd, int w, int h, GRenderAPI api) {
+    GRYCE_API_GUARD();
+    if (!hwnd) return -1;
+    if (g_platform.mode != PlatformState::Mode::None) {
+        GLOG_WARN("GWindow_InitExternalEx: platform already initialized, shutting down first");
+        GWindow_Destroy();
+    }
+    if (!Window::init_sdk()) {
+        GLOG_ERROR("GWindow_InitExternalEx: GLFW init failed");
+        return -1;
+    }
+    glfwSetErrorCallback(glfw_error_callback);
+
+    GLFWwindow* embedded = create_embedded_window(
+        static_cast<HWND>(hwnd), w, h, api);
+    if (!embedded) {
+        GLOG_ERROR("GWindow_InitExternalEx: failed to create embedded GLFW window");
+        Window::shutdown_sdk();
+        return -1;
+    }
+
+    g_platform.mode = PlatformState::Mode::External;
+    g_platform.external_hwnd = hwnd;
+    g_platform.ext_width = w;
+    g_platform.ext_height = h;
+    g_platform.embedded_window = embedded;
+    GLOG_INFO("Platform: external HWND initialized ({}x{}) api={}",
+              w, h, api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+    return 0;
+}
+
+int GWindow_RecreateClientApi(GRenderAPI api) {
+    GRYCE_API_GUARD();
+    if (g_platform.mode != PlatformState::Mode::External) return -1;
+    if (g_platform.embedded_window) {
+        glfwDestroyWindow(g_platform.embedded_window);
+        g_platform.embedded_window = nullptr;
+    }
+
+    GLFWwindow* embedded = create_embedded_window(
+        static_cast<HWND>(g_platform.external_hwnd),
+        g_platform.ext_width, g_platform.ext_height, api);
+    if (!embedded) {
+        GLOG_ERROR("GWindow_RecreateClientApi: failed to recreate embedded window");
+        return -1;
+    }
+    g_platform.embedded_window = embedded;
+
+    if (api != GRYCE_RENDER_API_VULKAN) {
+        glfwMakeContextCurrent(embedded);  // keep the render thread's GL context valid
+    }
+    GLOG_INFO("Platform: embedded window recreated for {}",
+              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+    return 0;
+}
+
 int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
     GRYCE_API_GUARD();
     if (g_platform.mode != PlatformState::Mode::None) {

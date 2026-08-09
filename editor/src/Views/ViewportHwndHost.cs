@@ -145,6 +145,36 @@ public class ViewportHwndHost : HwndHost
         }
     }
 
+    /// <summary>Re-finds and re-subclasses the embedded GLFW child after the
+    /// core recreates the window for a render-backend switch.</summary>
+    public void ReattachGlfwChild()
+    {
+        if (_glfwChild != IntPtr.Zero && _oldWndProc != IntPtr.Zero)
+        {
+            SetWindowLongPtr(_glfwChild, GWLP_WNDPROC, _oldWndProc);
+            s_hosts.Remove(_glfwChild);
+            _glfwChild = IntPtr.Zero;
+            _oldWndProc = IntPtr.Zero;
+        }
+        _glfwChild = FindGlfwChild(_hwnd);
+        if (_glfwChild == IntPtr.Zero) return;
+
+        int ex = GetWindowLong(_glfwChild, GWL_EXSTYLE);
+        ex &= ~WS_EX_TRANSPARENT;
+        SetWindowLong(_glfwChild, GWL_EXSTYLE, ex);
+
+        _oldWndProc = SetWindowLongPtr(_glfwChild, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(s_proc));
+        if (_oldWndProc != IntPtr.Zero)
+        {
+            s_hosts[_glfwChild] = this;
+        }
+        if (TryGetClientSize(_hwnd, out int cw, out int ch))
+        {
+            SetWindowPos(_glfwChild, IntPtr.Zero, 0, 0, cw, ch,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
     /// <summary>Host WndProc: on WM_SIZE, resize the embedded GLFW child to the
     /// host's client size so the rendered viewport tracks the window frame
     /// during move/resize without lag.</summary>

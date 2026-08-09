@@ -84,6 +84,9 @@ public static class RenderAPI
     public static extern int GRender_GetShadowMapSize();
 
     [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_RequestBackend(GRenderAPI api);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
     public static extern void GRender_SetAmbient(float r, float g, float b);
 
     [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]

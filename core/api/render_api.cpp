@@ -65,6 +65,9 @@ struct RendererState {
     bool  shadow_enabled = true;
     int   shadow_map_size = 2048;
     bool  shadow_map_size_dirty = false;
+    bool  backend_pending = false;
+    GRenderAPI pending_backend_api = GRYCE_RENDER_API_OPENGL;
+    GRenderAPI current_backend = GRYCE_RENDER_API_OPENGL;
     math::Vector3f ambient = math::Vector3f(0.15f, 0.15f, 0.15f);
     float ibl_intensity = 1.0f;
 
@@ -215,6 +218,85 @@ static void upload_pending_meshes(scene::Scene& scn, RenderContext& ctx) {
 
 } // namespace
 
+// Applies a pending backend switch on the render thread: recreates the
+// embedded window with the right client API (Vulkan needs GLFW_NO_API) and
+// rebuilds the RenderContext/pipeline/renderer2d with the new backend.
+static void apply_backend_switch() {
+    const GRenderAPI api = g_renderer.pending_backend_api;
+    const bool sync = g_renderer.sync_mode;
+    const int w = g_renderer.viewport_w;
+    const int h = g_renderer.viewport_h;
+
+    if (GWindow_IsValid()) {
+        GWindow_RecreateClientApi(api);
+    }
+
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->shutdown();
+        g_renderer.pipeline.reset();
+    }
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->shutdown();
+        g_renderer.renderer2d.reset();
+    }
+    if (g_renderer.ctx) {
+        g_renderer.ctx->shutdown();
+        g_renderer.ctx.reset();
+    }
+    g_renderer.initialized = false;
+
+    auto backend = create_render_backend(to_internal_api(api));
+    if (!backend) {
+        GLOG_ERROR("GRender: backend switch failed to create backend");
+        g_renderer.backend_pending = false;
+        return;
+    }
+    GWindowHandle handle = GWindow_IsValid() ? GWindow_GetRenderHandle() : nullptr;
+    g_renderer.ctx = std::make_unique<RenderContext>();
+    if (!g_renderer.ctx->init(handle, std::move(backend))) {
+        GLOG_ERROR("GRender: backend switch RenderContext::init failed");
+        g_renderer.ctx.reset();
+        g_renderer.backend_pending = false;
+        return;
+    }
+
+    g_renderer.sync_mode = sync;
+    g_renderer.viewport_w = w;
+    g_renderer.viewport_h = h;
+    g_renderer.gameview_w = w;
+    g_renderer.gameview_h = h;
+
+    g_renderer.pipeline = std::make_unique<RenderPipeline>();
+    g_renderer.pipeline->set_viewport_output_enabled(false);
+    g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
+    if (!g_renderer.pipeline->init(g_renderer.ctx.get(), "res:/shaders")) {
+        GLOG_WARN("GRender: backend switch pipeline init failed, clear-only");
+        g_renderer.pipeline.reset();
+    }
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_hdr_enabled(g_renderer.hdr_enabled);
+        g_renderer.pipeline->set_tone_map_mode(g_renderer.tone_map_mode);
+        g_renderer.pipeline->set_exposure(g_renderer.exposure);
+        g_renderer.pipeline->set_shadow_enabled(g_renderer.shadow_enabled);
+        g_renderer.pipeline->set_ambient(g_renderer.ambient);
+        g_renderer.pipeline->set_ibl_intensity(g_renderer.ibl_intensity);
+    }
+
+    g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->init(g_renderer.ctx.get());
+    }
+    if (!sync) {
+        g_renderer.ctx->start();
+    }
+
+    g_renderer.initialized = true;
+    g_renderer.backend_pending = false;
+    g_renderer.current_backend = api;
+    GLOG_INFO("GRender: backend switched to {}",
+              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+}
+
 extern "C" {
 
 int GRender_Init(const GRenderInitDesc* desc) {
@@ -287,6 +369,8 @@ int GRender_Init(const GRenderInitDesc* desc) {
         g_renderer.ctx->start();
     }
 
+    g_renderer.current_backend = desc->api;
+    g_renderer.backend_pending = false;
     g_renderer.initialized = true;
     GLOG_INFO("GRender_Init: {} mode, {}x{}",
               g_renderer.sync_mode ? "sync" : "async",
@@ -328,6 +412,13 @@ bool GRender_IsInitialized(void) {
 void GRender_BeginFrame(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.backend_pending) {
+        apply_backend_switch();
+        if (!g_renderer.initialized || !g_renderer.ctx ||
+            !g_renderer.ctx->is_initialized()) {
+            return;
+        }
+    }
     if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
 
     if (g_renderer.sync_mode) {
@@ -645,6 +736,17 @@ void GGameView_SetCamera(GEntityHandle camera_entity) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.gameview_camera = camera_entity;
+}
+
+void GRender_RequestBackend(GRenderAPI api) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (api != GRYCE_RENDER_API_OPENGL && api != GRYCE_RENDER_API_VULKAN) return;
+    if (api == g_renderer.current_backend && !g_renderer.backend_pending) return;
+    g_renderer.pending_backend_api = api;
+    g_renderer.backend_pending = true;
+    GLOG_INFO("GRender_RequestBackend: {} requested",
+              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
 }
 
 } // extern "C"

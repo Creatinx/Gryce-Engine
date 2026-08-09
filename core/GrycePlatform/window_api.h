@@ -25,7 +25,9 @@ extern "C" {
 #endif
 
 GRYCE_PLATFORM_API int  GWindow_InitExternal(GWindowHandle hwnd, int w, int h);
+GRYCE_PLATFORM_API int  GWindow_InitExternalEx(GWindowHandle hwnd, int w, int h, GRenderAPI api);
 GRYCE_PLATFORM_API int  GWindow_Create(const char* title, int w, int h, GWindowMode mode);
+GRYCE_PLATFORM_API int  GWindow_RecreateClientApi(GRenderAPI api);
 GRYCE_PLATFORM_API void GWindow_Destroy(void);
 GRYCE_PLATFORM_API bool GWindow_IsValid(void);
 

@@ -71,6 +71,10 @@ GRYCE_RENDERER_API void  GRender_GetAmbient(float* r, float* g, float* b);
 GRYCE_RENDERER_API void  GRender_SetIBLIntensity(float intensity);
 GRYCE_RENDERER_API float GRender_GetIBLIntensity(void);
 
+// Hot backend switch: the request is applied on the render thread at the next
+// GRender_BeginFrame (renderer + embedded window are recreated).
+GRYCE_RENDERER_API void  GRender_RequestBackend(GRenderAPI api);
+
 #ifdef __cplusplus
 }
 #endif

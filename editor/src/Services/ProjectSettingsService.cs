@@ -97,6 +97,10 @@ public static class ProjectSettingsService
             Native.RenderAPI.GRender_SetShadowMapSize(s.ShadowMapSize);
             Native.RenderAPI.GRender_SetAmbient(s.AmbientR, s.AmbientG, s.AmbientB);
             Native.RenderAPI.GRender_SetIBLIntensity(s.IblIntensity);
+            Native.RenderAPI.GRender_RequestBackend(
+                string.Equals(s.RenderApi, "opengl", System.StringComparison.OrdinalIgnoreCase)
+                    ? Native.GRenderAPI.OpenGL
+                    : Native.GRenderAPI.Vulkan);
         }
         catch { /* renderer 可能尚未初始化；值已存入 Core，init 时应用 */ }
     }

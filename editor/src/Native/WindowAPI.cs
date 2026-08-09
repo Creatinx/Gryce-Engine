@@ -8,6 +8,9 @@ public static class WindowAPI
     public static extern int GWindow_InitExternal(GWindowHandle hwnd, int w, int h);
 
     [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GWindow_InitExternalEx(GWindowHandle hwnd, int w, int h, GRenderAPI api);
+
+    [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GWindow_Create([MarshalAs(UnmanagedType.LPUTF8Str)] string title, int w, int h, GWindowMode mode);
 
     [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]

@@ -74,18 +74,29 @@ bool ScriptSystem::load(components::ScriptComponent* comp) {
     comp->reported_error = false;
 
     const std::string full = resources::ResourcePath::resolve(comp->script_path);
-    std::ifstream in(full, std::ios::binary);
-    if (!in) {
-        comp->last_error = "cannot open script file: " + full;
-        return false;
+    std::string src;
+    auto it = source_cache_.find(comp->script_path);
+    if (it != source_cache_.end()) {
+        src = it->second;
+    } else {
+        std::ifstream in(full, std::ios::binary);
+        if (!in) {
+            comp->last_error = "cannot open script file: " + full;
+            return false;
+        }
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        src = ss.str();
+        source_cache_[comp->script_path] = src;
     }
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    const std::string src = ss.str();
     if (src.empty()) {
         comp->last_error = "empty script: " + comp->script_path;
         return false;
     }
+
+    // Preserve Inspector-edited props across a hot reload: remember the old
+    // values, let the script re-declare defaults, then re-apply old values.
+    const auto old_props = comp->props;
 
     // Per-component environment: env.__index = _G
     lua_newtable(L);                          // env
@@ -123,6 +134,20 @@ bool ScriptSystem::load(components::ScriptComponent* comp) {
 
     call_method(comp, "on_start");
     sync_props_from_env(comp);
+    for (const auto& old : old_props) {
+        for (auto& p : comp->props) {
+            if (p.name == old.name && p.type == old.type) {
+                if (p.type == 1) {
+                    p.s = old.s;
+                    write_prop_to_env(comp, old.name.c_str(), old.s);
+                } else {
+                    p.f = old.f;
+                    write_prop_to_env(comp, old.name.c_str(), old.f);
+                }
+                break;
+            }
+        }
+    }
     return true;
 }
 
@@ -272,6 +297,7 @@ void ScriptSystem::handle_error(components::ScriptComponent* comp) {
 }
 
 void ScriptSystem::reload_all() {
+    source_cache_.clear();
     for (auto* comp : loaded_) unload(comp);
     loaded_.clear();
     seen_.clear();

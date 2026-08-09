@@ -288,7 +288,14 @@ public partial class ViewportView : UserControl, IDisposable
 
         try
         {
-            int result = WindowAPI.GWindow_InitExternal(new GWindowHandle(hwnd), w, h);
+            var settings = Services.ProjectSettingsService.Load();
+            var renderApi = string.Equals(settings.RenderApi, "opengl",
+                System.StringComparison.OrdinalIgnoreCase)
+                ? GRenderAPI.OpenGL
+                : GRenderAPI.Vulkan;
+            int result = renderApi == GRenderAPI.Vulkan
+                ? WindowAPI.GWindow_InitExternalEx(new GWindowHandle(hwnd), w, h, renderApi)
+                : WindowAPI.GWindow_InitExternal(new GWindowHandle(hwnd), w, h);
             if (result != 0)
             {
                 VM?.AppendConsole("[Viewport] Failed to init external window");
@@ -303,7 +310,7 @@ public partial class ViewportView : UserControl, IDisposable
             {
                 Version = (uint)System.Runtime.InteropServices.Marshal.SizeOf<GRenderInitDesc>(),
                 NativeWindow = new GWindowHandle(hwnd),
-                Api = GRenderAPI.OpenGL,
+                Api = renderApi,
                 ViewportW = w,
                 ViewportH = h,
                 SyncMode = true
@@ -462,6 +469,18 @@ public partial class ViewportView : UserControl, IDisposable
                     // swap stalls on hidden windows and saves CPU/GPU.
                     System.Threading.Thread.Sleep(16);
                     continue;
+                }
+
+                // After a render-backend switch the core recreates the embedded
+                // GLFW window; re-attach the host subclass and take the new
+                // context on this thread.
+                var liveHandle = WindowAPI.GWindow_GetRenderHandle().Value;
+                if (liveHandle != 0 && liveHandle != _renderHandle)
+                {
+                    _renderHandle = liveHandle;
+                    _hwndHost?.ReattachGlfwChild();
+                    WindowAPI.GWindow_MakeContextCurrent();
+                    _appliedPixelSize = default;
                 }
 
                 frames++;

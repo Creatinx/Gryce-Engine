@@ -201,9 +201,17 @@ int l_input_mouse_pos(lua_State* L) {
     return 2;
 }
 
+int l_input_mouse_down(lua_State* L) {
+    const int b = static_cast<int>(luaL_checkinteger(L, 1));
+    const bool down = b >= 0 && b < 3 && gryce_core::g_core_state.mouse_button[b];
+    lua_pushboolean(L, down);
+    return 1;
+}
+
 const luaL_Reg kInputLib[] = {
     {"key_down", l_input_key_down},
     {"mouse_pos", l_input_mouse_pos},
+    {"mouse_down", l_input_mouse_down},
     {nullptr, nullptr}
 };
 
