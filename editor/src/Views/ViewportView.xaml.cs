@@ -93,6 +93,17 @@ public partial class ViewportView : UserControl, IDisposable
     /// </summary>
     private (int W, int H) GetPixelSize(double? width = null, double? height = null)
     {
+        // Prefer the GLFW child's actual client size: it is resized immediately
+        // (host WM_SIZE -> SetWindowPos), while the host HWND client rect lags
+        // a layout pass and would give the render thread a stale size, making
+        // the picture appear not to change on window resize.
+        var glfw = _hwndHost?.GlfwChildHandle ?? IntPtr.Zero;
+        if (glfw != IntPtr.Zero && TryGetClientSize(glfw, out int gcw, out int gch) &&
+            gcw > 0 && gch > 0)
+        {
+            return CapViewport(Math.Max(gcw, 100), Math.Max(gch, 100));
+        }
+
         if (_hwndHost != null && _hwndHost.Handle != IntPtr.Zero)
         {
             if (TryGetHostClientSize(out int cw, out int ch) && cw > 0 && ch > 0)
@@ -230,13 +241,15 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        var px = GetPixelSize(e.NewSize.Width, e.NewSize.Height);
-        UpdateResolutionDisplay(px.W, px.H);
-        // The embedded GLFW child is resized automatically by ViewportHwndHost
-        // (host WM_SIZE -> SetWindowPos on the GLFW child), so the rendered
-        // content tracks the window frame with no lag. Only the GL render
-        // targets need to be resized on the render thread (throttled below).
-        PositionOverlay();
+        // The embedded GLFW child is resized by the host WM_SIZE during the
+        // layout pass, which fires after this event; defer the resolution read
+        // until the layout settles so GetClientRect returns the final size.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var px = GetPixelSize();
+            UpdateResolutionDisplay(px.W, px.H);
+            PositionOverlay();
+        }), DispatcherPriority.Loaded);
     }
 
     private void UpdateResolutionDisplay(int w, int h)

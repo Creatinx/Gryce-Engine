@@ -481,7 +481,7 @@
                 <Setter Property="BorderBrush" Value="{DynamicResource SurfaceStrokeColorDefaultBrush}"/>
                 <Setter Property="BorderThickness" Value="1"/>
                 <Setter Property="Padding" Value="4,4"/>
-                <Setter Property="MinWidth" Value="160"/>
+                <Setter Property="MinWidth" Value="140"/>
                 <Setter Property="FontSize" Value="12"/>
                 <Setter Property="Template">
                     <Setter.Value>
@@ -598,8 +598,7 @@
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="Separator">
-                            <Border Height="1" Background="{DynamicResource CardStrokeColorDefaultBrush}"
-                                    Margin="10,3"/>
+                            <Border Height="1" Background="#59FFFFFF" Margin="8,3"/>
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
