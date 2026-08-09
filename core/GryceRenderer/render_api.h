@@ -55,6 +55,22 @@ GRYCE_RENDERER_API void GRender_SetDisplayMode(const char* mode);
 //（清屏 + 2D 覆盖层，不跑 3D 管线）。false = 3D 场景 + 2D 覆盖。
 GRYCE_RENDERER_API void GRender_SetScene2D(bool enabled);
 
+// --- Project Settings（渲染质量；大部分可运行时调整，阴影贴图尺寸/后端重启生效）---
+GRYCE_RENDERER_API void  GRender_SetHDR(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsHDR(void);
+GRYCE_RENDERER_API void  GRender_SetToneMapMode(int mode);   // 0=None, 1=Reinhard, 2=ACES
+GRYCE_RENDERER_API int   GRender_GetToneMapMode(void);
+GRYCE_RENDERER_API void  GRender_SetExposure(float exposure);
+GRYCE_RENDERER_API float GRender_GetExposure(void);
+GRYCE_RENDERER_API void  GRender_SetShadowEnabled(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsShadowEnabled(void);
+GRYCE_RENDERER_API void  GRender_SetShadowMapSize(int size); // 重启生效
+GRYCE_RENDERER_API int   GRender_GetShadowMapSize(void);
+GRYCE_RENDERER_API void  GRender_SetAmbient(float r, float g, float b);
+GRYCE_RENDERER_API void  GRender_GetAmbient(float* r, float* g, float* b);
+GRYCE_RENDERER_API void  GRender_SetIBLIntensity(float intensity);
+GRYCE_RENDERER_API float GRender_GetIBLIntensity(void);
+
 #ifdef __cplusplus
 }
 #endif

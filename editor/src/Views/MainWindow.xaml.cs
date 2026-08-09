@@ -187,6 +187,11 @@ public partial class MainWindow
         }
     }
 
+    private void OnProjectSettingsClick(object sender, RoutedEventArgs e)
+    {
+        ModalDialog.Show(new ProjectSettingsWindow(), this);
+    }
+
     private void OnAboutClick(object sender, RoutedEventArgs e)
     {
         // A real modal window: the previous in-window ContentDialog was covered

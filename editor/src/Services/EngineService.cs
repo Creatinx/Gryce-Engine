@@ -27,6 +27,7 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
     public bool IsInitialized { get => _initialized; private set { _initialized = value; OnPropertyChanged(); } }
     public bool IsSceneDirty => _sceneDirty;
     public string ProjectRoot { get; private set; } = "";
+    public EditorSettingsService.Settings EditorSettings { get; private set; } = new();
 
     /// <summary>Raised for editor-level engine messages (e.g. auto-save).</summary>
     public event Action<string>? LogMessage;
@@ -151,6 +152,17 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
         _autoSaveTimer.Interval = TimeSpan.FromMinutes(minutes);
         _autoSaveTimer.Start();
     }
+
+    /// <summary>重新读取编辑器设置（主题/语言/自动保存/视口开关等）。</summary>
+    public void ReloadEditorSettings()
+    {
+        EditorSettings = EditorSettingsService.Load();
+        UpdateAutoSaveInterval(EditorSettings.AutoSaveInterval);
+        EditorSettingsChanged?.Invoke();
+    }
+
+    /// <summary>编辑器设置变化后触发（视口据此应用网格/Gizmo/统计显示）。</summary>
+    public event Action? EditorSettingsChanged;
 
     private void OnAutoSaveTick(object? sender, EventArgs e)
     {

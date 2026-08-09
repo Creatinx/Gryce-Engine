@@ -104,7 +104,10 @@ public class SettingsViewModel : INotifyPropertyChanged
         var saved = Services.EditorSettingsService.Load();
         _selectedLanguageIndex = (int)LocalizationService.Instance.Language;
         _autoSaveInterval = saved.AutoSaveInterval;
-        _vSyncEnabled = true;
+        _vSyncEnabled = saved.VSync;
+        _showGrid = saved.ShowGrid;
+        _showGizmos = saved.ShowGizmos;
+        _showStats = saved.ShowStats;
         _micaBackdrop = saved.MicaBackdrop;
         ApplyCommand = new RelayCommand(Apply);
         CancelCommand = new RelayCommand(Cancel);

@@ -16,6 +16,10 @@ public static class EditorSettingsService
         public string Theme { get; set; } = "Dark";
         public bool MicaBackdrop { get; set; } = true;
         public int AutoSaveInterval { get; set; } = 300; // 分钟；0 = 关闭
+        public bool VSync { get; set; } = true;
+        public bool ShowGrid { get; set; } = true;
+        public bool ShowGizmos { get; set; } = true;
+        public bool ShowStats { get; set; } = false;
     }
 
     private static string SettingsPath =>
@@ -32,6 +36,10 @@ public static class EditorSettingsService
             result.Theme = ReadString(json, "theme") ?? "Dark";
             result.MicaBackdrop = ReadBool(json, "mica") ?? true;
             result.AutoSaveInterval = ReadInt(json, "autosave_interval") ?? 300;
+            result.VSync = ReadBool(json, "vsync") ?? true;
+            result.ShowGrid = ReadBool(json, "show_grid") ?? true;
+            result.ShowGizmos = ReadBool(json, "show_gizmos") ?? true;
+            result.ShowStats = ReadBool(json, "show_stats") ?? false;
         }
         catch (Exception ex)
         {
@@ -40,14 +48,19 @@ public static class EditorSettingsService
         return result;
     }
 
-    public static void Save(string language, string theme, bool mica, int autoSaveInterval)
+    public static void Save(string language, string theme, bool mica, int autoSaveInterval,
+                            bool vsync, bool showGrid, bool showGizmos, bool showStats)
     {
         try
         {
             string json = "{\"language\":\"" + Escape(language) +
                           "\",\"theme\":\"" + Escape(theme) +
                           "\",\"mica\":" + (mica ? "true" : "false") +
-                          ",\"autosave_interval\":" + autoSaveInterval + "}";
+                          ",\"autosave_interval\":" + autoSaveInterval +
+                          ",\"vsync\":" + (vsync ? "true" : "false") +
+                          ",\"show_grid\":" + (showGrid ? "true" : "false") +
+                          ",\"show_gizmos\":" + (showGizmos ? "true" : "false") +
+                          ",\"show_stats\":" + (showStats ? "true" : "false") + "}";
             File.WriteAllText(SettingsPath, json);
         }
         catch (Exception ex)

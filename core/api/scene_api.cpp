@@ -145,6 +145,8 @@ int GScene_Load(const char* path) {
         gc::g_core_state.world->attach_scene(std::move(scene));
     }
     gc::g_core_state.current_scene_path = path;
+    if (gc::g_core_state.scene_mode == 0) gc::g_core_state.scene_path_2d = path;
+    else gc::g_core_state.scene_path_3d = path;
     gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
     gc::g_core_state.selected_entity = 0;
     gc::g_core_state.deferred_entity_list_changed = true;
@@ -155,7 +157,13 @@ int GScene_Load(const char* path) {
 int GScene_Save(const char* path) {
     GRYCE_API_GUARD();
     if (!gc::g_core_state.initialized || !gc::g_core_state.world || !gc::g_core_state.world->scene() || !path) return -1;
-    return SceneSerializer::save_to_file(*gc::g_core_state.world->scene(), path) ? 0 : -1;
+    const bool ok = SceneSerializer::save_to_file(*gc::g_core_state.world->scene(), path);
+    if (ok) {
+        gc::g_core_state.current_scene_path = path;
+        if (gc::g_core_state.scene_mode == 0) gc::g_core_state.scene_path_2d = path;
+        else gc::g_core_state.scene_path_3d = path;
+    }
+    return ok ? 0 : -1;
 }
 
 int GScene_GetCurrentPath(char* out_buf, int buf_size) {
@@ -174,6 +182,8 @@ int GScene_New(void) {
         gc::g_core_state.world->attach_scene(std::move(scene));
     }
     gc::g_core_state.current_scene_path.clear();
+    if (gc::g_core_state.scene_mode == 0) gc::g_core_state.scene_path_2d.clear();
+    else gc::g_core_state.scene_path_3d.clear();
     gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
     gc::g_core_state.selected_entity = 0;
     gc::g_core_state.deferred_entity_list_changed = true;
@@ -220,6 +230,74 @@ GEntityHandle GScene_PickRay(const GVec3* origin, const GVec3* direction, float 
     if (len < 1e-8f) return 0;
     ray.direction = dir / len;
     return pick_with_ray(*gc::g_core_state.world->scene(), ray, max_dist);
+}
+
+int GScene_GetMode(void) {
+    GRYCE_API_GUARD();
+    return gc::g_core_state.scene_mode;
+}
+
+int GScene_SetMode(int mode) {
+    GRYCE_API_GUARD();
+    if (mode != 0 && mode != 1) return -1;
+    if (!gc::g_core_state.initialized || !gc::g_core_state.world) return -1;
+    if (mode == gc::g_core_state.scene_mode) return 0;
+
+    // 保存当前场景到旧槽（detach 保留场景内存，仅停止渲染/物理引用）
+    if (gc::g_core_state.world->scene()) {
+        auto detached = gc::g_core_state.world->detach_scene();
+        if (gc::g_core_state.scene_mode == 0) gc::g_core_state.scene_slot_2d = std::move(detached);
+        else gc::g_core_state.scene_slot_3d = std::move(detached);
+    }
+    if (gc::g_core_state.scene_mode == 0) {
+        gc::g_core_state.scene_path_2d = gc::g_core_state.current_scene_path;
+    } else {
+        gc::g_core_state.scene_path_3d = gc::g_core_state.current_scene_path;
+    }
+
+    gc::g_core_state.scene_mode = mode;
+    auto& slot = mode == 0 ? gc::g_core_state.scene_slot_2d : gc::g_core_state.scene_slot_3d;
+    if (slot) {
+        gc::g_core_state.world->attach_scene(std::move(slot));
+    } else {
+        gc::g_core_state.world->attach_scene(std::make_unique<gryce_engine::scene::Scene>("Untitled"));
+    }
+    gc::g_core_state.current_scene_path =
+        mode == 0 ? gc::g_core_state.scene_path_2d : gc::g_core_state.scene_path_3d;
+    gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
+    gc::g_core_state.selected_entity = 0;
+    gc::g_core_state.deferred_entity_list_changed = true;
+    gc::g_core_state.deferred_scene_loaded = true;
+    return 0;
+}
+
+int GScene_ReleaseMode(int mode) {
+    GRYCE_API_GUARD();
+    if (mode != 0 && mode != 1) return -1;
+    if (!gc::g_core_state.initialized) return -1;
+
+    if (mode == gc::g_core_state.scene_mode) {
+        // 释放活动场景：替换为空场景
+        if (gc::g_core_state.world) {
+            gc::g_core_state.world->attach_scene(std::make_unique<gryce_engine::scene::Scene>("Untitled"));
+            gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
+            gc::g_core_state.selected_entity = 0;
+            gc::g_core_state.deferred_entity_list_changed = true;
+        }
+        gc::g_core_state.current_scene_path.clear();
+    } else {
+        if (mode == 0) gc::g_core_state.scene_slot_2d.reset();
+        else gc::g_core_state.scene_slot_3d.reset();
+    }
+    if (mode == 0) gc::g_core_state.scene_path_2d.clear();
+    else gc::g_core_state.scene_path_3d.clear();
+    return 0;
+}
+
+bool GScene_HasScene(int mode) {
+    GRYCE_API_GUARD();
+    if (mode == gc::g_core_state.scene_mode) return true;
+    return mode == 0 ? (bool)gc::g_core_state.scene_slot_2d : (bool)gc::g_core_state.scene_slot_3d;
 }
 
 } // extern "C"

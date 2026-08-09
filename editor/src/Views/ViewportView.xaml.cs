@@ -39,6 +39,7 @@ public partial class ViewportView : UserControl, IDisposable
     private float _2dZoom = 1.0f;
     private readonly List<Line> _gridLines = new();
     private bool _gridBuilt;
+    private bool _appliedShowStats;
     private (int W, int H) _appliedPixelSize;
     private double _overlayScale = -1.0;
     private DateTime _lastResizeTime = DateTime.MinValue;
@@ -363,6 +364,12 @@ public partial class ViewportView : UserControl, IDisposable
             {
                 Update2DCameraSetup();
                 Update2DGrid();
+            }
+            var es = App.Engine?.EditorSettings;
+            if (es != null && es.ShowStats != _appliedShowStats)
+            {
+                _appliedShowStats = es.ShowStats;
+                FpsCounter.Visibility = _appliedShowStats ? Visibility.Visible : Visibility.Collapsed;
             }
             UpdateGizmoOverlay();
             // Refresh the inspector transform fields at the UI rate while a
@@ -1135,6 +1142,13 @@ public partial class ViewportView : UserControl, IDisposable
         // top-level transparent window and could otherwise cover the dialog).
         if (_overlay?.Suppressed == true) return;
 
+        // 设置里关闭 Gizmo 时隐藏整个覆盖（含模式徽标）
+        if (!(App.Engine?.EditorSettings.ShowGizmos ?? true))
+        {
+            HideGizmoShapes();
+            return;
+        }
+
         PositionOverlay();
         var selected = VM?.SelectedEntity;
         if (_isGameView || selected == null || VM == null)
@@ -1606,6 +1620,7 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnSceneTabClick(object sender, RoutedEventArgs e)
     {
         _isGameView = false;
+        try { SceneAPI.GScene_SetMode(1); } catch { /* ignore */ }
         Set2DMode(false);
         TabScene.IsChecked = true;
         Tab2D.IsChecked = false;
@@ -1618,6 +1633,7 @@ public partial class ViewportView : UserControl, IDisposable
     private void On2DTabClick(object sender, RoutedEventArgs e)
     {
         _isGameView = false;
+        try { SceneAPI.GScene_SetMode(0); } catch { /* ignore */ }
         Set2DMode(true);
         TabScene.IsChecked = false;
         Tab2D.IsChecked = true;
@@ -1637,6 +1653,22 @@ public partial class ViewportView : UserControl, IDisposable
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.game_view");
         GizmoOverlay.Visibility = Visibility.Collapsed;
         UpdateSceneHint();
+    }
+
+    private void OnRelease3DSceneClick(object sender, RoutedEventArgs e)
+    {
+        int rc = SceneAPI.GScene_ReleaseMode(1);
+        VM?.AppendConsole(rc == 0
+            ? "[Viewport] Released 3D scene memory."
+            : "[Viewport] Failed to release 3D scene memory.");
+    }
+
+    private void OnRelease2DSceneClick(object sender, RoutedEventArgs e)
+    {
+        int rc = SceneAPI.GScene_ReleaseMode(0);
+        VM?.AppendConsole(rc == 0
+            ? "[Viewport] Released 2D scene memory."
+            : "[Viewport] Failed to release 2D scene memory.");
     }
 
     // =====================================================================
@@ -1844,7 +1876,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void Update2DGrid()
     {
-        if (_is2DMode)
+        if (_is2DMode && (App.Engine?.EditorSettings.ShowGrid ?? true))
         {
             if (!_gridBuilt) Build2DGrid();
         }

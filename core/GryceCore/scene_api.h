@@ -41,6 +41,22 @@ GRYCE_CORE_API GEntityHandle GScene_PickRay(const GVec3* origin,
                                             const GVec3* direction,
                                             float max_dist);
 
+// --- 2D / 3D 双场景槽（编辑器热切换）---
+
+// 当前活动场景归属：0 = 2D，1 = 3D
+GRYCE_CORE_API int GScene_GetMode(void);
+
+// 热切换场景槽：把当前场景存入旧槽（内存保留），载入目标槽场景；
+// 目标槽为空则新建空场景。返回 0 成功。
+GRYCE_CORE_API int GScene_SetMode(int mode);
+
+// 释放指定槽的场景内存（含路径记录）。活动槽释放后替换为空场景。
+// 返回 0 成功。
+GRYCE_CORE_API int GScene_ReleaseMode(int mode);
+
+// 指定槽是否已有场景
+GRYCE_CORE_API bool GScene_HasScene(int mode);
+
 #ifdef __cplusplus
 }
 #endif

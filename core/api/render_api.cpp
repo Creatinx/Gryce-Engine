@@ -58,6 +58,15 @@ struct RendererState {
     std::string display_mode = "Shaded";
     bool scene_2d_only = false;
 
+    // Project Settings（渲染质量）—— 持久化值，GRender_Init 时应用到管线
+    bool  hdr_enabled = true;
+    int   tone_map_mode = 1;   // 0=None, 1=Reinhard, 2=ACES
+    float exposure = 1.0f;
+    bool  shadow_enabled = true;
+    int   shadow_map_size = 2048;
+    math::Vector3f ambient = math::Vector3f(0.15f, 0.15f, 0.15f);
+    float ibl_intensity = 1.0f;
+
     std::mutex mutex;
 };
 
@@ -247,9 +256,19 @@ int GRender_Init(const GRenderInitDesc* desc) {
     // 因此 tonemap 必须写入默认帧缓冲（交换链），而不是离屏 viewport FBO。
     // 离屏输出留给需要采样纹理的宿主（如旧 ImGui 编辑器）使用。
     g_renderer.pipeline->set_viewport_output_enabled(false);
+    // 应用 Project Settings（阴影贴图尺寸必须在 init 之前）
+    g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
     if (!g_renderer.pipeline->init(g_renderer.ctx.get(), "res:/shaders")) {
         GLOG_WARN("GRender_Init: RenderPipeline init failed (shaders may be missing), falling back to clear-only");
         g_renderer.pipeline.reset();
+    }
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_hdr_enabled(g_renderer.hdr_enabled);
+        g_renderer.pipeline->set_tone_map_mode(g_renderer.tone_map_mode);
+        g_renderer.pipeline->set_exposure(g_renderer.exposure);
+        g_renderer.pipeline->set_shadow_enabled(g_renderer.shadow_enabled);
+        g_renderer.pipeline->set_ambient(g_renderer.ambient);
+        g_renderer.pipeline->set_ibl_intensity(g_renderer.ibl_intensity);
     }
 
     // 2D 覆盖层渲染器：编辑器视口在 3D 场景之上绘制 2D（Sprite2D/UI 等）。
@@ -443,6 +462,87 @@ void GRender_SetScene2D(bool enabled) {
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.scene_2d_only = enabled;
     GLOG_INFO("GRender_SetScene2D: {}", enabled);
+}
+
+// --- Project Settings ---
+
+void GRender_SetHDR(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.hdr_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_hdr_enabled(enabled);
+}
+bool GRender_IsHDR(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.hdr_enabled;
+}
+void GRender_SetToneMapMode(int mode) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.tone_map_mode = mode;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_tone_map_mode(mode);
+}
+int GRender_GetToneMapMode(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.tone_map_mode;
+}
+void GRender_SetExposure(float exposure) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.exposure = exposure;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_exposure(exposure);
+}
+float GRender_GetExposure(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.exposure;
+}
+void GRender_SetShadowEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.shadow_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_shadow_enabled(enabled);
+}
+bool GRender_IsShadowEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.shadow_enabled;
+}
+void GRender_SetShadowMapSize(int size) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.shadow_map_size = size; // 重启生效（pipeline init 时应用）
+}
+int GRender_GetShadowMapSize(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.shadow_map_size;
+}
+void GRender_SetAmbient(float r, float g, float b) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ambient = math::Vector3f(r, g, b);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ambient(g_renderer.ambient);
+}
+void GRender_GetAmbient(float* r, float* g, float* b) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (r) *r = g_renderer.ambient.x;
+    if (g) *g = g_renderer.ambient.y;
+    if (b) *b = g_renderer.ambient.z;
+}
+void GRender_SetIBLIntensity(float intensity) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ibl_intensity = intensity;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ibl_intensity(intensity);
+}
+float GRender_GetIBLIntensity(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.ibl_intensity;
 }
 
 GTextureHandle GRender_GetViewportTexture(void) {

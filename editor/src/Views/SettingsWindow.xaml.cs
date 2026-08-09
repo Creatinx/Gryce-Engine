@@ -47,15 +47,20 @@ public partial class SettingsWindow : Window
                 Services.MicaHelper.TryRemoveMica(mainHwnd);
         }
 
-        // Persist language + theme + backdrop so they survive restarts.
+        // Persist all editor settings so they survive restarts.
         Services.EditorSettingsService.Save(
             LocalizationService.Instance.LanguageCode,
             _viewModel.IsDarkTheme ? "Dark" : "Light",
             _viewModel.MicaBackdrop,
-            _viewModel.AutoSaveInterval);
+            _viewModel.AutoSaveInterval,
+            _viewModel.VSyncEnabled,
+            _viewModel.ShowGrid,
+            _viewModel.ShowGizmos,
+            _viewModel.ShowStats);
 
         // Apply auto-save interval to the engine service (minutes, 0 = off).
         App.Engine?.UpdateAutoSaveInterval(_viewModel.AutoSaveInterval);
+        App.Engine?.ReloadEditorSettings();
 
         // Apply VSync setting to renderer
         try

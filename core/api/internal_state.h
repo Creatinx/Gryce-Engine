@@ -43,6 +43,14 @@ struct GlobalState {
     GEntityHandle selected_entity = 0;
     std::string current_scene_path;
 
+    // --- 2D / 3D 双场景槽（编辑器热切换，不释放场景内存）---
+    // scene_mode: 0 = 2D 场景编辑器，1 = 3D 场景编辑器（当前活动场景归属）
+    int scene_mode = 0;
+    std::unique_ptr<gryce_engine::scene::Scene> scene_slot_2d;
+    std::unique_ptr<gryce_engine::scene::Scene> scene_slot_3d;
+    std::string scene_path_2d;
+    std::string scene_path_3d;
+
     bool deferred_entity_list_changed = false;
     bool deferred_selection_changed = false;
     bool deferred_scene_loaded = false;

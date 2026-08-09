@@ -24,4 +24,17 @@ public static class SceneAPI
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern GEntityHandle GScene_PickRay(
         ref GVec3 origin, ref GVec3 direction, float maxDist);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GScene_GetMode();
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GScene_SetMode(int mode);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GScene_ReleaseMode(int mode);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static extern bool GScene_HasScene(int mode);
 }

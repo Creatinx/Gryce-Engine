@@ -14,6 +14,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             scene_test.cpp
             entity_io_test.cpp
             play_mode_test.cpp
+            scene_slot_test.cpp
             transform2d_test.cpp
             canvas_layer_test.cpp
             asset_test.cpp

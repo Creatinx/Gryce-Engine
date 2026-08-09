@@ -49,4 +49,49 @@ public static class RenderAPI
 
     [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
     public static extern void GRender_SetScene2D([MarshalAs(UnmanagedType.U1)] bool enabled);
+
+    // Project Settings（渲染质量）
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetHDR([MarshalAs(UnmanagedType.U1)] bool enabled);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static extern bool GRender_IsHDR();
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetToneMapMode(int mode);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GRender_GetToneMapMode();
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetExposure(float exposure);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern float GRender_GetExposure();
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetShadowEnabled([MarshalAs(UnmanagedType.U1)] bool enabled);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static extern bool GRender_IsShadowEnabled();
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetShadowMapSize(int size);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GRender_GetShadowMapSize();
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetAmbient(float r, float g, float b);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_GetAmbient(out float r, out float g, out float b);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GRender_SetIBLIntensity(float intensity);
+
+    [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
+    public static extern float GRender_GetIBLIntensity();
 }
