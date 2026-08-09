@@ -291,6 +291,8 @@
     ,"project_settings.render_api": "Render API"
     ,"project_settings.api_vulkan": "Vulkan (Default)"
     ,"project_settings.api_opengl": "OpenGL (Compatibility)"
+    ,"project_settings.editor_backend_info": "Editor viewport backend: OpenGL (embedded sync mode, fixed)"
+    ,"project_settings.backend_runtime_note": "This selects the runtime/project default backend for games and examples; the editor viewport always uses OpenGL."
     ,"project_settings.render_api_note": "Backend switch takes effect after the editor restarts."
     ,"project_settings.hdr": "HDR (High Dynamic Range)"
     ,"project_settings.tone_map": "Tone Map"

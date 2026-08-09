@@ -290,6 +290,8 @@
     ,"project_settings.render_api": "渲染后端"
     ,"project_settings.api_vulkan": "Vulkan（默认）"
     ,"project_settings.api_opengl": "OpenGL（兼容）"
+    ,"project_settings.editor_backend_info": "编辑器视口后端：OpenGL（嵌入同步模式，固定）"
+    ,"project_settings.backend_runtime_note": "该项为游戏/示例程序的运行时默认后端；编辑器视口固定使用 OpenGL。"
     ,"project_settings.render_api_note": "后端切换在编辑器重启后生效。"
     ,"project_settings.hdr": "HDR（高动态范围）"
     ,"project_settings.tone_map": "色调映射"

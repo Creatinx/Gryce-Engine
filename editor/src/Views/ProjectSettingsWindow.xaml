@@ -37,9 +37,12 @@
                               SelectedIndex="{Binding RenderApiIndex}"
                               FontSize="12" Height="26" Width="220" HorizontalAlignment="Left"/>
                 </Grid>
-                <TextBlock Text="{loc:Loc project_settings.render_api_note}" FontSize="10.5"
+                <TextBlock Text="{loc:Loc project_settings.editor_backend_info}" FontSize="10.5"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            Margin="140,0,0,10"/>
+                <TextBlock Text="{Binding BackendRuntimeNote}" FontSize="10.5"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Margin="140,0,0,10" TextWrapping="Wrap"/>
 
                 <CheckBox IsChecked="{Binding Hdr}" FontSize="12" Margin="0,6"
                           Content="{loc:Loc project_settings.hdr}" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>

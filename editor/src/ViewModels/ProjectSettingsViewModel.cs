@@ -14,6 +14,12 @@ public class ProjectSettingsViewModel : INotifyPropertyChanged
         LocalizationService.Instance.T("project_settings.api_opengl")
     };
 
+    public string EditorBackendInfo =>
+        LocalizationService.Instance.T("project_settings.editor_backend_info");
+
+    public string BackendRuntimeNote =>
+        LocalizationService.Instance.T("project_settings.backend_runtime_note");
+
     public string[] ToneMapModes { get; } = { "None", "Reinhard", "ACES" };
 
     private int _renderApiIndex;
