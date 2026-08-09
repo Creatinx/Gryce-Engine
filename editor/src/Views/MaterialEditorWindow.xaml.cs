@@ -151,11 +151,7 @@ public partial class MaterialEditorWindow : Window
 
     private string GetString(GMaterialField field)
     {
-        var sb = new StringBuilder(512);
-        if (MaterialAPI.GMaterial_GetField(_entity, _compHash, (int)field,
-                null!, 0, sb, sb.Capacity) >= 0)
-            return sb.ToString();
-        return string.Empty;
+        return MaterialAPI.GetFieldStringUtf8(_entity, _compHash, (int)field) ?? string.Empty;
     }
 
     private void SetFloat(GMaterialField field, float value) =>

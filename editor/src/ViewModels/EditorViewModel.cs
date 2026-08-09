@@ -166,6 +166,9 @@ public class EditorViewModel : INotifyPropertyChanged
     private string? _pendingComponentForNewEntity;
     private string? _pendingNewEntityName;
     private string? _pendingSelectEntityName;
+    // When set, after the pending entity is created and selected the editor
+    // opens the Add-Component picker so creation flows straight into it.
+    private bool _pendingOpenComponentPicker;
 
     // Undo/Redo stacks
     private readonly Stack<IUndoableAction> _undoStack = new();
@@ -327,6 +330,17 @@ public class EditorViewModel : INotifyPropertyChanged
     public void CreateChildEntity(GEntityHandle parent)
     {
         CreateEntity(LocalizationService.Instance.T("hierarchy.new_entity_name"), parent);
+    }
+
+    /// <summary>
+    /// Creates an entity (with the default name) and, once it appears in the
+    /// hierarchy, selects it and opens the Add-Component picker so the user can
+    /// immediately attach the first component (Create Entity -> New Component).
+    /// </summary>
+    public void CreateEntityThenOpenComponentPicker(GEntityHandle parent = GEntityHandle.Null)
+    {
+        CreateEntity(LocalizationService.Instance.T("hierarchy.new_entity_name"), parent);
+        _pendingOpenComponentPicker = true;
     }
 
     /// <summary>
@@ -497,13 +511,13 @@ public class EditorViewModel : INotifyPropertyChanged
             var handle = EntityAPI.GEntity_GetAt(i);
             if (handle == GEntityHandle.Null) continue;
 
-            var sb = new StringBuilder(256);
-            if (EntityAPI.GEntity_GetName(handle, sb, sb.Capacity) < 0) continue;
+            var entityName = EntityAPI.GetNameUtf8(handle);
+            if (entityName == null) continue;
 
             var parent = EntityAPI.GEntity_GetParent(handle);
             if (parent == GEntityHandle.Null)
             {
-                var model = BuildEntityTree(handle, sb.ToString());
+                var model = BuildEntityTree(handle, entityName);
                 RootEntities.Add(model);
             }
         }
@@ -519,10 +533,10 @@ public class EditorViewModel : INotifyPropertyChanged
         {
             var childHandle = EntityAPI.GEntity_GetChildAt(handle, i);
             if (childHandle == GEntityHandle.Null) continue;
-            var sb = new StringBuilder(256);
-            if (EntityAPI.GEntity_GetName(childHandle, sb, sb.Capacity) >= 0)
+            var childName = EntityAPI.GetNameUtf8(childHandle);
+            if (childName != null)
             {
-                model.Children.Add(BuildEntityTree(childHandle, sb.ToString()));
+                model.Children.Add(BuildEntityTree(childHandle, childName));
             }
         }
         return model;
@@ -611,7 +625,22 @@ public class EditorViewModel : INotifyPropertyChanged
         _pendingSelectEntityName = null;
         if (name == null) return;
         var created = FindNewestEntityByName(name, RootEntities);
-        if (created != null) SelectEntityByHandle(created.Handle);
+        if (created == null) return;
+
+        SelectEntityByHandle(created.Handle);
+        if (_pendingOpenComponentPicker)
+        {
+            _pendingOpenComponentPicker = false;
+            // Defer to the next dispatch so the entity-list callback completes
+            // before a modal dialog re-enters the message loop.
+            var vm = this;
+            System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (vm.SelectedEntity == null) return;
+                ModalDialog.Show(new Views.AddComponentDialog(vm),
+                                 System.Windows.Application.Current.MainWindow);
+            }), System.Windows.Threading.DispatcherPriority.Normal);
+        }
     }
 
     private static EntityModel? FindEntity(GEntityHandle handle, ObservableCollection<EntityModel> entities)

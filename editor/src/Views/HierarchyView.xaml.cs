@@ -107,28 +107,18 @@ public partial class HierarchyView : UserControl
 
     private void OnCreateEntityClick(object sender, RoutedEventArgs e)
     {
-        OpenCreateEntityDialog(GEntityHandle.Null);
+        VM?.CreateEntityThenOpenComponentPicker();
     }
 
     private void OnCreateChildClick(object sender, RoutedEventArgs e)
     {
         if (VM?.SelectedEntity != null)
-            OpenCreateEntityDialog(VM.SelectedEntity.Handle);
+            VM.CreateEntityThenOpenComponentPicker(VM.SelectedEntity.Handle);
     }
 
     private void OnDuplicateEntityClick(object sender, RoutedEventArgs e)
     {
         VM?.DuplicateSelectedEntity();
-    }
-
-    private void OpenCreateEntityDialog(GEntityHandle parent)
-    {
-        if (VM == null) return;
-        var dialog = new CreateEntityDialog(VM, parent)
-        {
-            Owner = Window.GetWindow(this)
-        };
-        ModalDialog.Show(dialog, Window.GetWindow(this));
     }
 
     private void OnRenameEntityClick(object sender, RoutedEventArgs e)

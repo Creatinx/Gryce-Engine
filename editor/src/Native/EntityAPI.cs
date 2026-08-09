@@ -17,6 +17,32 @@ public static class EntityAPI
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GEntity_GetPath(GEntityHandle entity, StringBuilder outBuf, int bufSize);
 
+    // The core writes UTF-8 bytes into these buffers; a StringBuilder P/Invoke
+    // would decode them with the ANSI codepage and garble Chinese text. Read
+    // the raw bytes and decode explicitly instead.
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "GEntity_GetName")]
+    private static extern int GEntity_GetNameBytes(GEntityHandle entity, [Out] byte[] outBuf, int bufSize);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "GEntity_GetPath")]
+    private static extern int GEntity_GetPathBytes(GEntityHandle entity, [Out] byte[] outBuf, int bufSize);
+
+    public static string? GetNameUtf8(GEntityHandle entity)
+        => ReadUtf8(entity, 512, GEntity_GetNameBytes);
+
+    public static string? GetPathUtf8(GEntityHandle entity)
+        => ReadUtf8(entity, 1024, GEntity_GetPathBytes);
+
+    private static string? ReadUtf8(GEntityHandle entity, int capacity,
+        Func<GEntityHandle, byte[], int, int> call)
+    {
+        var buf = new byte[capacity];
+        int len = call(entity, buf, buf.Length);
+        if (len <= 0) return null;
+        return Encoding.UTF8.GetString(buf, 0, len).TrimEnd('\0');
+    }
+
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern GEntityHandle GEntity_GetParent(GEntityHandle entity);
 

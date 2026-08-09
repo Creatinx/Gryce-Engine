@@ -598,9 +598,9 @@ public partial class ViewportView : UserControl, IDisposable
             {
                 var h = EntityAPI.GEntity_GetAt(i);
                 if (h == GEntityHandle.Null) continue;
-                var sb = new StringBuilder(128);
-                if (EntityAPI.GEntity_GetName(h, sb, sb.Capacity) > 0 &&
-                    (sb.ToString() == "MainCamera" || sb.ToString().Contains("Camera")))
+                var name = EntityAPI.GetNameUtf8(h);
+                if (name != null &&
+                    (name == "MainCamera" || name.Contains("Camera")))
                 {
                     return h;
                 }

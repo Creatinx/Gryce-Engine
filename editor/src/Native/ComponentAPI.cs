@@ -24,12 +24,12 @@ public static class ComponentAPI
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GComponent_GetProperty(GEntityHandle entity, ulong compTypeHash,
-        [MarshalAs(UnmanagedType.LPStr)] string propName,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string propName,
         nint outValue, int valueSize);
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GComponent_SetProperty(GEntityHandle entity, ulong compTypeHash,
-        [MarshalAs(UnmanagedType.LPStr)] string propName,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string propName,
         nint value, int valueSize);
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]

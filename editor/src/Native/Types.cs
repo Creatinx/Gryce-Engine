@@ -124,7 +124,7 @@ public delegate void GOnEntitySelected(GEntityHandle entity, nint userData);
 public delegate void GOnEntityDeselected(nint userData);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-public delegate void GOnSceneLoaded([MarshalAs(UnmanagedType.LPStr)] string path, nint userData);
+public delegate void GOnSceneLoaded([MarshalAs(UnmanagedType.LPUTF8Str)] string path, nint userData);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public delegate void GOnPlayModeChanged(bool isPlaying, bool isPaused, nint userData);
@@ -136,7 +136,7 @@ public delegate void GOnEntityListChanged(nint userData);
 public delegate void GOnComponentChanged(GEntityHandle entity, ulong compTypeHash, nint userData);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-public delegate void GOnLogMessage(int level, [MarshalAs(UnmanagedType.LPStr)] string msg, nint userData);
+public delegate void GOnLogMessage(int level, [MarshalAs(UnmanagedType.LPUTF8Str)] string msg, nint userData);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public delegate void GOnViewportTextureReady(GTextureHandle handle, int w, int h, nint userData);

@@ -117,18 +117,12 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
 
     public string? GetEntityName(GEntityHandle handle)
     {
-        var sb = new StringBuilder(256);
-        if (EntityAPI.GEntity_GetName(handle, sb, sb.Capacity) > 0)
-            return sb.ToString();
-        return null;
+        return EntityAPI.GetNameUtf8(handle);
     }
 
     public string? GetEntityPath(GEntityHandle handle)
     {
-        var sb = new StringBuilder(512);
-        if (EntityAPI.GEntity_GetPath(handle, sb, sb.Capacity) > 0)
-            return sb.ToString();
-        return null;
+        return EntityAPI.GetPathUtf8(handle);
     }
 
     public int GetEntityCount() => EntityAPI.GEntity_GetCount();

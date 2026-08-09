@@ -45,5 +45,5 @@ public static class RenderAPI
     public static extern void GRender_SetVSync([MarshalAs(UnmanagedType.U1)] bool enabled);
 
     [DllImport(NativeLibrary.Renderer, CallingConvention = CallingConvention.Cdecl)]
-    public static extern void GRender_SetDisplayMode([MarshalAs(UnmanagedType.LPStr)] string mode);
+    public static extern void GRender_SetDisplayMode([MarshalAs(UnmanagedType.LPUTF8Str)] string mode);
 }

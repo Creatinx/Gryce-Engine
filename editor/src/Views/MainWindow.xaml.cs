@@ -131,7 +131,7 @@ public partial class MainWindow
 
     private void OnCreateEntityClick(object sender, RoutedEventArgs e)
     {
-        ModalDialog.Show(new CreateEntityDialog(VM!, GEntityHandle.Null), this);
+        VM?.CreateEntityThenOpenComponentPicker();
     }
 
     // === View Menu ===

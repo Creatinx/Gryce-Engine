@@ -158,9 +158,9 @@ public partial class AnimationPanelView : UserControl
         int count = AnimatorAPI.GAnimator_GetClipCount(handle, hash);
         for (int i = 0; i < count; i++)
         {
-            var sb = new StringBuilder(128);
-            if (AnimatorAPI.GAnimator_GetClipName(handle, hash, i, sb, sb.Capacity) >= 0)
-                clips.Add(sb.ToString());
+            var clipName = AnimatorAPI.GetClipNameUtf8(handle, hash, i);
+            if (clipName != null)
+                clips.Add(clipName);
         }
 
         string current = _propClipName?.StringValue ?? string.Empty;

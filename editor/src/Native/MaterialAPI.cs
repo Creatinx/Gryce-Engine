@@ -40,5 +40,20 @@ public static class MaterialAPI
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GMaterial_SetField(GEntityHandle entity, ulong compTypeHash, int field,
         [In] float[] inFloats, int floatCount,
-        [MarshalAs(UnmanagedType.LPStr)] string? inStr);
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? inStr);
+
+    // UTF-8-safe read for string material fields (paths may contain Chinese).
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "GMaterial_GetField")]
+    private static extern int GMaterial_GetFieldBytes(GEntityHandle entity, ulong compTypeHash, int field,
+        [Out] float[]? outFloats, int floatCapacity,
+        [Out] byte[]? outStr, int strCapacity);
+
+    public static string? GetFieldStringUtf8(GEntityHandle entity, ulong compTypeHash, int field)
+    {
+        var buf = new byte[512];
+        int len = GMaterial_GetFieldBytes(entity, compTypeHash, field, null, 0, buf, buf.Length);
+        if (len < 0) return null;
+        return Encoding.UTF8.GetString(buf, 0, len).TrimEnd('\0');
+    }
 }
