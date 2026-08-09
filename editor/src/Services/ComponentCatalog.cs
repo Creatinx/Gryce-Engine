@@ -11,6 +11,8 @@ public static class ComponentCatalog
 {
     public static (string Category, string Icon, Brush Color) Categorize(string typeName)
     {
+        if (typeName == "Script")
+            return ("Script", "\uE943", NewBrush(0xFF, 0xB9, 0x8C));
         // 2D 组件（Node2D / 渲染 / 相机 / 光照 / 物理 / UI）
         if (typeName is "Node2D" or "Sprite2D" or "Label" or "ColorRect" or "Circle" or "Polygon"
             or "Tilemap" or "ParticleEmitter2D" or "ParallaxBackground" or "Skybox2D"

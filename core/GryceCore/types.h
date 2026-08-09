@@ -90,6 +90,10 @@ typedef enum {
     ECMD_GIZMO_SET_SPACE,
     ECMD_GIZMO_MANIPULATE,
 
+    // GryceSRT 脚本（Phase 1/2）
+    ECMD_SET_SCRIPT = 500,
+    ECMD_RELOAD_SCRIPTS,
+
     ECMD_COUNT
 } GCommandType;
 

@@ -210,6 +210,7 @@
     "create_entity.cat.audio": "Audio",
     "create_entity.cat.world": "World",
     "create_entity.cat.node": "Node",
+    "create_entity.cat.script": "Script",
     "create_entity.dialog_title_child": "Create Child of {0}",
     "inspector.remove_component": "Remove Component",
 

@@ -112,7 +112,10 @@ public enum GCommandType
 
     GizmoSetOperation = 400,
     GizmoSetSpace,
-    GizmoManipulate
+    GizmoManipulate,
+
+    SetScript = 500,
+    ReloadScripts
 }
 #endregion
 

@@ -1105,6 +1105,27 @@ public class EditorViewModel : INotifyPropertyChanged
         _engine.MarkSceneDirty();
     }
 
+    /// <summary>Sets the script_path of the entity's Script component.</summary>
+    public void SetScript(GEntityHandle handle, string path)
+    {
+        Span<byte> payload = stackalloc byte[sizeof(int) + 128];
+        BitConverterCompat.TryWriteBytes(payload, (int)handle);
+        var pathBytes = Encoding.UTF8.GetBytes(path ?? string.Empty);
+        if (pathBytes.Length > 128) pathBytes = pathBytes.AsSpan(0, 128).ToArray();
+        pathBytes.AsSpan().CopyTo(payload.Slice(sizeof(int)));
+        var cmd = GCommand.Create(GCommandType.SetScript, payload);
+        CoreAPI.GCore_PushCommand(ref cmd);
+        _engine.MarkSceneDirty();
+    }
+
+    /// <summary>Reloads all attached scripts (GryceSRT) on the next frame.</summary>
+    public void ReloadScripts()
+    {
+        var cmd = GCommand.Create(GCommandType.ReloadScripts, Span<byte>.Empty);
+        CoreAPI.GCore_PushCommand(ref cmd);
+        AppendConsole("Scripts reload requested.");
+    }
+
     // === 资源拖放 / 导入 ===
 
     private string? _pendingModelPath;

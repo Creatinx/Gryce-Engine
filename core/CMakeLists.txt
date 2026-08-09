@@ -75,6 +75,7 @@ target_sources(GryceCore
         scene/prefab.cpp
         scene/scene_serializer.cpp
         script/lua_runtime.cpp
+        ecs/systems/script_system.cpp
         ecs/world.cpp
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp

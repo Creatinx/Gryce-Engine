@@ -8,6 +8,8 @@
 
 #include "components/component.h"
 #include "components/transform.h"
+#include "components/script_component.h"
+using ScriptComponent = gryce_engine::components::ScriptComponent;
 #include "components/node2d.h"
 #include "components/node3d.h"
 #include "components/mesh_renderer.h"
@@ -253,9 +255,12 @@ GRYCE_REFLECT_CLASS(AudioSource, Component)
     GRYCE_REFLECT_FIELD_RANGE(min_distance, 0.0f, 1000.0f)
     GRYCE_REFLECT_FIELD_RANGE(max_distance, 0.0f, 10000.0f)
 GRYCE_REFLECT_END()
-
 GRYCE_REFLECT_CLASS(AudioListener, Component)
     GRYCE_REFLECT_FIELD_RANGE(global_volume, 0.0f, 1.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(ScriptComponent, Component)
+    GRYCE_REFLECT_FIELD(script_path)
 GRYCE_REFLECT_END()
 
 // ---------------------------------------------------------------------------

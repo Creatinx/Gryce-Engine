@@ -6,11 +6,13 @@
 #include "ecs/systems/animator_system.h"
 #include "ecs/systems/fracture_system.h"
 #include "ecs/systems/subviewport_system.h"
+#include "ecs/systems/script_system.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "scene/scene_serializer.h"
 #include "scene/uuid.h"
 #include "reflection/reflection.h"
+#include "components/script_component.h"
 #include "components/component_factory.h"
 #include "resources/project.h"
 #include "script/lua_runtime.h"
@@ -384,6 +386,57 @@ static void process_command(const GCommand& cmd) {
             }
             break;
         }
+        case ECMD_SET_SCRIPT: {
+            struct Payload { GEntityHandle h; char path[128]; };
+            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->h);
+            if (e) {
+                auto* comp = e->get_component<components::ScriptComponent>();
+                if (comp) {
+                    comp->script_path = p->path;
+                    comp->script_loaded = false;
+                    comp->start_called = false;
+                    comp->reported_error = false;
+                    comp->last_error.clear();
+                    e->mark_dirty();
+                    g_core_state.deferred_entity_list_changed = true;
+                }
+            }
+            break;
+        }
+        case ECMD_RELOAD_SCRIPTS: {
+            if (g_core_state.world) {
+                if (auto* sys = g_core_state.world->get_system<ecs::ScriptSystem>()) {
+                    sys->reload_all();
+                }
+            }
+            break;
+        }
+        case ECMD_INPUT_KEY: {
+            struct Payload { int key; uint8_t down; };
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            if (p->down) g_core_state.keys_down.insert(p->key);
+            else g_core_state.keys_down.erase(p->key);
+            break;
+        }
+        case ECMD_INPUT_MOUSE_MOVE: {
+            struct Payload { int x; int y; };
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            g_core_state.mouse_x = p->x;
+            g_core_state.mouse_y = p->y;
+            break;
+        }
+        case ECMD_INPUT_MOUSE_BUTTON: {
+            struct Payload { int button; uint8_t down; int x; int y; };
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            if (p->button >= 0 && p->button < 3) {
+                g_core_state.mouse_button[p->button] = p->down != 0;
+            }
+            g_core_state.mouse_x = p->x;
+            g_core_state.mouse_y = p->y;
+            break;
+        }
         default:
             break;
     }
@@ -426,6 +479,7 @@ int GCore_Init(const GCoreInitDesc* desc) {
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::AnimatorSystem>());
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::FractureSystem>());
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::SubViewportSystem>());
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::ScriptSystem>());
     gryce_core::g_core_state.world->init();
 
     gryce_core::g_core_state.entity_map.rebuild(gryce_core::g_core_state.world->scene());

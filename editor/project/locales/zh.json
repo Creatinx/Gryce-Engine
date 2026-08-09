@@ -210,6 +210,7 @@
     "create_entity.cat.audio": "音频",
     "create_entity.cat.world": "世界",
     "create_entity.cat.node": "节点",
+    "create_entity.cat.script": "脚本",
     "create_entity.dialog_title_child": "创建子实体（{0}）",
     "inspector.remove_component": "移除组件",
 

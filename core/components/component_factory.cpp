@@ -29,6 +29,7 @@
 #include "components/fragment_body.h"
 #include "components/audio_source.h"
 #include "components/audio_listener.h"
+#include "components/script_component.h"
 #include "components/2d/basic_rect.h"
 #include "components/2d/shape.h"
 #include "components/2d/label.h"
@@ -135,6 +136,10 @@ void register_builtin_components() {
     factory.register_type("AudioListener", []() { return std::make_unique<AudioListener>(); },
                           "音频监听点，决定 3D 声音的空间效果。");
 
+    // 脚本（GryceSRT）
+    factory.register_type("Script", []() { return std::make_unique<ScriptComponent>(); },
+                          "绑定 .lua 脚本，播放模式下驱动实体逻辑。");
+
     // 地形与特殊
     factory.register_type("Terrain", []() { return std::make_unique<Terrain>(); },
                           "程序化地形，支持高度图与噪声生成。");
@@ -188,3 +193,4 @@ const char* ComponentFactory::description(const std::string& type) const {
 }
 
 } // namespace gryce_engine::components
+

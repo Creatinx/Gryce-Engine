@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <atomic>
 #include <mutex>
 
@@ -50,6 +51,12 @@ struct GlobalState {
     std::unique_ptr<gryce_engine::scene::Scene> scene_slot_3d;
     std::string scene_path_2d;
     std::string scene_path_3d;
+
+    // --- 输入状态（供 gryce.input 查询；由 ECMD_INPUT_* 命令更新）---
+    std::unordered_set<int> keys_down;
+    int mouse_x = 0;
+    int mouse_y = 0;
+    bool mouse_button[3] = {};
 
     bool deferred_entity_list_changed = false;
     bool deferred_selection_changed = false;
