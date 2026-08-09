@@ -4,62 +4,62 @@
 [![Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](./CMakeLists.txt)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-> 一个处于原型阶段的 C++ 游戏引擎，采用 Vulkan 默认 / OpenGL 兼容的双渲染后端、ECS 架构、JSON 场景序列化，目标是为中小规模 2D/3D 游戏提供完整的运行时与编辑器工具链。
+> 一个处于原型阶段的 C++23 游戏引擎：Vulkan（默认）/ OpenGL（兼容）双渲染后端、ECS 架构、JSON 场景序列化。核心按模块拆分为多个 DLL，只通过**纯 C API**（`extern "C"`）对外服务；编辑器为 WPF（C#）实现，与核心完全解耦。
+
+---
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [C API 调用文档](./docs/C-API调用文档.md) | C API 完整调用文档：模块划分、生命周期、命令队列、逐函数参考、C / C# 示例 |
+| [已实现功能](./docs/已实现功能.md) | 已实现功能清单（模块、组件、系统、示例、测试、工具）与未实现 / TODO |
+| [架构说明](./docs/架构说明.md) | 模块架构、线程模型、数据流 |
 
 ---
 
 ## 特性
 
 - **双后端渲染（RHI）**
-  - Vulkan 1.2：**默认后端**，完整 2D 批处理 + 3D PBR + Shadow + HDR + Bloom，支持验证层、VMA、multi-viewport 与扩展动态状态。
-  - OpenGL 4.6：兼容后端（旧硬件/调试），同等功能集。
-  - DirectX 11 / 12：枚举值已预留（WinNative），尚未实现。
-  - PBR 材质工作流：albedo / normal / roughness / metallic / ao / emissive。
+  - Vulkan 1.2：**默认后端**，2D 批处理 + 3D PBR + Shadow + HDR + Bloom，支持验证层、VMA、多视口与扩展动态状态。
+  - OpenGL 4.6：兼容后端（旧硬件 / 调试），功能与 Vulkan 后端同步维护。
+  - DirectX 11 / 12：枚举值已预留（`GRYCE_RENDER_API_DX11 / DX12`），尚未实现。
+  - PBR 材质工作流：albedo / normal / roughness / metallic / ao / emissive 六张贴图槽 + 颜色参数。
   - IBL 环境光照、天空盒、HDR/EXR 环境贴图、tonemapping（Reinhard / ACES）。
   - 阴影：光空间正交盒贴合相机视锥（纹素对齐、深度延伸覆盖屏外投射体）、着色器边缘淡出、自适应 bias + 硬件 slope-scaled depth bias。
-  - Project Settings 内可配置渲染 API 与 Render Quality（阴影、环境光、HDR、tonemap、exposure、IBL 强度），持久化到 `project_settings.json`。
+  - 渲染质量可配置（阴影、环境光、HDR、tonemap、exposure、IBL 强度），持久化到 `project_settings.json`。
 - **ECS + 场景系统**
-  - Entity-Component-System 架构，类 Godot/Unity 的节点层级；每个场景有且仅有一个合成根节点（`.gesc` 格式版本 2，v1 兼容）。
-  - 2D 父链变换：`world_transform_2d()` 组合祖先变换，`Node2D::top_level` 脱离父链，`z_index` 参与绘制排序。
-  - `.gesc` JSON 场景格式，支持 `res:/` 虚拟路径、场景热重载与差异保存。
+  - Entity-Component-System 架构，类 Godot/Unity 的节点层级；每个场景有且仅有一个合成根节点。
+  - `.gesc` JSON 场景格式（版本 2，兼容 v1），支持 `res:/` 虚拟路径、场景热重载与差异保存。
   - Prefab / Prefab Variant：嵌套、覆盖参数、还原模板、场景紧凑引用。
+  - 2D 父链变换、`top_level` 脱离父链、`z_index` 参与绘制排序。
 - **资源管线**
-  - `AssetManager` 缓存 mesh / texture / material，支持引用计数与 LRU 卸载。
-  - 异步加载（`AsyncLoader` 线程池）与 `.gpack` 资源包挂载。
+  - `AssetManager` 缓存 mesh / texture / material，引用计数 + LRU 卸载；`AsyncLoader` 异步加载；`.gpack` 资源包挂载。
   - 模型：OBJ 内置加载器 + Assimp（FBX / glTF / DAE / PLY / STL）。
-  - 纹理：PNG / JPG / BMP / DDS / KTX（BC1~BC7 / ASTC / ETC2）、立方体贴图、HDR/EXR；资源路径统一按 UTF-8 处理，支持中文文件名。
-  - 字体：TTF 动态图集（stb_truetype）。
-  - 材质资源 `.gmat`、导入设置 `.gimport`。
-- **动画**
-  - 骨骼动画：Skeleton / AnimationClip / Pose、CPU 插值 + GPU Skinning。
-  - `SkinnedMeshRenderer` + `AnimatorSystem`，128 骨上限，GL/VK 双后端蒙皮 PBR。
+  - 纹理：PNG / JPG / BMP / DDS / KTX（BC1~BC7 / ASTC / ETC2）、立方体贴图、HDR/EXR；资源路径统一 UTF-8 处理，支持中文文件名。
+  - 字体：TTF 动态图集（stb_truetype）；材质资源 `.gmat`、导入设置 `.gimport`。
+- **骨骼动画**
+  - Skeleton / AnimationClip / Pose，CPU 插值 + GPU Skinning；128 骨上限，GL/VK 双后端蒙皮 PBR。
+  - `SkinnedMeshRenderer` + `AnimatorSystem`，编辑器 Animation 面板可查看片段与时长。
 - **物理**
-  - 3D：Jolt Physics v5.2.0，刚体、静态体、角色控制器、Hinge/Fixed/Spring/Distance 关节、碎裂。
-  - 2D：Box2D v3.0.0，刚体/静态体、圆形/多边形碰撞体、Distance/Spring 关节、角色控制器。
-  - 统一 `IPhysicsWorld2D/3D` 抽象 + Raycast。
-- **编辑器（MVP）**
-  - **WPF 编辑器**（`editor/GryceEngine.Editor.csproj`，iNKORE Fluent），仅通过模块 DLL 的 **C API** 与 Core 通信（`GCore_*` / `GEntity_*` / `GComponent_*` / `GScene_*` / `GMaterial_*` / `GAnimator_*` / `GPhysics_*`），Core 与 Editor 完全分离。
-  - Hierarchy / Inspector（反射字段编辑）/ Viewport / Project / Console / Animation 面板。
-  - Play Mode：播放模式真实驱动物理（Jolt/Box2D）与骨骼动画。
-  - 材质编辑器：PBR 参数 + 贴图槽，改动即时生效。
-  - Godot 风格 Create Entity 对话框（搜索/最近/分类/描述）。
-  - 主题（深色/浅色）与中文/英文本地化运行时切换，均持久化。
-  - 快捷键体系（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D）。
-  - 旧 ImGui C++ 编辑器已封存至 `backup/editor/`。
-- **日志与性能**
-  - 异步日志 AsyncLogger：`log()` 入队、worker 线程写出，`GLog` 自动包装 logger。
-  - 热路径优化：每帧日志降为 DEBUG、Release 剔除 `GL_CHECK_ERROR`、DrawItem 跨帧复用、重复材质绑定跳过。
-  - 大规模渲染优化方向：GPU Instancing、共享可见 entity 列表、Material/Shader 状态缓存、包围球脏标记，目标支撑 1000+ entity 场景。
+  - 3D：Jolt Physics v5.2.0 — 刚体、静态体、角色控制器、Hinge/Fixed/Spring/Distance 关节、碎裂。
+  - 2D：Box2D v3.0.0 — 刚体/静态体、圆形/多边形碰撞体、Distance/Spring 关节、角色控制器。
+  - 统一 `IPhysicsWorld2D/3D` 抽象 + Raycast；`PhysicsSystem3D/2D` 在 Play Mode 中真实模拟。
+- **音频**：miniaudio 引擎，`AudioSource` / `AudioListener`（3D 空间音效）、变速器 `TimeStretcher`。
 - **运行时 UI（2D）**
-  - ColorRect、Label、Sprite2D、Circle、Polygon、TileMap、ParticleEmitter2D、ParallaxBackground。
+  - ColorRect、Label、Sprite2D、Circle、Polygon、TileMap、ParticleEmitter2D、ParallaxBackground、Skybox2D、Camera2D。
   - 2D 光照：环境光、方向光、点光源、聚光灯、法线贴图、阴影/遮挡。
-- **输入**
-  - 键盘、鼠标、自定义光标、鼠标锁定（FPS 模式）。
-- **脚本系统（规划）**
-  - 计划引入 Lua 脚本层，用于玩法逻辑、组件行为与热重载；引擎核心（渲染、物理、ECS）继续以 C++ 实现并通过绑定层暴露 API，兼顾性能与迭代效率。
-- **工具与自动化**
-  - 帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
-  - 命令行参数：场景加载、无窗口截图、MP4 录制、相机预设。详见 [`docs/CLI.md`](./docs/CLI.md)。
+- **输入**：键盘、鼠标、自定义光标、鼠标锁定（FPS 模式）。
+- **WPF 编辑器（MVP）**
+  - `editor/GryceEngine.Editor.csproj`（.NET Framework 4.8，iNKORE Fluent 主题），仅通过模块 DLL 的 **C API** 与 Core 通信。
+  - Hierarchy / Inspector（反射字段编辑）/ Viewport / Project / Console / Animation / Toolbar 面板。
+  - Play Mode：真实驱动物理与骨骼动画，停止时从快照恢复场景（类 Unity 行为）。
+  - 材质编辑器：PBR 参数 + 贴图槽，改动即时生效；Godot 风格 Create Entity 对话框。
+  - 深色/浅色主题、中/英本地化运行时切换并持久化；快捷键体系（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D）。
+- **日志与性能**
+  - 异步日志 `AsyncLogger`（内存 Sink 转发到编辑器 Console），帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
+  - 热路径优化：每帧日志降级、Release 剔除 GL 错误检查、DrawItem 跨帧复用、重复材质绑定跳过、同步渲染模式下每帧网格上传预算（30/帧）。
+- **脚本系统（规划）**：计划引入 Lua 脚本层（玩法逻辑、组件行为、热重载）；引擎核心继续以 C++ 实现并通过绑定层暴露 API。
 
 ---
 
@@ -70,16 +70,17 @@
 | 项 | 说明 |
 |---|---|
 | 平台 | Windows 10/11（主要支持） |
-| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64）或 **MSVC**（VS 2022+）|
+| 编译器 | **MinGW-w64 GCC**（推荐 MSYS2 UCRT64）或 **MSVC**（VS 2022+） |
 | 构建工具 | CMake ≥ 3.28，Ninja（推荐） |
 | 显卡 | Vulkan 1.2（默认后端）/ OpenGL 4.6（兼容后端）兼容 |
 | Vulkan SDK | 构建 Vulkan 后端（默认）所需；无 SDK 时仅 OpenGL 可用 |
+| Python | 使用 `build.py` 时需要（依赖下载脚本） |
 
-> **注意**：本项目当前主要使用 **MSYS2 UCRT64 MinGW-w64** 工具链开发与测试。CMake 会优先自动选择 MinGW；若未找到则自动 fallback 到 MSVC（需打开 VS 2022 x64 Native Tools Prompt）。
+> 本项目主要使用 **MSYS2 UCRT64 MinGW-w64** 工具链开发与测试。CMake 会自动优先选择 MinGW；未找到时 fallback 到 MSVC（需在 VS x64 Native Tools Prompt 中运行）。
 
 ### 安装依赖（MSYS2 UCRT64，推荐）
 
-打开 **MSYS2 UCRT64** 终端（开始菜单中搜索 "MSYS2 UCRT64"）：
+打开 **MSYS2 UCRT64** 终端（开始菜单搜索 "MSYS2 UCRT64"）：
 
 ```bash
 pacman -S mingw-w64-ucrt-x86_64-gcc \
@@ -89,100 +90,98 @@ pacman -S mingw-w64-ucrt-x86_64-gcc \
           mingw-w64-ucrt-x86_64-glfw
 ```
 
+首次构建时，`build.py` / `tools/deps_manager.py` 会自动下载并解压以下源码到 `build/deps/`（原始压缩包缓存到 `deps_cache/`，均不入 Git）：
+
+| 依赖 | 版本 | 用途 |
+|---|---|---|
+| GLFW | 3.4 | 窗口/上下文 |
+| GLEW | 2.2.0 | OpenGL 扩展加载 |
+| Assimp | 5.4.3 | FBX/glTF/DAE/PLY/STL 模型导入 |
+| Box2D | 3.0.0 | 2D 物理 |
+| Jolt Physics | 5.2.0 | 3D 物理 |
+| GoogleTest | 1.15.2 | 单元测试 |
+
+仓库内已自带：imgui、imguizmo、nlohmann/json、stb、miniaudio、tinyexr。
+
 ### 构建
 
 #### 方式 A：MSYS2 UCRT64 终端（推荐）
 
-在 MSYS2 UCRT64 终端中 cd 到项目目录后：
-
 ```bash
-# Debug（默认 Vulkan 后端，--opengl 可切换兼容后端）
-cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build/debug
+# Debug（默认 Vulkan 后端；demo 用 --opengl 切换兼容后端）
+cmake -B build/Debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/Debug
 
 # Release
-cmake -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/release
+cmake -B build/Release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/Release
 ```
 
-#### 方式 B：普通 PowerShell / CMD（显式指定编译器）
-
-若未使用 MSYS2 终端，CMake 会自动尝试检测系统默认编译器。为避免自动选中 MSVC 导致缺少 `rc.exe` 错误，请显式指定 MinGW 编译器：
+#### 方式 B：普通 PowerShell / CMD（显式指定 MinGW）
 
 ```powershell
-# 确保 gcc 在 PATH 中（如 C:\msys64\ucrt64\bin 已加入系统 PATH）
-cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+cmake -B build/Debug -G Ninja -DCMAKE_BUILD_TYPE=Debug `
   -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
-cmake --build build/debug
+cmake --build build/Debug
 ```
 
-> 如果 `gcc` 不在 PATH 中，请使用完整路径：
-> `-DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe`
+> 若 `gcc` 不在 PATH：`-DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe`
 
-#### 方式 C：使用 build.py（Python 脚本，推荐）
+#### 方式 C：build.py（推荐）
 
 ```powershell
-# 默认 Debug，自动下载缺失依赖
-python build.py
-
-# Release / RelWithDebInfo / MinSizeRel
-python build.py Release
-
-# 仅下载并解压依赖（不构建）
-python build.py --setup-deps
-
-# 清理构建产物（保留 deps/ 缓存）
-python build.py --clean
-
-# 完全清理（包括 deps/，下次构建会重新下载）
-python build.py --clean-all
-
-# 指定并行任务数
-python build.py --jobs 8
-
-# 自定义构建目录前缀（默认 build/）
+python build.py                    # 默认 Debug，自动下载缺失依赖
+python build.py Release            # Release / RelWithDebInfo / MinSizeRel
+python build.py --setup-deps       # 仅下载并解压依赖
+python build.py --clean            # 清理构建产物（保留 deps/）
+python build.py --clean-all        # 完全清理（含 deps/，下次重新下载）
+python build.py --jobs 8           # 并行任务数
 python build.py --build-dir build-mingw
-
-# 使用 CMake 默认编译器检测（不锁定 MinGW/MSVC）
-python build.py --no-lock
+python build.py --no-lock          # 使用 CMake 默认编译器检测
+python build.py --msvc             # 强制 MSVC + Visual Studio 2026 generator
+python build.py --offline          # 离线模式（仅用本地缓存依赖）
+python build.py --verbose          # 输出 ninja 详细日志
 ```
 
-> 首次构建时，`build.py` 会调用 `tools/deps_manager.py` 下载 assimp/glfw/box2d/jolt/googletest 等源码到 `build/deps/` 目录，原始 tar.gz 缓存到 `deps_cache/`。`deps_cache/` 与 `build/deps/` 均**不上传 Git**，首次 clone 后由脚本自动下载。
+`build.py` 构建结束后会把生成的 `GryceEngine.slnx` 同步到仓库根目录，供 VS2026 直接打开。
 
-#### 方式 D：MSVC（Visual Studio 2022+）
-
-打开 **x64 Native Tools Command Prompt for VS 2022** 后执行：
+#### 方式 D：MSVC（Visual Studio 2022+ / 2026）
 
 ```powershell
-# 方式 D1：直接 cmake
-cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build/debug
+# 在 x64 Native Tools Command Prompt 中
+cmake -B build/Debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/Debug
 
-# 方式 D2：使用 build.py（自动检测 cl.exe）
+# 或使用 build.py（自动检测 cl.exe）
 python build.py
 ```
 
-> MSVC 已作为 CMake 的 auto-detect fallback 路径支持。部分 MinGW 特定逻辑（如 `libgcc` 运行时 DLL 复制）在 MSVC 下会被自动跳过。
+#### 方式 E：Visual Studio 2026
 
-#### 方式 E：Visual Studio（VS2026）
-
-仓库根目录的 `CMakeSettings.json` 已内置 `x64-Debug` / `x64-Release`（Ninja）配置，可直接用 Visual Studio 的"打开文件夹"工作流；也可以命令行生成 VS2026 解决方案：
+仓库根目录的 `CMakeSettings.json` 已内置 `x64-Debug` / `x64-Release`（Ninja）配置，可直接"打开文件夹"；也可命令行生成解决方案：
 
 ```powershell
 cmake -S . -B out/vs -G "Visual Studio 18 2026" -A x64
-# 生成 out/vs/GryceEngine.slnx，用 VS2026 打开即可
 ```
 
-构建完成后，可执行文件位于（以 `build.py` 默认目录为例）：
+### 构建产物
 
-- `build/Debug/bin/Debug/3dtest.exe`
-- `build/Debug/bin/Debug/gt2dDemo.exe`
-- `build/Debug/bin/Debug/gryce-engine.exe`
-- `build/Debug/bin/Debug/gryce_tests.exe`
+（以 `build.py` 默认目录为例）
+
+```text
+build/Debug/bin/Debug/
+├── GryceCore.dll / GrycePlatform.dll / GryceRenderer.dll / GrycePhysics.dll
+├── 3dtest.exe          # 3D 综合演示
+├── gt2dDemo.exe        # 2D 平台跳跃演示
+└── gryce_tests.exe     # 单元测试
+
+editor/bin/x64/<Config>/net48/
+└── GryceEngine.Editor.exe   # WPF 编辑器（CMake 构建时自动复制 4 个原生 DLL + glfw 到该目录）
+```
 
 ### 运行
 
-```bash
+```powershell
 # 3D 综合演示（默认 Vulkan 后端）
 ./build/Debug/bin/Debug/3dtest.exe
 
@@ -192,12 +191,23 @@ cmake -S . -B out/vs -G "Visual Studio 18 2026" -A x64
 # 2D 平台跳跃演示
 ./build/Debug/bin/Debug/gt2dDemo.exe
 
-# 编辑器（项目根自动从可执行文件位置向上探测，可在 File > Load Project 中切换）
-./build/Debug/bin/Debug/gryce-engine.exe
+# WPF 编辑器（原生 DLL 已由 CMake 自动部署）
+./editor/bin/x64/Debug/net48/GryceEngine.Editor.exe
 
 # 单元测试
 ./build/Debug/bin/Debug/gryce_tests.exe
 ```
+
+#### 演示程序命令行参数
+
+| 参数 | 说明 |
+|---|---|
+| `--vulkan` | 使用 Vulkan 后端（默认） |
+| `--opengl` | 使用 OpenGL 兼容后端 |
+| `--vulkan-validation` | 启用 Vulkan 验证层 |
+| `--screenshot` | 首帧后请求截图（写入引擎根目录 `screenshot_vulkan.bmp` / `screenshot_opengl.bmp`） |
+| `--screenshot-delay <秒>` | 延迟指定秒数后截图 |
+| `--auto-close <秒>` | 运行指定秒数后自动退出（CI 用） |
 
 ---
 
@@ -207,134 +217,129 @@ cmake -S . -B out/vs -G "Visual Studio 18 2026" -A x64
 
 | 按键 | 功能 |
 |------|------|
-| `W/A/S/D` | 移动 |
-| `Space` | 上升 |
-| `Left Ctrl` | 下降 |
+| `W/A/S/D`、`方向键` | 移动 |
+| `Space` / `Left Ctrl` | 上升 / 下降 |
 | `Left Shift` | 冲刺 |
+| `Right Shift` | 角色控制器跳跃（角色演示） |
 | `鼠标移动` | 视角 |
-| `Tab` | 锁定/释放鼠标 |
-| `ESC` | 释放鼠标并暂停视角控制 |
-| `R` | 重置场景 |
+| `Tab` | 锁定 / 释放鼠标 |
+| `ESC` | 退出程序 |
+| `R` | 重置 3D 场景 |
 | `鼠标左键` | 拾取并拖拽物体（重力枪） |
-| `F1` | 切换线框模式（OpenGL only） |
+| `F1` | 切换线框模式（仅 OpenGL 后端） |
 | `F2` | 触发 Cube 碎裂演示 |
-| `关闭窗口` | 退出程序 |
+| `F3` | 保存当前场景到 `res:/scenes/main.gesc` |
+| `F4` | 重建触发器演示 |
 
 ### 2D 演示（gt2dDemo）
 
 | 按键 | 功能 |
 |------|------|
-| `W/A/S/D` 或 `方向键` | 移动/跳跃 |
-| `ESC` | 暂停/菜单 |
+| `A/D`、`方向键` | 左右移动 |
+| `Space` / `W` / `上方向键` | 跳跃 |
+| `鼠标左键` | 射击 |
+| `R` | 重置关卡 |
+| `ESC` | 退出程序 |
 
 ---
 
 ## 项目结构
 
-```
+```text
 Gryce-Engine/
-├── cmake/                  # CMake 工具脚本（编译器选项、依赖解析）
-├── core/                   # 引擎核心（模块化 DLL：GryceCore / GryceRenderer / GrycePlatform / GrycePhysics）
-│   ├── api/                # C API 实现（GCore_* / GEntity_* / GComponent_* / GRender_* 等）
-│   ├── GryceCore/          # GryceCore.dll 公共 C API 头文件
-│   ├── GryceRenderer/      # GryceRenderer.dll 公共 C API 头文件
-│   ├── GrycePlatform/      # GrycePlatform.dll 公共 C API 头文件
-│   ├── GrycePhysics/       # GrycePhysics.dll 公共 C API 头文件
-│   ├── animation/          # 骨骼动画数据结构与 GPU Skinning
-│   ├── assets/             # 资源加载器（OBJ、Assimp、纹理、字体）
-│   ├── audio/              # 音频系统（miniaudio）
-│   ├── components/         # ECS 组件（3D + 2D）
-│   ├── ecs/                # ECS 系统（World、System、调度）
-│   ├── math/               # 数学库（Vector、Matrix、Quaternion）
+├── cmake/                  # CMake 工具脚本（编译器选项、依赖解析、着色器编译）
+├── core/                   # 引擎核心源码（4 个模块化 DLL）
+│   ├── api/                # C API 实现（core/entity/component/scene/asset/material/animator/physics/render/platform）
+│   ├── GryceCore/          # GryceCore.dll 公共 C API 头文件（types/core/entity/component/scene/asset/material/animator）
+│   ├── GryceRenderer/      # GryceRenderer.dll 公共 C API 头文件（render/viewport）
+│   ├── GrycePlatform/      # GrycePlatform.dll 公共 C API 头文件（window/input）
+│   ├── GrycePhysics/       # GrycePhysics.dll 公共 C API 头文件（physics）
+│   ├── animation/          # 骨骼动画（Skeleton/AnimationClip/Pose）
+│   ├── assets/             # 资源加载器（OBJ/Assimp/纹理/压缩纹理/异步加载）
+│   ├── audio/              # 音频（miniaudio）
+│   ├── components/         # ECS 组件（3D + 2D + 物理 + 音频）
+│   ├── ecs/                # ECS（World/System/ComponentStore + 内置系统）
+│   ├── math/               # 数学库（Vector/Matrix/Quaternion/Camera/Ray）
 │   ├── physics/            # 物理抽象与 Box2D / Jolt 后端
-│   ├── platform/           # 窗口、输入、光标
+│   ├── platform/           # 窗口、输入、光标（GLFW）
 │   ├── reflection/         # 组件反射（编辑器 Inspector 前置）
-│   ├── render/             # RHI、渲染管线、OpenGL/Vulkan 后端
-│   ├── resources/          # 资源路径、项目根解析
-│   ├── scene/              # Scene、Entity、Transform 层级、Prefab
-│   └── utils/              # 日志（异步 AsyncLogger）、帧率限制、工具类
-├── docs/                   # 文档（ARCHITECTURE、STATUS、PROJECT_LAYOUT、CORE_API、TODO、CLI）
-├── editor/                 # WPF 编辑器（GryceEngine.Editor.csproj，.NET Framework 4.8）
-│   ├── src/Native/         # C API 的 P/Invoke 包装
-│   ├── src/Services/       # EngineService（引擎生命周期、命令下发）
-│   ├── src/ViewModels/     # EditorViewModel（回调注册、面板刷新）
-│   └── src/Views/          # 面板 XAML（Hierarchy/Inspector/Viewport/Project/Console/Animation）
+│   ├── render/             # 渲染核心 + OpenGL/Vulkan 后端（opengl/、vulkan/）
+│   ├── resources/          # 资源路径（res:/）、项目根、gpack
+│   ├── scene/              # Scene/Entity/Transform 层级/Prefab/序列化
+│   └── utils/              # 日志（AsyncLogger）、帧率限制
+├── docs/                   # 文档（C API 调用文档 / 已实现功能 / 架构说明）
+├── editor/                 # WPF 编辑器（C#，.NET Framework 4.8）
+│   ├── src/Native/         # C API 的 P/Invoke 包装（与头文件一一对应）
+│   ├── src/Services/       # EngineService（引擎生命周期、命令下发、自动保存）
+│   ├── src/ViewModels/     # EditorViewModel 等（回调注册、面板刷新）
+│   └── src/Views/          # 面板 XAML（Hierarchy/Inspector/Viewport/Project/Console/Animation/...）
 ├── examples/               # 示例游戏项目
-│   ├── common/             # 示例公共框架
-│   ├── 3dtest/             # 3D 综合演示
-│   ├── gt2dDemo/           # 2D 平台跳跃演示
-│   ├── demo_sprite2d/      # 2D Sprite2D 演示
-│   ├── demo_shapes2d/      # 2D 形状演示
-│   ├── demo_lighting2d/    # 2D 光照演示
-│   ├── demo_tilemap2d/     # 2D 瓦片地图演示
-│   ├── demo_particles2d/   # 2D 粒子演示
-│   ├── demo_physics2d/     # 2D 物理演示
-│   ├── demo_character2d/   # 2D 角色控制器演示
-│   ├── demo_joints2d/      # 2D 关节演示
-│   ├── demo_physics3d/     # 3D 物理演示
-│   ├── demo_character3d/   # 3D 角色控制器演示
-│   ├── demo_joints3d/      # 3D 关节演示
-│   ├── demo_fracture/      # 3D 碎裂演示
-│   ├── demo_lighting3d/    # 3D 光照演示
-│   ├── demo_audio3d/       # 3D 音频演示
-│   ├── demo_scene_serializer/ # 场景序列化演示
-│   └── demo_skinned3d/     # 3D 骨骼动画演示
+│   ├── common/             # 示例公共框架（app_launcher、调试面板）
+│   ├── 3dtest/             # 3D 综合演示（PBR/阴影/物理/关节/角色/碎裂/动画/音频/场景热重载）
+│   └── gt2dDemo/           # 2D 平台跳跃（Tilemap/2D 光照/粒子/视差/音效/角色控制器）
 ├── tests/                  # 单元测试（GTest）
-├── third_party/            # 第三方库（imgui、json、stb、miniaudio、imguizmo）
-├── tools/                  # 工具脚本（deps_manager.py、gen_skybox.py）
+├── third_party/            # 第三方库源码（imgui、imguizmo、json、stb、miniaudio、tinyexr）
+├── tools/                  # 工具脚本（deps_manager.py、gen_skybox.py、gen_skinned_fixture.py）
 ├── deps_cache/             # 依赖源码本地缓存（gitignore）
 ├── CMakeLists.txt          # 根 CMake
-├── README.md               # 本文件
-└── build.py                # 一键构建脚本
+├── CMakeSettings.json      # VS "打开文件夹" 配置
+├── build.py                # 一键构建脚本
+├── Directory.Build.props   # MSBuild 全局属性（编辑器 C# 工程）
+├── GryceEngine.slnx        # VS2026 解决方案（build.py 自动同步）
+└── GryceECLib_Integration_Plan.md  # 模块化 Core/Editor 分离的历史设计方案
 ```
 
 ---
 
 ## 架构概览
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│  Application（3dtest / gt2dDemo）— C++，直接链接引擎内部 API   │
-└───────────────────────────────┬───────────────────────────────┘
+```text
+┌────────────────────────────────────────────────────────────┐
+│ Application（3dtest / gt2dDemo）— C++，直接链接引擎内部 API  │
+└───────────────────────────────┬────────────────────────────┘
                                 │
-┌───────────────────────────────▼───────────────────────────────┐
-│  WPF Editor（C#）: Views → ViewModels → EngineService          │
-│                      → Native (P/Invoke)                       │
-└───────────────────────────────┬───────────────────────────────┘
-                                │  C ABI（extern "C"）
-┌───────────────────────────────▼───────────────────────────────┐
-│  GryceCore.dll  GryceRenderer.dll  GrycePlatform.dll  GrycePhysics.dll │
-│  ┌──────────┐  ┌───────────┐  ┌───────────┐  ┌─────────────┐   │
-│  │  Scene   │  │    ECS    │  │  Assets   │  │  Physics    │   │
-│  │  Entity  │  │  Systems  │  │  Pipeline │  │(Jolt/Box2D) │   │
-│  └────┬─────┘  └─────┬─────┘  └─────┬─────┘  └─────────────┘   │
-│       └──────────────┴─────────────┘                           │
-│                     │                                          │
-│        ┌────────────▼────────────┐                             │
-│        │    RenderContext        │                             │
-│        │  (Command Buffer Queue) │                             │
-│        └────────────┬────────────┘                             │
-│        ┌────────────▼────────────┐                             │
-│        │      Render Thread      │                             │
-│        └────────────┬────────────┘                             │
-│        ┌────────────▼────────────┐                             │
-│        │ RHI: Vulkan（默认）/ OpenGL（兼容）│                     │
-│        └─────────────────────────┘                             │
-└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────▼────────────────────────────┐
+│ WPF Editor（C#）: Views → ViewModels → EngineService        │
+│                     → Native (P/Invoke)                     │
+└───────────────────────────────┬────────────────────────────┘
+                                │  C ABI（extern "C"，cdecl）
+┌───────────────────────────────▼────────────────────────────┐
+│ GryceCore.dll  GryceRenderer.dll  GrycePlatform.dll  GrycePhysics.dll │
+│  Scene/Entity     OpenGL/Vulkan 后端   Window/Input/Cursor  Jolt/Box2D │
+│  ECS/Reflection   RenderSystems       GLFW                  PhysicsSystem │
+│  Assets/Animation RenderPipeline                             │
+│  Audio/Math/UI    ImGui Backend                              │
+└───────────────────────────────┬────────────────────────────┘
+                                │
+                RenderContext（命令缓冲队列）
+                RenderThread / 同步模式（编辑器内嵌 HWND）
+                RHI: Vulkan（默认）/ OpenGL（兼容）
 ```
 
-更多细节参见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)。
+更完整的模块边界、线程模型与调用时序见 [架构说明](./docs/架构说明.md)；C API 用法见 [C API 调用文档](./docs/C-API调用文档.md)。
+
+---
+
+## 开发约定
+
+- **C API 是 Editor 与 Core 之间的唯一通道**：任何新增的编辑器功能都应优先以 C API 暴露，避免直接 `#include` 内部头文件。
+- **手动复制链接库必须同步到 CMake**：每当手动向编辑器输出目录复制某个原生 DLL（例如新增第三方库），必须在 `core/CMakeLists.txt` 中通过 `gryce_copy_dll_to_editor(<target>)` 或等价的 `add_custom_command(TARGET ... POST_BUILD ...)` 添加自动复制规则，保证全新 CMake 构建即可完整部署。
+- **公共头文件集中在模块目录**：`core/GryceCore/`、`core/GryceRenderer/`、`core/GrycePlatform/`、`core/GrycePhysics/`，新 API 的声明与实现一一对应。
+- **提交信息遵循 Conventional Commits**（`feat:` / `fix:` / `docs:` / `perf:` 等）。
 
 ---
 
 ## 已知限制与下一步
 
-- 当前 Editor 主要以 Vulkan 后端进行开发与测试，OpenGL 后端保持功能同步但偶发 DPI/翻转问题。
-- 大规模 3D 场景（>1000 entity）尚未启用 GPU Instancing，后续会按优先级落地。
-- 脚本系统处于规划阶段，计划先集成 LuaJIT/sol2 并暴露 Scene/Entity/Component API。
-- 资源路径已统一按 UTF-8 处理，中文贴图/模型名可正常加载。
+- 编辑器 Viewport 目前以 **OpenGL 后端** 驱动（内嵌 GLFW HWND），Vulkan 后端由 demo 与运行时使用；Vulkan 编辑器集成待跟进。
+- 世界空间变换查询（`GEntity_GetWorldPosition/Rotation/Scale`）尚未实现（返回 -1）。
+- GameView 与 SceneView 目前共用同一管线/纹理；独立 GameView FBO 待实现。
+- `GPhysics_Raycast` 暂未把命中体映射回实体（`out_entity` 恒为 0）。
+- 渲染显示模式（线框等）、Gizmo 操作命令（`ECMD_GIZMO_*`）为占位实现。
+- 大规模 3D 场景（>1000 entity）尚未启用 GPU Instancing。
+- 脚本系统处于规划阶段（计划 LuaJIT/sol2，暴露 Scene/Entity/Component API）。
 
-更多开发计划详见 [`docs/STATUS.md`](./docs/STATUS.md)。
+详见 [已实现功能](./docs/已实现功能.md)。
 
 ---
 

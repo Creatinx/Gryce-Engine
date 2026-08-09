@@ -7,6 +7,7 @@
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
 #include "render/render.h"
+#include "render/render2d.h"
 #include "assets/asset_manager.h"
 #include "components/camera.h"
 #include "components/light.h"
@@ -14,6 +15,7 @@
 #include "components/skinned_mesh_renderer.h"
 #include "ecs/world.h"
 #include "ecs/query.h"
+#include "ecs/systems/render_system_2d.h"
 #include "math/camera.h"
 #include "math/math.h"
 #include "scene/scene.h"
@@ -45,6 +47,7 @@ struct RendererState {
 
     std::unique_ptr<RenderContext> ctx;
     std::unique_ptr<RenderPipeline> pipeline;
+    std::unique_ptr<render::IRenderer2D> renderer2d;
 
     int viewport_w = 1280;
     int viewport_h = 720;
@@ -236,6 +239,13 @@ int GRender_Init(const GRenderInitDesc* desc) {
         g_renderer.pipeline.reset();
     }
 
+    // 2D 覆盖层渲染器：编辑器视口在 3D 场景之上绘制 2D（Sprite2D/UI 等）。
+    // init 必须在 RenderContext::start()（渲染线程）之前调用。
+    g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->init(g_renderer.ctx.get());
+    }
+
     // Async mode: start render thread
     if (!g_renderer.sync_mode) {
         g_renderer.ctx->start();
@@ -256,6 +266,11 @@ void GRender_Shutdown(void) {
     if (g_renderer.pipeline) {
         g_renderer.pipeline->shutdown();
         g_renderer.pipeline.reset();
+    }
+
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->shutdown();
+        g_renderer.renderer2d.reset();
     }
 
     if (g_renderer.ctx) {
@@ -329,6 +344,15 @@ static void render_world_internal() {
         collect_scene_lights(*world->scene(), lights);
         g_renderer.pipeline->set_lights(lights);
         g_renderer.pipeline->render_scene(*world->scene(), *g_renderer.ctx);
+
+        // 2D 覆盖层：在 3D 场景（tonemap 到默认帧缓冲）之上绘制 2D 组件
+        //（Sprite2D / Label / ColorRect / TileMap 等，按 CanvasLayer 分层）。
+        if (g_renderer.renderer2d) {
+            g_renderer.renderer2d->begin_frame(g_renderer.viewport_w, g_renderer.viewport_h);
+            ecs::RenderSystem2D sys(g_renderer.renderer2d.get());
+            sys.on_render(*world->scene(), *g_renderer.ctx);
+            g_renderer.renderer2d->end_frame();
+        }
     } else {
         // No pipeline — fallback: let world render systems push commands
         world->render(*g_renderer.ctx);

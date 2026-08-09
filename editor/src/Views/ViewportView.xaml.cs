@@ -1625,6 +1625,8 @@ public partial class ViewportView : UserControl, IDisposable
     {
         _is2DMode = !_is2DMode;
         BtnMode2D3D.Content = _is2DMode ? "2D" : "3D";
+        _overlay?.SetMode(_is2DMode ? "2D" : (_vmCached?.GizmoMode ?? "Translate"));
+        UpdateSceneHint();
         VM?.AppendConsole(_is2DMode
             ? "[Viewport] 2D editing mode: screen-space pick + XY translate gizmo"
             : "[Viewport] 3D editing mode");
