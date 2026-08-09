@@ -762,12 +762,14 @@
                                                          <ColumnDefinition Width="*"/>
                                                          <ColumnDefinition Width="Auto"/>
                                                      </Grid.ColumnDefinitions>
-                                                     <!-- 选中文本显示在 ToggleButton 内（标准 ComboBox 结构） -->
+                                                     <!-- 选中文本显示在 ToggleButton 内。
+                                                          注意：此模板的 TemplatedParent 是 ToggleButton，
+                                                          SelectionBoxItem 必须从 ComboBox 祖先取。 -->
                                                      <ContentPresenter Grid.Column="0" Margin="10,0,4,0"
                                                                        VerticalAlignment="Center"
-                                                                       Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource TemplatedParent}}"
-                                                                       ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource TemplatedParent}}"
-                                                                       ContentTemplateSelector="{Binding ItemTemplateSelector, RelativeSource={RelativeSource TemplatedParent}}"/>
+                                                                       Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
+                                                                       ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
+                                                                       ContentTemplateSelector="{Binding ItemTemplateSelector, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"/>
                                                      <TextBlock Grid.Column="1" Text="&#xE70D;"
                                                                 FontFamily="Segoe MDL2 Assets" FontSize="10"
                                                                 Foreground="{DynamicResource TextFillColorSecondaryBrush}"
