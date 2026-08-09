@@ -66,7 +66,9 @@ void RenderSystem2D::on_render(scene::Scene& scene, render::RenderContext& /*ctx
 
     // 2D 光照只作用于世界层（canvas_layer 0），UI/HUD 层不受光照影响
     {
-        render::Color ambient = render::Color::black();
+        // 无 AmbientLight2D 时默认全亮（等效未受光，Sprite2D 立即可见）；
+        // 显式放置环境光/点光源后由组件控制明暗。
+        render::Color ambient = render::Color::white();
         bool has_ambient = false;
         foreach_with_component<components::d2::light::AmbientLight2D>(scene, [&](scene::Entity* /*e*/, components::d2::light::AmbientLight2D* al) {
             if (!al || !al->enabled || has_ambient || effective_layer(al) != 0) return;

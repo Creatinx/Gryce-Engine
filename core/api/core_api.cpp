@@ -120,8 +120,11 @@ static void drain_log_messages() {
 
 std::string reflection_lookup_name(const std::string& full_name) {
     GRYCE_API_GUARD();
-    const std::string prefix = "gryce_engine::components::";
-    if (full_name.rfind(prefix, 0) == 0) return full_name.substr(prefix.size());
+    // 反射注册表使用短名；取最后一个 "::" 之后的段。
+    // 2D 组件位于 d2::basic_rect / d2::sprite / d2::light 等嵌套命名空间，
+    // 仅剥 "gryce_engine::components::" 前缀会留下 "d2::xxx::Type" 查不到。
+    const size_t pos = full_name.rfind("::");
+    if (pos != std::string::npos) return full_name.substr(pos + 2);
     return full_name;
 }
 

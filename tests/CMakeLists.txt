@@ -27,6 +27,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             animation_test.cpp
             skinned_renderer_test.cpp
             reflection_test.cpp
+            reflection_2d_test.cpp
             ray_test.cpp
             pick_test.cpp
     )
