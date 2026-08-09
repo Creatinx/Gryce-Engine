@@ -208,7 +208,7 @@
                                        FontSize="11" VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                        Margin="0,0,6,0"
-                                       Text="&#xE8B7;"/>
+                                       Text="{Binding Icon}"/>
                             <TextBlock Grid.Column="1" Text="{Binding Name}"
                                        FontSize="11.5" VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis"/>

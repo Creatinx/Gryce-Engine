@@ -1,4 +1,5 @@
 using GryceEngine.Editor.Native;
+using GryceEngine.Editor.Services;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -16,6 +17,7 @@ public class EntityModel : INotifyPropertyChanged
     private bool _isSelected;
     private bool _isExpanded = true;
     private bool _enabled = true;
+    private string _icon = "\uE8B7";
 
     public GEntityHandle Handle { get; }
 
@@ -93,6 +95,14 @@ public class EntityModel : INotifyPropertyChanged
         set { _enabled = value; OnPropertyChanged(); }
     }
 
+    /// <summary>Segoe Fluent glyph that reflects the entity's main component
+    /// (mesh, camera, light, physics, audio, world or generic node).</summary>
+    public string Icon
+    {
+        get => _icon;
+        private set { _icon = value; OnPropertyChanged(); }
+    }
+
     public ObservableCollection<EntityModel> Children { get; } = new();
     public ObservableCollection<ComponentModel> Components { get; } = new();
 
@@ -130,6 +140,18 @@ public class EntityModel : INotifyPropertyChanged
                 Components.Add(new ComponentModel(Handle, ShortTypeName(sb.ToString()), hash));
             }
         }
+        Icon = ComputeIcon();
+    }
+
+    private string ComputeIcon()
+    {
+        const string genericNode = "\uE8B7";
+        foreach (var c in Components)
+        {
+            var (_, icon, _) = ComponentCatalog.Categorize(c.TypeName);
+            if (icon != genericNode) return icon;
+        }
+        return genericNode;
     }
 
     /// <summary>Strips the "gryce_engine::components::" namespace prefix from a type name.</summary>

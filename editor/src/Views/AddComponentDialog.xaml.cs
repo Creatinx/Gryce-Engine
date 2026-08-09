@@ -48,12 +48,20 @@ public sealed class ComponentTypeEntry
 public partial class AddComponentDialog : Window
 {
     private readonly EditorViewModel _vm;
+    private readonly bool _renameEntityToType;
     private ComponentTypeEntry? _selected;
 
-    public AddComponentDialog(EditorViewModel vm)
+    /// <summary>
+    /// <paramref name="renameEntityToType"/> is set when the dialog is opened
+    /// from the Create-Entity flow: committing a component then renames the
+    /// freshly created entity to the component type (e.g. "MeshRenderer"), so
+    /// the new node "becomes" that type instead of staying a generic entity.
+    /// </summary>
+    public AddComponentDialog(EditorViewModel vm, bool renameEntityToType = false)
     {
         InitializeComponent();
         _vm = vm;
+        _renameEntityToType = renameEntityToType;
         RebuildTree(string.Empty);
         Loaded += (_, _) =>
         {
@@ -157,7 +165,11 @@ public partial class AddComponentDialog : Window
     private void Commit()
     {
         if (_selected == null) return;
-        _vm.AddComponent(_selected.TypeHash);
+        int result = _vm.AddComponent(_selected.TypeHash);
+        if (result == 0 && _renameEntityToType && _vm.SelectedEntity != null)
+        {
+            _vm.RenameEntity(_vm.SelectedEntity.Handle, _selected.Name);
+        }
         DialogResult = true;
     }
 }

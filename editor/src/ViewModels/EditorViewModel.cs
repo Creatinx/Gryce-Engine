@@ -527,6 +527,7 @@ public class EditorViewModel : INotifyPropertyChanged
     {
         var model = new EntityModel(handle, name);
         model.RefreshTransform();
+        model.RefreshComponents();
 
         int childCount = EntityAPI.GEntity_GetChildCount(handle);
         for (int i = 0; i < childCount; i++)
@@ -637,7 +638,7 @@ public class EditorViewModel : INotifyPropertyChanged
             System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
             {
                 if (vm.SelectedEntity == null) return;
-                ModalDialog.Show(new Views.AddComponentDialog(vm),
+                ModalDialog.Show(new Views.AddComponentDialog(vm, renameEntityToType: true),
                                  System.Windows.Application.Current.MainWindow);
             }), System.Windows.Threading.DispatcherPriority.Normal);
         }
@@ -734,9 +735,9 @@ public class EditorViewModel : INotifyPropertyChanged
         }
     }
 
-    public void AddComponent(ulong typeHash)
+    public int AddComponent(ulong typeHash)
     {
-        if (_selectedEntity == null) return;
+        if (_selectedEntity == null) return -1;
         int result = ComponentAPI.GComponent_AddComponent(_selectedEntity.Handle, typeHash);
         if (result == 0)
         {
@@ -747,6 +748,7 @@ public class EditorViewModel : INotifyPropertyChanged
         {
             AppendConsole($"Failed to add component to '{_selectedEntity.Name}'");
         }
+        return result;
     }
 
     public void RemoveComponent(ulong typeHash)
