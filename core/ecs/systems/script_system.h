@@ -22,8 +22,16 @@ public:
 
     /// Unloads every loaded script; they reload on the next update.
     void reload_all();
+    void sync_props_from_env(components::ScriptComponent* comp);
+    bool get_prop(components::ScriptComponent* comp, const char* name,
+                  int& out_type, float& out_f, std::string& out_s);
+    bool set_prop(components::ScriptComponent* comp, const char* name, float value);
+    bool set_prop(components::ScriptComponent* comp, const char* name, const std::string& value);
 
 private:
+    void write_prop_to_env(components::ScriptComponent* comp, const char* name, float value);
+    void write_prop_to_env(components::ScriptComponent* comp, const char* name, const std::string& value);
+
     void process_entity(scene::Entity* e, float dt);
     bool load(components::ScriptComponent* comp);
     void unload(components::ScriptComponent* comp);

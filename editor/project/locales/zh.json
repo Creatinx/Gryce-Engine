@@ -5,6 +5,7 @@
     "menu.load_scene": "加载场景...",
     "menu.open_project": "打开项目...",
     "menu.import_asset": "导入资源...",
+    "menu.package": "打包运行（GryceGC）...",
     "menu.exit": "退出",
     "menu.edit": "编辑",
     "menu.undo": "撤销",
@@ -213,6 +214,8 @@
     "create_entity.cat.script": "脚本",
     "create_entity.dialog_title_child": "创建子实体（{0}）",
     "inspector.remove_component": "移除组件",
+    "script_editor.save": "保存",
+    "script_editor.reload": "重载",
 
     "settings.title": "设置",
     "settings.theme": "主题",

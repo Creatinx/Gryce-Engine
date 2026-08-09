@@ -13,10 +13,10 @@ bool CommandBuffer::push(const GCommand& cmd) {
     size_t front = front_.load(std::memory_order_relaxed);
     size_t idx = write_idx_.fetch_add(1, std::memory_order_relaxed);
     if (idx >= k_cmd_buffer_capacity) {
-        // Overflow: ring-buffer style — wrap and overwrite oldest
-        write_idx_.store(1, std::memory_order_relaxed);
-        idx = 0;
+        // Buffer full: drop this command cleanly instead of wrapping and
+        // overwriting entries that swap() may be about to consume.
         dropped_total_.fetch_add(1, std::memory_order_relaxed);
+        return false;
     }
     buffers_[front][idx] = cmd;
     return true;

@@ -57,8 +57,11 @@ int l_version(lua_State* L) {
     return 1;
 }
 
+int l_self(lua_State* L);  // defined below with the entity helpers
+
 const luaL_Reg kGryceLib[] = {
     {"version", l_version},
+    {"self", l_self},
     {nullptr, nullptr}
 };
 

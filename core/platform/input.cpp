@@ -63,7 +63,9 @@ void InputManager::update(Window* window) {
     std::memcpy(mouse_buttons_previous_, mouse_buttons_current_, sizeof(mouse_buttons_current_));
 
     // 更新按键状态
-    for (int i = 0; i < KEY_COUNT; ++i) {
+    // GLFW only defines keys 32..GLFW_KEY_LAST (348); polling the reserved
+    // ranges makes glfwGetKey log "Invalid key" errors every frame.
+    for (int i = 32; i <= 348 && i < KEY_COUNT; ++i) {
         keys_current_[i] = window->get_key(i);
     }
 

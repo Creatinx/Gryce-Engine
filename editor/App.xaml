@@ -26,6 +26,8 @@
             <converters:IsFloatToVisibilityConverter x:Key="IsFloatToVisibility"/>
             <converters:IsBoolToVisibilityConverter x:Key="IsBoolToVisibility"/>
             <converters:IsStringToVisibilityConverter x:Key="IsStringToVisibility"/>
+            <converters:IntZeroToVisibilityConverter x:Key="IntZeroToVisibility"/>
+            <converters:IntOneToVisibilityConverter x:Key="IntOneToVisibility"/>
 
             <!-- ════════════════════════════════════════════════════════════════
                  Panel Headers

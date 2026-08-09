@@ -377,6 +377,14 @@ public partial class ProjectView : UserControl
                 VM?.AppendConsole($"Failed to open {item.Path}: {ex.Message}");
             }
         }
+        else if (ext == ".lua")
+        {
+            var window = new ScriptEditorWindow(VM!, item.Path)
+            {
+                Owner = Window.GetWindow(this)
+            };
+            window.Show();
+        }
         else
         {
             VM?.AppendConsole($"Opened: {item.Path}");

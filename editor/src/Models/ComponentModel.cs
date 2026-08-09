@@ -18,6 +18,10 @@ public class ComponentModel : INotifyPropertyChanged
     public string TypeName { get; }
     public ulong TypeHash { get; }
     public ObservableCollection<PropertyModel> Properties { get; } = new();
+    public ObservableCollection<ScriptPropModel> ScriptProps { get; } = new();
+
+    /// <summary>True when this is a Script component with exposed props.</summary>
+    public bool HasScriptProps => ScriptProps.Count > 0;
 
     /// <summary>Localized display name for the Inspector header.</summary>
     public string DisplayName
@@ -65,6 +69,52 @@ public class ComponentModel : INotifyPropertyChanged
                 Properties.Add(prop);
             }
         }
+    }
+
+    /// <summary>Refreshes exposed script props (GryceSRT) for Script components.</summary>
+    public void RefreshScriptProps()
+    {
+        bool had = HasScriptProps;
+        ScriptProps.Clear();
+        if (TypeName != "Script") return;
+
+        int count = ScriptAPI.GetPropCount(EntityHandle);
+        for (int i = 0; i < count; i++)
+        {
+            var info = ScriptAPI.GetPropInfo(EntityHandle, i);
+            if (info == null) continue;
+            var (name, type) = info.Value;
+            var model = new ScriptPropModel(name, type)
+            {
+                FloatValue = type == 0 ? (ScriptAPI.GetPropFloat(EntityHandle, name) ?? 0) : 0,
+                StringValue = type == 1 ? (ScriptAPI.GetPropString(EntityHandle, name) ?? string.Empty) : string.Empty
+            };
+            ScriptProps.Add(model);
+        }
+        if (had != HasScriptProps) OnPropertyChanged(nameof(HasScriptProps));
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+}
+
+/// <summary>A single exposed property of a Script component.</summary>
+public class ScriptPropModel : INotifyPropertyChanged
+{
+    public string Name { get; }
+    public int Type { get; }   // 0 = float, 1 = string
+
+    private float _floatValue;
+    public float FloatValue { get => _floatValue; set { _floatValue = value; OnPropertyChanged(); } }
+
+    private string _stringValue = string.Empty;
+    public string StringValue { get => _stringValue; set { _stringValue = value; OnPropertyChanged(); } }
+
+    public ScriptPropModel(string name, int type)
+    {
+        Name = name;
+        Type = type;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

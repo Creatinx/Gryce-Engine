@@ -96,6 +96,10 @@ include(cmake/deps_resolver.cmake)
 # ---------------------------------------------------------------------------
 add_subdirectory(core)
 
+# GryceSPC: standalone game template (GryceGC packaging entry point)
+option(GRYCE_BUILD_GAME_TEMPLATE "Build the standalone game template (GryceSPC)" ON)
+add_subdirectory(templates)
+
 if(GRYCE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

@@ -122,6 +122,11 @@
                         </MenuItem.Icon>
                     </MenuItem>
                     <Separator/>
+                    <MenuItem Header="{loc:Loc menu.package}" Click="OnPackageGameClick">
+                        <MenuItem.Icon>
+                            <TextBlock Text="&#xE74A;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="{loc:Loc menu.settings}" Click="OnSettingsClick">
                         <MenuItem.Icon>
                             <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>

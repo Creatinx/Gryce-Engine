@@ -19,6 +19,7 @@
 #include "utils/glog/glog_lib.h"
 
 #include <cstddef>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 
@@ -523,15 +524,19 @@ void GCore_BeginFrame(float dt) {
     gryce_core::g_core_state.cmdbuf.swap();
     int count = 0;
     const GCommand* cmds = gryce_core::g_core_state.cmdbuf.consume(count);
-    // Process at most 30 commands per frame; a burst of editor commands (e.g.
-    // gizmo drags at high mouse rate) must not stall the frame with one long
-    // serialized batch. Overflow is re-queued and runs next frame.
-    constexpr int k_max_commands_per_frame = 30;
-    int to_process = count < k_max_commands_per_frame ? count : k_max_commands_per_frame;
-    for (int i = 0; i < to_process; ++i) {
-        gryce_core::process_command(cmds[i]);
+    // Process commands under a small time budget: a burst of editor commands
+    // (gizmo drags at high mouse rate, mass edits) applies within one or two
+    // frames, while a heavy command (scene load) cannot block the tick for
+    // long. Unprocessed commands are re-queued for the next frame.
+    constexpr int k_max_commands_per_frame = 512;
+    constexpr auto k_command_budget = std::chrono::microseconds(4000);
+    const auto start = std::chrono::steady_clock::now();
+    int processed = 0;
+    for (; processed < count && processed < k_max_commands_per_frame; ++processed) {
+        gryce_core::process_command(cmds[processed]);
+        if (std::chrono::steady_clock::now() - start >= k_command_budget) break;
     }
-    for (int i = to_process; i < count; ++i) {
+    for (int i = processed; i < count; ++i) {
         gryce_core::g_core_state.cmdbuf.push(cmds[i]);
     }
 

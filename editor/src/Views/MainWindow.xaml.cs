@@ -5,6 +5,8 @@ using iNKORE.UI.WPF.Modern;
 using Microsoft.Win32;
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
 
@@ -135,6 +137,78 @@ public partial class MainWindow
                     VM?.AppendConsole($"Failed to import: {file}");
             }
         }
+    }
+
+    private void OnPackageGameClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string engineRoot = FindEngineRoot();
+            string projectRoot = Services.EngineService.Current?.ProjectRoot ?? engineRoot;
+            if (string.IsNullOrEmpty(engineRoot) || !File.Exists(Path.Combine(engineRoot, "CMakeLists.txt")))
+            {
+                VM?.AppendConsole("Package: engine root not found.");
+                return;
+            }
+
+            string script = Path.Combine(engineRoot, "tools", "grycegc.py");
+            string args =
+                $"\"{script}\" --project \"{projectRoot}\" --name MyGame " +
+                $"--build-dir \"{Path.Combine(engineRoot, "build")}\" --config Release " +
+                $"--out \"{Path.Combine(engineRoot, "build", "game")}\"";
+
+            VM?.AppendConsole($"Package: {args}");
+            var psi = new ProcessStartInfo("python")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                Arguments = args
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null)
+            {
+                VM?.AppendConsole("Package: failed to start grycegc.");
+                return;
+            }
+            string output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            foreach (var line in output.Split('\n'))
+            {
+                if (!string.IsNullOrWhiteSpace(line)) VM?.AppendConsole(line.TrimEnd());
+            }
+
+            if (proc.ExitCode == 0)
+            {
+                string gameExe = Path.Combine(engineRoot, "build", "game", "MyGame", "MyGame.exe");
+                if (File.Exists(gameExe))
+                {
+                    Process.Start(new ProcessStartInfo(gameExe)
+                    {
+                        WorkingDirectory = Path.GetDirectoryName(gameExe) ?? engineRoot,
+                        UseShellExecute = true,
+                        Arguments = $"--project \"{Path.Combine(Path.GetDirectoryName(gameExe) ?? engineRoot, "res")}\""
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            VM?.AppendConsole($"Package failed: {ex.Message}");
+        }
+    }
+
+    private static string FindEngineRoot()
+    {
+        var dir = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+        while (dir != null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "CMakeLists.txt")))
+                return dir.FullName;
+            dir = dir.Parent;
+        }
+        return string.Empty;
     }
 
     private void OnExitClick(object sender, RoutedEventArgs e)

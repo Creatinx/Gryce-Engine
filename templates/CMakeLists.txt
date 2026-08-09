@@ -1,0 +1,16 @@
+# GryceSPC game template: a standalone executable that links the core libraries
+# and runs a scene with scripts (built/packaged by GryceGC).
+if(GRYCE_BUILD_GAME_TEMPLATE)
+    add_executable(GryceGame game_main.cpp)
+    set_target_properties(GryceGame PROPERTIES
+        RUNTIME_OUTPUT_NAME GryceGame
+        FOLDER "Game"
+    )
+    target_include_directories(GryceGame PRIVATE ${CMAKE_SOURCE_DIR}/core)
+    target_link_libraries(GryceGame PRIVATE
+        GryceCore
+        GryceRenderer
+        GrycePlatform
+        GrycePhysics
+    )
+endif()

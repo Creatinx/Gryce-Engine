@@ -241,6 +241,25 @@ public class EditorViewModel : INotifyPropertyChanged
                     RefreshInspector();
                 }
                 OnPropertyChanged(nameof(EntityCount));
+                // Keep the Inspector in sync after any engine-side entity change
+                // (e.g. an AddComponent command completed on the next frame):
+                // RefreshHierarchy rebuilt the models, so re-resolve the
+                // selection by handle (suppressing history) or refresh directly.
+                if (_selectedEntity != null)
+                {
+                    var selHandle = _selectedEntity.Handle;
+                    var fresh = FindEntity(selHandle, RootEntities);
+                    if (fresh != null && !ReferenceEquals(fresh, _selectedEntity))
+                    {
+                        _historySuppress = true;
+                        try { SelectEntityByHandle(selHandle); }
+                        finally { _historySuppress = false; }
+                    }
+                    else
+                    {
+                        RefreshInspector();
+                    }
+                }
             });
         };
         _onEntitySelected = (entity, _) => System.Windows.Application.Current.Dispatcher.Invoke(() => SelectEntityByHandle(entity));
@@ -909,6 +928,7 @@ public class EditorViewModel : INotifyPropertyChanged
         foreach (var comp in _selectedEntity.Components)
         {
             comp.RefreshProperties();
+            comp.RefreshScriptProps();
         }
         OnPropertyChanged(nameof(HasRendererComponent));
         OnPropertyChanged(nameof(HasPrefabInstance));
@@ -1124,6 +1144,22 @@ public class EditorViewModel : INotifyPropertyChanged
         var cmd = GCommand.Create(GCommandType.ReloadScripts, Span<byte>.Empty);
         CoreAPI.GCore_PushCommand(ref cmd);
         AppendConsole("Scripts reload requested.");
+    }
+
+    /// <summary>Writes an exposed script property (GryceSRT) to the core.</summary>
+    public void WriteScriptProp(GEntityHandle handle, string propName, object value)
+    {
+        bool ok = value is float f
+            ? ScriptAPI.SetPropFloat(handle, propName, f)
+            : ScriptAPI.SetPropString(handle, propName, value?.ToString() ?? string.Empty);
+        if (ok)
+        {
+            _engine.MarkSceneDirty();
+        }
+        else
+        {
+            AppendConsole($"Failed to set script prop '{propName}'");
+        }
     }
 
     // === 资源拖放 / 导入 ===

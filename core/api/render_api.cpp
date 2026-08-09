@@ -64,6 +64,7 @@ struct RendererState {
     float exposure = 1.0f;
     bool  shadow_enabled = true;
     int   shadow_map_size = 2048;
+    bool  shadow_map_size_dirty = false;
     math::Vector3f ambient = math::Vector3f(0.15f, 0.15f, 0.15f);
     float ibl_intensity = 1.0f;
 
@@ -333,6 +334,16 @@ void GRender_BeginFrame(void) {
         auto* backend = g_renderer.ctx->backend();
         if (backend) backend->begin_frame();
     }
+    // Runtime shadow map resize: applied on the render thread (owns the GL
+    // context), requested by GRender_SetShadowMapSize from the UI thread.
+    if (g_renderer.shadow_map_size_dirty && g_renderer.pipeline) {
+        g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
+        if (!g_renderer.pipeline->resize_shadow_map(g_renderer.ctx.get())) {
+            GLOG_ERROR("GRender: failed to resize shadow map to {}",
+                       g_renderer.shadow_map_size);
+        }
+        g_renderer.shadow_map_size_dirty = false;
+    }
     // Async mode: render thread handles begin_frame
 }
 
@@ -513,7 +524,10 @@ bool GRender_IsShadowEnabled(void) {
 void GRender_SetShadowMapSize(int size) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
-    g_renderer.shadow_map_size = size; // 重启生效（pipeline init 时应用）
+    if (size < 64) size = 64;
+    if (size > 8192) size = 8192;
+    g_renderer.shadow_map_size = size;
+    g_renderer.shadow_map_size_dirty = true; // 下一帧游戏线程重建阴影贴图
 }
 int GRender_GetShadowMapSize(void) {
     GRYCE_API_GUARD();

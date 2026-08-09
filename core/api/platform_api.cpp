@@ -79,7 +79,9 @@ static void update_input_from_window() {
 
     copy_input_prev_to_current();
 
-    for (int i = 0; i < 512; ++i) {
+    // GLFW only defines keys 32..GLFW_KEY_LAST (348); the reserved ranges
+    // (0..31 and 349..511) make glfwGetKey log "Invalid key" every frame.
+    for (int i = 32; i < 349; ++i) {
         g_platform.input.keys[i] = g_platform.window->get_key(i);
     }
 

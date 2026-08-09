@@ -372,6 +372,21 @@ bool RenderPipeline::create_shadow_map(RenderContext* ctx) {
     return true;
 }
 
+bool RenderPipeline::resize_shadow_map(RenderContext* ctx) {
+    if (!ctx) return false;
+    if (!initialized_) return true;
+
+    if (shadow_map_.is_valid()) {
+        ctx->destroy_texture(shadow_map_);
+        shadow_map_ = RHITextureHandle{};
+    }
+    if (shadow_fbo_.is_valid()) {
+        ctx->destroy_framebuffer(shadow_fbo_);
+        shadow_fbo_ = RHIFramebufferHandle{};
+    }
+    return create_shadow_map(ctx);
+}
+
 void RenderPipeline::set_camera(const math::Camera& camera) {
     camera_ = const_cast<math::Camera*>(&camera);
 

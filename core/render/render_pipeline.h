@@ -61,6 +61,7 @@ public:
     // 阴影贴图分辨率：必须在 init() 之前调用（shadow map 在初始化时创建）
     void set_shadow_map_size(int size) { if (!initialized_) shadow_map_size_ = size; }
     int shadow_map_size() const { return shadow_map_size_; }
+    bool resize_shadow_map(RenderContext* ctx);
     void set_shadow_enabled(bool enabled) { shadow_enabled_ = enabled; }
     bool shadow_enabled() const { return shadow_enabled_; }
     // 阴影正交盒半径（世界单位），阴影盒跟随相机焦点

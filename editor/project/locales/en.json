@@ -5,6 +5,7 @@
     "menu.load_scene": "Load Scene...",
     "menu.open_project": "Open Project...",
     "menu.import_asset": "Import Asset...",
+    "menu.package": "Package Game (GryceGC)...",
     "menu.exit": "Exit",
     "menu.edit": "Edit",
     "menu.undo": "Undo",
@@ -213,6 +214,8 @@
     "create_entity.cat.script": "Script",
     "create_entity.dialog_title_child": "Create Child of {0}",
     "inspector.remove_component": "Remove Component",
+    "script_editor.save": "Save",
+    "script_editor.reload": "Reload",
 
     "settings.title": "Settings",
     "settings.theme": "Theme",

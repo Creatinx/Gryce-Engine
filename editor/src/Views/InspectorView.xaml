@@ -356,6 +356,37 @@
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
+
+                                    <!-- Script exposed props (GryceSRT) -->
+                                    <ItemsControl ItemsSource="{Binding ScriptProps}"
+                                                  Margin="8,6,0,0"
+                                                  Visibility="{Binding HasScriptProps, Converter={StaticResource BoolToVisibility}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type models:ScriptPropModel}">
+                                                <Grid Margin="0,2">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" MinWidth="80"/>
+                                                        <ColumnDefinition Width="*" MinWidth="100"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding Name}"
+                                                               Style="{StaticResource PropertyLabelStyle}"
+                                                               Margin="0,0,8,0"/>
+                                                    <TextBox Grid.Column="1"
+                                                             Style="{StaticResource PropertyTextBoxStyle}"
+                                                             Text="{Binding FloatValue, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                             Visibility="{Binding Type, Converter={StaticResource IntZeroToVisibility}}"
+                                                             LostFocus="OnScriptPropFloatChanged"
+                                                             Tag="{Binding}"/>
+                                                    <TextBox Grid.Column="1"
+                                                             Style="{StaticResource PropertyTextBoxStyle}"
+                                                             Text="{Binding StringValue, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                             Visibility="{Binding Type, Converter={StaticResource IntOneToVisibility}}"
+                                                             LostFocus="OnScriptPropStringChanged"
+                                                             Tag="{Binding}"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                 </StackPanel>
                             </Border>
                         </DataTemplate>

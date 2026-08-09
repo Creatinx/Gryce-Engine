@@ -49,6 +49,62 @@ public static class ScriptAPI
         return (rc, DecodeError(err));
     }
 
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int GScript_GetPropCount(GEntityHandle entity, out int count);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int GScript_GetPropInfo(GEntityHandle entity, int index,
+        [Out] byte[] nameBuf, int nameCap, out int type);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int GScript_GetPropFloat(GEntityHandle entity,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name, out float value);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int GScript_SetPropFloat(GEntityHandle entity,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name, float value);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int GScript_GetPropString(GEntityHandle entity,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name, [Out] byte[] valueBuf, int valueCap);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int GScript_SetPropString(GEntityHandle entity,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string value);
+
+    public static int GetPropCount(GEntityHandle entity)
+    {
+        if (GScript_GetPropCount(entity, out int count) != 0) return 0;
+        return count;
+    }
+
+    public static (string Name, int Type)? GetPropInfo(GEntityHandle entity, int index)
+    {
+        var name = new byte[128];
+        if (GScript_GetPropInfo(entity, index, name, name.Length, out int type) != 0) return null;
+        return (DecodeError(name), type);
+    }
+
+    public static float? GetPropFloat(GEntityHandle entity, string name)
+    {
+        if (GScript_GetPropFloat(entity, name, out float value) != 0) return null;
+        return value;
+    }
+
+    public static bool SetPropFloat(GEntityHandle entity, string name, float value)
+        => GScript_SetPropFloat(entity, name, value) == 0;
+
+    public static string? GetPropString(GEntityHandle entity, string name)
+    {
+        var buf = new byte[512];
+        if (GScript_GetPropString(entity, name, buf, buf.Length) != 0) return null;
+        return DecodeError(buf);
+    }
+
+    public static bool SetPropString(GEntityHandle entity, string name, string value)
+        => GScript_SetPropString(entity, name, value) == 0;
+
     private static string DecodeError(byte[] buf)
     {
         int len = 0;

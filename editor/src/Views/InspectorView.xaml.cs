@@ -4,6 +4,7 @@ using GryceEngine.Editor.Services;
 using GryceEngine.Editor.ViewModels;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 
 namespace GryceEngine.Editor.Views;
 
@@ -92,6 +93,24 @@ public partial class InspectorView : UserControl
     private void OnPropertyStringChanged(object sender, RoutedEventArgs e)
     {
         OnPropertyValueChanged(sender, e);
+    }
+
+    private void OnScriptPropFloatChanged(object sender, RoutedEventArgs e)
+    {
+        if (VM?.SelectedEntity == null) return;
+        if (sender is FrameworkElement fe && fe.Tag is ScriptPropModel prop)
+        {
+            VM.WriteScriptProp(VM.SelectedEntity.Handle, prop.Name, prop.FloatValue);
+        }
+    }
+
+    private void OnScriptPropStringChanged(object sender, RoutedEventArgs e)
+    {
+        if (VM?.SelectedEntity == null) return;
+        if (sender is FrameworkElement fe && fe.Tag is ScriptPropModel prop)
+        {
+            VM.WriteScriptProp(VM.SelectedEntity.Handle, prop.Name, prop.StringValue);
+        }
     }
 
     private void OnEditMaterialClick(object sender, RoutedEventArgs e)
