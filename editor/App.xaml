@@ -764,7 +764,7 @@
                                             <Border x:Name="BtnBd"
                                                     Background="{DynamicResource ControlFillColorDefaultBrush}"
                                                     BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
-                                                    BorderThickness="1" CornerRadius="6">
+                                                    BorderThickness="1" CornerRadius="6" MinHeight="30">
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*"/>
@@ -802,16 +802,14 @@
                                          Style="{x:Null}" Visibility="Hidden" Focusable="False"
                                          Background="Transparent" BorderThickness="0"/>
                                 <Popup x:Name="PART_Popup"
-                                       AllowsTransparency="True" Placement="Bottom"
+                                       Placement="Bottom"
                                        IsOpen="{TemplateBinding IsDropDownOpen}"
-                                       Focusable="False" PopupAnimation="Fade" VerticalOffset="4"
+                                       Focusable="False" PopupAnimation="None" VerticalOffset="4"
                                        MinWidth="{TemplateBinding ActualWidth}">
-                                    <Border Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"
+                                    <Border MinHeight="40"
+                                            Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"
                                             BorderBrush="{DynamicResource SurfaceStrokeColorDefaultBrush}"
                                             BorderThickness="1" CornerRadius="8" Padding="4">
-                                        <Border.Effect>
-                                            <DropShadowEffect ShadowDepth="4" BlurRadius="12" Opacity="0.3" Color="#000000"/>
-                                        </Border.Effect>
                                         <ScrollViewer MaxHeight="260"
                                                       CanContentScroll="True">
                                             <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>

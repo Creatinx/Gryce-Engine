@@ -127,7 +127,7 @@
                             <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                         </MenuItem.Icon>
                     </MenuItem>
-                    <MenuItem Header="Project Settings..." Click="OnProjectSettingsClick">
+                    <MenuItem Header="{loc:Loc menu.project_settings}" Click="OnProjectSettingsClick">
                         <MenuItem.Icon>
                             <TextBlock Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                         </MenuItem.Icon>

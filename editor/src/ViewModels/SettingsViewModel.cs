@@ -75,7 +75,12 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _selectedLanguageIndex = value; OnPropertyChanged(); }
     }
 
-    public string[] Languages { get; } = { "English", "中文 (Chinese)" };
+    // 语言选项按当前 UI 语言显示（英文界面不混中文）
+    public string[] Languages => new[]
+    {
+        LocalizationService.Instance.T("settings.language_en"),
+        LocalizationService.Instance.T("settings.language_zh")
+    };
 
     public string WorkspaceText => string.Format(
         LocalizationService.Instance.T("settings.workspace"),

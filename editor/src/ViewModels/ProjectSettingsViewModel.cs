@@ -8,7 +8,11 @@ namespace GryceEngine.Editor.ViewModels;
 /// <summary>项目设置（渲染后端、管线质量）ViewModel，风格与 Settings 一致。</summary>
 public class ProjectSettingsViewModel : INotifyPropertyChanged
 {
-    public string[] RenderApis { get; } = { "Vulkan (默认)", "OpenGL (兼容)" };
+    public string[] RenderApis => new[]
+    {
+        LocalizationService.Instance.T("project_settings.api_vulkan"),
+        LocalizationService.Instance.T("project_settings.api_opengl")
+    };
 
     public string[] ToneMapModes { get; } = { "None", "Reinhard", "ACES" };
 

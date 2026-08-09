@@ -110,7 +110,7 @@ public partial class ViewportView : UserControl, IDisposable
         _overlay?.SetHint(_isGameView
             ? LocalizationService.Instance.T("viewport.game_hint")
             : _is2DMode
-                ? "2D Scene Editor — middle/right drag: pan, wheel: zoom"
+                ? LocalizationService.Instance.T("viewport.mode_2d_hint")
                 : LocalizationService.Instance.T("viewport.scene_hint"));
     }
 
@@ -1638,7 +1638,7 @@ public partial class ViewportView : UserControl, IDisposable
         TabScene.IsChecked = false;
         Tab2D.IsChecked = true;
         TabGame.IsChecked = false;
-        GizmoInfo.Text = "2D Scene";
+        GizmoInfo.Text = LocalizationService.Instance.T("viewport.scene_2d");
         GizmoOverlay.Visibility = Visibility.Visible;
         UpdateSceneHint();
     }

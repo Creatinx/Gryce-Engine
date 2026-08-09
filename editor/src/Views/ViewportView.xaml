@@ -33,13 +33,13 @@
                                   Click="OnSceneTabClick">
                         <ToggleButton.ContextMenu>
                             <ContextMenu>
-                                <MenuItem Header="释放 3D 场景内存" Click="OnRelease3DSceneClick"/>
+                                <MenuItem Header="{loc:Loc viewport.release_3d_memory}" Click="OnRelease3DSceneClick"/>
                             </ContextMenu>
                         </ToggleButton.ContextMenu>
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
                                        FontSize="11" Margin="0,0,6,0"/>
-                            <TextBlock Text="3D"/>
+                            <TextBlock Text="{loc:Loc viewport.tab_3d}"/>
                         </StackPanel>
                     </ToggleButton>
                     <ToggleButton x:Name="Tab2D"
@@ -48,13 +48,13 @@
                                   Click="On2DTabClick">
                         <ToggleButton.ContextMenu>
                             <ContextMenu>
-                                <MenuItem Header="释放 2D 场景内存" Click="OnRelease2DSceneClick"/>
+                                <MenuItem Header="{loc:Loc viewport.release_2d_memory}" Click="OnRelease2DSceneClick"/>
                             </ContextMenu>
                         </ToggleButton.ContextMenu>
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE8B9;" FontFamily="Segoe MDL2 Assets"
                                        FontSize="11" Margin="0,0,6,0"/>
-                            <TextBlock Text="2D"/>
+                            <TextBlock Text="{loc:Loc viewport.tab_2d}"/>
                         </StackPanel>
                     </ToggleButton>
                     <ToggleButton x:Name="TabGame"
