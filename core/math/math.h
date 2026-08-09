@@ -304,4 +304,28 @@ struct GRYCE_API Quaternionf {
 
 inline Matrix4f Matrix4f::from_quaternion(const Quaternionf& q) { return q.to_matrix(); }
 
+// ---------------------------------------------------------------------------
+// billboard_matrix — 广告牌矩阵（Sprite3D）
+// 忽略实体自身旋转，把局部 +Z 轴定向到朝向相机的方向（Y 尽量对齐 up），
+// 保留平移与缩放。用于贴图四边形在 3D 世界中始终面向相机。
+// ---------------------------------------------------------------------------
+inline Matrix4f billboard_matrix(const Vector3f& position, const Vector3f& scale,
+                                 const Vector3f& camera_position, const Vector3f& up = Vector3f(0.0f, 1.0f, 0.0f)) {
+    const Vector3f dir = (camera_position - position).normalized();
+    Vector3f x = up.cross(dir);
+    if (x.length_sq() < 1e-8f) {
+        x = Vector3f(1.0f, 0.0f, 0.0f);
+    } else {
+        x = x.normalized();
+    }
+    const Vector3f y = dir.cross(x);
+
+    Matrix4f m = Matrix4f::identity();
+    m.m[0] = x.x * scale.x; m.m[1] = x.y * scale.x; m.m[2] = x.z * scale.x;
+    m.m[4] = y.x * scale.y; m.m[5] = y.y * scale.y; m.m[6] = y.z * scale.y;
+    m.m[8] = dir.x * scale.z; m.m[9] = dir.y * scale.z; m.m[10] = dir.z * scale.z;
+    m.m[12] = position.x; m.m[13] = position.y; m.m[14] = position.z;
+    return m;
+}
+
 } // namespace gryce_engine::math

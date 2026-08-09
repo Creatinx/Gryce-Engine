@@ -1238,11 +1238,13 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     math::Matrix4f view;
     if (camera_top_left_origin_) {
         view = math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::rotate(-camera_rotation_, math::Vector3f(0.0f, 0.0f, 1.0f))
              * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
     } else {
         math::Vector2f screen_center(screen_width * 0.5f, screen_height * 0.5f);
         view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
              * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::rotate(-camera_rotation_, math::Vector3f(0.0f, 0.0f, 1.0f))
              * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
     }
     view_proj_ = ortho_ * view;
@@ -1282,7 +1284,8 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     set_blend_mode(BlendMode::Alpha);
 }
 
-void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom, bool top_left_origin) {
+void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom, bool top_left_origin,
+                                  float rotation) {
     // 切换摄像机前必须先提交当前已缓冲的顶点，确保它们使用绘制时的 view_proj 矩阵，
     // 否则 UI 层（top_left_origin）顶点会在后续 flush 时被普通摄像机矩阵变换到屏幕中心。
     flush_batches();
@@ -1290,16 +1293,19 @@ void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom, bool
 
     camera_center_ = center;
     camera_zoom_ = zoom <= 0.0f ? 1.0f : zoom;
+    camera_rotation_ = rotation;
     camera_top_left_origin_ = top_left_origin;
     if (screen_width_ > 0.0f && screen_height_ > 0.0f) {
         math::Matrix4f view;
         if (top_left_origin) {
             view = math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+                 * math::Matrix4f::rotate(-camera_rotation_, math::Vector3f(0.0f, 0.0f, 1.0f))
                  * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
         } else {
             math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
             view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
                  * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+                 * math::Matrix4f::rotate(-camera_rotation_, math::Vector3f(0.0f, 0.0f, 1.0f))
                  * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
         }
         view_proj_ = ortho_ * view;
@@ -1307,11 +1313,15 @@ void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom, bool
 }
 
 math::Vector2f VulkanRenderer2D::world_to_screen(const math::Vector2f& world) const {
+    const float c = std::cos(-camera_rotation_);
+    const float s = std::sin(-camera_rotation_);
+    const math::Vector2f d = world - camera_center_;
+    const math::Vector2f rotated(d.x * c - d.y * s, d.x * s + d.y * c);
     if (camera_top_left_origin_) {
-        return (world - camera_center_) * camera_zoom_;
+        return rotated * camera_zoom_;
     }
     math::Vector2f screen_center(screen_width_ * 0.5f, screen_height_ * 0.5f);
-    return screen_center + (world - camera_center_) * camera_zoom_;
+    return screen_center + rotated * camera_zoom_;
 }
 
 void VulkanRenderer2D::end_frame() {

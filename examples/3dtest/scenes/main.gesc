@@ -3,6 +3,7 @@
     {
       "components": [
         {
+          "canvas_layer": 0,
           "color": [
             0.20000000298023224,
             0.20000000298023224,
@@ -42,6 +43,7 @@
     {
       "components": [
         {
+          "canvas_layer": 0,
           "color": [
             1.0,
             1.0,
@@ -51,7 +53,7 @@
           "enabled": true,
           "font_size": 26.0,
           "render_order": 10,
-          "text": "FPS: 67.1",
+          "text": "FPS: 219.9",
           "type": "Label"
         }
       ],
@@ -81,6 +83,7 @@
     {
       "components": [
         {
+          "canvas_layer": 0,
           "color": [
             0.15000000596046448,
             0.15000000596046448,
@@ -120,6 +123,7 @@
     {
       "components": [
         {
+          "canvas_layer": 0,
           "color": [
             1.0,
             0.6499999761581421,
@@ -159,6 +163,7 @@
     {
       "components": [
         {
+          "canvas_layer": 0,
           "color": [
             0.0,
             1.0,
@@ -210,6 +215,7 @@
     {
       "components": [
         {
+          "canvas_layer": 0,
           "color": [
             1.0,
             0.0,
@@ -354,6 +360,7 @@
     {
       "components": [
         {
+          "billboard": false,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -448,6 +455,7 @@
     {
       "components": [
         {
+          "billboard": false,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -590,6 +598,7 @@
     {
       "components": [
         {
+          "billboard": false,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -664,6 +673,7 @@
     {
       "components": [
         {
+          "billboard": false,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -738,6 +748,7 @@
     {
       "components": [
         {
+          "billboard": false,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -898,6 +909,231 @@
         ]
       },
       "uuid": "a607c5f3-324d-462f-b273-e5466942837b"
+    },
+    {
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              1.0,
+              1.0,
+              0.0
+            ],
+            "albedo_map_path": "",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 0.30000001192092896,
+            "preset_name": "",
+            "roughness": 0.5,
+            "roughness_map_path": "",
+            "softness": 0.0,
+            "two_sided": true,
+            "use_albedo_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": true,
+            "use_metallic_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "is_trigger": true,
+          "size": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "type": "BoxCollider"
+        }
+      ],
+      "enabled": true,
+      "name": "TriggerZone",
+      "parent": null,
+      "transform": {
+        "position": [
+          40.0,
+          10.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          6.0,
+          6.0,
+          6.0
+        ]
+      },
+      "uuid": "cf93821c-669c-4d0d-8f8d-0ed6b5ff513a"
+    },
+    {
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.800000011920929,
+              0.20000000298023224,
+              0.20000000298023224
+            ],
+            "albedo_map_path": "",
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.5,
+            "roughness_map_path": "",
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": true,
+            "use_metallic_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "acceleration": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "angular_damping": 0.0,
+          "angular_velocity": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "friction": 0.5,
+          "inertia_tensor": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "is_kinematic": false,
+          "linear_damping": 0.0,
+          "mass": 1.0,
+          "restitution": 0.30000001192092896,
+          "type": "RigidBody",
+          "use_gravity": true,
+          "velocity": [
+            0.0,
+            -58.69603729248047,
+            0.0
+          ]
+        },
+        {
+          "center": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "enabled": true,
+          "is_trigger": false,
+          "radius": 0.5,
+          "type": "SphereCollider"
+        }
+      ],
+      "enabled": true,
+      "name": "TriggerBall",
+      "parent": null,
+      "transform": {
+        "position": [
+          40.0,
+          -145.72183227539063,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          2.0,
+          2.0,
+          2.0
+        ]
+      },
+      "uuid": "ed363a99-c8f5-4c62-b88b-0d2fb20adc25"
     }
   ],
   "name": "main",

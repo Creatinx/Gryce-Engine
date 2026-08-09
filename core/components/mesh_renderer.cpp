@@ -51,6 +51,7 @@ void MeshRenderer::invalidate_gpu_mesh() {
 
 void MeshRenderer::serialize(nlohmann::json& out) const {
     out["mesh_path"] = mesh_path;
+    out["billboard"] = billboard;
     if (material) {
         nlohmann::json mat_json;
         material->serialize(mat_json);
@@ -60,6 +61,7 @@ void MeshRenderer::serialize(nlohmann::json& out) const {
 
 void MeshRenderer::deserialize(const nlohmann::json& in) {
     mesh_path = in.value("mesh_path", "");
+    billboard = in.value("billboard", false);
     ensure_material();
     auto it = in.find("material");
     if (it != in.end()) {

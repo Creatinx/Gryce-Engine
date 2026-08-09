@@ -5,6 +5,7 @@
 #include "ecs/world.h"
 #include "ecs/systems/animator_system.h"
 #include "ecs/systems/fracture_system.h"
+#include "ecs/systems/subviewport_system.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "scene/scene_serializer.h"
@@ -420,6 +421,7 @@ int GCore_Init(const GCoreInitDesc* desc) {
     // （物理系统位于 GrycePhysics.dll，由 GPhysics_AttachSystems 注册。）
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::AnimatorSystem>());
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::FractureSystem>());
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::SubViewportSystem>());
     gryce_core::g_core_state.world->init();
 
     gryce_core::g_core_state.entity_map.rebuild(gryce_core::g_core_state.world->scene());

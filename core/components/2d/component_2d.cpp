@@ -61,6 +61,7 @@ Transform2D world_transform_2d(const scene::Entity* entity) {
 uint64_t Component2D::render_hash() const {
     uint64_t h = hash_string(type());
     hash_combine(h, static_cast<uint64_t>(enabled));
+    hash_combine(h, static_cast<uint64_t>(canvas_layer));
     hash_combine(h, static_cast<uint64_t>(render_order));
     math::Vector2f p = position();
     hash_combine(h, hash_float(p.x));

@@ -203,6 +203,7 @@ GRYCE_REFLECT_END()
 // ---------------------------------------------------------------------------
 GRYCE_REFLECT_CLASS(MeshRenderer, Component)
     GRYCE_REFLECT_FIELD(mesh_path)
+    GRYCE_REFLECT_FIELD(billboard)
 GRYCE_REFLECT_END()
 
 GRYCE_REFLECT_CLASS(SkinnedMeshRenderer, Component)

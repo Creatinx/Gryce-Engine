@@ -75,6 +75,7 @@ target_sources(GryceCore
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
         ecs/systems/fracture_system.cpp
+        ecs/systems/subviewport_system.cpp
         # Render 核心（与 backend 无关）
         render/render_context.cpp
         render/material.cpp

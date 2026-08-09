@@ -72,7 +72,9 @@ void Sprite2D::draw(render::IRenderer2D* renderer) {
 
     // 按需加载贴图：CPU 数据由 AssetManager 缓存，GPU 纹理按路径共享。
     // 绘制只传句柄，不再解析/缓存裸指针。
-    if (!texture_path.empty() && !albedo_handle.is_valid()) {
+    if (runtime_texture.is_valid()) {
+        albedo_handle = runtime_texture; // SubViewport 输出，无需加载路径
+    } else if (!texture_path.empty() && !albedo_handle.is_valid()) {
         albedo_handle = sprite_texture_cache().get_or_create(renderer, texture_path);
     }
     if (!normal_map_path.empty() && !normal_handle.is_valid()) {

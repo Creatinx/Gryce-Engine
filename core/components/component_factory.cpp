@@ -3,6 +3,7 @@
 #include "components/transform.h"
 #include "components/prefab_instance.h"
 #include "components/mesh_renderer.h"
+#include "components/subviewport.h"
 #include "components/skinned_mesh_renderer.h"
 #include "components/terrain.h"
 #include "components/physical_material.h"
@@ -59,6 +60,8 @@ void register_builtin_components() {
                           "定义 3D 相机参数（FOV、裁剪面、背景色）。");
     factory.register_type("Light", []() { return std::make_unique<Light>(); },
                           "3D 光源：方向光、点光源或聚光灯。");
+    factory.register_type("SubViewport", []() { return std::make_unique<SubViewport>(); },
+                          "运行时 3D→2D 视口：把场景渲染到纹理并注入 Sprite2D。");
 
     // 2D 节点与渲染
     factory.register_type("Node2D", []() { return std::make_unique<Node2D>(); },

@@ -59,6 +59,11 @@ inline uint64_t hash_string(const std::string& s) {
 // ---------------------------------------------------------------------------
 class GRYCE_API Component2D : public Component {
 public:
+    // Canvas 层（Godot CanvasLayer 语义）：不同层的 2D 内容分组绘制，
+    // 层号升序（小号先画/靠底），每层可绑定自己的 Camera2D。
+    // 默认 0 = 世界层；>= 1000 的层按屏幕空间（UI/HUD）处理。
+    int canvas_layer = 0;
+
     // 2D 绘制顺序，数值越大越靠上（后绘制）。
     // Label 等 UI 元素应设在 ColorRect/Shape 之上。
     int render_order = 0;
@@ -79,14 +84,16 @@ public:
 protected:
     Component2D() = default;
 
-    // 序列化/反序列化 2D 组件公共字段（render_order、enabled）
+    // 序列化/反序列化 2D 组件公共字段（canvas_layer、render_order、enabled）
     void serialize_base(nlohmann::json& out) const {
         out["enabled"] = enabled;
+        out["canvas_layer"] = canvas_layer;
         out["render_order"] = render_order;
     }
 
     void deserialize_base(const nlohmann::json& in) {
         enabled = in.value("enabled", true);
+        canvas_layer = in.value("canvas_layer", 0);
         render_order = in.value("render_order", 0);
     }
 

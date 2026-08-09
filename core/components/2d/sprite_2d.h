@@ -26,6 +26,8 @@ public:
     // 渲染线程执行时经 generation 校验解析，无悬垂裸指针。
     mutable render::RHITextureHandle albedo_handle;
     mutable render::RHITextureHandle normal_handle;
+    // SubViewport 注入的运行时纹理（3D→2D）；有效时优先于 texture_path 使用
+    render::RHITextureHandle runtime_texture;
 
     Sprite2D() = default;
     Sprite2D(const std::string& tex, float w, float h)

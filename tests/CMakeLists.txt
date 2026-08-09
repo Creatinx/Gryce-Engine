@@ -15,6 +15,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             entity_io_test.cpp
             play_mode_test.cpp
             transform2d_test.cpp
+            canvas_layer_test.cpp
             asset_test.cpp
             physics_3d_test.cpp
             physics_2d_test.cpp

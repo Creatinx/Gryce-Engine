@@ -53,9 +53,11 @@ public:
     void end_frame() override;
     void set_blend_mode(BlendMode mode) override;
 
-    void set_camera(const math::Vector2f& center, float zoom, bool top_left_origin = false) override;
+    void set_camera(const math::Vector2f& center, float zoom, bool top_left_origin = false,
+                    float rotation = 0.0f) override;
     math::Vector2f camera_center() const override { return camera_center_; }
     float camera_zoom() const override { return camera_zoom_; }
+    float camera_rotation() const override { return camera_rotation_; }
     math::Vector2f world_to_screen(const math::Vector2f& world) const override;
     math::Vector2f screen_size() const override { return math::Vector2f(screen_width_, screen_height_); }
 
@@ -151,6 +153,7 @@ private:
     math::Matrix4f view_proj_;
     math::Vector2f camera_center_ = math::Vector2f::zero();
     float camera_zoom_ = 1.0f;
+    float camera_rotation_ = 0.0f;
     bool camera_top_left_origin_ = false;
     float screen_width_ = 0.0f;
     float screen_height_ = 0.0f;

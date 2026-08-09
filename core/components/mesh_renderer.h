@@ -22,6 +22,8 @@ class GRYCE_API MeshRenderer : public Component {
 public:
     std::string mesh_path;
     std::unique_ptr<render::Material> material;
+    // 广告牌（Sprite3D）：忽略自身旋转，始终面向相机（局部 +Z 朝向相机）
+    bool billboard = false;
 
     MeshRenderer();
     explicit MeshRenderer(const std::string& path);

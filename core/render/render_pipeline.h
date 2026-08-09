@@ -130,6 +130,8 @@ public:
     // 视口输出纹理（tonemap 后的 LDR 结果）；未启用或创建失败返回 nullptr。
     // 仅读取纹理对象指针/id，主线程调用安全（纹理 id 创建后不可变）。
     ITexture* viewport_color_texture() const;
+    // 视口输出纹理的 RHI 句柄（供 SubViewport 等运行时功能注入 2D 组件）
+    RHITextureHandle viewport_color_handle() const { return viewport_color_; }
 
     // 重建 HDR / 视口渲染目标（编辑器 Viewport 面板尺寸变化时调用）。
     // 线程约束：调用前必须 pause_render_thread()，调用后 resume_render_thread()。

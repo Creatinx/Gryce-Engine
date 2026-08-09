@@ -111,17 +111,19 @@ public:
     // -----------------------------------------------------------------------
     // 2D 摄像机（可选）
     // -----------------------------------------------------------------------
-    // 设置当前活动摄像机的世界中心坐标与缩放。默认不调用时等价于
-    // center=(0,0), zoom=1。
+    // 设置当前活动摄像机的世界中心坐标、缩放与 Z 旋转（弧度）。
+    // 默认不调用时等价于 center=(0,0), zoom=1, rotation=0。
     // top_left_origin=true 时坐标系以屏幕左上角为原点（UI/HUD 层），
     // 此时 center=(0,0), zoom=1 表示世界 (0,0) 对齐屏幕左上角。
-    virtual void set_camera(const math::Vector2f& center, float zoom, bool top_left_origin = false) {
-        (void)center; (void)zoom; (void)top_left_origin;
+    virtual void set_camera(const math::Vector2f& center, float zoom, bool top_left_origin = false,
+                            float rotation = 0.0f) {
+        (void)center; (void)zoom; (void)top_left_origin; (void)rotation;
     }
 
     // 获取当前摄像机状态（用于 RenderSystem2D 做世界→屏幕变换）
     virtual math::Vector2f camera_center() const { return math::Vector2f::zero(); }
     virtual float camera_zoom() const { return 1.0f; }
+    virtual float camera_rotation() const { return 0.0f; }
 
     // 将世界坐标转换为屏幕像素坐标（考虑当前 camera center/zoom + viewport）
     virtual math::Vector2f world_to_screen(const math::Vector2f& world) const { return world; }

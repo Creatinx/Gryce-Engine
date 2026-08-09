@@ -318,3 +318,38 @@ TEST(MathQuaternion, Conjugate) {
     EXPECT_FLOAT_EQ(c.z, -3.0f);
     EXPECT_FLOAT_EQ(c.w, 4.0f);
 }
+
+// ---------------------------------------------------------------------------
+// Billboard（Sprite3D）
+// ---------------------------------------------------------------------------
+TEST(MathBillboard, FacesCameraAlongZ) {
+    // 物体在原点，相机在 +Z：局部 +Z 轴应指向 +Z（朝向相机）
+    Vector3f pos(0.0f, 0.0f, 0.0f);
+    Vector3f cam(0.0f, 0.0f, 10.0f);
+    Matrix4f m = billboard_matrix(pos, Vector3f::one(), cam);
+
+    EXPECT_NEAR(m.m[8], 0.0f, 1e-4f);   // z 轴 x 分量
+    EXPECT_NEAR(m.m[9], 0.0f, 1e-4f);   // z 轴 y 分量
+    EXPECT_NEAR(m.m[10], 1.0f, 1e-4f);  // z 轴 z 分量
+    EXPECT_NEAR(m(0, 3), 0.0f, 1e-4f);  // 平移保留
+    EXPECT_NEAR(m(1, 3), 0.0f, 1e-4f);
+    EXPECT_NEAR(m(2, 3), 0.0f, 1e-4f);
+}
+
+TEST(MathBillboard, ScalesPreserved) {
+    Vector3f pos(1.0f, 2.0f, 3.0f);
+    Vector3f cam(1.0f, 2.0f, 30.0f);
+    Vector3f scale(4.0f, 5.0f, 6.0f);
+    Matrix4f m = billboard_matrix(pos, scale, cam);
+
+    // 基向量长度 = 对应缩放
+    const float len_x = std::sqrt(m.m[0]*m.m[0] + m.m[1]*m.m[1] + m.m[2]*m.m[2]);
+    const float len_y = std::sqrt(m.m[4]*m.m[4] + m.m[5]*m.m[5] + m.m[6]*m.m[6]);
+    const float len_z = std::sqrt(m.m[8]*m.m[8] + m.m[9]*m.m[9] + m.m[10]*m.m[10]);
+    EXPECT_NEAR(len_x, 4.0f, 1e-3f);
+    EXPECT_NEAR(len_y, 5.0f, 1e-3f);
+    EXPECT_NEAR(len_z, 6.0f, 1e-3f);
+    EXPECT_NEAR(m(0, 3), 1.0f, 1e-4f);
+    EXPECT_NEAR(m(1, 3), 2.0f, 1e-4f);
+    EXPECT_NEAR(m(2, 3), 3.0f, 1e-4f);
+}

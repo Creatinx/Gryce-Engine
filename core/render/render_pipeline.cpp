@@ -919,7 +919,14 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         scene,
         [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
             if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
-            const math::Matrix4f& model = entity->world_transform();
+            math::Matrix4f model = entity->world_transform();
+            if (mr->billboard && camera_) {
+                // Sprite3D 广告牌：忽略自身旋转，局部 +Z 朝向相机
+                model = math::billboard_matrix(
+                    math::Vector3f(model(0, 3), model(1, 3), model(2, 3)),
+                    entity->transform()->scale,
+                    camera_->position());
+            }
             if (!is_inside_frustum(camera_frustum, model, mr->mesh_path)) return;
             const Material* mat = mr->material.get();
             const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;

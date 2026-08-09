@@ -27,6 +27,7 @@ public partial class ViewportView : UserControl, IDisposable
     private bool _rendererInitialized;
     private volatile bool _isGameView;
     private volatile bool _windowMinimized;
+    private bool _is2DMode;
     private string _displayMode = "Shaded";
     private (int W, int H) _appliedPixelSize;
     private double _overlayScale = -1.0;
@@ -559,9 +560,16 @@ public partial class ViewportView : UserControl, IDisposable
         _lastMouseX = x;
         _lastMouseY = y;
 
-        if (_rightDown) _sceneCamera.Orbit(dx, dy);
-        else if (_middleDown) _sceneCamera.Pan(dx, dy);
-        else if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
+        if (_is2DMode)
+        {
+            if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
+        }
+        else
+        {
+            if (_rightDown) _sceneCamera.Orbit(dx, dy);
+            else if (_middleDown) _sceneCamera.Pan(dx, dy);
+            else if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
+        }
     }
 
     // =====================================================================
@@ -665,17 +673,24 @@ public partial class ViewportView : UserControl, IDisposable
         }
 
         // Scene mode
-        if (_rightDown)
+        if (_is2DMode)
         {
-            _sceneCamera.Orbit(dx, dy);
+            if (_leftDown && _dragCaptured) UpdateGizmoDrag(pos.X, pos.Y);
         }
-        else if (_middleDown)
+        else
         {
-            _sceneCamera.Pan(dx, dy);
-        }
-        else if (_leftDown && _dragCaptured)
-        {
-            UpdateGizmoDrag(pos.X, pos.Y);
+            if (_rightDown)
+            {
+                _sceneCamera.Orbit(dx, dy);
+            }
+            else if (_middleDown)
+            {
+                _sceneCamera.Pan(dx, dy);
+            }
+            else if (_leftDown && _dragCaptured)
+            {
+                UpdateGizmoDrag(pos.X, pos.Y);
+            }
         }
     }
 
@@ -966,6 +981,38 @@ public partial class ViewportView : UserControl, IDisposable
     {
         if (VM == null) return;
         var px = GetPixelSize();
+
+        // 2D 模式：2D 覆盖层为屏幕空间绘制（1 世界单位 ≈ 1 像素），
+        // 直接按实体原点屏幕距离拾取最近者。
+        if (_is2DMode)
+        {
+            double best = 22.0;
+            GEntityHandle bestHandle = GEntityHandle.Null;
+            try
+            {
+                int count = EntityAPI.GEntity_GetCount();
+                for (int i = 0; i < count; i++)
+                {
+                    var h = EntityAPI.GEntity_GetAt(i);
+                    if (h == GEntityHandle.Null || h == _mainCamera) continue;
+                    if (EntityAPI.GEntity_GetLocalPosition(h, out var p) != 0) continue;
+                    double d = Math.Sqrt((p.X - sx) * (p.X - sx) + (p.Y - sy) * (p.Y - sy));
+                    if (d < best)
+                    {
+                        best = d;
+                        bestHandle = h;
+                    }
+                }
+            }
+            catch { /* ignore */ }
+
+            if (bestHandle != GEntityHandle.Null)
+                VM.SelectEntityByHandle(bestHandle);
+            else
+                VM.SelectedEntity = null;
+            return;
+        }
+
         if (_mainCamera == GEntityHandle.Null) _mainCamera = FindMainCamera();
         if (_mainCamera == GEntityHandle.Null) return;
 
@@ -1194,6 +1241,23 @@ public partial class ViewportView : UserControl, IDisposable
         var center = cam.ProjectToScreen(pos.X, pos.Y, pos.Z, px.W, px.H);
         if (double.IsNaN(center.X)) return;
 
+        // 2D 模式：仅平移，直接在屏幕平面拖动（1 世界单位 ≈ 1 像素）
+        if (_is2DMode)
+        {
+            _dragAxis = 0;
+            _dragMode = "Translate2D";
+            _dragStartScreenX = sx;
+            _dragStartScreenY = sy;
+            _gizmoScreenX = center.X;
+            _gizmoScreenY = center.Y;
+            _dragStartPosX = pos.X; _dragStartPosY = pos.Y; _dragStartPosZ = pos.Z;
+            EntityAPI.GEntity_GetLocalScale(selected.Handle, out var scl2);
+            _dragStartScaleX = scl2.X; _dragStartScaleY = scl2.Y; _dragStartScaleZ = scl2.Z;
+            EntityAPI.GEntity_GetLocalRotation(selected.Handle, out _dragStartRot);
+            _dragCaptured = true;
+            return;
+        }
+
         double best = 18.0;
         int bestAxis = -1;
         if (VM.GizmoMode == "Rotate")
@@ -1253,6 +1317,20 @@ public partial class ViewportView : UserControl, IDisposable
         if (selected == null || _dragAxis < 0 || VM == null) return;
         var px = GetPixelSize();
         var cam = _sceneCamera;
+
+        if (_dragMode == "Translate2D")
+        {
+            double nx = _dragStartPosX + (sx - _dragStartScreenX);
+            double ny = _dragStartPosY + (sy - _dragStartScreenY);
+            lock (_gizmoApplyLock)
+            {
+                _gizmoApplyEntity = selected.Handle;
+                _gizmoApplyPos = new GVec3((float)nx, (float)ny, (float)_dragStartPosZ);
+                _gizmoApplyMask |= 1;
+                _gizmoApplyDirty = true;
+            }
+            return;
+        }
 
         bool local = VM.IsGizmoLocal;
         var axes = local ? QuatToBasis(_dragStartRot) : QuatRot.Identity;
@@ -1541,6 +1619,15 @@ public partial class ViewportView : UserControl, IDisposable
         catch { /* ignore if not supported */ }
 
         VM?.AppendConsole($"[Viewport] Display mode: {_displayMode}");
+    }
+
+    private void OnMode2D3DClick(object sender, RoutedEventArgs e)
+    {
+        _is2DMode = !_is2DMode;
+        BtnMode2D3D.Content = _is2DMode ? "2D" : "3D";
+        VM?.AppendConsole(_is2DMode
+            ? "[Viewport] 2D editing mode: screen-space pick + XY translate gizmo"
+            : "[Viewport] 3D editing mode");
     }
 
     public void Dispose()
