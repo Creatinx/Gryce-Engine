@@ -1,4 +1,4 @@
-<Window x:Class="GryceEngine.Editor.Views.AddComponentDialog"
+﻿<Window x:Class="GryceEngine.Editor.Views.AddComponentDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
@@ -81,7 +81,7 @@
 
         <!-- Description -->
         <Border Grid.Row="2" Margin="0,10,0,0" Padding="10,7" CornerRadius="6"
-                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="1" MinHeight="36">
             <TextBlock x:Name="DescriptionText"

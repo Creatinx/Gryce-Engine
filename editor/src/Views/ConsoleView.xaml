@@ -1,4 +1,4 @@
-<UserControl x:Class="GryceEngine.Editor.Views.ConsoleView"
+﻿<UserControl x:Class="GryceEngine.Editor.Views.ConsoleView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
@@ -207,7 +207,7 @@
         <!-- ══ Detail Panel (collapsed by default) ══ -->
         <Border Grid.Row="2"
                 x:Name="DetailPanel"
-                Background="{DynamicResource LayerFillColorDefaultBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
                 Visibility="Collapsed"

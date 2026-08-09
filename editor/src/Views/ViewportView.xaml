@@ -1,4 +1,4 @@
-<UserControl x:Class="GryceEngine.Editor.Views.ViewportView"
+﻿<UserControl x:Class="GryceEngine.Editor.Views.ViewportView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
@@ -15,7 +15,7 @@
 
         <!-- ══ Viewport Tabs (Scene / Game) ══ -->
         <Border Grid.Row="0"
-                Background="{DynamicResource LayerFillColorDefaultBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,0,0,1">
             <Grid>
@@ -103,7 +103,7 @@
                         IsHitTestVisible="False"
                         VerticalAlignment="Top" HorizontalAlignment="Right"
                         Margin="8" Padding="8,4" CornerRadius="4"
-                        Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                         Opacity="0.9">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock x:Name="GizmoIcon" Text="&#xE8AB;"
@@ -168,7 +168,7 @@
 
         <!-- ══ Viewport Info Bar ══ -->
         <Border Grid.Row="2"
-                Background="{DynamicResource LayerFillColorAltBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="8,3">

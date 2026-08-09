@@ -1,4 +1,4 @@
-<Window x:Class="GryceEngine.Editor.Views.ProjectSettingsWindow"
+﻿<Window x:Class="GryceEngine.Editor.Views.ProjectSettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
@@ -130,7 +130,7 @@
 
         <!-- 底部按钮 -->
         <Border Grid.Row="1"
-                Background="{DynamicResource LayerFillColorAltBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="12,8">

@@ -1,4 +1,4 @@
-<Window x:Class="GryceEngine.Editor.Views.MainWindow"
+﻿<Window x:Class="GryceEngine.Editor.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
@@ -11,7 +11,7 @@
         MinWidth="980" MinHeight="620"
         WindowStartupLocation="CenterScreen"
         WindowStyle="SingleBorderWindow"
-        Background="{DynamicResource LayerFillColorDefaultBrush}">
+        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
 
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="34"
@@ -215,7 +215,7 @@
              Playback Bar — centered below the title bar
              ================================================================ -->
         <Border Grid.Row="1"
-                Background="{DynamicResource LayerFillColorAltBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,0,0,1">
             <Grid>
@@ -302,7 +302,7 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0"
-                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
+                    Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
                 <views:HierarchyView/>
             </Border>
 
@@ -318,7 +318,7 @@
                           ResizeBehavior="PreviousAndNext"/>
 
             <Border Grid.Column="4"
-                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
+                    Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
                 <views:InspectorView/>
             </Border>
         </Grid>
@@ -330,7 +330,7 @@
              Bottom Panels — Project | Console | Animation
              ================================================================ -->
         <Border Grid.Row="5"
-                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0">
             <TabControl x:Name="BottomTabs" BorderThickness="0" Background="Transparent"
@@ -351,7 +351,7 @@
              Status Bar
              ================================================================ -->
         <Border Grid.Row="6"
-                Background="{DynamicResource LayerFillColorAltBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="12,3">

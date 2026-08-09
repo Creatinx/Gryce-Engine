@@ -1,4 +1,4 @@
-<UserControl x:Class="GryceEngine.Editor.Views.InspectorView"
+﻿<UserControl x:Class="GryceEngine.Editor.Views.InspectorView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
@@ -364,7 +364,7 @@
 
                 <!-- ── Add Component ── -->
                 <Border Margin="10,10,10,14" Padding="10"
-                        Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                         BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                         BorderThickness="1" CornerRadius="6">
                     <StackPanel>
@@ -381,7 +381,7 @@
 
         <!-- ══ Empty State ══ -->
         <Border Grid.Row="1"
-                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibilityInverse}}">
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                 <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
