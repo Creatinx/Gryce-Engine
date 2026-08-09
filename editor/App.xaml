@@ -7,18 +7,10 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ui:ThemeResources>
-                    <ui:ThemeResources.ThemeDictionaries>
-                        <ResourceDictionary x:Key="Dark">
-                            <SolidColorBrush x:Key="WindowCaptionBackground" Color="#1E1E1E"/>
-                            <SolidColorBrush x:Key="WindowCaptionBackgroundDisabled" Color="#1E1E1E"/>
-                        </ResourceDictionary>
-                        <ResourceDictionary x:Key="Light">
-                            <SolidColorBrush x:Key="WindowCaptionBackground" Color="#F3F3F3"/>
-                            <SolidColorBrush x:Key="WindowCaptionBackgroundDisabled" Color="#F3F3F3"/>
-                        </ResourceDictionary>
-                    </ui:ThemeResources.ThemeDictionaries>
-                </ui:ThemeResources>
+                <!-- 使用 iNKORE 默认主题字典（含全部 Fluent 画刷）：
+                     自定义 ThemeDictionaries 会覆盖默认字典，导致标准画刷缺失、
+                     下拉框文字不显示、浅色主题异常。 -->
+                <ui:ThemeResources/>
                 <ui:XamlControlsResources/>
                 <ResourceDictionary Source="src/Theme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
