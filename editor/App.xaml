@@ -481,7 +481,7 @@
                 <Setter Property="BorderBrush" Value="{DynamicResource SurfaceStrokeColorDefaultBrush}"/>
                 <Setter Property="BorderThickness" Value="1"/>
                 <Setter Property="Padding" Value="4,4"/>
-                <Setter Property="MinWidth" Value="220"/>
+                <Setter Property="MinWidth" Value="160"/>
                 <Setter Property="FontSize" Value="12"/>
                 <Setter Property="Template">
                     <Setter.Value>
