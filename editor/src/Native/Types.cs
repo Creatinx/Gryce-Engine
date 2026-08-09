@@ -147,17 +147,18 @@ public delegate void GOnViewportTextureReady(GTextureHandle handle, int w, int h
 
 #region Command
 [StructLayout(LayoutKind.Sequential)]
-public struct GCommand
+public unsafe struct GCommand
 {
     public GCommandType Type;
     public ulong Seq;
-    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-    public byte[] Payload;
+    public fixed byte Payload[256];
 
     public static GCommand Create(GCommandType type, ReadOnlySpan<byte> payload)
     {
-        var cmd = new GCommand { Type = type, Seq = 0, Payload = new byte[256] };
-        payload.CopyTo(cmd.Payload);
+        GCommand cmd = default;
+        cmd.Type = type;
+        if (payload.Length > 256) payload = payload.Slice(0, 256);
+        payload.CopyTo(new Span<byte>(cmd.Payload, 256));
         return cmd;
     }
 }

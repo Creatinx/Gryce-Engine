@@ -90,3 +90,22 @@ TEST_F(EntityIoTest, ExportPreservesChildHierarchy) {
     ASSERT_GT(GEntity_GetName(childHandle, name, sizeof(name)), 0);
     EXPECT_EQ(std::string(name), "Child");
 }
+
+TEST_F(EntityIoTest, HierarchyParentChildTree) {
+    GEntityHandle parent = CreateEntity("Parent");
+    ASSERT_NE(parent, 0);
+    GEntityHandle child = CreateEntity("Child", parent);
+    ASSERT_NE(child, 0);
+
+    // 根级实体的 parent 返回 0（合成根不暴露给编辑器）
+    EXPECT_EQ(GEntity_GetParent(parent), GEntityHandle(0));
+    // 子实体能正确回溯到父实体
+    EXPECT_EQ(GEntity_GetParent(child), parent);
+    // 父实体能枚举子节点（树状结构的数据基础）
+    EXPECT_EQ(GEntity_GetChildCount(parent), 1);
+    EXPECT_EQ(GEntity_GetChildAt(parent, 0), child);
+    // 层级路径
+    char path[256] = {};
+    ASSERT_GT(GEntity_GetPath(child, path, sizeof(path)), 0);
+    EXPECT_EQ(std::string(path), "Parent/Child");
+}

@@ -321,6 +321,9 @@
 | 渲染（Tonemapping） | 已实现（修复 HDR tonemap 默认曝光 2.0 导致视口整体灰白、场景不可见的问题，曝光调整为 1.0） |
 | 场景视图交互 | 已实现（编辑器相机：右键环绕、中键平移、滚轮缩放；左键网格 AABB 射线拾取/选中实体（`GScene_PickScreen`，空白处取消选中）；Transform Gizmo 拖动（平移/旋转/缩放，局部/全局空间，一次拖拽一条 Undo）；HwndHost airspace 通过全局鼠标钩子 + 独立覆盖窗口解决） |
 | 2D/3D 编辑模式 | 已实现（Viewport 工具栏 2D/3D 切换：2D 模式屏幕空间最近点拾取 + 屏幕平面 XY 平移 Gizmo，3D 模式轨道相机 + 三轴 Gizmo） |
+| 2D 组件可添加 | 已实现（Add Component / Create Entity 对话框开放全部 2D 组件：Node2D/Sprite2D/Label/ColorRect/Camera2D/2D 光照/TileMap/粒子/2D 物理等，按 "2D" 分类展示；仅 Transform/PrefabInstance/PhysicsBody 仍为内部类型） |
+| 命令通道零拷贝 | 已实现（`GCommand` 改为 C# fixed buffer 结构，P/Invoke 直接指针传递，不再每命令分配并复制 256 字节 payload） |
+| 层级树（父子关系） | 已实现（Hierarchy 面板按根实体递归展开子实体树，`GEntity_GetParent/GetChildAt/GetPath` 数据链路有单元测试覆盖） |
 | 游戏视图交互 | 已实现（WASD 移动、鼠标拖动视角、Space/Ctrl 上下、Shift 加速、滚轮调整速度；控制器驱动场景 MainCamera） |
 | 层级面板（Hierarchy） | 已实现（Entity 树、搜索、右键创建子实体/重命名/副本/删除、新建自动选中并展开祖先；Prefab：从选中实体创建 / 实例化 / Apply / Revert；支持从 Project 面板拖放模型/.gesc/.gmat） |
 | Create Entity 对话框 | 已实现（搜索 + 最近使用 + 类型分类 + 描述，创建时可附带组件） |

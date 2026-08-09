@@ -3,21 +3,14 @@ using System.Collections.Generic;
 namespace GryceEngine.Editor.Services;
 
 /// <summary>
-/// Shared filter for the Add-Component / Create-Entity pickers. 2D and UI
-/// components do not belong in this 3D editor, and the Core registers some
-/// internal types (Transform, PrefabInstance, PhysicsBody) that must not be
-/// attached manually.
+/// Shared filter for the Add-Component / Create-Entity pickers.
+/// 仅排除 Core 内部类型（Transform、PrefabInstance、PhysicsBody），
+/// 2D / UI / 物理组件全部开放，便于在统一场景树中构建 2D 或 2D+3D 游戏。
 /// </summary>
 public static class ComponentTypeFilter
 {
     private static readonly HashSet<string> Excluded = new(System.StringComparer.OrdinalIgnoreCase)
     {
-        // 2D / UI
-        "Node2D", "Sprite2D", "Label", "ColorRect", "Circle", "Polygon", "Camera2D",
-        "Tilemap", "ParticleEmitter2D", "ParallaxBackground", "Skybox2D", "Light2D",
-        "AmbientLight2D",
-        "RigidBody2D", "StaticBody2D", "BoxCollider2D", "CircleCollider2D",
-        "CharacterController2D", "Joint2D",
         // Internal components (Core: 不应手动添加)
         "Transform", "PrefabInstance", "PhysicsBody"
     };

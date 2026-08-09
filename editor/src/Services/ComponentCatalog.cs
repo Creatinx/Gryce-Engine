@@ -11,6 +11,15 @@ public static class ComponentCatalog
 {
     public static (string Category, string Icon, Brush Color) Categorize(string typeName)
     {
+        // 2D 组件（Node2D / 渲染 / 相机 / 光照 / 物理 / UI）
+        if (typeName is "Node2D" or "Sprite2D" or "Label" or "ColorRect" or "Circle" or "Polygon"
+            or "Tilemap" or "ParticleEmitter2D" or "ParallaxBackground" or "Skybox2D"
+            or "Camera2D" or "Light2D" or "AmbientLight2D"
+            or "RigidBody2D" or "StaticBody2D" or "BoxCollider2D" or "CircleCollider2D"
+            or "CharacterController2D" or "Joint2D")
+            return ("2D", "\uE8B9", NewBrush(0x8C, 0xFF, 0x8C));
+        if (typeName.IndexOf("2D", StringComparison.Ordinal) >= 0)
+            return ("2D", "\uE8B9", NewBrush(0x8C, 0xFF, 0x8C));
         if (typeName.IndexOf("MeshRenderer", StringComparison.Ordinal) >= 0)
             return ("Rendering", "\uE8B8", NewBrush(0x8C, 0xCB, 0xFF));
         if (typeName.IndexOf("Camera", StringComparison.Ordinal) >= 0)
