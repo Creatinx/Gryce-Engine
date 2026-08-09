@@ -43,16 +43,18 @@ public partial class App : Application
                 EditorVM.AppendConsole("Failed to load default scene (editor_default.gesc).");
         }
 
-        var window = new MainWindow(EditorVM);
-        window.Show();
-
         // Apply persisted theme globally (ThemeManager.Current.ApplicationTheme
         // switches the app-wide ThemeResources; per-window SetRequestedTheme is
         // only a local override and left the rest of the UI in the OS default).
+        // 必须在 Show 之前应用：MainWindow.SourceInitialized 会用当前主题
+        // 设置 DWM Mica 深色模式，先应用主题标题栏才不会停留在系统主题。
         iNKORE.UI.WPF.Modern.ThemeManager.Current.ApplicationTheme =
             settings.Theme == "Light"
                 ? iNKORE.UI.WPF.Modern.ApplicationTheme.Light
                 : iNKORE.UI.WPF.Modern.ApplicationTheme.Dark;
+
+        var window = new MainWindow(EditorVM);
+        window.Show();
     }
 
     protected override void OnExit(ExitEventArgs e)

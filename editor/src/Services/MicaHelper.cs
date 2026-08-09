@@ -14,6 +14,7 @@ namespace GryceEngine.Editor.Services;
 public static class MicaHelper
 {
     private const int DWMWA_SYSTEMBACKDROP_TYPE = 38;
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
     private const int DWMSBT_MAINWINDOW = 2;        // Mica
     private const int DWMSBT_TRANSIENTWINDOW = 3;   // Mica alt
 
@@ -38,6 +39,11 @@ public static class MicaHelper
         try
         {
             if (!IsWindows11OrLater()) return false;
+            // Mica 背景与标题栏颜色跟随应用主题（而非系统主题）
+            bool dark = iNKORE.UI.WPF.Modern.ThemeManager.Current.ActualApplicationTheme !=
+                        iNKORE.UI.WPF.Modern.ApplicationTheme.Light;
+            int useDark = dark ? 1 : 0;
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int));
             int backdrop = DWMSBT_MAINWINDOW;
             int hr = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, ref backdrop, sizeof(int));
             return hr == 0;

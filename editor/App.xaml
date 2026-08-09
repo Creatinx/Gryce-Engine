@@ -753,85 +753,73 @@
                 <Setter Property="ScrollViewer.CanContentScroll" Value="False"/>
                 <Setter Property="Template">
                     <Setter.Value>
-                        <ControlTemplate TargetType="ComboBox">
-                            <Grid SnapsToDevicePixels="True">
-                                <ToggleButton x:Name="toggleButton"
-                                              Focusable="False"
-                                              ClickMode="Press"
-                                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
-                                    <ToggleButton.Template>
-                                        <ControlTemplate TargetType="ToggleButton">
-                                            <Border x:Name="BtnBd"
-                                                    Background="{DynamicResource ControlFillColorDefaultBrush}"
-                                                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
-                                                    BorderThickness="1" CornerRadius="6" MinHeight="30">
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="Auto"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="1" Text="&#xE70D;"
-                                                               FontFamily="Segoe MDL2 Assets" FontSize="10"
-                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                                               Margin="6,0,12,0" HorizontalAlignment="Right"
-                                                               VerticalAlignment="Center" IsHitTestVisible="False"/>
-                                                </Grid>
-                                            </Border>
-                                            <ControlTemplate.Triggers>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter TargetName="BtnBd" Property="BorderBrush"
-                                                                Value="{DynamicResource ControlStrokeColorSecondaryBrush}"/>
-                                                    </Trigger>
-                                                    <Trigger Property="IsChecked" Value="True">
-                                                        <Setter TargetName="BtnBd" Property="BorderBrush"
-                                                                Value="{DynamicResource AccentFillColorDefaultBrush}"/>
-                                                    </Trigger>
-                                            </ControlTemplate.Triggers>
-                                        </ControlTemplate>
-                                    </ToggleButton.Template>
-                                </ToggleButton>
-                                <ContentPresenter x:Name="ContentSite"
-                                                  IsHitTestVisible="False"
-                                                  Content="{TemplateBinding SelectionBoxItem}"
-                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                                  ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
-                                                  Margin="10,0,30,0"
-                                                  VerticalAlignment="Center"
-                                                  HorizontalAlignment="Left"/>
-                                <TextBox x:Name="PART_EditableTextBox"
-                                         Style="{x:Null}" Visibility="Hidden" Focusable="False"
-                                         Background="Transparent" BorderThickness="0"/>
-                                <Popup x:Name="PART_Popup"
-                                       Placement="Bottom"
-                                       IsOpen="{TemplateBinding IsDropDownOpen}"
-                                       Focusable="False" PopupAnimation="None" VerticalOffset="4"
-                                       MinWidth="{TemplateBinding ActualWidth}">
-                                    <Border MinHeight="40"
-                                            Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"
-                                            BorderBrush="{DynamicResource SurfaceStrokeColorDefaultBrush}"
-                                            BorderThickness="1" CornerRadius="8" Padding="4">
-                                        <ScrollViewer MaxHeight="260"
-                                                      CanContentScroll="True">
-                                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
-                                        </ScrollViewer>
-                                    </Border>
-                                </Popup>
-                            </Grid>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="HasItems" Value="False">
-                                    <Setter Property="MinHeight" Value="95"/>
-                                </Trigger>
-                                <Trigger Property="IsEnabled" Value="False">
-                                    <Setter Property="Opacity" Value="0.45"/>
-                                </Trigger>
-                                <Trigger Property="IsEditable" Value="True">
-                                    <Setter TargetName="toggleButton" Property="IsChecked" Value="True"/>
-                                    <Setter TargetName="ContentSite" Property="IsEnabled" Value="False"/>
-                                    <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
-                                    <Setter TargetName="PART_EditableTextBox" Property="Focusable" Value="True"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
+                         <ControlTemplate TargetType="ComboBox">
+                             <Grid SnapsToDevicePixels="True">
+                                 <ToggleButton x:Name="toggleButton"
+                                               Focusable="False"
+                                               ClickMode="Press"
+                                               IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                     <ToggleButton.Template>
+                                         <ControlTemplate TargetType="ToggleButton">
+                                             <Border x:Name="BtnBd"
+                                                     Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                                     BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                                     BorderThickness="1" CornerRadius="6" MinHeight="30">
+                                                 <Grid>
+                                                     <Grid.ColumnDefinitions>
+                                                         <ColumnDefinition Width="*"/>
+                                                         <ColumnDefinition Width="Auto"/>
+                                                     </Grid.ColumnDefinitions>
+                                                     <!-- 选中文本显示在 ToggleButton 内（标准 ComboBox 结构） -->
+                                                     <ContentPresenter Grid.Column="0" Margin="10,0,4,0"
+                                                                       VerticalAlignment="Center"
+                                                                       Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource TemplatedParent}}"
+                                                                       ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource TemplatedParent}}"
+                                                                       ContentTemplateSelector="{Binding ItemTemplateSelector, RelativeSource={RelativeSource TemplatedParent}}"/>
+                                                     <TextBlock Grid.Column="1" Text="&#xE70D;"
+                                                                FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                                Margin="0,0,12,0" IsHitTestVisible="False"
+                                                                VerticalAlignment="Center"/>
+                                                 </Grid>
+                                             </Border>
+                                             <ControlTemplate.Triggers>
+                                                 <Trigger Property="IsMouseOver" Value="True">
+                                                     <Setter TargetName="BtnBd" Property="BorderBrush"
+                                                             Value="{DynamicResource ControlStrokeColorSecondaryBrush}"/>
+                                                 </Trigger>
+                                                 <Trigger Property="IsChecked" Value="True">
+                                                     <Setter TargetName="BtnBd" Property="BorderBrush"
+                                                             Value="{DynamicResource AccentFillColorDefaultBrush}"/>
+                                                 </Trigger>
+                                             </ControlTemplate.Triggers>
+                                         </ControlTemplate>
+                                     </ToggleButton.Template>
+                                 </ToggleButton>
+                                 <Popup x:Name="PART_Popup"
+                                        Placement="Bottom"
+                                        IsOpen="{TemplateBinding IsDropDownOpen}"
+                                        Focusable="False" PopupAnimation="None" VerticalOffset="4"
+                                        MinWidth="{TemplateBinding ActualWidth}">
+                                     <Border MinHeight="40"
+                                             Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"
+                                             BorderBrush="{DynamicResource SurfaceStrokeColorDefaultBrush}"
+                                             BorderThickness="1" CornerRadius="8" Padding="4">
+                                         <ScrollViewer MaxHeight="260" CanContentScroll="True">
+                                             <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                         </ScrollViewer>
+                                     </Border>
+                                 </Popup>
+                             </Grid>
+                             <ControlTemplate.Triggers>
+                                 <Trigger Property="HasItems" Value="False">
+                                     <Setter Property="MinHeight" Value="95"/>
+                                 </Trigger>
+                                 <Trigger Property="IsEnabled" Value="False">
+                                     <Setter Property="Opacity" Value="0.45"/>
+                                 </Trigger>
+                             </ControlTemplate.Triggers>
+                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
             </Style>
