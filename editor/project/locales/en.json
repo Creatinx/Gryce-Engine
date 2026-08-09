@@ -41,6 +41,7 @@
     "toolbar.gizmo_space": "Toggle Gizmo Space (Local / Global)",
     "toolbar.local": "Local",
     "toolbar.global": "Global",
+    "toolbar.backend": "Backend",
     "toolbar.play": "Play (Ctrl+P)",
     "toolbar.pause": "Pause (Ctrl+Shift+P)",
     "toolbar.stop": "Stop",

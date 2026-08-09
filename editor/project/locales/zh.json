@@ -41,6 +41,7 @@
     "toolbar.gizmo_space": "切换 Gizmo 坐标系（局部 / 全局）",
     "toolbar.local": "局部",
     "toolbar.global": "全局",
+    "toolbar.backend": "后端",
     "toolbar.play": "播放 (Ctrl+P)",
     "toolbar.pause": "暂停 (Ctrl+Shift+P)",
     "toolbar.stop": "停止",

@@ -189,30 +189,6 @@
                 </MenuItem>
             </Menu>
 
-            <!-- Project name chip (rounded background) after the menus -->
-            <Border Grid.Column="2"
-                    Background="{DynamicResource SubtleFillColorSecondaryBrush}"
-                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="10,3"
-                    Margin="10,0,0,0"
-                    VerticalAlignment="Center"
-                    MaxWidth="320">
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
-                               FontSize="11" VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                               Margin="0,0,6,0"/>
-                    <TextBlock x:Name="ProjectNameText"
-                               Text="{Binding SceneName}"
-                               FontSize="11.5" FontWeight="SemiBold"
-                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                               VerticalAlignment="Center"
-                               TextTrimming="CharacterEllipsis"/>
-                </StackPanel>
-            </Border>
-
             <!-- Window buttons -->
             <StackPanel Grid.Column="4" Orientation="Horizontal"
                         shell:WindowChrome.IsHitTestVisibleInChrome="True">
@@ -232,30 +208,72 @@
                 Background="{DynamicResource LayerFillColorAltBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,0,0,1">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Button x:Name="BtnPlay"
-                        Style="{StaticResource PlayButtonStyle}"
-                        AutomationProperties.Name="PlayButton"
-                        ToolTip="{loc:Loc toolbar.play}"
-                        Content="&#xE768;"
-                        Click="OnPlayClick"/>
-                <Button x:Name="BtnPause"
-                        Style="{StaticResource ToolbarButtonStyle}"
-                        AutomationProperties.Name="PauseButton"
-                        ToolTip="{loc:Loc toolbar.pause}"
-                        Content="&#xE769;"
-                        Click="OnPauseClick"/>
-                <Button x:Name="BtnStop"
-                        Style="{StaticResource ToolbarButtonStyle}"
-                        AutomationProperties.Name="StopButton"
-                        ToolTip="{loc:Loc toolbar.stop}"
-                        Content="&#xE71A;"
-                        Click="OnStopClick"/>
-                <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="10,3"/>
-                <TextBlock x:Name="PlaybackStateText" FontSize="10.5"
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                           VerticalAlignment="Center" Margin="4,0,0,0"/>
-            </StackPanel>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Project name (left) -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="14,0,0,0">
+                    <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets"
+                               FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               Margin="0,0,7,0"/>
+                    <TextBlock x:Name="ProjectNameText"
+                               Text="{Binding SceneName}"
+                               FontSize="12" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               MaxWidth="300"/>
+                </StackPanel>
+
+                <!-- Transport controls (centered) -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                            HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Button x:Name="BtnPlay"
+                            Style="{StaticResource PlayButtonStyle}"
+                            AutomationProperties.Name="PlayButton"
+                            ToolTip="{loc:Loc toolbar.play}"
+                            Content="&#xE768;"
+                            Click="OnPlayClick"/>
+                    <Button x:Name="BtnPause"
+                            Style="{StaticResource ToolbarButtonStyle}"
+                            AutomationProperties.Name="PauseButton"
+                            ToolTip="{loc:Loc toolbar.pause}"
+                            Content="&#xE769;"
+                            Click="OnPauseClick"/>
+                    <Button x:Name="BtnStop"
+                            Style="{StaticResource ToolbarButtonStyle}"
+                            AutomationProperties.Name="StopButton"
+                            ToolTip="{loc:Loc toolbar.stop}"
+                            Content="&#xE71A;"
+                            Click="OnStopClick"/>
+                    <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="10,3"/>
+                    <TextBlock x:Name="PlaybackStateText" FontSize="10.5"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               VerticalAlignment="Center" Margin="4,0,0,0"/>
+                </StackPanel>
+
+                <!-- Render backend (right) -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal"
+                            HorizontalAlignment="Right" VerticalAlignment="Center"
+                            Margin="0,0,14,0">
+                    <TextBlock Text="&#xE7FC;" FontFamily="Segoe MDL2 Assets"
+                               FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               Margin="0,0,6,0"/>
+                    <TextBlock FontSize="11"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               VerticalAlignment="Center">
+                        <Run Text="{loc:Loc toolbar.backend}"/>
+                        <Run Text=": OpenGL"/>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!-- Toolbar -->
