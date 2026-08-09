@@ -43,11 +43,13 @@ std::recursive_mutex& api_mutex() {
 // ============================================================================
 Entity* EntityResolver::resolve(GEntityHandle h) {
     if (!g_core_state.world || h == 0) return nullptr;
-    gryce_engine::scene::UUID* uuid = g_core_state.entity_map.resolve_uuid(h);
-    if (!uuid) return nullptr;
     Scene* s = g_core_state.world->scene();
     if (!s) return nullptr;
-    return s->find_entity_by_uuid(static_cast<const gryce_engine::scene::UUID&>(*uuid));
+    // Copy the UUID under the map lock: the map can rehash on a concurrent
+    // alloc/remove, invalidating a pointer returned by resolve_uuid().
+    gryce_engine::scene::UUID uuid;
+    if (!g_core_state.entity_map.resolve_uuid_copy(h, uuid)) return nullptr;
+    return s->find_entity_by_uuid(uuid);
 }
 
 // Forward: defined in component_api.cpp

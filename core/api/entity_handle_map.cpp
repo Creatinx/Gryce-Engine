@@ -56,6 +56,14 @@ gryce_engine::scene::UUID* EntityHandleMap::resolve_uuid(GEntityHandle h) {
     return nullptr;
 }
 
+bool EntityHandleMap::resolve_uuid_copy(GEntityHandle h, gryce_engine::scene::UUID& out) {
+    std::shared_lock lock(mutex_);
+    auto it = handle_to_uuid_.find(h);
+    if (it == handle_to_uuid_.end()) return false;
+    out = it->second;
+    return true;
+}
+
 GEntityHandle EntityHandleMap::lookup(const gryce_engine::scene::UUID& uuid) {
     std::shared_lock lock(mutex_);
     auto it = uuid_to_handle_.find(uuid);

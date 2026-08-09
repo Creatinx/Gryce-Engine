@@ -55,6 +55,17 @@ public partial class ViewportView : UserControl, IDisposable
     private GQuat _dragStartRot;
     private bool _dragCaptured;
 
+    // Batched gizmo transform: mouse events only compute the target and mark it
+    // dirty; the render loop applies it once per frame so a high mouse rate
+    // cannot flood the core with per-event writes and stall the UI.
+    private readonly object _gizmoApplyLock = new();
+    private bool _gizmoApplyDirty;
+    private GEntityHandle _gizmoApplyEntity;
+    private GVec3 _gizmoApplyPos;
+    private GQuat _gizmoApplyRot;
+    private GVec3 _gizmoApplyScale;
+    private int _gizmoApplyMask; // 1=pos, 2=rot, 4=scale
+
     // ---- gizmo visuals (reused shapes) ----
     private readonly Line[] _axisLines = new Line[3];
     private readonly Polygon[] _axisHeads = new Polygon[3];
@@ -331,6 +342,14 @@ public partial class ViewportView : UserControl, IDisposable
         try
         {
             UpdateGizmoOverlay();
+            // Refresh the inspector transform fields at the UI rate while a
+            // gizmo drag is in progress (the render loop applies the values).
+            if (_dragCaptured)
+            {
+                GEntityHandle h;
+                lock (_gizmoApplyLock) { h = _gizmoApplyEntity; }
+                if (h != GEntityHandle.Null) _vmCached?.RaiseTransformChanged(h);
+            }
         }
         catch { /* best-effort overlay refresh */ }
     }
@@ -428,6 +447,7 @@ public partial class ViewportView : UserControl, IDisposable
 
                 frames++;
                 PushSharedCamera();
+                ApplyPendingGizmoTransform();
 
                 RenderAPI.GRender_BeginFrame();
                 if (_isGameView) RenderAPI.GRender_RenderGameView();
@@ -1272,9 +1292,13 @@ public partial class ViewportView : UserControl, IDisposable
             double nx = _dragStartPosX + adx * worldDelta;
             double ny = _dragStartPosY + ady * worldDelta;
             double nz = _dragStartPosZ + adz * worldDelta;
-            var p = new GVec3((float)nx, (float)ny, (float)nz);
-            EntityAPI.GEntity_SetLocalPosition(selected.Handle, ref p);
-            VM.RaiseTransformChanged(selected.Handle);
+            lock (_gizmoApplyLock)
+            {
+                _gizmoApplyEntity = selected.Handle;
+                _gizmoApplyPos = new GVec3((float)nx, (float)ny, (float)nz);
+                _gizmoApplyMask |= 1;
+                _gizmoApplyDirty = true;
+            }
         }
         else if (_dragMode == "Scale")
         {
@@ -1285,8 +1309,13 @@ public partial class ViewportView : UserControl, IDisposable
             if (_dragAxis == 0) sc.X = (float)(_dragStartScaleX * factor);
             else if (_dragAxis == 1) sc.Y = (float)(_dragStartScaleY * factor);
             else sc.Z = (float)(_dragStartScaleZ * factor);
-            EntityAPI.GEntity_SetLocalScale(selected.Handle, ref sc);
-            VM.RaiseTransformChanged(selected.Handle);
+            lock (_gizmoApplyLock)
+            {
+                _gizmoApplyEntity = selected.Handle;
+                _gizmoApplyScale = sc;
+                _gizmoApplyMask |= 4;
+                _gizmoApplyDirty = true;
+            }
         }
         else if (_dragMode == "Rotate")
         {
@@ -1297,13 +1326,47 @@ public partial class ViewportView : UserControl, IDisposable
             double angle = currentAngle - startAngle;
             var axisQuat = QuatAxisAngle(adx, ady, adz, angle);
             var result = MulQuat(axisQuat, _dragStartRot);
-            EntityAPI.GEntity_SetLocalRotation(selected.Handle, ref result);
-            VM.RaiseTransformChanged(selected.Handle);
+            lock (_gizmoApplyLock)
+            {
+                _gizmoApplyEntity = selected.Handle;
+                _gizmoApplyRot = result;
+                _gizmoApplyMask |= 2;
+                _gizmoApplyDirty = true;
+            }
         }
+    }
+
+    /// <summary>Applies the latest batched gizmo transform (called once per
+    /// rendered frame from the render thread).</summary>
+    private void ApplyPendingGizmoTransform()
+    {
+        GEntityHandle h;
+        GVec3 p = default;
+        GQuat q = default;
+        GVec3 s = default;
+        int mask;
+        lock (_gizmoApplyLock)
+        {
+            if (!_gizmoApplyDirty) return;
+            h = _gizmoApplyEntity;
+            p = _gizmoApplyPos;
+            q = _gizmoApplyRot;
+            s = _gizmoApplyScale;
+            mask = _gizmoApplyMask;
+            _gizmoApplyDirty = false;
+        }
+        if (h == GEntityHandle.Null) return;
+        if ((mask & 1) != 0) EntityAPI.GEntity_SetLocalPosition(h, ref p);
+        if ((mask & 2) != 0) EntityAPI.GEntity_SetLocalRotation(h, ref q);
+        if ((mask & 4) != 0) EntityAPI.GEntity_SetLocalScale(h, ref s);
     }
 
     private void EndGizmoDrag()
     {
+        ApplyPendingGizmoTransform();
+        GEntityHandle h;
+        lock (_gizmoApplyLock) { h = _gizmoApplyEntity; }
+        if (h != GEntityHandle.Null) VM?.RaiseTransformChanged(h);
         _dragCaptured = false;
         _dragAxis = -1;
     }

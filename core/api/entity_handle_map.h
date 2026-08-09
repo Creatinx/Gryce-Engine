@@ -22,6 +22,9 @@ public:
     void clear();
 
     gryce_engine::scene::UUID* resolve_uuid(GEntityHandle h);
+    // Copy the UUID under the lock: callers must not hold the returned pointer
+    // across a map mutation (insert/erase can rehash and invalidate it).
+    bool resolve_uuid_copy(GEntityHandle h, gryce_engine::scene::UUID& out);
     GEntityHandle lookup(const gryce_engine::scene::UUID& uuid);
 
     // Rebuild entire map from a Scene (e.g. after scene load)
