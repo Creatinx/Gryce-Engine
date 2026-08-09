@@ -81,6 +81,7 @@
                                VerticalAlignment="Center" Margin="4,0,8,0"/>
                     <TextBox x:Name="SearchBox" Grid.Column="1"
                              FontSize="12" Padding="8,5"
+                             KeyDown="OnSearchKeyDown"
                              TextChanged="OnSearchTextChanged"/>
                 </Grid>
 
@@ -91,6 +92,7 @@
                          VirtualizingPanel.IsVirtualizing="False"
                          VirtualizingPanel.VirtualizationMode="Standard"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         MouseDoubleClick="OnTypeListDoubleClick"
                          SelectionChanged="OnTypeSelectionChanged">
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem">

@@ -165,7 +165,11 @@ public class ViewportHwndHost : HwndHost
     private void ResizeGlfwChild(int w, int h)
     {
         if (_glfwChild == IntPtr.Zero || w <= 0 || h <= 0) return;
-        SetWindowPos(_glfwChild, IntPtr.Zero, 0, 0, w, h,
+        // Render target is capped at 1280x720; larger hosts just show the
+        // fixed-size frame in the top-left of the panel.
+        int cw = Math.Min(w, 1280);
+        int ch = Math.Min(h, 720);
+        SetWindowPos(_glfwChild, IntPtr.Zero, 0, 0, cw, ch,
                      SWP_NOZORDER | SWP_NOACTIVATE);
     }
 

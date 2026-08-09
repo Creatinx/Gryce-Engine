@@ -97,7 +97,7 @@ public partial class ViewportView : UserControl, IDisposable
         {
             if (TryGetHostClientSize(out int cw, out int ch) && cw > 0 && ch > 0)
             {
-                return (Math.Max(cw, 100), Math.Max(ch, 100));
+                return CapViewport(Math.Max(cw, 100), Math.Max(ch, 100));
             }
         }
 
@@ -105,9 +105,14 @@ public partial class ViewportView : UserControl, IDisposable
             ? ViewportBorder.ActualWidth : ActualWidth);
         double h = height ?? (ViewportBorder != null && ViewportBorder.ActualHeight > 0
             ? ViewportBorder.ActualHeight : ActualHeight);
-        return (Math.Max((int)Math.Round(w), 100),
-                Math.Max((int)Math.Round(h), 100));
+        return CapViewport(Math.Max((int)Math.Round(w), 100),
+                           Math.Max((int)Math.Round(h), 100));
     }
+
+    /// <summary>Render target is capped at 1280x720: the editor viewport never
+    /// renders above that, so a large panel just shows the 1280x720 frame.</summary>
+    private static (int W, int H) CapViewport(int w, int h)
+        => (Math.Min(w, 1280), Math.Min(h, 720));
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetClientRect(IntPtr hWnd, out NativeRect rect);

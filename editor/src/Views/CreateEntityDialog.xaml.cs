@@ -52,6 +52,12 @@ public partial class CreateEntityDialog : Window
         NameBox.Text = LocalizationService.Instance.T("hierarchy.new_entity_name");
         BuildTypeList(string.Empty);
         RefreshRecentList();
+        // Godot-style: focus the search box so typing filters immediately.
+        Loaded += (_, _) =>
+        {
+            SearchBox.Focus();
+            SearchBox.SelectAll();
+        };
     }
 
     private static string T(string key) => LocalizationService.Instance.T(key);
@@ -161,6 +167,21 @@ public partial class CreateEntityDialog : Window
                 TypeList.ScrollIntoView(item);
                 break;
             }
+        }
+    }
+
+    /// <summary>Godot-style: double-clicking a type creates it directly.</summary>
+    private void OnTypeListDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        OnCreateClick(sender, e);
+    }
+
+    private void OnSearchKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            e.Handled = true;
+            OnCreateClick(sender, e);
         }
     }
 

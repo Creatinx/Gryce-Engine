@@ -2,7 +2,8 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
-             xmlns:converters="clr-namespace:GryceEngine.Editor.Converters">
+             xmlns:converters="clr-namespace:GryceEngine.Editor.Converters"
+             xmlns:services="clr-namespace:GryceEngine.Editor.Services">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
@@ -474,11 +475,13 @@
                  Context Menu — Fluent Design
                  ════════════════════════════════════════════════════════════════ -->
             <Style TargetType="ContextMenu">
+                <Setter Property="services:MenuMica.EnableMica" Value="True"/>
                 <Setter Property="Background" Value="{DynamicResource SolidBackgroundFillColorSecondaryBrush}"/>
                 <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
                 <Setter Property="BorderBrush" Value="{DynamicResource SurfaceStrokeColorDefaultBrush}"/>
                 <Setter Property="BorderThickness" Value="1"/>
                 <Setter Property="Padding" Value="4,4"/>
+                <Setter Property="MinWidth" Value="220"/>
                 <Setter Property="FontSize" Value="12"/>
                 <Setter Property="Template">
                     <Setter.Value>
@@ -730,7 +733,7 @@
                                                   Content="{TemplateBinding SelectionBoxItem}"
                                                   ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                                                   ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
-                                                  Margin="{TemplateBinding Padding}"
+                                                  Margin="10,0,30,0"
                                                   VerticalAlignment="Center"
                                                   HorizontalAlignment="Left"/>
                                 <TextBox x:Name="PART_EditableTextBox"

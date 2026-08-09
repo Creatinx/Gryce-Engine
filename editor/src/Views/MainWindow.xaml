@@ -7,8 +7,8 @@
         xmlns:views="clr-namespace:GryceEngine.Editor.Views"
         ui:ThemeManager.IsThemeAware="True"
         Title="{Binding Title}"
-        Width="1800" Height="1100"
-        MinWidth="1280" MinHeight="760"
+        Width="1680" Height="1000"
+        MinWidth="1180" MinHeight="700"
         WindowStartupLocation="CenterScreen"
         WindowStyle="SingleBorderWindow"
         Background="{DynamicResource LayerFillColorDefaultBrush}">
