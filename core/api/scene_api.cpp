@@ -7,6 +7,7 @@
 #include "ecs/world.h"
 #include "ecs/query.h"
 #include "math/ray.h"
+#include "resources/resource_path.h"
 #include "components/camera.h"
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
@@ -14,6 +15,7 @@
 #include "utils/glog/glog_lib.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <limits>
 #include <vector>
 
@@ -177,13 +179,19 @@ int GScene_GetCurrentPath(char* out_buf, int buf_size) {
 int GScene_New(void) {
     GRYCE_API_GUARD();
     if (!gc::g_core_state.initialized) return -1;
-    auto scene = std::make_unique<gryce_engine::scene::Scene>("Untitled");
+    const std::string default_path =
+        gc::g_core_state.scene_mode == 0 ? "res:/scenes/scene_2d.gesc" : "res:/scenes/scene_3d.gesc";
+    auto scene = std::make_unique<gryce_engine::scene::Scene>(
+        gc::g_core_state.scene_mode == 0 ? "scene_2d" : "scene_3d");
     if (gc::g_core_state.world) {
         gc::g_core_state.world->attach_scene(std::move(scene));
+        // 新建场景写入当前模式的缓冲场景文件（2D/3D 各自独立，绝不合并）
+        gryce_engine::scene::SceneSerializer::save_to_file(
+            *gc::g_core_state.world->scene(), default_path);
     }
-    gc::g_core_state.current_scene_path.clear();
-    if (gc::g_core_state.scene_mode == 0) gc::g_core_state.scene_path_2d.clear();
-    else gc::g_core_state.scene_path_3d.clear();
+    gc::g_core_state.current_scene_path = default_path;
+    if (gc::g_core_state.scene_mode == 0) gc::g_core_state.scene_path_2d = default_path;
+    else gc::g_core_state.scene_path_3d = default_path;
     gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
     gc::g_core_state.selected_entity = 0;
     gc::g_core_state.deferred_entity_list_changed = true;
@@ -260,7 +268,25 @@ int GScene_SetMode(int mode) {
     if (slot) {
         gc::g_core_state.world->attach_scene(std::move(slot));
     } else {
-        gc::g_core_state.world->attach_scene(std::make_unique<gryce_engine::scene::Scene>("Untitled"));
+        // 槽没有场景：使用该模式专属的缓冲场景文件（2D/3D 各自独立，绝不合并）。
+        // 文件已存在则加载（跨会话保留），否则新建空场景并写入缓冲文件。
+        const std::string default_path =
+            mode == 0 ? "res:/scenes/scene_2d.gesc" : "res:/scenes/scene_3d.gesc";
+        const std::string resolved = gryce_engine::resources::ResourcePath::resolve(default_path);
+
+        std::unique_ptr<gryce_engine::scene::Scene> next;
+        if (std::filesystem::exists(resolved)) {
+            next = gryce_engine::scene::SceneSerializer::load_from_file(default_path);
+        }
+        if (!next) {
+            next = std::make_unique<gryce_engine::scene::Scene>(
+                mode == 0 ? "scene_2d" : "scene_3d");
+            // 新建缓冲场景文件（项目 scenes/ 目录）
+            gryce_engine::scene::SceneSerializer::save_to_file(*next, default_path);
+        }
+        if (mode == 0) gc::g_core_state.scene_path_2d = default_path;
+        else gc::g_core_state.scene_path_3d = default_path;
+        gc::g_core_state.world->attach_scene(std::move(next));
     }
     gc::g_core_state.current_scene_path =
         mode == 0 ? gc::g_core_state.scene_path_2d : gc::g_core_state.scene_path_3d;
@@ -278,19 +304,24 @@ int GScene_ReleaseMode(int mode) {
 
     if (mode == gc::g_core_state.scene_mode) {
         // 释放活动场景：替换为空场景
+        const std::string default_path =
+            mode == 0 ? "res:/scenes/scene_2d.gesc" : "res:/scenes/scene_3d.gesc";
+        auto next = std::make_unique<gryce_engine::scene::Scene>(
+            mode == 0 ? "scene_2d" : "scene_3d");
+        gryce_engine::scene::SceneSerializer::save_to_file(*next, default_path);
         if (gc::g_core_state.world) {
-            gc::g_core_state.world->attach_scene(std::make_unique<gryce_engine::scene::Scene>("Untitled"));
+            gc::g_core_state.world->attach_scene(std::move(next));
             gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
             gc::g_core_state.selected_entity = 0;
             gc::g_core_state.deferred_entity_list_changed = true;
         }
-        gc::g_core_state.current_scene_path.clear();
+        gc::g_core_state.current_scene_path = default_path;
     } else {
         if (mode == 0) gc::g_core_state.scene_slot_2d.reset();
         else gc::g_core_state.scene_slot_3d.reset();
     }
-    if (mode == 0) gc::g_core_state.scene_path_2d.clear();
-    else gc::g_core_state.scene_path_3d.clear();
+    if (mode == 0) gc::g_core_state.scene_path_2d = "res:/scenes/scene_2d.gesc";
+    else gc::g_core_state.scene_path_3d = "res:/scenes/scene_3d.gesc";
     return 0;
 }
 

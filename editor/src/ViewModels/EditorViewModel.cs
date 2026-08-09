@@ -325,10 +325,16 @@ public class EditorViewModel : INotifyPropertyChanged
 
     public void SaveScene()
     {
-        int result = SceneAPI.GScene_Save("res:/scenes/main.gesc");
+        var sb = new StringBuilder(512);
+        string path = SceneAPI.GScene_GetCurrentPath(sb, sb.Capacity) > 0
+            ? sb.ToString()
+            : (SceneAPI.GScene_GetMode() == 0
+                ? "res:/scenes/scene_2d.gesc"
+                : "res:/scenes/scene_3d.gesc");
+        int result = SceneAPI.GScene_Save(path);
         if (result == 0)
         {
-            AppendConsole("Scene saved.");
+            AppendConsole($"Scene saved: {path}");
             _engine.ClearDirty();
         }
         else

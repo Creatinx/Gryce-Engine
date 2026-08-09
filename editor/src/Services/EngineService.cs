@@ -171,7 +171,9 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
         var sb = new StringBuilder(512);
         string path = SceneAPI.GScene_GetCurrentPath(sb, sb.Capacity) > 0
             ? sb.ToString()
-            : "res:/scenes/main.gesc";
+            : (SceneAPI.GScene_GetMode() == 0
+                ? "res:/scenes/scene_2d.gesc"
+                : "res:/scenes/scene_3d.gesc");
 
         int result = SceneAPI.GScene_Save(path);
         if (result == 0)

@@ -31,6 +31,10 @@ public partial class App : Application
         // so it must be constructed after the engine core is initialized.
         EditorVM = new EditorViewModel(Engine);
 
+        // 编辑器默认停在 3D 标签：同步 Core 场景模式为 3D（2D/3D 场景槽各自独立）。
+        // 空槽会自动创建/加载 scenes/scene_3d.gesc 缓冲文件。
+        SceneAPI.GScene_SetMode(1);
+
         // 首次打开（空场景）时加载默认可编辑场景，保证用户一进来就能看到内容。
         if (EditorVM.EntityCount == 0)
         {

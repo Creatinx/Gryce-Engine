@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <filesystem>
 
 #include "GryceCore/core_api.h"
 #include "GryceCore/entity_api.h"
@@ -23,6 +24,9 @@ protected:
     }
 
     void TearDown() override {
+        // 清理测试期间创建的缓冲场景文件，避免污染 fixtures
+        std::filesystem::remove(root_ + "/scenes/scene_2d.gesc");
+        std::filesystem::remove(root_ + "/scenes/scene_3d.gesc");
         GCore_Shutdown();
     }
 
