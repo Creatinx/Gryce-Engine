@@ -365,14 +365,6 @@
                         <TextBlock Text="Add Component" FontSize="11" FontWeight="SemiBold"
                                    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                    Margin="0,0,0,8"/>
-                        <ComboBox x:Name="AddComponentCombo" FontSize="11"
-                                  ItemsSource="{Binding RegisteredTypes}"
-                                  DisplayMemberPath="TypeName"
-                                  SelectedIndex="0"
-                                  Margin="0,0,0,8"
-                                  IsEditable="True"
-                                  IsTextSearchEnabled="True"
-                                  Text="Search..."/>
                         <Button Content="Add Component" FontSize="11"
                                 Style="{StaticResource SmallAccentButtonStyle}"
                                 Click="OnAddComponentClick"/>

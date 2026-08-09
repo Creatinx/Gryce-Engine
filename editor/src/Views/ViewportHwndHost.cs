@@ -170,7 +170,7 @@ public class ViewportHwndHost : HwndHost
         int cw = Math.Min(w, 1280);
         int ch = Math.Min(h, 720);
         SetWindowPos(_glfwChild, IntPtr.Zero, 0, 0, cw, ch,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
     }
 
     private static IntPtr WndProc(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam)
@@ -301,4 +301,5 @@ public class ViewportHwndHost : HwndHost
 
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_NOCOPYBITS = 0x0100;
 }

@@ -30,6 +30,7 @@ public partial class ViewportView : UserControl, IDisposable
     private string _displayMode = "Shaded";
     private (int W, int H) _appliedPixelSize;
     private double _overlayScale = -1.0;
+    private DateTime _lastResizeTime = DateTime.MinValue;
 
     // ---- editor viewport interaction ----
     private readonly ViewportCamera _sceneCamera = new();
@@ -241,6 +242,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
+        _lastResizeTime = DateTime.Now;
         // The embedded GLFW child is resized by the host WM_SIZE during the
         // layout pass, which fires after this event; defer the resolution read
         // until the layout settles so GetClientRect returns the final size.
@@ -403,7 +405,7 @@ public partial class ViewportView : UserControl, IDisposable
                 // subclass; only the GPU targets lag here, throttled to ~12Hz
                 // so interactive resizing does not churn allocations per frame.
                 var livePx = GetPixelSize();
-                if (livePx != _appliedPixelSize && resizeSw.ElapsedMilliseconds >= 80)
+                if (livePx != _appliedPixelSize && resizeSw.ElapsedMilliseconds >= 16)
                 {
                     try
                     {
@@ -1344,6 +1346,9 @@ public partial class ViewportView : UserControl, IDisposable
     {
         var overlay = _overlay;
         if (overlay == null || ViewportBorder == null || !ViewportBorder.IsVisible) return;
+        // While the window is being resized, the overlay would jitter against
+        // the moving frame; hold it in place until the resize settles.
+        if ((DateTime.Now - _lastResizeTime).TotalMilliseconds < 150) return;
         try
         {
             var src = PresentationSource.FromVisual(ViewportBorder);

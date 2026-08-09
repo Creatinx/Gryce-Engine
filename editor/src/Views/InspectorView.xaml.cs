@@ -29,10 +29,11 @@ public partial class InspectorView : UserControl
     private void OnAddComponentClick(object sender, RoutedEventArgs e)
     {
         if (VM == null) return;
-        if (AddComponentCombo.SelectedItem is RegisteredTypeItem item)
+        var dialog = new AddComponentDialog(VM)
         {
-            VM.AddComponent(item.TypeHash);
-        }
+            Owner = Window.GetWindow(this)
+        };
+        dialog.ShowDialog();
     }
 
     private void OnComponentHeaderClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
