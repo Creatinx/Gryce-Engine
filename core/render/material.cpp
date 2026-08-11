@@ -36,6 +36,12 @@ void Material::serialize(nlohmann::json& out) const {
     out["use_metallic_map"] = use_metallic_map;
     out["use_ao_map"] = use_ao_map;
     out["use_emissive_map"] = use_emissive_map;
+    out["clearcoat"] = clearcoat;
+    out["clearcoat_roughness"] = clearcoat_roughness;
+    out["sheen"] = sheen;
+    out["sheen_tint"] = { sheen_tint.x, sheen_tint.y, sheen_tint.z };
+    out["anisotropy"] = anisotropy;
+    out["anisotropy_rotation"] = anisotropy_rotation;
     out["softness"] = softness;
     out["drag_coefficient"] = drag_coefficient;
     out["density"] = density;
@@ -70,6 +76,13 @@ void Material::deserialize(const nlohmann::json& in) {
     use_metallic_map = in.value("use_metallic_map", use_metallic_map);
     use_ao_map = in.value("use_ao_map", use_ao_map);
     use_emissive_map = in.value("use_emissive_map", use_emissive_map);
+    clearcoat = in.value("clearcoat", clearcoat);
+    clearcoat_roughness = in.value("clearcoat_roughness", clearcoat_roughness);
+    sheen = in.value("sheen", sheen);
+    auto st = in.value("sheen_tint", std::vector<float>{1.0f, 1.0f, 1.0f});
+    if (st.size() >= 3) sheen_tint = math::Vector3f(st[0], st[1], st[2]);
+    anisotropy = in.value("anisotropy", anisotropy);
+    anisotropy_rotation = in.value("anisotropy_rotation", anisotropy_rotation);
     softness = in.value("softness", softness);
     drag_coefficient = in.value("drag_coefficient", drag_coefficient);
     density = in.value("density", density);
@@ -226,6 +239,12 @@ void Material::bind(RenderContext* ctx, RHIShaderHandle shader) const {
     ctx->set_uniform_float(shader, "uOpacity", opacity);
     ctx->set_uniform_vec4(shader, "uUVTransform",
                           math::Vector4f(uv_scale.x, uv_scale.y, uv_offset.x, uv_offset.y));
+    ctx->set_uniform_float(shader, "uClearcoat", clearcoat);
+    ctx->set_uniform_float(shader, "uClearcoatRoughness", clearcoat_roughness);
+    ctx->set_uniform_float(shader, "uSheen", sheen);
+    ctx->set_uniform_vec3(shader, "uSheenTint", sheen_tint);
+    ctx->set_uniform_float(shader, "uAnisotropy", anisotropy);
+    ctx->set_uniform_float(shader, "uAnisotropyRotation", anisotropy_rotation);
 
     auto bind_tex = [&](RHITextureHandle tex, RHITextureHandle fallback, int slot, bool use,
                         const char* use_flag, const char* uniform) {

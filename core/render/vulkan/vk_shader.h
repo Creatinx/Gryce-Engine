@@ -69,9 +69,8 @@ public:
                       bool skybox = false,
                       bool skinned = false) override;
 
-    void set_post_process_params(float exposure, int mode) override {
-        pp_exposure_ = exposure;
-        pp_mode_ = mode;
+    void set_post_process_params(const PostProcessParams& params) override {
+        pp_params_ = params;
     }
 
     bool shader_files_changed() const override;
@@ -79,7 +78,7 @@ public:
 
     void update_ubo(VkCommandBuffer cmd) const;
     void push_constants(VkCommandBuffer cmd) const;
-    void push_post_process_constants(VkCommandBuffer cmd, float exposure, int mode) const;
+    void push_post_process_constants(VkCommandBuffer cmd, const PostProcessParams& params) const;
     void bind_descriptor_set(VkCommandBuffer cmd) const;
 
     // 每帧开始（渲染线程、acquire 完成之后调用）：重置该帧的描述符池与
@@ -144,6 +143,7 @@ private:
         math::Vector4f spot;             // x=cos(outer), y=cos(inner)
     };
     static constexpr int k_max_lights = 8;
+    static constexpr int k_max_cascades = 4;
 
     // 与 GLSL std140 对齐的 UBO（material + ambient + lights）
     // GLSL 中 vec3 一律以 vec4 存储，避免尾部填充不一致
@@ -156,7 +156,6 @@ private:
         float roughness;
         float metallic;
         float ao;
-        float shadow_bias;
         int use_shadow_map;
         int use_albedo_map;
         int use_normal_map;
@@ -173,13 +172,47 @@ private:
         // std140：结构体数组必须 16 字节对齐。Vector4f 对齐为 4，two_sided 之后
         // 若不齐pad，lights 会落在 148（GLSL 期望 160）——灯光数据整体错位 12
         // 字节，shader 读到全零（场景无光照）。此前 lights 恰好在 144 只是运气。
-        float _pad_std140[3];
+        float _pad_std140[4];
         LightUBO lights[k_max_lights];
+
+        // CSM cascaded shadow maps (appended: old offsets unchanged)
+        int cascade_count;
+        int pcss_enabled;
+        int debug_mode;          // 0 final, 1 albedo, 2 normal, 3 roughness,
+                                 // 4 metallic, 5 shadow, 6 direct, 7 indirect, 8 cascade
+        int _pad_cascade;
+        math::Vector4f cascade_splits;         // xyz = view-space split distances
+        math::Vector4f cascade_bias;           // xyz = per-cascade depth bias
+        math::Vector4f cascade_far_blend;      // x = far, y = cascade blend band ratio
+        float pcss_light_size;                 // PCSS light size (world units)
+        float pcss_max_radius;                 // PCSS max sample radius (texels)
+        float pcss_tap_scale;                  // PCSS tap density scale
+        float _pad_cascade2;
+        math::Matrix4f cascade_light_space[k_max_cascades];
+        math::Matrix4f view_matrix;            // 片段阶段级联深度选择用
+
+        // 材质扩展：Clearcoat / Sheen / 各向异性（追加：旧字段偏移不变）
+        float clearcoat;
+        float clearcoat_roughness;
+        float sheen;
+        float anisotropy;
+        float anisotropy_rotation;
+        float _pad_mat[3];
+        math::Vector4f sheen_tint;
+
+        // 屏幕空间环境光遮蔽（GTAO/SSAO 结果）
+        int use_ssao;
+        float ssao_strength;
+        float _pad_ssao[2];
     };
     // 布局必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 的 MaterialLightUBO 一致
     static_assert(offsetof(UBOData, lights) == 160, "std140: lights must start at offset 160");
     static_assert(sizeof(LightUBO) == 64, "std140: LightUBO must be 64 bytes");
-    static_assert(sizeof(UBOData) == 160 + 8 * 64, "std140: UBOData size mismatch");
+    static_assert(offsetof(UBOData, cascade_light_space) == 752,
+                  "std140: cascade_light_space must start at offset 752");
+    static_assert(offsetof(UBOData, sheen_tint) == 1104,
+                  "std140: sheen_tint must start at offset 1104");
+    static_assert(sizeof(UBOData) == 1136, "std140: UBOData size mismatch (ssao)");
 
     // 非 post-process 路径：每 draw 独立描述符 + UBO 偏移。
     // 每帧一个描述符池（on_begin_frame 整池 reset）和一个大 UBO
@@ -187,7 +220,7 @@ private:
     // stride 按 256 对齐（>= minUniformBufferOffsetAlignment 常见最大值）。
     static constexpr size_t ubo_stride_ = (sizeof(UBOData) + 255) / 256 * 256;
     static constexpr uint32_t max_draws_per_frame_ = 2048;
-    static constexpr int k_max_texture_bindings = 12;
+    static constexpr int k_max_texture_bindings = 20;
 
     std::vector<std::unique_ptr<VulkanBuffer>> ubo_buffers_;      // 每帧一个大 UBO
     std::vector<VkDescriptorPool> descriptor_pools_;              // 每帧一个池
@@ -223,11 +256,53 @@ private:
     mutable math::Matrix4f view_;
     mutable math::Matrix4f projection_;
     mutable math::Matrix4f light_space_matrix_;
+    mutable float shadow_normal_offset_ = 0.0f;
     mutable bool ubo_dirty_ = true;
 
-    // Post-process parameters
-    float pp_exposure_ = 1.0f;
-    int pp_mode_ = 1;
+    // Post-process parameters (GL uniforms; Vulkan push constants)
+    PostProcessParams pp_params_;
+
+    // Must match vulkan_tonemap.frag PushConstants (std430, 128 bytes)
+    struct alignas(16) PostProcessPushData {
+        float exposure;
+        float ev100;
+        int mode;
+        int dithering;
+        float white_point;
+        float black_point;
+        float contrast;
+        float saturation;
+        math::Vector4f lift;
+        math::Vector4f gamma;
+        math::Vector4f gain;
+        math::Vector4f shadows;
+        math::Vector4f midtones;
+        math::Vector4f highlights;
+        int bloom_enabled;
+        float bloom_threshold;
+        float bloom_intensity;
+        float film_grain;
+        float vignette;
+        float chromatic_aberration;
+        int use_lut;
+        float lut_strength;
+        int auto_exposure;
+        float ae_target_luminance;
+        float ae_min_exposure;
+        float ae_max_exposure;
+        float ae_speed;
+        int taa_enabled;
+        float taa_weight;
+        int ssao_enabled;
+        float ssao_strength;
+        float ssao_radius;
+        float ssao_near;
+        float ssao_far;
+        float ssao_tan_half;
+        float ssao_aspect;
+        float _pad[2];
+    };
+    static_assert(sizeof(PostProcessPushData) == 224, "PostProcessPushData must be 224 bytes");
 };
 
 } // namespace gryce_engine::render

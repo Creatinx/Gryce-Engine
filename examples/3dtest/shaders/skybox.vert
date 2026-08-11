@@ -8,7 +8,8 @@ uniform mat4 uView;
 uniform mat4 uProjection;
 
 void main() {
-    vDir = aPos;
+    // 修复天空盒 Y 方向：屏幕顶部应采样 +Y(py)，此前翻转到 -Y(ny)
+    vDir = vec3(aPos.x, -aPos.y, aPos.z);
     // 深度恒为远平面（w = z），配合 LEQUAL/关深度测试绘制背景
     vec4 pos = uProjection * uView * vec4(aPos, 1.0);
     gl_Position = pos.xyww;

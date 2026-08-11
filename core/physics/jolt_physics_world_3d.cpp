@@ -414,6 +414,12 @@ void JoltPhysicsWorld3D::set_transform(BodyHandle handle, const math::Vector3f& 
     if (!initialized_ || handle == k_invalid_body) return;
     auto* bi = body_interface();
     if (!bi) return;
+    if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z) ||
+        !std::isfinite(rot.x) || !std::isfinite(rot.y) || !std::isfinite(rot.z) || !std::isfinite(rot.w)) {
+        GLOG_ERROR("Jolt set_transform: NaN/inf on body handle={} pos=({},{},{}) rot=({},{},{},{})",
+                   handle, pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w);
+        return;
+    }
     bi->SetPositionAndRotation(to_jolt_id(handle), to_jolt(pos), to_jolt(rot), JPH::EActivation::DontActivate);
 }
 
@@ -430,6 +436,11 @@ void JoltPhysicsWorld3D::set_linear_velocity(BodyHandle handle, const math::Vect
     if (!initialized_ || handle == k_invalid_body) return;
     auto* bi = body_interface();
     if (!bi) return;
+    if (!std::isfinite(vel.x) || !std::isfinite(vel.y) || !std::isfinite(vel.z)) {
+        GLOG_ERROR("Jolt set_linear_velocity: NaN/inf on body handle={} vel=({},{},{})",
+                   handle, vel.x, vel.y, vel.z);
+        return;
+    }
     bi->SetLinearVelocity(to_jolt_id(handle), to_jolt(vel));
 }
 
@@ -444,6 +455,11 @@ void JoltPhysicsWorld3D::set_angular_velocity(BodyHandle handle, const math::Vec
     if (!initialized_ || handle == k_invalid_body) return;
     auto* bi = body_interface();
     if (!bi) return;
+    if (!std::isfinite(vel.x) || !std::isfinite(vel.y) || !std::isfinite(vel.z)) {
+        GLOG_ERROR("Jolt set_angular_velocity: NaN/inf on body handle={} vel=({},{},{})",
+                   handle, vel.x, vel.y, vel.z);
+        return;
+    }
     bi->SetAngularVelocity(to_jolt_id(handle), to_jolt(vel));
 }
 

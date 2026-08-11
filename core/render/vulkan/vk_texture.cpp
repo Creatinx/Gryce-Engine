@@ -86,9 +86,11 @@ void VulkanTexture::destroy() {
     if (!device_ || !device_->is_valid()) return;
     VkDevice dev = device_->device();
     if (sampler_) vkDestroySampler(dev, sampler_, nullptr);
+    if (depth_sampler_) vkDestroySampler(dev, depth_sampler_, nullptr);
     if (image_view_) vkDestroyImageView(dev, image_view_, nullptr);
     if (image_) vmaDestroyImage(device_->allocator(), image_, allocation_);
     sampler_ = VK_NULL_HANDLE;
+    depth_sampler_ = VK_NULL_HANDLE;
     image_view_ = VK_NULL_HANDLE;
     image_ = VK_NULL_HANDLE;
     allocation_ = nullptr;
@@ -331,16 +333,27 @@ bool VulkanTexture::upload_cubemap(const void* faces[6], int width, int height, 
 }
 
 bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int height) {
-    if (!faces || width <= 0 || height <= 0) return false;
-    for (int i = 0; i < 6; ++i) {
-        if (!faces[i]) return false;
+    // 单级上传复用多级实现
+    const void* levels[1] = { reinterpret_cast<const void*>(faces) };
+    return upload_cubemap_hdr_mips(levels, 1, width, height);
+}
+
+bool VulkanTexture::upload_cubemap_hdr_mips(const void* const* mip_faces, int mip_levels,
+                                            int width, int height) {
+    if (!mip_faces || mip_levels <= 0 || width <= 0 || height <= 0) return false;
+    for (int l = 0; l < mip_levels; ++l) {
+        if (!mip_faces[l]) return false;
+        const void* const* faces = reinterpret_cast<const void* const*>(mip_faces[l]);
+        for (int i = 0; i < 6; ++i) {
+            if (!faces[i]) return false;
+        }
     }
 
     destroy();
     width_ = width;
     height_ = height;
     is_cubemap_ = true;
-    mip_levels_ = 1;
+    mip_levels_ = static_cast<uint32_t>(mip_levels);
     channels_ = 4;
     format_ = VK_FORMAT_R16G16B16A16_SFLOAT;
 
@@ -353,7 +366,7 @@ bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int heig
     info.extent.width = static_cast<uint32_t>(width_);
     info.extent.height = static_cast<uint32_t>(height_);
     info.extent.depth = 1;
-    info.mipLevels = 1;
+    info.mipLevels = static_cast<uint32_t>(mip_levels);
     info.arrayLayers = 6;
     info.format = format_;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -376,7 +389,7 @@ bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int heig
     view_info.format = format_;
     view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     view_info.subresourceRange.baseMipLevel = 0;
-    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.levelCount = static_cast<uint32_t>(mip_levels);
     view_info.subresourceRange.baseArrayLayer = 0;
     view_info.subresourceRange.layerCount = 6;
     if (vkCreateImageView(dev, &view_info, nullptr, &image_view_) != VK_SUCCESS) {
@@ -395,21 +408,34 @@ bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int heig
     sampler_info.unnormalizedCoordinates = VK_FALSE;
     sampler_info.compareEnable = VK_FALSE;
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler_info.maxLod = 1.0f;
+    sampler_info.maxLod = static_cast<float>(mip_levels - 1);
     if (vkCreateSampler(dev, &sampler_info, nullptr, &sampler_) != VK_SUCCESS) {
         GLOG_ERROR("VulkanTexture: failed to create HDR cubemap sampler");
         return false;
     }
 
-    const VkDeviceSize face_size = static_cast<VkDeviceSize>(width_) * height_ * 4 * sizeof(float);
-    const VkDeviceSize total = face_size * 6;
+    // 拼接所有 level × 6 面到一个 staging buffer
+    std::vector<VkDeviceSize> face_sizes(static_cast<size_t>(mip_levels));
+    VkDeviceSize total = 0;
+    for (int l = 0; l < mip_levels; ++l) {
+        const int mw = std::max(1, width >> l);
+        const int mh = std::max(1, height >> l);
+        face_sizes[static_cast<size_t>(l)] =
+            static_cast<VkDeviceSize>(mw) * mh * 4 * sizeof(float);
+        total += face_sizes[static_cast<size_t>(l)] * 6;
+    }
     VulkanBuffer staging;
     if (!staging.init(device_, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         return false;
     }
-    for (int f = 0; f < 6; ++f) {
-        staging.upload(faces[f], face_size, static_cast<VkDeviceSize>(f) * face_size);
+    VkDeviceSize cursor = 0;
+    for (int l = 0; l < mip_levels; ++l) {
+        const void* const* faces = reinterpret_cast<const void* const*>(mip_faces[l]);
+        for (int f = 0; f < 6; ++f) {
+            staging.upload(faces[f], face_sizes[static_cast<size_t>(l)], cursor);
+            cursor += face_sizes[static_cast<size_t>(l)];
+        }
     }
 
     VkCommandPoolCreateInfo pool_info{};
@@ -430,7 +456,7 @@ bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int heig
     barrier.image = image_;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.levelCount = static_cast<uint32_t>(mip_levels);
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 6;
     barrier.srcAccessMask = 0;
@@ -438,16 +464,26 @@ bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int heig
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    VkBufferImageCopy regions[6]{};
-    for (int f = 0; f < 6; ++f) {
-        regions[f].bufferOffset = static_cast<VkDeviceSize>(f) * face_size;
-        regions[f].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        regions[f].imageSubresource.mipLevel = 0;
-        regions[f].imageSubresource.baseArrayLayer = static_cast<uint32_t>(f);
-        regions[f].imageSubresource.layerCount = 1;
-        regions[f].imageExtent = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
+    std::vector<VkBufferImageCopy> regions;
+    regions.reserve(static_cast<size_t>(mip_levels) * 6);
+    cursor = 0;
+    for (int l = 0; l < mip_levels; ++l) {
+        const int mw = std::max(1, width >> l);
+        const int mh = std::max(1, height >> l);
+        for (int f = 0; f < 6; ++f) {
+            VkBufferImageCopy region{};
+            region.bufferOffset = cursor;
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = static_cast<uint32_t>(l);
+            region.imageSubresource.baseArrayLayer = static_cast<uint32_t>(f);
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = {static_cast<uint32_t>(mw), static_cast<uint32_t>(mh), 1};
+            regions.push_back(region);
+            cursor += face_sizes[static_cast<size_t>(l)];
+        }
     }
-    vkCmdCopyBufferToImage(cmd, staging.buffer(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, regions);
+    vkCmdCopyBufferToImage(cmd, staging.buffer(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<uint32_t>(regions.size()), regions.data());
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -460,7 +496,7 @@ bool VulkanTexture::upload_cubemap_hdr(const void* faces[6], int width, int heig
     vkDestroyCommandPool(device_->device(), pool, nullptr);
 
     layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    GLOG_INFO("VulkanTexture: HDR cubemap uploaded {}x{}", width_, height_);
+    GLOG_INFO("VulkanTexture: HDR cubemap uploaded {}x{} mips={}", width_, height_, mip_levels);
     return true;
 }
 
@@ -505,10 +541,12 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
         case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; channels_ = 4; break;
         case TextureFormat::RGBA32F: vk_format = VK_FORMAT_R32G32B32A32_SFLOAT; channels_ = 4; break;
         case TextureFormat::R8: vk_format = VK_FORMAT_R8_UNORM; channels_ = 1; break;
-        case TextureFormat::Depth16: vk_format = VK_FORMAT_D16_UNORM; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
-        case TextureFormat::Depth24: vk_format = VK_FORMAT_X8_D24_UNORM_PACK32; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
-        case TextureFormat::Depth32F: vk_format = VK_FORMAT_D32_SFLOAT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
-        case TextureFormat::Depth24Stencil8: vk_format = VK_FORMAT_D24_UNORM_S8_UINT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 2; break;
+        // 深度纹理同时标记 SAMPLED：HDR 深度（SSAO/GTAO 重建）和阴影贴图
+        // 都需要在 shader 中采样，缺 SAMPLED 位会导致采样非法（验证层报错）。
+        case TextureFormat::Depth16: vk_format = VK_FORMAT_D16_UNORM; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
+        case TextureFormat::Depth24: vk_format = VK_FORMAT_X8_D24_UNORM_PACK32; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
+        case TextureFormat::Depth32F: vk_format = VK_FORMAT_D32_SFLOAT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
+        case TextureFormat::Depth24Stencil8: vk_format = VK_FORMAT_D24_UNORM_S8_UINT; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 2; break;
         default: break;
     }
     format_ = vk_format;
@@ -765,15 +803,74 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
         return false;
     }
 
+    // PCSS：深度贴图额外创建一个非比较 sampler，供 sampler2D 读取原始深度
+    if (is_depth) {
+        VkSamplerCreateInfo depth_sampler_info = sampler_info;
+        depth_sampler_info.compareEnable = VK_FALSE;
+        depth_sampler_info.compareOp = VK_COMPARE_OP_NEVER;
+        if (vkCreateSampler(dev, &depth_sampler_info, nullptr, &depth_sampler_) != VK_SUCCESS) {
+            GLOG_WARN("VulkanTexture: failed to create non-compare depth sampler (PCSS disabled)");
+            depth_sampler_ = VK_NULL_HANDLE;
+        }
+    }
+
     // upload data if provided
     if (data && (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
         VkDeviceSize size = static_cast<VkDeviceSize>(width_ * height_ * channels_);
         return upload_with_staging(data, size);
     }
 
+    // 渲染目标纹理（无上传数据）初始实际布局是 UNDEFINED。带 SAMPLED 用途的
+    // 纹理可能在首次作为附件渲染之前就被采样（SSAO 回退、未使用级联、GTAO
+    // 深度等），会触发 VUID-vkCmdDraw-None-09600（layout 未过渡）并读到垃圾。
+    // 这里在创建后立即过渡到可采样布局：之后作为附件时 render pass 的
+    // initialLayout=UNDEFINED 会按"丢弃内容"处理，finalLayout 再回到只读，
+    // 生命周期内任何时刻采样都是合法的。
+    if (usage & VK_IMAGE_USAGE_SAMPLED_BIT) {
+        initial_transition_to_read_only(aspect);
+    }
     layout_ = (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return true;
+}
+
+// 创建后立即把带 SAMPLED 用途的渲染目标过渡到可采样布局（见 create_image）
+void VulkanTexture::initial_transition_to_read_only(VkImageAspectFlags aspect) {
+    VkDevice dev = device_ ? device_->device() : VK_NULL_HANDLE;
+    if (dev == VK_NULL_HANDLE || image_ == VK_NULL_HANDLE) return;
+
+    VkCommandPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = device_->graphics_queue_family();
+    VkCommandPool pool = VK_NULL_HANDLE;
+    vkCreateCommandPool(dev, &pool_info, nullptr, &pool);
+    if (pool == VK_NULL_HANDLE) return;
+
+    VkCommandBuffer cmd = begin_one_time_commands(device_, pool);
+
+    const VkImageLayout target = (aspect == VK_IMAGE_ASPECT_DEPTH_BIT)
+                                     ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = target;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image_;
+    barrier.subresourceRange.aspectMask = aspect;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = mip_levels_;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    end_one_time_commands(device_, pool, cmd);
+    vkDestroyCommandPool(dev, pool, nullptr);
 }
 
 bool VulkanTexture::upload_with_staging(const void* data, VkDeviceSize size) {
@@ -994,6 +1091,11 @@ void VulkanTexture::set_filter(TextureFilter min, TextureFilter mag) {
         const bool use_aniso = !is_depth && device_ && device_->max_sampler_anisotropy() > 1.0f;
         VkDevice dev = device_->device();
         vkDestroySampler(dev, sampler_, nullptr);
+        if (depth_sampler_) {
+            vkDestroySampler(dev, depth_sampler_, nullptr);
+            depth_sampler_ = VK_NULL_HANDLE;
+        }
+        sampler_ = VK_NULL_HANDLE;
         VkSamplerCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         info.magFilter = to_vk_filter(mag_filter_);
@@ -1010,6 +1112,12 @@ void VulkanTexture::set_filter(TextureFilter min, TextureFilter mag) {
         info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         info.maxLod = static_cast<float>(mip_levels_);
         vkCreateSampler(dev, &info, nullptr, &sampler_);
+        if (is_depth) {
+            VkSamplerCreateInfo depth_info = info;
+            depth_info.compareEnable = VK_FALSE;
+            depth_info.compareOp = VK_COMPARE_OP_NEVER;
+            vkCreateSampler(dev, &depth_info, nullptr, &depth_sampler_);
+        }
     }
 }
 

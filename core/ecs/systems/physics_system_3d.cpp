@@ -309,6 +309,19 @@ struct PhysicsSystem3D::Impl {
         if (!t) return false;
         if (t->scale != slot.last_scale) return true;
 
+        auto* mr = entity->get_component<components::MeshRenderer>();
+        const bool has_mesh = mr && !mr->mesh_path.empty();
+        const std::string current_mesh = mr ? mr->mesh_path : std::string();
+
+        // Mesh takes precedence when building the shape (see create_shape_for_slot).
+        // If the entity also carries primitive collider components, those are NOT
+        // used for the shape, so they must not drive the "changed" detection here;
+        // otherwise every frame reports a change and rebuilds all bodies.
+        if (has_mesh) {
+            return current_mesh != slot.last_mesh_path ||
+                   entity_has_trigger(entity) != slot.last_is_trigger;
+        }
+
         auto* box = entity->get_component<components::BoxCollider>();
         if (box) {
             if (!slot.has_box || box->size != slot.last_box_size || box->center != slot.last_box_center) {
@@ -338,8 +351,6 @@ struct PhysicsSystem3D::Impl {
             return true;
         }
 
-        auto* mr = entity->get_component<components::MeshRenderer>();
-        const std::string current_mesh = mr ? mr->mesh_path : std::string();
         if (current_mesh != slot.last_mesh_path) return true;
 
         if (entity_has_trigger(entity) != slot.last_is_trigger) return true;
@@ -531,7 +542,7 @@ struct PhysicsSystem3D::Impl {
         slot.last_is_trigger = desc.is_sensor;
     }
 
-    void sync_to_backend(Slot& slot) {
+    void sync_to_backend(Slot& slot, bool allow_body_rebuild = true) {
         if (!world || slot.body == physics::k_invalid_body) return;
         scene::Entity* entity = slot.entity;
         if (!entity) return;
@@ -545,10 +556,18 @@ struct PhysicsSystem3D::Impl {
         }
 
         // 如果质量或材质发生变化，直接重建 body（Jolt 不支持运行时修改质量/形状）
-        if (material_changed(slot, entity) || shapes_changed(slot, entity)) {
-            destroy_slot_body(slot);
-            create_body(entity, entity->uuid());
-            return;
+        // Rebuild only during the frame-start collection pass. Destroying and
+        // recreating bodies between substeps (step1 -> step2) leaves Jolt's
+        // contact/constraint caches dangling; worker threads of the next substep
+        // dereference freed bodies and crash at a fixed offset (0xc0000005).
+        if (allow_body_rebuild) {
+            if (material_changed(slot, entity) || shapes_changed(slot, entity)) {
+                GLOG_INFO("Phys3D: REBUILD body for entity '{}' (material/shape changed)",
+                          entity->name());
+                destroy_slot_body(slot);
+                create_body(entity, entity->uuid());
+                return;
+            }
         }
 
         // 位置/旋转变化较大时同步到后端
@@ -989,7 +1008,8 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
         if (i + 1 < steps) {
             for (auto& [uuid, slot] : impl_->slots) {
                 if (slot.seen_this_frame) {
-                    impl_->sync_to_backend(slot);
+                    // Between substeps: sync transform/velocity only, never rebuild.
+                    impl_->sync_to_backend(slot, /*allow_body_rebuild=*/false);
                 }
             }
         }

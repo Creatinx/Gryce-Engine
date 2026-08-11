@@ -460,7 +460,8 @@ static void ensure_material_showcase_entities(scene::Scene& scene) {
         auto* light = e->add_component<components::Light>();
         light->light_type = components::Light::Type::Point;
         light->color = math::Vector3f(1.0f, 0.75f, 0.4f);
-        light->intensity = 2.5f;
+        // inverse-square 衰减下的物理量级（距离 ~9 处贡献约 1.0）
+        light->intensity = 80.0f;
         light->range = 30.0f;
     }
 
@@ -471,7 +472,8 @@ static void ensure_material_showcase_entities(scene::Scene& scene) {
         light->light_type = components::Light::Type::Spot;
         light->direction = math::Vector3f(0.0f, -1.0f, 0.0f);
         light->color = math::Vector3f(0.6f, 0.8f, 1.0f);
-        light->intensity = 3.0f;
+        // inverse-square 衰减下的物理量级
+        light->intensity = 60.0f;
         light->range = 25.0f;
         light->spot_angle = 35.0f;
     }
@@ -1036,6 +1038,8 @@ int main(int argc, char* argv[])
     int record_frames = 0;            // --record-frames N：连续录制 N 帧（用于生成视频）
     float record_delay = 0.0f;        // --record-delay N：延迟 N 秒后开始录制
     std::string record_out = "D:/Gryce-Engine/3dtest_frames"; // --record-out DIR
+    float hot_reload_delay = 0.0f;    // --hot-reload-delay N：启动 N 秒后触发一次管线热重载（CI 用）
+    bool sync_mode = false;           // DIAG: --sync 用同步渲染路径（模拟编辑器），无渲染线程
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--vulkan") == 0) {
             selected_api = render::RenderAPI::Vulkan;
@@ -1055,6 +1059,10 @@ int main(int argc, char* argv[])
             record_delay = static_cast<float>(std::atof(argv[++i]));
         } else if (std::strcmp(argv[i], "--record-out") == 0 && i + 1 < argc) {
             record_out = argv[++i];
+        } else if (std::strcmp(argv[i], "--hot-reload-delay") == 0 && i + 1 < argc) {
+            hot_reload_delay = static_cast<float>(std::atof(argv[++i]));
+        } else if (std::strcmp(argv[i], "--sync") == 0) {
+            sync_mode = true;
         }
     }
 
@@ -1202,7 +1210,11 @@ int main(int argc, char* argv[])
     }
 
     // 启动渲染线程（此后主线程不再持有 GL context）
-    render_ctx.start();
+    if (!sync_mode) {
+        render_ctx.start();
+    } else {
+        GLOG_INFO("DIAG: sync render path (no render thread)");
+    }
 
     if (record_frames > 0) {
         std::filesystem::create_directories(record_out);
@@ -1530,7 +1542,15 @@ int main(int argc, char* argv[])
             }
         }
 
-        render_ctx.present();
+        if (sync_mode) {
+            if (render_ctx.backend()) {
+                render_ctx.backend()->begin_frame();
+            }
+            render_ctx.execute_pending_sync();
+            render_ctx.present_swap();
+        } else {
+            render_ctx.present();
+        }
 
         // -------------------------------------------------------------------
         // 场景热重载 / 动态模型加载：必须在 present 之后执行，
@@ -1572,6 +1592,26 @@ int main(int argc, char* argv[])
         if (shader_reload_timer >= 0.5) {
             shader_reload_timer = 0.0;
             pipeline.poll_shader_hot_reload(render_ctx);
+        }
+
+        // -------------------------------------------------------------------
+        // 渲染管线热重载（重建整个管线：shader + FBO + 后处理目标）：
+        // F5 或调试面板按钮触发。同样在 present() 之后执行，避免 pause 丢失
+        // 未提交的渲染命令。重建会保留天空盒/IBL/LUT/tonemap/shadow 等配置。
+        // -------------------------------------------------------------------
+        bool reload_pipeline = debug_panel.consume_pipeline_reload_request() ||
+                               input.is_key_pressed(GLFW_KEY_F5);
+        if (hot_reload_delay > 0.0f) {
+            static double hot_reload_timer = 0.0;
+            static bool hot_reload_sent = false;
+            hot_reload_timer += window.delta_time();
+            if (!hot_reload_sent && hot_reload_timer >= static_cast<double>(hot_reload_delay)) {
+                hot_reload_sent = true;
+                reload_pipeline = true;
+            }
+        }
+        if (reload_pipeline) {
+            pipeline.hot_reload();
         }
 
         // -------------------------------------------------------------------

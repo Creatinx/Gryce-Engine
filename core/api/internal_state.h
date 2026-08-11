@@ -52,7 +52,7 @@ struct GlobalState {
     std::string scene_path_2d;
     std::string scene_path_3d;
 
-    // --- 输入状态（供 gryce.input 查询；由 ECMD_INPUT_* 命令更新）---
+    // --- 输入状态（供 engine.input 查询；由 ECMD_INPUT_* 命令更新）---
     std::unordered_set<int> keys_down;
     int mouse_x = 0;
     int mouse_y = 0;

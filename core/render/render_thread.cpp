@@ -68,7 +68,11 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
             IShader* s = backend->shader(cmd.shader);
             ITexture* t = backend->texture(cmd.texture);
             if (!s || !t) return;
-            t->bind(cmd.uniform_int);
+            if (cmd.texture_raw_depth) {
+                t->bind_raw_depth(cmd.uniform_int);
+            } else {
+                t->bind(cmd.uniform_int);
+            }
             if (!cmd.uniform_name.empty()) {
                 s->set_int(cmd.uniform_name, cmd.uniform_int);
             }

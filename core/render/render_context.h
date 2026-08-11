@@ -100,6 +100,11 @@ public:
                      const std::string& uniform_name = "uTexture");
     void set_texture(RHIShaderHandle shader, RHITextureHandle texture, int slot,
                      const char* uniform_name = "uTexture");
+    // 按"原始深度"绑定纹理（PCSS / SSAO 读真实深度；OpenGL 会绑非比较 sampler）
+    void set_texture_raw_depth(RHIShaderHandle shader, RHITextureHandle texture, int slot,
+                               const std::string& uniform_name = "uTexture");
+    void set_texture_raw_depth(RHIShaderHandle shader, RHITextureHandle texture, int slot,
+                               const char* uniform_name = "uTexture");
     void clear(float r, float g, float b, float a);
     void clear_depth();
     void set_viewport(int x, int y, int w, int h);
@@ -165,6 +170,12 @@ private:
     bool initialized_ = false;
     bool validation_enabled_ = false;
     bool running_ = false;
+
+    // 同步模式（无渲染线程）下 destroy_* 直接调用 backend；为避免销毁仍被
+    // 上一帧 in-flight 命令缓冲引用的 Vulkan 资源，记录最近一次提交序号，
+    // 销毁前若有过新提交则先 wait_gpu_idle（每次提交最多等待一次）。
+    uint64_t sync_submit_seq_ = 0;
+    uint64_t sync_waited_seq_ = 0;
 
     std::shared_ptr<Lifetime> lifetime_ = std::make_shared<Lifetime>();
 

@@ -28,7 +28,7 @@
 
 | 方案 | 结论 |
 |---|---|
-| **Lua 5.4 + 纯 C API** | **采用**（GryceSRT 的脚本语言）。稳定、可嵌入、开销小、MSVC/GCC 均无 ABI 问题；手写 `gryce.*` 绑定表简单可控。 |
+| **Lua 5.4 + 纯 C API** | **采用**（GryceSRT 的脚本语言）。稳定、可嵌入、开销小、MSVC/GCC 均无 ABI 问题；手写 `engine.*` 绑定表简单可控。 |
 | Lua + sol2（头文件模板库） | 备选。省绑定代码，但引入 C++ 模板层，出错信息复杂，与现有"零/少依赖"风格不一致。 |
 | Python 嵌入（CPython） | 否决。体积大、GIL/初始化重、发行麻烦。 |
 | JavaScript（QuickJS/Duktape） | 可作备选；生态/心智模型不如 Lua 通用。 |
@@ -50,7 +50,7 @@ flowchart LR
     subgraph Core["Core (C++ DLL / 静态库)"]
         SRT["GryceSRT: Lua 运行时 + ScriptSystem"]
         SC["Script 组件"]
-        API["gryce.* 绑定表"]
+        API["engine.* 绑定表"]
         ECS["World / Scene / Reflection"]
         PLT["Platform: 窗口创建"]
         REN["Renderer: 渲染上下文/后端"]
@@ -82,7 +82,7 @@ flowchart LR
 ### 4.1 Lua 运行时
 - 新增 `core/script/` 目录（GryceSRT 的 Core 部分）：
   - `lua_runtime.h/.cpp`：全局 `lua_State*` 的生命周期（引擎初始化时创建、关闭时销毁），标准库加载裁剪。
-  - `lua_bindings.h/.cpp`：`gryce.*` API 表。
+  - `lua_bindings.h/.cpp`：`engine.*` API 表。
   - `script_component.h`：`Script` 组件。
   - `script_system.h/.cpp`：`ScriptSystem`（ISystem）。
 - 全局一个 `lua_State`；**每个 Script 组件持有一个独立环境表**（`lua_newtable` + 设置元表指向全局），
@@ -108,21 +108,21 @@ flowchart LR
   组件标记 `error_state`（每帧只报一次，避免刷屏）。
 - 场景切换/实体销毁时清理：按实体句柄缓存 env，销毁时 `luaL_unref`。
 
-### 4.4 Lua API（`gryce.*`）
+### 4.4 Lua API（`engine.*`）
 
 首轮最小集合：
 
 | 分组 | API | 说明 |
 |---|---|---|
-| 实体 | `gryce.self()` | 当前脚本所属实体句柄 |
-| | `gryce.entity.get_name(h)` / `find(name)` | 场景查询 |
-| | `gryce.entity.get_transform(h)` / `set_transform(h, pos, rot, scl)` | 变换读写（复用 `EntityAPI` 逻辑） |
-| | `gryce.entity.create(name, parent)` / `destroy(h)` | 运行时实例化（可选首轮） |
-| 组件 | `gryce.component.get(h, type_name, prop)` / `set(...)` | 走反射 `Registry::all_fields` 读写任意属性 |
-| 输入 | `gryce.input.key_down(key)` / `mouse_pos()` | 复用 Core 已保存的输入状态（Editor 已推 `ECMD_INPUT_*`） |
-| 时间 | `gryce.time.delta()` / `elapsed()` | |
-| 日志 | `gryce.log.info/warn/error(...)` | 进控制台 |
-| 场景 | `gryce.scene.load(path)` | 可选 |
+| 实体 | `engine.self()` | 当前脚本所属实体句柄 |
+| | `engine.entity.get_name(h)` / `find(name)` | 场景查询 |
+| | `engine.entity.get_transform(h)` / `set_transform(h, pos, rot, scl)` | 变换读写（复用 `EntityAPI` 逻辑） |
+| | `engine.entity.create(name, parent)` / `destroy(h)` | 运行时实例化（可选首轮） |
+| 组件 | `engine.component.get(h, type_name, prop)` / `set(...)` | 走反射 `Registry::all_fields` 读写任意属性 |
+| 输入 | `engine.input.key_down(key)` / `mouse_pos()` | 复用 Core 已保存的输入状态（Editor 已推 `ECMD_INPUT_*`） |
+| 时间 | `engine.time.delta()` / `elapsed()` | |
+| 日志 | `engine.log.info/warn/error(...)` | 进控制台 |
+| 场景 | `engine.scene.load(path)` | 可选 |
 
 绑定实现为普通 C 函数（`lua_CFunction`），内部调用 Core 已有模块，不做重实现。
 
@@ -133,7 +133,7 @@ flowchart LR
 - 也可首轮直接复用 `ECMD_SET_PROPERTY`（`Script.script_path` 是反射字段），显式命令作为 Phase 1 收尾的清理项。
 
 ### 4.6 暴露属性（Inspector 显示脚本变量）
-- 约定：脚本顶部定义 `gryce.props()` 返回表，或约定全局表 `props = { speed = 1 }`。
+- 约定：脚本顶部定义 `engine.props()` 返回表，或约定全局表 `props = { speed = 1 }`。
 - Core 加载脚本后扫描 props 表，动态注册为 Script 组件的临时反射字段（前缀 `script.`），
   Inspector 复用现有属性 UI 读写，写回 Lua 环境；序列化时按反射字段落盘 `.gesc`。
 - **阶段化**：Phase 1 只序列化 `script_path` + `enabled`；暴露属性放 Phase 3。
@@ -212,12 +212,12 @@ flowchart LR
 
 ### Phase 0 — Spike（验证嵌入可行性）
 - vendor Lua 5.4 源码 + CMake 接入；引擎初始化/关闭时创建/销毁 `lua_State`。
-- 冒烟：加载 `res://scripts/hello.lua`，执行 `gryce.log.info("hi")`，编辑器控制台可见。
+- 冒烟：加载 `res://scripts/hello.lua`，执行 `engine.log.info("hi")`，编辑器控制台可见。
 - 验收：`examples/` 下新增 hello 脚本示例；控制台正确显示日志。
 
 ### Phase 1 — Core 基础（GryceSRT 主体）
 - Script 组件 + ScriptSystem + 生命周期（on_start/on_update/on_destroy）+ pcall 错误上报。
-- `gryce.self / entity 变换 / 时间 / 日志 / 输入查询` 绑定。
+- `engine.self / entity 变换 / 时间 / 日志 / 输入查询` 绑定。
 - 序列化（.gesc 保存 script_path/enabled）与场景加载恢复。
 - 验收：给 Cube 挂脚本每帧自转；保存/重载场景后脚本仍工作；脚本抛错在控制台显示且不崩。
 

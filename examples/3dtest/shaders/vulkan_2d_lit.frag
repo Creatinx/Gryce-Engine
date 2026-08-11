@@ -37,9 +37,13 @@ layout(set = 0, binding = 2) uniform LightUBO {
 
 float compute_shadow(vec4 light_space_pos) {
     vec3 proj = light_space_pos.xyz / light_space_pos.w;
-    // Vulkan NDC z 已是 [0,1]，只有 xy 需要从 [-1,1] 重映射
+    // C++ 侧直接上传了 GL 风格 ortho（z ∈ [-1,1]），Vulkan shadow map
+    // 里存的深度是视图变换后的 [0,1]（z*0.5+0.5）。比较参考必须做同样的
+    // 重映射，否则阴影判定整体偏移（几乎不产生阴影或位置错误）。
     proj.xy = proj.xy * 0.5 + 0.5;
-    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 0.0;
+    proj.z = proj.z * 0.5 + 0.5;
+    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 ||
+        proj.z < 0.0 || proj.z > 1.0) return 0.0;
     return texture(uShadowMap, vec3(proj.xy, proj.z)).r;
 }
 

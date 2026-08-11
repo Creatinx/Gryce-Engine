@@ -44,6 +44,14 @@ public:
     math::Vector2f uv_scale = math::Vector2f(1.0f, 1.0f);
     math::Vector2f uv_offset = math::Vector2f(0.0f, 0.0f);
 
+    // 高级材质：Clearcoat（车漆/塑料）、Sheen（织物）、各向异性（金属拉丝/CD 纹路）
+    float clearcoat = 0.0f;             // 0~1 清漆强度
+    float clearcoat_roughness = 0.1f;   // 0~1 清漆粗糙度（低=镜面漆）
+    float sheen = 0.0f;                 // 0~1 织物光泽强度
+    math::Vector3f sheen_tint = math::Vector3f::one(); // 织物颜色
+    float anisotropy = 0.0f;            // -1~1 各向异性（0=各向同性）
+    float anisotropy_rotation = 0.0f;   // 各向异性方向旋转（弧度）
+
     // 贴图路径（res:/path 或绝对路径）
     std::string albedo_map_path;
     std::string normal_map_path;

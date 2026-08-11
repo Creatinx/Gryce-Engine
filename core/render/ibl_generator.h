@@ -17,15 +17,14 @@ namespace render {
 // 输出：
 //   - radiance_cubemap：环境辐射度 cubemap（RGBA16F，radiance 面）
 //   - irradiance_cubemap：漫反射 irradiance cubemap（RGBA16F，CPU 卷积）
-//   - prefilter_cubemap：用于镜面反射的预过滤 cubemap（RGBA16F，基础版）
+//   - prefilter_cubemap：用于镜面反射的预过滤 cubemap（RGBA16F，多级 mip，
+//     level 0 ≈ 低粗糙度，越高级越模糊，shader 按 roughness 采样对应 mip）
 //   - brdf_lut：BRDF 积分 LUT（RG16F，2D）
-//
-// 说明：
-//   - 当前为 IBL 基础实现。prefilter 暂使用单级 cubemap（无 mipmap），
-//     shader 中用 roughness 做简单衰减；cubemap mipmap 生成完成后可升级为
-//     标准 split-sum approximation。
 // ---------------------------------------------------------------------------
 struct IBLData {
+    // prefilter 的 mip 级数（level 0 = roughness 0，末级 = roughness 1）
+    static constexpr int k_prefilter_mip_levels = 5;
+
     int cubemap_size = 0;
     int irradiance_size = 0;
     int prefilter_size = 0;
@@ -34,13 +33,16 @@ struct IBLData {
     // 每个面数据：顺序 +X, -X, +Y, -Y, +Z, -Z
     std::array<std::vector<float>, 6> radiance_faces;
     std::array<std::vector<float>, 6> irradiance_faces;
-    std::array<std::vector<float>, 6> prefilter_faces;
+    // 多级 prefilter：prefilter_mips[level][face]，第 level 级边长
+    // max(1, prefilter_size >> level)
+    std::vector<std::array<std::vector<float>, 6>> prefilter_mips;
 
     // BRDF LUT：RG 各一个 float，按行优先存储
     std::vector<float> brdf_lut;
 
     bool valid() const {
-        return cubemap_size > 0 && irradiance_size > 0 && prefilter_size > 0 && brdf_size > 0;
+        return cubemap_size > 0 && irradiance_size > 0 && prefilter_size > 0 && brdf_size > 0 &&
+               !prefilter_mips.empty();
     }
 };
 
@@ -56,6 +58,15 @@ public:
                                              int irradiance_size = 32,
                                              int prefilter_size = 128,
                                              int brdf_size = 256);
+
+    // 从已生成的 radiance cubemap（6 面 RGBA32F，face_size 边长）生成 IBL 资源。
+    // 供"从 LDR 天空盒派生环境"等场景使用。
+    static std::unique_ptr<IBLData> generate_from_cubemap(
+        const std::array<std::vector<float>, 6>& radiance_faces,
+        int radiance_size,
+        int irradiance_size = 32,
+        int prefilter_size = 128,
+        int brdf_size = 256);
 
 private:
     static math::Vector3f cubemap_direction(int face, float u, float v);

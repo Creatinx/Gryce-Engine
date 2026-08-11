@@ -75,6 +75,16 @@ GRYCE_RENDERER_API float GRender_GetIBLIntensity(void);
 // GRender_BeginFrame (renderer + embedded window are recreated).
 GRYCE_RENDERER_API void  GRender_RequestBackend(GRenderAPI api);
 
+// Hot reload: rebuilds the render pipeline (shaders/FBOs/post-process targets)
+// in place at the next GRender_BeginFrame, preserving current configuration.
+GRYCE_RENDERER_API int   GRender_RebuildPipeline(void);
+
+// Recovers the embedded render surface after the host HWND hid or destroyed
+// it (e.g. switching to the code-editor tab and back): forces a same-backend
+// recreate of the GLFW child window + render context + swapchain at the next
+// GRender_BeginFrame.
+GRYCE_RENDERER_API void  GRender_RequestSurfaceRecreate(void);
+
 #ifdef __cplusplus
 }
 #endif

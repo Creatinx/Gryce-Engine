@@ -55,9 +55,23 @@ namespace TextureSlots {
     constexpr int kPBRAO        = kPBRBase + 4;  // 14
     constexpr int kPBRShadow    = kPBRBase + 5;  // 15
     constexpr int kPBREmissive  = kPBRBase + 6;  // 16
+    // CSM 级联 1..3（级联 0 复用 kPBRShadow）
+    constexpr int kPBRShadowC1  = kPBRBase + 7;  // 17
+    constexpr int kPBRShadowC2  = kPBRBase + 8;  // 18
+    constexpr int kPBRShadowC3  = kPBRBase + 9;  // 19
+    // PCSS 需要非比较 sampler 读原始深度（0..3 与阴影级联一一对应）
+    constexpr int kPBRShadowDepth  = 25;
+    constexpr int kPBRShadowDepth1 = 26;
+    constexpr int kPBRShadowDepth2 = 27;
+    constexpr int kPBRShadowDepth3 = 28;
+    constexpr int kPBRSSAO        = 33;  // 屏幕空间环境光遮蔽（半分辨率）
 
     // 后处理
     constexpr int kTonemapHDR   = 20;
+    constexpr int kTonemapBloom = 29;  // bloom 合成输入（半分辨率）
+    constexpr int kTonemapLUT    = 30; // 3D LUT 色彩分级（1024x32 打包）
+    constexpr int kTonemapExposure = 31; // 自动曝光 1x1 曝光值
+    constexpr int kTAAHistory    = 32; // TAA 历史帧
 
     // 天空盒
     constexpr int kSkyboxCube   = 21;
@@ -136,6 +150,15 @@ public:
         return false;
     }
 
+    // 上传多级 HDR cubemap（RGBA32F→RGBA16F）。
+    // mip_faces[i] 指向第 i 级 6 个面的指针数组（顺序 +X,-X,+Y,-Y,+Z,-Z）；
+    // 第 i 级每面 max(1,width>>i) × max(1,height>>i) × 4 个 float。mip_levels >= 1。
+    virtual bool upload_cubemap_hdr_mips(const void* const* mip_faces, int mip_levels,
+                                         int width, int height) {
+        (void)mip_faces; (void)mip_levels; (void)width; (void)height;
+        return false;
+    }
+
     virtual bool is_cubemap() const { return false; }
 
     // 显式格式创建（PBR、阴影图、HDR 等场景）
@@ -154,6 +177,12 @@ public:
 
     virtual void bind(uint32_t slot = 0) const = 0;
     virtual void unbind() const = 0;
+
+    // 绑定纹理并切换为"原始深度"读取模式：OpenGL 后端会绑定一个
+    // 关闭了 GL_TEXTURE_COMPARE_MODE 的 sampler 对象，使 sampler2D
+    // 能取到真正的深度值（PCSS blocker search / SSAO 重建深度用）。
+    // 其他后端默认与 bind() 相同。
+    virtual void bind_raw_depth(uint32_t slot = 0) const { bind(slot); }
 
     virtual void set_filter(TextureFilter min, TextureFilter mag) = 0;
     virtual void set_wrap(TextureWrap s, TextureWrap t) = 0;

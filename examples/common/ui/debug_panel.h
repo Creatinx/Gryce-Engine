@@ -30,11 +30,20 @@ public:
     bool swap_space_ctrl() const { return swap_space_ctrl_; }
     bool disable_cull() const { return disable_cull_; }
 
+    // 调试面板请求重建渲染管线：按钮点击后由主循环在 present() 之后消费并执行
+    //（重建需要暂停渲染线程，不能在 ImGui 帧内直接调用）。
+    bool consume_pipeline_reload_request() {
+        const bool requested = pipeline_reload_requested_;
+        pipeline_reload_requested_ = false;
+        return requested;
+    }
+
 private:
     void draw_scene_hierarchy(scene::Entity* entity);
     void draw_entity_inspector(scene::Entity* entity);
 
     scene::Entity* selected_entity_ = nullptr;
+    bool pipeline_reload_requested_ = false;
 
     bool invert_mouse_y_ = false;  // 默认标准 FPS：鼠标上移抬头
     bool swap_space_ctrl_ = false; // 默认标准 FPS：Space=上升、Ctrl=下降

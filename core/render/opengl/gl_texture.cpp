@@ -53,6 +53,9 @@ GLTexture::~GLTexture() {
         clear_texture_slot_cache(texture_id_);
         glDeleteTextures(1, &texture_id_);
     }
+    if (raw_sampler_) {
+        glDeleteSamplers(1, &raw_sampler_);
+    }
 }
 
 namespace {
@@ -434,9 +437,20 @@ bool GLTexture::upload_cubemap(const void* faces[6], int width, int height, int 
 }
 
 bool GLTexture::upload_cubemap_hdr(const void* faces[6], int width, int height) {
-    if (!faces || width <= 0 || height <= 0) return false;
-    for (int i = 0; i < 6; ++i) {
-        if (!faces[i]) return false;
+    // 单级上传复用多级实现
+    const void* levels[1] = { reinterpret_cast<const void*>(faces) };
+    return upload_cubemap_hdr_mips(levels, 1, width, height);
+}
+
+bool GLTexture::upload_cubemap_hdr_mips(const void* const* mip_faces, int mip_levels,
+                                        int width, int height) {
+    if (!mip_faces || mip_levels <= 0 || width <= 0 || height <= 0) return false;
+    for (int l = 0; l < mip_levels; ++l) {
+        if (!mip_faces[l]) return false;
+        const void* const* faces = reinterpret_cast<const void* const*>(mip_faces[l]);
+        for (int i = 0; i < 6; ++i) {
+            if (!faces[i]) return false;
+        }
     }
 
     if (texture_id_) {
@@ -452,32 +466,46 @@ bool GLTexture::upload_cubemap_hdr(const void* faces[6], int width, int height) 
     const bool dsa = gl_dsa_available();
     if (dsa) {
         glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &texture_id_);
-        glTextureStorage2D(texture_id_, 1, GL_RGBA16F, width, height);
-        for (int i = 0; i < 6; ++i) {
-            glTextureSubImage3D(texture_id_, 0, 0, 0, i, width, height, 1,
-                                GL_RGBA, GL_FLOAT, faces[i]);
+        glTextureStorage2D(texture_id_, mip_levels, GL_RGBA16F, width, height);
+        for (int l = 0; l < mip_levels; ++l) {
+            const void* const* faces = reinterpret_cast<const void* const*>(mip_faces[l]);
+            const int mw = std::max(1, width >> l);
+            const int mh = std::max(1, height >> l);
+            for (int i = 0; i < 6; ++i) {
+                glTextureSubImage3D(texture_id_, l, 0, 0, i, mw, mh, 1,
+                                    GL_RGBA, GL_FLOAT, faces[i]);
+            }
         }
-        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(texture_id_, GL_TEXTURE_BASE_LEVEL, 0);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
     } else {
         glGenTextures(1, &texture_id_);
         glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id_);
-        for (int i = 0; i < 6; ++i) {
-            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA16F,
-                         width, height, 0, GL_RGBA, GL_FLOAT, faces[i]);
+        for (int l = 0; l < mip_levels; ++l) {
+            const void* const* faces = reinterpret_cast<const void* const*>(mip_faces[l]);
+            const int mw = std::max(1, width >> l);
+            const int mh = std::max(1, height >> l);
+            for (int i = 0; i < 6; ++i) {
+                glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, l, GL_RGBA16F,
+                             mw, mh, 0, GL_RGBA, GL_FLOAT, faces[i]);
+            }
         }
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
     }
 
-    GLOG_INFO("HDR cubemap uploaded: {}x{} tex_id={}", width, height, texture_id_);
+    GLOG_INFO("HDR cubemap uploaded: {}x{} mips={} tex_id={}", width, height, mip_levels, texture_id_);
     return true;
 }
 
@@ -493,6 +521,10 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
         // 避免驱动复用同一 id 后 bind() 误判"已绑定"而跳过新纹理的绑定。
         clear_texture_slot_cache(texture_id_);
         glDeleteTextures(1, &texture_id_);
+    }
+    if (raw_sampler_) {
+        glDeleteSamplers(1, &raw_sampler_);
+        raw_sampler_ = 0;
     }
 
     GLFormatInfo info = to_gl_format(format);
@@ -531,6 +563,15 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
                 glTextureParameteri(texture_id_, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
                 glTextureParameteri(texture_id_, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
             }
+            // 原始深度 sampler：关闭比较模式，供 PCSS / SSAO 读取真实深度。
+            glGenSamplers(1, &raw_sampler_);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+            glSamplerParameterfv(raw_sampler_, GL_TEXTURE_BORDER_COLOR, border_color);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
         } else {
             glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -551,6 +592,15 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
             }
+            // 原始深度 sampler：关闭比较模式，供 PCSS / SSAO 读取真实深度。
+            glGenSamplers(1, &raw_sampler_);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+            glSamplerParameterfv(raw_sampler_, GL_TEXTURE_BORDER_COLOR, border_color);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
         } else {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -629,6 +679,11 @@ void GLTexture::bind(uint32_t slot) const {
     if (slot >= k_max_texture_slots) return;
     if (texture_id_ == 0) return;
 
+    // 清除该单元上残留的原始深度 sampler，避免覆盖纹理对象的比较模式
+    // （比较 sampler2DShadow 依赖纹理对象的 GL_COMPARE_REF_TO_TEXTURE），
+    // 也避免同单元后续绑定的颜色纹理被深度 sampler 的 wrap/filter 覆盖。
+    glBindSampler(slot, 0);
+
     if (gl_dsa_available()) {
         if (g_bound_textures[slot] == texture_id_) return;
         glBindTextureUnit(slot, texture_id_);
@@ -641,6 +696,29 @@ void GLTexture::bind(uint32_t slot) const {
         if (g_bound_textures[slot] == texture_id_) return;
         glBindTexture(is_cubemap_ ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, texture_id_);
         g_bound_textures[slot] = texture_id_;
+    }
+}
+
+void GLTexture::bind_raw_depth(uint32_t slot) const {
+    if (slot >= k_max_texture_slots) return;
+    if (texture_id_ == 0) return;
+
+    if (gl_dsa_available()) {
+        glBindTextureUnit(slot, texture_id_);
+    } else {
+        if (g_active_texture_unit != static_cast<int>(slot)) {
+            glActiveTexture(GL_TEXTURE0 + slot);
+            g_active_texture_unit = static_cast<int>(slot);
+        }
+        glBindTexture(GL_TEXTURE_2D, texture_id_);
+    }
+    g_bound_textures[slot] = texture_id_;
+
+    // 原始深度 sampler：读取真实深度（非比较结果）。
+    if (raw_sampler_) {
+        glBindSampler(slot, raw_sampler_);
+    } else {
+        glBindSampler(slot, 0);
     }
 }
 

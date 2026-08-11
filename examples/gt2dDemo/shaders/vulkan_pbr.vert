@@ -18,6 +18,7 @@ layout(location = 1) out vec2 vTexCoord;
 layout(location = 2) out vec3 vColor;
 layout(location = 3) out mat3 vTBN;
 layout(location = 6) out vec4 vLightSpacePos;
+layout(location = 7) out vec2 vScreenUV;
 
 void main() {
     vec4 world_pos = pc.uModel * vec4(aPos, 1.0);
@@ -33,4 +34,6 @@ void main() {
 
     vLightSpacePos = pc.uLightSpaceMatrix * world_pos;
     gl_Position = pc.uProjection * pc.uView * world_pos;
+    vScreenUV = (gl_Position.xy / gl_Position.w) * 0.5 + 0.5;
+    vScreenUV.y = 1.0 - vScreenUV.y;
 }

@@ -239,7 +239,8 @@ void GLShader::set_float(const char* name, float value) {
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_float: uniform '{}' not found (location={})", name, loc);
+        GLOG_WARN("GLShader::set_float: uniform '{}' not found (program={}, location={})",
+                  name, program_id_, loc);
         return;
     }
     glUniform1f(loc, value);
@@ -284,7 +285,8 @@ void GLShader::set_vec4(const char* name, const gryce_engine::math::Vector4f& va
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_vec4: uniform '{}' not found (location={})", name, loc);
+        GLOG_WARN("GLShader::set_vec4: uniform '{}' not found (program={}, location={})",
+                  name, program_id_, loc);
         return;
     }
     glUniform4f(loc, value.x, value.y, value.z, value.w);
@@ -299,7 +301,8 @@ void GLShader::set_mat4(const char* name, const gryce_engine::math::Matrix4f& va
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_mat4: uniform '{}' not found (location={})", name, loc);
+        GLOG_WARN("GLShader::set_mat4: uniform '{}' not found (program={}, location={})",
+                  name, program_id_, loc);
         return;
     }
     glUniformMatrix4fv(loc, 1, GL_FALSE, value.m);
@@ -409,21 +412,70 @@ bool GLShader::reload() {
     return true;
 }
 
-void GLShader::set_post_process_params(float exposure, int mode) {
-    pp_exposure_ = exposure;
-    pp_mode_ = mode;
+void GLShader::set_post_process_params(const PostProcessParams& params) {
+    pp_params_ = params;
     pp_dirty_ = true;
 }
 
 void GLShader::apply_post_process_params() const {
     if (!pp_dirty_ || program_id_ == 0) return;
-    int exposure_loc = get_uniform_location("uExposure");
-    int mode_loc = get_uniform_location("uToneMapMode");
-    if (exposure_loc >= 0) {
-        glUniform1f(exposure_loc, pp_exposure_);
+    const PostProcessParams& p = pp_params_;
+    struct Uniform1f { const char* name; float value; };
+    static const Uniform1f floats[] = {
+        {"uExposure", p.exposure},
+        {"uEV100", p.ev100},
+        {"uWhitePoint", p.white_point},
+        {"uBlackPoint", p.black_point},
+        {"uContrast", p.contrast},
+        {"uSaturation", p.saturation},
+        {"uBloomThreshold", p.bloom_threshold},
+        {"uBloomIntensity", p.bloom_intensity},
+        {"uFilmGrain", p.film_grain},
+        {"uVignette", p.vignette},
+        {"uChromaticAberration", p.chromatic_aberration},
+        {"uLUTStrength", p.lut_strength},
+        {"uAETargetLuminance", p.ae_target_luminance},
+        {"uAEMinExposure", p.ae_min_exposure},
+        {"uAEMaxExposure", p.ae_max_exposure},
+        {"uAESpeed", p.ae_speed},
+        {"uTAAWeight", p.taa_weight},
+        {"uSSAOStrength", p.ssao_strength},
+        {"uSSAORadius", p.ssao_radius},
+        {"uSSAONear", p.ssao_near},
+        {"uSSAOFar", p.ssao_far},
+        {"uSSAOTanHalfFov", p.ssao_tan_half},
+        {"uSSAOAspect", p.ssao_aspect},
+    };
+    for (const auto& u : floats) {
+        int loc = get_uniform_location(u.name);
+        if (loc >= 0) glUniform1f(loc, u.value);
     }
-    if (mode_loc >= 0) {
-        glUniform1i(mode_loc, pp_mode_);
+    struct Uniform1i { const char* name; int value; };
+    static const Uniform1i ints[] = {
+        {"uToneMapMode", p.tone_map_mode},
+        {"uDithering", p.dithering},
+        {"uBloomEnabled", p.bloom_enabled},
+        {"uUseLUT", p.use_lut},
+        {"uAutoExposure", p.auto_exposure},
+        {"uTAAEnabled", p.taa_enabled},
+        {"uSSAOEnabled", p.ssao_enabled},
+    };
+    for (const auto& u : ints) {
+        int loc = get_uniform_location(u.name);
+        if (loc >= 0) glUniform1i(loc, u.value);
+    }
+    struct Uniform4f { const char* name; math::Vector4f value; };
+    static const Uniform4f vec4s[] = {
+        {"uLift", p.lift},
+        {"uGamma", p.gamma},
+        {"uGain", p.gain},
+        {"uShadows", p.shadows},
+        {"uMidtones", p.midtones},
+        {"uHighlights", p.highlights},
+    };
+    for (const auto& u : vec4s) {
+        int loc = get_uniform_location(u.name);
+        if (loc >= 0) glUniform4f(loc, u.value.x, u.value.y, u.value.z, u.value.w);
     }
     pp_dirty_ = false;
 }

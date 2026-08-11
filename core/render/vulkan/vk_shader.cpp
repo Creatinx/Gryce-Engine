@@ -31,11 +31,29 @@ int slot_to_binding(int slot) {
         case TextureSlots::kPBRAO:        return 5;
         case TextureSlots::kPBRShadow:    return 6;
         case TextureSlots::kPBREmissive:  return 7;
+        case TextureSlots::kPBRShadowC1:  return 12;
+        case TextureSlots::kPBRShadowC2:  return 13;
+        case TextureSlots::kPBRShadowC3:  return 14;
+        case TextureSlots::kPBRShadowDepth:  return 15;
+        case TextureSlots::kPBRShadowDepth1: return 16;
+        case TextureSlots::kPBRShadowDepth2: return 17;
+        case TextureSlots::kPBRShadowDepth3: return 18;
+        case TextureSlots::kPBRSSAO:     return 19;
         case TextureSlots::kIBLIrradiance: return 9;
         case TextureSlots::kIBLPrefilter:  return 10;
         case TextureSlots::kIBLBRDF:       return 11;
         default: return slot + 1;
     }
+}
+
+// 后处理/天空盒共用固定描述符集：
+// 0 = 主输入（HDR/天空盒/当前帧），1 = bloom，2 = LUT，3 = 曝光值，4 = TAA 历史
+int post_process_binding(int slot) {
+    if (slot == TextureSlots::kTonemapBloom) return 1;
+    if (slot == TextureSlots::kTonemapLUT) return 2;
+    if (slot == TextureSlots::kTonemapExposure) return 3;
+    if (slot == TextureSlots::kTAAHistory) return 4;
+    return 0;
 }
 } // namespace
 
@@ -261,24 +279,32 @@ bool VulkanShader::create_pipeline() {
               reinterpret_cast<void*>(render_pass), color_output_enabled_, post_process_);
 
     if (post_process_ || skybox_) {
-        // Post-process / skybox descriptor layout: single combined image sampler at binding 0
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding = 0;
-        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binding.descriptorCount = 1;
-        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // Post-process / skybox descriptor layout: 5 combined image samplers
+        VkDescriptorSetLayoutBinding bindings[5]{};
+        for (int i = 0; i < 5; ++i) {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
 
-        VkDescriptorBindingFlags binding_flags = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+        VkDescriptorBindingFlags binding_flags[5] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+        };
         VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info{};
         binding_flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        binding_flags_info.bindingCount = 1;
-        binding_flags_info.pBindingFlags = &binding_flags;
+        binding_flags_info.bindingCount = 5;
+        binding_flags_info.pBindingFlags = binding_flags;
 
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        layout_info.bindingCount = 1;
-        layout_info.pBindings = &binding;
+        layout_info.bindingCount = 5;
+        layout_info.pBindings = bindings;
         layout_info.pNext = &binding_flags_info;
         vkCreateDescriptorSetLayout(device_->device(), &layout_info, nullptr, &descriptor_set_layout_);
 
@@ -292,7 +318,7 @@ bool VulkanShader::create_pipeline() {
         } else {
             push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             push_range.offset = 0;
-            push_range.size = 8;
+            push_range.size = sizeof(PostProcessPushData);
         }
 
         VkPipelineLayoutCreateInfo pl_info{};
@@ -311,7 +337,7 @@ bool VulkanShader::create_pipeline() {
 
         VkDescriptorPoolSize pool_size{};
         pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_size.descriptorCount = static_cast<uint32_t>(frames);
+        pool_size.descriptorCount = static_cast<uint32_t>(frames) * 5;
 
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -342,7 +368,7 @@ bool VulkanShader::create_pipeline() {
     } else {
         // 描述符布局：UBO(0) + PBR 贴图(1-7) + IBL 贴图(9-11) + palette UBO(8, skinned)
         std::vector<VkDescriptorSetLayoutBinding> bindings;
-        bindings.reserve(skinned_ ? 12 : 11);
+        bindings.reserve(skinned_ ? 20 : 19);
 
         VkDescriptorSetLayoutBinding ubo_binding{};
         ubo_binding.binding = 0;
@@ -368,6 +394,33 @@ bool VulkanShader::create_pipeline() {
             b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             bindings.push_back(b);
         }
+
+        for (int i = 12; i <= 14; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
+        }
+
+        // PCSS 深度采样（非比较 sampler）
+        for (int i = 15; i <= 18; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
+        }
+
+        // 屏幕空间 AO（半分辨率）
+        VkDescriptorSetLayoutBinding ssao_binding{};
+        ssao_binding.binding = 19;
+        ssao_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ssao_binding.descriptorCount = 1;
+        ssao_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings.push_back(ssao_binding);
 
         if (skinned_) {
             VkDescriptorSetLayoutBinding palette_binding{};
@@ -540,11 +593,14 @@ bool VulkanShader::create_pipeline() {
     depth_stencil.depthCompareOp = skybox_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
 
     VkPipelineColorBlendAttachmentState blend_attach{};
-    // 混合不是动态状态；PBR / shadow / grid 等不透明管线默认关闭混合。
-    // 透明物体由 RenderPipeline 在 forward pass 中排序后绘制，当前 Vulkan
-    // 路径尚不支持动态 blend，因此统一用不透明管线；后续可为透明材质创建
-    // 专用 pipeline 或启用 VK_EXT_extended_dynamic_state3 的动态颜色混合。
-    blend_attach.blendEnable = VK_FALSE;
+    // 混合不是动态状态；Vulkan 必须在管线创建时定死。
+    // 对 PBR / 网格统一启用 alpha 混合：
+    //   - 不透明材质 alpha=1，混合结果等于不混合（安全）；
+    //   - 半透明材质（TriggerZone、Glass 等）alpha<1，GL 端走 forward
+    //     透明排序 + blend，VK 之前硬编码关闭混合导致它们渲染错误。
+    // Shadow / post-process / skybox 仍保持不混合。
+    blend_attach.blendEnable =
+        (!post_process_ && !skybox_ && color_output_enabled_) ? VK_TRUE : VK_FALSE;
     blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend_attach.colorBlendOp = VK_BLEND_OP_ADD;
@@ -614,6 +670,10 @@ void VulkanShader::set_int(const std::string& name, int value) {
     else if (name == "uShadowLightIndex") ubo_data_.shadow_light_index = value;
     else if (name == "uUseIBL") ubo_data_.use_ibl = value;
     else if (name == "uTwoSided") ubo_data_.two_sided = value;
+    else if (name == "uCascadeCount") ubo_data_.cascade_count = value;
+    else if (name == "uPCSSEnabled") ubo_data_.pcss_enabled = value;
+    else if (name == "uDebugMode") ubo_data_.debug_mode = value;
+    else if (name == "uUseSSAO") ubo_data_.use_ssao = value;
     else if (parse_light_index(name, "uLightType", light_index)) {
         ubo_data_.lights[light_index].pos_type.w = static_cast<float>(value);
     }
@@ -630,8 +690,17 @@ void VulkanShader::set_float(const std::string& name, float value) {
     else if (name == "uMetallic") ubo_data_.metallic = value;
     else if (name == "uAO") ubo_data_.ao = value;
     else if (name == "uOpacity") ubo_data_.emissive_opacity.w = value;
-    else if (name == "uShadowBias") ubo_data_.shadow_bias = value;
     else if (name == "uIBLIntensity") ubo_data_.ibl_intensity = value;
+    else if (name == "uPCSSLightSize") ubo_data_.pcss_light_size = value;
+    else if (name == "uPCSSMaxRadius") ubo_data_.pcss_max_radius = value;
+    else if (name == "uPCSSBlockerScale") ubo_data_.pcss_tap_scale = value;
+    else if (name == "uNormalOffset") shadow_normal_offset_ = value;
+    else if (name == "uClearcoat") ubo_data_.clearcoat = value;
+    else if (name == "uClearcoatRoughness") ubo_data_.clearcoat_roughness = value;
+    else if (name == "uSheen") ubo_data_.sheen = value;
+    else if (name == "uAnisotropy") ubo_data_.anisotropy = value;
+    else if (name == "uAnisotropyRotation") ubo_data_.anisotropy_rotation = value;
+    else if (name == "uSSAOStrength") ubo_data_.ssao_strength = value;
     else if (name == "uLightIntensity") ubo_data_.lights[0].color_intensity.w = value; // 旧版单光 API
     else if (parse_light_index(name, "uLightIntensity", light_index)) {
         ubo_data_.lights[light_index].color_intensity.w = value;
@@ -650,6 +719,7 @@ void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value
     auto to_vec4 = [](const math::Vector3f& v) { return math::Vector4f(v.x, v.y, v.z, 0.0f); };
     int light_index = -1;
     if (name == "uAlbedoColor") ubo_data_.albedo_color = to_vec4(value);
+    else if (name == "uSheenTint") ubo_data_.sheen_tint = to_vec4(value);
     else if (name == "uCameraPos") ubo_data_.camera_pos = to_vec4(value);
     else if (name == "uAmbient") ubo_data_.ambient = to_vec4(value);
     else if (name == "uEmissiveColor") {
@@ -685,6 +755,12 @@ void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value
     int light_index = -1;
     if (name == "uUVTransform") {
         ubo_data_.uv_transform = value;
+    } else if (name == "uCascadeSplits") {
+        ubo_data_.cascade_splits = value;
+    } else if (name == "uCascadeBias") {
+        ubo_data_.cascade_bias = value;
+    } else if (name == "uCascadeFarBlend") {
+        ubo_data_.cascade_far_blend = value;
     } else if (parse_light_index(name, "uLightParams", light_index)) {
         // x=range, y=cos(outer), z=cos(inner)
         ubo_data_.lights[light_index].dir_range.w = value.x;
@@ -699,7 +775,11 @@ void VulkanShader::set_vec4(const char* name, const math::Vector4f& value) {
 
 void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value) {
     if (name == "uModel") model_ = value;
-    else if (name == "uView") view_ = value;
+    else if (name == "uView") {
+        view_ = value;
+        ubo_data_.view_matrix = value;
+        ubo_dirty_ = true;
+    }
     else if (name == "uProjection") {
         // OpenGL projection matrices use Z in [-1, 1]; Vulkan NDC uses [0, 1].
         // Remap the Z row while keeping Y unchanged; Y is flipped via negative viewport.
@@ -724,7 +804,22 @@ void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) {
 }
 
 void VulkanShader::set_mat4_array(const char* name, const math::Matrix4f* data, uint32_t count) {
-    if (!name || std::strcmp(name, "uBonePalette") != 0) return;
+    if (!name) return;
+    if (std::strcmp(name, "uCascadeLightSpace") == 0) {
+        const uint32_t n = std::min<uint32_t>(count, k_max_cascades);
+        for (uint32_t i = 0; i < n; ++i) {
+            // 与单矩阵 uLightSpaceMatrix 相同的 OpenGL→Vulkan NDC z 重映射
+            const math::Matrix4f& v = data[i];
+            math::Matrix4f vk_m = v;
+            vk_m(2, 2) = v(2, 2) * 0.5f + v(3, 2) * 0.5f;
+            vk_m(2, 3) = v(2, 3) * 0.5f + v(3, 3) * 0.5f;
+            ubo_data_.cascade_light_space[i] = vk_m;
+        }
+        ubo_data_.cascade_count = std::max(ubo_data_.cascade_count, static_cast<int>(n));
+        ubo_dirty_ = true;
+        return;
+    }
+    if (std::strcmp(name, "uBonePalette") != 0) return;
     if (!data || count == 0) {
         palette_count_ = 0;
         return;
@@ -789,7 +884,7 @@ bool VulkanShader::create_descriptor_pool() {
         pool_sizes[0].descriptorCount = max_draws_per_frame_ * (skinned_ ? 2 : 1);
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         // 每 draw 最多 10 张采样器：PBR(1-7) + IBL(9-11)
-        pool_sizes[1].descriptorCount = max_draws_per_frame_ * 10;
+        pool_sizes[1].descriptorCount = max_draws_per_frame_ * 19;
 
         VkDescriptorPoolCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -808,7 +903,8 @@ bool VulkanShader::create_descriptor_pool() {
 void VulkanShader::set_texture(int slot, ITexture* texture) {
     // post-process / skybox: 只有一个 combined image sampler，固定 binding 0。
     // PBR/IBL: 经 slot_to_binding 映射到与 GLSL layout(binding=...) 一致的 binding。
-    int binding = uses_fixed_descriptor_sets() ? 0 : slot_to_binding(slot);
+    int binding = uses_fixed_descriptor_sets() ? post_process_binding(slot)
+                                               : slot_to_binding(slot);
     if (binding < 0 || binding >= k_max_texture_bindings || !texture) return;
     auto* vk_tex = dynamic_cast<VulkanTexture*>(texture);
     if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) return;
@@ -832,7 +928,11 @@ void VulkanShader::set_texture(int slot, ITexture* texture) {
                                  ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                                  : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     image_info.imageView = vk_tex->image_view();
-    image_info.sampler = vk_tex->sampler();
+    // 深度纹理在 post-process（GTAO / SSAO blur）里用于重建视图位置，
+    // 必须用非比较 sampler 读原始深度；比较 sampler 会返回 0/1 比较结果。
+    image_info.sampler = (vk_tex->is_depth() && vk_tex->depth_sampler())
+                             ? vk_tex->depth_sampler()
+                             : vk_tex->sampler();
 
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -970,12 +1070,18 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
                                                       : fallback_texture_.get();
         }
         if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) continue;
+        // PCSS 深度采样 binding（15-18）用非比较 sampler 读原始深度
+        const bool pcss_depth_binding = (binding >= 15 && binding <= 18);
+        VkSampler use_sampler = vk_tex->sampler();
+        if (pcss_depth_binding && vk_tex->depth_sampler()) {
+            use_sampler = vk_tex->depth_sampler();
+        }
         auto& image_info = image_infos[binding];
         image_info.imageLayout = vk_tex->is_depth()
                                      ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                                      : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         image_info.imageView = vk_tex->image_view();
-        image_info.sampler = vk_tex->sampler();
+        image_info.sampler = use_sampler;
 
         writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[write_count].dstSet = set;
@@ -1002,10 +1108,43 @@ void VulkanShader::push_constants(VkCommandBuffer cmd) const {
     // 不能用脏标记跨帧跳过（否则验证层报 VUID-vkCmdDraw-None-08601，
     // 且着色器读到的是未定义数据）。
     if (post_process_) {
-        struct PushData {
-            float exposure;
-            int mode;
-        } data{pp_exposure_, pp_mode_};
+        PostProcessPushData data{};
+        data.exposure = pp_params_.exposure;
+        data.ev100 = pp_params_.ev100;
+        data.mode = pp_params_.tone_map_mode;
+        data.dithering = pp_params_.dithering;
+        data.white_point = pp_params_.white_point;
+        data.black_point = pp_params_.black_point;
+        data.contrast = pp_params_.contrast;
+        data.saturation = pp_params_.saturation;
+        data.lift = pp_params_.lift;
+        data.gamma = pp_params_.gamma;
+        data.gain = pp_params_.gain;
+        data.shadows = pp_params_.shadows;
+        data.midtones = pp_params_.midtones;
+        data.highlights = pp_params_.highlights;
+        data.bloom_enabled = pp_params_.bloom_enabled;
+        data.bloom_threshold = pp_params_.bloom_threshold;
+        data.bloom_intensity = pp_params_.bloom_intensity;
+        data.film_grain = pp_params_.film_grain;
+        data.vignette = pp_params_.vignette;
+        data.chromatic_aberration = pp_params_.chromatic_aberration;
+        data.use_lut = pp_params_.use_lut;
+        data.lut_strength = pp_params_.lut_strength;
+        data.auto_exposure = pp_params_.auto_exposure;
+        data.ae_target_luminance = pp_params_.ae_target_luminance;
+        data.ae_min_exposure = pp_params_.ae_min_exposure;
+        data.ae_max_exposure = pp_params_.ae_max_exposure;
+        data.ae_speed = pp_params_.ae_speed;
+        data.taa_enabled = pp_params_.taa_enabled;
+        data.taa_weight = pp_params_.taa_weight;
+        data.ssao_enabled = pp_params_.ssao_enabled;
+        data.ssao_strength = pp_params_.ssao_strength;
+        data.ssao_radius = pp_params_.ssao_radius;
+        data.ssao_near = pp_params_.ssao_near;
+        data.ssao_far = pp_params_.ssao_far;
+        data.ssao_tan_half = pp_params_.ssao_tan_half;
+        data.ssao_aspect = pp_params_.ssao_aspect;
         vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(data), &data);
     } else if (skybox_) {
@@ -1016,6 +1155,20 @@ void VulkanShader::push_constants(VkCommandBuffer cmd) const {
         }
         vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(matrices), matrices);
+    } else if (!color_output_enabled_) {
+        // 阴影深度 pass：{ lightSpace, model, normalOffset }
+        // （无颜色输出 = shadow map 管线；normal offset 在顶点阶段沿法线推几何）
+        struct ShadowPushData {
+            math::Matrix4f light_space;
+            math::Matrix4f model;
+            float normal_offset;
+            float pad[3];
+        } data{};
+        data.light_space = light_space_matrix_;
+        data.model = model_;
+        data.normal_offset = shadow_normal_offset_;
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(data), &data);
     } else {
         float matrices[4 * 16];
         for (int i = 0; i < 16; ++i) {
@@ -1029,12 +1182,46 @@ void VulkanShader::push_constants(VkCommandBuffer cmd) const {
     }
 }
 
-void VulkanShader::push_post_process_constants(VkCommandBuffer cmd, float exposure, int mode) const {
+void VulkanShader::push_post_process_constants(VkCommandBuffer cmd,
+                                               const PostProcessParams& params) const {
     if (!pipeline_layout_) return;
-    struct PushData {
-        float exposure;
-        int mode;
-    } data{exposure, mode};
+    PostProcessPushData data{};
+    data.exposure = params.exposure;
+    data.ev100 = params.ev100;
+    data.mode = params.tone_map_mode;
+    data.dithering = params.dithering;
+    data.white_point = params.white_point;
+    data.black_point = params.black_point;
+    data.contrast = params.contrast;
+    data.saturation = params.saturation;
+    data.lift = params.lift;
+    data.gamma = params.gamma;
+    data.gain = params.gain;
+    data.shadows = params.shadows;
+    data.midtones = params.midtones;
+    data.highlights = params.highlights;
+    data.bloom_enabled = params.bloom_enabled;
+    data.bloom_threshold = params.bloom_threshold;
+    data.bloom_intensity = params.bloom_intensity;
+    data.film_grain = params.film_grain;
+    data.vignette = params.vignette;
+    data.chromatic_aberration = params.chromatic_aberration;
+    data.use_lut = params.use_lut;
+    data.lut_strength = params.lut_strength;
+    data.auto_exposure = params.auto_exposure;
+    data.ae_target_luminance = params.ae_target_luminance;
+    data.ae_min_exposure = params.ae_min_exposure;
+    data.ae_max_exposure = params.ae_max_exposure;
+    data.ae_speed = params.ae_speed;
+    data.taa_enabled = params.taa_enabled;
+    data.taa_weight = params.taa_weight;
+    data.ssao_enabled = params.ssao_enabled;
+    data.ssao_strength = params.ssao_strength;
+    data.ssao_radius = params.ssao_radius;
+    data.ssao_near = params.ssao_near;
+    data.ssao_far = params.ssao_far;
+    data.ssao_tan_half = params.ssao_tan_half;
+    data.ssao_aspect = params.ssao_aspect;
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(data), &data);
 }

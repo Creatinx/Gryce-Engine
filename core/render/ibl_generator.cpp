@@ -162,7 +162,8 @@ math::Vector3f IBLGenerator::sample_equirectangular(const assets::TextureData* d
 }
 
 void IBLGenerator::convolve_irradiance(const IBLData& src, IBLData& dst) {
-    if (!src.valid() || dst.irradiance_size <= 0) return;
+    // 注意：生成过程中 prefilter_mips 尚未填充，不能用 src.valid()（会误判失败）
+    if (src.cubemap_size <= 0 || src.radiance_faces[0].empty() || dst.irradiance_size <= 0) return;
 
     const int size = dst.irradiance_size;
     const int samples = 1024;
@@ -207,47 +208,58 @@ void IBLGenerator::convolve_irradiance(const IBLData& src, IBLData& dst) {
 }
 
 void IBLGenerator::prefilter_radiance(const IBLData& src, IBLData& dst) {
-    if (!src.valid() || dst.prefilter_size <= 0) return;
+    // 注意：生成过程中 irradiance/prefilter 尚未填充，不能用 src.valid()
+    if (src.cubemap_size <= 0 || src.radiance_faces[0].empty() || dst.prefilter_size <= 0) return;
 
-    // 基础版 prefilter：对 radiance 做简单 box blur（模拟中等粗糙度）。
-    // 升级方案：为 cubemap 增加 mipmap 后，按 roughness 采样不同 mip。
-    const int size = dst.prefilter_size;
     const int src_size = src.cubemap_size;
-    const int blur_radius = std::max(1, src_size / (size * 4));
+    dst.prefilter_mips.clear();
+    dst.prefilter_mips.reserve(IBLData::k_prefilter_mip_levels);
 
-    for (int face = 0; face < 6; ++face) {
-        dst.prefilter_faces[face].resize(static_cast<size_t>(size) * size * 4);
-        for (int y = 0; y < size; ++y) {
-            for (int x = 0; x < size; ++x) {
-                float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
-                float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
-                math::Vector3f N = cubemap_direction(face, u, v);
+    const float golden_angle = k_pi * (3.0f - std::sqrt(5.0f)); // ~2.39996
+    const int levels = IBLData::k_prefilter_mip_levels;
 
-                math::Vector3f color = math::Vector3f::zero();
-                float weight = 0.0f;
-                int samples = 16;
-                // 在 N 周围小范围抖动采样，避免高频噪声
-                for (int i = 0; i < samples; ++i) {
-                    float angle = static_cast<float>(i) / static_cast<float>(samples) * k_two_pi;
-                    float radius = static_cast<float>(i) / static_cast<float>(samples);
-                    float ax = std::cos(angle) * radius;
-                    float ay = std::sin(angle) * radius;
-                    // 构造一个偏离 N 的方向
+    for (int level = 0; level < levels; ++level) {
+        const int size = std::max(1, dst.prefilter_size >> level);
+        const float t = static_cast<float>(level) / static_cast<float>(levels - 1);
+        // 采样锥半径随 roughness 增大：level 0 接近锐利，末级覆盖大半半球。
+        // 用 t*t 让低粗糙度区间更锐利（视觉上更接近真实反射）。
+        const float jitter_radius = 0.02f + 0.55f * t * t;
+        const int samples = 16 + 48 * level;
+
+        std::array<std::vector<float>, 6> faces;
+        for (int face = 0; face < 6; ++face) {
+            faces[face].resize(static_cast<size_t>(size) * size * 4);
+            for (int y = 0; y < size; ++y) {
+                for (int x = 0; x < size; ++x) {
+                    float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
+                    float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
+                    math::Vector3f N = cubemap_direction(face, u, v);
+
                     math::Vector3f T, B;
                     build_tangent_basis(N, T, B);
-                    math::Vector3f perturbed = (N + T * ax * 0.15f + B * ay * 0.15f).normalized();
-                    color += sample_cubemap_faces(src.radiance_faces, src_size, perturbed);
-                    weight += 1.0f;
-                }
-                color = color * (1.0f / weight);
 
-                size_t idx = (static_cast<size_t>(y) * size + x) * 4;
-                dst.prefilter_faces[face][idx + 0] = color.x;
-                dst.prefilter_faces[face][idx + 1] = color.y;
-                dst.prefilter_faces[face][idx + 2] = color.z;
-                dst.prefilter_faces[face][idx + 3] = 1.0f;
+                    math::Vector3f color = math::Vector3f::zero();
+                    // 黄金角螺旋均匀覆盖圆盘，再投影到半球，近似 GGX 的镜面 lobe。
+                    for (int i = 0; i < samples; ++i) {
+                        float r = std::sqrt((static_cast<float>(i) + 0.5f) / static_cast<float>(samples));
+                        float angle = golden_angle * static_cast<float>(i);
+                        float ax = std::cos(angle) * r;
+                        float ay = std::sin(angle) * r;
+                        math::Vector3f perturbed = (N + T * (ax * jitter_radius) +
+                                                    B * (ay * jitter_radius)).normalized();
+                        color += sample_cubemap_faces(src.radiance_faces, src_size, perturbed);
+                    }
+                    color = color * (1.0f / static_cast<float>(samples));
+
+                    size_t idx = (static_cast<size_t>(y) * size + x) * 4;
+                    faces[face][idx + 0] = color.x;
+                    faces[face][idx + 1] = color.y;
+                    faces[face][idx + 2] = color.z;
+                    faces[face][idx + 3] = 1.0f;
+                }
             }
         }
+        dst.prefilter_mips.push_back(std::move(faces));
     }
 }
 
@@ -313,6 +325,39 @@ std::unique_ptr<IBLData> IBLGenerator::generate(const assets::TextureData* hdr_d
     integrate_brdf(*data, brdf_size);
 
     GLOG_INFO("IBLGenerator: generated IBL (radiance={}, irradiance={}, prefilter={}, brdf={})",
+              radiance_size, irradiance_size, prefilter_size, brdf_size);
+    return data;
+}
+
+std::unique_ptr<IBLData> IBLGenerator::generate_from_cubemap(
+    const std::array<std::vector<float>, 6>& radiance_faces,
+    int radiance_size,
+    int irradiance_size,
+    int prefilter_size,
+    int brdf_size) {
+    if (radiance_size <= 0 || irradiance_size <= 0 || prefilter_size <= 0 || brdf_size <= 0) {
+        GLOG_ERROR("IBLGenerator: invalid cubemap input size");
+        return nullptr;
+    }
+    for (int face = 0; face < 6; ++face) {
+        if (radiance_faces[face].size() < static_cast<size_t>(radiance_size) * radiance_size * 4) {
+            GLOG_ERROR("IBLGenerator: radiance face {} too small", face);
+            return nullptr;
+        }
+    }
+
+    auto data = std::make_unique<IBLData>();
+    data->cubemap_size = radiance_size;
+    data->irradiance_size = irradiance_size;
+    data->prefilter_size = prefilter_size;
+    data->brdf_size = brdf_size;
+    data->radiance_faces = radiance_faces;
+
+    convolve_irradiance(*data, *data);
+    prefilter_radiance(*data, *data);
+    integrate_brdf(*data, brdf_size);
+
+    GLOG_INFO("IBLGenerator: generated IBL from cubemap (radiance={}, irradiance={}, prefilter={}, brdf={})",
               radiance_size, irradiance_size, prefilter_size, brdf_size);
     return data;
 }

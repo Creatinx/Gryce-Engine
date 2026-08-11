@@ -66,6 +66,7 @@ struct RendererState {
     int   shadow_map_size = 2048;
     bool  shadow_map_size_dirty = false;
     bool  backend_pending = false;
+    bool  pipeline_reload_pending = false;
     GRenderAPI pending_backend_api = GRYCE_RENDER_API_OPENGL;
     GRenderAPI current_backend = GRYCE_RENDER_API_OPENGL;
     math::Vector3f ambient = math::Vector3f(0.15f, 0.15f, 0.15f);
@@ -168,6 +169,13 @@ static void collect_scene_lights(scene::Scene& scn,
         l.position = t ? t->position : math::Vector3f::zero();
         out.push_back(l);
     });
+    // 兜底：场景没有任何灯时保证至少一个方向光，避免 uLightCount=0 只剩环境光
+    // （每个面渲染成纯色）。与 3dtest 的 collect_lights 行为保持一致。
+    if (out.empty()) {
+        RenderPipeline::Light fallback;
+        fallback.direction = math::Vector3f(0.0f, -1.0f, 0.0f);
+        out.push_back(fallback);
+    }
 }
 
 // 同步模式下渲染线程未运行，RenderSystem3D 的上传路径不会执行；
@@ -435,6 +443,14 @@ void GRender_BeginFrame(void) {
         }
         g_renderer.shadow_map_size_dirty = false;
     }
+    // Hot reload of the render pipeline: rebuild shaders/FBOs/post-process
+    // targets in place while preserving the current configuration.
+    if (g_renderer.pipeline_reload_pending && g_renderer.pipeline) {
+        g_renderer.pipeline_reload_pending = false;
+        if (!g_renderer.pipeline->hot_reload()) {
+            GLOG_ERROR("GRender: pipeline hot reload failed");
+        }
+    }
     // Async mode: render thread handles begin_frame
 }
 
@@ -625,6 +641,14 @@ int GRender_GetShadowMapSize(void) {
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.shadow_map_size;
 }
+int GRender_RebuildPipeline(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.initialized || !g_renderer.pipeline) return -1;
+    // 请求在下一个 GRender_BeginFrame 由渲染线程应用
+    g_renderer.pipeline_reload_pending = true;
+    return 0;
+}
 void GRender_SetAmbient(float r, float g, float b) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
@@ -747,6 +771,15 @@ void GRender_RequestBackend(GRenderAPI api) {
     g_renderer.backend_pending = true;
     GLOG_INFO("GRender_RequestBackend: {} requested",
               api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+}
+
+void GRender_RequestSurfaceRecreate(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.initialized) return;
+    g_renderer.pending_backend_api = g_renderer.current_backend;
+    g_renderer.backend_pending = true;
+    GLOG_INFO("GRender_RequestSurfaceRecreate: surface recreate requested");
 }
 
 } // extern "C"

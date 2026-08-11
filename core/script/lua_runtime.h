@@ -8,7 +8,7 @@ namespace gryce_engine { namespace scene { class Entity; } }
 
 namespace gryce_engine::script {
 
-/// GryceSRT runtime: owns the global Lua state and the `gryce.*` bindings.
+/// GryceSRT runtime: owns the global Lua state and the `engine.*` bindings.
 /// Lifecycle is tied to the core (GCore_Init creates it, GCore_Shutdown
 /// destroys it). All script execution happens on the game thread inside
 /// GCore_BeginFrame; the editor UI never touches this state.
@@ -40,7 +40,7 @@ private:
     LuaRuntime(const LuaRuntime&) = delete;
     LuaRuntime& operator=(const LuaRuntime&) = delete;
 
-    void register_gryce_bindings();
+    void register_engine_bindings();
 
     lua_State* L_ = nullptr;
     scene::Entity* current_entity_ = nullptr;

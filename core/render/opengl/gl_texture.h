@@ -19,6 +19,8 @@ public:
     bool upload_data(const void* data, int width, int height, int channels = 4) override;
     bool upload_cubemap(const void* faces[6], int width, int height, int channels = 4) override;
     bool upload_cubemap_hdr(const void* faces[6], int width, int height) override;
+    bool upload_cubemap_hdr_mips(const void* const* mip_faces, int mip_levels,
+                                 int width, int height) override;
     bool is_cubemap() const override { return is_cubemap_; }
     bool create_depth(int width, int height) override;
     bool create(TextureFormat format, int width, int height, const void* data = nullptr) override;
@@ -28,6 +30,7 @@ public:
                            const size_t* mip_sizes) override;
 
     void bind(uint32_t slot = 0) const override;
+    void bind_raw_depth(uint32_t slot = 0) const override;
     void unbind() const override;
 
     void set_filter(TextureFilter min, TextureFilter mag) override;
@@ -41,6 +44,8 @@ public:
 
 private:
     uint32_t texture_id_ = 0;
+    // 原始深度读取用的 sampler（关闭比较模式）；仅深度纹理创建。
+    uint32_t raw_sampler_ = 0;
     int width_ = 0;
     int height_ = 0;
     int channels_ = 4;

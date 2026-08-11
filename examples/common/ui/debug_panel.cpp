@@ -50,6 +50,19 @@ void draw_material_editor(render::Material* material) {
     ImGui::SliderFloat("Metallic", &material->metallic, 0.0f, 1.0f);
     ImGui::SliderFloat("AO", &material->ao, 0.0f, 1.0f);
 
+    // 高级材质：Clearcoat / Sheen / 各向异性
+    ImGui::Separator();
+    ImGui::Text("Advanced BRDF");
+    ImGui::SliderFloat("Clearcoat", &material->clearcoat, 0.0f, 1.0f);
+    ImGui::SliderFloat("Clearcoat Roughness", &material->clearcoat_roughness, 0.02f, 1.0f);
+    ImGui::SliderFloat("Sheen", &material->sheen, 0.0f, 1.0f);
+    float sheen_tint[3] = {material->sheen_tint.x, material->sheen_tint.y, material->sheen_tint.z};
+    if (ImGui::ColorEdit3("Sheen Tint", sheen_tint)) {
+        material->sheen_tint = math::Vector3f(sheen_tint[0], sheen_tint[1], sheen_tint[2]);
+    }
+    ImGui::SliderFloat("Anisotropy", &material->anisotropy, -1.0f, 1.0f);
+    ImGui::SliderFloat("Anisotropy Rotation", &material->anisotropy_rotation, -3.14159f, 3.14159f);
+
     auto texture_field = [](const char* label, std::string& path, bool& use_flag) {
         char checkbox_label[64] = {};
         std::snprintf(checkbox_label, sizeof(checkbox_label), "Use %s", label);
@@ -310,24 +323,167 @@ void DebugPanel::show(platform::Window* window, scene::Scene* scene, math::Camer
             pipeline->set_shadow_enabled(use_shadow);
         }
     }
+    // CSM 级联阴影
+    static int cascade_count = pipeline ? pipeline->cascade_count() : 3;
+    static float cascade_lambda = pipeline ? pipeline->cascade_split_lambda() : 0.5f;
+    if (ImGui::SliderInt("Cascades", &cascade_count, 1, 4)) {
+        if (pipeline) pipeline->set_cascade_count(cascade_count);
+    }
+    if (ImGui::SliderFloat("Split Lambda", &cascade_lambda, 0.0f, 1.0f, "%.2f")) {
+        if (pipeline) pipeline->set_cascade_split_lambda(cascade_lambda);
+    }
+    static float normal_offset = 1.0f;
+    if (ImGui::SliderFloat("Normal Offset", &normal_offset, 0.0f, 4.0f, "%.1f")) {
+        if (pipeline) pipeline->set_normal_offset_scale(normal_offset);
+    }
+    // PCSS 软阴影
+    static bool pcss_enabled = pipeline && pipeline->pcss_enabled();
+    static float pcss_light_size = 8.0f;
+    static float pcss_max_radius = 16.0f;
+    if (ImGui::Checkbox("PCSS Soft Shadows", &pcss_enabled)) {
+        if (pipeline) pipeline->set_pcss_enabled(pcss_enabled);
+    }
+    bool pcss_changed = ImGui::SliderFloat("PCSS Light Size", &pcss_light_size, 1.0f, 40.0f, "%.1f");
+    pcss_changed |= ImGui::SliderFloat("PCSS Max Radius", &pcss_max_radius, 1.0f, 40.0f, "%.1f");
+    if (pcss_changed && pipeline) {
+        pipeline->set_pcss_params(pcss_light_size, pcss_max_radius);
+    }
 
     // -----------------------------------------------------------------------
     // HDR / Tone Mapping
     // -----------------------------------------------------------------------
     ImGui::Separator();
     ImGui::Text("HDR / Tone Mapping");
+    if (pipeline) {
+        if (ImGui::Button("Rebuild Pipeline (Hot Reload)")) {
+            // 只置标记，真正重建由主循环在 present() 之后执行（需暂停渲染线程）
+            pipeline_reload_requested_ = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(F5)");
+        ImGui::Separator();
+    }
     static float exposure = 1.0f;
-    static int tone_map_mode = 1; // 0: none, 1: Reinhard, 2: ACES
+    static int tone_map_mode = 1; // 0: none, 1: Reinhard, 2: ACES, 3: AgX, 4: Filmic
     if (ImGui::SliderFloat("Exposure", &exposure, 0.1f, 5.0f, "%.2f")) {
         if (pipeline) {
             pipeline->set_exposure(exposure);
         }
     }
-    const char* k_tone_map_names[] = { "None", "Reinhard", "ACES" };
-    if (ImGui::Combo("Tone Map", &tone_map_mode, k_tone_map_names, 3)) {
+    const char* k_tone_map_names[] = { "None", "Reinhard", "ACES", "AgX", "Filmic" };
+    if (ImGui::Combo("Tone Map", &tone_map_mode, k_tone_map_names, 5)) {
         if (pipeline) {
             pipeline->set_tone_map_mode(tone_map_mode);
         }
+    }
+    static float contrast = 1.0f;
+    static float saturation = 1.0f;
+    bool grade_changed = ImGui::SliderFloat("Contrast", &contrast, 0.2f, 2.0f, "%.2f");
+    grade_changed |= ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f, "%.2f");
+    if (grade_changed && pipeline) {
+        render::PostProcessParams pp = pipeline->tonemap_params();
+        pp.contrast = contrast;
+        pp.saturation = saturation;
+        pipeline->set_tonemap_params(pp);
+    }
+
+    // Bloom 后处理
+    static bool bloom_enabled = pipeline ? pipeline->bloom_enabled() : true;
+    static float bloom_threshold = 1.0f;
+    static float bloom_intensity = 0.35f;
+    if (ImGui::Checkbox("Bloom", &bloom_enabled)) {
+        if (pipeline) pipeline->set_bloom_enabled(bloom_enabled);
+    }
+    bool bloom_changed = ImGui::SliderFloat("Bloom Threshold", &bloom_threshold, 0.1f, 3.0f, "%.2f");
+    bloom_changed |= ImGui::SliderFloat("Bloom Intensity", &bloom_intensity, 0.0f, 2.0f, "%.2f");
+    if (bloom_changed && pipeline) {
+        pipeline->set_bloom_params(bloom_threshold, bloom_intensity);
+    }
+
+    // 轻量镜头效果
+    static float film_grain = 0.0f;
+    static float vignette = 0.0f;
+    static float chromatic_aberration = 0.0f;
+    bool fx_changed = ImGui::SliderFloat("Film Grain", &film_grain, 0.0f, 0.2f, "%.3f");
+    fx_changed |= ImGui::SliderFloat("Vignette", &vignette, 0.0f, 1.0f, "%.2f");
+    fx_changed |= ImGui::SliderFloat("Chromatic Aberration", &chromatic_aberration, 0.0f, 1.0f, "%.2f");
+    if (fx_changed && pipeline) {
+        render::PostProcessParams pp = pipeline->tonemap_params();
+        pp.film_grain = film_grain;
+        pp.vignette = vignette;
+        pp.chromatic_aberration = chromatic_aberration;
+        pipeline->set_tonemap_params(pp);
+    }
+
+    // HDR 分析视图
+    ImGui::Separator();
+    ImGui::Text("HDR Analysis View");
+    static int debug_view = 0;
+    const char* k_debug_view_names[] = {
+        "Final", "Albedo", "Normal", "Roughness", "Metallic",
+        "Shadow", "Direct", "Indirect", "Cascade",
+    };
+    if (ImGui::Combo("View Mode", &debug_view, k_debug_view_names, 9)) {
+        if (pipeline) pipeline->set_debug_view(debug_view);
+    }
+
+    // 时间性抗锯齿 / 自动曝光 / LUT / 物理光照单位
+    ImGui::Separator();
+    ImGui::Text("Temporal / Exposure / Color");
+    static bool taa_enabled = pipeline && pipeline->taa_enabled();
+    static float taa_weight = 0.85f;
+    if (ImGui::Checkbox("TAA", &taa_enabled)) {
+        if (pipeline) pipeline->set_taa_enabled(taa_enabled);
+    }
+    if (ImGui::SliderFloat("TAA Weight", &taa_weight, 0.5f, 0.95f, "%.2f")) {
+        if (pipeline) pipeline->set_taa_weight(taa_weight);
+    }
+
+    static bool ssao_enabled = pipeline && pipeline->ssao_enabled();
+    static float ssao_strength = 1.0f;
+    static float ssao_radius = 12.0f;
+    if (ImGui::Checkbox("GTAO/SSAO", &ssao_enabled)) {
+        if (pipeline) pipeline->set_ssao_enabled(ssao_enabled);
+    }
+    bool ssao_changed = ImGui::SliderFloat("SSAO Strength", &ssao_strength, 0.0f, 2.0f, "%.2f");
+    ssao_changed |= ImGui::SliderFloat("SSAO Radius", &ssao_radius, 2.0f, 40.0f, "%.1f");
+    if (ssao_changed && pipeline) {
+        pipeline->set_ssao_params(ssao_strength, ssao_radius);
+    }
+
+    static bool auto_exposure = pipeline && pipeline->auto_exposure();
+    static float ae_target = 0.18f;
+    static float ae_min = 0.1f;
+    static float ae_max = 4.0f;
+    static float ae_speed = 1.0f;
+    if (ImGui::Checkbox("Auto Exposure", &auto_exposure)) {
+        if (pipeline) pipeline->set_auto_exposure(auto_exposure);
+    }
+    bool ae_changed = ImGui::SliderFloat("AE Target", &ae_target, 0.02f, 1.0f, "%.3f");
+    ae_changed |= ImGui::SliderFloat("AE Min", &ae_min, 0.02f, 2.0f, "%.2f");
+    ae_changed |= ImGui::SliderFloat("AE Max", &ae_max, 0.5f, 8.0f, "%.2f");
+    ae_changed |= ImGui::SliderFloat("AE Speed", &ae_speed, 0.05f, 1.0f, "%.2f");
+    if (ae_changed && pipeline) {
+        pipeline->set_auto_exposure_params(ae_target, ae_min, ae_max, ae_speed);
+    }
+
+    static bool lut_enabled = false;
+    static float lut_strength = 1.0f;
+    static char lut_path[256] = "";
+    if (ImGui::Checkbox("3D LUT", &lut_enabled)) {
+        if (pipeline) pipeline->set_lut_enabled(lut_enabled);
+    }
+    if (ImGui::SliderFloat("LUT Strength", &lut_strength, 0.0f, 1.0f, "%.2f")) {
+        if (pipeline) pipeline->set_lut_strength(lut_strength);
+    }
+    ImGui::InputText("LUT Path", lut_path, sizeof(lut_path));
+    if (ImGui::Button("Load LUT")) {
+        if (pipeline && lut_path[0]) pipeline->set_color_lut(lut_path);
+    }
+
+    static bool physical_units = pipeline && pipeline->light_units_physical();
+    if (ImGui::Checkbox("Physical Light Units", &physical_units)) {
+        if (pipeline) pipeline->set_light_units_physical(physical_units);
     }
 
     ImGui::Separator();

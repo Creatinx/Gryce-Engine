@@ -35,6 +35,64 @@ struct ShaderStageDesc {
 };
 
 // ---------------------------------------------------------------------------
+// PostProcessParams — post-process (tonemap) 参数
+// 由 RenderPipeline 设置；GL 后端写成 uniform，Vulkan 后端走 push constants。
+// ---------------------------------------------------------------------------
+struct PostProcessParams {
+    float exposure = 1.0f;
+    float ev100 = -1.0f;      // >= 0 时按摄影 EV100 推导曝光
+    int tone_map_mode = 1;    // 0 none, 1 Reinhard, 2 ACES, 3 AgX, 4 filmic
+    int dithering = 1;        // 8-bit 输出前有序抖动
+
+    float white_point = 1.0f;
+    float black_point = 0.0f;
+    float contrast = 1.0f;
+    float saturation = 1.0f;
+
+    // Bloom 后处理（阈值提取 → 多级降采样模糊 → 上采样合成）
+    int bloom_enabled = 1;
+    float bloom_threshold = 1.0f;
+    float bloom_intensity = 0.35f;
+
+    // 轻量镜头效果（默认关闭）
+    float film_grain = 0.0f;          // 0~1
+    float vignette = 0.0f;            // 0~1
+    float chromatic_aberration = 0.0f; // 0~1
+
+    // 3D LUT 色彩分级（配合 set_color_lut 的 1024x32 打包贴图）
+    int use_lut = 0;
+    float lut_strength = 1.0f;
+
+    // 自动曝光（GPU 侧亮度反馈，默认关闭）
+    int auto_exposure = 0;
+    float ae_target_luminance = 0.18f;
+    float ae_min_exposure = 0.1f;
+    float ae_max_exposure = 4.0f;
+    float ae_speed = 1.0f;
+
+    // TAA（时域累积 + 抖动采样 + 邻域钳制，默认关闭）
+    int taa_enabled = 0;
+    float taa_weight = 0.85f;
+
+    // 屏幕空间环境光遮蔽（GTAO-lite + 双边上模糊，默认关闭）
+    int ssao_enabled = 0;
+    float ssao_strength = 1.0f;
+    float ssao_radius = 12.0f;      // 屏幕空间采样半径（像素）
+    // 每帧由管线从相机更新（Vulkan push constants 需要）
+    float ssao_near = 0.1f;
+    float ssao_far = 100.0f;
+    float ssao_tan_half = 0.577f;
+    float ssao_aspect = 1.777f;
+
+    math::Vector4f lift = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
+    math::Vector4f gamma = math::Vector4f(1.0f, 1.0f, 1.0f, 0.0f);
+    math::Vector4f gain = math::Vector4f(1.0f, 1.0f, 1.0f, 0.0f);
+    math::Vector4f shadows = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
+    math::Vector4f midtones = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
+    math::Vector4f highlights = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
+};
+
+// ---------------------------------------------------------------------------
 // IShader — 跨 API Shader 接口
 // ---------------------------------------------------------------------------
 class IShader {
@@ -87,8 +145,10 @@ public:
                               bool skybox = false,
                               bool skinned = false) { (void)skybox; (void)skinned; return false; }
 
-    // Set post-process parameters (exposure + tone map mode). Used by tonemap shader.
-    virtual void set_post_process_params(float exposure, int mode) {}
+    // Set post-process (tonemap) parameters. Used by tonemap shader.
+    virtual void set_post_process_params(const PostProcessParams& params) {
+        (void)params;
+    }
 
     virtual bool is_valid() const = 0;
 

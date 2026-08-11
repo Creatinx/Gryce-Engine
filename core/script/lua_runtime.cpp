@@ -3,6 +3,8 @@
 #include "api/internal_state.h"
 #include "components/transform.h"
 #include "ecs/world.h"
+#include "reflection/reflection.h"
+#include "resources/project.h"
 #include "scene/entity.h"
 #include "scene/scene.h"
 
@@ -25,7 +27,7 @@ namespace {
 using gryce_engine::math::Vector3f;
 using gryce_engine::math::Quaternionf;
 
-// gryce.log.info / warn / error(...)
+// engine.log.info / warn / error(...)
 int l_log_info(lua_State* L) {
     const char* msg = luaL_optstring(L, 1, "");
     GLOG_INFO("{}", msg ? msg : "");
@@ -51,7 +53,7 @@ const luaL_Reg kLogLib[] = {
     {nullptr, nullptr}
 };
 
-// gryce.version()
+// engine.version()
 int l_version(lua_State* L) {
     lua_pushfstring(L, "GryceSRT 0.1.0 (%s)", LUA_RELEASE);
     return 1;
@@ -59,7 +61,7 @@ int l_version(lua_State* L) {
 
 int l_self(lua_State* L);  // defined below with the entity helpers
 
-const luaL_Reg kGryceLib[] = {
+const luaL_Reg kEngineLib[] = {
     {"version", l_version},
     {"self", l_self},
     {nullptr, nullptr}
@@ -94,7 +96,7 @@ static void push_quat(lua_State* L, const Quaternionf& q) {
     lua_pushnumber(L, q.w); lua_setfield(L, -2, "w");
 }
 
-// gryce.self() -> entity handle of the currently running script
+// engine.self() -> entity handle of the currently running script
 int l_self(lua_State* L) {
     auto* e = gryce_engine::script::LuaRuntime::instance().current_entity();
     if (!e) { lua_pushinteger(L, 0); return 1; }
@@ -102,7 +104,7 @@ int l_self(lua_State* L) {
     return 1;
 }
 
-// gryce.entity.get_name(h) -> string
+// engine.entity.get_name(h) -> string
 int l_entity_get_name(lua_State* L) {
     const auto h = static_cast<GEntityHandle>(luaL_checkinteger(L, 1));
     auto* e = gryce_core::EntityResolver::resolve(h);
@@ -110,7 +112,7 @@ int l_entity_get_name(lua_State* L) {
     return 1;
 }
 
-// gryce.entity.find(name) -> handle (0 if not found)
+// engine.entity.find(name) -> handle (0 if not found)
 int l_entity_find(lua_State* L) {
     const char* name = luaL_checkstring(L, 1);
     auto* scene = gryce_core::g_core_state.world
@@ -122,7 +124,7 @@ int l_entity_find(lua_State* L) {
     return 1;
 }
 
-// gryce.entity.get_transform(h) -> {pos={x,y,z}, rot={x,y,z,w}, scale={x,y,z}}
+// engine.entity.get_transform(h) -> {pos={x,y,z}, rot={x,y,z,w}, scale={x,y,z}}
 int l_entity_get_transform(lua_State* L) {
     const auto h = static_cast<GEntityHandle>(luaL_checkinteger(L, 1));
     auto* e = gryce_core::EntityResolver::resolve(h);
@@ -138,7 +140,7 @@ int l_entity_get_transform(lua_State* L) {
     return 1;
 }
 
-// gryce.entity.set_transform(h, {pos={x,y,z}}, {rot={x,y,z,w}}, {scale={x,y,z}})
+// engine.entity.set_transform(h, {pos={x,y,z}}, {rot={x,y,z,w}}, {scale={x,y,z}})
 int l_entity_set_transform(lua_State* L) {
     const auto h = static_cast<GEntityHandle>(luaL_checkinteger(L, 1));
     auto* e = gryce_core::EntityResolver::resolve(h);
@@ -170,7 +172,160 @@ const luaL_Reg kEntityLib[] = {
     {nullptr, nullptr}
 };
 
-// gryce.time.delta() / elapsed()
+// engine.component.get(h, type_name, prop_name) -> value
+int l_component_get(lua_State* L) {
+    const auto h = static_cast<GEntityHandle>(luaL_checkinteger(L, 1));
+    const char* type_name = luaL_checkstring(L, 2);
+    const char* prop_name = luaL_checkstring(L, 3);
+    auto* e = gryce_core::EntityResolver::resolve(h);
+    if (!e || !type_name || !prop_name) { lua_pushnil(L); return 1; }
+
+    auto* comp = e->get_component_by_type(type_name);
+    if (!comp) { lua_pushnil(L); return 1; }
+    auto fields = gryce_engine::reflection::Registry::instance().all_fields(
+        gryce_core::reflection_lookup_name(type_name));
+    for (const auto* f : fields) {
+        if (f->name != prop_name || !f->read) continue;
+        switch (f->type) {
+            case gryce_engine::reflection::FieldType::Float: {
+                float v = 0.0f; f->read(comp, &v); lua_pushnumber(L, v); return 1;
+            }
+            case gryce_engine::reflection::FieldType::Double: {
+                double v = 0.0; f->read(comp, &v); lua_pushnumber(L, v); return 1;
+            }
+            case gryce_engine::reflection::FieldType::Int: {
+                int v = 0; f->read(comp, &v); lua_pushinteger(L, v); return 1;
+            }
+            case gryce_engine::reflection::FieldType::Bool: {
+                bool v = false; f->read(comp, &v); lua_pushboolean(L, v); return 1;
+            }
+            case gryce_engine::reflection::FieldType::String: {
+                std::string v; f->read(comp, &v);
+                lua_pushlstring(L, v.c_str(), v.size()); return 1;
+            }
+            case gryce_engine::reflection::FieldType::Vector2f: {
+                math::Vector2f v; f->read(comp, &v);
+                lua_createtable(L, 0, 2);
+                lua_pushnumber(L, v.x); lua_setfield(L, -2, "x");
+                lua_pushnumber(L, v.y); lua_setfield(L, -2, "y");
+                return 1;
+            }
+            case gryce_engine::reflection::FieldType::Vector3f: {
+                math::Vector3f v; f->read(comp, &v);
+                push_vec3(L, v);
+                return 1;
+            }
+            case gryce_engine::reflection::FieldType::Vector4f: {
+                math::Vector4f v; f->read(comp, &v);
+                lua_createtable(L, 0, 4);
+                lua_pushnumber(L, v.x); lua_setfield(L, -2, "x");
+                lua_pushnumber(L, v.y); lua_setfield(L, -2, "y");
+                lua_pushnumber(L, v.z); lua_setfield(L, -2, "z");
+                lua_pushnumber(L, v.w); lua_setfield(L, -2, "w");
+                return 1;
+            }
+            case gryce_engine::reflection::FieldType::Quaternionf: {
+                math::Quaternionf v; f->read(comp, &v);
+                push_quat(L, v);
+                return 1;
+            }
+            default:
+                lua_pushnil(L);
+                return 1;
+        }
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
+// engine.component.set(h, type_name, prop_name, value)
+int l_component_set(lua_State* L) {
+    const auto h = static_cast<GEntityHandle>(luaL_checkinteger(L, 1));
+    const char* type_name = luaL_checkstring(L, 2);
+    const char* prop_name = luaL_checkstring(L, 3);
+    auto* e = gryce_core::EntityResolver::resolve(h);
+    if (!e || !type_name || !prop_name) return 0;
+
+    auto* comp = e->get_component_by_type(type_name);
+    if (!comp) return 0;
+    auto fields = gryce_engine::reflection::Registry::instance().all_fields(
+        gryce_core::reflection_lookup_name(type_name));
+    for (const auto* f : fields) {
+        if (f->name != prop_name || !f->write || f->read_only) continue;
+        switch (f->type) {
+            case gryce_engine::reflection::FieldType::Float: {
+                float v = static_cast<float>(luaL_checknumber(L, 4));
+                if (f->write(comp, &v)) e->mark_dirty();
+                return 0;
+            }
+            case gryce_engine::reflection::FieldType::Double: {
+                double v = static_cast<double>(luaL_checknumber(L, 4));
+                if (f->write(comp, &v)) e->mark_dirty();
+                return 0;
+            }
+            case gryce_engine::reflection::FieldType::Int: {
+                int v = static_cast<int>(luaL_checkinteger(L, 4));
+                if (f->write(comp, &v)) e->mark_dirty();
+                return 0;
+            }
+            case gryce_engine::reflection::FieldType::Bool: {
+                bool v = lua_toboolean(L, 4) != 0;
+                if (f->write(comp, &v)) e->mark_dirty();
+                return 0;
+            }
+            case gryce_engine::reflection::FieldType::String: {
+                const char* s = luaL_checkstring(L, 4);
+                std::string v = s ? s : "";
+                if (f->write(comp, &v)) e->mark_dirty();
+                return 0;
+            }
+            case gryce_engine::reflection::FieldType::Vector3f: {
+                math::Vector3f v;
+                if (read_vec3(L, 4, v)) {
+                    if (f->write(comp, &v)) e->mark_dirty();
+                }
+                return 0;
+            }
+            case gryce_engine::reflection::FieldType::Vector2f: {
+                math::Vector2f v;
+                if (lua_istable(L, 4)) {
+                    lua_getfield(L, 4, "x");
+                    lua_getfield(L, 4, "y");
+                    v.x = static_cast<float>(lua_tonumber(L, -2));
+                    v.y = static_cast<float>(lua_tonumber(L, -1));
+                    lua_pop(L, 2);
+                    if (f->write(comp, &v)) e->mark_dirty();
+                }
+                return 0;
+            }
+            case gryce_engine::reflection::FieldType::Quaternionf: {
+                math::Quaternionf v;
+                if (lua_istable(L, 4)) {
+                    lua_getfield(L, 4, "x"); lua_getfield(L, 4, "y");
+                    lua_getfield(L, 4, "z"); lua_getfield(L, 4, "w");
+                    v.x = static_cast<float>(lua_tonumber(L, -4));
+                    v.y = static_cast<float>(lua_tonumber(L, -3));
+                    v.z = static_cast<float>(lua_tonumber(L, -2));
+                    v.w = static_cast<float>(lua_tonumber(L, -1));
+                    lua_pop(L, 4);
+                    if (f->write(comp, &v)) e->mark_dirty();
+                }
+                return 0;
+            }
+            default:
+                return 0;
+        }
+    }
+    return 0;
+}
+
+const luaL_Reg kComponentLib[] = {
+    {"get", l_component_get},
+    {"set", l_component_set},
+    {nullptr, nullptr}
+};
+
+// engine.time.delta() / elapsed()
 int l_time_delta(lua_State* L) {
     lua_pushnumber(L, gryce_engine::script::LuaRuntime::instance().delta());
     return 1;
@@ -187,7 +342,7 @@ const luaL_Reg kTimeLib[] = {
     {nullptr, nullptr}
 };
 
-// gryce.input.key_down(key) / mouse_pos()
+// engine.input.key_down(key) / mouse_pos()
 int l_input_key_down(lua_State* L) {
     const int key = static_cast<int>(luaL_checkinteger(L, 1));
     const bool down = gryce_core::g_core_state.keys_down.count(key) > 0;
@@ -232,7 +387,7 @@ bool LuaRuntime::init() {
     }
 
     luaL_openlibs(L_);
-    register_gryce_bindings();
+    register_engine_bindings();
     GLOG_INFO("GryceSRT: Lua runtime initialized ({})", LUA_RELEASE);
     return true;
 }
@@ -281,13 +436,13 @@ bool LuaRuntime::run_file(const char* path, std::string* err) {
     return run_string(ss.str().c_str(), err);
 }
 
-void LuaRuntime::register_gryce_bindings() {
-    lua_getglobal(L_, "gryce");
+void LuaRuntime::register_engine_bindings() {
+    lua_getglobal(L_, "engine");
     if (lua_isnil(L_, -1)) {
         lua_pop(L_, 1);
         lua_newtable(L_);
-        lua_setglobal(L_, "gryce");
-        lua_getglobal(L_, "gryce");
+        lua_setglobal(L_, "engine");
+        lua_getglobal(L_, "engine");
     }
 
     lua_newtable(L_);
@@ -299,6 +454,10 @@ void LuaRuntime::register_gryce_bindings() {
     lua_setfield(L_, -2, "entity");
 
     lua_newtable(L_);
+    luaL_setfuncs(L_, kComponentLib, 0);
+    lua_setfield(L_, -2, "component");
+
+    lua_newtable(L_);
     luaL_setfuncs(L_, kTimeLib, 0);
     lua_setfield(L_, -2, "time");
 
@@ -306,8 +465,23 @@ void LuaRuntime::register_gryce_bindings() {
     luaL_setfuncs(L_, kInputLib, 0);
     lua_setfield(L_, -2, "input");
 
-    luaL_setfuncs(L_, kGryceLib, 0);
+    luaL_setfuncs(L_, kEngineLib, 0);
     lua_pop(L_, 1);
+
+    // Make require("GryceEngineUtils") resolve against the project's
+    // scripts/ folder (project root is set before the runtime inits).
+    const std::string root = resources::Project::instance().root();
+    if (!root.empty()) {
+        const std::string scripts = root + "/scripts/?.lua";
+        lua_getglobal(L_, "package");
+        lua_getfield(L_, -1, "path");
+        const char* old = lua_tostring(L_, -1);
+        const std::string new_path = scripts + ";" + (old ? old : "");
+        lua_pop(L_, 1);
+        lua_pushstring(L_, new_path.c_str());
+        lua_setfield(L_, -2, "path");
+        lua_pop(L_, 1);
+    }
 }
 
 } // namespace gryce_engine::script

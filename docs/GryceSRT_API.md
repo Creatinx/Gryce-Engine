@@ -17,22 +17,22 @@ function on_destroy() end        -- 组件移除/场景关闭/重载前调用
 
 脚本顶层代码在加载时执行一次（相当于 `require`）。每个实体拥有独立环境，全局变量互不污染。
 
-## 2. `gryce.*` API
+## 2. `engine.*` API
 
 | 分组 | 函数 | 说明 |
 |---|---|---|
-| 运行时 | `gryce.version()` | 返回运行时版本字符串 |
-| 实体 | `gryce.self()` | 当前脚本所属实体句柄（0 表示无） |
-| | `gryce.entity.get_name(h)` | 实体名 |
-| | `gryce.entity.find(name)` | 按名字查找实体，返回句柄（0 = 未找到） |
-| | `gryce.entity.get_transform(h)` | 返回 `{pos={x,y,z}, rot={x,y,z,w}, scale={x,y,z}}` |
-| | `gryce.entity.set_transform(h, pos, rot, scale)` | 写回变换（三个表均可省略） |
-| 组件 | `gryce.component.get/set`（规划中） | 反射读写任意组件属性 |
-| 输入 | `gryce.input.key_down(key)` | 按键是否按住（GLFW 键码，如 W=87） |
-| | `gryce.input.mouse_pos()` | 返回鼠标 x, y |
-| | `gryce.input.mouse_down(button)` | 鼠标键是否按住（0=左，1=右，2=中） |
-| 时间 | `gryce.time.delta()` / `gryce.time.elapsed()` | 帧时间 / 累计运行时间（秒） |
-| 日志 | `gryce.log.info/warn/error(msg)` | 输出到引擎日志/编辑器控制台 |
+| 运行时 | `engine.version()` | 返回运行时版本字符串 |
+| 实体 | `engine.self()` | 当前脚本所属实体句柄（0 表示无） |
+| | `engine.entity.get_name(h)` | 实体名 |
+| | `engine.entity.find(name)` | 按名字查找实体，返回句柄（0 = 未找到） |
+| | `engine.entity.get_transform(h)` | 返回 `{pos={x,y,z}, rot={x,y,z,w}, scale={x,y,z}}` |
+| | `engine.entity.set_transform(h, pos, rot, scale)` | 写回变换（三个表均可省略） |
+| 组件 | `engine.component.get/set`（规划中） | 反射读写任意组件属性 |
+| 输入 | `engine.input.key_down(key)` | 按键是否按住（GLFW 键码，如 W=87） |
+| | `engine.input.mouse_pos()` | 返回鼠标 x, y |
+| | `engine.input.mouse_down(button)` | 鼠标键是否按住（0=左，1=右，2=中） |
+| 时间 | `engine.time.delta()` / `engine.time.elapsed()` | 帧时间 / 累计运行时间（秒） |
+| 日志 | `engine.log.info/warn/error(msg)` | 输出到引擎日志/编辑器控制台 |
 
 ## 3. 暴露属性（props）
 

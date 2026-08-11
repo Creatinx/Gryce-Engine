@@ -989,7 +989,10 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
             // 2D shadow map 固定到 TextureSlots::k2DShadow，避免与 3D PBR 的
             // roughness/metallic/ao 产生 depth-vs-color 纹理类型冲突，触发 NVIDIA shader recompile。
             ITexture* shadow_map_ptr = ctx_->texture(shadow_map);
-            if (shadow_map_ptr) shadow_map_ptr->bind(TextureSlots::k2DShadow);
+            // 原始深度读取：lit shader 在 CPU 侧手动比较深度，需要关闭纹理
+            // 对象上的 GL_TEXTURE_COMPARE_MODE（否则 sampler2D 取到 0/1 比较结果，
+            // 阴影覆盖范围内全部判为遮挡、整片变黑）。
+            if (shadow_map_ptr) shadow_map_ptr->bind_raw_depth(TextureSlots::k2DShadow);
             shader_ptr->set_int("uShadowMap", TextureSlots::k2DShadow);
         }
 

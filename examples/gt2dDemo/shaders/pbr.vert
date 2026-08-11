@@ -10,12 +10,11 @@ out vec3 vFragPos;
 out vec2 vTexCoord;
 out vec3 vColor;
 out mat3 vTBN;
-out vec4 vLightSpacePos;
+out vec2 vScreenUV;
 
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
-uniform mat4 uLightSpaceMatrix;
 
 void main() {
     vec4 world_pos = uModel * vec4(aPos, 1.0);
@@ -30,6 +29,6 @@ void main() {
     vec3 B = cross(N, T);
     vTBN = mat3(T, B, N);
 
-    vLightSpacePos = uLightSpaceMatrix * world_pos;
     gl_Position = uProjection * uView * world_pos;
+    vScreenUV = (gl_Position.xy / gl_Position.w) * 0.5 + 0.5;
 }

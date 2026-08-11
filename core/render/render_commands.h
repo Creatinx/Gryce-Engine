@@ -89,6 +89,9 @@ struct RenderCommandTyped {
     RHITextureHandle texture;
     RHIMeshHandle mesh;
     RHIFramebufferHandle framebuffer;
+    // SetTexture：true 时按"原始深度"绑定（OpenGL 绑定关闭比较模式的 sampler，
+    // 供 PCSS blocker search / SSAO 重建深度读取真实深度值）
+    bool texture_raw_depth = false;
     std::string uniform_name;
     math::Vector3f uniform_vec3;
     math::Vector4f uniform_vec4;
@@ -180,6 +183,13 @@ struct RenderCommandTyped {
         // slot 复用 uniform_int
         cmd.uniform_int = slot;
         cmd.uniform_name = std::move(name);
+        return cmd;
+    }
+
+    static RenderCommandTyped make_set_texture_raw_depth(RHIShaderHandle s, RHITextureHandle t,
+                                                         int slot, std::string name) {
+        RenderCommandTyped cmd = make_set_texture(s, t, slot, std::move(name));
+        cmd.texture_raw_depth = true;
         return cmd;
     }
 

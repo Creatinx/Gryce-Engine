@@ -49,7 +49,7 @@ public:
                       bool post_process = false,
                       bool skybox = false,
                       bool skinned = false) override;
-    void set_post_process_params(float exposure, int mode) override;
+    void set_post_process_params(const PostProcessParams& params) override;
 
     bool shader_files_changed() const override;
     bool reload() override;
@@ -65,8 +65,7 @@ private:
     std::filesystem::file_time_type vert_mtime_{};
     std::filesystem::file_time_type frag_mtime_{};
 
-    mutable float pp_exposure_ = 1.0f;
-    mutable int pp_mode_ = 1;
+    mutable PostProcessParams pp_params_;
     mutable bool pp_dirty_ = true;
 
     // Uniform 位置缓存：避免每帧重复查询 driver。

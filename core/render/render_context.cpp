@@ -69,7 +69,11 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
             IShader* s = backend->shader(cmd.shader);
             ITexture* t = backend->texture(cmd.texture);
             if (!s || !t) break;
-            t->bind(cmd.uniform_int);
+            if (cmd.texture_raw_depth) {
+                t->bind_raw_depth(cmd.uniform_int);
+            } else {
+                t->bind(cmd.uniform_int);
+            }
             if (!cmd.uniform_name.empty()) {
                 s->set_int(cmd.uniform_name, cmd.uniform_int);
             }
@@ -417,6 +421,12 @@ void RenderContext::destroy_mesh(RHIMeshHandle handle) {
             if (backend_) backend_->destroy_mesh(handle);
         });
     } else {
+        // 同步模式：提交后销毁必须等 GPU 完成，避免销毁 in-flight 命令缓冲
+        // 仍引用的 Vulkan 资源（vkDestroy* "currently in use"）。
+        if (backend_ && sync_submit_seq_ != sync_waited_seq_) {
+            backend_->wait_gpu_idle();
+            sync_waited_seq_ = sync_submit_seq_;
+        }
         if (backend_) backend_->destroy_mesh(handle);
     }
 }
@@ -428,6 +438,10 @@ void RenderContext::destroy_shader(RHIShaderHandle handle) {
             if (backend_) backend_->destroy_shader(handle);
         });
     } else {
+        if (backend_ && sync_submit_seq_ != sync_waited_seq_) {
+            backend_->wait_gpu_idle();
+            sync_waited_seq_ = sync_submit_seq_;
+        }
         if (backend_) backend_->destroy_shader(handle);
     }
 }
@@ -439,6 +453,10 @@ void RenderContext::destroy_texture(RHITextureHandle handle) {
             if (backend_) backend_->destroy_texture(handle);
         });
     } else {
+        if (backend_ && sync_submit_seq_ != sync_waited_seq_) {
+            backend_->wait_gpu_idle();
+            sync_waited_seq_ = sync_submit_seq_;
+        }
         if (backend_) backend_->destroy_texture(handle);
     }
 }
@@ -450,6 +468,10 @@ void RenderContext::destroy_framebuffer(RHIFramebufferHandle handle) {
             if (backend_) backend_->destroy_framebuffer(handle);
         });
     } else {
+        if (backend_ && sync_submit_seq_ != sync_waited_seq_) {
+            backend_->wait_gpu_idle();
+            sync_waited_seq_ = sync_submit_seq_;
+        }
         if (backend_) backend_->destroy_framebuffer(handle);
     }
 }
@@ -527,6 +549,18 @@ void RenderContext::set_texture(RHIShaderHandle shader, RHITextureHandle texture
                                 const char* uniform_name) {
     if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_texture(shader, texture, slot, uniform_name ? uniform_name : ""));
+}
+
+void RenderContext::set_texture_raw_depth(RHIShaderHandle shader, RHITextureHandle texture, int slot,
+                                          const std::string& uniform_name) {
+    set_texture_raw_depth(shader, texture, slot, uniform_name.c_str());
+}
+
+void RenderContext::set_texture_raw_depth(RHIShaderHandle shader, RHITextureHandle texture, int slot,
+                                          const char* uniform_name) {
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_texture_raw_depth(
+        shader, texture, slot, uniform_name ? uniform_name : ""));
 }
 
 void RenderContext::clear(float r, float g, float b, float a) {
@@ -620,6 +654,8 @@ void RenderContext::present_swap() {
     // end_frame（截图 + glfwSwapBuffers），否则 GLFW 窗口永远显示首帧。
     if (backend_) {
         backend_->end_frame();
+        // 同步模式下提交了新的 GPU 工作；后续 destroy_* 销毁前需等待其完成
+        ++sync_submit_seq_;
     }
 
     process_pending_destroys(true);
