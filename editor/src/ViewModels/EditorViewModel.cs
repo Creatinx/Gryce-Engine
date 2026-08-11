@@ -179,6 +179,13 @@ public class EditorViewModel : INotifyPropertyChanged
     // Undo/Redo stacks
     private readonly Stack<IUndoableAction> _undoStack = new();
     private readonly Stack<IUndoableAction> _redoStack = new();
+    // Created-entity actions whose handle is resolved when the entity appears.
+    private readonly Queue<CreateEntityAction> _pendingCreateActions = new();
+    // Component restores that must wait for the async AddComponent command to
+    // complete on the next engine frame before their fields can be written.
+    private readonly List<(GEntityHandle Entity, ulong TypeHash, ComponentSnapshot Snapshot, int Retries)> _pendingComponentRestores = new();
+    // Entity-type switch undo entry, finalized once the component commands run.
+    private EntityTypeAction? _pendingEntityTypeAction;
 
     // Callback delegates (kept alive to prevent GC)
     private readonly GOnEntityListChanged _onEntityListChanged;
@@ -231,12 +238,14 @@ public class EditorViewModel : INotifyPropertyChanged
             System.Windows.Application.Current.Dispatcher.Invoke(() =>
             {
                 RefreshHierarchy();
+                ApplyPendingComponentRestores();
                 AttachPendingComponentToNewEntity();
                 SelectPendingNewEntity();
                 ApplyPendingModelSetup();
                 if (_entityTypeSwitchPending)
                 {
                     _entityTypeSwitchPending = false;
+                    FinalizePendingEntityTypeAction();
                     RefreshEntityType();
                     RefreshInspector();
                 }
@@ -307,6 +316,9 @@ public class EditorViewModel : INotifyPropertyChanged
             {
                 _undoStack.Clear();
                 _redoStack.Clear();
+                _pendingCreateActions.Clear();
+                _pendingComponentRestores.Clear();
+                System.Windows.Input.CommandManager.InvalidateRequerySuggested();
                 RefreshHierarchy();
                 RefreshInspector();
                 OnPropertyChanged(nameof(EntityCount));
@@ -339,6 +351,9 @@ public class EditorViewModel : INotifyPropertyChanged
         _engine.ClearDirty();
         _undoStack.Clear();
         _redoStack.Clear();
+        _pendingCreateActions.Clear();
+        _pendingComponentRestores.Clear();
+        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
         OnPropertyChanged(nameof(EntityCount));
     }
 
@@ -385,6 +400,18 @@ public class EditorViewModel : INotifyPropertyChanged
     /// Payload layout matches the C++ side: { char name[128]; int parent; }.
     /// </summary>
     public void CreateEntity(string name, GEntityHandle parent = GEntityHandle.Null)
+        => CreateEntityCore(name, parent, recordUndo: true, componentTypeName: null);
+
+    /// <summary>Creates an entity without recording an undo entry (used by undo/redo actions).</summary>
+    internal void CreateEntitySilent()
+        => CreateEntityCore(LocalizationService.Instance.T("hierarchy.new_entity_name"),
+            GEntityHandle.Null, recordUndo: false, componentTypeName: null);
+
+    internal void CreateEntitySilent(string name, string? componentTypeName = null)
+        => CreateEntityCore(name, GEntityHandle.Null, recordUndo: false, componentTypeName);
+
+    private void CreateEntityCore(string name, GEntityHandle parent, bool recordUndo,
+                                  string? componentTypeName)
     {
         Span<byte> payload = stackalloc byte[128 + sizeof(int)];
         var nameBytes = Encoding.UTF8.GetBytes(string.IsNullOrWhiteSpace(name) ? "Entity" : name);
@@ -395,8 +422,17 @@ public class EditorViewModel : INotifyPropertyChanged
         var cmd = GCommand.Create(GCommandType.CreateEntity, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
         _engine.MarkSceneDirty();
-        _undoStack.Push(new CreateEntityAction(this));
-        _redoStack.Clear();
+        if (recordUndo)
+        {
+            var action = new CreateEntityAction(this, name, componentTypeName);
+            PushUndo(action);
+            _pendingCreateActions.Enqueue(action);
+        }
+        if (!string.IsNullOrEmpty(componentTypeName))
+        {
+            _pendingComponentForNewEntity = componentTypeName;
+            _pendingNewEntityName = name;
+        }
         AppendConsole($"Entity created: {name}");
         _pendingSelectEntityName = name;
     }
@@ -424,12 +460,37 @@ public class EditorViewModel : INotifyPropertyChanged
     /// </summary>
     public void CreateEntityWithComponent(string name, GEntityHandle parent, string componentTypeName)
     {
-        CreateEntity(name, parent);
-        if (!string.IsNullOrEmpty(componentTypeName))
-        {
-            _pendingComponentForNewEntity = componentTypeName;
-            _pendingNewEntityName = name;
-        }
+        CreateEntityCore(name, parent, recordUndo: true, componentTypeName);
+    }
+
+    /// <summary>Deletes the selected entity without recording an undo entry.</summary>
+    internal void DeleteSelectedEntitySilent()
+    {
+        if (_selectedEntity == null) return;
+        DeleteEntityCore(_selectedEntity.Handle, _selectedEntity.Name,
+            EntityAPI.ExportJsonUtf8(_selectedEntity.Handle),
+            EntityAPI.GEntity_GetParent(_selectedEntity.Handle), recordUndo: false);
+    }
+
+    /// <summary>Deletes a specific entity without recording an undo entry.</summary>
+    internal void DeleteEntitySilent(GEntityHandle handle)
+    {
+        if (handle == GEntityHandle.Null) { DeleteSelectedEntitySilent(); return; }
+        var name = EntityAPI.GetNameUtf8(handle) ?? "Entity";
+        DeleteEntityCore(handle, name, EntityAPI.ExportJsonUtf8(handle),
+            EntityAPI.GEntity_GetParent(handle), recordUndo: false);
+    }
+
+    private void DeleteEntityCore(GEntityHandle handle, string name, string? json,
+                                  GEntityHandle parent, bool recordUndo)
+    {
+        Span<byte> payload = stackalloc byte[sizeof(int)];
+        BitConverterCompat.TryWriteBytes(payload, (int)handle);
+        var cmd = GCommand.Create(GCommandType.DestroyEntity, payload);
+        CoreAPI.GCore_PushCommand(ref cmd);
+        _engine.MarkSceneDirty();
+        if (recordUndo) PushUndo(new DeleteEntityAction(this, handle, name, json, parent));
+        AppendConsole($"Deleted entity: {name}");
     }
 
     public void DeleteSelectedEntity()
@@ -464,8 +525,7 @@ public class EditorViewModel : INotifyPropertyChanged
             if (newHandle != GEntityHandle.Null)
             {
                 _engine.MarkSceneDirty();
-                _undoStack.Push(new DeleteEntityAction(this, newHandle, copyName, null, parent));
-                _redoStack.Clear();
+                PushUndo(new DeleteEntityAction(this, newHandle, copyName, null, parent));
                 AppendConsole($"Duplicated: {name}");
                 SelectEntityByHandle(newHandle);
                 return;
@@ -517,8 +577,7 @@ public class EditorViewModel : INotifyPropertyChanged
             var cmd = GCommand.Create(GCommandType.ReparentEntity, payload);
             CoreAPI.GCore_PushCommand(ref cmd);
             _engine.MarkSceneDirty();
-            _undoStack.Push(new ReparentAction(_clipboardEntity, oldParent, parentHandle));
-            _redoStack.Clear();
+            PushUndo(new ReparentAction(_clipboardEntity, oldParent, parentHandle));
             _clipboardEntity = GEntityHandle.Null;
             _clipboardEntityName = string.Empty;
             _clipboardIsCut = false;
@@ -535,8 +594,7 @@ public class EditorViewModel : INotifyPropertyChanged
                 if (newHandle != GEntityHandle.Null)
                 {
                     _engine.MarkSceneDirty();
-                    _undoStack.Push(new DeleteEntityAction(this, newHandle, _clipboardEntityName, null, parentHandle));
-                    _redoStack.Clear();
+                    PushUndo(new DeleteEntityAction(this, newHandle, _clipboardEntityName, null, parentHandle));
                     AppendConsole($"Pasted: {_clipboardEntityName}");
                     SelectEntityByHandle(newHandle);
                     return;
@@ -587,12 +645,19 @@ public class EditorViewModel : INotifyPropertyChanged
         {
             var oldName = entity.Name;
             RenameEntity(entity.Handle, dialog.InputText);
-            _undoStack.Push(new RenameEntityAction(this, entity.Handle, oldName, dialog.InputText));
-            _redoStack.Clear();
+            PushUndo(new RenameEntityAction(this, entity.Handle, oldName, dialog.InputText));
         }
     }
 
     // === Undo/Redo ===
+
+    /// <summary>Records an action on the undo stack, clears redo, and refreshes command UI.</summary>
+    private void PushUndo(IUndoableAction action)
+    {
+        _undoStack.Push(action);
+        _redoStack.Clear();
+        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+    }
 
     private void Undo()
     {
@@ -602,6 +667,7 @@ public class EditorViewModel : INotifyPropertyChanged
         _redoStack.Push(action);
         _engine.MarkSceneDirty();
         AppendConsole("Undo: " + action.Description);
+        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
     }
 
     private void Redo()
@@ -612,6 +678,7 @@ public class EditorViewModel : INotifyPropertyChanged
         _undoStack.Push(action);
         _engine.MarkSceneDirty();
         AppendConsole("Redo: " + action.Description);
+        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
     }
 
     // === Hierarchy ===
@@ -744,6 +811,10 @@ public class EditorViewModel : INotifyPropertyChanged
         if (created == null) return;
 
         SelectEntityByHandle(created.Handle);
+        if (_pendingCreateActions.Count > 0)
+        {
+            _pendingCreateActions.Dequeue().Handle = created.Handle;
+        }
         if (_pendingOpenComponentPicker)
         {
             _pendingOpenComponentPicker = false;
@@ -854,10 +925,12 @@ public class EditorViewModel : INotifyPropertyChanged
     public int AddComponent(ulong typeHash)
     {
         if (_selectedEntity == null) return -1;
-        int result = ComponentAPI.GComponent_AddComponent(_selectedEntity.Handle, typeHash);
+        var entity = _selectedEntity.Handle;
+        int result = ComponentAPI.GComponent_AddComponent(entity, typeHash);
         if (result == 0)
         {
             _engine.MarkSceneDirty();
+            PushUndo(new AddComponentAction(this, entity, typeHash));
             AppendConsole($"Added component to '{_selectedEntity.Name}'");
             RefreshInspector();
         }
@@ -871,10 +944,18 @@ public class EditorViewModel : INotifyPropertyChanged
     public void RemoveComponent(ulong typeHash)
     {
         if (_selectedEntity == null) return;
-        int result = ComponentAPI.GComponent_RemoveComponent(_selectedEntity.Handle, typeHash);
+        var entity = _selectedEntity.Handle;
+        string typeName = "Component";
+        foreach (var c in _selectedEntity.Components)
+        {
+            if (c.TypeHash == typeHash) { typeName = c.TypeName; break; }
+        }
+        var snapshot = CaptureComponentState(entity, typeHash, typeName);
+        int result = ComponentAPI.GComponent_RemoveComponent(entity, typeHash);
         if (result == 0)
         {
             _engine.MarkSceneDirty();
+            PushUndo(new RemoveComponentAction(this, entity, typeHash, typeName, snapshot));
             AppendConsole($"Removed component from '{_selectedEntity.Name}'");
             RefreshInspector();
         }
@@ -887,13 +968,17 @@ public class EditorViewModel : INotifyPropertyChanged
     public void WriteTransform()
     {
         if (_selectedEntity == null) return;
+        var handle = _selectedEntity.Handle;
+        EntityAPI.GEntity_GetLocalPosition(handle, out var oldPos);
+        EntityAPI.GEntity_GetLocalRotation(handle, out var oldRot);
+        EntityAPI.GEntity_GetLocalScale(handle, out var oldScale);
         var pos = _selectedEntity.LocalPosition;
         var rot = _selectedEntity.LocalRotation;
         var scl = _selectedEntity.LocalScale;
 
         Span<byte> payload = stackalloc byte[sizeof(int) + 3 * 4 * sizeof(float)];
         int offset = 0;
-        BitConverterCompat.TryWriteBytes(payload.Slice(offset), (int)_selectedEntity.Handle);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), (int)handle);
         offset += sizeof(int);
         BitConverterCompat.TryWriteBytes(payload.Slice(offset), pos.X);
         offset += sizeof(float);
@@ -918,6 +1003,10 @@ public class EditorViewModel : INotifyPropertyChanged
         var cmd = GCommand.Create(GCommandType.SetTransform, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
         _engine.MarkSceneDirty();
+        if (!Vec3Close(oldPos, pos) || !QuatClose(oldRot, rot) || !Vec3Close(oldScale, scl))
+        {
+            PushUndo(new TransformAction(this, handle, oldPos, oldRot, oldScale, pos, rot, scl));
+        }
     }
 
     public void RefreshInspector()
@@ -952,10 +1041,35 @@ public class EditorViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>Collects the distinct component types currently present in the
+    /// scene (across all entities) — used by the New Script dialog's
+    /// "Parent Component" list.</summary>
+    public List<string> GetSceneComponentTypes()
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        int entityCount = EntityAPI.GEntity_GetCount();
+        for (int i = 0; i < entityCount; i++)
+        {
+            var handle = EntityAPI.GEntity_GetAt(i);
+            if (handle == GEntityHandle.Null) continue;
+            int compCount = ComponentAPI.GComponent_GetCount(handle);
+            for (int c = 0; c < compCount; c++)
+            {
+                var sb = new StringBuilder(128);
+                if (ComponentAPI.GComponent_GetTypeNameAt(handle, c, sb, sb.Capacity) >= 0)
+                {
+                    string shortName = Models.EntityModel.ShortTypeName(sb.ToString());
+                    if (seen.Add(shortName)) result.Add(shortName);
+                }
+            }
+        }
+        return result;
+    }
+
     private void ApplyEntityType(int target)
     {
         if (_selectedEntity == null) return;
-        _selectedEntity.RefreshComponents();
 
         bool has2d = false, has3d = false;
         ulong node2dHash = 0, node3dHash = 0;
@@ -964,6 +1078,8 @@ public class EditorViewModel : INotifyPropertyChanged
             if (c.TypeName == "Node2D") { has2d = true; node2dHash = c.TypeHash; }
             else if (c.TypeName == "Node3D") { has3d = true; node3dHash = c.TypeHash; }
         }
+        var old2dSnap = has2d ? CaptureComponentState(_selectedEntity.Handle, node2dHash, "Node2D") : null;
+        var old3dSnap = has3d ? CaptureComponentState(_selectedEntity.Handle, node3dHash, "Node3D") : null;
 
         bool changed = false;
         switch (target)
@@ -1016,9 +1132,47 @@ public class EditorViewModel : INotifyPropertyChanged
 
         if (changed)
         {
+            var action = new EntityTypeAction(this, _selectedEntity.Handle,
+                has2d, has3d, old2dSnap, old3dSnap,
+                has2d, has3d, old2dSnap, old3dSnap);
+            _pendingEntityTypeAction = action;
             _entityTypeSwitchPending = true;
             _engine.MarkSceneDirty();
         }
+    }
+
+    /// <summary>
+    /// Captures the post-switch component state once the engine has processed
+    /// the async component commands, then records the undo entry.
+    /// </summary>
+    private void FinalizePendingEntityTypeAction()
+    {
+        var action = _pendingEntityTypeAction;
+        _pendingEntityTypeAction = null;
+        if (action == null) return;
+
+        bool has2d = false, has3d = false;
+        ulong hash2d = 0, hash3d = 0;
+        int count = ComponentAPI.GComponent_GetCount(action.Entity);
+        for (int i = 0; i < count; i++)
+        {
+            if (ComponentAPI.GComponent_GetTypeHashAt(action.Entity, i, out var h) != 0) continue;
+            var sb = new StringBuilder(128);
+            if (ComponentAPI.GComponent_GetTypeNameAt(action.Entity, i, sb, sb.Capacity) < 0) continue;
+            string type = sb.ToString();
+            if (type == "Node2D") { has2d = true; hash2d = h; }
+            else if (type == "Node3D") { has3d = true; hash3d = h; }
+        }
+        action.SetNewState(has2d, has3d,
+            has2d ? CaptureComponentState(action.Entity, hash2d, "Node2D") : null,
+            has3d ? CaptureComponentState(action.Entity, hash3d, "Node3D") : null);
+        PushUndo(action);
+    }
+
+    internal void NotifyEntityTypeSwitched()
+    {
+        _entityTypeSwitchPending = true;
+        _engine.MarkSceneDirty();
     }
 
     /// <summary>从当前组件推导实体类型；切换命令未处理完时保持目标值。</summary>
@@ -1035,7 +1189,8 @@ public class EditorViewModel : INotifyPropertyChanged
             return;
         }
 
-        _selectedEntity.RefreshComponents();
+        // 注意：这里不能重建 Components——RefreshInspector() 刚填充过属性，
+        // 重建会得到属性为空的 ComponentModel，导致检查器属性行消失。
         bool has2d = false, has3d = false;
         foreach (var c in _selectedEntity.Components)
         {
@@ -1061,8 +1216,7 @@ public class EditorViewModel : INotifyPropertyChanged
         if (oldBytes != null && newBytes != null &&
             !System.Linq.Enumerable.SequenceEqual(oldBytes, newBytes))
         {
-            _undoStack.Push(new PropertyAction(this, entity, comp.TypeHash, prop.Name, oldBytes, newBytes));
-            _redoStack.Clear();
+            PushUndo(new PropertyAction(this, entity, comp.TypeHash, prop.Name, oldBytes, newBytes));
         }
     }
 
@@ -1092,6 +1246,141 @@ public class EditorViewModel : INotifyPropertyChanged
         finally { pin.Free(); }
     }
 
+    /// <summary>Adds a component without recording an undo entry.</summary>
+    internal void AddComponentSilent(GEntityHandle entity, ulong typeHash)
+    {
+        if (entity == GEntityHandle.Null) return;
+        if (ComponentAPI.GComponent_AddComponent(entity, typeHash) != 0) return;
+        _engine.MarkSceneDirty();
+        if (_selectedEntity?.Handle == entity) RefreshInspector();
+    }
+
+    /// <summary>Removes a component without recording an undo entry.</summary>
+    internal void RemoveComponentSilent(GEntityHandle entity, ulong typeHash)
+    {
+        if (entity == GEntityHandle.Null) return;
+        if (ComponentAPI.GComponent_RemoveComponent(entity, typeHash) != 0) return;
+        _engine.MarkSceneDirty();
+        if (_selectedEntity?.Handle == entity) RefreshInspector();
+    }
+
+    /// <summary>
+    /// Captures the full state of one component (reflection fields + exposed
+    /// script props) so it can be restored after an undo of "Remove Component".
+    /// </summary>
+    private static ComponentSnapshot CaptureComponentState(GEntityHandle entity, ulong typeHash, string typeName)
+    {
+        var snapshot = new ComponentSnapshot();
+        int fieldCount = ComponentAPI.GComponent_GetPropertyCount(entity, typeHash);
+        for (int i = 0; i < fieldCount; i++)
+        {
+            var sb = new StringBuilder(128);
+            if (ComponentAPI.GComponent_GetPropertyInfo(entity, typeHash, i, sb, sb.Capacity,
+                    out int propType, out int propSize) < 0)
+                continue;
+            int len = Math.Max(propSize, 4);
+            var buf = new byte[len];
+            var pin = GCHandle.Alloc(buf, GCHandleType.Pinned);
+            try
+            {
+                if (ComponentAPI.GComponent_GetProperty(entity, typeHash, sb.ToString(),
+                        pin.AddrOfPinnedObject(), len) == 0)
+                {
+                    snapshot.Fields.Add(new ComponentSnapshot.Field(sb.ToString(), len, buf));
+                }
+            }
+            finally { pin.Free(); }
+        }
+        if (typeName == "Script")
+        {
+            int propCount = ScriptAPI.GetPropCount(entity);
+            for (int i = 0; i < propCount; i++)
+            {
+                var info = ScriptAPI.GetPropInfo(entity, i);
+                if (info == null) continue;
+                if (info.Value.Type == 0)
+                {
+                    snapshot.ScriptProps.Add(new ComponentSnapshot.ScriptProp(
+                        info.Value.Name, 0, ScriptAPI.GetPropFloat(entity, info.Value.Name), null));
+                }
+                else
+                {
+                    snapshot.ScriptProps.Add(new ComponentSnapshot.ScriptProp(
+                        info.Value.Name, 1, null, ScriptAPI.GetPropString(entity, info.Value.Name)));
+                }
+            }
+        }
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Re-attaches a component (async) and queues the captured state so it is
+    /// written back once the AddComponent command completes on the next frame.
+    /// </summary>
+    internal void RestoreComponentState(GEntityHandle entity, ulong typeHash, ComponentSnapshot? snapshot)
+    {
+        if (entity == GEntityHandle.Null) return;
+        if (ComponentAPI.GComponent_AddComponent(entity, typeHash) != 0) return;
+        _pendingComponentRestores.Add((entity, typeHash, snapshot ?? new ComponentSnapshot(), 0));
+        _engine.MarkSceneDirty();
+    }
+
+    /// <summary>Writes a captured snapshot onto an existing component.</summary>
+    private static void WriteComponentSnapshot(GEntityHandle entity, ulong typeHash, ComponentSnapshot snapshot)
+    {
+        foreach (var f in snapshot.Fields)
+        {
+            WritePropertyBytes(entity, typeHash, f.Name, f.Bytes);
+        }
+        foreach (var p in snapshot.ScriptProps)
+        {
+            if (p.Type == 0) ScriptAPI.SetPropFloat(entity, p.Name, p.Float ?? 0f);
+            else ScriptAPI.SetPropString(entity, p.Name, p.String ?? string.Empty);
+        }
+    }
+
+    /// <summary>
+    /// Applies deferred component restores once the engine has processed the
+    /// async AddComponent command. Script props retry until the script loads.
+    /// </summary>
+    private void ApplyPendingComponentRestores()
+    {
+        if (_pendingComponentRestores.Count == 0) return;
+        bool refreshed = false;
+        for (int i = _pendingComponentRestores.Count - 1; i >= 0; i--)
+        {
+            var entry = _pendingComponentRestores[i];
+            if (entry.Entity == GEntityHandle.Null) { _pendingComponentRestores.RemoveAt(i); continue; }
+            if (!HasComponent(entry.Entity, entry.TypeHash)) continue; // command not processed yet
+
+            bool scriptReady = entry.Snapshot.ScriptProps.Count == 0 ||
+                               ScriptAPI.GetPropCount(entry.Entity) > 0;
+            if (!scriptReady)
+            {
+                int retries = entry.Retries + 1;
+                if (retries >= 240) _pendingComponentRestores.RemoveAt(i);
+                else _pendingComponentRestores[i] = (entry.Entity, entry.TypeHash, entry.Snapshot, retries);
+                continue;
+            }
+
+            WriteComponentSnapshot(entry.Entity, entry.TypeHash, entry.Snapshot);
+            _pendingComponentRestores.RemoveAt(i);
+            refreshed = true;
+        }
+        if (refreshed && _selectedEntity != null) RefreshInspector();
+    }
+
+    private static bool HasComponent(GEntityHandle entity, ulong typeHash)
+    {
+        int count = ComponentAPI.GComponent_GetCount(entity);
+        for (int i = 0; i < count; i++)
+        {
+            if (ComponentAPI.GComponent_GetTypeHashAt(entity, i, out var hash) == 0 && hash == typeHash)
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Pushes a Transform undo action for a gizmo drag (called at drag end with
     /// the values captured at drag start).
@@ -1103,8 +1392,7 @@ public class EditorViewModel : INotifyPropertyChanged
         if (EntityAPI.GEntity_GetLocalRotation(handle, out var newRot) != 0) return;
         if (EntityAPI.GEntity_GetLocalScale(handle, out var newScale) != 0) return;
         if (Vec3Close(oldPos, newPos) && QuatClose(oldRot, newRot) && Vec3Close(oldScale, newScale)) return;
-        _undoStack.Push(new TransformAction(this, handle, oldPos, oldRot, oldScale, newPos, newRot, newScale));
-        _redoStack.Clear();
+        PushUndo(new TransformAction(this, handle, oldPos, oldRot, oldScale, newPos, newRot, newScale));
     }
 
     private static bool Vec3Close(GVec3 a, GVec3 b)
@@ -1216,7 +1504,7 @@ public class EditorViewModel : INotifyPropertyChanged
         }
     }
 
-    private ulong FindRegisteredTypeHash(string typeName)
+    internal ulong FindRegisteredTypeHash(string typeName)
     {
         foreach (var t in RegisteredTypes)
         {
@@ -1295,9 +1583,8 @@ public class EditorViewModel : INotifyPropertyChanged
         if (handle != GEntityHandle.Null)
         {
             _engine.MarkSceneDirty();
-            _undoStack.Push(new DeleteEntityAction(this, handle,
+            PushUndo(new DeleteEntityAction(this, handle,
                 System.IO.Path.GetFileNameWithoutExtension(prefabPath), null, parent));
-            _redoStack.Clear();
             AppendConsole($"Instantiated prefab: {prefabPath}");
             SelectEntityByHandle(handle);
         }
@@ -1378,11 +1665,17 @@ internal interface IUndoableAction
     void Undo();
 }
 
-internal class CreateEntityAction(EditorViewModel vm) : IUndoableAction
+internal class CreateEntityAction(EditorViewModel vm, string name, string? componentTypeName) : IUndoableAction
 {
-    public string Description => "Create Entity";
-    public void Execute() => vm.CreateEntity();
-    public void Undo() => vm.DeleteSelectedEntity();
+    public string Description => $"Create '{name}'";
+    public GEntityHandle Handle { get; set; } = GEntityHandle.Null;
+
+    public void Execute() => vm.CreateEntitySilent(name, componentTypeName);
+    public void Undo()
+    {
+        if (Handle != GEntityHandle.Null) vm.DeleteEntitySilent(Handle);
+        else vm.DeleteSelectedEntitySilent();
+    }
 }
 
 internal class DeleteEntityAction : IUndoableAction
@@ -1402,7 +1695,9 @@ internal class DeleteEntityAction : IUndoableAction
         _vm = vm;
         _originalHandle = handle;
         _name = name;
-        _json = json;
+        // Capture the entity state now (it still exists at push time for
+        // duplicate/paste/prefab paths), so Undo restores the real entity.
+        _json = json ?? EntityAPI.ExportJsonUtf8(handle);
         _parent = parent;
     }
 
@@ -1427,7 +1722,117 @@ internal class DeleteEntityAction : IUndoableAction
                 return;
             }
         }
-        _vm.CreateEntity();
+        _vm.CreateEntitySilent();
+    }
+}
+
+internal class AddComponentAction(EditorViewModel vm, GEntityHandle entity, ulong typeHash) : IUndoableAction
+{
+    public string Description => "Add Component";
+    public void Execute() => vm.AddComponentSilent(entity, typeHash);
+    public void Undo() => vm.RemoveComponentSilent(entity, typeHash);
+}
+
+internal class RemoveComponentAction(EditorViewModel vm, GEntityHandle entity, ulong typeHash,
+                                     string typeName, ComponentSnapshot snapshot) : IUndoableAction
+{
+    public string Description => $"Remove '{typeName}'";
+    public void Execute() => vm.RemoveComponentSilent(entity, typeHash);
+    public void Undo() => vm.RestoreComponentState(entity, typeHash, snapshot);
+}
+
+internal sealed class ComponentSnapshot
+{
+    public List<Field> Fields { get; } = new();
+    public List<ScriptProp> ScriptProps { get; } = new();
+
+    public sealed class Field(string name, int size, byte[] bytes)
+    {
+        public string Name { get; } = name;
+        public int Size { get; } = size;
+        public byte[] Bytes { get; } = bytes;
+    }
+
+    public sealed class ScriptProp(string name, int type, float? floatValue, string? stringValue)
+    {
+        public string Name { get; } = name;
+        public int Type { get; } = type;
+        public float? Float { get; } = floatValue;
+        public string? String { get; } = stringValue;
+    }
+}
+
+internal class EntityTypeAction : IUndoableAction
+{
+    private readonly EditorViewModel _vm;
+    private readonly bool _old2d, _old3d;
+    private readonly ComponentSnapshot? _old2dSnap, _old3dSnap;
+    private bool _new2d, _new3d;
+    private ComponentSnapshot? _new2dSnap, _new3dSnap;
+
+    public string Description => "Entity Type";
+    public GEntityHandle Entity { get; }
+
+    public EntityTypeAction(EditorViewModel vm, GEntityHandle entity,
+                            bool old2d, bool old3d, ComponentSnapshot? old2dSnap, ComponentSnapshot? old3dSnap,
+                            bool new2d, bool new3d, ComponentSnapshot? new2dSnap, ComponentSnapshot? new3dSnap)
+    {
+        _vm = vm;
+        Entity = entity;
+        _old2d = old2d;
+        _old3d = old3d;
+        _old2dSnap = old2dSnap;
+        _old3dSnap = old3dSnap;
+        _new2d = new2d;
+        _new3d = new3d;
+        _new2dSnap = new2dSnap;
+        _new3dSnap = new3dSnap;
+    }
+
+    public void SetNewState(bool has2d, bool has3d, ComponentSnapshot? snap2d, ComponentSnapshot? snap3d)
+    {
+        _new2d = has2d;
+        _new3d = has3d;
+        _new2dSnap = snap2d;
+        _new3dSnap = snap3d;
+    }
+
+    public void Execute() => Apply(_new2d, _new3d, _new2dSnap, _new3dSnap);
+    public void Undo() => Apply(_old2d, _old3d, _old2dSnap, _old3dSnap);
+
+    private void Apply(bool want2d, bool want3d, ComponentSnapshot? snap2d, ComponentSnapshot? snap3d)
+    {
+        bool has2d = false, has3d = false;
+        ulong hash2d = 0, hash3d = 0;
+        int count = ComponentAPI.GComponent_GetCount(Entity);
+        for (int i = 0; i < count; i++)
+        {
+            if (ComponentAPI.GComponent_GetTypeHashAt(Entity, i, out var h) != 0) continue;
+            var sb = new StringBuilder(128);
+            if (ComponentAPI.GComponent_GetTypeNameAt(Entity, i, sb, sb.Capacity) < 0) continue;
+            string type = sb.ToString();
+            if (type == "Node2D") { has2d = true; hash2d = h; }
+            else if (type == "Node3D") { has3d = true; hash3d = h; }
+        }
+        if (want2d && !has2d)
+        {
+            ulong h = _vm.FindRegisteredTypeHash("Node2D");
+            if (h != 0) _vm.RestoreComponentState(Entity, h, snap2d);
+        }
+        else if (!want2d && has2d)
+        {
+            _vm.RemoveComponentSilent(Entity, hash2d);
+        }
+        if (want3d && !has3d)
+        {
+            ulong h = _vm.FindRegisteredTypeHash("Node3D");
+            if (h != 0) _vm.RestoreComponentState(Entity, h, snap3d);
+        }
+        else if (!want3d && has3d)
+        {
+            _vm.RemoveComponentSilent(Entity, hash3d);
+        }
+        _vm.NotifyEntityTypeSwitched();
     }
 }
 

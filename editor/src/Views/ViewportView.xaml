@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
              Focusable="True"
              PreviewKeyDown="OnPreviewKeyDown"
              PreviewKeyUp="OnPreviewKeyUp">
@@ -57,6 +58,16 @@
                             <TextBlock Text="{loc:Loc viewport.tab_2d}"/>
                         </StackPanel>
                     </ToggleButton>
+                    <ToggleButton x:Name="TabScript"
+                                  IsChecked="False"
+                                  Style="{StaticResource ViewportTabStyle}"
+                                  Click="OnScriptTabClick">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE943;" FontFamily="Segoe MDL2 Assets"
+                                       FontSize="11" Margin="0,0,6,0"/>
+                            <TextBlock Text="{loc:Loc viewport.tab_script}"/>
+                        </StackPanel>
+                    </ToggleButton>
                     <ToggleButton x:Name="TabGame"
                                   IsChecked="False"
                                   Style="{StaticResource ViewportTabStyle}"
@@ -71,6 +82,7 @@
 
                 <!-- Right: Display Mode + Resolution -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal"
+                            x:Name="ViewportToolsRight"
                             VerticalAlignment="Center" Margin="0,0,6,0">
                     <Button x:Name="BtnDisplayMode"
                             Style="{StaticResource ToolbarButtonStyle}"
@@ -97,6 +109,12 @@
             <Grid>
                 <!-- Main render host (HWND child window) -->
                 <ContentControl x:Name="HostContainer"/>
+
+                <!-- Script editor (Monaco via WebView2) replaces the render
+                     surface while the Script tab is active -->
+                <wv2:WebView2 x:Name="ScriptWebView"
+                              Visibility="Collapsed"
+                              DefaultBackgroundColor="#FF1E1E1E"/>
 
                 <!-- Gizmo overlay (top-right) -->
                 <Border x:Name="GizmoOverlay"
@@ -168,6 +186,7 @@
 
         <!-- ══ Viewport Info Bar ══ -->
         <Border Grid.Row="2"
+                x:Name="ViewportInfoBar"
                 Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"

@@ -15,11 +15,17 @@
 
   <ItemGroup>
     <PackageReference Include="iNKORE.UI.WPF.Modern" Version="0.10.0" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
     <PackageReference Include="System.Memory" Version="4.5.5" />
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
+  </ItemGroup>
+
+  <!-- Monaco editor (WebView2 script tab) copied to the output directory -->
+  <ItemGroup>
+    <Content Include="assets\monaco\**\*.*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- Embedded locale tables (en / zh) for the editor localization service -->

@@ -137,6 +137,33 @@ public class PropertyModel : INotifyPropertyChanged
     public PropertyType PropType { get; }
     public int Size { get; }
 
+    /// <summary>Localized label for the Inspector (falls back to the raw field name).</summary>
+    public string DisplayName
+    {
+        get
+        {
+            string key = "property." + Name;
+            string localized = LocalizationService.Instance.T(key);
+            return localized != key ? localized : Name;
+        }
+    }
+
+    /// <summary>True for string path fields that should show a Browse button
+    /// (script_path is excluded — it gets a "New" button instead).</summary>
+    public bool IsPathProperty
+    {
+        get
+        {
+            if (PropType != PropertyType.String || IsScriptPath) return false;
+            return Name.EndsWith("_path", StringComparison.Ordinal) ||
+                   Name.EndsWith("Path", StringComparison.Ordinal) ||
+                   Name == "path";
+        }
+    }
+
+    /// <summary>The Script component's script path gets a "New Script" button.</summary>
+    public bool IsScriptPath => Name == "script_path";
+
     // Value holders
     private float _floatValue;
     private string _stringValue = string.Empty;

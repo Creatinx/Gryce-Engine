@@ -2,6 +2,7 @@ using GryceEngine.Editor.Models;
 using GryceEngine.Editor.Native;
 using GryceEngine.Editor.Services;
 using GryceEngine.Editor.ViewModels;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -93,6 +94,84 @@ public partial class InspectorView : UserControl
     private void OnPropertyStringChanged(object sender, RoutedEventArgs e)
     {
         OnPropertyValueChanged(sender, e);
+    }
+
+    /// <summary>Browse for a file and write it into a string path property.</summary>
+    private void OnPropertyBrowseClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.Tag is not PropertyModel prop) return;
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = LocalizationService.Instance.T("common.browse"),
+            FileName = prop.StringValue ?? string.Empty
+        };
+        string? initialDir = null;
+        if (!string.IsNullOrEmpty(prop.StringValue))
+        {
+            try { initialDir = System.IO.Path.GetDirectoryName(prop.StringValue); } catch { }
+        }
+        if (string.IsNullOrEmpty(initialDir))
+        {
+            initialDir = App.Engine?.ProjectRoot;
+        }
+        if (!string.IsNullOrEmpty(initialDir) && System.IO.Directory.Exists(initialDir))
+        {
+            dialog.InitialDirectory = initialDir;
+        }
+        if (dialog.ShowDialog(Window.GetWindow(this)) == true)
+        {
+            prop.StringValue = dialog.FileName ?? string.Empty;
+            if (VM?.SelectedEntity != null)
+            {
+                foreach (var comp in VM.SelectedEntity.Components)
+                {
+                    if (comp.Properties.Contains(prop))
+                    {
+                        VM.WritePropertyValue(comp, prop);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>Open the New Script dialog and assign the created script to the
+    /// Script component's script_path property.</summary>
+    private void OnScriptNewClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.Tag is not PropertyModel prop) return;
+        if (VM?.SelectedEntity == null) return;
+
+        string projectRoot = App.Engine?.ProjectRoot ?? string.Empty;
+        string scriptsDir = string.IsNullOrEmpty(projectRoot)
+            ? System.IO.Path.GetDirectoryName(prop.StringValue ?? string.Empty) ?? projectRoot
+            : System.IO.Path.Combine(projectRoot, "scripts");
+        try { System.IO.Directory.CreateDirectory(scriptsDir); } catch { }
+
+        var dialog = new NewScriptWindow(scriptsDir,
+            VM.RegisteredTypes.Select(t => t.TypeName), null,
+            VM.GetSceneComponentTypes());
+        dialog.Owner = Window.GetWindow(this);
+        string? created = null;
+        if (dialog.ShowDialog() == true)
+        {
+            created = dialog.CreatedPath;
+        }
+        if (!string.IsNullOrEmpty(created))
+        {
+            prop.StringValue = created!;
+            foreach (var comp in VM.SelectedEntity.Components)
+            {
+                if (comp.Properties.Contains(prop))
+                {
+                    VM.WritePropertyValue(comp, prop);
+                    break;
+                }
+            }
+            VM.AppendConsole(string.Format(
+                LocalizationService.Instance.T("new_script.created"), created));
+            ViewportView.OpenScriptRequested?.Invoke(created!);
+        }
     }
 
     private void OnScriptPropFloatChanged(object sender, RoutedEventArgs e)

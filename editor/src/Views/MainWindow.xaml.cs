@@ -20,6 +20,9 @@ public partial class MainWindow
     {
         DataContext = viewModel;
         InitializeComponent();
+        // 代码编辑器（Script 标签）激活时隐藏场景编辑器工具栏的变换/Gizmo 工具
+        ViewportHost.ScriptModeChanged += scriptMode =>
+            EditorToolbar.SetSceneToolsVisible(scriptMode);
         SourceInitialized += OnSourceInitialized;
         viewModel.RefreshHierarchy();
         viewModel.PropertyChanged += OnViewModelPropertyChanged;

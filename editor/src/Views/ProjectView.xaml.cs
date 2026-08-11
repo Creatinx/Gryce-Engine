@@ -150,6 +150,9 @@ public partial class ProjectView : UserControl
     private static object CreateFolderHeader(string name)
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        // 悬浮在图标或名字上方时显示完整文件夹名（Tooltip 为独立 Popup，
+        // 渲染优先级高于条目内的图标/文字）
+        panel.ToolTip = name;
         panel.Children.Add(new TextBlock
         {
             Text = "\uE8B7",
@@ -162,7 +165,10 @@ public partial class ProjectView : UserControl
         panel.Children.Add(new TextBlock
         {
             Text = name,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap,
+            MaxWidth = 140
         });
         return panel;
     }
@@ -379,11 +385,7 @@ public partial class ProjectView : UserControl
         }
         else if (ext == ".lua")
         {
-            var window = new ScriptEditorWindow(VM!, item.Path)
-            {
-                Owner = Window.GetWindow(this)
-            };
-            window.Show();
+            ViewportView.OpenScriptRequested?.Invoke(item.Path);
         }
         else
         {
@@ -422,6 +424,22 @@ public partial class ProjectView : UserControl
         catch (Exception ex)
         {
             VM?.AppendConsole($"Failed to create material: {ex.Message}");
+        }
+    }
+
+    private void OnNewScriptClick(object sender, RoutedEventArgs e)
+    {
+        string dir = string.IsNullOrEmpty(_currentPath) ? ProjectRoot : _currentPath;
+        var dialog = new NewScriptWindow(dir,
+            VM?.RegisteredTypes.Select(t => t.TypeName),
+            null,
+            VM?.GetSceneComponentTypes());
+        dialog.Owner = Window.GetWindow(this);
+        if (dialog.ShowDialog() == true && !string.IsNullOrEmpty(dialog.CreatedPath))
+        {
+            RefreshFileList(dir);
+            VM?.AppendConsole(string.Format(
+                LocalizationService.Instance.T("new_script.created"), dialog.CreatedPath));
         }
     }
 
@@ -532,13 +550,11 @@ public partial class ProjectView : UserControl
     {
         if (string.IsNullOrEmpty(_selectedFilePath)) return;
         var name = Path.GetFileName(_selectedFilePath);
-        var result = MessageBox.Show(
-            $"Are you sure you want to delete '{name}'?",
-            "Confirm Delete",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-
-        if (result == MessageBoxResult.Yes)
+        var message = string.Format(
+            LocalizationService.Instance.T("confirm.delete_message"), name);
+        var dialog = new ConfirmDialog(message);
+        dialog.Owner = Window.GetWindow(this);
+        if (dialog.ShowDialog() == true && dialog.Confirmed)
         {
             try
             {

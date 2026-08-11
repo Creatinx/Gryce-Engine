@@ -1,11 +1,12 @@
 {
   "version": 2,
-  "dgSpecHash": "vWYq1uD5Xr4=",
+  "dgSpecHash": "SGxWvQedlzE=",
   "success": true,
   "projectFilePath": "D:\\Gryce-Engine\\editor\\GryceEngine.Editor.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Creatinx\\.nuget\\packages\\inkore.ui.wpf\\1.2.8\\inkore.ui.wpf.1.2.8.nupkg.sha512",
     "C:\\Users\\Creatinx\\.nuget\\packages\\inkore.ui.wpf.modern\\0.10.0\\inkore.ui.wpf.modern.0.10.0.nupkg.sha512",
+    "C:\\Users\\Creatinx\\.nuget\\packages\\microsoft.web.webview2\\1.0.2903.40\\microsoft.web.webview2.1.0.2903.40.nupkg.sha512",
     "C:\\Users\\Creatinx\\.nuget\\packages\\system.buffers\\4.5.1\\system.buffers.4.5.1.nupkg.sha512",
     "C:\\Users\\Creatinx\\.nuget\\packages\\system.memory\\4.5.5\\system.memory.4.5.5.nupkg.sha512",
     "C:\\Users\\Creatinx\\.nuget\\packages\\system.numerics.vectors\\4.5.0\\system.numerics.vectors.4.5.0.nupkg.sha512",

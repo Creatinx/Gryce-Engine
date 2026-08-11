@@ -163,6 +163,11 @@
                                         <TextBlock Text="&#xE791;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
                                     </MenuItem.Icon>
                                 </MenuItem>
+                                <MenuItem Header="{loc:Loc project.new_script}" Click="OnNewScriptClick">
+                                    <MenuItem.Icon>
+                                        <TextBlock Text="&#xE943;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                                    </MenuItem.Icon>
+                                </MenuItem>
                                 <Separator Style="{StaticResource ContextMenuSeparatorStyle}"/>
                                 <MenuItem Header="{loc:Loc common.rename}" Click="OnRenameClick">
                                     <MenuItem.Icon>
@@ -227,8 +232,9 @@
                                                    FontSize="9.5"
                                                    HorizontalAlignment="Center"
                                                    TextAlignment="Center"
-                                                   TextWrapping="Wrap"
-                                                   MaxHeight="24"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   TextWrapping="NoWrap"
+                                                   MaxWidth="72"
                                                    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                                    Margin="0,5,0,0"/>
                                     </StackPanel>

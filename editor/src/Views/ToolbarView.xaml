@@ -32,7 +32,7 @@
             <Border Grid.Column="1" Style="{StaticResource VerticalSeparatorStyle}"/>
 
             <!-- Transform Tools (Q/W/E/R) -->
-            <StackPanel Grid.Column="2" Orientation="Horizontal">
+            <StackPanel Grid.Column="2" x:Name="SceneToolsPanel" Orientation="Horizontal">
                 <ToggleButton x:Name="BtnHand"
                               Style="{StaticResource ToolbarToggleStyle}"
                               ToolTip="{loc:Loc toolbar.hand}"
@@ -56,10 +56,10 @@
                               Click="OnScaleClick"/>
             </StackPanel>
 
-            <Border Grid.Column="3" Style="{StaticResource VerticalSeparatorStyle}"/>
+            <Border Grid.Column="3" x:Name="SceneToolsSeparator" Style="{StaticResource VerticalSeparatorStyle}"/>
 
             <!-- Gizmo Pivot / Space -->
-            <StackPanel Grid.Column="4" Orientation="Horizontal">
+            <StackPanel Grid.Column="4" x:Name="GizmoToolsPanel" Orientation="Horizontal">
                 <ToggleButton x:Name="BtnCenter"
                               Style="{StaticResource ToolbarToggleStyle}"
                               ToolTip="{loc:Loc toolbar.center_pivot}"

@@ -15,6 +15,16 @@ public partial class ToolbarView : UserControl
         InitializeComponent();
     }
 
+    /// <summary>Shows/hides the scene-editor transform/gizmo tools (used when
+    /// the viewport switches to the code-editor Script tab).</summary>
+    public void SetSceneToolsVisible(bool visible)
+    {
+        var v = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (SceneToolsPanel != null) SceneToolsPanel.Visibility = v;
+        if (SceneToolsSeparator != null) SceneToolsSeparator.Visibility = v;
+        if (GizmoToolsPanel != null) GizmoToolsPanel.Visibility = v;
+    }
+
     private void SetActiveTool(string tool)
     {
         _activeTool = tool;

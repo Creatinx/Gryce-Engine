@@ -1,9 +1,11 @@
 using GryceEngine.Editor.Native;
 using GryceEngine.Editor.Services;
 using GryceEngine.Editor.ViewModels;
+using Microsoft.Web.WebView2.Core;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -22,13 +24,33 @@ public partial class ViewportView : UserControl, IDisposable
     private EditorViewModel? _vmCached;
     private System.Threading.Thread? _renderThread;
     private volatile bool _renderThreadRunning;
+    // Set when the render surface is re-shown after being hidden (code-editor
+    // tab): the render loop then forces a full surface recreate so a stale
+    // Vulkan swapchain / destroyed GLFW child cannot freeze the viewport.
+    private volatile bool _needRenderRecovery;
     private readonly object _cameraLock = new();
     private nint _renderHandle;
     private bool _rendererInitialized;
+    private GRenderAPI _renderApi;
     private volatile bool _isGameView;
     private volatile bool _windowMinimized;
     private bool _is2DMode;
     private string _displayMode = "Shaded";
+
+    // Script tab (Monaco via WebView2) state
+    private bool _scriptMode;
+    private bool _scriptWebReady;
+    private bool _scriptLoadingContent;
+    private string? _currentScriptPath;
+    private string? _scriptInitialContent;
+
+    /// <summary>Raised by the project panel to open a .lua file in the
+    /// viewport's Script tab.</summary>
+    public static Action<string>? OpenScriptRequested;
+
+    /// <summary>Raised when the Script (code editor) tab becomes active/closed,
+    /// so the main window can hide the scene-editor toolbar tools.</summary>
+    public event Action<bool>? ScriptModeChanged;
 
     // ---- 2D 场景编辑器 ----
     private GEntityHandle _editor2DCamera = GEntityHandle.Null;
@@ -144,6 +166,10 @@ public partial class ViewportView : UserControl, IDisposable
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetClientRect(IntPtr hWnd, out NativeRect rect);
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hWnd);
+
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct NativeRect
     {
@@ -172,6 +198,7 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         _vmCached = DataContext as EditorViewModel;
+        OpenScriptRequested += OnOpenScriptRequested;
         int w = Math.Max((int)ActualWidth, 100);
         int h = Math.Max((int)ActualHeight, 100);
         var px = GetPixelSize();
@@ -215,6 +242,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        OpenScriptRequested -= OnOpenScriptRequested;
         StopRenderThread();
         _gizmoTimer?.Stop();
         _gizmoTimer = null;
@@ -293,6 +321,7 @@ public partial class ViewportView : UserControl, IDisposable
                 System.StringComparison.OrdinalIgnoreCase)
                 ? GRenderAPI.OpenGL
                 : GRenderAPI.Vulkan;
+            _renderApi = renderApi;
             int result = renderApi == GRenderAPI.Vulkan
                 ? WindowAPI.GWindow_InitExternalEx(new GWindowHandle(hwnd), w, h, renderApi)
                 : WindowAPI.GWindow_InitExternal(new GWindowHandle(hwnd), w, h);
@@ -382,7 +411,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void StartRenderThread()
     {
-        if (_renderThread != null) return;
+        if (_renderThread != null && _renderThread.IsAlive) return;
         _renderThreadRunning = true;
         _renderThread = new System.Threading.Thread(RenderLoop)
         {
@@ -471,6 +500,32 @@ public partial class ViewportView : UserControl, IDisposable
                     continue;
                 }
 
+                if (_scriptMode)
+                {
+                    // Script (code editor) tab active: the render surface is
+                    // hidden behind WebView2, so stop producing frames. This
+                    // avoids rendering to a hidden GLFW window and any GPU
+                    // contention with the WebView2 compositor, and the next
+                    // Scene tab click resumes rendering with fresh camera/light
+                    // state (re-collected every frame).
+                    System.Threading.Thread.Sleep(16);
+                    continue;
+                }
+
+                // Coming back from the code-editor tab: the GLFW child may
+                // have been hidden (or destroyed) while HostContainer was
+                // collapsed, and a Vulkan swapchain can go stale even when the
+                // window itself survives. Force a same-backend surface
+                // recreate; the liveHandle check below then re-attaches the
+                // fresh child window and re-takes the context.
+                if (_needRenderRecovery)
+                {
+                    _needRenderRecovery = false;
+                    _appliedPixelSize = default;
+                    try { RenderAPI.GRender_RequestSurfaceRecreate(); }
+                    catch { /* recovery runs on next frame */ }
+                }
+
                 // After a render-backend switch the core recreates the embedded
                 // GLFW window; re-attach the host subclass and take the new
                 // context on this thread.
@@ -515,6 +570,7 @@ public partial class ViewportView : UserControl, IDisposable
         finally
         {
             try { WindowAPI.GWindow_ReleaseContext(); } catch { }
+            _renderThreadRunning = false;
         }
     }
 
@@ -1633,6 +1689,8 @@ public partial class ViewportView : UserControl, IDisposable
         TabScene.IsChecked = true;
         Tab2D.IsChecked = false;
         TabGame.IsChecked = false;
+        TabScript.IsChecked = false;
+        ShowRenderSurface();
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.scene_view");
         GizmoOverlay.Visibility = Visibility.Visible;
     }
@@ -1645,6 +1703,8 @@ public partial class ViewportView : UserControl, IDisposable
         TabScene.IsChecked = false;
         Tab2D.IsChecked = true;
         TabGame.IsChecked = false;
+        TabScript.IsChecked = false;
+        ShowRenderSurface();
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.scene_2d");
         GizmoOverlay.Visibility = Visibility.Visible;
     }
@@ -1656,9 +1716,295 @@ public partial class ViewportView : UserControl, IDisposable
         TabScene.IsChecked = false;
         Tab2D.IsChecked = false;
         TabGame.IsChecked = true;
+        TabScript.IsChecked = false;
+        ShowRenderSurface();
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.game_view");
         GizmoOverlay.Visibility = Visibility.Collapsed;
     }
+
+    private void OnScriptTabClick(object sender, RoutedEventArgs e)
+    {
+        _isGameView = false;
+        Set2DMode(false);
+        TabScene.IsChecked = false;
+        Tab2D.IsChecked = false;
+        TabGame.IsChecked = false;
+        TabScript.IsChecked = true;
+        GizmoInfo.Text = LocalizationService.Instance.T("viewport.tab_script");
+        GizmoOverlay.Visibility = Visibility.Collapsed;
+        EnterScriptMode(_currentScriptPath);
+    }
+
+    private void EnterScriptMode(string? path)
+    {
+        _scriptMode = true;
+        HostContainer.Visibility = Visibility.Collapsed;
+        GizmoOverlay.Visibility = Visibility.Collapsed;
+        ViewportOverlay.Visibility = Visibility.Collapsed;
+        ScriptWebView.Visibility = Visibility.Visible;
+        // 代码编辑器里不显示场景编辑器工具：顶栏右侧的显示模式/分辨率、
+        // 底部信息栏，以及悬浮的 Gizmo 覆盖窗口。
+        UpdateSceneToolsVisible(false);
+        _overlay?.Hide();
+        ScriptModeChanged?.Invoke(false);
+        LoadScriptFile(path);
+    }
+
+    private void ShowRenderSurface()
+    {
+        _scriptMode = false;
+        ScriptWebView.Visibility = Visibility.Collapsed;
+        HostContainer.Visibility = Visibility.Visible;
+        UpdateSceneToolsVisible(true);
+        if (_overlay != null && !_overlay.Suppressed)
+        {
+            _overlay.Show();
+        }
+        ScriptModeChanged?.Invoke(true);
+
+        // The embedded GLFW child was hidden (and may have been destroyed)
+        // while the render surface was collapsed behind the code editor.
+        // Vulkan swapchains can go stale even when the window survives, so
+        // force a full surface recreate there; for a healthy OpenGL child a
+        // render-target refresh (next-frame SetSize) is enough.
+        if (_renderApi == GRenderAPI.Vulkan || !IsGlfwChildAlive())
+        {
+            _appliedPixelSize = default;
+            _needRenderRecovery = true;
+        }
+        else
+        {
+            _appliedPixelSize = default;
+        }
+        StartRenderThread();
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var px = GetPixelSize();
+            UpdateResolutionDisplay(px.W, px.H);
+            PositionOverlay();
+        }), DispatcherPriority.Loaded);
+    }
+
+    /// <summary>True when the embedded GLFW child HWND still exists.</summary>
+    private bool IsGlfwChildAlive()
+    {
+        nint child = _hwndHost?.GlfwChildHandle ?? IntPtr.Zero;
+        return child != IntPtr.Zero && IsWindow(child);
+    }
+
+    /// <summary>Shows/hides viewport chrome that is only meaningful while the
+    /// scene editor is active (display-mode button, resolution label, FPS bar).</summary>
+    private void UpdateSceneToolsVisible(bool visible)
+    {
+        if (ViewportToolsRight != null)
+        {
+            ViewportToolsRight.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        }
+        if (ViewportInfoBar != null)
+        {
+            ViewportInfoBar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    private void OnOpenScriptRequested(string path)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            TabScene.IsChecked = false;
+            Tab2D.IsChecked = false;
+            TabGame.IsChecked = false;
+            TabScript.IsChecked = true;
+            EnterScriptMode(path);
+        }), DispatcherPriority.Normal);
+    }
+
+    // === Script tab: Monaco (WebView2) ===
+
+    private async void LoadScriptFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            path = FindNewScriptPath();
+        }
+        _currentScriptPath = path;
+        try
+        {
+            _scriptInitialContent = File.Exists(path) ? File.ReadAllText(path) : NewScriptTemplate;
+        }
+        catch (Exception ex)
+        {
+            VM?.AppendConsole($"[Script] read failed: {ex.Message}");
+            _scriptInitialContent = string.Empty;
+        }
+
+        try
+        {
+            await EnsureScriptWebViewAsync();
+            if (!_scriptWebReady)
+            {
+                _scriptLoadingContent = true;
+                var html = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                                                  "assets", "monaco", "editor.html");
+                ScriptWebView.CoreWebView2.Navigate(new Uri(html).ToString());
+            }
+            else
+            {
+                SendContentToWeb(_scriptInitialContent);
+            }
+        }
+        catch (Exception ex)
+        {
+            VM?.AppendConsole($"[Script] WebView error: {ex.Message}");
+        }
+    }
+
+    private async System.Threading.Tasks.Task EnsureScriptWebViewAsync()
+    {
+        if (ScriptWebView.CoreWebView2 != null) return;
+        await ScriptWebView.EnsureCoreWebView2Async(null);
+        if (ScriptWebView.CoreWebView2 == null) return;
+        ScriptWebView.CoreWebView2.WebMessageReceived += OnScriptWebMessage;
+        ScriptWebView.CoreWebView2.NavigationCompleted += OnScriptNavigationCompleted;
+        ScriptWebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+        ScriptWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+    }
+
+    private void OnScriptNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+    {
+        if (!e.IsSuccess || _scriptLoadingContent)
+        {
+            _scriptLoadingContent = false;
+            SendContentToWeb(_scriptInitialContent);
+        }
+    }
+
+    private void SendContentToWeb(string? content)
+    {
+        if (ScriptWebView.CoreWebView2 == null) return;
+        var payload = "{\"cmd\":\"setContent\",\"content\":\"" +
+                      JsonEscape(content ?? string.Empty) + "\"}";
+        try
+        {
+            ScriptWebView.CoreWebView2.PostWebMessageAsJson(payload);
+        }
+        catch { /* page not ready yet */ }
+    }
+
+    private static string JsonEscape(string s)
+    {
+        var sb = new StringBuilder(s.Length + 16);
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private void OnScriptWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        string json;
+        try { json = e.TryGetWebMessageAsString(); }
+        catch { return; }
+
+        string cmd = ExtractJsonString(json, "cmd") ?? string.Empty;
+        if (cmd == "ready")
+        {
+            _scriptWebReady = true;
+            SendContentToWeb(_scriptInitialContent);
+        }
+        else if (cmd == "save")
+        {
+            string text = ExtractJsonString(json, "text") ?? string.Empty;
+            SaveScript(text);
+        }
+        else if (cmd == "changed")
+        {
+            if (VM != null && !string.IsNullOrEmpty(_currentScriptPath))
+            {
+                VM.AppendConsole($"[Script] modified: {System.IO.Path.GetFileName(_currentScriptPath)}");
+            }
+        }
+    }
+
+    private static string? ExtractJsonString(string json, string key)
+    {
+        var marker = "\"" + key + "\":";
+        int idx = json.IndexOf(marker, StringComparison.Ordinal);
+        if (idx < 0) return null;
+        idx += marker.Length;
+        while (idx < json.Length && char.IsWhiteSpace(json[idx])) idx++;
+        if (idx >= json.Length || json[idx] != '"') return null;
+        var sb = new StringBuilder();
+        bool escape = false;
+        for (int i = idx + 1; i < json.Length; i++)
+        {
+            char c = json[i];
+            if (escape)
+            {
+                sb.Append(c);
+                escape = false;
+            }
+            else if (c == '\\') escape = true;
+            else if (c == '"') break;
+            else sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    private void SaveScript(string text)
+    {
+        if (string.IsNullOrEmpty(_currentScriptPath)) return;
+        try
+        {
+            File.WriteAllText(_currentScriptPath, text);
+            VM?.AppendConsole($"Saved: {_currentScriptPath}");
+            VM?.ReloadScripts();
+        }
+        catch (Exception ex)
+        {
+            VM?.AppendConsole($"[Script] save failed: {ex.Message}");
+        }
+    }
+
+    private static string FindNewScriptPath()
+    {
+        string root = EngineService.Current?.ProjectRoot ?? AppDomain.CurrentDomain.BaseDirectory;
+        string scripts = System.IO.Path.Combine(root, "scripts");
+        try { Directory.CreateDirectory(scripts); } catch { }
+        for (int i = 1; ; i++)
+        {
+            string candidate = System.IO.Path.Combine(scripts, $"NewScript{i}.lua");
+            if (!File.Exists(candidate)) return candidate;
+        }
+    }
+
+    private const string NewScriptTemplate =
+        "-- GryceSRT script template (GryceEngineUtils preloaded).\r\n" +
+        "require(\"GryceEngineUtils\")\r\n" +
+        "\r\n" +
+        "props = {\r\n" +
+        "    speed = 1.0\r\n" +
+        "}\r\n" +
+        "\r\n" +
+        "function on_start()\r\n" +
+        "    engine.log.info(\"on_start\")\r\n" +
+        "end\r\n" +
+        "\r\n" +
+        "function on_update(dt)\r\n" +
+        "    -- engine.self() / engine.entity.* / engine.component.* / GryceEngineUtils.*\r\n" +
+        "end\r\n";
 
     private void OnRelease3DSceneClick(object sender, RoutedEventArgs e)
     {
