@@ -59,7 +59,11 @@ function(gryce_compile_vulkan_shaders shader_dir)
 
         add_custom_command(
             OUTPUT "${output}"
-            COMMAND "${GRYCE_GLSLANG_VALIDATOR}" -V "${source}" -o "${output}"
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DGLSLANG=${GRYCE_GLSLANG_VALIDATOR}"
+                    "-DSOURCE=${source}"
+                    "-DOUTPUT=${output}"
+                    -P "${CMAKE_SOURCE_DIR}/cmake/run_glslang.cmake"
             DEPENDS "${source}"
             COMMENT "Compiling SPIR-V: ${filename}"
             VERBATIM
