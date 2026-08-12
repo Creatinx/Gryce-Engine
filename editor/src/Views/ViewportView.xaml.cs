@@ -905,6 +905,13 @@ public partial class ViewportView : UserControl, IDisposable
             return;
         }
 
+        if (_is2DMode)
+        {
+            if (_leftDown && _dragCaptured) UpdateGizmoDrag(x, y);
+            else if (_rightDown || _middleDown) Pan2DView(dx, dy);
+            return;
+        }
+
         if (_rightDown)
         {
             lock (_cameraLock) _sceneCamera.Orbit(dx, dy);
@@ -1277,6 +1284,11 @@ public partial class ViewportView : UserControl, IDisposable
         }
 
         BuildGizmoShapes();
+        if (_is2DMode)
+        {
+            UpdateGizmoOverlay2D();
+            return;
+        }
         var px = GetPixelSize();
         var cam = _sceneCamera;
         cam.Aspect = px.W / (double)px.H;
@@ -1388,6 +1400,126 @@ public partial class ViewportView : UserControl, IDisposable
         }
     }
 
+    // =====================================================================
+    //  2D gizmo (translate / rotate / scale in the 2D editor)
+    // =====================================================================
+
+    private double Local2DTheta()
+    {
+        var selected = VM?.SelectedEntity;
+        if (!(VM?.IsGizmoLocal ?? false) || selected == null) return 0.0;
+        if (EntityAPI.GEntity_GetLocalRotation(selected.Handle, out var rot) == 0)
+            return 2.0 * Math.Atan2(rot.Z, rot.W);   // rotation around Z
+        return 0.0;
+    }
+
+    private static bool PointInBox(double x, double y, double bx, double by, double half)
+        => Math.Abs(x - bx) <= half && Math.Abs(y - by) <= half;
+
+    private void Draw2DArrowHead(Polygon head, double tipX, double tipY, double dx, double dy)
+    {
+        head.Visibility = Visibility.Visible;
+        head.Points.Clear();
+        double px = -dy, py = dx;
+        head.Points.Add(new Point(tipX, tipY));
+        head.Points.Add(new Point(tipX - dx * 9 + px * 5, tipY - dy * 9 + py * 5));
+        head.Points.Add(new Point(tipX - dx * 9 - px * 5, tipY - dy * 9 - py * 5));
+    }
+
+    private void UpdateGizmoOverlay2D()
+    {
+        var vm = VM;
+        if (vm == null)
+        {
+            HideGizmoShapes();
+            return;
+        }
+        var selected = vm.SelectedEntity;
+        if (selected == null)
+        {
+            HideGizmoShapes();
+            return;
+        }
+        if (EntityAPI.GEntity_GetLocalPosition(selected.Handle, out var pos) != 0)
+        {
+            HideGizmoShapes();
+            return;
+        }
+
+        var px = GetPixelSize();
+        // Screen position of the entity's 2D world position (world unit = 1 px
+        // at _2dZoom, same mapping as picking/panning).
+        double cx = px.W * 0.5 + (pos.X - _2dCenterX) * _2dZoom;
+        double cy = px.H * 0.5 + (pos.Y - _2dCenterY) * _2dZoom;
+
+        _overlay?.SetMode(vm.GizmoMode);
+        _overlay?.Show();
+
+        double theta = Local2DTheta();
+        double axx = Math.Cos(theta), axy = Math.Sin(theta);  // local X
+        double ayx = -Math.Sin(theta), ayy = Math.Cos(theta); // local Y
+        double handleLen = Clamp(Math.Min(px.W, px.H) * 0.16, 50, 140);
+        string mode = vm.GizmoMode;
+
+        for (int i = 0; i < 3; i++)
+        {
+            _axisLines[i].Visibility = Visibility.Collapsed;
+            _axisHeads[i].Visibility = Visibility.Collapsed;
+            _axisBoxes[i].Visibility = Visibility.Collapsed;
+            _axisRings[i].Visibility = Visibility.Collapsed;
+        }
+
+        if (mode == "Rotate")
+        {
+            // Full circle in the X-Y (screen) plane; drag rotates around Z.
+            var ring = _axisRings[2];
+            ring.Visibility = Visibility.Visible;
+            ring.Points.Clear();
+            for (int k = 0; k <= 48; k++)
+            {
+                double t = k * Math.PI * 2.0 / 48.0;
+                ring.Points.Add(new Point(cx + Math.Cos(t) * handleLen,
+                                          cy + Math.Sin(t) * handleLen));
+            }
+        }
+        else if (mode == "Scale")
+        {
+            var bx = _axisBoxes[0];
+            var by = _axisBoxes[1];
+            var bc = _axisBoxes[2];
+            bx.Visibility = Visibility.Visible;
+            Canvas.SetLeft(bx, cx + axx * handleLen - 4);
+            Canvas.SetTop(bx, cy + axy * handleLen - 4);
+            by.Visibility = Visibility.Visible;
+            Canvas.SetLeft(by, cx + ayx * handleLen - 4);
+            Canvas.SetTop(by, cy + ayy * handleLen - 4);
+            bc.Visibility = Visibility.Visible;
+            Canvas.SetLeft(bc, cx - 4);
+            Canvas.SetTop(bc, cy - 4);
+        }
+        else // Translate
+        {
+            var lx = _axisLines[0];
+            var ly = _axisLines[1];
+            var cx0 = _axisBoxes[2];
+            lx.Visibility = Visibility.Visible;
+            lx.X1 = cx; lx.Y1 = cy;
+            lx.X2 = cx + axx * handleLen; lx.Y2 = cy + axy * handleLen;
+            lx.StrokeThickness = (_dragAxis == 0 && _dragCaptured) ? 3 : 2;
+            Draw2DArrowHead(_axisHeads[0], lx.X2, lx.Y2, axx, axy);
+
+            ly.Visibility = Visibility.Visible;
+            ly.X1 = cx; ly.Y1 = cy;
+            ly.X2 = cx + ayx * handleLen; ly.Y2 = cy + ayy * handleLen;
+            ly.StrokeThickness = (_dragAxis == 1 && _dragCaptured) ? 3 : 2;
+            Draw2DArrowHead(_axisHeads[1], ly.X2, ly.Y2, ayx, ayy);
+
+            cx0.Visibility = Visibility.Visible;   // center = free move
+            Canvas.SetLeft(cx0, cx - 4);
+            Canvas.SetTop(cx0, cy - 4);
+        }
+    }
+
     private void TryStartGizmoDrag(double sx, double sy)
     {
         var selected = VM?.SelectedEntity;
@@ -1403,17 +1535,7 @@ public partial class ViewportView : UserControl, IDisposable
         // 2D 模式：仅平移，直接在屏幕平面拖动（1 世界单位 ≈ 1 像素）
         if (_is2DMode)
         {
-            _dragAxis = 0;
-            _dragMode = "Translate2D";
-            _dragStartScreenX = sx;
-            _dragStartScreenY = sy;
-            _gizmoScreenX = center.X;
-            _gizmoScreenY = center.Y;
-            _dragStartPosX = pos.X; _dragStartPosY = pos.Y; _dragStartPosZ = pos.Z;
-            EntityAPI.GEntity_GetLocalScale(selected.Handle, out var scl2);
-            _dragStartScaleX = scl2.X; _dragStartScaleY = scl2.Y; _dragStartScaleZ = scl2.Z;
-            EntityAPI.GEntity_GetLocalRotation(selected.Handle, out _dragStartRot);
-            _dragCaptured = true;
+            Start2DGizmoDrag(sx, sy);
             return;
         }
 
@@ -1470,6 +1592,74 @@ public partial class ViewportView : UserControl, IDisposable
             (sx - center.X) * (sx - center.X) + (sy - center.Y) * (sy - center.Y));
     }
 
+    private void Start2DGizmoDrag(double sx, double sy)
+    {
+        var selected = VM?.SelectedEntity;
+        if (selected == null || VM == null) return;
+        if (EntityAPI.GEntity_GetLocalPosition(selected.Handle, out var pos) != 0) return;
+
+        var px = GetPixelSize();
+        double cx = px.W * 0.5 + (pos.X - _2dCenterX) * _2dZoom;
+        double cy = px.H * 0.5 + (pos.Y - _2dCenterY) * _2dZoom;
+        double handleLen = Clamp(Math.Min(px.W, px.H) * 0.16, 50, 140);
+        double theta = Local2DTheta();
+        double axx = Math.Cos(theta), axy = Math.Sin(theta);
+        double ayx = -Math.Sin(theta), ayy = Math.Cos(theta);
+
+        string mode = VM.GizmoMode;
+        int hitAxis = -1;
+        const double best = 18.0;
+
+        if (mode == "Rotate")
+        {
+            var ring = _axisRings[2];
+            if (ring.Points.Count > 0)
+            {
+                for (int k = 0; k < ring.Points.Count; k += 2)
+                {
+                    var p = ring.Points[k];
+                    double d = Math.Sqrt((p.X - sx) * (p.X - sx) + (p.Y - sy) * (p.Y - sy));
+                    if (d < best) hitAxis = 2;
+                }
+            }
+        }
+        else if (mode == "Scale")
+        {
+            if (PointInBox(sx, sy, cx, cy, 12)) hitAxis = 2;                        // center = uniform
+            else if (PointInBox(sx, sy, cx + axx * handleLen, cy + axy * handleLen, 12)) hitAxis = 0;
+            else if (PointInBox(sx, sy, cx + ayx * handleLen, cy + ayy * handleLen, 12)) hitAxis = 1;
+        }
+        else // Translate
+        {
+            if (PointInBox(sx, sy, cx, cy, 12)) hitAxis = 2;                        // center = free move
+            else
+            {
+                double d0 = PointSegmentDistance(sx, sy, cx, cy,
+                                                 cx + axx * handleLen, cy + axy * handleLen);
+                double d1 = PointSegmentDistance(sx, sy, cx, cy,
+                                                 cx + ayx * handleLen, cy + ayy * handleLen);
+                if (d0 < d1 && d0 < best) hitAxis = 0;
+                else if (d1 < best) hitAxis = 1;
+            }
+        }
+        if (hitAxis < 0) return;
+
+        _dragAxis = hitAxis;
+        _dragMode = mode == "Rotate" ? "Rotate2D"
+                  : mode == "Scale" ? "Scale2D"
+                  : hitAxis == 2 ? "Translate2D" : "Translate2DAxis";
+        _dragStartScreenX = sx;
+        _dragStartScreenY = sy;
+        _gizmoScreenX = cx;
+        _gizmoScreenY = cy;
+        _dragStartPosX = pos.X; _dragStartPosY = pos.Y; _dragStartPosZ = pos.Z;
+        EntityAPI.GEntity_GetLocalScale(selected.Handle, out var scl);
+        _dragStartScaleX = scl.X; _dragStartScaleY = scl.Y; _dragStartScaleZ = scl.Z;
+        EntityAPI.GEntity_GetLocalRotation(selected.Handle, out _dragStartRot);
+        _dragStartScreenDist = Math.Sqrt((sx - cx) * (sx - cx) + (sy - cy) * (sy - cy));
+        _dragCaptured = true;
+    }
+
     private void UpdateGizmoDrag(double sx, double sy)
     {
         var selected = VM?.SelectedEntity;
@@ -1477,15 +1667,88 @@ public partial class ViewportView : UserControl, IDisposable
         var px = GetPixelSize();
         var cam = _sceneCamera;
 
-        if (_dragMode == "Translate2D")
+        if (_dragMode == "Translate2D" || _dragMode == "Translate2DAxis")
         {
-            double nx = _dragStartPosX + (sx - _dragStartScreenX) / _2dZoom;
-            double ny = _dragStartPosY + (sy - _dragStartScreenY) / _2dZoom;
+            double nx, ny;
+            if (_dragMode == "Translate2D")
+            {
+                nx = _dragStartPosX + (sx - _dragStartScreenX) / _2dZoom;
+                ny = _dragStartPosY + (sy - _dragStartScreenY) / _2dZoom;
+            }
+            else
+            {
+                double theta = (VM?.IsGizmoLocal ?? false)
+                    ? 2.0 * Math.Atan2(_dragStartRot.Z, _dragStartRot.W)
+                    : 0.0;
+                double a2x = _dragAxis == 0 ? Math.Cos(theta) : -Math.Sin(theta);
+                double a2y = _dragAxis == 0 ? Math.Sin(theta) : Math.Cos(theta);
+                double along = (sx - _dragStartScreenX) * a2x + (sy - _dragStartScreenY) * a2y;
+                double delta2d = along / _2dZoom;
+                nx = _dragStartPosX + a2x * delta2d;
+                ny = _dragStartPosY + a2y * delta2d;
+            }
             lock (_gizmoApplyLock)
             {
                 _gizmoApplyEntity = selected.Handle;
                 _gizmoApplyPos = new GVec3((float)nx, (float)ny, (float)_dragStartPosZ);
                 _gizmoApplyMask |= 1;
+                _gizmoApplyDirty = true;
+            }
+            return;
+        }
+
+        if (_dragMode == "Rotate2D")
+        {
+            // Rotate around Z by the mouse's angular displacement on screen.
+            double currentAngle = Math.Atan2(sy - _gizmoScreenY, sx - _gizmoScreenX);
+            double startAngle = Math.Atan2(_dragStartScreenY - _gizmoScreenY, _dragStartScreenX - _gizmoScreenX);
+            double angle = currentAngle - startAngle;
+            var result = MulQuat(QuatAxisAngle(0.0, 0.0, 1.0, angle), _dragStartRot);
+            lock (_gizmoApplyLock)
+            {
+                _gizmoApplyEntity = selected.Handle;
+                _gizmoApplyRot = result;
+                _gizmoApplyMask |= 2;
+                _gizmoApplyDirty = true;
+            }
+            return;
+        }
+
+        if (_dragMode == "Scale2D")
+        {
+            double theta = (VM?.IsGizmoLocal ?? false)
+                ? 2.0 * Math.Atan2(_dragStartRot.Z, _dragStartRot.W)
+                : 0.0;
+            double axx = Math.Cos(theta), axy = Math.Sin(theta);
+            double ayx = -Math.Sin(theta), ayy = Math.Cos(theta);
+            var sc = new GVec3((float)_dragStartScaleX, (float)_dragStartScaleY, (float)_dragStartScaleZ);
+            if (_dragAxis == 2)
+            {
+                // Center handle: uniform scale from the radial screen distance.
+                double curDist = Math.Sqrt((sx - _gizmoScreenX) * (sx - _gizmoScreenX) +
+                                           (sy - _gizmoScreenY) * (sy - _gizmoScreenY));
+                double factor = _dragStartScreenDist > 1e-6 ? curDist / _dragStartScreenDist : 1.0;
+                factor = Math.Max(factor, 0.05);
+                sc.X = (float)(_dragStartScaleX * factor);
+                sc.Y = (float)(_dragStartScaleY * factor);
+            }
+            else
+            {
+                double a2x = _dragAxis == 0 ? axx : ayx;
+                double a2y = _dragAxis == 0 ? axy : ayy;
+                double along = (sx - _dragStartScreenX) * a2x + (sy - _dragStartScreenY) * a2y;
+                double handleLen = Clamp(Math.Min(px.W, px.H) * 0.16, 50, 140);
+                double handleWorld = handleLen / _2dZoom;
+                double factor = handleWorld > 1e-6 ? 1.0 + (along / _2dZoom) / handleWorld : 1.0;
+                factor = Math.Max(factor, 0.05);
+                if (_dragAxis == 0) sc.X = (float)(_dragStartScaleX * factor);
+                else sc.Y = (float)(_dragStartScaleY * factor);
+            }
+            lock (_gizmoApplyLock)
+            {
+                _gizmoApplyEntity = selected.Handle;
+                _gizmoApplyScale = sc;
+                _gizmoApplyMask |= 4;
                 _gizmoApplyDirty = true;
             }
             return;
