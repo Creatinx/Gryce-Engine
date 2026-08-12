@@ -15,3 +15,7 @@ set_target_properties(GryceGC PROPERTIES
 )
 target_include_directories(GryceGC PRIVATE ${CMAKE_SOURCE_DIR}/core)
 target_link_libraries(GryceGC PRIVATE GryceCore)
+# SHA-256/SHA-512 for the gdata package key (Windows CNG / bcrypt.dll).
+if(WIN32)
+    target_link_libraries(GryceGC PRIVATE bcrypt)
+endif()

@@ -2,9 +2,11 @@
 //
 // Packages a game project's res:// content into one or more .gpkg resource
 // archives (GPAK format) and assembles a standalone game directory:
-//   * the template executable (GryceGame),
-//   * the core runtime DLLs,
-//   * the game content as *.gpkg archives (no raw res/ directory copy).
+//   <out>/<name>/<name>.exe         template executable
+//   <out>/<name>/runtime/           core runtime DLLs
+//   <out>/<name>/assets/*.gpkg      game content archives (no raw res/ copy)
+//   <out>/<name>/gdata              package metadata: source-file records,
+//                                   a 64-byte SHA-512 key, author info
 //
 // The archives are written by GryceCore's GPackWriter through its C API
 // (GCore_PackCreate / GCore_PackAddFile / GCore_PackWrite), so the on-disk
@@ -23,14 +25,23 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -151,9 +162,155 @@ bool copy_file_if_exists(const fs::path& src_dir, const std::string& name,
     return true;
 }
 
+#if defined(_WIN32)
+// Hex-encode a digest through the Windows CNG (bcrypt.dll) provider.
+std::string cng_hash_hex(LPCWSTR algorithm, const void* data, size_t len,
+                         size_t digest_bytes) {
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    if (BCryptOpenAlgorithmProvider(&alg, algorithm, nullptr, 0) != 0) return "";
+    std::string digest(digest_bytes, '\0');
+    const NTSTATUS rc = BCryptHash(alg, nullptr, 0,
+                                   reinterpret_cast<PUCHAR>(const_cast<void*>(data)),
+                                   static_cast<ULONG>(len),
+                                   reinterpret_cast<PUCHAR>(digest.data()),
+                                   static_cast<ULONG>(digest.size()));
+    BCryptCloseAlgorithmProvider(alg, 0);
+    if (rc != 0) return "";
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(digest.size() * 2);
+    for (unsigned char c : digest) {
+        out.push_back(kHex[c >> 4]);
+        out.push_back(kHex[c & 0xF]);
+    }
+    return out;
+}
+#endif
+
+std::string sha256_hex(const void* data, size_t len) {
+#if defined(_WIN32)
+    return cng_hash_hex(BCRYPT_SHA256_ALGORITHM, data, len, 32);
+#else
+    (void)data; (void)len;
+    return "";
+#endif
+}
+
+std::string sha512_hex(const void* data, size_t len) {
+#if defined(_WIN32)
+    return cng_hash_hex(BCRYPT_SHA512_ALGORITHM, data, len, 64);
+#else
+    (void)data; (void)len;
+    return "";
+#endif
+}
+
+std::string read_file_bytes(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out.push_back(c);
+                }
+        }
+    }
+    return out;
+}
+
+// Writes the package metadata file "gdata": records every source file that
+// was packaged (path + SHA-256 + size), a 64-byte SHA-512 key derived from
+// the source records, and author/project metadata.
+bool write_gdata(const fs::path& out_dir, const std::string& name,
+                 const std::string& author,
+                 const std::vector<FileEntry>& files) {
+    std::string records;   // sorted "path:size:sha256" lines -> key input
+    std::ostringstream sources;
+    sources << "\"sources\": [";
+    bool first = true;
+    for (const FileEntry& file : files) {
+        const std::string bytes = read_file_bytes(file.source_path);
+        const std::string digest = sha256_hex(bytes.data(), bytes.size());
+        if (digest.empty()) {
+            std::cerr << "[grycegc] ERROR: failed to hash " << file.internal_path << "\n";
+            return false;
+        }
+        records += file.internal_path + ":" +
+                   std::to_string(fs::file_size(file.source_path)) + ":" +
+                   digest + "\n";
+        if (!first) sources << ", ";
+        first = false;
+        sources << "{\"path\": \"" << json_escape(file.internal_path)
+                << "\", \"sha256\": \"" << digest
+                << "\", \"size\": " << fs::file_size(file.source_path) << "}";
+    }
+    sources << "]";
+
+    // 64-byte key: SHA-512 over the source-file records.
+    const std::string key = sha512_hex(records.data(), records.size());
+    if (key.empty()) {
+        std::cerr << "[grycegc] ERROR: failed to derive gdata key\n";
+        return false;
+    }
+
+    std::time_t now = std::time(nullptr);
+    char created[64] = {};
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    std::strftime(created, sizeof(created), "%Y-%m-%dT%H:%M:%S", &local);
+
+    std::ostringstream gdata;
+    gdata << "{\n"
+          << "  \"format\": \"gryce_gdata\",\n"
+          << "  \"version\": 1,\n"
+          << "  \"project\": \"" << json_escape(name) << "\",\n"
+          << "  \"author\": \"" << json_escape(author) << "\",\n"
+          << "  \"created\": \"" << created << "\",\n"
+          << "  \"tool\": \"grycegc\",\n"
+          << "  \"key_sha512_hex\": \"" << key << "\",\n"   // 64 bytes, hex-encoded
+          << "  " << sources.str() << "\n"
+          << "}\n";
+
+    std::ofstream out(out_dir / "gdata", std::ios::binary);
+    if (!out) {
+        std::cerr << "[grycegc] ERROR: failed to write " << (out_dir / "gdata") << "\n";
+        return false;
+    }
+    out << gdata.str();
+    std::printf("[grycegc] gdata: 64-byte SHA-512 key + %zu source records, author '%s'\n",
+                files.size(), author.c_str());
+    return out.good();
+}
+
 bool copy_runtime(const fs::path& bin_dir, bool debug, const fs::path& out_dir,
                   const fs::path& exe, const std::string& name,
                   std::vector<std::string>& copied) {
+    const fs::path runtime_dir = out_dir / "runtime";
+    std::error_code ec;
+    fs::create_directories(runtime_dir, ec);
+
     const std::string suffix = debug ? "d" : "";
     const std::vector<std::string> cores = {
         "GryceCore" + suffix + ".dll",
@@ -173,7 +330,7 @@ bool copy_runtime(const fs::path& bin_dir, bool debug, const fs::path& out_dir,
             }
         }
         const std::string dst_name = src.filename().string();
-        fs::copy_file(src, out_dir / dst_name, fs::copy_options::overwrite_existing, ec);
+        fs::copy_file(src, runtime_dir / dst_name, fs::copy_options::overwrite_existing, ec);
         if (ec) {
             std::cerr << "[grycegc] ERROR: failed to copy " << src << ": " << ec.message() << "\n";
             return false;
@@ -183,7 +340,7 @@ bool copy_runtime(const fs::path& bin_dir, bool debug, const fs::path& out_dir,
     // GLFW: MSVC Debug builds use glfw3d.dll; MinGW uses plain glfw3.dll.
     bool glfw_ok = false;
     for (const char* glfw : {"glfw3d.dll", "glfw3.dll"}) {
-        if (copy_file_if_exists(bin_dir, glfw, out_dir, copied)) {
+        if (copy_file_if_exists(bin_dir, glfw, runtime_dir, copied)) {
             glfw_ok = true;
             break;
         }
@@ -193,10 +350,9 @@ bool copy_runtime(const fs::path& bin_dir, bool debug, const fs::path& out_dir,
     }
     // MinGW runtime DLLs (self-contained packages; harmless to include).
     for (const char* rt : {"libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"}) {
-        copy_file_if_exists(bin_dir, rt, out_dir, copied);
+        copy_file_if_exists(bin_dir, rt, runtime_dir, copied);
     }
 
-    std::error_code ec;
     fs::copy_file(exe, out_dir / (name + ".exe"), fs::copy_options::overwrite_existing, ec);
     if (ec) {
         std::cerr << "[grycegc] ERROR: failed to copy " << exe << ": " << ec.message() << "\n";
@@ -255,6 +411,7 @@ void print_usage(const char* argv0) {
         "  --build-dir <dir> CMake build directory (default: build)\n"
         "  --config <cfg>    Debug or Release (default: Release)\n"
         "  --out <dir>       output parent directory (default: build/game)\n"
+        "  --author <name>   author stored in gdata (default: %USERNAME%)\n"
         "  --single          pack everything into one <name>.gpkg\n",
         argv0);
 }
@@ -263,7 +420,7 @@ void print_usage(const char* argv0) {
 
 int main(int argc, char* argv[]) {
     std::string project, name = "MyGame", build_dir = "build", config = "Release",
-                out = "build/game";
+                out = "build/game", author;
     bool single = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -284,6 +441,8 @@ int main(int argc, char* argv[]) {
             if (const char* v = need("--config")) config = v;
         } else if (arg == "--out") {
             if (const char* v = need("--out")) out = v;
+        } else if (arg == "--author") {
+            if (const char* v = need("--author")) author = v;
         } else if (arg == "--single") {
             single = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -321,8 +480,10 @@ int main(int argc, char* argv[]) {
 
     const fs::path out_dir = fs::path(out) / name;
     fs::create_directories(out_dir, ec);
+    const fs::path assets_dir = out_dir / "assets";
+    fs::create_directories(assets_dir, ec);
 
-    // 1) Runtime: exe + core DLLs (same layout as before, no res/ copy).
+    // 1) Runtime: exe at the output root, core DLLs under runtime/.
     std::vector<std::string> copied;
     if (!copy_runtime(bin_dir, debug, out_dir, exe, name, copied)) {
         return 1;
@@ -345,15 +506,24 @@ int main(int argc, char* argv[]) {
     size_t total_entries = 0;
     for (const auto& [key, members] : bundles) {
         const std::string suffix = single ? "" : "." + key;
-        const fs::path bundle_path = out_dir / (name + suffix + ".gpkg");
+        const fs::path bundle_path = assets_dir / (name + suffix + ".gpkg");
         if (!write_bundle(members, bundle_path, total_entries)) {
             return 1;
         }
     }
 
+    // 3) gdata: source-file records + 64-byte SHA-512 key + author metadata.
+    if (author.empty()) {
+        const char* user = std::getenv("USERNAME");
+        author = (user && user[0]) ? user : "Unknown";
+    }
+    if (!write_gdata(out_dir, name, author, files)) {
+        return 1;
+    }
+
     std::printf("[grycegc] packaged %s -> %s\n", name.c_str(), out_dir.string().c_str());
-    std::printf("[grycegc] exe + %zu runtime DLLs + %zu resources in %zu .gpkg archive(s)\n",
-                copied.size(), total_entries, bundles.size());
+    std::printf("[grycegc] %s.exe + runtime/%zu DLLs + assets/%zu .gpkg (%zu resources) + gdata\n",
+                name.c_str(), copied.size(), bundles.size(), total_entries);
     std::printf("[grycegc] run with: %s (project root defaults to exe dir)\n",
                 (out_dir / (name + ".exe")).string().c_str());
     return 0;

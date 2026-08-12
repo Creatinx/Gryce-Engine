@@ -92,17 +92,30 @@ Core 初始化 → 物理挂载 → Platform 创建窗口 → Renderer → 播�
 
 ```bat
 build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame ^
-    --build-dir build --config Release --out build/game
+    --build-dir build --config Release --out build/game --author "Your Name"
 ```
 
-输出 `build/game/MyGame/`：`MyGame.exe` + 核心 DLL + `*.gpkg`（场景、脚本、着色器、资源；无 `res/` 目录）。
+输出 `build/game/MyGame/`（无 `res/` 目录）：
+
+```text
+MyGame.exe            游戏入口（对核心 DLL 延迟加载，从 runtime/ 解析）
+runtime/              核心运行时 DLL（GryceCore / Renderer / Platform / Physics / glfw）
+assets/*.gpkg         资源包（GPAK 格式，场景、脚本、着色器、模型、纹理等）
+gdata                 包元数据：源文件记录（path + SHA-256 + size）、
+                      64 字节 SHA-512 密钥（key_sha512_hex）、作者/项目/时间
+```
+
+`gdata` 中的密钥由打包的源文件记录派生（SHA-512，64 字节，hex 编码 128 字符），
+可用于校验包内容是否被改动；作者等信息通过 `--author` 传入（默认取 `%USERNAME%`）。
 
 ### 5.3 运行
 
 ```bat
 cd build/game/MyGame
-MyGame.exe --project res --scene res:/scenes/main.gesc
+MyGame.exe
+MyGame.exe --scene res:/scenes/script_test.gesc   # 覆盖主场景
 ```
 
-注意：`--project` 指向打包后的 `res/` 目录（`res:/` 以它为根）。编辑器菜单
-「文件 → 打包运行（GryceGC）」会自动完成打包并启动。
+项目根默认取 exe 所在目录（`res:/` 以它为根），Core 启动时自动挂载
+`assets/` 下的 `.gpkg`，并进入主场景（`project_settings.json` 的 `main_scene`）。
+编辑器菜单「文件 → 打包运行（GryceGC）」会自动完成打包。

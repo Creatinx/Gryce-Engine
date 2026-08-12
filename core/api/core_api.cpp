@@ -44,14 +44,19 @@ namespace {
 // resources can be read from packaged archives (GryceGC output).
 void mount_project_bundles(const std::string& root) {
     if (root.empty()) return;
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
-        if (!entry.is_regular_file(ec)) continue;
-        const std::string ext = entry.path().extension().string();
-        if (ext == ".gpack" || ext == ".gpkg") {
-            const int id = assets::AssetManager::instance().mount_bundle(entry.path().string());
-            GLOG_INFO("GCore: mounted resource bundle '{}' (id={})",
-                      entry.path().string(), id);
+    // GryceGC puts the archives under <root>/assets/; older layouts placed
+    // them directly in the project root, so scan both.
+    const std::vector<std::string> dirs = {root, root + "/assets"};
+    for (const std::string& dir : dirs) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (!entry.is_regular_file(ec)) continue;
+            const std::string ext = entry.path().extension().string();
+            if (ext == ".gpack" || ext == ".gpkg") {
+                const int id = assets::AssetManager::instance().mount_bundle(entry.path().string());
+                GLOG_INFO("GCore: mounted resource bundle '{}' (id={})",
+                          entry.path().string(), id);
+            }
         }
     }
 }

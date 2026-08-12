@@ -52,6 +52,21 @@ void enter_play_mode() {
 } // namespace
 
 int main(int argc, char* argv[]) {
+#if defined(_WIN32)
+    // GryceGC output layout puts the runtime DLLs in the "runtime" subfolder
+    // next to the exe; the core DLLs are delay-loaded so the search path can
+    // be extended here before the first engine call. Falls back to the exe
+    // directory automatically when "runtime" does not exist. Resolve against
+    // the exe directory (not the CWD) so the game works from any working dir.
+    wchar_t exe_buf[MAX_PATH + 1] = {};
+    const DWORD exe_len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
+    if (exe_len > 0 && exe_len < MAX_PATH) {
+        const std::filesystem::path runtime_dir =
+            std::filesystem::path(exe_buf).parent_path() / "runtime";
+        SetDllDirectoryW(runtime_dir.c_str());
+    }
+#endif
+
     argv0_override = argv[0];
     std::string project = default_project_root();
     const char* scene = "res:/scenes/main.gesc";

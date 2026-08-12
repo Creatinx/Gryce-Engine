@@ -33,9 +33,13 @@ public partial class PackageResultDialog : Window
         if (string.IsNullOrEmpty(_outputDir) || !Directory.Exists(_outputDir)) return;
         try
         {
+            // Start explorer.exe directly (not through ShellExecute): the
+            // shell can take a long time to answer when Explorer is busy, and
+            // this opens the folder window immediately.
             Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_outputDir}\"")
             {
-                UseShellExecute = true
+                UseShellExecute = false,
+                CreateNoWindow = true
             });
         }
         catch { /* ignore */ }
