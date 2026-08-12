@@ -17,6 +17,7 @@ public partial class PackageDialog : Window
     private readonly string _engineRoot;
     private readonly string _projectRoot;
     private bool _running;
+    private string? _toolConfig;
 
     /// <summary>Console/log lines produced while packaging.</summary>
     public List<string> OutputLines { get; } = new();
@@ -36,6 +37,60 @@ public partial class PackageDialog : Window
         _engineRoot = engineRoot;
         _projectRoot = projectRoot;
         OutputDirBox.Text = Path.Combine(engineRoot, "build", "game");
+    }
+
+    /// <summary>Locates grycegc.exe in the engine build output. Prefers the
+    /// config matching the editor build (Debug when the editor is a Debug
+    /// build), falls back to the other config.</summary>
+    private string? FindGryceGCTool()
+    {
+        bool editorDebug = AppDomain.CurrentDomain.BaseDirectory.Contains("Debug");
+        string[] candidates = editorDebug
+            ? new[] { "Debug", "Release" }
+            : new[] { "Release", "Debug" };
+        foreach (string config in candidates)
+        {
+            string exe = Path.Combine(_engineRoot, "build", "bin", config, "grycegc.exe");
+            if (File.Exists(exe))
+            {
+                _toolConfig = config;
+                return exe;
+            }
+        }
+        return null;
+    }
+
+    private async System.Threading.Tasks.Task<bool> BuildGryceGCToolAsync(string config)
+    {
+        StatusText.Text = $"Building GryceGC ({config})...";
+        var psi = new ProcessStartInfo("cmake")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            Arguments =
+                $"--build \"{Path.Combine(_engineRoot, "build")}\" " +
+                $"--target GryceGC --config {config}"
+        };
+        try
+        {
+            using var proc = Process.Start(psi);
+            if (proc == null) return false;
+            string output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            foreach (string raw in output.Split('\n'))
+            {
+                string line = raw.TrimEnd('\r');
+                if (!string.IsNullOrWhiteSpace(line)) LogLine("cmake: " + line.Trim());
+            }
+            return proc.ExitCode == 0 && FindGryceGCTool() != null;
+        }
+        catch (Exception ex)
+        {
+            LogLine("cmake failed: " + ex.Message);
+            return false;
+        }
     }
 
     private void OnBrowseClick(object sender, RoutedEventArgs e)
@@ -69,20 +124,33 @@ public partial class PackageDialog : Window
             return;
         }
 
-        string tool = Path.Combine(_engineRoot, "build", "bin", "Release", "grycegc.exe");
-        if (!File.Exists(tool))
+        string? tool = FindGryceGCTool();
+        if (tool == null)
         {
-            StatusText.Text = LocalizationService.Instance.T("package.tool_missing");
-            return;
+            // Not built yet: compile the GryceGC target first (Debug or
+            // Release depending on the editor build), then continue.
+            _running = true;
+            SetBusy(true);
+            bool built = await BuildGryceGCToolAsync(
+                AppDomain.CurrentDomain.BaseDirectory.Contains("Debug") ? "Debug" : "Release");
+            _running = false;
+            SetBusy(false);
+            tool = FindGryceGCTool();
+            if (!built || tool == null)
+            {
+                StatusText.Text = LocalizationService.Instance.T("package.tool_missing");
+                return;
+            }
         }
 
         _running = true;
         SetBusy(true);
-        StatusText.Text = LocalizationService.Instance.T("package.packing");
+        StatusText.Text = LocalizationService.Instance.T("package.packing") +
+                          $" ({_toolConfig})";
 
         string args =
             $"--project \"{_projectRoot}\" --name \"{name}\" " +
-            $"--build-dir \"{Path.Combine(_engineRoot, "build")}\" --config Release " +
+            $"--build-dir \"{Path.Combine(_engineRoot, "build")}\" --config {_toolConfig} " +
             $"--out \"{outDir}\"";
         LogLine($"Package: {tool} {args}");
 

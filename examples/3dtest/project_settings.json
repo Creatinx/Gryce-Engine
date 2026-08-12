@@ -1,1 +1,1 @@
-{"render_api":"opengl","hdr":true,"tone_map_mode":1,"exposure":1,"shadow_enabled":true,"shadow_map_size":2048,"ambient_r":0.15,"ambient_g":0.15,"ambient_b":0.15,"ibl_intensity":1}
+{"render_api":"opengl","hdr":true,"tone_map_mode":1,"exposure":1,"shadow_enabled":true,"shadow_map_size":2048,"ambient_r":0.15,"ambient_g":0.15,"ambient_b":0.15,"ibl_intensity":1,"main_scene":"res:/scenes/main.gesc"}

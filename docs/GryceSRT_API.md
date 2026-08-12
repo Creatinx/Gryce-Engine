@@ -33,6 +33,27 @@ function on_destroy() end        -- 组件移除/场景关闭/重载前调用
 | | `engine.input.mouse_down(button)` | 鼠标键是否按住（0=左，1=右，2=中） |
 | 时间 | `engine.time.delta()` / `engine.time.elapsed()` | 帧时间 / 累计运行时间（秒） |
 | 日志 | `engine.log.info/warn/error(msg)` | 输出到引擎日志/编辑器控制台 |
+| 场景 | `engine.scene.load(path)` | 切换到指定场景（`res:/...`），经命令队列延迟到本帧结束后生效；返回 `0` 成功 / `-1` 失败 |
+| | `engine.scene.current()` | 当前场景的 `res:/` 路径；无场景时返回 `nil` |
+
+## 2.1 主场景（Main Scene）
+
+Core 增加“主场景”概念：游戏启动时自动进入主场景。
+
+- 主场景配置：`project_settings.json` 的 `"main_scene"` 字段（如 `"main_scene":"res:/scenes/main.gesc"`），缺省为 `res:/scenes/main.gesc`。
+- 游戏入口（GryceGame 模板）在 `GCore_Init` 前调用 `GCore_SetAutoLoadMainScene(true)`，Core 初始化完成后自动加载主场景；命令行 `--scene <path>` 可覆盖。
+- 编辑器不自动加载主场景（不调用该 setter，默认为 false），由编辑器自己管理场景。
+- 运行中切换场景用 Lua：`engine.scene.load("res:/scenes/xxx.gesc")`。
+
+示例（在脚本里按下某个键切换到另一个场景）：
+
+```lua
+function on_update(dt)
+    if engine.input.key_down(32) then          -- Space
+        engine.scene.load("res:/scenes/level2.gesc")
+    end
+end
+```
 
 ## 3. 暴露属性（props）
 

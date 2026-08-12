@@ -1,5 +1,6 @@
 #include "script/lua_runtime.h"
 
+#include "GryceCore/types.h"
 #include "api/internal_state.h"
 #include "components/transform.h"
 #include "ecs/world.h"
@@ -17,6 +18,7 @@ extern "C" {
 }
 #include "utils/glog/glog_lib.h"
 
+#include <cstring>
 #include <fstream>
 #include <sstream>
 
@@ -370,6 +372,44 @@ const luaL_Reg kInputLib[] = {
     {nullptr, nullptr}
 };
 
+// engine.scene.load(path) -> 0 on success, -1 on failure.
+// The switch is deferred through the command buffer so it happens after the
+// current frame's world update (safe to call from on_update).
+int l_scene_load(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    if (!path || !path[0]) {
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    if (!gryce_core::g_core_state.initialized || !gryce_core::g_core_state.world) {
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    GCommand cmd{};
+    cmd.type = ECMD_LOAD_SCENE;
+    std::strncpy(reinterpret_cast<char*>(cmd.payload), path, GCMD_PAYLOAD_SIZE - 1);
+    const bool ok = gryce_core::g_core_state.cmdbuf.push(cmd);
+    lua_pushinteger(L, ok ? 0 : -1);
+    return 1;
+}
+
+// engine.scene.current() -> res:/ path of the active scene, or nil.
+int l_scene_current(lua_State* L) {
+    const std::string& p = gryce_core::g_core_state.current_scene_path;
+    if (p.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushstring(L, p.c_str());
+    }
+    return 1;
+}
+
+const luaL_Reg kSceneLib[] = {
+    {"load", l_scene_load},
+    {"current", l_scene_current},
+    {nullptr, nullptr}
+};
+
 } // namespace
 
 LuaRuntime& LuaRuntime::instance() {
@@ -464,6 +504,10 @@ void LuaRuntime::register_engine_bindings() {
     lua_newtable(L_);
     luaL_setfuncs(L_, kInputLib, 0);
     lua_setfield(L_, -2, "input");
+
+    lua_newtable(L_);
+    luaL_setfuncs(L_, kSceneLib, 0);
+    lua_setfield(L_, -2, "scene");
 
     luaL_setfuncs(L_, kEngineLib, 0);
     lua_pop(L_, 1);

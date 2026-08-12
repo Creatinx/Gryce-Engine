@@ -55,12 +55,13 @@ int main(int argc, char* argv[]) {
     argv0_override = argv[0];
     std::string project = default_project_root();
     const char* scene = "res:/scenes/main.gesc";
+    bool scene_override = false;
     int width = 1280;
     int height = 720;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--project") == 0 && i + 1 < argc) project = argv[++i];
-        else if (std::strcmp(argv[i], "--scene") == 0 && i + 1 < argc) scene = argv[++i];
+        else if (std::strcmp(argv[i], "--scene") == 0 && i + 1 < argc) { scene = argv[++i]; scene_override = true; }
         else if (std::strcmp(argv[i], "--w") == 0 && i + 1 < argc) width = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--h") == 0 && i + 1 < argc) height = std::atoi(argv[++i]);
     }
@@ -69,6 +70,10 @@ int main(int argc, char* argv[]) {
     core_desc.version = sizeof(GCoreInitDesc);
     core_desc.project_root = project.c_str();
     core_desc.enable_reflection = true;
+    // The core enters the project's main scene (project_settings.json
+    // "main_scene", default res:/scenes/main.gesc) right after startup unless
+    // an explicit --scene override is given.
+    GCore_SetAutoLoadMainScene(!scene_override);
     if (GCore_Init(&core_desc) != 0) {
         std::fprintf(stderr, "[game] GCore_Init failed\n");
         return 1;
@@ -100,7 +105,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    if (GScene_Load(scene) != 0) {
+    if (scene_override && GScene_Load(scene) != 0) {
         std::fprintf(stderr, "[game] failed to load scene %s\n", scene);
     }
     enter_play_mode();

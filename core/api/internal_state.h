@@ -39,6 +39,10 @@ struct GlobalState {
 
     bool play_mode = false;
     bool paused = false;
+    // Game entry (GryceGame): when true, GCore_Init loads the project's main
+    // scene right after startup. Set via GCore_SetAutoLoadMainScene; the
+    // editor leaves it false and manages scenes itself.
+    bool auto_load_main_scene = false;
     // Play Mode 进入时保存的场景快照（JSON）；Stop 时据此恢复场景。
     std::string play_snapshot_json;
     GEntityHandle selected_entity = 0;

@@ -1,4 +1,5 @@
 #include "GryceCore/core_api.h"
+#include "GryceCore/scene_api.h"
 #include "GryceCore/api_guard.h"
 #include "internal_state.h"
 
@@ -20,11 +21,14 @@
 #include "script/lua_runtime.h"
 #include "utils/glog/glog_lib.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstddef>
 #include <chrono>
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 
 using namespace gryce_engine;
@@ -49,6 +53,25 @@ void mount_project_bundles(const std::string& root) {
             GLOG_INFO("GCore: mounted resource bundle '{}' (id={})",
                       entry.path().string(), id);
         }
+    }
+}
+
+// Read the project's project_settings.json and apply the fields the core
+// owns (currently the main scene; render settings are owned by the editor).
+void load_project_settings(const std::string& root) {
+    if (root.empty()) return;
+    try {
+        std::ifstream in(root + "/project_settings.json");
+        if (!in) return;
+        nlohmann::json j;
+        in >> j;
+        if (j.contains("main_scene") && j["main_scene"].is_string()) {
+            Project::instance().set_main_scene(j["main_scene"].get<std::string>());
+            GLOG_INFO("GCore: main scene set to '{}'",
+                      Project::instance().main_scene());
+        }
+    } catch (const std::exception& e) {
+        GLOG_WARN("GCore: failed to read project_settings.json ({})", e.what());
     }
 }
 
@@ -497,6 +520,7 @@ int GCore_Init(const GCoreInitDesc* desc) {
     // (scenes, shaders, scripts, assets) resolve from packaged archives
     // produced by GryceGC. Files on disk still take precedence at load time.
     mount_project_bundles(Project::instance().root());
+    load_project_settings(Project::instance().root());
 
     components::register_builtin_components();
 
@@ -518,7 +542,23 @@ int GCore_Init(const GCoreInitDesc* desc) {
     script::LuaRuntime::instance().init();
 
     gryce_core::g_core_state.initialized = true;
+
+    // Game entry (GryceGame template): enter the project's main scene right
+    // after startup. The editor leaves the flag off and manages scenes itself.
+    if (gryce_core::g_core_state.auto_load_main_scene) {
+        const std::string main_scene = Project::instance().main_scene();
+        if (GScene_Load(main_scene.c_str()) != 0) {
+            GLOG_ERROR("GCore_Init: failed to load main scene '{}'", main_scene);
+        } else {
+            GLOG_INFO("GCore: main scene loaded '{}'", main_scene);
+        }
+    }
     return 0;
+}
+
+void GCore_SetAutoLoadMainScene(bool enable) {
+    GRYCE_API_GUARD();
+    gryce_core::g_core_state.auto_load_main_scene = enable;
 }
 
 void GCore_Shutdown(void) {
