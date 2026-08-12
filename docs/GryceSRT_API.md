@@ -70,11 +70,11 @@ Core 初始化 → 物理挂载 → Platform 创建窗口 → Renderer → 播�
 ### 5.2 打包
 
 ```bat
-python tools/grycegc.py --project examples/3dtest --name MyGame ^
+build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame ^
     --build-dir build --config Release --out build/game
 ```
 
-输出 `build/game/MyGame/`：`MyGame.exe` + 核心 DLL + `res/`（场景、脚本、资源）。
+输出 `build/game/MyGame/`：`MyGame.exe` + 核心 DLL + `*.gpkg`（场景、脚本、着色器、资源；无 `res/` 目录）。
 
 ### 5.3 运行
 

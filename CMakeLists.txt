@@ -100,6 +100,9 @@ add_subdirectory(core)
 option(GRYCE_BUILD_GAME_TEMPLATE "Build the standalone game template (GryceSPC)" ON)
 add_subdirectory(templates)
 
+# GryceGC: C++ resource packager (GryceSPC packaging tool)
+add_subdirectory(tools/grycegc)
+
 if(GRYCE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

@@ -154,14 +154,19 @@ public partial class MainWindow
                 return;
             }
 
-            string script = Path.Combine(engineRoot, "tools", "grycegc.py");
+            string tool = Path.Combine(engineRoot, "build", "bin", "Release", "grycegc.exe");
+            if (!File.Exists(tool))
+            {
+                VM?.AppendConsole("Package: grycegc.exe not found (build the grycegc target first).");
+                return;
+            }
             string args =
-                $"\"{script}\" --project \"{projectRoot}\" --name MyGame " +
+                $"--project \"{projectRoot}\" --name MyGame " +
                 $"--build-dir \"{Path.Combine(engineRoot, "build")}\" --config Release " +
                 $"--out \"{Path.Combine(engineRoot, "build", "game")}\"";
 
             VM?.AppendConsole($"Package: {args}");
-            var psi = new ProcessStartInfo("python")
+            var psi = new ProcessStartInfo(tool)
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -187,11 +192,12 @@ public partial class MainWindow
                 string gameExe = Path.Combine(engineRoot, "build", "game", "MyGame", "MyGame.exe");
                 if (File.Exists(gameExe))
                 {
+                    string gameDir = Path.GetDirectoryName(gameExe) ?? engineRoot;
                     Process.Start(new ProcessStartInfo(gameExe)
                     {
-                        WorkingDirectory = Path.GetDirectoryName(gameExe) ?? engineRoot,
+                        WorkingDirectory = gameDir,
                         UseShellExecute = true,
-                        Arguments = $"--project \"{Path.Combine(Path.GetDirectoryName(gameExe) ?? engineRoot, "res")}\""
+                        Arguments = $"--project \"{gameDir}\""
                     });
                 }
             }
