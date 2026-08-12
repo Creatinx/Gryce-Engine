@@ -322,8 +322,11 @@ public class EditorViewModel : INotifyPropertyChanged
                 RefreshHierarchy();
                 RefreshInspector();
                 OnPropertyChanged(nameof(EntityCount));
-                int rc = SceneAPI.GScene_Load("res:/scenes/editor_default.gesc");
+                // Default to the project's main scene (project_settings.json
+                // "main_scene"), with the legacy scenes as fallbacks.
+                int rc = SceneAPI.GScene_Load(ProjectSettingsService.Load().MainScene);
                 if (rc != 0) rc = SceneAPI.GScene_Load("res:/scenes/main.gesc");
+                if (rc != 0) rc = SceneAPI.GScene_Load("res:/scenes/editor_default.gesc");
                 if (rc != 0) SceneAPI.GScene_New();
                 AppendConsole($"Project switched: {root}");
             });

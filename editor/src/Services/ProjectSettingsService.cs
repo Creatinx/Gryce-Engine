@@ -15,6 +15,7 @@ public static class ProjectSettingsService
     public sealed class ProjectSettings
     {
         public string RenderApi { get; set; } = "vulkan"; // "vulkan" | "opengl"（重启生效）
+        public string MainScene { get; set; } = "res:/scenes/main.gesc";
         public bool Hdr { get; set; } = true;
         public int ToneMapMode { get; set; } = 1;   // 0=None, 1=Reinhard, 2=ACES
         public float Exposure { get; set; } = 1.0f;
@@ -45,6 +46,7 @@ public static class ProjectSettingsService
             if (!File.Exists(ProjectPath)) return s;
             string json = File.ReadAllText(ProjectPath);
             s.RenderApi = ReadString(json, "render_api") ?? "vulkan";
+            s.MainScene = ReadString(json, "main_scene") ?? "res:/scenes/main.gesc";
             s.Hdr = ReadBool(json, "hdr") ?? true;
             s.ToneMapMode = ReadInt(json, "tone_map_mode") ?? 1;
             s.Exposure = ReadFloat(json, "exposure") ?? 1.0f;
@@ -68,6 +70,7 @@ public static class ProjectSettingsService
         {
             string json =
                 "{\"render_api\":\"" + Escape(s.RenderApi) + "\"" +
+                ",\"main_scene\":\"" + Escape(s.MainScene) + "\"" +
                 ",\"hdr\":" + (s.Hdr ? "true" : "false") +
                 ",\"tone_map_mode\":" + s.ToneMapMode +
                 ",\"exposure\":" + F(s.Exposure) +

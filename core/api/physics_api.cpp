@@ -54,19 +54,21 @@ int GPhysics_Init(GPhysicsBackend backend) {
 
     g_physics.backend = backend;
 
-    const char* name = (backend == GPHYSICS_BACKEND_BOX2D) ? "box2d" : "jolt";
-
-    // Create 3D world
-    g_physics.world_3d = create_physics_world_3d(name);
-    if (g_physics.world_3d) {
-        if (!g_physics.world_3d->init()) {
-            GLOG_WARN("GPhysics_Init: 3D world init failed");
-            g_physics.world_3d.reset();
+    // 3D world: Jolt (only meaningful for the JOLT backend; a Box2D-only
+    // request must not spam an "unknown backend" error for 3D).
+    if (backend == GPHYSICS_BACKEND_JOLT) {
+        g_physics.world_3d = create_physics_world_3d("jolt");
+        if (g_physics.world_3d) {
+            if (!g_physics.world_3d->init()) {
+                GLOG_WARN("GPhysics_Init: 3D world init failed");
+                g_physics.world_3d.reset();
+            }
         }
     }
 
-    // Create 2D world
-    g_physics.world_2d = create_physics_world_2d(name);
+    // 2D world: always Box2D (the only 2D backend). Requesting 'jolt' for 2D
+    // would log a confusing "unknown backend 'jolt'" error on every startup.
+    g_physics.world_2d = create_physics_world_2d("box2d");
     if (g_physics.world_2d) {
         if (!g_physics.world_2d->init()) {
             GLOG_WARN("GPhysics_Init: 2D world init failed");
@@ -75,7 +77,8 @@ int GPhysics_Init(GPhysicsBackend backend) {
     }
 
     g_physics.initialized = true;
-    GLOG_INFO("GPhysics_Init: backend={}", name);
+    GLOG_INFO("GPhysics_Init: backend={}",
+              (backend == GPHYSICS_BACKEND_BOX2D) ? "box2d" : "jolt");
     return 0;
 }
 
