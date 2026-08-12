@@ -1031,6 +1031,33 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnWindowKeyDown(object sender, KeyEventArgs e)
     {
         _heldKeys.Add(e.Key);
+
+        // Script (code editor) tab active: keep the editor shortcuts working
+        // even when the WebView2 child does not currently hold keyboard focus
+        // (e.g. right after clicking the tab). When the WebView has focus the
+        // keys never reach WPF, so there is no double-handling.
+        if (_scriptMode && !e.Handled)
+        {
+            var mods = Keyboard.Modifiers;
+            if ((mods & ModifierKeys.Control) != 0)
+            {
+                if (e.Key == Key.Z)
+                {
+                    e.Handled = true;
+                    ScriptCommand((mods & ModifierKeys.Shift) != 0 ? "redo" : "undo");
+                }
+                else if (e.Key == Key.Y)
+                {
+                    e.Handled = true;
+                    ScriptCommand("redo");
+                }
+                else if (e.Key == Key.S)
+                {
+                    e.Handled = true;
+                    ScriptCommand("saveRequest");
+                }
+            }
+        }
     }
 
     private void OnWindowKeyUp(object sender, KeyEventArgs e)
@@ -1735,6 +1762,35 @@ public partial class ViewportView : UserControl, IDisposable
         EnterScriptMode(_currentScriptPath);
     }
 
+    // === Script-tab toolbar (undo / redo / save -> Monaco) ===
+
+    private void OnScriptUndoClick(object sender, RoutedEventArgs e) => ScriptCommand("undo");
+    private void OnScriptRedoClick(object sender, RoutedEventArgs e) => ScriptCommand("redo");
+    private void OnScriptSaveClick(object sender, RoutedEventArgs e) => ScriptCommand("saveRequest");
+
+    /// <summary>Forwards an editor command to the Monaco instance in the
+    /// WebView2 script tab ("undo", "redo" or "saveRequest").</summary>
+    private void ScriptCommand(string cmd)
+    {
+        try
+        {
+            if (ScriptWebView.CoreWebView2 == null) return;
+            ScriptWebView.Focus();
+            if (cmd == "saveRequest")
+            {
+                ScriptWebView.CoreWebView2.ExecuteScriptAsync(
+                    "window.chrome.webview.postMessage(" +
+                    "{ cmd: 'save', text: window.gryceEditor.getContent() });");
+            }
+            else
+            {
+                ScriptWebView.CoreWebView2.ExecuteScriptAsync(
+                    "window.gryceEditor && window.gryceEditor." + cmd + "();");
+            }
+        }
+        catch { /* webview not ready */ }
+    }
+
     private void EnterScriptMode(string? path)
     {
         _scriptMode = true;
@@ -1745,9 +1801,22 @@ public partial class ViewportView : UserControl, IDisposable
         // 代码编辑器里不显示场景编辑器工具：顶栏右侧的显示模式/分辨率、
         // 底部信息栏，以及悬浮的 Gizmo 覆盖窗口。
         UpdateSceneToolsVisible(false);
+        UpdateScriptToolsVisible(true);
         _overlay?.Hide();
         ScriptModeChanged?.Invoke(false);
         LoadScriptFile(path);
+        // Keep keyboard focus inside Monaco so Ctrl+Z / Ctrl+Y / Ctrl+S edit
+        // the script text immediately after switching to the Script tab.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                ScriptWebView.Focus();
+                ScriptWebView.CoreWebView2?.ExecuteScriptAsync(
+                    "window.gryceEditor && window.gryceEditor.focus();");
+            }
+            catch { /* webview not ready yet */ }
+        }), DispatcherPriority.Input);
     }
 
     private void ShowRenderSurface()
@@ -1756,6 +1825,7 @@ public partial class ViewportView : UserControl, IDisposable
         ScriptWebView.Visibility = Visibility.Collapsed;
         HostContainer.Visibility = Visibility.Visible;
         UpdateSceneToolsVisible(true);
+        UpdateScriptToolsVisible(false);
         if (_overlay != null && !_overlay.Suppressed)
         {
             _overlay.Show();
@@ -1804,6 +1874,15 @@ public partial class ViewportView : UserControl, IDisposable
         if (ViewportInfoBar != null)
         {
             ViewportInfoBar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>Shows/hides the Script-tab toolbar (undo/redo/save).</summary>
+    private void UpdateScriptToolsVisible(bool visible)
+    {
+        if (ScriptToolbar != null)
+        {
+            ScriptToolbar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 
@@ -1887,6 +1966,11 @@ public partial class ViewportView : UserControl, IDisposable
         try
         {
             ScriptWebView.CoreWebView2.PostWebMessageAsJson(payload);
+            // Keep keyboard focus inside Monaco so Ctrl+Z / Ctrl+Y edit the
+            // script text instead of falling through to the scene undo/redo.
+            ScriptWebView.Focus();
+            ScriptWebView.CoreWebView2.ExecuteScriptAsync(
+                "window.gryceEditor && window.gryceEditor.focus();");
         }
         catch { /* page not ready yet */ }
     }

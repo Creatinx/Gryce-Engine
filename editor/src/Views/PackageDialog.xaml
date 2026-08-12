@@ -1,0 +1,85 @@
+<Window x:Class="GryceEngine.Editor.Views.PackageDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
+        xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
+        ui:ThemeManager.IsThemeAware="True"
+        ui:WindowHelper.UseModernWindowStyle="True"
+        Title="{loc:Loc menu.package}"
+        Width="540" SizeToContent="Height"
+        MinWidth="480"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
+    <Grid Margin="20,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Platform -->
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="{loc:Loc package.platform}"
+                       FontSize="12.5" VerticalAlignment="Center"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <ComboBox Grid.Column="1" x:Name="PlatformBox" FontSize="12" Padding="6,4"
+                      HorizontalAlignment="Stretch">
+                <ComboBoxItem Content="{loc:Loc package.platform_windows}" IsSelected="True"/>
+                <ComboBoxItem Content="{loc:Loc package.platform_linux_note}" IsEnabled="False"/>
+            </ComboBox>
+        </Grid>
+
+        <!-- Game name -->
+        <Grid Grid.Row="1" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="{loc:Loc package.game_name}"
+                       FontSize="12.5" VerticalAlignment="Center"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <TextBox Grid.Column="1" x:Name="NameBox" FontSize="12" Padding="6,4"
+                     Text="MyGame"/>
+        </Grid>
+
+        <!-- Output directory -->
+        <Grid Grid.Row="2" Margin="0,0,0,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="{loc:Loc package.output_dir}"
+                       FontSize="12.5" VerticalAlignment="Center"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <TextBox Grid.Column="1" x:Name="OutputDirBox" FontSize="12" Padding="6,4"
+                     VerticalContentAlignment="Center"/>
+            <Button Grid.Column="2" Content="{loc:Loc common.browse}"
+                    MinWidth="72" MinHeight="30" FontSize="12"
+                    Margin="8,0,0,0" Click="OnBrowseClick"/>
+        </Grid>
+
+        <!-- Status / error -->
+        <TextBlock Grid.Row="3" x:Name="StatusText" FontSize="11.5" TextWrapping="Wrap"
+                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                   Margin="110,0,0,10"/>
+
+        <!-- Actions -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="CancelButton" Content="{loc:Loc common.cancel}"
+                    MinWidth="88" MinHeight="30" FontSize="12" Margin="0,0,8,0"
+                    IsCancel="True" Click="OnCancelClick"/>
+            <Button x:Name="PackButton" Content="{loc:Loc package.pack}"
+                    MinWidth="96" MinHeight="30" FontSize="12"
+                    Style="{StaticResource AccentButtonStyle}"
+                    IsDefault="True" Click="OnPackClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -80,6 +80,36 @@
                     </ToggleButton>
                 </StackPanel>
 
+                <!-- Script (code editor) tools: shown only while the Script tab
+                     is active; forwards undo/redo/save to Monaco. -->
+                <StackPanel Grid.Column="1" x:Name="ScriptToolbar"
+                            Orientation="Horizontal" Visibility="Collapsed"
+                            VerticalAlignment="Center" Margin="8,0,0,0">
+                    <Button x:Name="ScriptUndoBtn"
+                            Style="{StaticResource ToolbarButtonStyle}"
+                            Width="28" Height="24" Padding="0"
+                            FontFamily="Segoe MDL2 Assets" FontSize="11"
+                            ToolTip="{loc:Loc toolbar.undo}"
+                            Click="OnScriptUndoClick">
+                        <TextBlock Text="&#xE7A7;"/>
+                    </Button>
+                    <Button x:Name="ScriptRedoBtn"
+                            Style="{StaticResource ToolbarButtonStyle}"
+                            Width="28" Height="24" Padding="0"
+                            FontFamily="Segoe MDL2 Assets" FontSize="11"
+                            ToolTip="{loc:Loc toolbar.redo}"
+                            Click="OnScriptRedoClick">
+                        <TextBlock Text="&#xE7A6;"/>
+                    </Button>
+                    <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="4,2"/>
+                    <Button x:Name="ScriptSaveBtn"
+                            Content="{loc:Loc script_editor.save}"
+                            Style="{StaticResource ToolbarButtonStyle}"
+                            MinWidth="52" Height="24" FontSize="11"
+                            Margin="0,0,4,0"
+                            Click="OnScriptSaveClick"/>
+                </StackPanel>
+
                 <!-- Right: Display Mode + Resolution -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal"
                             x:Name="ViewportToolsRight"

@@ -154,52 +154,18 @@ public partial class MainWindow
                 return;
             }
 
-            string tool = Path.Combine(engineRoot, "build", "bin", "Release", "grycegc.exe");
-            if (!File.Exists(tool))
+            // Packaging setup dialog: platform + game name + output directory.
+            var dialog = new PackageDialog(engineRoot, projectRoot);
+            dialog.Log += line =>
             {
-                VM?.AppendConsole("Package: grycegc.exe not found (build the grycegc target first).");
-                return;
-            }
-            string args =
-                $"--project \"{projectRoot}\" --name MyGame " +
-                $"--build-dir \"{Path.Combine(engineRoot, "build")}\" --config Release " +
-                $"--out \"{Path.Combine(engineRoot, "build", "game")}\"";
-
-            VM?.AppendConsole($"Package: {args}");
-            var psi = new ProcessStartInfo(tool)
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                Arguments = args
+                if (VM != null) VM.AppendConsole(line);
             };
-            using var proc = Process.Start(psi);
-            if (proc == null)
+            if (ModalDialog.Show(dialog, this) == true && dialog.Succeeded)
             {
-                VM?.AppendConsole("Package: failed to start grycegc.");
-                return;
-            }
-            string output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
-            proc.WaitForExit();
-            foreach (var line in output.Split('\n'))
-            {
-                if (!string.IsNullOrWhiteSpace(line)) VM?.AppendConsole(line.TrimEnd());
-            }
-
-            if (proc.ExitCode == 0)
-            {
-                string gameExe = Path.Combine(engineRoot, "build", "game", "MyGame", "MyGame.exe");
-                if (File.Exists(gameExe))
-                {
-                    string gameDir = Path.GetDirectoryName(gameExe) ?? engineRoot;
-                    Process.Start(new ProcessStartInfo(gameExe)
-                    {
-                        WorkingDirectory = gameDir,
-                        UseShellExecute = true,
-                        Arguments = $"--project \"{gameDir}\""
-                    });
-                }
+                // Editor-styled success popup with OK / Cancel / Open Folder.
+                string message = Services.LocalizationService.Instance.T("package.success_msg");
+                var result = new PackageResultDialog(true, dialog.LastOutputDir, message);
+                ModalDialog.Show(result, this);
             }
         }
         catch (Exception ex)

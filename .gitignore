@@ -3,6 +3,7 @@ build/
 build_vs*/
 build_mingw_test/
 build_ninja_msvc/
+build_editor_check/
 cmake-build-*/
 out/
 x64/

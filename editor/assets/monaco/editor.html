@@ -98,12 +98,17 @@
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyZ, function () {
       editor.trigger('keyboard', 'redo', null);
     });
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY, function () {
+      editor.trigger('keyboard', 'redo', null);
+    });
 
     window.gryceEditor = {
       setContent: function (text) { editor.setValue(text || ''); dirty = false; },
       getContent: function () { return editor.getValue(); },
       isDirty: function () { return dirty; },
-      focus: function () { editor.focus(); }
+      focus: function () { editor.focus(); },
+      undo: function () { editor.trigger('keyboard', 'undo', null); },
+      redo: function () { editor.trigger('keyboard', 'redo', null); }
     };
 
     // Bridge with the WPF host.
@@ -112,6 +117,11 @@
         var data = e.data;
         if (!data) return;
         if (data.cmd === 'setContent') window.gryceEditor.setContent(data.content);
+        if (data.cmd === 'undo') window.gryceEditor.undo();
+        if (data.cmd === 'redo') window.gryceEditor.redo();
+        if (data.cmd === 'saveRequest') {
+          window.chrome.webview.postMessage({ cmd: 'save', text: window.gryceEditor.getContent() });
+        }
         if (data.cmd === 'getContent') {
           window.chrome.webview.postMessage({ cmd: 'content', text: window.gryceEditor.getContent() });
         }
