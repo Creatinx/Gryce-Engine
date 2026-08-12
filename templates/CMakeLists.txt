@@ -5,6 +5,11 @@ if(GRYCE_BUILD_GAME_TEMPLATE)
     set_target_properties(GryceGame PROPERTIES
         RUNTIME_OUTPUT_NAME GryceGame
         FOLDER "Game"
+        # Static CRT for the launcher: with GryceGC's runtime/ layout the exe
+        # starts before SetDllDirectory runs, so it must not import the
+        # dynamic CRT at process start. The engine DLLs keep the dynamic CRT,
+        # which the packaged game resolves from runtime/ via delay-load.
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     target_include_directories(GryceGame PRIVATE ${CMAKE_SOURCE_DIR}/core)
     target_link_libraries(GryceGame PRIVATE

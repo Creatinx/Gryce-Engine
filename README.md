@@ -190,7 +190,7 @@ build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame --build-di
 
 # 运行产物（无 res/ 目录）：
 #   <out>/<name>/MyGame.exe        游戏入口
-#   <out>/<name>/runtime/          核心运行时 DLL
+#   <out>/<name>/runtime/          核心运行时 DLL + MSVC/MinGW/GCC 运行时
 #   <out>/<name>/assets/*.gpkg     资源包（GPAK）
 #   <out>/<name>/gdata             包元数据（源文件记录 + 64 字节 SHA-512 密钥 + 作者）
 build/game/MyGame/MyGame.exe                                          # 项目根默认取 exe 所在目录

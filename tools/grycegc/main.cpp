@@ -213,6 +213,120 @@ std::string read_file_bytes(const fs::path& path) {
     return ss.str();
 }
 
+// Locate the directory that holds the MSVC CRT runtime DLLs for the given
+// configuration. Prefers the VS install recorded in the build's
+// CMakeCache.txt, then scans common VS install locations, and finally falls
+// back to System32 (the VC++ redistributable is present there on machines
+// that build with MSVC).
+fs::path find_msvc_crt_dir(const fs::path& build_dir, bool debug) {
+    std::vector<fs::path> installs;
+    std::error_code ec;
+
+    // 1) The VS generator instance recorded in the CMake cache.
+    std::ifstream cache(build_dir / "CMakeCache.txt");
+    if (cache) {
+        std::string line;
+        while (std::getline(cache, line)) {
+            const std::string key = "CMAKE_GENERATOR_INSTANCE:INTERNAL=";
+            if (line.rfind(key, 0) == 0) {
+                std::string v = line.substr(key.size());
+                if (!v.empty()) installs.push_back(v);
+                break;
+            }
+        }
+    }
+
+    // 2) Common VS install roots (VS2022/2026 + BuildTools).
+    for (const char* root : {
+             "C:\\Program Files\\Microsoft Visual Studio",
+             "C:\\Program Files (x86)\\Microsoft Visual Studio",
+             "D:\\Microsoft Visual Studio"}) {
+        std::error_code ec2;
+        for (const auto& edition : fs::directory_iterator(root, ec2)) {
+            if (!edition.is_directory()) continue;
+            for (const auto& inst : fs::directory_iterator(edition.path(), ec2)) {
+                if (inst.is_directory()) installs.push_back(inst.path());
+            }
+        }
+    }
+
+    const char* want = debug ? "vcruntime140d.dll" : "vcruntime140.dll";
+    fs::path best;
+    uint64_t best_version = 0;
+    for (const fs::path& inst : installs) {
+        std::error_code ec3;
+        const fs::path redist = inst / "VC" / "Redist" / "MSVC";
+        for (const auto& ver : fs::directory_iterator(redist, ec3)) {
+            if (!ver.is_directory()) continue;
+            uint64_t vnum = 0;
+            try {
+                vnum = std::stoull(ver.path().filename().string());
+            } catch (...) {
+                continue;
+            }
+            if (vnum < best_version) continue;
+            const fs::path arch_dir = debug
+                ? ver.path() / "debug_nonredist" / "x64"
+                : ver.path() / "x64";
+            std::error_code ec4;
+            for (const auto& pkg : fs::directory_iterator(arch_dir, ec4)) {
+                if (!pkg.is_directory()) continue;
+                const std::string name = pkg.path().filename().string();
+                const bool is_crt = debug
+                    ? name.find(".DebugCRT") != std::string::npos
+                    : name.find(".CRT") != std::string::npos;
+                if (!is_crt) continue;
+                if (fs::is_regular_file(pkg.path() / want, ec4)) {
+                    best = pkg.path();
+                    best_version = vnum;
+                }
+            }
+        }
+    }
+    if (!best.empty()) return best;
+
+    // 3) Fallback: System32 (the redistributable installed for the build).
+    return fs::path("C:\\Windows\\System32");
+}
+
+// Copy the MSVC CRT runtime DLLs into runtime/. The exact redistributable set
+// depends on the build's runtime usage; a superset of the common names is
+// attempted, missing files are skipped.
+bool copy_msvc_runtime(const fs::path& build_dir, bool debug,
+                       const fs::path& runtime_dir,
+                       std::vector<std::string>& copied) {
+    const fs::path src_dir = find_msvc_crt_dir(build_dir, debug);
+    static const std::vector<std::string> kRelease = {
+        "vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll",
+        "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+        "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",
+        "concrt140.dll", "vccorlib140.dll", "vcomp140.dll",
+    };
+    static const std::vector<std::string> kDebug = {
+        "vcruntime140d.dll", "vcruntime140_1d.dll", "vcruntime140_threadsd.dll",
+        "msvcp140d.dll", "msvcp140_1d.dll", "msvcp140_2d.dll",
+        "msvcp140_atomic_waitd.dll", "msvcp140_codecvt_idsd.dll",
+        "concrt140d.dll", "vccorlib140d.dll", "vcomp140d.dll",
+    };
+    const std::vector<std::string>& names = debug ? kDebug : kRelease;
+    size_t found = 0;
+    for (const std::string& dll : names) {
+        std::error_code ec;
+        const fs::path src = src_dir / dll;
+        if (!fs::is_regular_file(src, ec)) continue;
+        fs::copy_file(src, runtime_dir / dll, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime " << src << "\n";
+            return false;
+        }
+        copied.push_back(dll);
+        ++found;
+    }
+    std::printf("[grycegc] MSVC %s runtime: %zu DLL(s) from %s\n",
+                debug ? "Debug" : "Release", found, src_dir.string().c_str());
+    return true;
+}
+
 std::string json_escape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -304,14 +418,15 @@ bool write_gdata(const fs::path& out_dir, const std::string& name,
     return out.good();
 }
 
-bool copy_runtime(const fs::path& bin_dir, bool debug, const fs::path& out_dir,
-                  const fs::path& exe, const std::string& name,
+bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug,
+                  const fs::path& out_dir, const fs::path& exe, const std::string& name,
                   std::vector<std::string>& copied) {
     const fs::path runtime_dir = out_dir / "runtime";
     std::error_code ec;
     fs::create_directories(runtime_dir, ec);
 
     const std::string suffix = debug ? "d" : "";
+    bool mingw = false;
     const std::vector<std::string> cores = {
         "GryceCore" + suffix + ".dll",
         "GryceRenderer" + suffix + ".dll",
@@ -328,6 +443,7 @@ bool copy_runtime(const fs::path& bin_dir, bool debug, const fs::path& out_dir,
                 std::cerr << "[grycegc] warning: " << dll << " not found in " << bin_dir << "\n";
                 continue;
             }
+            mingw = true;
         }
         const std::string dst_name = src.filename().string();
         fs::copy_file(src, runtime_dir / dst_name, fs::copy_options::overwrite_existing, ec);
@@ -351,6 +467,13 @@ bool copy_runtime(const fs::path& bin_dir, bool debug, const fs::path& out_dir,
     // MinGW runtime DLLs (self-contained packages; harmless to include).
     for (const char* rt : {"libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"}) {
         copy_file_if_exists(bin_dir, rt, runtime_dir, copied);
+    }
+    // MSVC CRT runtime (release/debug per config). MinGW packages already
+    // carry their GCC runtime above; System32 is the fallback source.
+    if (!mingw) {
+        if (!copy_msvc_runtime(build_dir, debug, runtime_dir, copied)) {
+            return false;
+        }
     }
 
     fs::copy_file(exe, out_dir / (name + ".exe"), fs::copy_options::overwrite_existing, ec);
@@ -485,7 +608,7 @@ int main(int argc, char* argv[]) {
 
     // 1) Runtime: exe at the output root, core DLLs under runtime/.
     std::vector<std::string> copied;
-    if (!copy_runtime(bin_dir, debug, out_dir, exe, name, copied)) {
+    if (!copy_runtime(build_dir, bin_dir, debug, out_dir, exe, name, copied)) {
         return 1;
     }
 

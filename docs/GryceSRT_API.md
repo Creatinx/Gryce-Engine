@@ -100,6 +100,7 @@ build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame ^
 ```text
 MyGame.exe            游戏入口（对核心 DLL 延迟加载，从 runtime/ 解析）
 runtime/              核心运行时 DLL（GryceCore / Renderer / Platform / Physics / glfw）
+                      + MSVC/MinGW/GCC 运行时（vcruntime/msvcp140 或 libgcc/libstdc++ 等）
 assets/*.gpkg         资源包（GPAK 格式，场景、脚本、着色器、模型、纹理等）
 gdata                 包元数据：源文件记录（path + SHA-256 + size）、
                       64 字节 SHA-512 密钥（key_sha512_hex）、作者/项目/时间
