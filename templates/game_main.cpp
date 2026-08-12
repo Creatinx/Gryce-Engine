@@ -55,14 +55,37 @@ int main(int argc, char* argv[]) {
 #if defined(_WIN32)
     // GryceGC output layout puts the runtime DLLs in the "runtime" subfolder
     // next to the exe; the core DLLs are delay-loaded so the search path can
-    // be extended here before the first engine call. Falls back to the exe
-    // directory automatically when "runtime" does not exist. Resolve against
-    // the exe directory (not the CWD) so the game works from any working dir.
+    // be extended here before the first engine call.
     wchar_t exe_buf[MAX_PATH + 1] = {};
     const DWORD exe_len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
     if (exe_len > 0 && exe_len < MAX_PATH) {
-        const std::filesystem::path runtime_dir =
-            std::filesystem::path(exe_buf).parent_path() / "runtime";
+        const std::filesystem::path exe_dir = std::filesystem::path(exe_buf).parent_path();
+        const std::filesystem::path runtime_dir = exe_dir / "runtime";
+
+        // Prefer the SYSTEM VC++ runtime: pin it by loading it from System32
+        // explicitly. Once loaded, the delay-loaded engine DLLs bind to the
+        // system version instead of the bundled copy in runtime/ (an
+        // already-loaded module wins over the search path). If the system
+        // lacks the runtime these loads just fail, and the engine DLLs then
+        // resolve their CRT from runtime/ (the fallback below).
+        wchar_t sys_dir[MAX_PATH + 1] = {};
+        const UINT sys_len = GetSystemDirectoryW(sys_dir, MAX_PATH);
+        if (sys_len > 0 && sys_len < MAX_PATH) {
+            static const wchar_t* kCrtNames[] = {
+                L"vcruntime140.dll", L"vcruntime140_1.dll", L"vcruntime140_threads.dll",
+                L"msvcp140.dll", L"msvcp140_1.dll", L"msvcp140_2.dll",
+                L"concrt140.dll", L"vccorlib140.dll", L"vcomp140.dll",
+                L"vcruntime140d.dll", L"vcruntime140_1d.dll", L"vcruntime140_threadsd.dll",
+                L"msvcp140d.dll", L"msvcp140_1d.dll", L"msvcp140_2d.dll",
+                L"concrt140d.dll", L"vccorlib140d.dll", L"vcomp140d.dll",
+            };
+            for (const wchar_t* name : kCrtNames) {
+                const std::filesystem::path sys_crt = std::filesystem::path(sys_dir) / name;
+                LoadLibraryExW(sys_crt.c_str(), nullptr, 0);  // ignore: system may lack it
+            }
+        }
+
+        // Engine DLLs and (as a fallback) the CRT resolve from runtime/.
         SetDllDirectoryW(runtime_dir.c_str());
     }
 #endif

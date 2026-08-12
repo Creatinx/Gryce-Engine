@@ -100,7 +100,7 @@ build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame ^
 ```text
 MyGame.exe            游戏入口（对核心 DLL 延迟加载，从 runtime/ 解析）
 runtime/              核心运行时 DLL（GryceCore / Renderer / Platform / Physics / glfw）
-                      + MSVC/MinGW/GCC 运行时（vcruntime/msvcp140 或 libgcc/libstdc++ 等）
+                      + MSVC/MinGW/GCC 运行时（vcruntime/msvcp140 或 libgcc/libstdc++ 等，兜底用）
 assets/*.gpkg         资源包（GPAK 格式，场景、脚本、着色器、模型、纹理等）
 gdata                 包元数据：源文件记录（path + SHA-256 + size）、
                       64 字节 SHA-512 密钥（key_sha512_hex）、作者/项目/时间
@@ -120,3 +120,6 @@ MyGame.exe --scene res:/scenes/script_test.gesc   # 覆盖主场景
 项目根默认取 exe 所在目录（`res:/` 以它为根），Core 启动时自动挂载
 `assets/` 下的 `.gpkg`，并进入主场景（`project_settings.json` 的 `main_scene`）。
 编辑器菜单「文件 → 打包运行（GryceGC）」会自动完成打包。
+
+运行时加载策略：优先使用系统安装的 VC++ 运行时（System32）；系统缺失时，
+引擎 DLL 回退到 `runtime/` 里打包的运行时。
