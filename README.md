@@ -183,7 +183,7 @@ editor/bin/x64/<Config>/net48/
 
 ```powershell
 # 构建打包工具（随主构建一起生成 build/bin/<Config>/grycegc.exe）
-cmake --build build --target grycegc --config Release
+cmake --build build --target GryceGC --config Release
 
 # 打包（Debug/Release 均可）：不复制 res/，而是将资源按类别打包为多个 .gpkg
 build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame --build-dir build --config Release --out build/game
