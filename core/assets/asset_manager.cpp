@@ -14,6 +14,7 @@
 #include "assets/assimp_importer.h"
 #endif
 #include "resources/resource_path.h"
+#include "resources/project.h"
 #include "utils/glog/glog_lib.h"
 
 // stb_image 声明在 stb_image.h 中，实现集中在 core/assets/stb_image_impl.cpp
@@ -33,6 +34,51 @@ bool ends_with_ci(const std::string& str, const std::string& suffix) {
     std::transform(b.begin(), b.end(), b.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return a == b;
+}
+
+// Normalize a resource path to the internal bundle key form:
+//   * "res:/shaders/pbr.vert"      -> "shaders/pbr.vert"
+//   * "C:/game/shaders/pbr.vert"   -> "shaders/pbr.vert" (project root prefix)
+//   * "shaders\\pbr.vert"          -> "shaders/pbr.vert"
+std::string normalize_bundle_path(const std::string& path) {
+    std::string p = path;
+    const bool has_res_prefix =
+        p.size() >= 5 &&
+        (p[0] == 'r' || p[0] == 'R') &&
+        (p[1] == 'e' || p[1] == 'E') &&
+        (p[2] == 's' || p[2] == 'S') &&
+        p[3] == ':' && (p[4] == '/' || p[4] == '\\');
+    if (has_res_prefix) {
+        p = p.substr(5);
+    }
+    for (char& c : p) {
+        if (c == '\\') c = '/';
+    }
+    if (!has_res_prefix) {
+        // Absolute paths under the project root map to bundle entries too,
+        // e.g. "<root>/shaders/pbr.vert" -> "shaders/pbr.vert".
+        std::string root = resources::ResourcePath::resolve("res:/");
+        for (char& c : root) {
+            if (c == '\\') c = '/';
+        }
+        // Case-insensitive prefix check (Windows filesystems are case-insensitive).
+        const size_t root_len = root.size();
+        bool matches = root_len > 1 && p.size() >= root_len;
+        if (matches) {
+            for (size_t i = 0; i < root_len && matches; ++i) {
+                if (std::tolower(static_cast<unsigned char>(p[i])) !=
+                    std::tolower(static_cast<unsigned char>(root[i]))) {
+                    matches = false;
+                }
+            }
+        }
+        if (matches) {
+            p = p.substr(root.size());
+        }
+    }
+    while (!p.empty() && p.front() == '/') p.erase(p.begin());
+    while (p.rfind("./", 0) == 0) p.erase(0, 2);
+    return p;
 }
 
 } // namespace
@@ -511,10 +557,7 @@ void AssetManager::unmount_bundle(int id) {
 }
 
 std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) {
-    std::string internal_path = path;
-    if (internal_path.rfind("res:/", 0) == 0) {
-        internal_path = internal_path.substr(5);
-    }
+    std::string internal_path = normalize_bundle_path(path);
     if (internal_path.empty()) return "";
 
     for (auto& [id, bundle] : bundles_) {
@@ -546,6 +589,16 @@ std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) 
         return temp_path;
     }
     return "";
+}
+
+std::string AssetManager::resolve_for_reading(const std::string& path) {
+    std::string resolved = resources::ResourcePath::resolve(path);
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(resolved, ec)) {
+        return resolved;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    return extract_from_bundle_unlocked(path);
 }
 
 bool AssetManager::has_mesh(const std::string& path) const {

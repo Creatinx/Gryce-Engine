@@ -34,7 +34,7 @@
   - Prefab / Prefab Variant：嵌套、覆盖参数、还原模板、场景紧凑引用。
   - 2D 父链变换、`top_level` 脱离父链、`z_index` 参与绘制排序。
 - **资源管线**
-  - `AssetManager` 缓存 mesh / texture / material，引用计数 + LRU 卸载；`AsyncLoader` 异步加载；`.gpack` 资源包挂载。
+- `AssetManager` 缓存 mesh / texture / material，引用计数 + LRU 卸载；`AsyncLoader` 异步加载；`.gpack/.gpkg` 资源包挂载（GryceGC 打包产物，`GCore_Init` 自动挂载，真实文件优先、包内提取兜底）。
   - 模型：OBJ 内置加载器 + Assimp（FBX / glTF / DAE / PLY / STL）。
   - 纹理：PNG / JPG / BMP / DDS / KTX（BC1~BC7 / ASTC / ETC2）、立方体贴图、HDR/EXR；资源路径统一 UTF-8 处理，支持中文文件名。
   - 字体：TTF 动态图集（stb_truetype）；材质资源 `.gmat`、导入设置 `.gimport`。
@@ -178,6 +178,19 @@ build/Debug/bin/Debug/
 editor/bin/x64/<Config>/net48/
 └── GryceEngine.Editor.exe   # WPF 编辑器（CMake 构建时自动复制 4 个原生 DLL + glfw 到该目录）
 ```
+
+### 发布（GryceGC）
+
+```powershell
+# 打包（Debug/Release 均可）：不复制 res/，而是将资源按类别打包为多个 .gpkg
+python tools/grycegc.py --project examples/3dtest --name MyGame --build-dir build --config Release --out build/game
+
+# 运行产物（exe + 运行时 DLL + *.gpkg，无 res/ 目录）
+build/game/MyGame/MyGame.exe                                          # 项目根默认取 exe 所在目录
+build/game/MyGame/MyGame.exe --project build/game/MyGame --scene res:/scenes/main.gesc
+```
+
+GryceGC 通过 GryceCore 的 GPack C API（`GCore_PackCreate/AddFile/Write`）生成 GPAK 格式的 `.gpkg` 资源包；Core 启动时自动挂载项目根下所有 `.gpkg/.gpack`。着色器、场景、脚本、网格、纹理等加载管线统一走 `AssetManager::resolve_for_reading`：真实文件优先，包内提取兜底；shader 每次加载都会重新编译（无预编译缓存依赖）。
 
 ### 运行
 

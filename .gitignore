@@ -1,6 +1,8 @@
 # Build outputs
 build/
 build_vs*/
+build_mingw_test/
+build_ninja_msvc/
 cmake-build-*/
 out/
 x64/

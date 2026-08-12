@@ -231,6 +231,10 @@ unsafe
 | `void GCore_SetCallback_UserData(void* user_data)` | 设置回调 user_data | — |
 | `void GCore_RegisterCallback_On*(cb)` | 注册各类回调（见第 4 节） | — |
 | `int GCore_GetLogMessages(char* out_buf, int buf_size)` | 拉取内存日志（换行分隔） | 写入字节数；`-1` 参数无效 |
+| `GPackHandle GCore_PackCreate(void)` | 创建 GPack 资源包写入器（GryceGC 使用；格式与 `GPackReader` 一致） | 句柄；`NULL` 失败 |
+| `int GCore_PackAddFile(GPackHandle h, const char* internal_path, const char* source_path)` | 将 `source_path` 文件加入包内 `internal_path`（正斜杠、相对项目根） | `0` 成功；`-1` 失败 |
+| `int GCore_PackWrite(GPackHandle h, const char* output_path)` | 写出 `.gpkg`/`.gpack` 文件 | `0` 成功；`-1` 失败 |
+| `void GCore_PackDestroy(GPackHandle h)` | 释放写入器；可传 `NULL` | — |
 | `void* GCore_GetInternalWorldPtr(void)` | 内部 `ecs::World*`（仅供同进程其他模块 DLL 使用，如 `GPhysics_AttachSystems`） | 指针或 `NULL` |
 
 `GCoreInitDesc`：

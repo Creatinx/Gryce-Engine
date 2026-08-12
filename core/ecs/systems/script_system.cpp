@@ -1,6 +1,7 @@
 #include "ecs/systems/script_system.h"
 
 #include "components/script_component.h"
+#include "assets/asset_manager.h"
 #include "resources/resource_path.h"
 #include "scene/entity.h"
 #include "scene/scene.h"
@@ -73,7 +74,11 @@ bool ScriptSystem::load(components::ScriptComponent* comp) {
     comp->last_error.clear();
     comp->reported_error = false;
 
-    const std::string full = resources::ResourcePath::resolve(comp->script_path);
+    const std::string full = assets::AssetManager::instance().resolve_for_reading(comp->script_path);
+    if (full.empty()) {
+        comp->last_error = "cannot resolve script: " + comp->script_path;
+        return false;
+    }
     std::string src;
     auto it = source_cache_.find(comp->script_path);
     if (it != source_cache_.end()) {

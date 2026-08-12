@@ -56,6 +56,24 @@ GRYCE_CORE_API void GCore_RegisterCallback_OnLogMessage(GOnLogMessage cb);
 
 GRYCE_CORE_API int GCore_GetLogMessages(char* out_buf, int buf_size);
 
+// ---------------------------------------------------------------------------
+// GPack resource packaging (used by GryceGC; format shared with GPackReader).
+// ---------------------------------------------------------------------------
+typedef void* GPackHandle;
+
+// Create an empty resource pack writer. Returns NULL on failure.
+GRYCE_CORE_API GPackHandle GCore_PackCreate(void);
+
+// Add one file to the pack. internal_path uses forward slashes and is relative
+// to the project root (e.g. "scenes/main.gesc"). Returns 0 on success.
+GRYCE_CORE_API int GCore_PackAddFile(GPackHandle handle, const char* internal_path, const char* source_path);
+
+// Write the pack to output_path (must end in .gpkg/.gpack). Returns 0 on success.
+GRYCE_CORE_API int GCore_PackWrite(GPackHandle handle, const char* output_path);
+
+// Free the writer; safe to pass NULL.
+GRYCE_CORE_API void GCore_PackDestroy(GPackHandle handle);
+
 // 内部访问：供同进程其他 DLL 模块获取 World 指针（不透明，模块内部再 cast）
 GRYCE_CORE_API void* GCore_GetInternalWorldPtr(void);
 

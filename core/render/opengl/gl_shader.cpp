@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <system_error>
 
+#include "assets/asset_manager.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
 
@@ -350,8 +351,20 @@ bool GLShader::load_program(const std::string& name,
         dir += '/';
     }
 
-    std::string vertex_src = load_file_text(dir + name + ".vert");
-    std::string fragment_src = load_file_text(dir + name + ".frag");
+    // Prefer the res:/ form so shader sources can be read from mounted
+    // .gpack/.gpkg bundles; fall back to the resolved path for plain dirs.
+    auto load_shader_source = [&](const char* ext) {
+        std::string res_path = shader_dir;
+        if (!res_path.empty() && res_path.back() != '/') res_path += '/';
+        res_path += name;
+        res_path += ext;
+        std::string p = assets::AssetManager::instance().resolve_for_reading(res_path);
+        if (!p.empty()) return load_file_text(p);
+        return load_file_text(dir + name + ext);
+    };
+
+    std::string vertex_src = load_shader_source(".vert");
+    std::string fragment_src = load_shader_source(".frag");
     if (vertex_src.empty() || fragment_src.empty()) {
         GLOG_ERROR("GLShader::load_program: failed to load '{}.vert' or '{}.frag' from '{}'", name, name, dir);
         return false;

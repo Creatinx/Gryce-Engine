@@ -13,9 +13,34 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <thread>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace {
+
+// Set from argv[0] in main(); used as fallback when the platform API cannot
+// resolve the executable path.
+std::string argv0_override;
+
+// Default project root: the directory of the executable. With GryceGC output
+// the .gpkg archives live next to the .exe, so res:/ resolves from there even
+// when the game is launched by double-click (CWD may be anywhere).
+std::string default_project_root() {
+#if defined(_WIN32)
+    wchar_t buf[MAX_PATH + 1] = {};
+    const DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        std::filesystem::path p(buf);
+        return p.parent_path().string();
+    }
+#endif
+    std::filesystem::path p(argv0_override.empty() ? "." : argv0_override);
+    return std::filesystem::absolute(p).parent_path().string();
+}
 
 void enter_play_mode() {
     GCommand cmd{};
@@ -27,7 +52,8 @@ void enter_play_mode() {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    const char* project = ".";
+    argv0_override = argv[0];
+    std::string project = default_project_root();
     const char* scene = "res:/scenes/main.gesc";
     int width = 1280;
     int height = 720;
@@ -41,7 +67,7 @@ int main(int argc, char* argv[]) {
 
     GCoreInitDesc core_desc{};
     core_desc.version = sizeof(GCoreInitDesc);
-    core_desc.project_root = project;
+    core_desc.project_root = project.c_str();
     core_desc.enable_reflection = true;
     if (GCore_Init(&core_desc) != 0) {
         std::fprintf(stderr, "[game] GCore_Init failed\n");

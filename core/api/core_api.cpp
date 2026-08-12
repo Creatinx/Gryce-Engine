@@ -2,6 +2,7 @@
 #include "GryceCore/api_guard.h"
 #include "internal_state.h"
 
+#include "assets/asset_manager.h"
 #include "ecs/world.h"
 #include "ecs/systems/animator_system.h"
 #include "ecs/systems/fracture_system.h"
@@ -15,12 +16,15 @@
 #include "components/script_component.h"
 #include "components/component_factory.h"
 #include "resources/project.h"
+#include "resources/gpack_bundle.h"
 #include "script/lua_runtime.h"
 #include "utils/glog/glog_lib.h"
 
 #include <cstddef>
 #include <chrono>
 #include <cstring>
+#include <exception>
+#include <filesystem>
 #include <mutex>
 
 using namespace gryce_engine;
@@ -29,6 +33,26 @@ using gryce_engine::scene::Entity;
 using gryce_engine::scene::SceneSerializer;
 using gryce_engine::ecs::World;
 using gryce_engine::resources::Project;
+
+namespace {
+
+// Mount every .gpack/.gpkg bundle found in the project root so res:/
+// resources can be read from packaged archives (GryceGC output).
+void mount_project_bundles(const std::string& root) {
+    if (root.empty()) return;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
+        if (!entry.is_regular_file(ec)) continue;
+        const std::string ext = entry.path().extension().string();
+        if (ext == ".gpack" || ext == ".gpkg") {
+            const int id = assets::AssetManager::instance().mount_bundle(entry.path().string());
+            GLOG_INFO("GCore: mounted resource bundle '{}' (id={})",
+                      entry.path().string(), id);
+        }
+    }
+}
+
+} // namespace
 
 namespace gryce_core {
 
@@ -469,6 +493,11 @@ int GCore_Init(const GCoreInitDesc* desc) {
         Project::instance().set_root(desc->project_root);
     }
 
+    // Mount every .gpack/.gpkg bundle in the project root so res:/ resources
+    // (scenes, shaders, scripts, assets) resolve from packaged archives
+    // produced by GryceGC. Files on disk still take precedence at load time.
+    mount_project_bundles(Project::instance().root());
+
     components::register_builtin_components();
 
     gryce_core::g_core_state.world = std::make_unique<World>();
@@ -647,6 +676,55 @@ int GCore_GetLogMessages(char* out_buf, int buf_size) {
     }
     std::memcpy(out_buf, joined.c_str(), joined.size() + 1);
     return static_cast<int>(joined.size());
+}
+
+// ============================================================================
+// GPack packaging API (used by GryceGC to assemble .gpkg archives)
+// ============================================================================
+GPackHandle GCore_PackCreate(void) {
+    try {
+        auto* writer = new resources::GPackWriter();
+        return reinterpret_cast<GPackHandle>(writer);
+    } catch (const std::exception& e) {
+        GLOG_ERROR("GCore_PackCreate: failed ({})", e.what());
+        return nullptr;
+    } catch (...) {
+        GLOG_ERROR("GCore_PackCreate: unknown failure");
+        return nullptr;
+    }
+}
+
+int GCore_PackAddFile(GPackHandle handle, const char* internal_path, const char* source_path) {
+    if (!handle || !internal_path || !source_path) return -1;
+    try {
+        auto* writer = reinterpret_cast<resources::GPackWriter*>(handle);
+        return writer->add_file(internal_path, source_path) ? 0 : -1;
+    } catch (const std::exception& e) {
+        GLOG_ERROR("GCore_PackAddFile('{}'): failed ({})", internal_path, e.what());
+        return -1;
+    } catch (...) {
+        GLOG_ERROR("GCore_PackAddFile('{}'): unknown failure", internal_path);
+        return -1;
+    }
+}
+
+int GCore_PackWrite(GPackHandle handle, const char* output_path) {
+    if (!handle || !output_path) return -1;
+    try {
+        auto* writer = reinterpret_cast<resources::GPackWriter*>(handle);
+        return writer->write(output_path) ? 0 : -1;
+    } catch (const std::exception& e) {
+        GLOG_ERROR("GCore_PackWrite('{}'): failed ({})", output_path, e.what());
+        return -1;
+    } catch (...) {
+        GLOG_ERROR("GCore_PackWrite('{}'): unknown failure", output_path);
+        return -1;
+    }
+}
+
+void GCore_PackDestroy(GPackHandle handle) {
+    if (!handle) return;
+    delete reinterpret_cast<resources::GPackWriter*>(handle);
 }
 
 void* GCore_GetInternalWorldPtr(void) {

@@ -1,5 +1,7 @@
 #include "scene_serializer.h"
 
+#include "assets/asset_manager.h"
+
 #include <filesystem>
 #include <fstream>
 #include <unordered_map>
@@ -293,7 +295,11 @@ bool SceneSerializer::save_to_file(const Scene& scene, const std::string& path) 
 }
 
 std::unique_ptr<Scene> SceneSerializer::load_from_file(const std::string& path) {
-    std::string resolved = resources::ResourcePath::resolve(path);
+    std::string resolved = assets::AssetManager::instance().resolve_for_reading(path);
+    if (resolved.empty()) {
+        GLOG_ERROR("SceneSerializer: failed to resolve '{}'", path);
+        return nullptr;
+    }
     std::string content = read_file(resolved);
     if (content.empty()) {
         return nullptr;

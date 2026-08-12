@@ -84,6 +84,11 @@ public:
     int mount_bundle(const std::string& pack_path);
     void unmount_bundle(int id);
 
+    /// Returns a path that can be opened with std::ifstream: the real file
+    /// when it exists, otherwise a temp extraction from a mounted bundle.
+    /// Returns an empty string when the resource is not found.
+    std::string resolve_for_reading(const std::string& path);
+
 private:
     AssetManager() = default;
 
