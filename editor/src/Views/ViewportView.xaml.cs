@@ -31,6 +31,9 @@ public partial class ViewportView : UserControl, IDisposable
     private readonly object _cameraLock = new();
     private nint _renderHandle;
     private bool _rendererInitialized;
+    // Set once the embedded GLFW surface exists and the renderer is
+    // initialized; the render loop never touches GL before this is true.
+    private volatile bool _renderSurfaceReady;
     private GRenderAPI _renderApi;
     private volatile bool _isGameView;
     private volatile bool _windowMinimized;
@@ -308,6 +311,19 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnHwndCreated(object? sender, nint hwnd)
     {
+        // Re-creation guard: the UI thread must never re-run the platform /
+        // renderer init while the render thread owns the GL context (a second
+        // GWindow_InitExternal destroys the old context under the render
+        // thread and can hang it). With Visibility.Hidden the surface stays
+        // alive across the Script tab, so this normally fires only once; if a
+        // host rebuild still happens, re-attach the child instead of re-init.
+        if (_rendererInitialized)
+        {
+            VM?.AppendConsole("[Viewport] host HWND recreated; skipping renderer re-init");
+            _hwndHost?.ReattachGlfwChild();
+            return;
+        }
+
         var px = TryGetClientSize(hwnd, out int hw, out int hh)
             ? (W: hw, H: hh)
             : GetPixelSize();
@@ -354,6 +370,7 @@ public partial class ViewportView : UserControl, IDisposable
             }
 
             _rendererInitialized = true;
+            _renderSurfaceReady = true;
             NoRendererMessage.Visibility = Visibility.Collapsed;
             InitStatusText.Text = "Renderer initialized.";
             VM?.AppendConsole("[Viewport] Renderer initialized successfully");
@@ -468,6 +485,16 @@ public partial class ViewportView : UserControl, IDisposable
             WindowAPI.GWindow_SetSwapInterval(1);
             while (_renderThreadRunning)
             {
+                // Never touch GL before the embedded surface is ready (e.g.
+                // during startup or a rebuild): rendering on a destroyed or
+                // half-created context makes the driver stall and the
+                // viewport freeze.
+                if (!_renderSurfaceReady)
+                {
+                    System.Threading.Thread.Sleep(16);
+                    continue;
+                }
+
                 frameSw.Restart();
                 double now = sw.Elapsed.TotalSeconds;
                 double dt = Math.Min(now - lastTick, 0.05);
@@ -1794,7 +1821,12 @@ public partial class ViewportView : UserControl, IDisposable
     private void EnterScriptMode(string? path)
     {
         _scriptMode = true;
-        HostContainer.Visibility = Visibility.Collapsed;
+        // Hidden (not Collapsed): Collapsed destroys the HwndHost window and
+        // the embedded GLFW child together with its GL context, leaving the
+        // sleeping render thread holding a dead context. Hidden keeps the
+        // window alive (just not shown), so switching back resumes rendering
+        // without a destroy/recreate race.
+        HostContainer.Visibility = Visibility.Hidden;
         GizmoOverlay.Visibility = Visibility.Collapsed;
         ViewportOverlay.Visibility = Visibility.Collapsed;
         ScriptWebView.Visibility = Visibility.Visible;
@@ -1832,11 +1864,11 @@ public partial class ViewportView : UserControl, IDisposable
         }
         ScriptModeChanged?.Invoke(true);
 
-        // The embedded GLFW child was hidden (and may have been destroyed)
-        // while the render surface was collapsed behind the code editor.
-        // Vulkan swapchains can go stale even when the window survives, so
-        // force a full surface recreate there; for a healthy OpenGL child a
-        // render-target refresh (next-frame SetSize) is enough.
+        // The embedded GLFW child was hidden (not destroyed: the Script tab
+        // uses Visibility.Hidden so the window and GL context survive).
+        // Vulkan swapchains can still go stale while hidden, so force a full
+        // surface recreate there; for a healthy OpenGL child a render-target
+        // refresh (next-frame SetSize) is enough.
         if (_renderApi == GRenderAPI.Vulkan || !IsGlfwChildAlive())
         {
             _appliedPixelSize = default;
