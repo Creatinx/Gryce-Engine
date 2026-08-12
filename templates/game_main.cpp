@@ -14,13 +14,68 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <delayimp.h>
 #endif
 
 namespace {
+
+#if defined(_WIN32)
+// Appends a diagnostic line to <exe dir>/gryce_boot.log so a failing machine
+// reports what went wrong instead of dying silently.
+void write_boot_log(const std::wstring& exe_dir, const std::string& line) {
+    std::ofstream log(std::filesystem::path(exe_dir) / "gryce_boot.log", std::ios::app);
+    if (log) log << line << "\n";
+}
+
+// Delay-load failure hook: logs the missing DLL, tries <exe dir>/runtime as a
+// last resort, then shows the reason before the process terminates.
+extern "C" FARPROC WINAPI GryceDelayLoadHook(unsigned event, PDelayLoadInfo info) {
+    if (event != dliFailLoadLib || !info || !info->szDll) return nullptr;
+
+    wchar_t exe_buf[MAX_PATH + 1] = {};
+    std::wstring exe_dir;
+    if (GetModuleFileNameW(nullptr, exe_buf, MAX_PATH) > 0) {
+        exe_dir = std::filesystem::path(exe_buf).parent_path().wstring();
+    }
+    const std::string msg = std::string("delay-load failed: ") + info->szDll;
+    write_boot_log(exe_dir, msg);
+
+    // Last resort: resolve from <exe dir>/runtime even if the search path
+    // was not set up (e.g. the CRT preload failed on a bare machine).
+    if (!exe_dir.empty()) {
+        const int wide_len = MultiByteToWideChar(CP_ACP, 0, info->szDll, -1, nullptr, 0);
+        std::wstring wide(static_cast<size_t>(wide_len > 0 ? wide_len : 1), L'\0');
+        if (wide_len > 0) {
+            MultiByteToWideChar(CP_ACP, 0, info->szDll, -1, wide.data(), wide_len);
+            const std::wstring full = exe_dir + L"\\runtime\\" + wide;
+            HMODULE h = LoadLibraryExW(full.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+            if (h) return reinterpret_cast<FARPROC>(h);
+        }
+    }
+
+    MessageBoxW(nullptr,
+                (L"GryceGame failed to start:\n" +
+                 std::wstring(L"missing runtime DLL: ") +
+                 [&]() {
+                     std::wstring w;
+                     const int n = MultiByteToWideChar(CP_ACP, 0, info->szDll, -1, nullptr, 0);
+                     if (n > 0) {
+                         w.resize(n - 1);
+                         MultiByteToWideChar(CP_ACP, 0, info->szDll, -1, w.data(), n);
+                     }
+                     return w;
+                 }() + L"\nSee gryce_boot.log next to the game.").c_str(),
+                L"GryceGame", MB_OK | MB_ICONERROR);
+    return nullptr;
+}
+
+PfnDliHook __pfnDliFailureHook2 = GryceDelayLoadHook;
+#endif
 
 // Set from argv[0] in main(); used as fallback when the platform API cannot
 // resolve the executable path.
@@ -61,6 +116,10 @@ int main(int argc, char* argv[]) {
     if (exe_len > 0 && exe_len < MAX_PATH) {
         const std::filesystem::path exe_dir = std::filesystem::path(exe_buf).parent_path();
         const std::filesystem::path runtime_dir = exe_dir / "runtime";
+        write_boot_log(exe_dir.wstring(), "gryce_boot: exe_dir=" + exe_dir.string());
+        write_boot_log(exe_dir.wstring(),
+                       "gryce_boot: runtime dir exists=" +
+                       std::to_string(std::filesystem::is_directory(runtime_dir)));
 
         // Prefer the SYSTEM VC++ runtime: pin it by loading it from System32
         // explicitly. Once loaded, the delay-loaded engine DLLs bind to the
@@ -79,10 +138,13 @@ int main(int argc, char* argv[]) {
                 L"msvcp140d.dll", L"msvcp140_1d.dll", L"msvcp140_2d.dll",
                 L"concrt140d.dll", L"vccorlib140d.dll", L"vcomp140d.dll",
             };
+            int crt_loaded = 0;
             for (const wchar_t* name : kCrtNames) {
                 const std::filesystem::path sys_crt = std::filesystem::path(sys_dir) / name;
-                LoadLibraryExW(sys_crt.c_str(), nullptr, 0);  // ignore: system may lack it
+                if (LoadLibraryExW(sys_crt.c_str(), nullptr, 0)) ++crt_loaded;  // ignore failures
             }
+            write_boot_log(exe_dir.wstring(),
+                           "gryce_boot: system CRT DLLs loaded=" + std::to_string(crt_loaded));
         }
 
         // Engine DLLs and (as a fallback) the CRT resolve from runtime/.

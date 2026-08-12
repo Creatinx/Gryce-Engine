@@ -446,6 +446,14 @@ else()
     message(FATAL_ERROR "GLEW is required. Run: python tools/deps_manager.py download")
 endif()
 
+# OpenGL-only games must not require the Vulkan loader on the target machine:
+# delay-load vulkan-1.dll so the import is only resolved when the Vulkan
+# backend is actually used. (MSVC only; MinGW packages keep the hard import.)
+if(MSVC AND GRYCE_HAS_VULKAN)
+    target_link_options(GryceRenderer PRIVATE /DELAYLOAD:vulkan-1.dll)
+    target_link_libraries(GryceRenderer PRIVATE delayimp)
+endif()
+
 # ============================================================================
 # GrycePlatform.dll — Window、Input、Cursor
 # ============================================================================

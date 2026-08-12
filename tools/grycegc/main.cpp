@@ -289,39 +289,98 @@ fs::path find_msvc_crt_dir(const fs::path& build_dir, bool debug) {
     return fs::path("C:\\Windows\\System32");
 }
 
-// Copy the MSVC CRT runtime DLLs into runtime/. The exact redistributable set
-// depends on the build's runtime usage; a superset of the common names is
-// attempted, missing files are skipped.
+// Copy the MSVC CRT runtime DLLs into runtime/. When the VS redist folder is
+// found, all of its DLLs are copied (it contains exactly the redistributable
+// CRT set). Debug builds additionally need the debug Universal CRT
+// (ucrtbased.dll) from the Windows Kits / System32.
 bool copy_msvc_runtime(const fs::path& build_dir, bool debug,
                        const fs::path& runtime_dir,
                        std::vector<std::string>& copied) {
     const fs::path src_dir = find_msvc_crt_dir(build_dir, debug);
-    static const std::vector<std::string> kRelease = {
-        "vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll",
-        "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
-        "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",
-        "concrt140.dll", "vccorlib140.dll", "vcomp140.dll",
-    };
-    static const std::vector<std::string> kDebug = {
-        "vcruntime140d.dll", "vcruntime140_1d.dll", "vcruntime140_threadsd.dll",
-        "msvcp140d.dll", "msvcp140_1d.dll", "msvcp140_2d.dll",
-        "msvcp140_atomic_waitd.dll", "msvcp140_codecvt_idsd.dll",
-        "concrt140d.dll", "vccorlib140d.dll", "vcomp140d.dll",
-    };
-    const std::vector<std::string>& names = debug ? kDebug : kRelease;
     size_t found = 0;
-    for (const std::string& dll : names) {
+
+    // Prefer the VS redist folder: copy every DLL it contains.
+    bool from_redist = src_dir.filename() != fs::path("System32");
+    if (from_redist) {
         std::error_code ec;
-        const fs::path src = src_dir / dll;
-        if (!fs::is_regular_file(src, ec)) continue;
-        fs::copy_file(src, runtime_dir / dll, fs::copy_options::overwrite_existing, ec);
-        if (ec) {
-            std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime " << src << "\n";
-            return false;
+        for (const auto& entry : fs::directory_iterator(src_dir, ec)) {
+            if (!entry.is_regular_file(ec)) continue;
+            if (entry.path().extension() != ".dll") continue;
+            fs::copy_file(entry.path(), runtime_dir / entry.path().filename(),
+                          fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime "
+                          << entry.path() << "\n";
+                return false;
+            }
+            copied.push_back(entry.path().filename().string());
+            ++found;
         }
-        copied.push_back(dll);
-        ++found;
+    } else {
+        // System32 fallback: copy the common CRT names.
+        static const std::vector<std::string> kRelease = {
+            "vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll",
+            "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+            "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",
+            "concrt140.dll", "vccorlib140.dll", "vcomp140.dll",
+        };
+        static const std::vector<std::string> kDebug = {
+            "vcruntime140d.dll", "vcruntime140_1d.dll", "vcruntime140_threadsd.dll",
+            "msvcp140d.dll", "msvcp140_1d.dll", "msvcp140_2d.dll",
+            "msvcp140d_atomic_wait.dll", "msvcp140d_codecvt_ids.dll",
+            "concrt140d.dll", "vccorlib140d.dll", "vcomp140d.dll",
+        };
+        const std::vector<std::string>& names = debug ? kDebug : kRelease;
+        for (const std::string& dll : names) {
+            std::error_code ec;
+            const fs::path src = src_dir / dll;
+            if (!fs::is_regular_file(src, ec)) continue;
+            fs::copy_file(src, runtime_dir / dll, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime " << src << "\n";
+                return false;
+            }
+            copied.push_back(dll);
+            ++found;
+        }
     }
+
+    // Debug builds also need the debug Universal CRT (ucrtbased.dll), which
+    // lives in the Windows Kits (not the VC redist folder). System32 fallback.
+    if (debug) {
+        fs::path ucrt_src;
+        const fs::path kits = "C:\\Program Files (x86)\\Windows Kits\\10\\bin";
+        uint64_t best_version = 0;
+        std::error_code ec;
+        for (const auto& ver : fs::directory_iterator(kits, ec)) {
+            if (!ver.is_directory()) continue;
+            uint64_t vnum = 0;
+            try {
+                vnum = std::stoull(ver.path().filename().string());
+            } catch (...) {
+                continue;
+            }
+            const fs::path cand = ver.path() / "x64" / "ucrt" / "ucrtbased.dll";
+            if (fs::is_regular_file(cand, ec) && vnum > best_version) {
+                best_version = vnum;
+                ucrt_src = cand;
+            }
+        }
+        if (ucrt_src.empty()) ucrt_src = fs::path("C:\\Windows\\System32") / "ucrtbased.dll";
+        if (fs::is_regular_file(ucrt_src, ec)) {
+            fs::copy_file(ucrt_src, runtime_dir / "ucrtbased.dll",
+                          fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "[grycegc] ERROR: failed to copy ucrtbased.dll\n";
+                return false;
+            }
+            copied.push_back("ucrtbased.dll");
+            ++found;
+        } else {
+            std::cerr << "[grycegc] warning: ucrtbased.dll not found (Debug UCRT missing)\n";
+        }
+    }
+
     std::printf("[grycegc] MSVC %s runtime: %zu DLL(s) from %s\n",
                 debug ? "Debug" : "Release", found, src_dir.string().c_str());
     return true;
@@ -602,6 +661,18 @@ int main(int argc, char* argv[]) {
     }
 
     const fs::path out_dir = fs::path(out) / name;
+    // Fresh package: remove any previous output for this game first so stale
+    // files (old DLLs, removed archives, leftover test data) cannot leak into
+    // the new build. The path is the explicit <out>/<name> target.
+    if (fs::exists(out_dir, ec)) {
+        std::printf("[grycegc] cleaning previous output: %s\n", out_dir.string().c_str());
+        fs::remove_all(out_dir, ec);
+        if (ec) {
+            std::cerr << "[grycegc] ERROR: failed to clean " << out_dir
+                      << ": " << ec.message() << " (is the game running?)\n";
+            return 1;
+        }
+    }
     fs::create_directories(out_dir, ec);
     const fs::path assets_dir = out_dir / "assets";
     fs::create_directories(assets_dir, ec);
