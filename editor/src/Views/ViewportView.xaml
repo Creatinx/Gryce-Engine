@@ -129,7 +129,7 @@
                                VerticalAlignment="Center" Margin="4,0"/>
                     <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="2,2"/>
                     <ToggleButton x:Name="BtnGridSnap"
-                                  Style="{StaticResource ToolbarButtonStyle}"
+                                  Style="{StaticResource ToolbarToggleStyle}"
                                   MinWidth="28" Height="24" Padding="0"
                                   IsChecked="{Binding IsGridSnap}"
                                   IsEnabled="{Binding HasSelection}"
