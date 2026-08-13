@@ -48,6 +48,8 @@ function on_start()
     end
     -- 每关重力（来自 levels.json）
     engine.physics.set_gravity(0, common.current_gravity())
+    -- 背景音乐：仅在游戏运行时（Play Mode / 独立 exe）播放，编辑器编辑态不播
+    engine.audio.play_on(engine.entity.find("BGM"))
 end
 
 function on_update(dt)

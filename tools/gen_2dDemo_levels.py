@@ -79,9 +79,9 @@ def label(text, font_size=18.0, color=(1, 1, 1, 1), ro=1100):
     return c2d("Label", ro, text=text, font_size=font_size, color=list(color))
 
 
-def audio(clip, volume=0.5, pitch=1.0):
+def audio(clip, volume=0.5, pitch=1.0, loop=False, play_on_awake=False):
     return {"type": "AudioSource", "enabled": True, "clip_path": clip, "volume": volume,
-            "pitch": pitch, "speed": 1.0, "loop": False, "play_on_awake": False,
+            "pitch": pitch, "speed": 1.0, "loop": loop, "play_on_awake": play_on_awake,
             "is_3d": False, "min_distance": 1.0, "max_distance": 100.0}
 
 
@@ -176,6 +176,8 @@ def scene_common(map_w, map_h, tiles, player_spawn):
     es.append(ent("SFX_Shoot", [audio("res:/audio/shoot.wav", 0.35)]))
     es.append(ent("SFX_Powerup", [audio("res:/audio/coin.wav", 0.45, pitch=1.6)]))
     es.append(ent("SFX_Goal", [audio("res:/audio/explosion.wav", 0.50)]))
+    # 背景音乐：由 game_manager 在游戏运行时 on_start 主动播放（编辑器编辑态不播放）
+    es.append(ent("BGM", [audio("res:/audio/bgm.wav", 0.5, loop=True)]))
     # 粒子特效：跳跃尘土 / 命中爆炸 / 枪口火光
     es.append(ent("JumpDust", [particle(15,
         emission_offset=[0.0, 14.0], direction_min=1.2566370614359172,

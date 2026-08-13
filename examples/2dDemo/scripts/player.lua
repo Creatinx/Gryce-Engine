@@ -128,10 +128,10 @@ function on_update(dt)
     if right then target_vx = 240 end
     set_vel(self_h, target_vx, vy)
 
-    -- 跳跃（按当前关重力反推起跳速度，弹跳高度一致）
+    -- 跳跃（按当前关重力反推起跳速度，弹跳高度一致，目标 9 格高）
     local grounded = math.abs(vy) < 18
     if jump and not jump_pressed_last and grounded and jump_cooldown <= 0 then
-        local jump_speed = math.sqrt(2 * gravity * 6 * 32)
+        local jump_speed = math.sqrt(2 * gravity * 9 * 32)
         set_vel(self_h, target_vx, -jump_speed)
         jump_cooldown = 0.18
         engine.audio.play_on(engine.entity.find("SFX_Jump"))

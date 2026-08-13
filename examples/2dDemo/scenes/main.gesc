@@ -4439,6 +4439,32 @@
           "max_distance": 100.0
         }
       ]
+    },
+    {
+      "name": "BGM",
+      "uuid": "000000099003-0000-0000-0000-000000000000",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0, 0, 0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "clip_path": "res:/audio/bgm.wav",
+          "volume": 0.5,
+          "pitch": 1.0,
+          "speed": 1.0,
+          "loop": true,
+          "play_on_awake": false,
+          "is_3d": false,
+          "min_distance": 1.0,
+          "max_distance": 100.0
+        }
+      ]
     }
   ]
 }
