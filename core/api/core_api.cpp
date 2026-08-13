@@ -469,8 +469,13 @@ static void process_command(const GCommand& cmd) {
         case ECMD_INPUT_KEY: {
             struct Payload { int key; uint8_t down; };
             const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            if (p->down) g_core_state.keys_down.insert(p->key);
-            else g_core_state.keys_down.erase(p->key);
+            if (p->down) {
+                g_core_state.keys_down.insert(p->key);
+                g_core_state.input_events.push_back({INPUT_EVENT_KEY_DOWN, p->key, 0, 0});
+            } else {
+                g_core_state.keys_down.erase(p->key);
+                g_core_state.input_events.push_back({INPUT_EVENT_KEY_UP, p->key, 0, 0});
+            }
             break;
         }
         case ECMD_INPUT_MOUSE_MOVE: {
@@ -478,6 +483,7 @@ static void process_command(const GCommand& cmd) {
             const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
             g_core_state.mouse_x = p->x;
             g_core_state.mouse_y = p->y;
+            g_core_state.input_events.push_back({INPUT_EVENT_MOUSE_MOVE, p->x, p->y, 0});
             break;
         }
         case ECMD_INPUT_MOUSE_BUTTON: {
@@ -485,6 +491,9 @@ static void process_command(const GCommand& cmd) {
             const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
             if (p->button >= 0 && p->button < 3) {
                 g_core_state.mouse_button[p->button] = p->down != 0;
+                g_core_state.input_events.push_back({
+                    p->down ? INPUT_EVENT_MOUSE_DOWN : INPUT_EVENT_MOUSE_UP,
+                    p->button, p->x, p->y});
             }
             g_core_state.mouse_x = p->x;
             g_core_state.mouse_y = p->y;
@@ -619,8 +628,16 @@ void GCore_BeginFrame(float dt) {
         gryce_core::g_core_state.cmdbuf.push(cmds[i]);
     }
 
-    if (gryce_core::g_core_state.play_mode && !gryce_core::g_core_state.paused) {
-        gryce_core::g_core_state.world->update(dt);
+    if (gryce_core::g_core_state.play_mode) {
+        if (!gryce_core::g_core_state.paused) {
+            gryce_core::g_core_state.world->update(dt);
+        } else {
+            // 暂停时仅驱动脚本系统，让 pause_mode=true 的脚本继续 on_update
+            // （其余系统保持冻结，类比 Godot 按 process_mode 选择性暂停）。
+            if (auto* sys = gryce_core::g_core_state.world->get_system<ecs::ScriptSystem>()) {
+                sys->on_update(*gryce_core::g_core_state.world->scene(), 0.0f);
+            }
+        }
     }
 }
 

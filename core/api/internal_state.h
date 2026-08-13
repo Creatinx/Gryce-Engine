@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <unordered_set>
 #include <atomic>
 #include <mutex>
@@ -26,6 +27,26 @@ struct CallbackTable {
     GOnEntityListChanged on_entity_list_changed = nullptr;
     GOnComponentChanged on_component_changed = nullptr;
     GOnLogMessage on_log_message = nullptr;
+};
+
+// Input event kinds dispatched to scripts' _input handler (matches the C
+// constants exposed on engine.input so scripts can branch on the event type).
+enum InputEventKinds {
+    INPUT_EVENT_KEY_DOWN = 1,
+    INPUT_EVENT_KEY_UP = 2,
+    INPUT_EVENT_MOUSE_MOVE = 3,
+    INPUT_EVENT_MOUSE_DOWN = 4,
+    INPUT_EVENT_MOUSE_UP = 5,
+};
+
+// A single input event queued this frame by process_command and drained by
+// ScriptSystem::on_update (before per-entity scheduling). a/b/c are the
+// positional args forwarded to the script's _input(type, a, b, c).
+struct InputEvent {
+    int type = 0;
+    int a = 0;
+    int b = 0;
+    int c = 0;
 };
 
 struct GlobalState {
@@ -68,6 +89,10 @@ struct GlobalState {
 
     // Console: number of MemoryLogSink entries already delivered to the editor
     size_t log_delivered_count = 0;
+
+    // Input events queued this frame (filled by process_command, drained by
+    // ScriptSystem::on_update). Cleared each frame after dispatch.
+    std::vector<InputEvent> input_events;
 };
 
 // Defined in core_api.cpp

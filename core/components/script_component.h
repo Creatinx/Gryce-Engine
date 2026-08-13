@@ -18,6 +18,17 @@ struct GRYCE_API ScriptProp {
     std::string s;
 };
 
+/// A signal connection recorded by engine.signal.connect(name, target, cb).
+/// callback_ref lives in the Lua registry; target_env_ref is the target
+/// component's per-component environment (used to set the current entity while
+/// the callback runs). Runtime state, not serialized.
+struct GRYCE_API ScriptSignal {
+    std::string name;
+    int target_handle = 0;      // target entity handle (restores current_entity)
+    int target_env_ref = -1;    // target component's per-component env (registry ref)
+    int callback_ref = -1;      // target callback (registry ref)
+};
+
 /// ScriptComponent (GryceSRT): binds a .lua file to an entity. The Lua
 /// callbacks (on_start / on_update / on_destroy) are driven by ScriptSystem.
 /// Only script_path + enabled are serialized; the Lua env/chunk references are
@@ -67,6 +78,11 @@ public:
     bool reported_error = false;
     std::string last_error;
     std::vector<ScriptProp> props;
+
+    // --- Godot-like Node scheduling / communication ---
+    int process_priority = 0; // 值越大 on_update 越先执行（默认 0）
+    bool pause_mode = false;  // true = 全局暂停时仍执行 on_update（类比 process_mode）
+    std::vector<ScriptSignal> signals; // engine.signal.connect 记录
 };
 
 } // namespace gryce_engine::components

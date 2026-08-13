@@ -34,11 +34,14 @@ private:
     void write_prop_to_env(components::ScriptComponent* comp, const char* name, float value);
     void write_prop_to_env(components::ScriptComponent* comp, const char* name, const std::string& value);
 
-    void process_entity(scene::Entity* e, float dt);
+    void process_entity(components::ScriptComponent* comp, float dt);
     bool load(components::ScriptComponent* comp);
     void unload(components::ScriptComponent* comp);
     void call_method(components::ScriptComponent* comp, const char* method,
                      float arg = 0.0f, bool has_arg = false);
+    void call_method_int(components::ScriptComponent* comp, const char* method,
+                         int type, int a, int b, int c);
+    void dispatch_input_events();
     void handle_error(components::ScriptComponent* comp);
 
     std::vector<components::ScriptComponent*> loaded_;

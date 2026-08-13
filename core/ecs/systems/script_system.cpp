@@ -5,7 +5,9 @@
 #include "resources/resource_path.h"
 #include "scene/entity.h"
 #include "scene/scene.h"
+#include "ecs/world.h"
 #include "script/lua_runtime.h"
+#include "api/internal_state.h"
 #include "utils/glog/glog_lib.h"
 
 #include <algorithm>
@@ -36,14 +38,31 @@ void ScriptSystem::on_update(scene::Scene& scene, float dt) {
     rt.set_current_scene(&scene);
     seen_.clear();
 
+    // 输入事件分发：把本帧缓存的事件逐条派发给定义 _input 的脚本
+    // （先分发再执行 on_update，类比 Godot 的 _input 早于 _process）。
+    dispatch_input_events();
+
     // 快照遍历：脚本在 on_update 里通过 engine.entity.create 创建实体是安全的
     // （新实体下一帧才进入脚本驱动，避免遍历期间修改场景层级）。
     std::vector<scene::Entity*> entities;
     scene.root()->foreach([&](scene::Entity* e) {
         entities.push_back(e);
     });
+
+    // 按 process_priority 降序收集所有脚本组件，值越大 on_update 越先执行。
+    std::vector<components::ScriptComponent*> comps;
     for (scene::Entity* e : entities) {
-        process_entity(e, dt);
+        auto* comp = e->get_component<components::ScriptComponent>();
+        if (!comp) continue;
+        comps.push_back(comp);
+        seen_.push_back(comp);
+    }
+    std::stable_sort(comps.begin(), comps.end(),
+        [](components::ScriptComponent* a, components::ScriptComponent* b) {
+            return a->process_priority > b->process_priority;
+        });
+    for (components::ScriptComponent* comp : comps) {
+        process_entity(comp, dt);
     }
 
     // engine.entity.destroy 的延迟销毁：先卸载脚本（env/unref），再销毁实体，
@@ -69,10 +88,8 @@ void ScriptSystem::on_update(scene::Scene& scene, float dt) {
         loaded_.end());
 }
 
-void ScriptSystem::process_entity(scene::Entity* e, float dt) {
-    auto* comp = e->get_component<components::ScriptComponent>();
+void ScriptSystem::process_entity(components::ScriptComponent* comp, float dt) {
     if (!comp) return;
-    seen_.push_back(comp);
 
     if (!comp->enabled || comp->script_path.empty()) {
         if (comp->script_loaded) unload(comp);
@@ -86,7 +103,37 @@ void ScriptSystem::process_entity(scene::Entity* e, float dt) {
         }
     }
 
+    // per-node 暂停（pause_mode）：全局暂停时，只有 pause_mode 的脚本继续更新。
+    if (gryce_core::g_core_state.paused && !comp->pause_mode) {
+        return;
+    }
+
     call_method(comp, "on_update", dt, true);
+}
+
+// 把本帧缓存的输入事件逐条派发给定义了 _input 的脚本组件。
+// _input(type, a, b, c)：type 为 engine.input 的常量，a/b/c 是位置参数。
+void ScriptSystem::dispatch_input_events() {
+    auto& state = gryce_core::g_core_state;
+    if (state.input_events.empty()) return;
+
+    std::vector<components::ScriptComponent*> comps;
+    if (state.world) {
+        scene::Scene* scene = state.world->scene();
+        if (scene) {
+            scene->root()->foreach([&](scene::Entity* e) {
+                auto* c = e->get_component<components::ScriptComponent>();
+                if (c && c->script_loaded) comps.push_back(c);
+            });
+        }
+    }
+
+    for (const auto& ev : state.input_events) {
+        for (components::ScriptComponent* comp : comps) {
+            call_method_int(comp, "_input", ev.type, ev.a, ev.b, ev.c);
+        }
+    }
+    state.input_events.clear();
 }
 
 bool ScriptSystem::load(components::ScriptComponent* comp) {
@@ -159,6 +206,12 @@ bool ScriptSystem::load(components::ScriptComponent* comp) {
     comp->script_loaded = true;
     comp->start_called = false;
     comp->reported_error = false;
+
+    // 热重载前清空旧信号连接并释放其回调引用，避免 on_start 里重复 connect。
+    for (const auto& sig : comp->signals) {
+        if (sig.callback_ref >= 0) luaL_unref(L, LUA_REGISTRYINDEX, sig.callback_ref);
+    }
+    comp->signals.clear();
 
     call_method(comp, "on_start");
     sync_props_from_env(comp);
@@ -305,6 +358,37 @@ void ScriptSystem::call_method(components::ScriptComponent* comp,
     rt.set_current_entity(comp->owner());
     if (has_arg) lua_pushnumber(L, arg);
     const int rc = lua_pcall(L, has_arg ? 1 : 0, 0, 0);
+    if (rc != LUA_OK) {
+        const char* msg = lua_tostring(L, -1);
+        comp->last_error = msg ? msg : "script error";
+        lua_pop(L, 1);                                  // error
+        lua_pop(L, 1);                                  // env
+        handle_error(comp);
+        return;
+    }
+    lua_pop(L, 1);                                      // env
+}
+
+// 调用脚本的带整型参数方法（用于 _input 事件分发）。
+void ScriptSystem::call_method_int(components::ScriptComponent* comp,
+                                   const char* method, int type, int a, int b, int c) {
+    auto& rt = script::LuaRuntime::instance();
+    lua_State* L = rt.state();
+    if (!L || comp->env_ref < 0) return;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, comp->env_ref);   // env
+    lua_getfield(L, -1, method);                        // env, fn
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 2);
+        return;
+    }
+
+    rt.set_current_entity(comp->owner());
+    lua_pushinteger(L, type);
+    lua_pushinteger(L, a);
+    lua_pushinteger(L, b);
+    lua_pushinteger(L, c);
+    const int rc = lua_pcall(L, 4, 0, 0);
     if (rc != LUA_OK) {
         const char* msg = lua_tostring(L, -1);
         comp->last_error = msg ? msg : "script error";

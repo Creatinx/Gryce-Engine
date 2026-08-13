@@ -10,6 +10,7 @@
 #include "components/box_collider_2d.h"
 #include "components/circle_collider_2d.h"
 #include "components/component_factory.h"
+#include "components/script_component.h"
 #include "components/transform.h"
 #include "ecs/world.h"
 #include "reflection/reflection.h"
@@ -660,6 +661,84 @@ const luaL_Reg kInputLib[] = {
 };
 
 // ---------------------------------------------------------------------------
+// engine.signal
+// ---------------------------------------------------------------------------
+// engine.signal.connect(name, target_handle, callback) -> bool
+// 把当前脚本的某个信号连接到目标实体脚本环境里的回调函数。
+int l_signal_connect(lua_State* L) {
+    const char* sig_name = luaL_checkstring(L, 1);
+    scene::Entity* target_e = resolve_entity(L, 2);
+    if (!sig_name || !target_e) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    auto* target_comp = target_e->get_component<components::ScriptComponent>();
+    if (!target_comp || target_comp->env_ref < 0) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    if (!lua_isfunction(L, 3)) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    lua_pushvalue(L, 3);
+    const int callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    auto* self_comp = LuaRuntime::instance().current_entity()
+                          ? LuaRuntime::instance().current_entity()->get_component<components::ScriptComponent>()
+                          : nullptr;
+    if (self_comp) {
+        self_comp->signals.push_back({
+            std::string(sig_name),
+            LuaRuntime::instance().entity_handle(target_e),
+            target_comp->env_ref,
+            callback_ref});
+        lua_pushboolean(L, true);
+    } else {
+        luaL_unref(L, LUA_REGISTRYINDEX, callback_ref);
+        lua_pushboolean(L, false);
+    }
+    return 1;
+}
+
+// engine.signal.emit(name, ...) -> bool
+// 触发当前脚本上的同名信号，依次调用所有已连接的回调。
+int l_signal_emit(lua_State* L) {
+    const char* sig_name = luaL_checkstring(L, 1);
+    auto* self_comp = LuaRuntime::instance().current_entity()
+                          ? LuaRuntime::instance().current_entity()->get_component<components::ScriptComponent>()
+                          : nullptr;
+    if (!self_comp) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    const int arg_count = lua_gettop(L) - 1;
+    for (const auto& sig : self_comp->signals) {
+        if (sig.name != sig_name || sig.callback_ref < 0) continue;
+        scene::Entity* target_e = LuaRuntime::instance().entity_by_handle(sig.target_handle);
+        if (target_e) LuaRuntime::instance().set_current_entity(target_e);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, sig.callback_ref);   // cb
+        for (int i = 0; i < arg_count; ++i) {
+            lua_pushvalue(L, i + 2);                            // cb, args...
+        }
+        if (lua_pcall(L, arg_count, 0, 0) != LUA_OK) {
+            const char* msg = lua_tostring(L, -1);
+            GLOG_ERROR("GryceSRT: signal '{}' callback error: {}", sig_name, msg ? msg : "unknown");
+            lua_pop(L, 1);                                      // error
+        }
+        if (target_e) LuaRuntime::instance().set_current_entity(self_comp->owner());
+    }
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+const luaL_Reg kSignalLib[] = {
+    {"connect", l_signal_connect},
+    {"emit", l_signal_emit},
+    {nullptr, nullptr}
+};
+
+// ---------------------------------------------------------------------------
 // engine.scene
 // ---------------------------------------------------------------------------
 // engine.scene.load(path) -> 0 on success, -1 on failure.
@@ -993,11 +1072,26 @@ void LuaRuntime::register_engine_bindings() {
 
     lua_newtable(L_);
     luaL_setfuncs(L_, kInputLib, 0);
+    // 暴露输入事件类型常量，供 _input(type, ...) 分支判断。
+    lua_pushinteger(L_, gryce_core::INPUT_EVENT_KEY_DOWN);
+    lua_setfield(L_, -2, "KEY_DOWN");
+    lua_pushinteger(L_, gryce_core::INPUT_EVENT_KEY_UP);
+    lua_setfield(L_, -2, "KEY_UP");
+    lua_pushinteger(L_, gryce_core::INPUT_EVENT_MOUSE_MOVE);
+    lua_setfield(L_, -2, "MOUSE_MOVE");
+    lua_pushinteger(L_, gryce_core::INPUT_EVENT_MOUSE_DOWN);
+    lua_setfield(L_, -2, "MOUSE_DOWN");
+    lua_pushinteger(L_, gryce_core::INPUT_EVENT_MOUSE_UP);
+    lua_setfield(L_, -2, "MOUSE_UP");
     lua_setfield(L_, -2, "input");
 
     lua_newtable(L_);
     luaL_setfuncs(L_, kSceneLib, 0);
     lua_setfield(L_, -2, "scene");
+
+    lua_newtable(L_);
+    luaL_setfuncs(L_, kSignalLib, 0);
+    lua_setfield(L_, -2, "signal");
 
     lua_newtable(L_);
     luaL_setfuncs(L_, kAudioLib, 0);
