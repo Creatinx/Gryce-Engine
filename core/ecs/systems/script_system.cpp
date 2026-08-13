@@ -33,16 +33,39 @@ void ScriptSystem::on_update(scene::Scene& scene, float dt) {
     if (!rt.initialized()) return;
 
     rt.set_delta(dt);
+    rt.set_current_scene(&scene);
     seen_.clear();
 
+    // 快照遍历：脚本在 on_update 里通过 engine.entity.create 创建实体是安全的
+    // （新实体下一帧才进入脚本驱动，避免遍历期间修改场景层级）。
+    std::vector<scene::Entity*> entities;
     scene.root()->foreach([&](scene::Entity* e) {
-        process_entity(e, dt);
+        entities.push_back(e);
     });
+    for (scene::Entity* e : entities) {
+        process_entity(e, dt);
+    }
 
-    // Drop bookkeeping for components that no longer exist (removed entity /
-    // component). The component object itself is gone, so only drop the entry.
+    // engine.entity.destroy 的延迟销毁：先卸载脚本（env/unref），再销毁实体，
+    // 避免遍历期间销毁 + 脚本环境泄漏。
+    for (scene::Entity* e : rt.take_pending_destroy()) {
+        if (!e) continue;
+        if (auto* comp = e->get_component<components::ScriptComponent>()) {
+            unload(comp);
+            loaded_.erase(std::remove(loaded_.begin(), loaded_.end(), comp), loaded_.end());
+        }
+        scene.destroy_entity(e);
+    }
+
+    // Drop bookkeeping for components that no longer exist (removed via the
+    // editor or other paths; the component object is still alive so unload is
+    // safe and releases its Lua environment).
     loaded_.erase(std::remove_if(loaded_.begin(), loaded_.end(),
-        [&](components::ScriptComponent* c) { return !contains(seen_, c); }),
+        [&](components::ScriptComponent* c) {
+            if (contains(seen_, c)) return false;
+            unload(c);
+            return true;
+        }),
         loaded_.end());
 }
 
@@ -311,6 +334,7 @@ void ScriptSystem::reload_all() {
 void ScriptSystem::on_shutdown(scene::Scene& scene) {
     (void)scene;
     reload_all();
+    script::LuaRuntime::instance().set_current_scene(nullptr);
 }
 
 } // namespace gryce_engine::ecs

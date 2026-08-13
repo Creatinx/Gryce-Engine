@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "ecs/types.h"
+#include "math/math.h"
 
 namespace gryce_engine {
 namespace scene { class Scene; }
@@ -49,6 +50,11 @@ public:
     // 每帧调用
     virtual void on_update(scene::Scene& scene, float dt) { (void)scene; (void)dt; }
     virtual void on_render(scene::Scene& scene, render::RenderContext& ctx) { (void)scene; (void)ctx; }
+
+    // 通用重力接口（由 2D/3D 物理系统覆写；脚本经 engine.physics 调用）。
+    // 默认无操作，避免 ISystem 派生类被迫实现。
+    virtual void set_gravity(const math::Vector2f& g) { (void)g; }
+    virtual math::Vector2f get_gravity() const { return math::Vector2f(0.0f, 0.0f); }
 
     bool enabled = true;
 };

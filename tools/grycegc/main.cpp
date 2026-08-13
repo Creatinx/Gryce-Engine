@@ -5,6 +5,10 @@
 //   <out>/<name>/<name>.exe         template executable
 //   <out>/<name>/runtime/           core runtime DLLs
 //   <out>/<name>/assets/*.gpkg      game content archives (no raw res/ copy)
+//   <out>/<name>/project_settings.json
+//                                   raw copy of the runtime settings (the game
+//                                   entry reads it from the project root)
+//   <out>/<name>/project.gryce      project manifest (documentation)
 //   <out>/<name>/gdata              package metadata: source-file records,
 //                                   a 64-byte SHA-512 key, author info
 //
@@ -543,6 +547,25 @@ bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug
     return true;
 }
 
+// Copy the project's runtime settings / manifest next to the packaged exe.
+// The game entry reads project_settings.json from the project root (exe dir)
+// as a real file; it is also packed into config.gpkg, but the raw copy keeps
+// the packaged game booting with the correct main scene / settings even when
+// bundle extraction is unavailable. project.gryce is copied as documentation.
+void copy_project_metadata(const fs::path& project, const fs::path& out_dir) {
+    for (const char* name : {"project_settings.json", "project.gryce"}) {
+        std::error_code ec;
+        const fs::path src = project / name;
+        if (!fs::is_regular_file(src, ec)) continue;
+        fs::copy_file(src, out_dir / name, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[grycegc] ERROR: failed to copy " << src << ": " << ec.message() << "\n";
+        } else {
+            std::printf("[grycegc] copied %s to output root\n", name);
+        }
+    }
+}
+
 bool write_bundle(const std::vector<FileEntry>& files, const fs::path& output_path,
                   size_t& entry_count) {
     GPackHandle handle = GCore_PackCreate();
@@ -682,6 +705,7 @@ int main(int argc, char* argv[]) {
     if (!copy_runtime(build_dir, bin_dir, debug, out_dir, exe, name, copied)) {
         return 1;
     }
+    copy_project_metadata(project, out_dir);
 
     // 2) Content: group project files into .gpkg archives.
     const std::vector<FileEntry> files = collect_project_files(project);

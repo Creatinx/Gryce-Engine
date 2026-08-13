@@ -56,6 +56,12 @@ struct PlatformState {
         float mouse_delta_x = 0.0f;
         float mouse_delta_y = 0.0f;
         bool first_mouse = true;
+
+        // GInput_SyncToCore 的"上次已同步"快照，只对变化推命令
+        bool synced_keys[512] = {};
+        bool synced_mouse_buttons[8] = {};
+        int synced_mouse_x = 0;
+        int synced_mouse_y = 0;
     } input;
 
     std::mutex input_mutex;
@@ -500,6 +506,49 @@ void GInput_GetMousePosition(float* out_x, float* out_y) {
     std::lock_guard lock(g_platform.input_mutex);
     if (out_x) *out_x = g_platform.input.mouse_x;
     if (out_y) *out_y = g_platform.input.mouse_y;
+}
+
+void GInput_SyncToCore(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+
+    struct KeyPayload { int key; uint8_t down; };
+    struct MouseMovePayload { int x; int y; };
+    struct MouseButtonPayload { int button; uint8_t down; int x; int y; };
+
+    PlatformState::InputState& in = g_platform.input;
+
+    for (int i = 32; i < 349; ++i) {
+        if (in.keys[i] == in.synced_keys[i]) continue;
+        in.synced_keys[i] = in.keys[i];
+        KeyPayload p{ i, static_cast<uint8_t>(in.keys[i] ? 1 : 0) };
+        GCommand cmd{};
+        cmd.type = ECMD_INPUT_KEY;
+        std::memcpy(cmd.payload, &p, sizeof(p));
+        GCore_PushCommand(&cmd);
+    }
+
+    const int mx = static_cast<int>(in.mouse_x);
+    const int my = static_cast<int>(in.mouse_y);
+    if (mx != in.synced_mouse_x || my != in.synced_mouse_y) {
+        in.synced_mouse_x = mx;
+        in.synced_mouse_y = my;
+        MouseMovePayload p{ mx, my };
+        GCommand cmd{};
+        cmd.type = ECMD_INPUT_MOUSE_MOVE;
+        std::memcpy(cmd.payload, &p, sizeof(p));
+        GCore_PushCommand(&cmd);
+    }
+
+    for (int b = 0; b < 3; ++b) {
+        if (in.mouse_buttons[b] == in.synced_mouse_buttons[b]) continue;
+        in.synced_mouse_buttons[b] = in.mouse_buttons[b];
+        MouseButtonPayload p{ b, static_cast<uint8_t>(in.mouse_buttons[b] ? 1 : 0), mx, my };
+        GCommand cmd{};
+        cmd.type = ECMD_INPUT_MOUSE_BUTTON;
+        std::memcpy(cmd.payload, &p, sizeof(p));
+        GCore_PushCommand(&cmd);
+    }
 }
 
 } // extern "C"

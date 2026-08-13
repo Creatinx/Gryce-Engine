@@ -1,5 +1,5 @@
 {
-  "name": "gt2dDemo",
+  "name": "2dDemo",
   "version": "0.1.0",
   "engine_version": ">=0.1.0",
   "entry_scene": "res:/scenes/main.gesc",

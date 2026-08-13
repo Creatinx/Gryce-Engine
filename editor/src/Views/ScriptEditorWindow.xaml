@@ -29,12 +29,24 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <Button Grid.Column="0" Content="{loc:Loc script_editor.save}"
-                        MinWidth="72" MinHeight="28" FontSize="12"
-                        Margin="0,0,8,0" Click="OnSaveClick"/>
-                <Button Grid.Column="1" Content="{loc:Loc script_editor.reload}"
-                        MinWidth="72" MinHeight="28" FontSize="12"
-                        Click="OnReloadClick"/>
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <Button x:Name="BtnUndo" Width="28" Height="28" Padding="0"
+                            ToolTip="Undo (Ctrl+Z)" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                            Margin="0,0,4,0" Click="OnUndoClick">
+                        <TextBlock Text="&#xE7A7;"/>
+                    </Button>
+                    <Button x:Name="BtnRedo" Width="28" Height="28" Padding="0"
+                            ToolTip="Redo (Ctrl+Y)" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                            Margin="0,0,8,0" Click="OnRedoClick">
+                        <TextBlock Text="&#xE7A6;"/>
+                    </Button>
+                    <Button Content="{loc:Loc script_editor.save}"
+                            MinWidth="72" MinHeight="28" FontSize="12"
+                            Margin="0,0,8,0" Click="OnSaveClick"/>
+                    <Button Content="{loc:Loc script_editor.reload}"
+                            MinWidth="72" MinHeight="28" FontSize="12"
+                            Click="OnReloadClick"/>
+                </StackPanel>
                 <TextBlock Grid.Column="3" x:Name="StatusText" FontSize="10.5"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            VerticalAlignment="Center"/>

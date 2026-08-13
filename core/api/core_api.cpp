@@ -608,7 +608,12 @@ void GCore_BeginFrame(float dt) {
     int processed = 0;
     for (; processed < count && processed < k_max_commands_per_frame; ++processed) {
         gryce_core::process_command(cmds[processed]);
-        if (std::chrono::steady_clock::now() - start >= k_command_budget) break;
+        if (std::chrono::steady_clock::now() - start >= k_command_budget) {
+            // 本命令已经处理完成；break 不会执行 for 的自增，
+            // 手动 +1 避免它被下面的 re-queue 再次入队。
+            ++processed;
+            break;
+        }
     }
     for (int i = processed; i < count; ++i) {
         gryce_core::g_core_state.cmdbuf.push(cmds[i]);

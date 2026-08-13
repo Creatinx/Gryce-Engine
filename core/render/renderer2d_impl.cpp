@@ -654,7 +654,6 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
              * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
     }
     view_proj_ = ortho_ * view;
-
     if (context_alive()) {
         ctx_->set_depth_test(false);
         ctx_->set_blend(true);
@@ -872,12 +871,12 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
     std::vector<LitBatch> batches_copy;
     batches_copy.reserve(lit_batches_.size());
     for (auto& kv : lit_batches_) {
-        batches_copy.push_back({kv.second.albedo, kv.second.normal, std::move(kv.second.verts)});
+        batches_copy.push_back({kv.second.albedo, kv.second.normal,
+                                std::move(kv.second.verts), kv.second.view_proj});
     }
     lit_batches_.clear();
     auto batches_shared = std::make_shared<std::vector<LitBatch>>(std::move(batches_copy));
 
-    math::Matrix4f view_proj = view_proj_;
     Color ambient = ambient_light_;
     auto lights_copy = std::make_shared<std::vector<Light2D>>(lights_);
 
@@ -921,7 +920,7 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
     const int sw = static_cast<int>(screen_width_);
     const int sh = static_cast<int>(screen_height_);
 
-    ctx_->push_command([this, batches_shared, view_proj, ambient, lights_copy,
+    ctx_->push_command([this, batches_shared, ambient, lights_copy,
                         shadow_light_index, light_space, use_shadow, target_is_scene_fbo,
                         scene_fbo, mesh, lit_shader, shadow_map, sw, sh](IRenderBackend* backend) {
         if (batches_shared->empty()) return;
@@ -963,7 +962,6 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         }
 
         shader_ptr->bind();
-        shader_ptr->set_mat4("uViewProj", view_proj);
         shader_ptr->set_vec3("uAmbientLight", math::Vector3f(ambient.r, ambient.g, ambient.b));
 
         int light_count = static_cast<int>(std::min<size_t>(lights_copy->size(), 32));
@@ -998,6 +996,8 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
 
         for (const auto& batch : *batches_shared) {
             if (batch.verts.empty()) continue;
+
+            shader_ptr->set_mat4("uViewProj", batch.view_proj);
 
             // 句柄在执行时经 generation 校验解析；纹理已销毁则回退默认纹理
             if (ITexture* albedo_ptr = ctx_->texture(batch.albedo)) {
@@ -1174,6 +1174,7 @@ Renderer2D::LitBatch* Renderer2D::find_lit_batch(RHITextureHandle albedo, RHITex
         LitBatch batch;
         batch.albedo = albedo;
         batch.normal = normal;
+        batch.view_proj = view_proj_;
         it = lit_batches_.emplace(key, std::move(batch)).first;
     }
     return &it->second;

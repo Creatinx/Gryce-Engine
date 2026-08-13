@@ -38,7 +38,13 @@ void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
     // 注意：flags 只在加载/解析成功后才置位，失败会保留在未加载状态以便重试
     // （临时性文件错误不应变成永久失败）。
     if (!tileset_json_loaded_ && !tileset_path.empty()) {
-        std::string resolved = resources::ResourcePath::resolve(tileset_path);
+        // 与其它资源一致：优先真实文件，缺失时从挂载的 .gpkg/.gpack 提取
+        // （GryceGC-A 打包产物没有 res/ 目录，tileset JSON 位于 config 包内）。
+        std::string resolved = assets::AssetManager::instance().resolve_for_reading(tileset_path);
+        if (resolved.empty()) {
+            GLOG_WARN("Tilemap: failed to resolve tileset '{}'", tileset_path);
+            return;
+        }
         std::ifstream file(resolved);
         if (file.is_open()) {
             try {

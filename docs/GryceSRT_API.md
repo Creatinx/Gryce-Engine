@@ -2,6 +2,8 @@
 
 > GryceSRT = GryceEngine Script Runtime（Core 内嵌 Lua 5.4）。
 > 脚本通过 `Script` 组件挂到实体上，播放/打包运行时由 ScriptSystem 驱动。
+> 玩法逻辑（角色控制、AI、关卡流程等）可以完全用 Lua 编写；
+> `examples/2dDemo` 就是一套完整的 Lua 驱动的平台跳跃游戏。
 
 ## 1. 脚本生命周期
 
@@ -25,9 +27,16 @@ function on_destroy() end        -- 组件移除/场景关闭/重载前调用
 | 实体 | `engine.self()` | 当前脚本所属实体句柄（0 表示无） |
 | | `engine.entity.get_name(h)` | 实体名 |
 | | `engine.entity.find(name)` | 按名字查找实体，返回句柄（0 = 未找到） |
+| | `engine.entity.find_all(prefix)` | 查找名字为 `prefix` 或 `prefix<数字>` 的全部实体，返回句柄数组 |
+| | `engine.entity.create(name)` | 在当前场景创建实体，返回句柄（脚本遍历期间安全） |
+| | `engine.entity.destroy(h)` | 延迟销毁实体（本帧脚本遍历结束后生效），返回 bool |
+| | `engine.entity.aabb(h)` | 实体 AABB `{x, y, w, h}`（中心+尺寸；优先取碰撞盒） |
 | | `engine.entity.get_transform(h)` | 返回 `{pos={x,y,z}, rot={x,y,z,w}, scale={x,y,z}}` |
 | | `engine.entity.set_transform(h, pos, rot, scale)` | 写回变换（三个表均可省略） |
-| 组件 | `engine.component.get/set`（规划中） | 反射读写任意组件属性 |
+| 组件 | `engine.component.has(h, type)` | 实体是否有该类型组件 |
+| | `engine.component.get(h, type, prop)` | 读取组件字段（number/string/bool/`{x,y}`/`{x,y,z,w}`/`{r,g,b,a}`/int） |
+| | `engine.component.set(h, type, prop, value)` | 写组件字段；**组件不存在时自动创建**（含 Script/Sprite2D/RigidBody2D 等所有注册类型） |
+| 状态 | `engine.state.get/set/has(key)` | 跨实体、跨场景共享的游戏状态表（任意 Lua 值） |
 | 输入 | `engine.input.key_down(key)` | 按键是否按住（GLFW 键码，如 W=87） |
 | | `engine.input.mouse_pos()` | 返回鼠标 x, y |
 | | `engine.input.mouse_down(button)` | 鼠标键是否按住（0=左，1=右，2=中） |
@@ -35,6 +44,13 @@ function on_destroy() end        -- 组件移除/场景关闭/重载前调用
 | 日志 | `engine.log.info/warn/error(msg)` | 输出到引擎日志/编辑器控制台 |
 | 场景 | `engine.scene.load(path)` | 切换到指定场景（`res:/...`），经命令队列延迟到本帧结束后生效；返回 `0` 成功 / `-1` 失败 |
 | | `engine.scene.current()` | 当前场景的 `res:/` 路径；无场景时返回 `nil` |
+| 音频 | `engine.audio.play_on(h)` | 播放实体上 `AudioSource` 组件，返回 bool |
+| 特效 | `engine.fx.burst(h)` | 实体上 `ParticleEmitter2D` 爆发一次，返回 bool |
+| JSON | `engine.json.read(path)` | 读取项目内 JSON（支持从 .gpkg 提取），返回 Lua 表 / `nil` |
+| 物理 | `engine.physics.set_gravity(x, y)` / `get_gravity()` | 设置/读取当前 2D 物理世界重力（脚本可在关卡切换时调整） |
+
+> `require("common")` 可加载 `res:/scripts/` 下的模块（打包产物中脚本位于 .gpkg 内也能
+> require）。2dDemo 的 `scripts/common.lua` 是共享工具模块示例。
 
 ## 2.1 主场景（Main Scene）
 
@@ -77,6 +93,8 @@ props = {
 - `timer.lua`：按 `props.interval` 秒定时打日志。
 
 ## 5. GryceGC 打包（GryceSPC）
+
+> GryceGC-A 项目组织与打包标准的完整说明见 [GryceGC-A 标准](./GryceGC-A.md)。
 
 ### 5.1 构建游戏模板
 

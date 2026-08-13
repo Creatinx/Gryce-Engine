@@ -88,12 +88,38 @@ endfunction()
 # ---------------------------------------------------------------------------
 set(GRYCE_SHADER_TARGETS)
 
+# 2dDemo 与 3dtest 共用同一套运行时着色器（grid 调试网格等）。
+# 仓库约定：手动复制的文件必须在 CMake 里自动补齐，因此 configure 时
+# 检测 2dDemo/shaders 缺失的 .vert/.frag 并自动从 3dtest/shaders 复制。
+file(GLOB _2dDemo_shader_sources
+    "${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders/*.vert"
+    "${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders/*.frag"
+)
+set(_2dDemo_shader_names)
+foreach(_shader IN LISTS _2dDemo_shader_sources)
+    get_filename_component(_shader_name "${_shader}" NAME)
+    list(APPEND _2dDemo_shader_names "${_shader_name}")
+endforeach()
+
+file(GLOB _3dtest_shader_sources
+    "${CMAKE_CURRENT_SOURCE_DIR}/3dtest/shaders/*.vert"
+    "${CMAKE_CURRENT_SOURCE_DIR}/3dtest/shaders/*.frag"
+)
+foreach(_shader IN LISTS _3dtest_shader_sources)
+    get_filename_component(_shader_name "${_shader}" NAME)
+    if(NOT _shader_name IN_LIST _2dDemo_shader_names)
+        message(STATUS "[Gryce Engine] syncing missing shader to 2dDemo: ${_shader_name}")
+        file(COPY "${_shader}" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders")
+        list(APPEND _2dDemo_shader_names "${_shader_name}")
+    endif()
+endforeach()
+
 gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/3dtest/shaders")
 if(GRYCE_SHADER_TARGET)
     list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
 endif()
 
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/gt2dDemo/shaders")
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders")
 if(GRYCE_SHADER_TARGET)
     list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
 endif()
@@ -105,11 +131,11 @@ set(GRYCE_EXAMPLE_SHADER_TARGETS "${GRYCE_SHADER_TARGETS}" PARENT_SCOPE)
 # 现有综合演示（尽可能覆盖所有功能）
 # ---------------------------------------------------------------------------
 add_gryce_demo_legacy(3dtest 3dtest 3dtest.cpp)
-add_gryce_demo_legacy(gt2dDemo gt2dDemo gt2dDemo.cpp)
+add_gryce_demo_legacy(2dDemo 2dDemo 2dDemo.cpp)
 
 # 示例可执行文件依赖对应 SPIR-V
 if(GRYCE_SHADER_TARGETS)
     add_dependencies(3dtest ${GRYCE_SHADER_TARGETS})
-    add_dependencies(gt2dDemo ${GRYCE_SHADER_TARGETS})
+    add_dependencies(2dDemo ${GRYCE_SHADER_TARGETS})
 endif()
 

@@ -6,6 +6,7 @@
 #include "GryceCore/scene_api.h"
 #include "GryceCore/script_api.h"
 #include "GrycePlatform/window_api.h"
+#include "GrycePlatform/input_api.h"
 #include "GryceRenderer/render_api.h"
 #include "GrycePhysics/physics_api.h"
 
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <thread>
 
 #if defined(_WIN32)
@@ -95,6 +97,20 @@ std::string default_project_root() {
 #endif
     std::filesystem::path p(argv0_override.empty() ? "." : argv0_override);
     return std::filesystem::absolute(p).parent_path().string();
+}
+
+// 2D 项目在 project_settings.json 里声明 "scene_2d": true，
+// 让渲染器走纯 2D 画布路径（跳过 3D 管线，与编辑器 2D 模式一致）。
+bool project_is_2d(const std::string& root) {
+    try {
+        std::ifstream in(root + "/project_settings.json");
+        if (!in) return false;
+        nlohmann::json j;
+        in >> j;
+        return j.value("scene_2d", false);
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 void enter_play_mode() {
@@ -204,6 +220,7 @@ int main(int argc, char* argv[]) {
         GCore_Shutdown();
         return 1;
     }
+    GRender_SetScene2D(project_is_2d(project));
 
     if (scene_override && GScene_Load(scene) != 0) {
         std::fprintf(stderr, "[game] failed to load scene %s\n", scene);
@@ -213,6 +230,7 @@ int main(int argc, char* argv[]) {
     auto last = std::chrono::steady_clock::now();
     while (!GWindow_ShouldClose()) {
         GWindow_PollEvents();
+        GInput_SyncToCore();
         const auto now = std::chrono::steady_clock::now();
         float dt = std::chrono::duration<float>(now - last).count();
         last = now;

@@ -4,6 +4,7 @@
 #include <unordered_map>
 
 #include "ecs/system.h"
+#include "export.h"
 
 namespace gryce_engine::components { class ScriptComponent; }
 namespace gryce_engine::scene { class Entity; }
@@ -12,7 +13,7 @@ namespace gryce_engine::ecs {
 
 /// GryceSRT driver: loads .lua scripts into per-component environments and
 /// calls on_start / on_update(dt) / on_destroy, every invocation under pcall.
-class ScriptSystem : public ISystem {
+class GRYCE_API ScriptSystem : public ISystem {
 public:
     const char* name() const override { return "ScriptSystem"; }
     Phase phase() const override { return Phase::Update; }

@@ -115,6 +115,10 @@ private:
         RHITextureHandle albedo;
         RHITextureHandle normal;
         std::vector<LitVertex2D> verts;
+        // 绘制时捕获的视图矩阵：受光精灵在 end_frame 的 lit pass 才提交，
+        // 此时 RenderSystem2D 已把相机恢复为上一帧状态；按批次记录绘制时刻
+        // 的矩阵，否则受光内容会画到错误的屏幕位置。
+        math::Matrix4f view_proj;
     };
     using LitBatchKey = std::pair<RHITextureHandle, RHITextureHandle>;
     struct LitBatchKeyHash {

@@ -1,0 +1,50 @@
+{
+  "entities": [
+    {
+      "components": [
+        {
+          "canvas_layer": 0,
+          "enabled": true,
+          "is_active": true,
+          "limit_bottom": 1000000.0,
+          "limit_enabled": false,
+          "limit_left": -1000000.0,
+          "limit_right": 1000000.0,
+          "limit_top": -1000000.0,
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "render_order": 0,
+          "rotation": 0.0,
+          "type": "Camera2D",
+          "zoom": 1.0
+        }
+      ],
+      "enabled": true,
+      "name": "Editor2DCamera",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "0c54bfc5-829d-4e4a-8773-45d16b4f1f8d"
+    }
+  ],
+  "name": "Untitled",
+  "version": 2
+}

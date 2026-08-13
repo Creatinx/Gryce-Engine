@@ -161,8 +161,8 @@ void RenderSystem2D::on_render(scene::Scene& scene, render::RenderContext& /*ctx
             // 无相机的非世界层：屏幕空间（UI/HUD），左上角原点
             renderer_->set_camera(math::Vector2f::zero(), 1.0f, true, 0.0f);
         }
-        // 世界层（layer 0）无 Camera2D 时保留应用层通过
-        // renderer2d->set_camera() 设置的摄像机，不重置回原点。
+    // 世界层（layer 0）无 Camera2D 时保留应用层通过
+    // renderer2d->set_camera() 设置的摄像机，不重置回原点。
 
         for (auto* comp : layer_comps) {
             // 天空盒已在世界层背景统一绘制，跳过避免重复

@@ -1,0 +1,26 @@
+{
+  "cycle_seconds": 120,
+  "levels": [
+    {
+      "scene": "res:/scenes/level_1.gesc",
+      "name": "Level 1 - 晨曦草原",
+      "start_time": 0.0,
+      "gravity": 1150,
+      "enemy_speed": 80
+    },
+    {
+      "scene": "res:/scenes/level_2.gesc",
+      "name": "Level 2 - 黄昏峡谷",
+      "start_time": 0.28,
+      "gravity": 1050,
+      "enemy_speed": 100
+    },
+    {
+      "scene": "res:/scenes/level_3.gesc",
+      "name": "Level 3 - 午夜要塞",
+      "start_time": 0.52,
+      "gravity": 1150,
+      "enemy_speed": 115
+    }
+  ]
+}

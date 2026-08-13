@@ -9,6 +9,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -115,12 +116,14 @@ public partial class ProjectView : UserControl
             Style = CompactTreeItemStyle()
         };
 
-        // Add a placeholder to enable expand arrow
-        item.Items.Add(new TreeViewItem { Header = "...", Style = CompactTreeItemStyle() });
-
+        // Lazy-load children on first expand. Do NOT clear/re-add here: clearing
+        // the Items collection inside the Expanded event left the tree with an
+        // empty item host, so folders never showed their subfolders.
+        bool loaded = false;
         item.Expanded += (_, _) =>
         {
-            item.Items.Clear();
+            if (loaded) return;
+            loaded = true;
             try
             {
                 foreach (var dir in Directory.GetDirectories(path))
@@ -133,7 +136,35 @@ public partial class ProjectView : UserControl
             catch { /* ignore */ }
         };
 
+        // Clicking the folder row (not the expand arrow) also toggles
+        // expand/collapse, matching how file browsers behave.
+        item.PreviewMouseLeftButtonDown += OnFolderNodeMouseDown;
+
         return item;
+    }
+
+    private static void OnFolderNodeMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not TreeViewItem item) return;
+        // Let the expand arrow (ToggleButton) handle its own click.
+        if (e.OriginalSource is DependencyObject source &&
+            FindVisualAncestor<ToggleButton>(source) != null)
+        {
+            return;
+        }
+        // Toggle expand/collapse without swallowing the click, so the folder
+        // is also selected and its files show on the right.
+        item.IsExpanded = !item.IsExpanded;
+    }
+
+    private static T? FindVisualAncestor<T>(DependencyObject? child) where T : DependencyObject
+    {
+        while (child != null)
+        {
+            if (child is T match) return match;
+            child = System.Windows.Media.VisualTreeHelper.GetParent(child);
+        }
+        return null;
     }
 
     /// <summary>

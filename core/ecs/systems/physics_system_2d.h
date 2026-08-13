@@ -26,6 +26,9 @@ public:
     void on_shutdown(scene::Scene& scene) override;
     void on_update(scene::Scene& scene, float dt) override;
 
+    void set_gravity(const math::Vector2f& g) override { gravity = g; }
+    math::Vector2f get_gravity() const override { return gravity; }
+
     // 射线检测：从 origin 沿 direction 发射射线，最大距离 max_distance（单位：米）
     std::optional<physics::IPhysicsWorld2D::RaycastHit2D> raycast(const math::Vector2f& origin,
                                                                    const math::Vector2f& direction,
