@@ -350,7 +350,23 @@ public partial class InspectorView : UserControl
         float val;
         if (wheelDelta.HasValue)
         {
-            val = wheelDelta.Value;
+            // Wheel editing increments the current field value by the step amount,
+            // matching the property-wheel behavior (prop.FloatValue += step).
+            float current;
+            switch (tb.Name)
+            {
+                case "TransPosX": current = entity.PositionX; break;
+                case "TransPosY": current = entity.PositionY; break;
+                case "TransPosZ": current = entity.PositionZ; break;
+                case "TransRotX": current = entity.RotationX; break;
+                case "TransRotY": current = entity.RotationY; break;
+                case "TransRotZ": current = entity.RotationZ; break;
+                case "TransScaleX": current = entity.ScaleX; break;
+                case "TransScaleY": current = entity.ScaleY; break;
+                case "TransScaleZ": current = entity.ScaleZ; break;
+                default: return;
+            }
+            val = current + wheelDelta.Value;
         }
         else if (!float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
         {

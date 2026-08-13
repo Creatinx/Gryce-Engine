@@ -6,6 +6,8 @@
 #include "assets/mesh_data.h"
 #include "utils/glog/glog_lib.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -15,8 +17,11 @@ using gryce_engine::assets::AssetManager;
 
 namespace {
 
+enum class AssetType { Mesh, Audio };
+
 struct AssetRecord {
     std::string path;
+    AssetType type = AssetType::Mesh;
     std::shared_ptr<const gryce_engine::assets::MeshData> mesh;
 };
 
@@ -24,46 +29,60 @@ static std::mutex s_asset_mutex;
 static std::unordered_map<int, AssetRecord> s_assets;
 static int s_next_asset_id = 1;
 
-} // namespace
+// 返回小写扩展名（含点），如 ".wav"；无扩展名返回空串。
+std::string file_extension(const char* path) {
+    std::string p = path ? path : "";
+    auto dot = p.find_last_of('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = p.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
+}
 
-extern "C" {
+bool is_audio_ext(const std::string& ext) {
+    return ext == ".wav" || ext == ".ogg" || ext == ".mp3" ||
+           ext == ".flac" || ext == ".aac" || ext == ".wma" || ext == ".m4a";
+}
 
-GAssetHandle GAsset_Import(const char* source_path) {
+// 登记一个资源到资产表，返回其句柄。音频按扩展名识别并以路径登记
+// （AudioSource::clip_path 直接按路径加载，不占用 mesh 缓存）；其余走网格导入。
+GAssetHandle register_asset(const char* source_path, const char* what) {
     GRYCE_API_GUARD();
     if (!source_path || !source_path[0]) return -1;
 
     std::lock_guard lock(s_asset_mutex);
     auto& mgr = AssetManager::instance();
-    auto mesh = mgr.load_mesh_shared(source_path);
-    if (mesh) {
-        int id = s_next_asset_id++;
-        AssetRecord rec;
-        rec.path = source_path;
+
+    AssetRecord rec;
+    rec.path = source_path;
+
+    std::string ext = file_extension(source_path);
+    if (is_audio_ext(ext)) {
+        rec.type = AssetType::Audio;
+    } else {
+        auto mesh = mgr.load_mesh_shared(source_path);
+        if (!mesh) return -1;
+        rec.type = AssetType::Mesh;
         rec.mesh = std::move(mesh);
-        s_assets[id] = std::move(rec);
-        GLOG_INFO("GAsset_Import: loaded '{}' -> handle {}", source_path, id);
-        return id;
     }
-    return -1;
+
+    int id = s_next_asset_id++;
+    s_assets[id] = std::move(rec);
+    GLOG_INFO("GAsset_{}: '{}' -> handle {}", what, source_path, id);
+    return id;
+}
+
+} // namespace
+
+extern "C" {
+
+GAssetHandle GAsset_Import(const char* source_path) {
+    return register_asset(source_path, "Import");
 }
 
 GAssetHandle GAsset_Load(const char* path) {
-    GRYCE_API_GUARD();
-    if (!path || !path[0]) return -1;
-
-    std::lock_guard lock(s_asset_mutex);
-    auto& mgr = AssetManager::instance();
-    auto mesh = mgr.load_mesh_shared(path);
-    if (mesh) {
-        int id = s_next_asset_id++;
-        AssetRecord rec;
-        rec.path = path;
-        rec.mesh = std::move(mesh);
-        s_assets[id] = std::move(rec);
-        GLOG_INFO("GAsset_Load: loaded '{}' -> handle {}", path, id);
-        return id;
-    }
-    return -1;
+    return register_asset(path, "Load");
 }
 
 int GAsset_GetPath(GAssetHandle handle, char* out_buf, int buf_size) {
