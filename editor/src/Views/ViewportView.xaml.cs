@@ -1672,8 +1672,12 @@ public partial class ViewportView : UserControl, IDisposable
             double nx, ny;
             if (_dragMode == "Translate2D")
             {
-                nx = _dragStartPosX + (sx - _dragStartScreenX) / _2dZoom;
-                ny = _dragStartPosY + (sy - _dragStartScreenY) / _2dZoom;
+                double dx = (sx - _dragStartScreenX) / _2dZoom;
+                double dy = (sy - _dragStartScreenY) / _2dZoom;
+                dx = VM?.SnapDelta(dx) ?? dx;
+                dy = VM?.SnapDelta(dy) ?? dy;
+                nx = _dragStartPosX + dx;
+                ny = _dragStartPosY + dy;
             }
             else
             {
@@ -1683,7 +1687,7 @@ public partial class ViewportView : UserControl, IDisposable
                 double a2x = _dragAxis == 0 ? Math.Cos(theta) : -Math.Sin(theta);
                 double a2y = _dragAxis == 0 ? Math.Sin(theta) : Math.Cos(theta);
                 double along = (sx - _dragStartScreenX) * a2x + (sy - _dragStartScreenY) * a2y;
-                double delta2d = along / _2dZoom;
+                double delta2d = VM?.SnapDelta(along / _2dZoom) ?? (along / _2dZoom);
                 nx = _dragStartPosX + a2x * delta2d;
                 ny = _dragStartPosY + a2y * delta2d;
             }
@@ -1782,9 +1786,10 @@ public partial class ViewportView : UserControl, IDisposable
 
         if (_dragMode == "Translate")
         {
-            double nx = _dragStartPosX + adx * worldDelta;
-            double ny = _dragStartPosY + ady * worldDelta;
-            double nz = _dragStartPosZ + adz * worldDelta;
+            double snapped = VM?.SnapDelta(worldDelta) ?? worldDelta;
+            double nx = _dragStartPosX + adx * snapped;
+            double ny = _dragStartPosY + ady * snapped;
+            double nz = _dragStartPosZ + adz * snapped;
             lock (_gizmoApplyLock)
             {
                 _gizmoApplyEntity = selected.Handle;
@@ -2678,6 +2683,21 @@ public partial class ViewportView : UserControl, IDisposable
 
         VM?.AppendConsole($"[Viewport] Display mode: {_displayMode}");
     }
+
+    private void OnAlignClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button b && b.ContextMenu is System.Windows.Controls.ContextMenu cm)
+        {
+            cm.PlacementTarget = b;
+            cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            cm.IsOpen = true;
+        }
+    }
+
+    private void OnAlignAllClick(object sender, RoutedEventArgs e) => VM?.AlignToGrid();
+    private void OnAlignXClick(object sender, RoutedEventArgs e) => VM?.AlignToGrid("X");
+    private void OnAlignYClick(object sender, RoutedEventArgs e) => VM?.AlignToGrid("Y");
+    private void OnAlignZClick(object sender, RoutedEventArgs e) => VM?.AlignToGrid("Z");
 
     public void Dispose()
     {

@@ -90,6 +90,52 @@ public class EditorViewModel : INotifyPropertyChanged
         set { _gizmoLocal = value; OnPropertyChanged(); }
     }
 
+    // Grid snapping used by the gizmo translate and the align toolbar.
+    private bool _gridSnap;
+    private float _gridSnapSize = 1.0f;
+
+    public bool IsGridSnap
+    {
+        get => _gridSnap;
+        set { _gridSnap = value; OnPropertyChanged(); }
+    }
+
+    public float GridSnapSize
+    {
+        get => _gridSnapSize;
+        set { _gridSnapSize = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Snap a displacement (delta) to the active grid, or return it
+    /// unchanged when snapping is disabled.</summary>
+    public double SnapDelta(double delta)
+    {
+        if (!_gridSnap || _gridSnapSize <= 0f) return delta;
+        double g = _gridSnapSize;
+        return Math.Round(delta / g) * g;
+    }
+
+    public void ToggleGridSnap() => IsGridSnap = !IsGridSnap;
+
+    /// <summary>Snap the selected entity's position onto the nearest grid point
+    /// along the given axis ('X', 'Y', 'Z', or null for all). Commits one undo.</summary>
+    public void AlignToGrid(string? axis = null)
+    {
+        if (_selectedEntity == null) return;
+        var pos = _selectedEntity.LocalPosition;
+        var oldPos = pos;
+        double g = _gridSnapSize > 0f ? _gridSnapSize : 1.0;
+        if (axis == null || axis == "X") pos.X = (float)(Math.Round(pos.X / g) * g);
+        if (axis == null || axis == "Y") pos.Y = (float)(Math.Round(pos.Y / g) * g);
+        if (axis == null || axis == "Z") pos.Z = (float)(Math.Round(pos.Z / g) * g);
+        if (Vec3Close(oldPos, pos)) return;
+        _selectedEntity.LocalPosition = pos;
+        WriteTransformLive();
+        PushUndo(new TransformAction(this, _selectedEntity.Handle, oldPos,
+            _selectedEntity.LocalRotation, _selectedEntity.LocalScale, pos,
+            _selectedEntity.LocalRotation, _selectedEntity.LocalScale));
+    }
+
     // Title
     private string _title = "Gryce Engine Editor";
     public string Title

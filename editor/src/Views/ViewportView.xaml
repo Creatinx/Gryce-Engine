@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="GryceEngine.Editor.Views.ViewportView"
+<UserControl x:Class="GryceEngine.Editor.Views.ViewportView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:loc="clr-namespace:GryceEngine.Editor.Markup"
@@ -127,6 +127,36 @@
                                FontSize="10" FontFamily="Consolas"
                                Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                VerticalAlignment="Center" Margin="4,0"/>
+                    <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="2,2"/>
+                    <ToggleButton x:Name="BtnGridSnap"
+                                  Style="{StaticResource ToolbarButtonStyle}"
+                                  MinWidth="28" Height="24" Padding="0"
+                                  IsChecked="{Binding IsGridSnap}"
+                                  IsEnabled="{Binding HasSelection}"
+                                  ToolTip="{loc:Loc viewport.grid_snap}">
+                        <TextBlock Text="&#xE8A8;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                    </ToggleButton>
+                    <TextBox x:Name="GridSnapSizeBox" Width="42" Height="22"
+                             FontSize="10.5" VerticalContentAlignment="Center"
+                             Margin="2,0" IsEnabled="{Binding IsGridSnap}"
+                             Text="{Binding GridSnapSize, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                             ToolTip="{loc:Loc viewport.grid_snap_size}"/>
+                    <Button x:Name="BtnAlign"
+                            Style="{StaticResource ToolbarButtonStyle}"
+                            MinWidth="28" Height="24" Padding="0"
+                            IsEnabled="{Binding HasSelection}"
+                            ToolTip="{loc:Loc viewport.align}"
+                            Click="OnAlignClick">
+                        <Button.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="{loc:Loc viewport.align_all}" Click="OnAlignAllClick"/>
+                                <MenuItem Header="{loc:Loc viewport.align_x}" Click="OnAlignXClick"/>
+                                <MenuItem Header="{loc:Loc viewport.align_y}" Click="OnAlignYClick"/>
+                                <MenuItem Header="{loc:Loc viewport.align_z}" Click="OnAlignZClick"/>
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                        <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                    </Button>
                 </StackPanel>
             </Grid>
         </Border>
