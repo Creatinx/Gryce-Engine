@@ -121,6 +121,21 @@ public partial class MainWindow
         }
     }
 
+    private void OnNewProjectClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new NewProjectDialog(App.Engine.ProjectRoot);
+        if (ModalDialog.Show(dialog, this) == true && dialog.CreatedProjectRoot != null)
+        {
+            App.Engine.ReloadProject(dialog.CreatedProjectRoot);
+            // 加载脚手架生成的主场景，并让视图刷新到底层实体树。
+            int rc = SceneAPI.GScene_Load("res:/scenes/main.gesc");
+            VM?.AppendConsole(rc == 0
+                ? $"Created project: {dialog.CreatedProjectRoot}"
+                : $"Created project, but failed to load main scene: {dialog.CreatedProjectRoot}");
+            VM?.RefreshHierarchy();
+        }
+    }
+
     private void OnImportAssetClick(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog

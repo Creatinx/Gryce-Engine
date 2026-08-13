@@ -4,6 +4,7 @@
     "menu.save_scene": "保存场景",
     "menu.load_scene": "加载场景...",
     "menu.open_project": "打开项目...",
+    "menu.new_project": "新建项目...",
     "menu.import_asset": "导入资源...",
     "menu.package": "打包运行（GryceGC）...",
     "menu.exit": "退出",
@@ -408,4 +409,16 @@
     ,"common.cancel": "取消"
     ,"confirm.delete_title": "确认删除"
     ,"confirm.delete_message": "确定要删除“{0}”吗？"
+    ,"new_project.title": "新建项目"
+    ,"new_project.name": "项目名称"
+    ,"new_project.parent_dir": "创建位置"
+    ,"new_project.template": "模板"
+    ,"new_project.template_3d": "3D 空项目"
+    ,"new_project.template_2d": "2D 空项目"
+    ,"new_project.target": "目标目录："
+    ,"new_project.create": "创建"
+    ,"new_project.name_required": "请输入项目名称。"
+    ,"new_project.bad_parent_dir": "父目录不存在。"
+    ,"new_project.already_exists": "该位置已存在同名项目。"
+    ,"new_project.create_failed": "创建项目失败。"
 }

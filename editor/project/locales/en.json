@@ -4,6 +4,7 @@
     "menu.save_scene": "Save Scene",
     "menu.load_scene": "Load Scene...",
     "menu.open_project": "Open Project...",
+    "menu.new_project": "New Project...",
     "menu.import_asset": "Import Asset...",
     "menu.package": "Package Game (GryceGC)...",
     "menu.exit": "Exit",
@@ -409,4 +410,16 @@
     ,"common.cancel": "Cancel"
     ,"confirm.delete_title": "Confirm Delete"
     ,"confirm.delete_message": "Are you sure you want to delete '{0}'?"
+    ,"new_project.title": "Create New Project"
+    ,"new_project.name": "Project Name"
+    ,"new_project.parent_dir": "Create in"
+    ,"new_project.template": "Template"
+    ,"new_project.template_3d": "3D Empty"
+    ,"new_project.template_2d": "2D Empty"
+    ,"new_project.target": "Target:"
+    ,"new_project.create": "Create"
+    ,"new_project.name_required": "Please enter a project name."
+    ,"new_project.bad_parent_dir": "The parent directory does not exist."
+    ,"new_project.already_exists": "A project with this name already exists at that location."
+    ,"new_project.create_failed": "Failed to create the project."
 }
