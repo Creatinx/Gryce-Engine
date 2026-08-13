@@ -974,6 +974,10 @@ public partial class ViewportView : UserControl, IDisposable
         {
             _gameCamera.FlyMoveSpeed = Clamp(_gameCamera.FlyMoveSpeed * (delta > 0 ? 1.1 : 0.9), 0.5, 100);
         }
+        else if (_is2DMode)
+        {
+            Zoom2DView(delta);
+        }
         else
         {
             _sceneCamera.Zoom(delta);
