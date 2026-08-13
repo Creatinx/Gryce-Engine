@@ -18,6 +18,7 @@ public partial class PackageDialog : Window
     private readonly string _projectRoot;
     private bool _running;
     private string? _toolConfig;
+    private string? _toolBuildDir;
 
     /// <summary>Console/log lines produced while packaging.</summary>
     public List<string> OutputLines { get; } = new();
@@ -41,7 +42,9 @@ public partial class PackageDialog : Window
 
     /// <summary>Locates grycegc.exe in the engine build output. Prefers the
     /// config matching the editor build (Debug when the editor is a Debug
-    /// build), falls back to the other config.</summary>
+    /// build), falls back to the other config.
+    /// Tries both multi-config (VS: build/bin/config) and single-config
+    /// (Ninja: build/config/bin/config) layouts.</summary>
     private string? FindGryceGCTool()
     {
         bool editorDebug = AppDomain.CurrentDomain.BaseDirectory.Contains("Debug");
@@ -50,11 +53,21 @@ public partial class PackageDialog : Window
             : new[] { "Release", "Debug" };
         foreach (string config in candidates)
         {
+            // Multi-config (Visual Studio generator): output to build/bin/config
             string exe = Path.Combine(_engineRoot, "build", "bin", config, "grycegc.exe");
             if (File.Exists(exe))
             {
                 _toolConfig = config;
+                _toolBuildDir = Path.Combine(_engineRoot, "build");
                 return exe;
+            }
+            // Single-config (Ninja generator): output to build/config/bin/config
+            string exeNinja = Path.Combine(_engineRoot, "build", config, "bin", config, "grycegc.exe");
+            if (File.Exists(exeNinja))
+            {
+                _toolConfig = config;
+                _toolBuildDir = Path.Combine(_engineRoot, "build", config);
+                return exeNinja;
             }
         }
         return null;
@@ -63,6 +76,16 @@ public partial class PackageDialog : Window
     private async System.Threading.Tasks.Task<bool> BuildGryceGCToolAsync(string config)
     {
         StatusText.Text = $"Building GryceGC ({config})...";
+        // Single-config (Ninja) trees put the tool under build/<config>/bin/<config>;
+        // multi-config (Visual Studio) trees under build/bin/<config>. Detect the
+        // layout and build the correct tree so the freshly built tool is found.
+        string buildDir = Path.Combine(_engineRoot, "build");
+        if (File.Exists(Path.Combine(buildDir, "CMakeCache.txt")) &&
+            System.IO.File.ReadAllText(Path.Combine(buildDir, "CMakeCache.txt")) is string cache &&
+            cache.Contains("CMAKE_GENERATOR:INTERNAL=Ninja"))
+        {
+            buildDir = Path.Combine(buildDir, config);
+        }
         var psi = new ProcessStartInfo("cmake")
         {
             UseShellExecute = false,
@@ -70,7 +93,7 @@ public partial class PackageDialog : Window
             RedirectStandardError = true,
             CreateNoWindow = true,
             Arguments =
-                $"--build \"{Path.Combine(_engineRoot, "build")}\" " +
+                $"--build \"{buildDir}\" " +
                 $"--target GryceGC --config {config}"
         };
         try
@@ -150,7 +173,7 @@ public partial class PackageDialog : Window
 
         string args =
             $"--project \"{_projectRoot}\" --name \"{name}\" " +
-            $"--build-dir \"{Path.Combine(_engineRoot, "build")}\" --config {_toolConfig} " +
+            $"--build-dir \"{_toolBuildDir}\" --config {_toolConfig} " +
             $"--out \"{outDir}\"";
         LogLine($"Package: {tool} {args}");
 
