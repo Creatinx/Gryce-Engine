@@ -108,8 +108,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FFE06C75"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.PositionX, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransPosX"
+                                         Text="{Binding SelectedEntity.PositionX, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
                             <Grid Grid.Row="0" Grid.Column="2" Margin="1,2">
                                 <Grid.ColumnDefinitions>
@@ -120,8 +124,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FF98C379"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.PositionY, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransPosY"
+                                         Text="{Binding SelectedEntity.PositionY, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
                             <Grid Grid.Row="0" Grid.Column="3" Margin="1,2">
                                 <Grid.ColumnDefinitions>
@@ -132,8 +140,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FF61AFEF"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.PositionZ, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransPosZ"
+                                         Text="{Binding SelectedEntity.PositionZ, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
 
                             <!-- Rotation -->
@@ -148,8 +160,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FFE06C75"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.RotationX, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransRotX"
+                                         Text="{Binding SelectedEntity.RotationX, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
                             <Grid Grid.Row="1" Grid.Column="2" Margin="1,2">
                                 <Grid.ColumnDefinitions>
@@ -160,8 +176,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FF98C379"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.RotationY, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransRotY"
+                                         Text="{Binding SelectedEntity.RotationY, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
                             <Grid Grid.Row="1" Grid.Column="3" Margin="1,2">
                                 <Grid.ColumnDefinitions>
@@ -172,8 +192,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FF61AFEF"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.RotationZ, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransRotZ"
+                                         Text="{Binding SelectedEntity.RotationZ, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
 
                             <!-- Scale -->
@@ -188,8 +212,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FFE06C75"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.ScaleX, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransScaleX"
+                                         Text="{Binding SelectedEntity.ScaleX, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
                             <Grid Grid.Row="2" Grid.Column="2" Margin="1,2">
                                 <Grid.ColumnDefinitions>
@@ -200,8 +228,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FF98C379"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.ScaleY, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransScaleY"
+                                         Text="{Binding SelectedEntity.ScaleY, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
                             <Grid Grid.Row="2" Grid.Column="3" Margin="1,2">
                                 <Grid.ColumnDefinitions>
@@ -212,8 +244,12 @@
                                            VerticalAlignment="Center" Margin="0,0,2,0"
                                            Foreground="#FF61AFEF"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource PropertyTextBoxStyle}"
-                                         Text="{Binding SelectedEntity.ScaleZ, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         LostFocus="OnTransformValueChanged"/>
+                                         x:Name="TransScaleZ"
+                                         Text="{Binding SelectedEntity.ScaleZ, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         GotFocus="OnTransformGotFocus"
+                                         TextChanged="OnTransformTextChanged"
+                                         LostFocus="OnTransformCommit"
+                                         PreviewMouseWheel="OnTransformMouseWheel"/>
                             </Grid>
                         </Grid>
                     </StackPanel>
@@ -354,6 +390,9 @@
                                                              Style="{StaticResource PropertyTextBoxStyle}"
                                                              Text="{Binding StringValue, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                                              Visibility="{Binding PropType, Converter={StaticResource IsStringToVisibility}}"
+                                                             AllowDrop="True"
+                                                             DragOver="OnPathDragOver"
+                                                             Drop="OnPathDrop"
                                                              LostFocus="OnPropertyStringChanged"
                                                              Tag="{Binding}"/>
                                                     <!-- Browse button for string path fields -->

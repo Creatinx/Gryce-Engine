@@ -176,6 +176,10 @@ public class EditorViewModel : INotifyPropertyChanged
     // opens the Add-Component picker so creation flows straight into it.
     private bool _pendingOpenComponentPicker;
 
+    // Skeleton entities to wire up (name -> component type) on the next frame
+    // after a New Scene, so the fresh scene is immediately useful.
+    private readonly List<(string name, string componentType)> _pendingSkeleton = new();
+
     // Undo/Redo stacks
     private readonly Stack<IUndoableAction> _undoStack = new();
     private readonly Stack<IUndoableAction> _redoStack = new();
@@ -240,6 +244,7 @@ public class EditorViewModel : INotifyPropertyChanged
                 RefreshHierarchy();
                 ApplyPendingComponentRestores();
                 AttachPendingComponentToNewEntity();
+                ProcessPendingSkeleton();
                 SelectPendingNewEntity();
                 ApplyPendingModelSetup();
                 if (_entityTypeSwitchPending)
@@ -350,6 +355,7 @@ public class EditorViewModel : INotifyPropertyChanged
     public void NewScene()
     {
         SceneAPI.GScene_New();
+        CreateSceneSkeleton();
         AppendConsole("New scene created.");
         _engine.ClearDirty();
         _undoStack.Clear();
@@ -358,6 +364,20 @@ public class EditorViewModel : INotifyPropertyChanged
         _pendingComponentRestores.Clear();
         System.Windows.Input.CommandManager.InvalidateRequerySuggested();
         OnPropertyChanged(nameof(EntityCount));
+    }
+
+    /// <summary>Populate a fresh scene with a main camera and a key light so it is
+    /// immediately usable. Components are attached on the next engine frame via
+    /// ProcessPendingSkeleton.</summary>
+    private void CreateSceneSkeleton()
+    {
+        _pendingSkeleton.Clear();
+        _pendingSkeleton.Add(("MainCamera", "Camera"));
+        _pendingSkeleton.Add(("MainLight", "Light"));
+        CreateEntitySilent("MainCamera");
+        CreateEntitySilent("MainLight");
+        // Don't auto-select the skeleton entities.
+        _pendingSelectEntityName = null;
     }
 
     public void SaveScene()
@@ -891,6 +911,31 @@ public class EditorViewModel : INotifyPropertyChanged
             else
             {
                 AppendConsole($"Failed to add component '{typeName}'");
+            }
+        }
+    }
+
+    /// <summary>Attach the Camera / Light components to the skeleton entities that
+    /// were created by CreateSceneSkeleton on the previous frame.</summary>
+    private void ProcessPendingSkeleton()
+    {
+        if (_pendingSkeleton.Count == 0) return;
+        var items = _pendingSkeleton.ToList();
+        _pendingSkeleton.Clear();
+        foreach (var (name, componentType) in items)
+        {
+            var created = FindNewestEntityByName(name, RootEntities);
+            if (created == null) continue;
+            ulong hash = 0;
+            foreach (var t in RegisteredTypes)
+            {
+                if (t.TypeName == componentType) { hash = t.TypeHash; break; }
+            }
+            if (hash == 0) continue;
+            if (ComponentAPI.GComponent_AddComponent(created.Handle, hash) == 0)
+            {
+                _engine.MarkSceneDirty();
+                AppendConsole($"Component '{componentType}' added to '{name}'");
             }
         }
     }
