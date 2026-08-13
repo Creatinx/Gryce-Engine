@@ -1012,6 +1012,45 @@ public class EditorViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>实时写入 Transform 到引擎（不推 undo），供 Inspector 拖拽/输入时实时预览。</summary>
+    public void WriteTransformLive()
+    {
+        if (_selectedEntity == null) return;
+        var handle = _selectedEntity.Handle;
+        var pos = _selectedEntity.LocalPosition;
+        var rot = _selectedEntity.LocalRotation;
+        var scl = _selectedEntity.LocalScale;
+
+        Span<byte> payload = stackalloc byte[sizeof(int) + 3 * 4 * sizeof(float)];
+        int offset = 0;
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), (int)handle); offset += sizeof(int);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), pos.X); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), pos.Y); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), pos.Z); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), rot.X); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), rot.Y); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), rot.Z); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), rot.W); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), scl.X); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), scl.Y); offset += sizeof(float);
+        BitConverterCompat.TryWriteBytes(payload.Slice(offset), scl.Z);
+
+        var cmd = GCommand.Create(GCommandType.SetTransform, payload);
+        CoreAPI.GCore_PushCommand(ref cmd);
+        _engine.MarkSceneDirty();
+    }
+
+    /// <summary>提交一次 Transform 编辑：用聚焦时捕获的旧状态推一条 undo。</summary>
+    public void FlushTransformUndo(GVec3 oldPos, GQuat oldRot, GVec3 oldScale)
+    {
+        if (_selectedEntity == null) return;
+        var pos = _selectedEntity.LocalPosition;
+        var rot = _selectedEntity.LocalRotation;
+        var scl = _selectedEntity.LocalScale;
+        if (!Vec3Close(oldPos, pos) || !QuatClose(oldRot, rot) || !Vec3Close(oldScale, scl))
+            PushUndo(new TransformAction(this, _selectedEntity.Handle, oldPos, oldRot, oldScale, pos, rot, scl));
+    }
+
     public void RefreshInspector()
     {
         if (_selectedEntity == null) return;
@@ -1221,6 +1260,24 @@ public class EditorViewModel : INotifyPropertyChanged
         {
             PushUndo(new PropertyAction(this, entity, comp.TypeHash, prop.Name, oldBytes, newBytes));
         }
+    }
+
+    /// <summary>实时写入组件反射属性（不推 undo），供 Inspector 输入/滚轮实时预览。</summary>
+    public void WritePropertyLive(ComponentModel comp, PropertyModel prop)
+    {
+        if (_selectedEntity == null) return;
+        prop.WriteToEngine(_selectedEntity.Handle, comp.TypeHash);
+        _engine.MarkSceneDirty();
+    }
+
+    /// <summary>提交一次组件属性编辑：用聚焦时捕获的旧值推一条 undo。</summary>
+    public void FlushPropertyUndo(ComponentModel comp, PropertyModel prop, byte[]? baseline)
+    {
+        if (_selectedEntity == null) return;
+        if (baseline == null || baseline.Length == 0) { WritePropertyValue(comp, prop); return; }
+        byte[]? cur = ReadPropertyBytes(_selectedEntity.Handle, comp.TypeHash, prop.Name, prop.Size);
+        if (cur != null && !System.Linq.Enumerable.SequenceEqual(baseline, cur))
+            PushUndo(new PropertyAction(this, _selectedEntity.Handle, comp.TypeHash, prop.Name, baseline, cur));
     }
 
     /// <summary>Reads a raw reflection property value from the engine.</summary>
