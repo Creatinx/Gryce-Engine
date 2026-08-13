@@ -72,15 +72,9 @@ public partial class MainWindow
     private void OnPlayClick(object sender, RoutedEventArgs e)
     {
         if (VM == null) return;
-        // Play and Pause are separate buttons: Play only starts/resumes.
-        if (!VM.IsPlaying || VM.IsPaused) VM.Play();
-    }
-
-    private void OnPauseClick(object sender, RoutedEventArgs e)
-    {
-        if (VM == null) return;
-        // Play and Pause are separate buttons: Pause only pauses.
-        if (VM.IsPlaying && !VM.IsPaused) VM.Pause();
+        // 播放按钮：点击播放，再点一下即暂停/继续切换。
+        if (VM.IsPlaying) VM.Pause();
+        else VM.Play();
     }
 
     private void OnStopClick(object sender, RoutedEventArgs e) => VM?.Stop();

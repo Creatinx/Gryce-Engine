@@ -676,8 +676,9 @@ public class EditorViewModel : INotifyPropertyChanged
 
     public void TogglePlayMode()
     {
+        // 播放/暂停切换（与播放按钮一致）：播放中再触发则暂停，否则开始播放。
         if (IsPlaying)
-            Stop();
+            Pause();
         else
             Play();
     }

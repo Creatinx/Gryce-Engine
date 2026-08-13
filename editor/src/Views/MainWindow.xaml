@@ -261,12 +261,6 @@
                             ToolTip="{loc:Loc toolbar.play}"
                             Content="&#xE768;"
                             Click="OnPlayClick"/>
-                    <Button x:Name="BtnPause"
-                            Style="{StaticResource ToolbarButtonStyle}"
-                            AutomationProperties.Name="PauseButton"
-                            ToolTip="{loc:Loc toolbar.pause}"
-                            Content="&#xE769;"
-                            Click="OnPauseClick"/>
                     <Button x:Name="BtnStop"
                             Style="{StaticResource ToolbarButtonStyle}"
                             AutomationProperties.Name="StopButton"

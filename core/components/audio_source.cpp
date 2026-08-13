@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "audio/audio_engine.h"
+#include "assets/asset_manager.h"
 #include "scene/entity.h"
 #include "components/transform.h"
 #include "resources/resource_path.h"
@@ -27,7 +28,8 @@ void AudioSource::ensure_clip_loaded() {
     if (clip_path.empty()) return;
     if (clip_ && clip_->path() == clip_path) return;
 
-    std::string resolved = resources::ResourcePath::resolve(clip_path);
+    // 先查磁盘存在，不存在则从 gpkg 包提取到临时文件供读取
+    std::string resolved = assets::AssetManager::instance().resolve_for_reading(clip_path);
     clip_ = std::make_shared<audio::AudioClip>();
     if (!clip_->load(resolved)) {
         clip_.reset();
