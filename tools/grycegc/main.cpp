@@ -28,6 +28,7 @@
 #include "resources/gpack_bundle.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
@@ -527,6 +528,9 @@ bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug
     if (!glfw_ok) {
         std::cerr << "[grycegc] warning: glfw3d.dll/glfw3.dll not found in " << bin_dir << "\n";
     }
+    // GLEW: the renderer may link it dynamically (MinGW shared GLEW builds).
+    // Harmless to include and avoids a hard DLL_NOT_FOUND at load time.
+    copy_file_if_exists(bin_dir, "glew32.dll", runtime_dir, copied);
     // MinGW runtime DLLs (self-contained packages; harmless to include).
     for (const char* rt : {"libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"}) {
         copy_file_if_exists(bin_dir, rt, runtime_dir, copied);
@@ -536,6 +540,31 @@ bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug
     if (!mingw) {
         if (!copy_msvc_runtime(build_dir, debug, runtime_dir, copied)) {
             return false;
+        }
+    }
+
+    // MinGW builds do not support /DELAYLOAD, so the exe imports the engine
+    // DLLs at process start BEFORE SetDllDirectoryW("runtime") can run. Their
+    // DLLs must therefore sit next to the exe, not only in runtime/. Copy the
+    // full import set to the output root so packaged MinGW games actually boot.
+    if (mingw) {
+        const std::array<std::string, 9> root_dlls{
+            "libGryceCore" + suffix + ".dll",
+            "libGryceRenderer" + suffix + ".dll",
+            "libGrycePlatform" + suffix + ".dll",
+            "libGrycePhysics" + suffix + ".dll",
+            "glfw3.dll",
+            "glew32.dll",
+            "libgcc_s_seh-1.dll",
+            "libstdc++-6.dll",
+            "libwinpthread-1.dll"};
+        for (const std::string& root_dll : root_dlls) {
+            std::error_code sec;
+            const fs::path root_src = bin_dir / root_dll;
+            if (fs::is_regular_file(root_src, sec)) {
+                fs::copy_file(root_src, out_dir / root_dll,
+                              fs::copy_options::overwrite_existing, ec);
+            }
         }
     }
 
