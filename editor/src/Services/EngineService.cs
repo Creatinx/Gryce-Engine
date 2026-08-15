@@ -88,11 +88,30 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
             LogMessage?.Invoke($"Project root not found: {root}");
             return;
         }
+        WriteEngineLog("ReloadProject: shutdown " + root);
         Shutdown();
+        WriteEngineLog("ReloadProject: initialize " + root);
         Initialize(root);
+        WriteEngineLog("ReloadProject: project changed");
         ProjectChanged?.Invoke(ProjectRoot);
+        WriteEngineLog("ReloadProject: persist");
         EditorSettingsService.SaveLastProject(ProjectRoot);
         EditorSettingsService.AddRecentProject(ProjectRoot);
+        WriteEngineLog("ReloadProject: done");
+    }
+
+    private static void WriteEngineLog(string message)
+    {
+        try
+        {
+            string path = System.IO.Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory, "editor_crash.log");
+            System.IO.File.AppendAllText(path,
+                $"[{DateTime.Now:HH:mm:ss.fff}] {message}\r\n");
+        }
+        catch
+        {
+        }
     }
 
     /// <summary>

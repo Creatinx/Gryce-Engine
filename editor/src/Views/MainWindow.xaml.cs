@@ -42,6 +42,7 @@ public partial class MainWindow
     protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
+        WriteEditorLog("MainWindow.OnClosing cancel=" + e.Cancel + "\r\n" + Environment.StackTrace);
 
         var engine = App.Engine;
         if (engine == null || !engine.IsInitialized || !engine.IsSceneDirty || engine.IsPlaying) return;
@@ -62,6 +63,26 @@ public partial class MainWindow
             e.Cancel = true;
         }
         // No = discard unsaved changes and close.
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        WriteEditorLog("MainWindow.OnClosed\r\n" + Environment.StackTrace);
+        base.OnClosed(e);
+    }
+
+    private static void WriteEditorLog(string message)
+    {
+        try
+        {
+            string path = System.IO.Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory, "editor_crash.log");
+            System.IO.File.AppendAllText(path,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}\r\n");
+        }
+        catch
+        {
+        }
     }
 
     /// <summary>Transient status toast: shows the message in the status bar and
@@ -163,30 +184,41 @@ public partial class MainWindow
 
     private void OnOpenProjectClick(object sender, RoutedEventArgs e)
     {
+        WriteEditorLog("OnOpenProjectClick: start");
         using var dialog = new System.Windows.Forms.FolderBrowserDialog
         {
             Description = "Select Game Project Root",
             ShowNewFolderButton = false
         };
+        WriteEditorLog("OnOpenProjectClick: showing FolderBrowserDialog");
         if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
         {
+            WriteEditorLog("OnOpenProjectClick: selected " + dialog.SelectedPath);
             App.Engine.ReloadProject(dialog.SelectedPath);
+            WriteEditorLog("OnOpenProjectClick: ReloadProject returned");
         }
+        WriteEditorLog("OnOpenProjectClick: end");
     }
 
     private void OnNewProjectClick(object sender, RoutedEventArgs e)
     {
+        WriteEditorLog("OnNewProjectClick: start");
         var dialog = new NewProjectDialog(App.Engine.ProjectRoot);
+        WriteEditorLog("OnNewProjectClick: showing NewProjectDialog");
         if (ModalDialog.Show(dialog, this) == true && dialog.CreatedProjectRoot != null)
         {
+            WriteEditorLog("OnNewProjectClick: created " + dialog.CreatedProjectRoot);
             App.Engine.ReloadProject(dialog.CreatedProjectRoot);
+            WriteEditorLog("OnNewProjectClick: ReloadProject returned");
             // 加载脚手架生成的主场景，并让视图刷新到底层实体树。
             int rc = SceneAPI.GScene_Load("res:/scenes/main.gesc");
+            WriteEditorLog("OnNewProjectClick: GScene_Load rc=" + rc);
             VM?.AppendConsole(rc == 0
                 ? $"Created project: {dialog.CreatedProjectRoot}"
                 : $"Created project, but failed to load main scene: {dialog.CreatedProjectRoot}");
             VM?.RefreshHierarchy();
         }
+        WriteEditorLog("OnNewProjectClick: end");
     }
 
     private void OnImportAssetClick(object sender, RoutedEventArgs e)

@@ -13,6 +13,17 @@ public partial class App : Application
 
     public App()
     {
+        // 捕获所有首次异常（含被处理/吞掉的），便于定位"干净退出"的触发点。
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+        {
+            try
+            {
+                WriteCrashLog(e.Exception, "FirstChance");
+            }
+            catch
+            {
+            }
+        };
         // 未处理异常落盘（编辑器崩溃时留证据），同时弹窗提示而不是无声闪退。
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
@@ -122,6 +133,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        WriteCrashLog(new Exception("Application exiting"), "OnExit " + Environment.StackTrace);
         EditorVM?.DetachCallbacks();
         Engine?.Shutdown();
         base.OnExit(e);
