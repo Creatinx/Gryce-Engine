@@ -15,6 +15,7 @@ public class EntityModel : INotifyPropertyChanged
     private GQuat _rotation;
     private GVec3 _scale = new(1, 1, 1);
     private bool _isSelected;
+    private bool _isMultiHighlight;
     private bool _isExpanded = true;
     private bool _enabled = true;
     private string _icon = "\uE8B7";
@@ -81,6 +82,13 @@ public class EntityModel : INotifyPropertyChanged
     {
         get => _isSelected;
         set { _isSelected = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>多选集合中的次要高亮（TreeView 原生只保留主选中高亮）。</summary>
+    public bool IsMultiHighlight
+    {
+        get => _isMultiHighlight;
+        set { _isMultiHighlight = value; OnPropertyChanged(); }
     }
 
     public bool IsExpanded

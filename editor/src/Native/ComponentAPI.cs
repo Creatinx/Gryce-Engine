@@ -33,6 +33,14 @@ public static class ComponentAPI
         nint value, int valueSize);
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GComponent_TilemapGetTiles(GEntityHandle entity, ulong compTypeHash,
+        [Out] int[] outTiles, int maxCount);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int GComponent_TilemapSetTiles(GEntityHandle entity, ulong compTypeHash,
+        int[] tiles, int count);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GComponent_AddComponent(GEntityHandle entity, ulong compTypeHash);
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]

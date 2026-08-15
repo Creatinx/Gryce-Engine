@@ -2,6 +2,8 @@ using GryceEngine.Editor.Models;
 using GryceEngine.Editor.ViewModels;
 using System;
 using System.Linq;
+using System.IO;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -50,9 +52,29 @@ public partial class ConsoleView : UserControl
     /// (falls back to the OS default editor).</summary>
     private void OnLogDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (_selectedEntry == null || string.IsNullOrEmpty(_selectedEntry.SourceFile)) return;
+        if (_selectedEntry == null) return;
+
+        // Lua 脚本错误优先：消息形如 "scripts/player.lua:12: ..."，
+        // 解析出脚本路径与行号跳转（相对路径基于项目根解析）。
         string file = _selectedEntry.SourceFile;
         int line = _selectedEntry.SourceLine;
+        var luaMatch = Regex.Match(_selectedEntry.Message, @"([^\s""']+\.lua):(\d+)");
+        if (luaMatch.Success)
+        {
+            string luaPath = luaMatch.Groups[1].Value;
+            if (!Path.IsPathRooted(luaPath))
+            {
+                string? root = App.Engine?.ProjectRoot;
+                if (!string.IsNullOrEmpty(root))
+                    luaPath = Path.Combine(root, luaPath);
+            }
+            if (File.Exists(luaPath))
+            {
+                file = luaPath;
+                line = int.Parse(luaMatch.Groups[2].Value);
+            }
+        }
+        if (string.IsNullOrEmpty(file)) return;
         try
         {
             var psi = new System.Diagnostics.ProcessStartInfo("code")

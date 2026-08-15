@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GryceCore/types.h"
+#include "export.h"
 #include "runtime/command_buffer.h"
 #include "runtime/entity_handle_map.h"
 
@@ -124,7 +125,8 @@ struct EngineContext {
 extern EngineContext g_core_state;
 
 // Helper: resolve EntityHandle -> Entity* via UUID
-struct EntityResolver {
+// （跨 DLL 使用：GryceRenderer 的 GameView 相机需要把实体句柄解析为 Entity）
+struct GRYCE_API EntityResolver {
     static gryce_engine::scene::Entity* resolve(GEntityHandle h);
 };
 

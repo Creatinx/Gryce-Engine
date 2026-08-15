@@ -52,6 +52,35 @@ public partial class InspectorView : UserControl
         if (sender is FrameworkElement fe && fe.Tag is ulong typeHash)
         {
             var contextMenu = new ContextMenu();
+            // Tilemap 组件提供数据编辑器入口
+            if (fe.DataContext is ComponentModel comp && comp.TypeName == "Tilemap")
+            {
+                var editItem = new MenuItem
+                {
+                    Header = LocalizationService.Instance.T("tilemap_editor.edit"),
+                    InputGestureText = "..."
+                };
+                editItem.Icon = new TextBlock
+                {
+                    Text = "\uE7B8",
+                    FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
+                    FontSize = 12
+                };
+                string initialTileset = comp.Properties
+                    .FirstOrDefault(p => p.Name == "tileset_path")?.StringValue ?? string.Empty;
+                editItem.Click += (_, _) =>
+                {
+                    if (VM.SelectedEntity != null)
+                    {
+                        ModalDialog.Show(new TilemapEditorWindow(
+                            VM.SelectedEntity.Handle, typeHash, initialTileset),
+                            Window.GetWindow(this));
+                        VM.RefreshInspector();
+                    }
+                };
+                contextMenu.Items.Add(editItem);
+                contextMenu.Items.Add(new Separator());
+            }
             var removeItem = new MenuItem
             {
                 Header = LocalizationService.Instance.T("inspector.remove_component"),

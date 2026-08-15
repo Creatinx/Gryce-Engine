@@ -3,6 +3,7 @@
 #include "GryceRenderer/viewport_api.h"
 #include "GryceCore/core_api.h"
 #include "GrycePlatform/window_api.h"
+#include "runtime/engine_context.h"
 
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
@@ -455,7 +456,7 @@ void GRender_BeginFrame(void) {
 }
 
 // Renders the current world through the pipeline (shared by SceneView / GameView).
-static void render_world_internal() {
+static void render_world_internal(GEntityHandle camera_override = 0) {
     if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
 
     auto* world = get_world();
@@ -500,8 +501,16 @@ static void render_world_internal() {
         // 从场景中解析主摄像机与光源，喂给渲染管线（此前未设置 camera_，
         // render_scene 直接 return，场景始终画不出来）。
         math::Camera camera;
-        if (build_scene_camera(
-                find_main_camera_entity(*world->scene()),
+        // GameView 独立相机：GGameView_SetCamera 指定的实体优先，
+        // 否则回退到场景主相机（SceneView 行为）。
+        scene::Entity* camera_entity = nullptr;
+        if (camera_override != 0) {
+            camera_entity = gryce_core::EntityResolver::resolve(camera_override);
+        }
+        if (!camera_entity) {
+            camera_entity = find_main_camera_entity(*world->scene());
+        }
+        if (build_scene_camera(camera_entity,
                 g_renderer.viewport_w, g_renderer.viewport_h, camera)) {
             g_renderer.pipeline->set_camera(camera);
         }
@@ -534,9 +543,9 @@ void GRender_RenderGizmo(void) {
 void GRender_RenderGameView(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
-    // TODO(Phase): 独立 GameView FBO 与独立相机。目前与 SceneView 共用同一管线/纹理，
-    // 与 GRender_GetGameViewTexture() 返回视口纹理的行为保持一致。
-    render_world_internal();
+    // 相机已独立（gameview_camera 优先）；FBO/纹理仍与 SceneView 共用，
+    // GRender_GetGameViewTexture() 返回视口纹理。独立 FBO 留待双管线改造。
+    render_world_internal(g_renderer.gameview_camera);
 }
 
 void GRender_SetDisplayMode(const char* mode) {

@@ -190,6 +190,10 @@
                                             <Setter TargetName="Bd" Property="Background"
                                                     Value="{DynamicResource AccentFillColorSecondaryBrush}"/>
                                         </Trigger>
+                                        <DataTrigger Binding="{Binding IsMultiHighlight}" Value="True">
+                                            <Setter TargetName="Bd" Property="Background"
+                                                    Value="{DynamicResource AccentFillColorDefaultBrush}"/>
+                                        </DataTrigger>
                                         <MultiTrigger>
                                             <MultiTrigger.Conditions>
                                                 <Condition Property="IsSelected" Value="True"/>

@@ -461,11 +461,13 @@ public partial class EditorViewModel : INotifyPropertyChanged
         {
             _entityModelCache.Remove(stale);
             _entityComponentSignature.Remove(stale);
+            _multiSelection.Remove(stale);
         }
 
         SyncCollection(RootEntities, roots);
         foreach (var h in present)
             SyncEntityChildren(h);
+        ApplyMultiHighlight();
     }
 
     /// <summary>返回实体的模型：新实体创建并刷新组件；已有实体只更新名称，
@@ -527,7 +529,80 @@ public partial class EditorViewModel : INotifyPropertyChanged
         foreach (var m in desired) target.Add(m);
     }
 
+    // -----------------------------------------------------------------------
+    // 多选（批量复制/删除）：TreeView 原生单选，次要选中项用 IsMultiHighlight
+    // 高亮；主选中项（_selectedEntity）驱动 Inspector/Gizmo。
+    // -----------------------------------------------------------------------
+    private readonly HashSet<GEntityHandle> _multiSelection = new();
+
+    /// <summary>程序化单选（拾取/点击/导航）：重置多选集合。</summary>
     public void SelectEntityByHandle(GEntityHandle handle)
+    {
+        ClearMultiSelection();
+        SelectEntityByHandleInternal(handle);
+    }
+
+    /// <summary>多选模式下的主选中（不重置集合）。</summary>
+    public void SetSingleSelection(GEntityHandle handle)
+    {
+        ClearMultiSelection();
+        SelectEntityByHandleInternal(handle);
+    }
+
+    /// <summary>Ctrl/Shift 点击：加入/移出多选集合，并把点击项设为主选中。</summary>
+    public void ToggleMultiSelect(GEntityHandle handle)
+    {
+        if (handle == GEntityHandle.Null) return;
+        if (!_multiSelection.Add(handle))
+            _multiSelection.Remove(handle);
+        ApplyMultiHighlight();
+        SelectEntityByHandleInternal(handle);
+    }
+
+    /// <summary>右键：实体已在多选集合中则保留集合，否则退化为单选。</summary>
+    public void SelectWithinMulti(GEntityHandle handle)
+    {
+        if (_multiSelection.Contains(handle))
+            SelectEntityByHandleInternal(handle);
+        else
+            SetSingleSelection(handle);
+    }
+
+    public void ClearMultiSelection()
+    {
+        if (_multiSelection.Count == 0) return;
+        _multiSelection.Clear();
+        ApplyMultiHighlight();
+    }
+
+    public bool IsMultiSelected(GEntityHandle handle) => _multiSelection.Contains(handle);
+
+    private void ApplyMultiHighlight()
+    {
+        foreach (var pair in _entityModelCache)
+            pair.Value.IsMultiHighlight = _multiSelection.Contains(pair.Key);
+    }
+
+    /// <summary>不含祖先的选中实体（父+子同选时只处理父，避免重复）。</summary>
+    private static List<GEntityHandle> TopmostSelection(IEnumerable<GEntityHandle> handles)
+    {
+        var set = new HashSet<GEntityHandle>(handles);
+        var result = new List<GEntityHandle>();
+        foreach (var h in handles)
+        {
+            bool hasSelectedAncestor = false;
+            var parent = EntityAPI.GEntity_GetParent(h);
+            while (parent != GEntityHandle.Null)
+            {
+                if (set.Contains(parent)) { hasSelectedAncestor = true; break; }
+                parent = EntityAPI.GEntity_GetParent(parent);
+            }
+            if (!hasSelectedAncestor) result.Add(h);
+        }
+        return result;
+    }
+
+    private void SelectEntityByHandleInternal(GEntityHandle handle)
     {
         if (handle == GEntityHandle.Null)
         {

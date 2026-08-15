@@ -11,6 +11,7 @@
 #include "scene/entity.h"
 
 #include "components/component_factory.h"
+#include "components/2d/tilemap.h"
 
 #include "reflection/reflection.h"
 
@@ -168,6 +169,55 @@ static std::string get_component_type_name(gryce_engine::components::Component* 
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Tilemap 瓦片数据
+// ---------------------------------------------------------------------------
+namespace {
+
+gryce_engine::components::d2::tilemap::Tilemap* resolve_tilemap(
+    GEntityHandle entity, uint64_t comp_type_hash) {
+    Entity* e = resolve_entity(entity);
+    if (!e) return nullptr;
+    for (const auto& comp : e->components()) {
+        auto* tm = dynamic_cast<gryce_engine::components::d2::tilemap::Tilemap*>(comp.get());
+        if (!tm) continue;
+        if (hash_type_name(tm->type()) != comp_type_hash) continue;
+        return tm;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+int GComponent_TilemapGetTiles(GEntityHandle entity, uint64_t comp_type_hash,
+                               int* out_tiles, int max_count) {
+    GRYCE_API_GUARD();
+    auto* tm = resolve_tilemap(entity, comp_type_hash);
+    if (!tm) return -1;
+    const int n = static_cast<int>(tm->tiles.size());
+    // out_tiles 为空时返回所需数量（供调用方分配缓冲）
+    if (!out_tiles) return n;
+    if (max_count <= 0) return 0;
+    const int copy = n < max_count ? n : max_count;
+    for (int i = 0; i < copy; ++i) out_tiles[i] = tm->tiles[static_cast<size_t>(i)];
+    return copy;
+}
+
+int GComponent_TilemapSetTiles(GEntityHandle entity, uint64_t comp_type_hash,
+                               const int* tiles, int count) {
+    GRYCE_API_GUARD();
+    auto* tm = resolve_tilemap(entity, comp_type_hash);
+    if (!tm) return -1;
+    if (count <= 0) {
+        tm->tiles.clear();
+    } else if (tiles) {
+        tm->tiles.assign(tiles, tiles + count);
+    } else {
+        return -1;
+    }
+    return 0;
+}
 
 namespace gryce_core {
 std::string get_component_type_name(gryce_engine::components::Component* comp) {

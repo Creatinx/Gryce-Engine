@@ -383,7 +383,57 @@ public partial class ProjectView : UserControl
                 ? string.Format(LocalizationService.Instance.T("project.folder"), item.Name)
                 : string.Format(LocalizationService.Instance.T("project.file"),
                     item.Name, Path.GetExtension(item.Name));
+            UpdatePreview(item);
         }
+        else
+        {
+            PreviewPanel.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>资源预览：纹理显示缩略图 + 尺寸，其余文件显示名称/大小。</summary>
+    private void UpdatePreview(FileItem item)
+    {
+        if (item.IsDirectory || !File.Exists(item.Path))
+        {
+            PreviewPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        string ext = Path.GetExtension(item.Path).ToLowerInvariant();
+        bool isImage = ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".tga" or ".webp";
+        var fileInfo = new FileInfo(item.Path);
+
+        if (isImage)
+        {
+            try
+            {
+                var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                bitmap.UriSource = new Uri(item.Path);
+                bitmap.EndInit();
+                PreviewImage.Source = bitmap;
+                PreviewInfo.Text = $"{bitmap.PixelWidth} × {bitmap.PixelHeight}  ·  {FormatSize(fileInfo.Length)}";
+                PreviewPanel.Visibility = Visibility.Visible;
+                return;
+            }
+            catch
+            {
+                // 非 WPF 可解码格式（DDS 等）降级为文件信息
+            }
+        }
+
+        PreviewImage.Source = null;
+        PreviewInfo.Text = $"{item.Name}  ·  {FormatSize(fileInfo.Length)}";
+        PreviewPanel.Visibility = Visibility.Visible;
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes >= 1 << 20) return $"{bytes / (double)(1 << 20):0.0} MB";
+        if (bytes >= 1 << 10) return $"{bytes / (double)(1 << 10):0.0} KB";
+        return $"{bytes} B";
     }
 
     private void OnFileDoubleClick(object sender, MouseButtonEventArgs e)

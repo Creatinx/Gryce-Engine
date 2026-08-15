@@ -37,6 +37,16 @@ GRYCE_CORE_API int GComponent_GetProperty(GEntityHandle entity, uint64_t comp_ty
 GRYCE_CORE_API int GComponent_SetProperty(GEntityHandle entity, uint64_t comp_type_hash, const char* prop_name,
                                            const void* value, int value_size);
 
+// ---------------------------------------------------------------------------
+// Tilemap 瓦片数据（tiles 向量不在反射标量范围内，提供专用数组接口）
+// ---------------------------------------------------------------------------
+// 读取瓦片数组到 out_tiles（最多 max_count 个）。返回实际写入的数量；失败返回 -1。
+GRYCE_CORE_API int GComponent_TilemapGetTiles(GEntityHandle entity, uint64_t comp_type_hash,
+                                              int* out_tiles, int max_count);
+// 写入瓦片数组（count 为 -1 时清空）。返回 0 成功，-1 失败。
+GRYCE_CORE_API int GComponent_TilemapSetTiles(GEntityHandle entity, uint64_t comp_type_hash,
+                                              const int* tiles, int count);
+
 GRYCE_CORE_API int GComponent_AddComponent(GEntityHandle entity, uint64_t comp_type_hash);
 GRYCE_CORE_API int GComponent_RemoveComponent(GEntityHandle entity, uint64_t comp_type_hash);
 

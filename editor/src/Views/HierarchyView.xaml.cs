@@ -41,7 +41,11 @@ public partial class HierarchyView : UserControl
         if (VM == null) return;
         if (sender is TreeViewItem item && item.DataContext is EntityModel entity)
         {
-            VM.SelectedEntity = entity;
+            var mods = Keyboard.Modifiers;
+            if ((mods & ModifierKeys.Control) != 0 || (mods & ModifierKeys.Shift) != 0)
+                VM.ToggleMultiSelect(entity.Handle);
+            else
+                VM.SetSingleSelection(entity.Handle);
         }
     }
 
@@ -51,7 +55,7 @@ public partial class HierarchyView : UserControl
         {
             _contextOnEntity = true;
             item.IsSelected = true;
-            VM!.SelectedEntity = entity;
+            VM!.SelectWithinMulti(entity.Handle);
         }
     }
 

@@ -157,6 +157,19 @@ public partial class EditorViewModel
 
     public void DeleteSelectedEntity()
     {
+        // 批量删除：多选时按顶层实体逐个删除（子实体随父删除，不重复）。
+        if (_multiSelection.Count > 1)
+        {
+            foreach (var h in TopmostSelection(_multiSelection))
+            {
+                DeleteEntityCore(h, EntityAPI.GetNameUtf8(h) ?? "Entity",
+                    EntityAPI.ExportJsonUtf8(h), EntityAPI.GEntity_GetParent(h), recordUndo: true);
+            }
+            ClearMultiSelection();
+            SelectedEntity = null;
+            return;
+        }
+
         if (_selectedEntity == null) return;
         var handle = _selectedEntity.Handle;
         var name = _selectedEntity.Name;
@@ -177,10 +190,32 @@ public partial class EditorViewModel
 
     public void DuplicateSelectedEntity()
     {
+        // 批量复制：多选时复制整个集合（仅顶层，父+子同选不重复），
+        // 完成后选中第一个新实体。
+        if (_multiSelection.Count > 1)
+        {
+            var created = new List<GEntityHandle>();
+            foreach (var h in TopmostSelection(_multiSelection))
+            {
+                var nh = DuplicateEntityToParent(h, EntityAPI.GEntity_GetParent(h));
+                if (nh != GEntityHandle.Null) created.Add(nh);
+            }
+            ClearMultiSelection();
+            if (created.Count > 0) SelectEntityByHandle(created[0]);
+            return;
+        }
+
         if (_selectedEntity == null) return;
-        var handle = _selectedEntity.Handle;
-        var name = _selectedEntity.Name;
-        var parent = EntityAPI.GEntity_GetParent(handle);
+        var newHandle = DuplicateEntityToParent(_selectedEntity.Handle,
+            EntityAPI.GEntity_GetParent(_selectedEntity.Handle));
+        if (newHandle != GEntityHandle.Null) SelectEntityByHandle(newHandle);
+    }
+
+    /// <summary>复制实体子树到指定父级（含 Undo 记录）；失败回退创建空实体。</summary>
+    private GEntityHandle DuplicateEntityToParent(GEntityHandle handle, GEntityHandle parent)
+    {
+        if (handle == GEntityHandle.Null) return GEntityHandle.Null;
+        var name = EntityAPI.GetNameUtf8(handle) ?? "Entity";
         string copyName = name + LocalizationService.Instance.T("hierarchy.duplicate_suffix");
         string? json = EntityAPI.ExportJsonUtf8(handle);
         if (!string.IsNullOrEmpty(json))
@@ -191,12 +226,12 @@ public partial class EditorViewModel
                 _engine.MarkSceneDirty();
                 PushUndo(new DeleteEntityAction(this, newHandle, copyName, null, parent));
                 AppendConsole($"Duplicated: {name}");
-                SelectEntityByHandle(newHandle);
-                return;
+                return newHandle;
             }
         }
         CreateEntity(copyName, parent);
         AppendConsole($"Duplicated: {name}");
+        return GEntityHandle.Null;
     }
 
 

@@ -66,6 +66,13 @@ public partial class ViewportView
         GameViewActive = true;
         // 游戏视图即游戏画布：进入即开始 Play，让 Lua 脚本接管场景与相机。
         if (VM != null && !VM.IsPlaying) VM.Play();
+        // 独立 GameView 相机：优先场景主相机实体（渲染侧 GRender_RenderGameView
+        // 会使用该相机而非编辑器 Orbit 相机）。
+        var gameCamera = FindMainCamera();
+        if (gameCamera != GEntityHandle.Null)
+        {
+            ViewportAPI.GGameView_SetCamera(gameCamera);
+        }
         Set2DMode(false);
         TabScene.IsChecked = false;
         Tab2D.IsChecked = false;
