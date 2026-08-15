@@ -88,29 +88,14 @@ endfunction()
 # ---------------------------------------------------------------------------
 set(GRYCE_SHADER_TARGETS)
 
-# 2dDemo 与 3dtest 共用同一套运行时着色器（grid 调试网格等）。
+# 着色器单一来源：examples/common/shaders（76 个 .vert/.frag）。
 # 仓库约定：手动复制的文件必须在 CMake 里自动补齐，因此 configure 时
-# 检测 2dDemo/shaders 缺失的 .vert/.frag 并自动从 3dtest/shaders 复制。
-file(GLOB _2dDemo_shader_sources
-    "${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders/*.vert"
-    "${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders/*.frag"
-)
-set(_2dDemo_shader_names)
-foreach(_shader IN LISTS _2dDemo_shader_sources)
-    get_filename_component(_shader_name "${_shader}" NAME)
-    list(APPEND _2dDemo_shader_names "${_shader_name}")
-endforeach()
-
-file(GLOB _3dtest_shader_sources
-    "${CMAKE_CURRENT_SOURCE_DIR}/3dtest/shaders/*.vert"
-    "${CMAKE_CURRENT_SOURCE_DIR}/3dtest/shaders/*.frag"
-)
-foreach(_shader IN LISTS _3dtest_shader_sources)
-    get_filename_component(_shader_name "${_shader}" NAME)
-    if(NOT _shader_name IN_LIST _2dDemo_shader_names)
-        message(STATUS "[Gryce Engine] syncing missing shader to 2dDemo: ${_shader_name}")
-        file(COPY "${_shader}" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders")
-        list(APPEND _2dDemo_shader_names "${_shader_name}")
+# 统一从 common/shaders 同步到每个 demo 的 shaders 目录，避免三处漂移。
+set(GRYCE_SHARED_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/shaders")
+foreach(_demo_dir IN ITEMS 2dDemo 3dtest FPSDemo)
+    set(_demo_shaders_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_demo_dir}/shaders")
+    if(IS_DIRECTORY "${GRYCE_SHARED_SHADERS_DIR}")
+        file(COPY "${GRYCE_SHARED_SHADERS_DIR}/" DESTINATION "${_demo_shaders_dir}")
     endif()
 endforeach()
 
@@ -124,6 +109,11 @@ if(GRYCE_SHADER_TARGET)
     list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
 endif()
 
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/FPSDemo/shaders")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
 # 把着色器 target 暴露给父目录，editor 可依赖
 set(GRYCE_EXAMPLE_SHADER_TARGETS "${GRYCE_SHADER_TARGETS}" PARENT_SCOPE)
 
@@ -132,10 +122,12 @@ set(GRYCE_EXAMPLE_SHADER_TARGETS "${GRYCE_SHADER_TARGETS}" PARENT_SCOPE)
 # ---------------------------------------------------------------------------
 add_gryce_demo_legacy(3dtest 3dtest 3dtest.cpp)
 add_gryce_demo_legacy(2dDemo 2dDemo 2dDemo.cpp)
+add_gryce_demo_legacy(FPSDemo FPSDemo FPSDemo.cpp)
 
 # 示例可执行文件依赖对应 SPIR-V
 if(GRYCE_SHADER_TARGETS)
     add_dependencies(3dtest ${GRYCE_SHADER_TARGETS})
     add_dependencies(2dDemo ${GRYCE_SHADER_TARGETS})
+    add_dependencies(FPSDemo ${GRYCE_SHADER_TARGETS})
 endif()
 

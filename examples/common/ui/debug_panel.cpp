@@ -348,6 +348,23 @@ void DebugPanel::show(platform::Window* window, scene::Scene* scene, math::Camer
     if (pcss_changed && pipeline) {
         pipeline->set_pcss_params(pcss_light_size, pcss_max_radius);
     }
+    // 屏幕空间接触阴影（补 Peter-Panning 脚底黑）
+    static bool contact_shadow_enabled = pipeline && pipeline->contact_shadow_enabled();
+    static float cs_strength = 0.6f;
+    static float cs_radius = 0.5f;
+    static int cs_steps = 4;
+    if (ImGui::Checkbox("Contact Shadow", &contact_shadow_enabled)) {
+        if (pipeline) pipeline->set_contact_shadow_enabled(contact_shadow_enabled);
+    }
+    if (ImGui::SliderFloat("CS Strength", &cs_strength, 0.0f, 1.0f, "%.2f")) {
+        if (pipeline) pipeline->set_contact_shadow_params(cs_strength, cs_radius, cs_steps);
+    }
+    if (ImGui::SliderFloat("CS Radius", &cs_radius, 0.05f, 2.0f, "%.2f")) {
+        if (pipeline) pipeline->set_contact_shadow_params(cs_strength, cs_radius, cs_steps);
+    }
+    if (ImGui::SliderInt("CS Steps", &cs_steps, 1, 16)) {
+        if (pipeline) pipeline->set_contact_shadow_params(cs_strength, cs_radius, cs_steps);
+    }
 
     // -----------------------------------------------------------------------
     // HDR / Tone Mapping

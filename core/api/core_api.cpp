@@ -479,11 +479,21 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_INPUT_MOUSE_MOVE: {
-            struct Payload { int x; int y; };
+            struct Payload { float x; float y; };
             const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            g_core_state.mouse_x = p->x;
-            g_core_state.mouse_y = p->y;
-            g_core_state.input_events.push_back({INPUT_EVENT_MOUSE_MOVE, p->x, p->y, 0});
+            // 累加本帧鼠标增量（相对上一次 move 事件的绝对位置）
+            if (g_core_state.mouse_snap_x < 0.0f) {
+                g_core_state.mouse_snap_x = p->x;
+                g_core_state.mouse_snap_y = p->y;
+            } else {
+                g_core_state.mouse_delta_x += p->x - g_core_state.mouse_snap_x;
+                g_core_state.mouse_delta_y += p->y - g_core_state.mouse_snap_y;
+                g_core_state.mouse_snap_x = p->x;
+                g_core_state.mouse_snap_y = p->y;
+            }
+            g_core_state.mouse_x = static_cast<int>(p->x);
+            g_core_state.mouse_y = static_cast<int>(p->y);
+            g_core_state.input_events.push_back({INPUT_EVENT_MOUSE_MOVE, static_cast<int>(p->x), static_cast<int>(p->y), 0});
             break;
         }
         case ECMD_INPUT_MOUSE_BUTTON: {
@@ -604,6 +614,12 @@ void GCore_BeginFrame(float dt) {
     GRYCE_API_GUARD();
     if (!gryce_core::g_core_state.initialized || !gryce_core::g_core_state.world) return;
 
+    // 每帧开始清零累计的鼠标增量；随后由 process_command 期间推送的
+    // ECMD_INPUT_MOUSE_MOVE 重新累加，供脚本在 on_update 读取本帧增量。
+    // 注意：必须在本帧命令处理之前清零，否则会抹掉刚累加的 delta。
+    gryce_core::g_core_state.mouse_delta_x = 0;
+    gryce_core::g_core_state.mouse_delta_y = 0;
+
     gryce_core::g_core_state.cmdbuf.swap();
     int count = 0;
     const GCommand* cmds = gryce_core::g_core_state.cmdbuf.consume(count);
@@ -720,6 +736,10 @@ void GCore_RegisterCallback_OnComponentChanged(GOnComponentChanged cb) {
 void GCore_RegisterCallback_OnLogMessage(GOnLogMessage cb) {
     GRYCE_API_GUARD();
     gryce_core::g_core_state.callbacks.on_log_message = cb;
+}
+void GCore_RegisterCallback_OnMouseLock(GOnMouseLock cb) {
+    GRYCE_API_GUARD();
+    gryce_core::g_core_state.callbacks.on_mouse_lock = cb;
 }
 
 int GCore_GetLogMessages(char* out_buf, int buf_size) {

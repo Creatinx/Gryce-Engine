@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 
 namespace GryceEngine.Editor.Native;
 
@@ -23,6 +23,9 @@ public static class InputAPI
     [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.U1)]
     public static extern bool GInput_IsKeyHeld(int keyCode);
+
+    [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GInput_SyncToCore();
 
     [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.U1)]

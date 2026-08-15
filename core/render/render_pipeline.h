@@ -159,6 +159,14 @@ public:
         pp_params_.ssao_radius = std::max(1.0f, radius_px);
     }
 
+    // -----------------------------------------------------------------------
+    // 屏幕空间接触阴影（Contact Shadow）：主 pass 后沿方向光方向半分辨率
+    // 步进采样深度，补落地悬浮（Peter-Panning）脚底的黑。默认关闭。
+    // -----------------------------------------------------------------------
+    void set_contact_shadow_enabled(bool enabled) { contact_shadow_enabled_ = enabled; }
+    bool contact_shadow_enabled() const { return contact_shadow_enabled_; }
+    void set_contact_shadow_params(float strength, float radius_world, int steps);
+
     // Scene View 网格线开关
     void set_grid_enabled(bool enabled) { grid_enabled_ = enabled; }
     bool grid_enabled() const { return grid_enabled_; }
@@ -478,6 +486,19 @@ private:
     // 禁用 SSAO 时绑定的合法回退纹理（1x1 白），避免 Vulkan 采样
     // 从未渲染过的 ssao 目标（layout 仍为 UNDEFINED → 验证层报错）
     RHITextureHandle ssao_fallback_tex_;
+
+    // 屏幕空间接触阴影
+    RHITextureHandle contact_shadow_tex_;
+    RHIFramebufferHandle contact_shadow_fbo_;
+    RHIShaderHandle contact_shadow_shader_;
+    int cs_w_ = 0;
+    int cs_h_ = 0;
+    bool contact_shadow_enabled_ = true;
+    float contact_shadow_strength_ = 0.6f;
+    float contact_shadow_radius_ = 0.5f;   // 世界单位
+    int contact_shadow_steps_ = 4;
+    bool contact_shadow_targets_valid_ = false;
+
     int ssao_w_ = 0;
     int ssao_h_ = 0;
     RHIShaderHandle gtao_shader_;
@@ -487,6 +508,10 @@ private:
     bool create_ssao_targets(RenderContext* ctx);
     void destroy_ssao_targets();
     void render_ssao(RenderContext& ctx);
+
+    bool create_contact_shadow_targets(RenderContext* ctx);
+    void destroy_contact_shadow_targets();
+    void render_contact_shadow(RenderContext& ctx);
 
     // 编辑器视口离屏输出（tonemap 后的 LDR 纹理，供 Viewport 面板采样）
     bool viewport_output_enabled_ = false;

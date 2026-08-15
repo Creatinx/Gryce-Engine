@@ -49,6 +49,12 @@ _scratch/
 # ImGui runtime layout
 imgui.ini
 
+# Demo shaders are generated from examples/common/shaders at CMake configure
+# time (see examples/CMakeLists.txt) -- keep only the canonical copy tracked.
+examples/2dDemo/shaders/
+examples/3dtest/shaders/
+examples/FPSDemo/shaders/
+
 # Runtime generated assets / screenshots / recordings
 media/
 font_atlas_debug.bmp

@@ -59,6 +59,7 @@ GRYCE_CORE_API void GCore_RegisterCallback_OnPlayModeChanged(GOnPlayModeChanged 
 GRYCE_CORE_API void GCore_RegisterCallback_OnEntityListChanged(GOnEntityListChanged cb);
 GRYCE_CORE_API void GCore_RegisterCallback_OnComponentChanged(GOnComponentChanged cb);
 GRYCE_CORE_API void GCore_RegisterCallback_OnLogMessage(GOnLogMessage cb);
+GRYCE_CORE_API void GCore_RegisterCallback_OnMouseLock(GOnMouseLock cb);
 
 GRYCE_CORE_API int GCore_GetLogMessages(char* out_buf, int buf_size);
 

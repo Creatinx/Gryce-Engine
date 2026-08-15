@@ -1,5 +1,6 @@
 #include "GrycePlatform/window_api.h"
 #include "GryceCore/api_guard.h"
+#include "GryceCore/core_api.h"
 #include "GrycePlatform/input_api.h"
 
 #ifdef _WIN32
@@ -60,8 +61,8 @@ struct PlatformState {
         // GInput_SyncToCore 的"上次已同步"快照，只对变化推命令
         bool synced_keys[512] = {};
         bool synced_mouse_buttons[8] = {};
-        int synced_mouse_x = 0;
-        int synced_mouse_y = 0;
+        float synced_mouse_x = 0.0f;
+        float synced_mouse_y = 0.0f;
     } input;
 
     std::mutex input_mutex;
@@ -98,6 +99,8 @@ static void update_input_from_window() {
 
     double x, y;
     g_platform.window->get_cursor_pos(x, y);
+    const float px = g_platform.input.mouse_x;
+    const float py = g_platform.input.mouse_y;
     g_platform.input.mouse_x = static_cast<float>(x);
     g_platform.input.mouse_y = static_cast<float>(y);
 
@@ -106,8 +109,8 @@ static void update_input_from_window() {
         g_platform.input.mouse_delta_y = 0.0f;
         g_platform.input.first_mouse = false;
     } else {
-        g_platform.input.mouse_delta_x = g_platform.input.mouse_x - g_platform.input.mouse_x;
-        g_platform.input.mouse_delta_y = g_platform.input.mouse_y - g_platform.input.mouse_y;
+        g_platform.input.mouse_delta_x = static_cast<float>(x) - px;
+        g_platform.input.mouse_delta_y = static_cast<float>(y) - py;
     }
 }
 
@@ -292,6 +295,14 @@ int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
 
     g_platform.input_mgr = std::make_unique<InputManager>();
     g_platform.mode = PlatformState::Mode::GLFW;
+
+    // 把 Core 的鼠标锁定请求接到平台窗口（FPS 视角隐藏并锁定光标）
+    GCore_RegisterCallback_OnMouseLock([](int locked, void*) {
+        if (g_platform.window) {
+            g_platform.window->set_cursor_disabled(locked != 0);
+        }
+    });
+
     GLOG_INFO("Platform: GLFW window created '{}' ({}x{})", title ? title : "Gryce Engine", w, h);
     return 0;
 }
@@ -508,12 +519,27 @@ void GInput_GetMousePosition(float* out_x, float* out_y) {
     if (out_y) *out_y = g_platform.input.mouse_y;
 }
 
+void GInput_SetMouseLocked(bool locked) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (g_platform.window) {
+        g_platform.window->set_cursor_disabled(locked);
+    }
+}
+
+void GInput_GetMouseDelta(float* out_dx, float* out_dy) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (out_dx) *out_dx = g_platform.input.mouse_delta_x;
+    if (out_dy) *out_dy = g_platform.input.mouse_delta_y;
+}
+
 void GInput_SyncToCore(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
 
     struct KeyPayload { int key; uint8_t down; };
-    struct MouseMovePayload { int x; int y; };
+    struct MouseMovePayload { float x; float y; };
     struct MouseButtonPayload { int button; uint8_t down; int x; int y; };
 
     PlatformState::InputState& in = g_platform.input;
@@ -528,8 +554,8 @@ void GInput_SyncToCore(void) {
         GCore_PushCommand(&cmd);
     }
 
-    const int mx = static_cast<int>(in.mouse_x);
-    const int my = static_cast<int>(in.mouse_y);
+    const float mx = in.mouse_x;
+    const float my = in.mouse_y;
     if (mx != in.synced_mouse_x || my != in.synced_mouse_y) {
         in.synced_mouse_x = mx;
         in.synced_mouse_y = my;
@@ -543,7 +569,7 @@ void GInput_SyncToCore(void) {
     for (int b = 0; b < 3; ++b) {
         if (in.mouse_buttons[b] == in.synced_mouse_buttons[b]) continue;
         in.synced_mouse_buttons[b] = in.mouse_buttons[b];
-        MouseButtonPayload p{ b, static_cast<uint8_t>(in.mouse_buttons[b] ? 1 : 0), mx, my };
+        MouseButtonPayload p{ b, static_cast<uint8_t>(in.mouse_buttons[b] ? 1 : 0), static_cast<int>(mx), static_cast<int>(my) };
         GCommand cmd{};
         cmd.type = ECMD_INPUT_MOUSE_BUTTON;
         std::memcpy(cmd.payload, &p, sizeof(p));

@@ -653,10 +653,32 @@ int l_input_mouse_down(lua_State* L) {
     return 1;
 }
 
+int l_input_mouse_delta(lua_State* L) {
+    lua_pushnumber(L, gryce_core::g_core_state.mouse_delta_x);
+    lua_pushnumber(L, gryce_core::g_core_state.mouse_delta_y);
+    return 2;
+}
+
+int l_input_mouse_locked(lua_State* L) {
+    auto& st = gryce_core::g_core_state;
+    // 传 bool 时请求锁定/解锁，并转发给平台回调（隐藏/锁定光标）
+    if (lua_gettop(L) == 1 && lua_isboolean(L, 1)) {
+        const bool locked = lua_toboolean(L, 1);
+        st.mouse_locked = locked;
+        if (st.callbacks.on_mouse_lock) {
+            st.callbacks.on_mouse_lock(locked ? 1 : 0, st.callback_user_data);
+        }
+    }
+    lua_pushboolean(L, st.mouse_locked);
+    return 1;
+}
+
 const luaL_Reg kInputLib[] = {
     {"key_down", l_input_key_down},
     {"mouse_pos", l_input_mouse_pos},
     {"mouse_down", l_input_mouse_down},
+    {"mouse_delta", l_input_mouse_delta},
+    {"mouse_locked", l_input_mouse_locked},
     {nullptr, nullptr}
 };
 

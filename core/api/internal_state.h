@@ -27,6 +27,7 @@ struct CallbackTable {
     GOnEntityListChanged on_entity_list_changed = nullptr;
     GOnComponentChanged on_component_changed = nullptr;
     GOnLogMessage on_log_message = nullptr;
+    GOnMouseLock on_mouse_lock = nullptr;
 };
 
 // Input event kinds dispatched to scripts' _input handler (matches the C
@@ -82,6 +83,16 @@ struct GlobalState {
     int mouse_x = 0;
     int mouse_y = 0;
     bool mouse_button[3] = {};
+    // 本帧累计鼠标移动增量（像素）。由 ECMD_INPUT_MOUSE_MOVE 累加，
+    // 在 GCore_BeginFrame 每帧开始前清零。用 float 保留亚像素精度，
+    // 避免慢速移动时被 int 截断成 0 导致视角卡顿。
+    float mouse_delta_x = 0.0f;
+    float mouse_delta_y = 0.0f;
+    // 上次已计入 delta 的绝对位置快照（用于计算跨 move 事件的增量）
+    float mouse_snap_x = -1.0f;
+    float mouse_snap_y = -1.0f;
+    // 鼠标锁定状态（FPS 视角用；由 engine.input.mouse_locked 请求驱动）
+    bool mouse_locked = false;
 
     bool deferred_entity_list_changed = false;
     bool deferred_selection_changed = false;

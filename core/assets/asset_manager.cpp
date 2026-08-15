@@ -150,7 +150,22 @@ std::shared_ptr<MeshData> AssetManager::load_mesh_internal(const std::string& pa
         return nullptr;
     }
 
-    auto data = std::make_shared<MeshData>(std::move(meshes[0]));
+    // 引擎 MeshRenderer 按单网格渲染；多子网格模型（常见于 GLB）需要把
+    // 所有子网格合并成单一 MeshData，否则只会显示第一个子网格。
+    auto data = std::make_shared<MeshData>();
+    data->name = meshes.front().name;
+    for (auto& m : meshes) {
+        const uint32_t base = static_cast<uint32_t>(data->vertices.size());
+        data->vertices.insert(data->vertices.end(), m.vertices.begin(), m.vertices.end());
+        data->indices.reserve(data->indices.size() + m.indices.size());
+        for (uint32_t idx : m.indices) {
+            data->indices.push_back(base + idx);
+        }
+        // 取模型内第一个有效材质作为整体材质（其余子网格沿用默认）
+        if (m.material.valid && !data->material.valid) {
+            data->material = m.material;
+        }
+    }
     data->set_path(path);
     CacheEntry entry;
     entry.asset = data;
@@ -175,7 +190,8 @@ std::shared_ptr<SkinnedModelData> AssetManager::load_skinned_model_internal(cons
     }
 
 #ifdef GRYCE_HAS_ASSIMP
-    const std::string resolved = resources::ResourcePath::resolve(path);
+    // 用 resolve_for_reading 统一解析：磁盘文件优先，gpkg 内提取兜底（打包产物无散文件）
+    const std::string resolved = resolve_for_reading(path);
     AssimpImporter importer;
     auto model = std::make_shared<SkinnedModelData>(importer.import_skinned(resolved));
     if (model->meshes.empty()) {

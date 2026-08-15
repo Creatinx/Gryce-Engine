@@ -1,0 +1,1126 @@
+{
+  "version": 2,
+  "name": "FPSDemo_main",
+  "entities": [
+    {
+      "name": "PlayerCamera",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000001",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 1.6, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "background_color": [ 0.16, 0.2, 0.28, 1.0 ],
+          "enabled": true,
+          "far_plane": 500.0,
+          "fov": 70.0,
+          "is_main": true,
+          "near_plane": 0.1,
+          "type": "Camera"
+        }
+      ]
+    },
+    {
+      "name": "Player",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000002",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.8, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "acceleration": [ 0.0, 0.0, 0.0 ],
+          "angular_damping": 0.5,
+          "angular_velocity": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "friction": 0.0,
+          "is_kinematic": false,
+          "linear_damping": 0.0,
+          "mass": 1.0,
+          "restitution": 0.0,
+          "type": "RigidBody",
+          "use_gravity": true,
+          "velocity": [ 0.0, 0.0, 0.0 ]
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 0.6, 1.6, 0.6 ],
+          "type": "BoxCollider"
+        },
+        {
+          "enabled": true,
+          "script_path": "res:/scripts/player.lua",
+          "type": "Script"
+        }
+      ]
+    },
+    {
+      "name": "SpawnPoint",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000003",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.8, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": []
+    },
+    {
+      "name": "Weapon",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000004",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.3, 1.2, 0.5 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 2.2, 2.2, 2.2 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.5, 0.5, 0.52, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.6,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.3,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "use_metallic_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/m1911.glb",
+          "type": "MeshRenderer"
+        }
+      ]
+    },
+    {
+      "name": "MainLight",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000005",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 10.0, 2.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "color": [ 1.0, 0.98, 0.92 ],
+          "direction": [ -0.5, -0.8, -0.3 ],
+          "enabled": true,
+          "intensity": 3.0,
+          "light_type": 0,
+          "range": 20.0,
+          "spot_angle": 45.0,
+          "spot_softness": 0.2,
+          "type": "Light"
+        }
+      ]
+    },
+    {
+      "name": "Ground",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000006",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, -0.5, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 60.0, 1.0, 60.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.45, 0.5, 0.55, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.85,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Wall_N",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000007",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 1.0, -20.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 40.0, 2.0, 1.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.32, 0.34, 0.38, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.8,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Wall_S",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000008",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 1.0, 20.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 40.0, 2.0, 1.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.32, 0.34, 0.38, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.8,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Wall_E",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000009",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 20.0, 1.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 2.0, 40.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.32, 0.34, 0.38, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.8,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Wall_W",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-00000000000a",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ -20.0, 1.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 2.0, 40.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.32, 0.34, 0.38, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.8,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Cover_1",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-00000000000b",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 5.0, 0.5, 3.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 2.0, 1.0, 2.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.55, 0.4, 0.25, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.75,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Cover_2",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-00000000000c",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ -4.0, 0.5, -3.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 2.0, 1.0, 2.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.55, 0.4, 0.25, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.75,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Cover_3",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-00000000000d",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 3.0, 0.5, -7.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 3.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "billboard": false,
+          "enabled": true,
+          "material": {
+            "albedo_color": [ 0.45, 0.5, 0.3, 1.0 ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.1,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [ 0.0, 0.0, 0.0 ],
+            "emissive_map_path": "",
+            "metallic": 0.0,
+            "metallic_map_path": "",
+            "name": "Default",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.75,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [ 1.0, 1.0, 1.0 ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [ 0.0, 0.0 ],
+            "uv_scale": [ 1.0, 1.0 ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        },
+        {
+          "enabled": true,
+          "kinematic": false,
+          "type": "StaticBody"
+        },
+        {
+          "center": [ 0.0, 0.0, 0.0 ],
+          "enabled": true,
+          "is_trigger": false,
+          "size": [ 1.0, 1.0, 1.0 ],
+          "type": "BoxCollider"
+        }
+      ]
+    },
+    {
+      "name": "Enemy1",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000010",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.75, -16.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "clip_name": "Idle",
+          "enabled": true,
+          "loop": true,
+          "model_path": "res:/models/RobotExpressive.glb",
+          "playing": true,
+          "speed": 1.0,
+          "type": "SkinnedMeshRenderer"
+        },
+        {
+          "enabled": true,
+          "script_path": "res:/scripts/enemy.lua",
+          "type": "Script"
+        }
+      ]
+    },
+    {
+      "name": "Enemy2",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000011",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 12.0, 0.75, 12.0 ],
+        "rotation": [ 0.0, 3.14159265, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "clip_name": "Idle",
+          "enabled": true,
+          "loop": true,
+          "model_path": "res:/models/RobotExpressive.glb",
+          "playing": true,
+          "speed": 1.0,
+          "type": "SkinnedMeshRenderer"
+        },
+        {
+          "enabled": true,
+          "script_path": "res:/scripts/enemy.lua",
+          "type": "Script"
+        }
+      ]
+    },
+    {
+      "name": "Enemy3",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000012",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ -14.0, 0.75, 8.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "clip_name": "Idle",
+          "enabled": true,
+          "loop": true,
+          "model_path": "res:/models/RobotExpressive.glb",
+          "playing": true,
+          "speed": 1.0,
+          "type": "SkinnedMeshRenderer"
+        },
+        {
+          "enabled": true,
+          "script_path": "res:/scripts/enemy.lua",
+          "type": "Script"
+        }
+      ]
+    },
+    {
+      "name": "Enemy4",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000013",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 16.0, 0.75, -8.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "clip_name": "Idle",
+          "enabled": true,
+          "loop": true,
+          "model_path": "res:/models/RobotExpressive.glb",
+          "playing": true,
+          "speed": 1.0,
+          "type": "SkinnedMeshRenderer"
+        },
+        {
+          "enabled": true,
+          "script_path": "res:/scripts/enemy.lua",
+          "type": "Script"
+        }
+      ]
+    },
+    {
+      "name": "Enemy5",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000014",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ -12.0, 0.75, -14.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "clip_name": "Idle",
+          "enabled": true,
+          "loop": true,
+          "model_path": "res:/models/RobotExpressive.glb",
+          "playing": true,
+          "speed": 1.0,
+          "type": "SkinnedMeshRenderer"
+        },
+        {
+          "enabled": true,
+          "script_path": "res:/scripts/enemy.lua",
+          "type": "Script"
+        }
+      ]
+    },
+    {
+      "name": "HealthLabel",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000020",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 20.0, 20.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "canvas_layer": 100,
+          "enabled": true,
+          "render_order": 1000,
+          "text": "HP: 100",
+          "font_size": 24.0,
+          "color": [ 0.2, 1.0, 0.3, 1.0 ],
+          "type": "Label"
+        }
+      ]
+    },
+    {
+      "name": "KillsLabel",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000021",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 20.0, 52.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "canvas_layer": 100,
+          "enabled": true,
+          "render_order": 1000,
+          "text": "击杀: 0",
+          "font_size": 20.0,
+          "color": [ 1.0, 0.85, 0.3, 1.0 ],
+          "type": "Label"
+        }
+      ]
+    },
+    {
+      "name": "LivesLabel",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000022",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 20.0, 80.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "canvas_layer": 100,
+          "enabled": true,
+          "render_order": 1000,
+          "text": "生命: 5",
+          "font_size": 20.0,
+          "color": [ 0.4, 0.8, 1.0, 1.0 ],
+          "type": "Label"
+        }
+      ]
+    },
+    {
+      "name": "EnemiesLabel",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000023",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 20.0, 108.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "canvas_layer": 100,
+          "enabled": true,
+          "render_order": 1000,
+          "text": "敌人: 5",
+          "font_size": 20.0,
+          "color": [ 1.0, 0.5, 0.5, 1.0 ],
+          "type": "Label"
+        }
+      ]
+    },
+    {
+      "name": "Crosshair",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000024",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 640.0, 358.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "canvas_layer": 100,
+          "enabled": true,
+          "render_order": 1000,
+          "text": "+",
+          "font_size": 30.0,
+          "color": [ 1.0, 1.0, 1.0, 1.0 ],
+          "type": "Label"
+        }
+      ]
+    },
+    {
+      "name": "MessageLabel",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000025",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 640.0, 76.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "canvas_layer": 100,
+          "enabled": true,
+          "render_order": 1000,
+          "text": "用 WASD 移动，鼠标瞄准，左键射击",
+          "font_size": 22.0,
+          "color": [ 1.0, 1.0, 1.0, 1.0 ],
+          "type": "Label"
+        }
+      ]
+    },
+    {
+      "name": "BGM",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000030",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "clip_path": "res:/audio/bgm.wav",
+          "volume": 0.5,
+          "pitch": 1.0,
+          "speed": 1.0,
+          "loop": true,
+          "play_on_awake": false,
+          "is_3d": false,
+          "min_distance": 1.0,
+          "max_distance": 100.0
+        }
+      ]
+    },
+    {
+      "name": "SFX_Shoot",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000031",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "clip_path": "res:/audio/shoot.wav",
+          "volume": 0.5,
+          "pitch": 1.0,
+          "speed": 1.0,
+          "loop": false,
+          "play_on_awake": false,
+          "is_3d": false,
+          "min_distance": 1.0,
+          "max_distance": 100.0
+        }
+      ]
+    },
+    {
+      "name": "SFX_Hit",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000032",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "clip_path": "res:/audio/hit.wav",
+          "volume": 0.5,
+          "pitch": 1.0,
+          "speed": 1.0,
+          "loop": false,
+          "play_on_awake": false,
+          "is_3d": false,
+          "min_distance": 1.0,
+          "max_distance": 100.0
+        }
+      ]
+    },
+    {
+      "name": "SFX_EnemyDead",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000033",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "clip_path": "res:/audio/explosion.wav",
+          "volume": 0.5,
+          "pitch": 1.0,
+          "speed": 1.0,
+          "loop": false,
+          "play_on_awake": false,
+          "is_3d": false,
+          "min_distance": 1.0,
+          "max_distance": 100.0
+        }
+      ]
+    },
+    {
+      "name": "SFX_Hurt",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000034",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "clip_path": "res:/audio/hurt.wav",
+          "volume": 0.5,
+          "pitch": 1.0,
+          "speed": 1.0,
+          "loop": false,
+          "play_on_awake": false,
+          "is_3d": false,
+          "min_distance": 1.0,
+          "max_distance": 100.0
+        }
+      ]
+    },
+    {
+      "name": "SFX_Jump",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000035",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "clip_path": "res:/audio/jump.wav",
+          "volume": 0.4,
+          "pitch": 1.0,
+          "speed": 1.0,
+          "loop": false,
+          "play_on_awake": false,
+          "is_3d": false,
+          "min_distance": 1.0,
+          "max_distance": 100.0
+        }
+      ]
+    },
+    {
+      "name": "GameManager",
+      "uuid": "6f3f0a6c-1d30-4b2e-9a7e-000000000040",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [ 0.0, 0.0, 0.0 ],
+        "rotation": [ 0.0, 0.0, 0.0, 1.0 ],
+        "scale": [ 1.0, 1.0, 1.0 ]
+      },
+      "components": [
+        {
+          "enabled": true,
+          "script_path": "res:/scripts/game_manager.lua",
+          "type": "Script"
+        }
+      ]
+    }
+  ]
+}

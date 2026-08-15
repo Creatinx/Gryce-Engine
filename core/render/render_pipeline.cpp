@@ -286,6 +286,17 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
             GLOG_WARN("RenderPipeline: GTAO targets failed, disabled");
             pp_params_.ssao_enabled = 0;
         }
+
+        if (create_contact_shadow_targets(ctx)) {
+            contact_shadow_shader_ = load_shader("contact_shadow", contact_shadow_fbo_, true, true);
+            if (!contact_shadow_shader_.is_valid()) {
+                GLOG_WARN("RenderPipeline: contact shadow shader unavailable, disabled");
+                contact_shadow_enabled_ = false;
+            }
+        } else {
+            GLOG_WARN("RenderPipeline: contact shadow targets failed, disabled");
+            contact_shadow_enabled_ = false;
+        }
     }
 
     initialized_ = true;
@@ -364,6 +375,11 @@ void RenderPipeline::shutdown() {
         ctx_->destroy_shader(ssao_blur_shader_);
         ssao_blur_shader_ = RHIShaderHandle{};
     }
+    if (owns_shaders_ && contact_shadow_shader_.is_valid()) {
+        ctx_->destroy_shader(contact_shadow_shader_);
+        contact_shadow_shader_ = RHIShaderHandle{};
+    }
+    destroy_contact_shadow_targets();
     destroy_bloom_targets();
     destroy_auto_exposure_targets();
     destroy_taa_targets();
@@ -551,6 +567,12 @@ void RenderPipeline::set_pcss_params(float light_size, float max_radius_texels, 
     pcss_light_size_ = std::max(0.0f, light_size);
     pcss_max_radius_ = std::max(1.0f, max_radius_texels);
     pcss_tap_scale_ = std::max(0.1f, tap_scale);
+}
+
+void RenderPipeline::set_contact_shadow_params(float strength, float radius_world, int steps) {
+    contact_shadow_strength_ = math::clamp(strength, 0.0f, 2.0f);
+    contact_shadow_radius_ = std::max(0.01f, radius_world);
+    contact_shadow_steps_ = std::clamp(steps, 1, 32);
 }
 
 void RenderPipeline::set_camera(const math::Camera& camera) {
@@ -1290,6 +1312,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         end_hdr_forward_pass(ctx);
         // 3. 屏幕空间环境光遮蔽（深度 → GTAO → 模糊）
         render_ssao(ctx);
+        // 3a. 屏幕空间接触阴影（补 Peter-Panning 脚底黑）
+        render_contact_shadow(ctx);
         // 4. Bloom（阈值 → 降采样链 → 上采样合成）
         render_bloom(ctx);
         // 5. 自动曝光（GPU 亮度反馈，更新曝光纹理）
@@ -1865,6 +1889,39 @@ void RenderPipeline::destroy_ssao_targets() {
     ssao_targets_valid_ = false;
 }
 
+bool RenderPipeline::create_contact_shadow_targets(RenderContext* ctx) {
+    cs_w_ = std::max(16, viewport_width_ / 2);
+    cs_h_ = std::max(16, viewport_height_ / 2);
+    contact_shadow_tex_ = ctx->create_texture();
+    ITexture* tex = ctx->texture(contact_shadow_tex_);
+    if (!contact_shadow_tex_.is_valid() || !tex ||
+        !tex->create(TextureFormat::RGBA16F, cs_w_, cs_h_, nullptr)) {
+        return false;
+    }
+    tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+    contact_shadow_fbo_ = ctx->create_framebuffer();
+    IFramebuffer* fbo = ctx->framebuffer(contact_shadow_fbo_);
+    if (!contact_shadow_fbo_.is_valid() || !fbo || !fbo->create(cs_w_, cs_h_)) return false;
+    fbo->attach_color_texture(tex);
+    if (!fbo->is_complete()) return false;
+    contact_shadow_targets_valid_ = true;
+    return true;
+}
+
+void RenderPipeline::destroy_contact_shadow_targets() {
+    if (!ctx_) return;
+    if (contact_shadow_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(contact_shadow_fbo_);
+        contact_shadow_fbo_ = RHIFramebufferHandle{};
+    }
+    if (contact_shadow_tex_.is_valid()) {
+        ctx_->destroy_texture(contact_shadow_tex_);
+        contact_shadow_tex_ = RHITextureHandle{};
+    }
+    contact_shadow_targets_valid_ = false;
+}
+
 void RenderPipeline::render_ssao(RenderContext& ctx) {
     if (pp_params_.ssao_enabled == 0 || !ssao_targets_valid_) return;
     if (!gtao_shader_.is_valid() || !ssao_blur_shader_.is_valid() || !fullscreen_mesh_.is_valid()) {
@@ -1906,6 +1963,45 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
     ctx.set_texture_raw_depth(ssao_blur_shader_, hdr_depth_, TextureSlots::kTAAHistory, "uDepthTexture");
     ctx.set_uniform_int(ssao_blur_shader_, "uDepthTexture", TextureSlots::kTAAHistory);
     ctx.draw_mesh(fullscreen_mesh_, ssao_blur_shader_);
+}
+
+void RenderPipeline::render_contact_shadow(RenderContext& ctx) {
+    if (!contact_shadow_enabled_ || !contact_shadow_targets_valid_) return;
+    if (!contact_shadow_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
+    if (!camera_) return;
+
+    const float near_p = camera_->near_plane();
+    const float far_p = camera_->far_plane();
+    const float tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+    const float aspect = camera_->aspect();
+
+    // 取第一个方向光，步进方向指向光源（-direction）
+    math::Vector3f light_dir = math::Vector3f(0.0f, -1.0f, 0.0f);
+    for (const auto& l : lights_) {
+        if (l.type == LightType::Directional) { light_dir = l.direction; break; }
+    }
+    const math::Matrix4f view = camera_->get_view_matrix();
+    const math::Vector3f light_dir_view = view.transform_vector(math::Vector3f(-light_dir.x, -light_dir.y, -light_dir.z));
+
+    ctx.set_depth_test(false);
+    ctx.set_cull_face(false);
+    ctx.set_blend(false);
+
+    ctx.set_framebuffer(contact_shadow_fbo_);
+    ctx.set_viewport(0, 0, cs_w_, cs_h_);
+    ctx.set_shader(contact_shadow_shader_);
+    ctx.set_texture_raw_depth(contact_shadow_shader_, hdr_depth_, TextureSlots::kTonemapHDR, "uDepthTexture");
+    ctx.set_uniform_int(contact_shadow_shader_, "uDepthTexture", TextureSlots::kTonemapHDR);
+    ctx.set_uniform_float(contact_shadow_shader_, "uCSNear", near_p);
+    ctx.set_uniform_float(contact_shadow_shader_, "uCSFar", far_p);
+    ctx.set_uniform_float(contact_shadow_shader_, "uCSTanHalfFov", tan_half);
+    ctx.set_uniform_float(contact_shadow_shader_, "uCSAspect", aspect);
+    ctx.set_uniform_vec3(contact_shadow_shader_, "uCSLightDirView", light_dir_view);
+    ctx.set_uniform_float(contact_shadow_shader_, "uCSRadius", contact_shadow_radius_);
+    ctx.set_uniform_int(contact_shadow_shader_, "uCSteps", contact_shadow_steps_);
+    ctx.set_uniform_float(contact_shadow_shader_, "uCSStrength", contact_shadow_strength_);
+    ctx.set_uniform_int(contact_shadow_shader_, "uCSEnabled", 1);
+    ctx.draw_mesh(fullscreen_mesh_, contact_shadow_shader_);
 }
 
 bool RenderPipeline::create_viewport_target(RenderContext* ctx) {
@@ -2211,6 +2307,15 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     if (exp) exp->bind(TextureSlots::kTonemapExposure);
     ctx.set_texture(tonemap_shader_, exp_in, TextureSlots::kTonemapExposure, "uExposureTexture");
     ctx.set_uniform_int(tonemap_shader_, "uExposureTexture", TextureSlots::kTonemapExposure);
+    // 屏幕空间接触阴影：半分辨率因子贴图，乘到 HDR 颜色（禁用时保持全亮）
+    if (contact_shadow_enabled_ && contact_shadow_targets_valid_ && contact_shadow_tex_.is_valid()) {
+        ctx.set_texture(tonemap_shader_, contact_shadow_tex_, TextureSlots::kTonemapContactShadow, "uContactShadowTexture");
+        ctx.set_uniform_int(tonemap_shader_, "uContactShadowTexture", TextureSlots::kTonemapContactShadow);
+        ctx.set_uniform_int(tonemap_shader_, "uContactShadowEnabled", 1);
+        ctx.set_uniform_float(tonemap_shader_, "uContactShadowStrength", contact_shadow_strength_);
+    } else {
+        ctx.set_uniform_int(tonemap_shader_, "uContactShadowEnabled", 0);
+    }
     tonemap_ptr->set_post_process_params(pp_params_);
 
     ctx.draw_mesh(fullscreen_mesh_, tonemap_shader_);

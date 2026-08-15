@@ -40,17 +40,16 @@ public partial class PackageDialog : Window
         OutputDirBox.Text = Path.Combine(engineRoot, "build", "game");
     }
 
-    /// <summary>Locates grycegc.exe in the engine build output. Prefers the
-    /// config matching the editor build (Debug when the editor is a Debug
-    /// build), falls back to the other config.
+    /// <summary>Locates grycegc.exe in the engine build output. Packaging is
+    /// always done against the Release build so the packaged game ships only
+    /// Release CRT (no debug runtime dependency ucrtbased.dll etc.), which is
+    /// required for distributing to machines without Visual Studio installed.
+    /// Falls back to Debug only if Release is not built yet.
     /// Tries both multi-config (VS: build/bin/config) and single-config
     /// (Ninja: build/config/bin/config) layouts.</summary>
     private string? FindGryceGCTool()
     {
-        bool editorDebug = AppDomain.CurrentDomain.BaseDirectory.Contains("Debug");
-        string[] candidates = editorDebug
-            ? new[] { "Debug", "Release" }
-            : new[] { "Release", "Debug" };
+        string[] candidates = new[] { "Release", "Debug" };
         foreach (string config in candidates)
         {
             // Multi-config (Visual Studio generator): output to build/bin/config
@@ -150,12 +149,11 @@ public partial class PackageDialog : Window
         string? tool = FindGryceGCTool();
         if (tool == null)
         {
-            // Not built yet: compile the GryceGC target first (Debug or
-            // Release depending on the editor build), then continue.
+            // Not built yet: compile the GryceGC target first. Packaging is
+            // fixed to Release so the shipped game uses Release CRT only.
             _running = true;
             SetBusy(true);
-            bool built = await BuildGryceGCToolAsync(
-                AppDomain.CurrentDomain.BaseDirectory.Contains("Debug") ? "Debug" : "Release");
+            bool built = await BuildGryceGCToolAsync("Release");
             _running = false;
             SetBusy(false);
             tool = FindGryceGCTool();

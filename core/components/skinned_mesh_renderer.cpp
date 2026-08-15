@@ -89,17 +89,38 @@ render::IMesh* SkinnedMeshRenderer::upload_to_gpu(render::RenderContext* ctx, bo
         return nullptr;
     }
 
-    // 本轮只上传第一个带 skin 的 mesh（多 mesh 模型为已知遗留项）
-    const assets::SkinnedMeshData* mesh_data = nullptr;
+    // 引擎单网格渲染：把模型所有子网格合并成单一 SkinnedMeshData，
+    // 否则只显示第一个子网格（GLB 模型常见多个子网格）。
+    assets::SkinnedMeshData merged;
+    merged.name = model_->meshes.front().name;
     for (const auto& m : model_->meshes) {
-        if (m.has_skin()) { mesh_data = &m; break; }
+        if (m.vertices.empty()) continue;
+        const uint32_t base = static_cast<uint32_t>(merged.vertices.size());
+        merged.vertices.insert(merged.vertices.end(), m.vertices.begin(), m.vertices.end());
+        // bone_influences 与 vertices 一一对应；保持同长度以保留蒙皮
+        if (m.has_skin()) {
+            merged.bone_influences.insert(merged.bone_influences.end(),
+                                          m.bone_influences.begin(), m.bone_influences.end());
+        } else if (m.vertices.size() == m.bone_influences.size()) {
+            merged.bone_influences.insert(merged.bone_influences.end(),
+                                          m.bone_influences.begin(), m.bone_influences.end());
+        } else {
+            // 无蒙皮子网格：补全零影响，保持顶点数对齐
+            merged.bone_influences.resize(merged.vertices.size());
+        }
+        merged.indices.reserve(merged.indices.size() + m.indices.size());
+        for (uint32_t idx : m.indices) {
+            merged.indices.push_back(base + idx);
+        }
+        if (m.material.valid && !merged.material.valid) {
+            merged.material = m.material;
+        }
     }
-    if (!mesh_data) mesh_data = &model_->meshes.front();
-    if (mesh_data->empty()) return nullptr;
+    if (merged.empty()) return nullptr;
 
     ctx_ = ctx;
 
-    std::vector<render::SkinnedVertexGPU> verts = render::build_skinned_vertices(*mesh_data);
+    std::vector<render::SkinnedVertexGPU> verts = render::build_skinned_vertices(merged);
 
     render::RHIMeshHandle mesh = ctx->create_mesh();
     render::IMesh* mesh_ptr = ctx->mesh(mesh);
@@ -108,14 +129,14 @@ render::IMesh* SkinnedMeshRenderer::upload_to_gpu(render::RenderContext* ctx, bo
     mesh_ptr->upload_vertices(verts.data(),
                               static_cast<uint32_t>(verts.size() * sizeof(render::SkinnedVertexGPU)),
                               static_cast<uint32_t>(verts.size()));
-    mesh_ptr->upload_indices(mesh_data->indices.data(),
-                             static_cast<uint32_t>(mesh_data->indices.size() * sizeof(uint32_t)),
-                             static_cast<uint32_t>(mesh_data->indices.size()));
+    mesh_ptr->upload_indices(merged.indices.data(),
+                             static_cast<uint32_t>(merged.indices.size() * sizeof(uint32_t)),
+                             static_cast<uint32_t>(merged.indices.size()));
     mesh_ptr->set_layout(render::skinned_vertex_layout());
 
     // 模型自带材质合并（与 MeshRenderer 相同策略：组件显式设置优先）
-    if (material && mesh_data->material.valid) {
-        const assets::MeshMaterialData& mm = mesh_data->material;
+    if (material && merged.material.valid) {
+        const assets::MeshMaterialData& mm = merged.material;
         const math::Vector3f one = math::Vector3f::one();
         const math::Vector3f zero = math::Vector3f::zero();
         if (material->albedo_color == one) material->albedo_color = mm.albedo_color;
@@ -142,7 +163,8 @@ render::IMesh* SkinnedMeshRenderer::upload_to_gpu(render::RenderContext* ctx, bo
     uploaded_.store(true, std::memory_order_release);
 
     GLOG_INFO("SkinnedMeshRenderer: uploaded '{}' to GPU ({} vertices, {} indices, skin={})",
-              model_path, verts.size(), mesh_data->indices.size(), mesh_data->has_skin());
+              model_path, verts.size(), merged.indices.size(),
+              merged.bone_influences.size() == merged.vertices.size());
     return mesh_ptr;
 }
 

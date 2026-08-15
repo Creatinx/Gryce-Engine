@@ -72,6 +72,7 @@ namespace TextureSlots {
     constexpr int kTonemapLUT    = 30; // 3D LUT 色彩分级（1024x32 打包）
     constexpr int kTonemapExposure = 31; // 自动曝光 1x1 曝光值
     constexpr int kTAAHistory    = 32; // TAA 历史帧
+    constexpr int kTonemapContactShadow = 34; // 屏幕空间接触阴影（半分辨率）
 
     // 天空盒
     constexpr int kSkyboxCube   = 21;

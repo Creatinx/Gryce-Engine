@@ -34,6 +34,13 @@ GRYCE_PLATFORM_API bool GInput_IsKeyHeld(int key_code);
 GRYCE_PLATFORM_API bool GInput_IsMouseButtonPressed(int button);
 GRYCE_PLATFORM_API void GInput_GetMousePosition(float* out_x, float* out_y);
 
+// 锁定/解锁鼠标（GLFW_CURSOR_DISABLED）。锁定后光标隐藏并持续报告移动增量，
+// 供 FPS 视角旋转使用。独立宿主与编辑器注入路径均可用。
+GRYCE_PLATFORM_API void GInput_SetMouseLocked(bool locked);
+
+// 返回本帧累计的鼠标移动增量（像素）。独立宿主轮询路径使用。
+GRYCE_PLATFORM_API void GInput_GetMouseDelta(float* out_dx, float* out_dy);
+
 // 独立游戏宿主用：把平台层轮询到的 GLFW 键盘/鼠标状态同步进 Core 的输入
 // 状态（engine.input 查询的数据源）。编辑器走 GInput_Inject* 事件注入，
 // 不需要调用本函数。

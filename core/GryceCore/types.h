@@ -52,6 +52,7 @@ typedef void (*GOnPlayModeChanged)(bool is_playing, bool is_paused, void* user_d
 typedef void (*GOnEntityListChanged)(void* user_data);
 typedef void (*GOnComponentChanged)(GEntityHandle entity, uint64_t comp_type_hash, void* user_data);
 typedef void (*GOnLogMessage)(int level, const char* msg, const char* source_file, int source_line, void* user_data);
+typedef void (*GOnMouseLock)(int locked, void* user_data);
 typedef void (*GOnViewportTextureReady)(GTextureHandle handle, int w, int h, void* user_data);
 
 typedef enum {

@@ -1,4 +1,5 @@
 ﻿using GryceEngine.Editor.Native;
+using GryceEngine.Editor.Views;
 using System;
 using System.ComponentModel;
 using System.IO;
@@ -234,6 +235,9 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
     private void OnFrameTick(object? sender, EventArgs e)
     {
         if (!IsInitialized) return;
+        // 游戏视图激活时，把编辑器注入的输入同步到核心，供 Lua 脚本读取
+        //（独立运行时的 game_main.cpp 也会每帧调用 GInput_SyncToCore）。
+        if (ViewportView.GameViewActive) Native.InputAPI.GInput_SyncToCore();
         CoreAPI.GCore_BeginFrame((float)_frameTimer.Interval.TotalSeconds);
         CoreAPI.GCore_EndFrame();
         IsPlaying = CoreAPI.GCore_IsPlaying();
