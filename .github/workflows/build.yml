@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  mingw:
+    name: MinGW UCRT64 build + tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2 (UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-glew
+            mingw-w64-ucrt-x86_64-glfw
+            mingw-w64-ucrt-x86_64-python
+
+      - name: Install Vulkan SDK (glslangValidator for SPIR-V)
+        uses: jakoch/vulkan-sdk-action@v1
+        with:
+          version: 1.4.304.0
+          cache: true
+
+      - name: Download external dependencies
+        shell: msys2 {0}
+        run: python build.py --setup-deps
+
+      - name: Configure
+        shell: msys2 {0}
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build --target gryce_tests 3dtest 2dDemo FPSDemo grycegc
+
+      - name: Run tests
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure
+
+  msvc:
+    name: MSVC build + tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Vulkan SDK (glslangValidator for SPIR-V)
+        uses: jakoch/vulkan-sdk-action@v1
+        with:
+          version: 1.4.304.0
+          cache: true
+
+      - name: Download external dependencies
+        run: python build.py --setup-deps
+
+      - name: Configure
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Debug --target gryce_tests 3dtest 2dDemo FPSDemo grycegc
+
+      - name: Run tests
+        run: ctest -C Debug --test-dir build --output-on-failure
+
+  editor:
+    name: WPF editor build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Restore NuGet packages
+        run: msbuild editor/GryceEngine.Editor.csproj /t:Restore /p:Configuration=Debug /p:Platform=x64
+
+      - name: Build editor
+        run: msbuild editor/GryceEngine.Editor.csproj /p:Configuration=Debug /p:Platform=x64 /v:minimal

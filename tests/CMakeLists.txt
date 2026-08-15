@@ -21,8 +21,10 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             physics_3d_test.cpp
             physics_2d_test.cpp
             fracture_test.cpp
+            lua_script_test.cpp
             tilemap_test.cpp
             render2d_test.cpp
+            scene_serialization_test.cpp
             prefab_test.cpp
             compressed_texture_test.cpp
             animation_test.cpp
@@ -31,6 +33,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             reflection_2d_test.cpp
             ray_test.cpp
             pick_test.cpp
+            backend_smoke_test.cpp
     )
     target_link_libraries(gryce_tests
         PRIVATE
