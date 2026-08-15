@@ -106,6 +106,7 @@ public enum GCommandType
     InputMouseMove,
     InputMouseButton,
     InputMouseScroll,
+    InputMouseReset,
 
     PhysicsSetGravity = 300,
     PhysicsAddForce,

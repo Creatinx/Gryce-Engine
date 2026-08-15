@@ -172,14 +172,27 @@ int main(int argc, char* argv[]) {
     std::string project = default_project_root();
     const char* scene = "res:/scenes/main.gesc";
     bool scene_override = false;
+    float auto_close_seconds = 0.0f;
     int width = 1280;
     int height = 720;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--project") == 0 && i + 1 < argc) project = argv[++i];
         else if (std::strcmp(argv[i], "--scene") == 0 && i + 1 < argc) { scene = argv[++i]; scene_override = true; }
+        else if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
+            auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
+        }
         else if (std::strcmp(argv[i], "--w") == 0 && i + 1 < argc) width = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--h") == 0 && i + 1 < argc) height = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+            std::printf(
+                "GryceGame (GryceSPC 游戏模板)\n"
+                "  --project <dir>   项目根（默认 exe 目录）\n"
+                "  --scene <res:...> 覆盖起始场景\n"
+                "  --auto-close <s>  运行 s 秒后自动退出（CI/测试用）\n"
+                "  --w/--h <px>      窗口尺寸\n");
+            return 0;
+        }
     }
 
     GCoreInitDesc core_desc{};
@@ -228,6 +241,7 @@ int main(int argc, char* argv[]) {
     enter_play_mode();
 
     auto last = std::chrono::steady_clock::now();
+    float auto_close_timer = 0.0f;
     while (!GWindow_ShouldClose()) {
         GWindow_PollEvents();
         GInput_SyncToCore();
@@ -235,6 +249,14 @@ int main(int argc, char* argv[]) {
         float dt = std::chrono::duration<float>(now - last).count();
         last = now;
         if (dt < 0.0f || dt > 0.05f) dt = 0.016f;
+
+        if (auto_close_seconds > 0.0f) {
+            auto_close_timer += dt;
+            if (auto_close_timer >= auto_close_seconds) {
+                std::printf("[game] auto-close after %.1f seconds\n", auto_close_seconds);
+                break;
+            }
+        }
 
         GCore_BeginFrame(dt);
         GRender_BeginFrame();

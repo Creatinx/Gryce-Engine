@@ -204,6 +204,7 @@ public partial class ViewportView
             SetGameCursorLocked(true);
             _fpsVirtualX = 0;
             _fpsVirtualY = 0;
+            try { InputAPI.GInput_ResetMouseBaseline(); } catch { /* ignore */ }
             return;
         }
 
@@ -336,7 +337,15 @@ public partial class ViewportView
             {
                 _pointerLocked = down;
                 SetGameCursorLocked(down);
-                if (down) WarpToViewportCenter();
+                if (down)
+                {
+                    // 重新锁定：重置虚拟累计与平台/核心鼠标基线，避免第一次
+                    // 移动基于旧的绝对坐标产生巨大假 delta（视角猛甩）。
+                    _fpsVirtualX = 0;
+                    _fpsVirtualY = 0;
+                    try { InputAPI.GInput_ResetMouseBaseline(); } catch { /* ignore */ }
+                    WarpToViewportCenter();
+                }
             }
             return;
         }

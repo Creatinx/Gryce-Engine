@@ -17,6 +17,9 @@ public static class InputAPI
     public static extern void GInput_InjectMouseScroll(float deltaX, float deltaY);
 
     [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GInput_ResetMouseBaseline();
+
+    [DllImport(NativeLibrary.Platform, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.U1)]
     public static extern bool GInput_IsKeyPressed(int keyCode);
 

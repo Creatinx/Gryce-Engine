@@ -1,6 +1,7 @@
 using GryceEngine.Editor.Models;
 using GryceEngine.Editor.Native;
 using GryceEngine.Editor.Services;
+using GryceEngine.Editor.Views;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -15,11 +16,23 @@ public partial class EditorViewModel
 
     // === Toolbar actions ===
 
-    public void Play() => _engine.Play();
+    public void Play()
+    {
+        _engine.Play();
+        // 播放必须进入 Game 视图：输入同步（GameViewActive）与相机移交
+        // （GGameView_SetCamera）都在 EnterGameView 中完成；否则工具栏 Play /
+        // Ctrl+P 播放时 Lua 收不到键盘鼠标、编辑相机还会覆盖游戏相机。
+        ViewportView.RequestGameView?.Invoke();
+    }
 
     public void Pause() => _engine.Pause();
 
-    public void Stop() => _engine.Stop();
+    public void Stop()
+    {
+        _engine.Stop();
+        // 停止播放后回到场景编辑视图（类 Unity 行为）。
+        ViewportView.RequestSceneView?.Invoke();
+    }
 
 
 

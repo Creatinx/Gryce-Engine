@@ -87,6 +87,8 @@ public:
     /// Returns a path that can be opened with std::ifstream: the real file
     /// when it exists, otherwise a temp extraction from a mounted bundle.
     /// Returns an empty string when the resource is not found.
+    // 解析为可读路径：磁盘文件优先，否则从已挂载 bundle 提取到临时目录。
+    // 调用方必须持有 mutex_（内部会访问 bundles_）。
     std::string resolve_for_reading(const std::string& path);
 
 private:

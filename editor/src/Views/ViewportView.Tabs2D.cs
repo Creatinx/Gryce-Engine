@@ -23,11 +23,17 @@ public partial class ViewportView
 
     private void OnSceneTabClick(object sender, RoutedEventArgs e)
     {
+        // 离开游戏视图即停止 Play，恢复场景编辑态。
+        if (VM != null && VM.IsPlaying) VM.Stop();
+        EnterSceneView();
+    }
+
+    /// <summary>进入场景编辑视图（不停止 Play；调用方决定是否先 Stop）。</summary>
+    private void EnterSceneView()
+    {
         _isGameView = false;
         GameViewActive = false;
         SetGameCursorLocked(false);
-        // 离开游戏视图即停止 Play，恢复场景编辑态。
-        if (VM != null && VM.IsPlaying) VM.Stop();
         try { SceneAPI.GScene_SetMode(1); } catch { /* ignore */ }
         Set2DMode(false);
         TabScene.IsChecked = true;
@@ -43,10 +49,8 @@ public partial class ViewportView
 
     private void On2DTabClick(object sender, RoutedEventArgs e)
     {
-        _isGameView = false;
-        GameViewActive = false;
-        SetGameCursorLocked(false);
         if (VM != null && VM.IsPlaying) VM.Stop();
+        EnterSceneView();
         try { SceneAPI.GScene_SetMode(0); } catch { /* ignore */ }
         Set2DMode(true);
         TabScene.IsChecked = false;
@@ -62,10 +66,18 @@ public partial class ViewportView
 
     private void OnGameTabClick(object sender, RoutedEventArgs e)
     {
+        // Play 会通过 ViewportView.RequestGameView 钩子进入游戏视图；
+        // 这里也补一次（幂等），确保手动点 Game 标签同样生效。
+        if (VM != null && !VM.IsPlaying) VM.Play();
+        EnterGameView();
+    }
+
+    /// <summary>进入游戏视图：同步输入、接管相机（Play 由调用方负责）。</summary>
+    private void EnterGameView()
+    {
+        if (_isGameView) return;
         _isGameView = true;
         GameViewActive = true;
-        // 游戏视图即游戏画布：进入即开始 Play，让 Lua 脚本接管场景与相机。
-        if (VM != null && !VM.IsPlaying) VM.Play();
         // 独立 GameView 相机：优先场景主相机实体（渲染侧 GRender_RenderGameView
         // 会使用该相机而非编辑器 Orbit 相机）。
         var gameCamera = FindMainCamera();
@@ -81,6 +93,15 @@ public partial class ViewportView
         ShowRenderSurface();
         GizmoInfo.Text = LocalizationService.Instance.T("viewport.game_view");
         GizmoOverlay.Visibility = Visibility.Collapsed;
+        // 场景模式注入的是绝对坐标；清掉平台/核心的鼠标基线并重置虚拟累计，
+        // 否则进入游戏视图后第一次移动会产生巨大的假 delta（视角猛甩）。
+        _fpsVirtualX = 0;
+        _fpsVirtualY = 0;
+        _trackedMouseX = 0;
+        _trackedMouseY = 0;
+        _lastMouseX = 0;
+        _lastMouseY = 0;
+        try { InputAPI.GInput_ResetMouseBaseline(); } catch { /* ignore */ }
     }
 
 

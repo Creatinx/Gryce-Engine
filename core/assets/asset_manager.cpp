@@ -81,6 +81,60 @@ std::string normalize_bundle_path(const std::string& path) {
     return p;
 }
 
+// 模型格式：外部引用（glTF 的 .bin/贴图、OBJ 的 .mtl 等）按相对路径解析，
+// 解包时必须把依赖文件一并解出到同一目录。
+bool is_model_format(const std::string& path) {
+    static const char* kExts[] = {".gltf", ".glb", ".obj", ".fbx",
+                                  ".dae",  ".ply", ".stl", ".3ds", ".blend"};
+    for (const char* ext : kExts) {
+        if (ends_with_ci(path, ext)) return true;
+    }
+    return false;
+}
+
+// 可能被模型相对引用的依赖文件扩展名。
+bool is_model_dependency_ext(const std::string& path) {
+    static const char* kExts[] = {
+        ".bin", ".mtl", ".jpg", ".jpeg", ".png", ".bmp", ".tga", ".dds",
+        ".ktx", ".hdr", ".exr", ".gif", ".webp", ".tif", ".tiff",
+    };
+    for (const char* ext : kExts) {
+        if (ends_with_ci(path, ext)) return true;
+    }
+    return false;
+}
+
+// 去掉绝对前缀与 "." / ".." 段，防止打包内部路径逃逸出临时解包根目录。
+std::string sanitize_internal_path(const std::string& path) {
+    std::string p = path;
+    for (char& c : p) {
+        if (c == '\\') c = '/';
+    }
+    std::string out;
+    size_t start = 0;
+    while (start <= p.size()) {
+        const size_t slash = p.find('/', start);
+        const std::string seg = p.substr(
+            start, slash == std::string::npos ? std::string::npos : slash - start);
+        if (seg == ".." || seg == "." || seg.empty()) {
+            if (slash == std::string::npos) break;
+            start = slash + 1;
+            continue;
+        }
+        out += seg;
+        if (slash == std::string::npos) break;
+        out += '/';
+        start = slash + 1;
+    }
+    return out;
+}
+
+// 返回路径的父目录（含末尾 '/'）；无目录返回空串。
+std::string parent_dir_of(const std::string& path) {
+    const size_t pos = path.find_last_of('/');
+    return pos == std::string::npos ? std::string() : path.substr(0, pos + 1);
+}
+
 } // namespace
 
 AssetManager& AssetManager::instance() {
@@ -573,7 +627,7 @@ void AssetManager::unmount_bundle(int id) {
 }
 
 std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) {
-    std::string internal_path = normalize_bundle_path(path);
+    std::string internal_path = sanitize_internal_path(normalize_bundle_path(path));
     if (internal_path.empty()) return "";
 
     for (auto& [id, bundle] : bundles_) {
@@ -588,21 +642,52 @@ std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) 
         auto data = bundle.reader->read(internal_path);
         if (data.empty()) continue;
 
-        std::string filename = std::filesystem::path(internal_path).filename().string();
-        if (filename.empty()) filename = "bundle_data";
-        std::filesystem::path temp_dir = std::filesystem::temp_directory_path() / "gryce_bundle";
+        // 按内部路径保持目录结构解出（<temp>/gryce_bundle/<bundle_id>/...），
+        // 这样 glTF / OBJ 等模型的外部相对引用（.bin / 贴图 / .mtl）能解析。
+        std::filesystem::path temp_root =
+            std::filesystem::temp_directory_path() / "gryce_bundle";
+        std::filesystem::path temp_path =
+            temp_root / std::to_string(bundle.id) / internal_path;
         std::error_code ec;
-        std::filesystem::create_directories(temp_dir, ec);
-        std::string temp_path = (temp_dir / (std::to_string(bundle.id) + "_" + filename)).string();
-
-        std::ofstream ofs(temp_path, std::ios::binary);
+        std::filesystem::create_directories(temp_path.parent_path(), ec);
+        std::ofstream ofs(temp_path.string(), std::ios::binary);
         if (!ofs) continue;
         ofs.write(reinterpret_cast<const char*>(data.data()),
                   static_cast<std::streamsize>(data.size()));
         if (!ofs.good()) continue;
 
-        bundle.extracted_temp_paths[internal_path] = temp_path;
-        return temp_path;
+        bundle.extracted_temp_paths[internal_path] = temp_path.string();
+
+        // 模型文件：把同目录下的依赖（glTF 缓冲/贴图、OBJ 的 .mtl）一并解出，
+        // 否则打包产物里 Assimp 打不开相对引用的外部文件。依赖可能按扩展名
+        // 归到别的 .gpkg（.bin→misc、贴图→textures），因此要跨所有 bundle 找。
+        if (is_model_format(internal_path)) {
+            const std::string dir = parent_dir_of(internal_path);
+            for (auto& [dep_bundle_id, dep_bundle] : bundles_) {
+                (void)dep_bundle_id;
+                for (const auto& entry : dep_bundle.reader->entries()) {
+                    if (entry.path == internal_path) continue;
+                    if (!is_model_dependency_ext(entry.path)) continue;
+                    if (!dir.empty() && entry.path.rfind(dir, 0) != 0) continue;
+                    if (dep_bundle.extracted_temp_paths.count(entry.path)) continue;
+
+                    auto dep = dep_bundle.reader->read(entry.path);
+                    if (dep.empty()) continue;
+                    const std::string dep_rel = sanitize_internal_path(entry.path);
+                    std::filesystem::path dep_path =
+                        temp_root / std::to_string(bundle.id) / dep_rel;
+                    std::filesystem::create_directories(dep_path.parent_path(), ec);
+                    std::ofstream dep_ofs(dep_path.string(), std::ios::binary);
+                    if (!dep_ofs) continue;
+                    dep_ofs.write(reinterpret_cast<const char*>(dep.data()),
+                                  static_cast<std::streamsize>(dep.size()));
+                    if (dep_ofs.good()) {
+                        dep_bundle.extracted_temp_paths[entry.path] = dep_path.string();
+                    }
+                }
+            }
+        }
+        return temp_path.string();
     }
     return "";
 }
@@ -613,7 +698,9 @@ std::string AssetManager::resolve_for_reading(const std::string& path) {
     if (std::filesystem::is_regular_file(resolved, ec)) {
         return resolved;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    // 注意：不能在此加锁——调用方（load_skinned_model_internal 等）已持有
+    // mutex_，这里再加锁会在打包产物（文件不在磁盘、走 bundle 提取）上死锁。
+    // 约定：本函数及 extract_from_bundle_unlocked 都要求调用方持有 mutex_。
     return extract_from_bundle_unlocked(path);
 }
 

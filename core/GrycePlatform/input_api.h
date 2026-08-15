@@ -28,6 +28,9 @@ GRYCE_PLATFORM_API void GInput_InjectKey(int key_code, GInputAction action);
 GRYCE_PLATFORM_API void GInput_InjectMouseMove(float x, float y);
 GRYCE_PLATFORM_API void GInput_InjectMouseButton(int button, GInputAction action, float x, float y);
 GRYCE_PLATFORM_API void GInput_InjectMouseScroll(float delta_x, float delta_y);
+// 清除鼠标增量累计与绝对位置基线：场景/游戏视图切换或重新锁定指针后调用，
+// 下一次 GInput_InjectMouseMove 会重新基线（不产生假 delta）。
+GRYCE_PLATFORM_API void GInput_ResetMouseBaseline(void);
 
 GRYCE_PLATFORM_API bool GInput_IsKeyPressed(int key_code);
 GRYCE_PLATFORM_API bool GInput_IsKeyHeld(int key_code);

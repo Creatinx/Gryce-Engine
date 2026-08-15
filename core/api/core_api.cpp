@@ -509,6 +509,16 @@ static void process_command(const GCommand& cmd) {
             g_core_state.input.mouse_y = p->y;
             break;
         }
+        case ECMD_INPUT_MOUSE_RESET: {
+            // 编辑器切换场景/游戏视图或重新锁定指针后，旧的绝对鼠标基线
+            // 已失效：清掉 snap，令下一次 ECMD_INPUT_MOUSE_MOVE 重新基线，
+            // 避免第一次移动产生巨大的假 delta（视角猛甩）。
+            g_core_state.input.mouse_snap_x = -1.0f;
+            g_core_state.input.mouse_snap_y = -1.0f;
+            g_core_state.input.mouse_delta_x = 0;
+            g_core_state.input.mouse_delta_y = 0;
+            break;
+        }
         default:
             break;
     }

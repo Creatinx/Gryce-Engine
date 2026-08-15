@@ -55,6 +55,13 @@ public partial class ViewportView : UserControl, IDisposable
     /// sync editor-injected input into the core so Lua scripts can read it.</summary>
     public static volatile bool GameViewActive;
 
+    /// <summary>工具栏/快捷键 Play 时由 ViewModel 触发：自动进入游戏视图
+    /// （否则输入不同步到核心、编辑相机还会覆盖游戏相机）。</summary>
+    public static Action? RequestGameView;
+
+    /// <summary>Stop 后自动回到场景编辑视图。</summary>
+    public static Action? RequestSceneView;
+
     /// <summary>Raised when the Script (code editor) tab becomes active/closed,
     /// so the main window can hide the scene-editor toolbar tools.</summary>
     public event Action<bool>? ScriptModeChanged;
@@ -199,6 +206,8 @@ public partial class ViewportView : UserControl, IDisposable
     {
         _vmCached = DataContext as EditorViewModel;
         OpenScriptRequested += OnOpenScriptRequested;
+        RequestGameView = EnterGameView;
+        RequestSceneView = EnterSceneView;
         int w = Math.Max((int)ActualWidth, 100);
         int h = Math.Max((int)ActualHeight, 100);
         var px = GetPixelSize();
@@ -243,6 +252,8 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         OpenScriptRequested -= OnOpenScriptRequested;
+        if (ReferenceEquals(RequestGameView, (Action)EnterGameView)) RequestGameView = null;
+        if (ReferenceEquals(RequestSceneView, (Action)EnterSceneView)) RequestSceneView = null;
         StopRenderThread();
         _gizmoTimer?.Stop();
         _gizmoTimer = null;

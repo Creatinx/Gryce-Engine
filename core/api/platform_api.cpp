@@ -491,6 +491,20 @@ void GInput_InjectMouseScroll(float delta_x, float delta_y) {
     (void)delta_x; (void)delta_y;
 }
 
+void GInput_ResetMouseBaseline(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    // 下一次 InjectMouseMove 直接基线而不产生 delta（first_mouse 语义）。
+    g_platform.input.first_mouse = true;
+    g_platform.input.mouse_delta_x = 0.0f;
+    g_platform.input.mouse_delta_y = 0.0f;
+
+    // 同时让 Core 的 snap 失效：下次 ECMD_INPUT_MOUSE_MOVE 重新基线。
+    GCommand cmd{};
+    cmd.type = ECMD_INPUT_MOUSE_RESET;
+    GCore_PushCommand(&cmd);
+}
+
 bool GInput_IsKeyPressed(int key_code) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
