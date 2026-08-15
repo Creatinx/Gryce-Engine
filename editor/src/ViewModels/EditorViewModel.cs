@@ -616,10 +616,14 @@ public partial class EditorViewModel : INotifyPropertyChanged
             // 展开到该实体的整条祖先链，确保嵌套节点可见。
             foreach (var e in path) e.IsExpanded = true;
             var entity = path[path.Count - 1];
-            if (_selectedEntity != null)
+            if (_selectedEntity != null && !ReferenceEquals(_selectedEntity, entity))
+            {
                 _selectedEntity.IsSelected = false;
+            }
 
-            entity.IsSelected = true;
+            // 相等守卫：写回 TreeViewItem 会触发 Selected 事件并再次进入本方法，
+            // 已选中时跳过写回以切断递归（与 EntityModel.IsSelected 守卫配合）。
+            if (!entity.IsSelected) entity.IsSelected = true;
             SelectedEntity = entity;
 
             if (!_historySuppress)

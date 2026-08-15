@@ -8,6 +8,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
@@ -31,6 +32,11 @@ public partial class MainWindow
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
         viewModel.StatusToast += ShowToast;
         UpdatePlaybackState(viewModel);
+
+        // 菜单显示 "Ctrl+Shift+N" 但此前从未绑定快捷键：补上。
+        InputBindings.Add(new KeyBinding(
+            new RelayCommand(() => OnNewProjectClick(this, new RoutedEventArgs())),
+            Key.N, ModifierKeys.Control | ModifierKeys.Shift));
     }
 
     protected override void OnClosing(CancelEventArgs e)

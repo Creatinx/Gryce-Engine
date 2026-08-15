@@ -81,20 +81,40 @@ public class EntityModel : INotifyPropertyChanged
     public bool IsSelected
     {
         get => _isSelected;
-        set { _isSelected = value; OnPropertyChanged(); }
+        set
+        {
+            // 相等守卫：IsSelected 是 TwoWay 绑定到 TreeViewItem，无条件
+            // PropertyChanged 会把值写回 TreeViewItem 并再次触发 Selected
+            // 事件，形成 OnEntitySelected → Select → IsSelected → 事件 的
+            // 无限递归（StackOverflow，进程直接终止）。
+            if (_isSelected == value) return;
+            _isSelected = value;
+            OnPropertyChanged();
+        }
     }
 
     /// <summary>多选集合中的次要高亮（TreeView 原生只保留主选中高亮）。</summary>
     public bool IsMultiHighlight
     {
         get => _isMultiHighlight;
-        set { _isMultiHighlight = value; OnPropertyChanged(); }
+        set
+        {
+            if (_isMultiHighlight == value) return;
+            _isMultiHighlight = value;
+            OnPropertyChanged();
+        }
     }
 
     public bool IsExpanded
     {
         get => _isExpanded;
-        set { _isExpanded = value; OnPropertyChanged(); }
+        set
+        {
+            // 同样加相等守卫，避免 TwoWay 绑定写回 TreeViewItem 造成无谓事件风暴
+            if (_isExpanded == value) return;
+            _isExpanded = value;
+            OnPropertyChanged();
+        }
     }
 
     public bool Enabled

@@ -13,9 +13,16 @@ public partial class App : Application
 
     public App()
     {
+        // 未处理异常落盘（编辑器崩溃时留证据），同时弹窗提示而不是无声闪退。
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            WriteCrashLog(e.ExceptionObject as Exception ?? new Exception("unknown unhandled exception"),
+                          "AppDomain.UnhandledException");
+        };
         // 编辑器内未处理异常：弹窗提示而不是无声闪退（保留控制台日志路径）。
         DispatcherUnhandledException += (_, e) =>
         {
+            WriteCrashLog(e.Exception, "DispatcherUnhandledException");
             try
             {
                 MessageBox.Show($"Gryce Engine Editor error:\n{e.Exception.Message}",
@@ -27,6 +34,20 @@ public partial class App : Application
             }
             e.Handled = true;
         };
+    }
+
+    private static void WriteCrashLog(Exception ex, string source)
+    {
+        try
+        {
+            string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "editor_crash.log");
+            System.IO.File.AppendAllText(path,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{source}] {ex}\r\n");
+        }
+        catch
+        {
+            // 日志写入失败不影响主流程
+        }
     }
 
     protected override void OnStartup(StartupEventArgs e)
