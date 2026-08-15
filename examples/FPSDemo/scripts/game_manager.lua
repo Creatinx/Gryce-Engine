@@ -19,18 +19,24 @@ local function count_alive_enemies()
     return n
 end
 
+-- 场景中实际存在的 Enemy 实体总数（防止"敌人脚本没注册就判胜利"）
+local function count_enemy_entities()
+    local n = 0
+    local found = engine.entity.find_all("Enemy") or {}
+    for _ in ipairs(found) do n = n + 1 end
+    return n
+end
+
 function on_start()
-    if engine.state.get("health") == nil then
-        engine.state.set("health", 100)
-        engine.state.set("kills", 0)
-        engine.state.set("lives", 5)
-        engine.state.set("game_over", false)
-        engine.state.set("victory", false)
-        engine.state.set("jumping", false)
-    else
-        engine.state.set("game_over", false)
-        engine.state.set("victory", false)
-    end
+    -- engine.state 跨场景重载/重进 Play 持久存在：必须无条件重置，
+    -- 否则 R 重开会保留 lives=0（软锁）或残留旧 kills/health。
+    engine.state.set("health", 100)
+    engine.state.set("kills", 0)
+    engine.state.set("lives", 5)
+    engine.state.set("game_over", false)
+    engine.state.set("victory", false)
+    engine.state.set("jumping", false)
+    engine.state.set("invuln", 0)
     -- 背景音乐：仅在游戏运行时（Play Mode / 独立 exe）播放，编辑器编辑态不播
     local bgm = engine.entity.find("BGM")
     if bgm ~= 0 then engine.audio.play_on(bgm) end
@@ -63,8 +69,10 @@ function on_update(dt)
         end
     end
 
-    -- 清剿胜利
-    if not over and not victory and count_alive_enemies() == 0 then
+    -- 清剿胜利：要求场景里确实有 Enemy 实体，且全部被消灭。
+    -- 只数 ENEMIES 会在敌人脚本未注册时（加载失败）误判秒胜。
+    if not over and not victory and count_enemy_entities() > 0
+        and count_alive_enemies() == 0 then
         engine.state.set("victory", true)
     end
 

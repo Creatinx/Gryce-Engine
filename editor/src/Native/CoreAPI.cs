@@ -66,6 +66,9 @@ public static class CoreAPI
     public static extern void GCore_RegisterCallback_OnLogMessage(GOnLogMessage cb);
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void GCore_RegisterCallback_OnMouseLock(GOnMouseLock cb);
+
+    [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]
     public static extern int GCore_GetLogMessages([MarshalAs(UnmanagedType.LPStr)] StringBuilder outBuf, int bufSize);
 
     [DllImport(NativeLibrary.Core, CallingConvention = CallingConvention.Cdecl)]

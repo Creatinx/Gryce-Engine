@@ -548,6 +548,16 @@ public partial class ViewportView
         PositionOverlay();
     }
 
+    /// <summary>响应 Lua 的 engine.input.mouse_locked()：在 Game 视图内
+    /// 锁定/隐藏光标并捕获鼠标（FPS 视角用），离开游戏视图自动释放。</summary>
+    private void OnMouseLockRequested(bool locked)
+    {
+        if (!_isGameView) return;
+        _pointerLocked = locked;
+        SetGameCursorLocked(locked);
+        SetViewportCapture(locked);
+    }
+
     /// <summary>Updates the top-right gizmo mode badge as soon as the mode
     /// changes (W/E/R), instead of waiting for the 30Hz overlay tick.</summary>
 

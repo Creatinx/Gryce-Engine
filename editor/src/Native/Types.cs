@@ -145,6 +145,9 @@ public delegate void GOnLogMessage(int level,
     int sourceLine, nint userData);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+public delegate void GOnMouseLock(int locked, nint userData);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 public delegate void GOnViewportTextureReady(GTextureHandle handle, int w, int h, nint userData);
 #endregion
 

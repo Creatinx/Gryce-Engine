@@ -55,6 +55,10 @@ examples/2dDemo/shaders/
 examples/3dtest/shaders/
 examples/FPSDemo/shaders/
 
+# Editor dual-slot buffer scenes (written when creating/editing scenes)
+examples/*/scenes/scene_2d.gesc
+examples/*/scenes/scene_3d.gesc
+
 # Runtime generated assets / screenshots / recordings
 media/
 font_atlas_debug.bmp

@@ -14,7 +14,6 @@ local mouse_init = false
 
 local shoot_cooldown = 0.0
 local jump_cooldown = 0.0
-local invuln = 0.0
 
 -- 地面/身体参数
 local GROUND_Y = 0.0
@@ -87,7 +86,6 @@ function on_start()
     mouse_init = true
     shoot_cooldown = 0.0
     jump_cooldown = 0.0
-    invuln = 0.0
     -- 锁定并隐藏鼠标，实现 FPS 视角
     engine.input.mouse_locked(true)
     engine.log.info("FPSDemo: player script started")
@@ -140,7 +138,8 @@ function on_update(dt)
     local grounded = t.pos.y <= BODY_REST + 0.06
 
     -- 跳跃
-    local jump = engine.input.key_down(32) or engine.input.key_down(265)
+    -- 跳跃键：仅空格（265 是无效键码，已移除）
+    local jump = engine.input.key_down(32)
     if jump and grounded and jump_cooldown <= 0 and not engine.state.get("jumping") then
         target_vx = target_vx  -- 保持水平
         vy = common.CFG.jump_force
@@ -207,7 +206,7 @@ function on_update(dt)
                     engine.entity.set_transform(self_h, st.pos, nil, nil)
                 end
             end
-            invuln = 1.5
+            engine.state.set("invuln", 1.5)
             local sfx = engine.entity.find("SFX_Hurt")
             if sfx ~= 0 then engine.audio.play_on(sfx) end
         else
@@ -215,6 +214,11 @@ function on_update(dt)
         end
     end
 
-    -- 无敌倒计时
-    if invuln > 0 then invuln = invuln - dt end
+    -- 无敌倒计时（存入 engine.state，供 enemy.lua 攻击时检查）
+    local inv = engine.state.get("invuln") or 0
+    if inv > 0 then
+        inv = inv - dt
+        if inv < 0 then inv = 0 end
+        engine.state.set("invuln", inv)
+    end
 end

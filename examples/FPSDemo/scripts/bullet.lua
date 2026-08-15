@@ -47,6 +47,17 @@ function on_update(dt)
     local t = engine.entity.get_transform(self_h)
     if not t then return end
 
+    -- 撞墙/落地检测：子弹被物理阻挡后速度归零（restitution=0 不反弹），
+    -- 直接销毁，避免穿透或贴墙滞留到寿命结束。
+    local v = engine.component.get(self_h, "RigidBody", "velocity")
+    if v then
+        local speed = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+        if speed < 2.0 then
+            engine.entity.destroy(self_h)
+            return
+        end
+    end
+
     -- 用本帧位移 + 命中半径做“线段”检测：高速子弹整段路径都能命中，不再穿透
     local hit_range = common.CFG.bullet_hit_range
     local nearest_d = 999

@@ -60,6 +60,7 @@ function on_update(dt)
 
     local dx = player_pos.x - t.pos.x
     local dz = player_pos.z - t.pos.z
+    local dy = math.abs(player_pos.y - t.pos.y)
     local dist = math.sqrt(dx * dx + dz * dz)
 
     local vx, vz = 0, 0
@@ -77,7 +78,9 @@ function on_update(dt)
         end
     else
         -- 攻击
-        if attack_cooldown <= 0 then
+        -- 垂直距离过大（玩家在掩体/高处）不打；无敌期间不打
+        local invuln = engine.state.get("invuln") or 0
+        if attack_cooldown <= 0 and dy <= 2.0 and invuln <= 0 then
             attack_cooldown = 1.0
             local health = engine.state.get("health") or 100
             health = health - common.CFG.enemy_damage
