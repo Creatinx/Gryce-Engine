@@ -255,26 +255,33 @@ endif()
 
 # ---------------------------------------------------------------------------
 # 测试框架：GoogleTest（可选）
-# MSVC 下优先使用 deps_manager.py 下载的源码构建，避免链接到 MSYS2 预装的
-# GTest（其 include 目录指向 MinGW 头文件，与 MSVC 不兼容）。
+# 统一优先使用 deps_manager.py 下载的源码构建，避免链接到发行版预装的
+# GTest（其 include 目录/ABI 可能与当前编译器不兼容，如 MSYS2 的 GTest 头文件
+# 指向 MinGW 路径，与 MSVC 不匹配）。
 # ---------------------------------------------------------------------------
 if(GRYCE_BUILD_TESTS)
-    # MSVC 优先本地源码；其他平台保留先 find_package 的习惯
-    if(MSVC)
-        gryce_require_dep(googletest FALSE)
-        if(GRYCE_HAS_GOOGLETEST)
-            set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
-            set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-            set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-            add_subdirectory("${GRYCE_DEPS_ROOT}/googletest" EXCLUDE_FROM_ALL)
-            # add_subdirectory 后生成 gtest / gtest_main 目标，但测试目标用的是 GTest::gtest_main
-            if(TARGET gtest_main AND NOT TARGET GTest::gtest_main)
-                add_library(GTest::gtest_main ALIAS gtest_main)
-            endif()
-            if(TARGET gtest AND NOT TARGET GTest::gtest)
-                add_library(GTest::gtest ALIAS gtest)
-            endif()
-            message(STATUS "GTest: built from source at ${GRYCE_DEPS_ROOT}/googletest")
+    # 统一策略：优先使用 deps_manager.py 下载的源码 add_subdirectory 构建
+    # （避免链接到发行版预装的 GTest，其 include 目录/ABI 可能与编译器不匹配）；
+    # 源码缺失时才回退到 find_package。
+    gryce_require_dep(googletest FALSE)
+    if(GRYCE_HAS_GOOGLETEST)
+        set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+        set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        add_subdirectory("${GRYCE_DEPS_ROOT}/googletest" EXCLUDE_FROM_ALL)
+        # add_subdirectory 后生成 gtest / gtest_main 目标，但测试目标用的是 GTest::gtest_main
+        if(TARGET gtest_main AND NOT TARGET GTest::gtest_main)
+            add_library(GTest::gtest_main ALIAS gtest_main)
+        endif()
+        if(TARGET gtest AND NOT TARGET GTest::gtest)
+            add_library(GTest::gtest ALIAS gtest)
+        endif()
+        message(STATUS "GTest: built from source at ${GRYCE_DEPS_ROOT}/googletest")
+        set(GRYCE_HAS_GTEST TRUE)
+    else()
+        find_package(GTest QUIET CONFIG)
+        if(GTest_FOUND)
+            message(STATUS "GTest found via find_package: ${GTest_DIR}")
             set(GRYCE_HAS_GTEST TRUE)
         else()
             # 显式报错而非静默禁用：GRYCE_BUILD_TESTS=ON 却跑不了测试会让人误以为
@@ -282,18 +289,6 @@ if(GRYCE_BUILD_TESTS)
             message(FATAL_ERROR
                 "[deps] GRYCE_BUILD_TESTS=ON but GoogleTest source not found at "
                 "${GRYCE_DEPS_ROOT}/googletest\n"
-                "Please run: python tools/deps_manager.py download\n"
-                "Or pass -DGRYCE_BUILD_TESTS=OFF to disable tests."
-            )
-        endif()
-    else()
-        find_package(GTest QUIET CONFIG)
-        if(GTest_FOUND)
-            message(STATUS "GTest found: ${GTest_DIR}")
-            set(GRYCE_HAS_GTEST TRUE)
-        else()
-            message(FATAL_ERROR
-                "[deps] GRYCE_BUILD_TESTS=ON but GoogleTest not found.\n"
                 "Please run: python tools/deps_manager.py download\n"
                 "Or pass -DGRYCE_BUILD_TESTS=OFF to disable tests."
             )

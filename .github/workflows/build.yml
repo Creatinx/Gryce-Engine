@@ -47,6 +47,33 @@ jobs:
         shell: msys2 {0}
         run: ctest --test-dir build --output-on-failure
 
+  linux:
+    name: Linux (GCC) build + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install X11/GL dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxi-dev libxkbcommon-dev mesa-common-dev libgl-dev \
+            libglew-dev
+
+      - name: Download external dependencies
+        run: python3 build.py --setup-deps
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --target gryce_tests 3dtest 2dDemo FPSDemo grycegc
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
   msvc:
     name: MSVC build + tests
     runs-on: windows-latest

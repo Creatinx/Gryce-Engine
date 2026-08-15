@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gryce Engine -- one-click build script (Windows, MinGW-w64 / MSVC)
+"""Gryce Engine -- one-click build script (Windows MinGW-w64/MSVC, Linux GCC/Clang)
 
 用法:
     python build.py [config] [选项]
@@ -10,6 +10,13 @@
     python build.py --setup-deps       # 仅下载依赖
     python build.py --clean            # 清理构建产物（保留 deps）
     python build.py --clean-all        # 完全清理（包括 deps）
+    python build.py --editor           # 预留：同时启用 Editor(C#) 编译开关
+
+Linux 编译前置条件（安装 X11/GL 开发头文件，供 GLFW/GLEW 从源码构建）:
+    sudo apt install build-essential cmake ninja-build python3 \
+        libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+        libxi-dev libxkbcommon-dev mesa-common-dev libgl-dev \
+        libglew-dev libglfw3-dev  # 可选 libvulkan-dev / lld
 """
 
 import argparse
@@ -19,6 +26,9 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+
+# 平台常量：Windows 之外（Linux/macOS）走 POSIX 路径。
+IS_WINDOWS = (os.name == 'nt')
 
 # 编译器输出按 UTF-8 解码（见 run()）；打印到 GBK 控制台时替换不可编码字符，避免崩溃。
 if os.name == 'nt':
@@ -342,6 +352,12 @@ def main():
         help="Force MSVC compiler and Visual Studio 2026 generator"
     )
     parser.add_argument(
+        "--editor", action="store_true",
+        help="预留：启用 Editor（C#）编译开关（-DGRYCE_BUILD_EDITOR=ON）。"
+             "当前 Editor 为 WPF，仅 Windows + Visual Studio generator 生效；"
+             "未来移植跨平台 UI 后在 Linux 上亦可用。"
+    )
+    parser.add_argument(
         "--offline", action="store_true",
         help="Skip network downloads; use only local cached dependencies"
     )
@@ -399,24 +415,35 @@ def main():
             compiler_family = "msvc"
 
         if compiler_family is None:
-            print(
-                f"\n{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}\n\n"
-                "This project supports:\n"
-                "  * MSYS2 UCRT64 MinGW-w64 (recommended)\n"
-                "  * MSVC (Visual Studio 2026+)\n\n"
-                "For MinGW (MSYS2 UCRT64 terminal):\n"
-                "    pacman -S mingw-w64-ucrt-x86_64-gcc "
-                "mingw-w64-ucrt-x86_64-cmake "
-                "mingw-w64-ucrt-x86_64-ninja "
-                "mingw-w64-ucrt-x86_64-glew "
-                "mingw-w64-ucrt-x86_64-glfw\n\n"
-                "Then either:\n"
-                "    1. Run this script from the MSYS2 UCRT64 terminal.\n"
-                "    2. Add C:\\msys64\\ucrt64\\bin to your system PATH and retry.\n\n"
-                "For MSVC:\n"
-                '    Open "x64 Native Tools Command Prompt for VS 2026" and run:\n'
-                "        python build.py --msvc"
-            )
+            if IS_WINDOWS:
+                tips = (
+                    "This project supports:\n"
+                    "  * MSYS2 UCRT64 MinGW-w64 (recommended)\n"
+                    "  * MSVC (Visual Studio 2026+)\n\n"
+                    "For MinGW (MSYS2 UCRT64 terminal):\n"
+                    "    pacman -S mingw-w64-ucrt-x86_64-gcc "
+                    "mingw-w64-ucrt-x86_64-cmake "
+                    "mingw-w64-ucrt-x86_64-ninja "
+                    "mingw-w64-ucrt-x86_64-glew "
+                    "mingw-w64-ucrt-x86_64-glfw\n\n"
+                    "Then either:\n"
+                    "    1. Run this script from the MSYS2 UCRT64 terminal.\n"
+                    "    2. Add C:\\msys64\\ucrt64\\bin to your system PATH and retry.\n\n"
+                    "For MSVC:\n"
+                    '    Open "x64 Native Tools Command Prompt for VS 2026" and run:\n'
+                    "        python build.py --msvc"
+                )
+            else:
+                tips = (
+                    "This project supports GCC and Clang.\n\n"
+                    "Install (Debian/Ubuntu):\n"
+                    "    sudo apt install g++ cmake ninja-build python3 \\\n"
+                    "        libx11-dev libxrandr-dev libxinerama-dev \\\n"
+                    "        libxcursor-dev libxi-dev libxkbcommon-dev \\\n"
+                    "        mesa-common-dev libgl-dev libglew-dev\n\n"
+                    "Then retry: python build.py"
+                )
+            print(f"\n{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}\n\n{tips}")
             sys.exit(1)
     else:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} --no-lock: using CMake default compiler detection")
@@ -497,6 +524,21 @@ def main():
                 "-DCMAKE_C_COMPILER=" + gcc_path,
                 "-DCMAKE_CXX_COMPILER=" + gxx_path,
             ]
+
+        # 预留接口：启用 Editor（C#）编译开关。当前 WPF Editor 仅
+        # Windows + Visual Studio generator 生效，Linux 上暂不参与编译。
+        if args.editor:
+            configure_cmd += ["-DGRYCE_BUILD_EDITOR=ON"]
+            if IS_WINDOWS:
+                print(
+                    f"{C_WARN}[Gryce Engine]{C_RESET} --editor: Editor(C#) build enabled "
+                    "(requires Visual Studio generator)"
+                )
+            else:
+                print(
+                    f"{C_WARN}[Gryce Engine]{C_RESET} --editor: GRYCE_BUILD_EDITOR=ON passed; "
+                    "WPF Editor is Windows-only, core will be unaffected"
+                )
 
         configure_cmd += [str(project_root)]
 

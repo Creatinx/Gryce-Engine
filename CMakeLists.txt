@@ -69,6 +69,12 @@ option(GRYCE_ENABLE_SANITIZERS  "Enable ASan/UBSan in Debug (GCC/Clang only)" OF
 option(GRYCE_ENABLE_LTO           "Enable Link-Time Optimization in Release" ON)
 option(GRYCE_STATIC_RUNTIME       "Use static C++ runtime (/MT) on MSVC" OFF)
 
+# 预留接口：Editor（C#）编译开关。
+# 当前 WPF Editor 仅支持 Windows 上的 Visual Studio generator（见下方
+# include_external_msproject）。未来若移植到跨平台 UI（如 Avalonia），
+# 可在 Linux 上通过 -DGRYCE_BUILD_EDITOR=ON 或 build.py --editor 启用。
+option(GRYCE_BUILD_EDITOR        "Build the (C#) Editor" OFF)
+
 # ---------------------------------------------------------------------------
 # 编译器选项
 # ---------------------------------------------------------------------------
@@ -114,9 +120,9 @@ add_subdirectory(examples)
 # add_subdirectory(editor)
 
 # ---------------------------------------------------------------------------
-# WPF Editor 集成到 VS 解决方案（仅 Visual Studio Generator 生效）
+# WPF Editor 集成到 VS 解决方案（仅 Visual Studio generator + GRYCE_BUILD_EDITOR 生效）
 # ---------------------------------------------------------------------------
-if(CMAKE_GENERATOR MATCHES "Visual Studio")
+if(GRYCE_BUILD_EDITOR AND CMAKE_GENERATOR MATCHES "Visual Studio")
     include_external_msproject(
         GryceEngine.Editor
         ${CMAKE_SOURCE_DIR}/editor/GryceEngine.Editor.csproj

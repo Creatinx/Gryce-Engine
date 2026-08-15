@@ -112,6 +112,15 @@ static void update_input_from_window() {
         g_platform.input.mouse_delta_x = static_cast<float>(x) - px;
         g_platform.input.mouse_delta_y = static_cast<float>(y) - py;
     }
+
+    // FPS 鼠标锁定：InputManager 已把光标拉回窗口中心并按"相对中心"算好增量，
+    // 绝对位置差在这里恒为 0，直接采用它的增量。
+    if (g_platform.input_mgr && g_platform.input_mgr->is_mouse_locked()) {
+        g_platform.input.mouse_delta_x =
+            static_cast<float>(g_platform.input_mgr->mouse_delta_x());
+        g_platform.input.mouse_delta_y =
+            static_cast<float>(g_platform.input_mgr->mouse_delta_y());
+    }
 }
 
 static WindowMode to_internal_mode(GWindowMode mode) {
@@ -296,9 +305,12 @@ int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
     g_platform.input_mgr = std::make_unique<InputManager>();
     g_platform.mode = PlatformState::Mode::GLFW;
 
-    // 把 Core 的鼠标锁定请求接到平台窗口（FPS 视角隐藏并锁定光标）
+    // 把 Core 的鼠标锁定请求接到平台输入层：InputManager::set_mouse_locked
+    // 负责隐藏光标 + 立即回中 + 每帧回中（update 里）+ IME 关闭。
     GCore_RegisterCallback_OnMouseLock([](int locked, void*) {
-        if (g_platform.window) {
+        if (g_platform.input_mgr) {
+            g_platform.input_mgr->set_mouse_locked(locked != 0);
+        } else if (g_platform.window) {
             g_platform.window->set_cursor_disabled(locked != 0);
         }
     });
@@ -536,7 +548,9 @@ void GInput_GetMousePosition(float* out_x, float* out_y) {
 void GInput_SetMouseLocked(bool locked) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
-    if (g_platform.window) {
+    if (g_platform.input_mgr) {
+        g_platform.input_mgr->set_mouse_locked(locked);
+    } else if (g_platform.window) {
         g_platform.window->set_cursor_disabled(locked);
     }
 }
@@ -570,7 +584,19 @@ void GInput_SyncToCore(void) {
 
     const float mx = in.mouse_x;
     const float my = in.mouse_y;
-    if (mx != in.synced_mouse_x || my != in.synced_mouse_y) {
+    const bool locked_glfw =
+        g_platform.mode == PlatformState::Mode::GLFW &&
+        g_platform.input_mgr && g_platform.input_mgr->is_mouse_locked();
+    if (locked_glfw) {
+        // FPS 锁定：光标每帧被拉回窗口中心，绝对位置差恒为 0；
+        // 推送 InputManager 已算好的相对中心增量。
+        struct MouseDeltaPayload { float dx; float dy; };
+        MouseDeltaPayload p{ in.mouse_delta_x, in.mouse_delta_y };
+        GCommand cmd{};
+        cmd.type = ECMD_INPUT_MOUSE_DELTA;
+        std::memcpy(cmd.payload, &p, sizeof(p));
+        GCore_PushCommand(&cmd);
+    } else if (mx != in.synced_mouse_x || my != in.synced_mouse_y) {
         in.synced_mouse_x = mx;
         in.synced_mouse_y = my;
         MouseMovePayload p{ mx, my };

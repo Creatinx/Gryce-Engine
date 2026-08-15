@@ -91,8 +91,13 @@ else()
     target_compile_options(gryce_compile_options INTERFACE $<$<CONFIG:Debug>:-g1>)
     target_compile_options(gryce_compile_options INTERFACE $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
 
-    # 使用 LLVM lld 替代 GNU ld，避免处理大型对象文件时崩溃
-    find_program(LLD_LINKER ld.lld.exe PATHS ${CMAKE_CXX_COMPILER}/.. ${CMAKE_CXX_COMPILER}/../..)
+    # 使用 LLVM lld 替代 GNU ld，避免处理大型对象文件时崩溃。
+    # Windows 下可执行文件名为 ld.lld.exe；Linux 下为 ld.lld。
+    if(WIN32)
+        find_program(LLD_LINKER ld.lld.exe PATHS ${CMAKE_CXX_COMPILER}/.. ${CMAKE_CXX_COMPILER}/../..)
+    else()
+        find_program(LLD_LINKER ld.lld)
+    endif()
     if(LLD_LINKER)
         add_link_options(-fuse-ld=lld)
         message(STATUS "Using LLVM lld linker: ${LLD_LINKER}")

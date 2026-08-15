@@ -519,6 +519,15 @@ static void process_command(const GCommand& cmd) {
             g_core_state.input.mouse_delta_y = 0;
             break;
         }
+        case ECMD_INPUT_MOUSE_DELTA: {
+            struct Payload { float dx; float dy; };
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            // GLFW 锁定模式：增量已由 InputManager 相对窗口中心计算并每帧回中，
+            // 绝对位置恒为中心，不能走位置差；直接累加（BeginFrame 每帧清零）。
+            g_core_state.input.mouse_delta_x += p->dx;
+            g_core_state.input.mouse_delta_y += p->dy;
+            break;
+        }
         default:
             break;
     }

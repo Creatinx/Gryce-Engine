@@ -58,6 +58,12 @@ void InputManager::update(Window* window) {
     window_ = window;
     if (!window || !window->is_valid()) return;
 
+    // 仅在窗口有焦点时才锁定光标范围：失焦时临时解除（恢复 Normal），
+    // 重新聚焦时恢复锁定。set_cursor_disabled 内部有状态缓存，只在边沿切换。
+    if (mouse_locked_) {
+        window->set_cursor_disabled(window->has_focus());
+    }
+
     // 保存上一帧状态
     std::memcpy(keys_previous_, keys_current_, sizeof(keys_current_));
     std::memcpy(mouse_buttons_previous_, mouse_buttons_current_, sizeof(mouse_buttons_current_));

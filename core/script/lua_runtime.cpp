@@ -1,4 +1,4 @@
-﻿#include "script/lua_runtime.h"
+#include "script/lua_runtime.h"
 
 #include "GryceCore/types.h"
 #include "runtime/engine_context.h"
