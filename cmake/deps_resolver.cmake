@@ -240,6 +240,10 @@ elseif(GRYCE_FETCH_JOLT)
         set(JPH_INSTALL_DEVELOPMENT OFF CACHE BOOL "" FORCE)
         # Jolt 默认使用静态 MSVC 运行时 (/MT)，与 Gryce 默认的动态运行时 (/MD) 冲突
         set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
+        # Jolt 自带 INTERPROCEDURAL_OPTIMIZATION=ON，在 MinGW 下会以 -flto=auto
+        # 编译出纯 LTO 对象（.gnu.lto_* 段），lld 无法解析其中的符号，导致大量
+        # undefined symbol。这里显式关闭，改用普通对象链接。
+        set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
         add_subdirectory("${GRYCE_DEPS_ROOT}/jolt/Build" EXCLUDE_FROM_ALL)
         if(MSVC AND TARGET Jolt)
             # Jolt 默认 /Wall /WX，在 VS2026 + 新 Windows SDK 下会把 SDK 头里的

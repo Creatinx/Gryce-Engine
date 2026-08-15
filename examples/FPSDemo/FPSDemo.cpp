@@ -27,6 +27,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
+#include <climits>
 #endif
 
 namespace {

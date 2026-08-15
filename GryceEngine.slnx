@@ -58,6 +58,7 @@
 			<BuildDependency Project="build/examples/examples_common.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders_1.vcxproj" />
+			<BuildDependency Project="build/examples/gryce_shaders_shaders_2.vcxproj" />
 			<BuildDependency Project="build/tests/gryce_tests.vcxproj" />
 		</Project>
 		<Project Path="build/INSTALL.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="695984e1-ff76-3ee9-9463-5adf2f189370">
@@ -125,6 +126,7 @@
 			<BuildDependency Project="build/build/deps/glfw/src/glfw.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders_1.vcxproj" />
+			<BuildDependency Project="build/examples/gryce_shaders_shaders_2.vcxproj" />
 			<BuildDependency Project="build/build/deps/box2d/extern/simde/simde.vcxproj" />
 			<BuildDependency Project="build/build/deps/assimp/contrib/zlib/zlibstatic.vcxproj" />
 		</Project>
@@ -142,6 +144,7 @@
 			<BuildDependency Project="build/build/deps/glfw/src/glfw.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders_1.vcxproj" />
+			<BuildDependency Project="build/examples/gryce_shaders_shaders_2.vcxproj" />
 			<BuildDependency Project="build/build/deps/box2d/extern/simde/simde.vcxproj" />
 			<BuildDependency Project="build/build/deps/assimp/contrib/zlib/zlibstatic.vcxproj" />
 		</Project>
@@ -159,6 +162,7 @@
 			<BuildDependency Project="build/build/deps/glfw/src/glfw.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders.vcxproj" />
 			<BuildDependency Project="build/examples/gryce_shaders_shaders_1.vcxproj" />
+			<BuildDependency Project="build/examples/gryce_shaders_shaders_2.vcxproj" />
 			<BuildDependency Project="build/build/deps/box2d/extern/simde/simde.vcxproj" />
 			<BuildDependency Project="build/build/deps/assimp/contrib/zlib/zlibstatic.vcxproj" />
 		</Project>
@@ -205,6 +209,9 @@
 			<BuildDependency Project="build/ZERO_CHECK.vcxproj" />
 		</Project>
 		<Project Path="build/examples/gryce_shaders_shaders_1.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="9255d329-dcf5-3755-b9a9-d17772677430">
+			<BuildDependency Project="build/ZERO_CHECK.vcxproj" />
+		</Project>
+		<Project Path="build/examples/gryce_shaders_shaders_2.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="109fcc48-7662-3a1c-b1c0-ea4ca2a55544">
 			<BuildDependency Project="build/ZERO_CHECK.vcxproj" />
 		</Project>
 	</Folder>
