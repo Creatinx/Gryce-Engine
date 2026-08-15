@@ -19,6 +19,7 @@ public partial class MainWindow
 {
     private EditorViewModel? VM => DataContext as EditorViewModel;
     private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private bool _shutdownRequested;
 
     public MainWindow(EditorViewModel viewModel)
     {
@@ -69,6 +70,23 @@ public partial class MainWindow
     {
         WriteEditorLog("MainWindow.OnClosed\r\n" + Environment.StackTrace);
         base.OnClosed(e);
+        // OnExplicitShutdown 下主窗口关闭不会自动退出应用；
+        // 主窗口是最后一个窗口，关闭即显式退出（延迟到关闭流程结束后，
+        // 避免 File→Exit 已触发的 Shutdown 重入）。
+        if (!_shutdownRequested && Application.Current != null)
+        {
+            _shutdownRequested = true;
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try { Application.Current.Shutdown(); } catch { }
+                }), DispatcherPriority.ContextIdle);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private static void WriteEditorLog(string message)

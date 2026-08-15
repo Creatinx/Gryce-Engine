@@ -128,6 +128,9 @@ public partial class App : Application
                 : iNKORE.UI.WPF.Modern.ApplicationTheme.Dark;
 
         var window = new MainWindow(EditorVM);
+        // 欢迎页先于主窗口显示，WPF 会把欢迎页误设为 Application.MainWindow；
+        // 显式指定主窗口，避免后续对话框以已关闭的欢迎页为 Owner。
+        Application.Current.MainWindow = window;
         window.Show();
     }
 

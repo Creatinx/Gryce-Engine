@@ -3,7 +3,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern"
              xmlns:converters="clr-namespace:GryceEngine.Editor.Converters"
-             xmlns:services="clr-namespace:GryceEngine.Editor.Services">
+             xmlns:services="clr-namespace:GryceEngine.Editor.Services"
+             ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
