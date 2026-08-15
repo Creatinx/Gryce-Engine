@@ -5,9 +5,12 @@
 //  #include "export.h" 会优先定位到本文件，导致 GRYCE_API 缺失。）
 #include "../export.h"
 
-// GryceRenderer / GryceCore 导出宏
-// GryceCore 和 GryceRenderer 都可能定义这些 render 类型，
-// 因此当编译 GryceCore 或 GryceRenderer 时都视为导出。
+// render 抽象/管线的导出宏。
+// 渲染抽象类（RenderContext / RenderPipeline / Render2D / FontAtlas 等）
+// 的实现在 GryceCore.dll，头文件已随实现归位到 GryceCore 的公共头集合；
+// 后端类（GL/VK 的 Backend/Buffer/Shader 等）实现在 GryceRenderer.dll。
+// 两类 render 类型共用本宏：编译任意引擎 DLL 时按导出处理，
+// 外部消费者按导入处理（符号实际位于 GryceCore.dll）。
 
 #ifndef GRYCE_RENDERER_API
     #if defined(GRYCE_CORE_BUILDING) || defined(GRYCE_RENDERER_BUILDING) \

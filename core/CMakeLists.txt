@@ -94,6 +94,8 @@ target_sources(GryceCore
         render/font_atlas.cpp
         render/ibl_generator.cpp
         render/render_pipeline.cpp
+        render/shadow_pass.cpp
+        render/postprocess_pass.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -186,6 +188,8 @@ target_sources(GryceCore
             utils/glog/glog_lib.h
             utils/frame_limiter.h
             reflection/reflection.h
+            # 渲染抽象/管线实现在 GryceCore（render_pipeline.cpp 等），头文件随实现归位
+            render/render_pipeline.h
 )
 
 target_include_directories(GryceCore
@@ -267,7 +271,6 @@ target_sources(GryceRenderer
             render/texture.h
             render/material.h
             render/framebuffer.h
-            render/render_pipeline.h
             render/render_command_buffer.h
             render/render_thread.h
             render/render_context.h
