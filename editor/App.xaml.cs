@@ -56,6 +56,11 @@ public partial class App : Application
                            System.IO.Directory.Exists(settings.LastProject)
             ? settings.LastProject
             : "";
+        // 首次启动（无上次项目）时显示欢迎页：新建/打开/最近项目。
+        if (string.IsNullOrEmpty(startRoot))
+        {
+            startRoot = Views.WelcomeWindow.PickProject() ?? "";
+        }
         Engine.Initialize(startRoot);
 
         // Restore persisted editor settings (language must be applied before the

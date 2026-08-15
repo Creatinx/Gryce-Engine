@@ -82,6 +82,60 @@ public static class EditorSettingsService
              s.ShowGrid, s.ShowGizmos, s.ShowStats, projectRoot);
     }
 
+    // -----------------------------------------------------------------------
+    // 最近项目列表（recent_projects.json，独立于 editor_settings.json，
+    // 避免改动手动拼接的设置 JSON 结构）
+    // -----------------------------------------------------------------------
+    private static string RecentProjectsPath =>
+        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "recent_projects.json");
+
+    private const int MaxRecentProjects = 6;
+
+    public static List<string> GetRecentProjects()
+    {
+        var result = new List<string>();
+        try
+        {
+            if (!File.Exists(RecentProjectsPath)) return result;
+            string json = File.ReadAllText(RecentProjectsPath);
+            // 极简解析：["a","b",...] 或 {"projects":[...]}
+            var match = Regex.Match(json, "\"[^\"]*\"");
+            while (match.Success)
+            {
+                string value = match.Value.Trim('"');
+                if (Directory.Exists(value) && !result.Contains(value, StringComparer.OrdinalIgnoreCase))
+                    result.Add(value);
+                match = match.NextMatch();
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[RecentProjects] load failed: {ex.Message}");
+        }
+        return result;
+    }
+
+    /// <summary>把项目加入最近列表（去重、置顶、截断），并持久化。</summary>
+    public static void AddRecentProject(string projectRoot)
+    {
+        if (string.IsNullOrWhiteSpace(projectRoot)) return;
+        try
+        {
+            var list = GetRecentProjects();
+            list.RemoveAll(p => string.Equals(p, projectRoot, StringComparison.OrdinalIgnoreCase));
+            list.Insert(0, projectRoot);
+            if (list.Count > MaxRecentProjects)
+                list.RemoveRange(MaxRecentProjects, list.Count - MaxRecentProjects);
+            File.WriteAllText(RecentProjectsPath,
+                "{\"projects\":[\"" + string.Join("\",\"", list) + "\"]}",
+                new System.Text.UTF8Encoding(false));
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[RecentProjects] save failed: {ex.Message}");
+        }
+    }
+
     private static string? ReadString(string json, string key)
     {
         var match = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"([^\"]*)\"");

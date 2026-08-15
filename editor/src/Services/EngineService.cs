@@ -92,6 +92,7 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
         Initialize(root);
         ProjectChanged?.Invoke(ProjectRoot);
         EditorSettingsService.SaveLastProject(ProjectRoot);
+        EditorSettingsService.AddRecentProject(ProjectRoot);
     }
 
     /// <summary>

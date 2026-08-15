@@ -33,6 +33,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             reflection_2d_test.cpp
             ray_test.cpp
             pick_test.cpp
+            scale_benchmark_test.cpp
             backend_smoke_test.cpp
     )
     target_link_libraries(gryce_tests
