@@ -51,10 +51,6 @@ public partial class ViewportView : UserControl, IDisposable
     /// viewport's Script tab.</summary>
     public static Action<string>? OpenScriptRequested;
 
-    /// <summary>Lua 通过 engine.input.mouse_locked() 请求锁定/隐藏光标时，
-    /// 由 EditorViewModel 转发到这里（Game 视图内生效）。</summary>
-    public static Action<bool>? MouseLockRequested;
-
     /// <summary>True while the Game tab is active. EngineService uses this to
     /// sync editor-injected input into the core so Lua scripts can read it.</summary>
     public static volatile bool GameViewActive;
@@ -81,6 +77,8 @@ public partial class ViewportView : UserControl, IDisposable
     private readonly ViewportCamera _sceneCamera = new();
     private bool _leftDown, _rightDown, _middleDown;
     private double _lastMouseX, _lastMouseY;
+    // FPS 游戏视图：虚拟累计鼠标位置（只含真实增量，warp 回中不产生尖峰）
+    private double _fpsVirtualX, _fpsVirtualY;
     private double _trackedMouseX, _trackedMouseY;
     private readonly HashSet<Key> _heldKeys = new();
     private readonly HashSet<int> _nativeKeys = new();
@@ -201,7 +199,6 @@ public partial class ViewportView : UserControl, IDisposable
     {
         _vmCached = DataContext as EditorViewModel;
         OpenScriptRequested += OnOpenScriptRequested;
-        MouseLockRequested += OnMouseLockRequested;
         int w = Math.Max((int)ActualWidth, 100);
         int h = Math.Max((int)ActualHeight, 100);
         var px = GetPixelSize();
@@ -246,7 +243,6 @@ public partial class ViewportView : UserControl, IDisposable
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         OpenScriptRequested -= OnOpenScriptRequested;
-        MouseLockRequested -= OnMouseLockRequested;
         StopRenderThread();
         _gizmoTimer?.Stop();
         _gizmoTimer = null;

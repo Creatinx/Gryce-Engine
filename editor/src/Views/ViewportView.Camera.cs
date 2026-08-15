@@ -202,6 +202,8 @@ public partial class ViewportView
         {
             _pointerLocked = true;
             SetGameCursorLocked(true);
+            _fpsVirtualX = 0;
+            _fpsVirtualY = 0;
             return;
         }
 
@@ -226,8 +228,7 @@ public partial class ViewportView
 
         if (_isGameView)
         {
-            _pointerLocked = false;
-            SetGameCursorLocked(false);
+            // 点击锁定后保持，直到 Esc / 切标签解锁（松开不解除）
             return;
         }
 
@@ -283,16 +284,21 @@ public partial class ViewportView
         double dy = y - _lastMouseY;
         _lastMouseX = x;
         _lastMouseY = y;
-        InputAPI.GInput_InjectMouseMove((float)x, (float)y);
-
         if (_isGameView)
         {
             if (_pointerLocked)
             {
+                // FPS 视角：只注入真实增量（虚拟累计位置，warp 不会产生尖峰），
+                // 然后回中，光标永不撞到视口边缘。
+                _fpsVirtualX += dx;
+                _fpsVirtualY += dy;
+                InputAPI.GInput_InjectMouseMove((float)_fpsVirtualX, (float)_fpsVirtualY);
                 WarpToViewportCenter();
             }
             return;
         }
+
+        InputAPI.GInput_InjectMouseMove((float)x, (float)y);
 
         if (_is2DMode)
         {
@@ -548,15 +554,6 @@ public partial class ViewportView
         PositionOverlay();
     }
 
-    /// <summary>响应 Lua 的 engine.input.mouse_locked()：在 Game 视图内
-    /// 锁定/隐藏光标并捕获鼠标（FPS 视角用），离开游戏视图自动释放。</summary>
-    private void OnMouseLockRequested(bool locked)
-    {
-        if (!_isGameView) return;
-        _pointerLocked = locked;
-        SetGameCursorLocked(locked);
-        SetViewportCapture(locked);
-    }
 
     /// <summary>Updates the top-right gizmo mode badge as soon as the mode
     /// changes (W/E/R), instead of waiting for the 30Hz overlay tick.</summary>

@@ -270,7 +270,6 @@ public partial class EditorViewModel : INotifyPropertyChanged
     private readonly GOnPlayModeChanged _onPlayModeChanged;
     private readonly GOnLogMessage _onLogMessage;
     private readonly GOnSceneLoaded _onSceneLoaded;
-    private readonly GOnMouseLock _onMouseLock;
 
     public EditorViewModel(EngineService engine)
     {
@@ -373,11 +372,6 @@ public partial class EditorViewModel : INotifyPropertyChanged
                 _engine.ClearDirty();
             });
         };
-        // Lua 请求鼠标锁定（engine.input.mouse_locked）时转发给视口，
-        // 让 FPS 类玩法在编辑器 Game 视图里也能锁定/隐藏光标。
-        _onMouseLock = (locked, _) =>
-            System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                Views.ViewportView.MouseLockRequested?.Invoke(locked != 0));
 
         CoreAPI.GCore_SetCallback_UserData(IntPtr.Zero);
         CoreAPI.GCore_RegisterCallback_OnEntityListChanged(_onEntityListChanged);
@@ -386,7 +380,6 @@ public partial class EditorViewModel : INotifyPropertyChanged
         CoreAPI.GCore_RegisterCallback_OnPlayModeChanged(_onPlayModeChanged);
         CoreAPI.GCore_RegisterCallback_OnLogMessage(_onLogMessage);
         CoreAPI.GCore_RegisterCallback_OnSceneLoaded(_onSceneLoaded);
-        CoreAPI.GCore_RegisterCallback_OnMouseLock(_onMouseLock);
 
         engine.PropertyChanged += (_, e) =>
         {
@@ -844,7 +837,6 @@ public partial class EditorViewModel : INotifyPropertyChanged
         CoreAPI.GCore_RegisterCallback_OnPlayModeChanged(null!);
         CoreAPI.GCore_RegisterCallback_OnLogMessage(null!);
         CoreAPI.GCore_RegisterCallback_OnSceneLoaded(null!);
-        CoreAPI.GCore_RegisterCallback_OnMouseLock(null!);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
