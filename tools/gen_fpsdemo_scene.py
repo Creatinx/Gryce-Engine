@@ -242,7 +242,7 @@ def build():
     ]
     for i, pos in enumerate(enemy_positions, 1):
         entities.append(entity("Enemy%d" % i, pos,
-                               [skinned_mesh_renderer("enemy.glb"),
+                               [skinned_mesh_renderer("enemy.gltf"),
                                 script_component("enemy.lua")]))
 
     # --- HUD（ASCII：Roboto 无 CJK 字形，fallback 只覆盖 ASCII）---

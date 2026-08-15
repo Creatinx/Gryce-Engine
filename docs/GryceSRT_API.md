@@ -58,7 +58,8 @@ Core 增加“主场景”概念：游戏启动时自动进入主场景。
 
 - 主场景配置：`project_settings.json` 的 `"main_scene"` 字段（如 `"main_scene":"res:/scenes/main.gesc"`），缺省为 `res:/scenes/main.gesc`。
 - 游戏入口（GryceGame 模板）在 `GCore_Init` 前调用 `GCore_SetAutoLoadMainScene(true)`，Core 初始化完成后自动加载主场景；命令行 `--scene <path>` 可覆盖。
-- 编辑器不自动加载主场景（不调用该 setter，默认为 false），由编辑器自己管理场景。
+- 编辑器默认加载主场景：打开项目后编辑器自动加载 `main_scene` 指定的场景（缺省
+  `res:/scenes/main.gesc`），新建项目会立即把脚手架生成的 `main.gesc` 保存为主场景。
 - 运行中切换场景用 Lua：`engine.scene.load("res:/scenes/xxx.gesc")`。
 
 示例（在脚本里按下某个键切换到另一个场景）：

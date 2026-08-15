@@ -1252,7 +1252,7 @@
           "clip_name": "",
           "enabled": true,
           "loop": true,
-          "model_path": "res:/models/enemy.glb",
+          "model_path": "res:/models/enemy.gltf",
           "playing": true,
           "speed": 1.0,
           "type": "SkinnedMeshRenderer"
@@ -1292,7 +1292,7 @@
           "clip_name": "",
           "enabled": true,
           "loop": true,
-          "model_path": "res:/models/enemy.glb",
+          "model_path": "res:/models/enemy.gltf",
           "playing": true,
           "speed": 1.0,
           "type": "SkinnedMeshRenderer"
@@ -1332,7 +1332,7 @@
           "clip_name": "",
           "enabled": true,
           "loop": true,
-          "model_path": "res:/models/enemy.glb",
+          "model_path": "res:/models/enemy.gltf",
           "playing": true,
           "speed": 1.0,
           "type": "SkinnedMeshRenderer"
@@ -1372,7 +1372,7 @@
           "clip_name": "",
           "enabled": true,
           "loop": true,
-          "model_path": "res:/models/enemy.glb",
+          "model_path": "res:/models/enemy.gltf",
           "playing": true,
           "speed": 1.0,
           "type": "SkinnedMeshRenderer"
@@ -1412,7 +1412,7 @@
           "clip_name": "",
           "enabled": true,
           "loop": true,
-          "model_path": "res:/models/enemy.glb",
+          "model_path": "res:/models/enemy.gltf",
           "playing": true,
           "speed": 1.0,
           "type": "SkinnedMeshRenderer"
@@ -1452,7 +1452,7 @@
           "clip_name": "",
           "enabled": true,
           "loop": true,
-          "model_path": "res:/models/enemy.glb",
+          "model_path": "res:/models/enemy.gltf",
           "playing": true,
           "speed": 1.0,
           "type": "SkinnedMeshRenderer"

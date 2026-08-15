@@ -230,6 +230,12 @@ public partial class MainWindow
             WriteEditorLog("OnNewProjectClick: ReloadProject returned");
             // 加载脚手架生成的主场景，并让视图刷新到底层实体树。
             int rc = SceneAPI.GScene_Load("res:/scenes/main.gesc");
+            if (rc == 0)
+            {
+                // 把当前场景保存为主场景，确保 main.gesc 与
+                // project_settings.json 的 main_scene 指向一致。
+                SceneAPI.GScene_Save("res:/scenes/main.gesc");
+            }
             WriteEditorLog("OnNewProjectClick: GScene_Load rc=" + rc);
             VM?.AppendConsole(rc == 0
                 ? $"Created project: {dialog.CreatedProjectRoot}"

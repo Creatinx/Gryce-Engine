@@ -109,12 +109,19 @@ public partial class App : Application
         // 空槽会自动创建/加载 scenes/scene_3d.gesc 缓冲文件。
         SceneAPI.GScene_SetMode(1);
 
-        // 首次打开（空场景）时加载默认可编辑场景，保证用户一进来就能看到内容。
+        // 首次打开（空场景）时加载项目的主场景（project_settings.json
+        // "main_scene"），回退到 main.gesc / editor_default.gesc / 新建。
         if (EditorVM.EntityCount == 0)
         {
-            int rc = SceneAPI.GScene_Load("res:/scenes/editor_default.gesc");
+            var proj = Services.ProjectSettingsService.Load();
+            int rc = SceneAPI.GScene_Load(proj.MainScene);
+            if (rc != 0) rc = SceneAPI.GScene_Load("res:/scenes/main.gesc");
+            if (rc != 0) rc = SceneAPI.GScene_Load("res:/scenes/editor_default.gesc");
             if (rc != 0)
-                EditorVM.AppendConsole("Failed to load default scene (editor_default.gesc).");
+            {
+                EditorVM.NewScene();
+                EditorVM.AppendConsole("Created a new empty scene (no main scene found).");
+            }
         }
 
         // Apply persisted theme globally (ThemeManager.Current.ApplicationTheme

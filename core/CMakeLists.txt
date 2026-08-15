@@ -63,6 +63,7 @@ target_sources(GryceCore
         audio/audio_engine.cpp
         audio/time_stretcher.cpp
         audio/miniaudio_impl.cpp
+        audio/stb_vorbis_impl.cpp
         components/mesh_renderer.cpp
         components/skinned_mesh_renderer.cpp
         components/terrain.cpp
