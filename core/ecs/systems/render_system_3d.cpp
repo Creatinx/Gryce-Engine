@@ -1,4 +1,4 @@
-#include "ecs/systems/render_system_3d.h"
+﻿#include "ecs/systems/render_system_3d.h"
 
 #include "render/render_pipeline.h"
 #include "render/render_context.h"
@@ -7,7 +7,7 @@
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
 #include "assets/asset_manager.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::ecs {

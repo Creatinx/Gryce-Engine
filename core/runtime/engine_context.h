@@ -1,8 +1,8 @@
 #pragma once
 
 #include "GryceCore/types.h"
-#include "command_buffer.h"
-#include "entity_handle_map.h"
+#include "runtime/command_buffer.h"
+#include "runtime/entity_handle_map.h"
 
 #include <memory>
 #include <string>
@@ -12,13 +12,20 @@
 #include <mutex>
 
 namespace gryce_engine { namespace ecs { class World; } }
+namespace gryce_engine { namespace scene { class Scene; } }
 namespace gryce_engine { namespace components { class Component; } }
 
 namespace gryce_core {
 
 // ---------------------------------------------------------------------------
-// Shared internal state — single instance lives in core_api.cpp
+// 引擎运行时上下文（core/runtime）
+//
+// 引擎的全局运行时状态从 api/internal_state.h 移到这里，作为与 C API 胶水
+// 层无关的领域模块：script/ecs 等核心代码只依赖 runtime/engine_context.h，
+// 不再反向依赖 api/。后续可按需注入到 World / LuaRuntime 而非直接读全局。
 // ---------------------------------------------------------------------------
+
+// 回调表（C API 层向编辑器转发事件）
 struct CallbackTable {
     GOnEntitySelected on_entity_selected = nullptr;
     GOnEntityDeselected on_entity_deselected = nullptr;
@@ -50,7 +57,31 @@ struct InputEvent {
     int c = 0;
 };
 
-struct GlobalState {
+// 输入状态（供 engine.input 查询；由 ECMD_INPUT_* 命令更新）
+struct InputState {
+    std::unordered_set<int> keys_down;
+    int mouse_x = 0;
+    int mouse_y = 0;
+    bool mouse_button[3] = {};
+    // 本帧累计鼠标移动增量（像素）。由 ECMD_INPUT_MOUSE_MOVE 累加，
+    // 在 GCore_BeginFrame 每帧开始前清零。用 float 保留亚像素精度，
+    // 避免慢速移动时被 int 截断成 0 导致视角卡顿。
+    float mouse_delta_x = 0.0f;
+    float mouse_delta_y = 0.0f;
+    // 上次已计入 delta 的绝对位置快照（用于计算跨 move 事件的增量）
+    float mouse_snap_x = -1.0f;
+    float mouse_snap_y = -1.0f;
+    // 鼠标锁定状态（FPS 视角用；由 engine.input.mouse_locked 请求驱动）
+    bool mouse_locked = false;
+    // Input events queued this frame (filled by process_command, drained by
+    // ScriptSystem::on_update). Cleared each frame after dispatch.
+    std::vector<InputEvent> input_events;
+};
+
+// ---------------------------------------------------------------------------
+// 引擎全局上下文
+// ---------------------------------------------------------------------------
+struct EngineContext {
     bool initialized = false;
     std::mutex init_mutex;
     std::unique_ptr<gryce_engine::ecs::World> world;
@@ -78,21 +109,8 @@ struct GlobalState {
     std::string scene_path_2d;
     std::string scene_path_3d;
 
-    // --- 输入状态（供 engine.input 查询；由 ECMD_INPUT_* 命令更新）---
-    std::unordered_set<int> keys_down;
-    int mouse_x = 0;
-    int mouse_y = 0;
-    bool mouse_button[3] = {};
-    // 本帧累计鼠标移动增量（像素）。由 ECMD_INPUT_MOUSE_MOVE 累加，
-    // 在 GCore_BeginFrame 每帧开始前清零。用 float 保留亚像素精度，
-    // 避免慢速移动时被 int 截断成 0 导致视角卡顿。
-    float mouse_delta_x = 0.0f;
-    float mouse_delta_y = 0.0f;
-    // 上次已计入 delta 的绝对位置快照（用于计算跨 move 事件的增量）
-    float mouse_snap_x = -1.0f;
-    float mouse_snap_y = -1.0f;
-    // 鼠标锁定状态（FPS 视角用；由 engine.input.mouse_locked 请求驱动）
-    bool mouse_locked = false;
+    // 输入状态
+    InputState input;
 
     bool deferred_entity_list_changed = false;
     bool deferred_selection_changed = false;
@@ -100,14 +118,10 @@ struct GlobalState {
 
     // Console: number of MemoryLogSink entries already delivered to the editor
     size_t log_delivered_count = 0;
-
-    // Input events queued this frame (filled by process_command, drained by
-    // ScriptSystem::on_update). Cleared each frame after dispatch.
-    std::vector<InputEvent> input_events;
 };
 
 // Defined in core_api.cpp
-extern GlobalState g_core_state;
+extern EngineContext g_core_state;
 
 // Helper: resolve EntityHandle -> Entity* via UUID
 struct EntityResolver {

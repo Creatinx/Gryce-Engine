@@ -1,4 +1,4 @@
-#include "render_pipeline.h"
+﻿#include "render_pipeline.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,7 +24,7 @@
 #include "components/transform.h"
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "math/camera.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"

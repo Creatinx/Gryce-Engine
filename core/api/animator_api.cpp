@@ -1,6 +1,6 @@
-#include "GryceCore/animator_api.h"
+﻿#include "GryceCore/animator_api.h"
 #include "GryceCore/api_guard.h"
-#include "internal_state.h"
+#include "runtime/engine_context.h"
 
 #include "assets/skinned_mesh_data.h"
 #include "components/skinned_mesh_renderer.h"

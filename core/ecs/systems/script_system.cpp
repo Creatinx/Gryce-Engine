@@ -1,4 +1,4 @@
-#include "ecs/systems/script_system.h"
+﻿#include "ecs/systems/script_system.h"
 
 #include "components/script_component.h"
 #include "assets/asset_manager.h"
@@ -7,7 +7,7 @@
 #include "scene/scene.h"
 #include "ecs/world.h"
 #include "script/lua_runtime.h"
-#include "api/internal_state.h"
+#include "runtime/engine_context.h"
 #include "utils/glog/glog_lib.h"
 
 #include <algorithm>
@@ -115,7 +115,7 @@ void ScriptSystem::process_entity(components::ScriptComponent* comp, float dt) {
 // _input(type, a, b, c)：type 为 engine.input 的常量，a/b/c 是位置参数。
 void ScriptSystem::dispatch_input_events() {
     auto& state = gryce_core::g_core_state;
-    if (state.input_events.empty()) return;
+    if (state.input.input_events.empty()) return;
 
     std::vector<components::ScriptComponent*> comps;
     if (state.world) {
@@ -128,12 +128,12 @@ void ScriptSystem::dispatch_input_events() {
         }
     }
 
-    for (const auto& ev : state.input_events) {
+    for (const auto& ev : state.input.input_events) {
         for (components::ScriptComponent* comp : comps) {
             call_method_int(comp, "_input", ev.type, ev.a, ev.b, ev.c);
         }
     }
-    state.input_events.clear();
+    state.input.input_events.clear();
 }
 
 bool ScriptSystem::load(components::ScriptComponent* comp) {

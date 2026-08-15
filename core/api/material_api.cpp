@@ -1,6 +1,6 @@
-#include "GryceCore/material_api.h"
+﻿#include "GryceCore/material_api.h"
 #include "GryceCore/api_guard.h"
-#include "internal_state.h"
+#include "runtime/engine_context.h"
 
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"

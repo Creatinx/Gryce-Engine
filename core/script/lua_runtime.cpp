@@ -1,7 +1,7 @@
-#include "script/lua_runtime.h"
+﻿#include "script/lua_runtime.h"
 
 #include "GryceCore/types.h"
-#include "api/internal_state.h"
+#include "runtime/engine_context.h"
 #include "assets/asset_manager.h"
 #include "components/2d/light_2d.h"
 #include "components/2d/parallax_background.h"
@@ -635,27 +635,27 @@ const luaL_Reg kTimeLib[] = {
 // ---------------------------------------------------------------------------
 int l_input_key_down(lua_State* L) {
     const int key = static_cast<int>(luaL_checkinteger(L, 1));
-    const bool down = gryce_core::g_core_state.keys_down.count(key) > 0;
+    const bool down = gryce_core::g_core_state.input.keys_down.count(key) > 0;
     lua_pushboolean(L, down);
     return 1;
 }
 
 int l_input_mouse_pos(lua_State* L) {
-    lua_pushinteger(L, gryce_core::g_core_state.mouse_x);
-    lua_pushinteger(L, gryce_core::g_core_state.mouse_y);
+    lua_pushinteger(L, gryce_core::g_core_state.input.mouse_x);
+    lua_pushinteger(L, gryce_core::g_core_state.input.mouse_y);
     return 2;
 }
 
 int l_input_mouse_down(lua_State* L) {
     const int b = static_cast<int>(luaL_checkinteger(L, 1));
-    const bool down = b >= 0 && b < 3 && gryce_core::g_core_state.mouse_button[b];
+    const bool down = b >= 0 && b < 3 && gryce_core::g_core_state.input.mouse_button[b];
     lua_pushboolean(L, down);
     return 1;
 }
 
 int l_input_mouse_delta(lua_State* L) {
-    lua_pushnumber(L, gryce_core::g_core_state.mouse_delta_x);
-    lua_pushnumber(L, gryce_core::g_core_state.mouse_delta_y);
+    lua_pushnumber(L, gryce_core::g_core_state.input.mouse_delta_x);
+    lua_pushnumber(L, gryce_core::g_core_state.input.mouse_delta_y);
     return 2;
 }
 
@@ -664,12 +664,12 @@ int l_input_mouse_locked(lua_State* L) {
     // 传 bool 时请求锁定/解锁，并转发给平台回调（隐藏/锁定光标）
     if (lua_gettop(L) == 1 && lua_isboolean(L, 1)) {
         const bool locked = lua_toboolean(L, 1);
-        st.mouse_locked = locked;
+        st.input.mouse_locked = locked;
         if (st.callbacks.on_mouse_lock) {
             st.callbacks.on_mouse_lock(locked ? 1 : 0, st.callback_user_data);
         }
     }
-    lua_pushboolean(L, st.mouse_locked);
+    lua_pushboolean(L, st.input.mouse_locked);
     return 1;
 }
 

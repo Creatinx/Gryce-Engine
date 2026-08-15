@@ -1,6 +1,6 @@
-#include "GryceCore/script_api.h"
+﻿#include "GryceCore/script_api.h"
 
-#include "api/internal_state.h"
+#include "runtime/engine_context.h"
 #include "components/script_component.h"
 #include "ecs/systems/script_system.h"
 #include "ecs/world.h"

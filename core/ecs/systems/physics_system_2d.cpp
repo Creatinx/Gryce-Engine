@@ -1,4 +1,4 @@
-#include "ecs/systems/physics_system_2d.h"
+﻿#include "ecs/systems/physics_system_2d.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,7 +14,7 @@
 #include "components/joint_2d.h"
 #include "components/2d/component_2d.h"
 #include "components/transform.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "physics/physics_factory.h"
 #include "scene/entity.h"
 #include "utils/glog/glog_lib.h"

@@ -1,6 +1,6 @@
-#include "GryceCore/entity_api.h"
+﻿#include "GryceCore/entity_api.h"
 #include "GryceCore/api_guard.h"
-#include "internal_state.h"
+#include "runtime/engine_context.h"
 
 #include "ecs/world.h"
 #include "scene/scene.h"

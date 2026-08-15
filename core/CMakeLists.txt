@@ -28,8 +28,8 @@ target_sources(GryceCore
         api/material_api.cpp
         api/animator_api.cpp
         api/script_api.cpp
-        api/command_buffer.cpp
-        api/entity_handle_map.cpp
+        runtime/command_buffer.cpp
+        runtime/entity_handle_map.cpp
         # 内部模块
         math/math.cpp
         math/camera.cpp
@@ -175,7 +175,7 @@ target_sources(GryceCore
             ecs/types.h
             ecs/system.h
             ecs/world.h
-            ecs/query.h
+            scene/query.h
             ecs/component_store.h
             ecs/systems/physics_system_3d.h
             ecs/systems/physics_system_2d.h

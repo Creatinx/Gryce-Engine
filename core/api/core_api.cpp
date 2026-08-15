@@ -1,7 +1,7 @@
-#include "GryceCore/core_api.h"
+﻿#include "GryceCore/core_api.h"
 #include "GryceCore/scene_api.h"
 #include "GryceCore/api_guard.h"
-#include "internal_state.h"
+#include "runtime/engine_context.h"
 
 #include "assets/asset_manager.h"
 #include "ecs/world.h"
@@ -91,11 +91,11 @@ static size_t bounded_strlen(const char* s, size_t max_len) {
     return n;
 }
 
-// Definition of the global state (declared in internal_state.h)
-GlobalState g_core_state;
+// Definition of the global state (declared in runtime/engine_context.h)
+EngineContext g_core_state;
 
 // Shared recursive mutex backing the GRYCE_API_GUARD() macro. A free function
-// (instead of a GlobalState member) so the other Gryce DLLs (Platform /
+// (instead of an EngineContext member) so the other Gryce DLLs (Platform /
 // Renderer / Physics) can lock the same instance.
 std::recursive_mutex& api_mutex() {
     static std::recursive_mutex instance;
@@ -470,11 +470,11 @@ static void process_command(const GCommand& cmd) {
             struct Payload { int key; uint8_t down; };
             const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
             if (p->down) {
-                g_core_state.keys_down.insert(p->key);
-                g_core_state.input_events.push_back({INPUT_EVENT_KEY_DOWN, p->key, 0, 0});
+                g_core_state.input.keys_down.insert(p->key);
+                g_core_state.input.input_events.push_back({INPUT_EVENT_KEY_DOWN, p->key, 0, 0});
             } else {
-                g_core_state.keys_down.erase(p->key);
-                g_core_state.input_events.push_back({INPUT_EVENT_KEY_UP, p->key, 0, 0});
+                g_core_state.input.keys_down.erase(p->key);
+                g_core_state.input.input_events.push_back({INPUT_EVENT_KEY_UP, p->key, 0, 0});
             }
             break;
         }
@@ -482,31 +482,31 @@ static void process_command(const GCommand& cmd) {
             struct Payload { float x; float y; };
             const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
             // 累加本帧鼠标增量（相对上一次 move 事件的绝对位置）
-            if (g_core_state.mouse_snap_x < 0.0f) {
-                g_core_state.mouse_snap_x = p->x;
-                g_core_state.mouse_snap_y = p->y;
+            if (g_core_state.input.mouse_snap_x < 0.0f) {
+                g_core_state.input.mouse_snap_x = p->x;
+                g_core_state.input.mouse_snap_y = p->y;
             } else {
-                g_core_state.mouse_delta_x += p->x - g_core_state.mouse_snap_x;
-                g_core_state.mouse_delta_y += p->y - g_core_state.mouse_snap_y;
-                g_core_state.mouse_snap_x = p->x;
-                g_core_state.mouse_snap_y = p->y;
+                g_core_state.input.mouse_delta_x += p->x - g_core_state.input.mouse_snap_x;
+                g_core_state.input.mouse_delta_y += p->y - g_core_state.input.mouse_snap_y;
+                g_core_state.input.mouse_snap_x = p->x;
+                g_core_state.input.mouse_snap_y = p->y;
             }
-            g_core_state.mouse_x = static_cast<int>(p->x);
-            g_core_state.mouse_y = static_cast<int>(p->y);
-            g_core_state.input_events.push_back({INPUT_EVENT_MOUSE_MOVE, static_cast<int>(p->x), static_cast<int>(p->y), 0});
+            g_core_state.input.mouse_x = static_cast<int>(p->x);
+            g_core_state.input.mouse_y = static_cast<int>(p->y);
+            g_core_state.input.input_events.push_back({INPUT_EVENT_MOUSE_MOVE, static_cast<int>(p->x), static_cast<int>(p->y), 0});
             break;
         }
         case ECMD_INPUT_MOUSE_BUTTON: {
             struct Payload { int button; uint8_t down; int x; int y; };
             const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
             if (p->button >= 0 && p->button < 3) {
-                g_core_state.mouse_button[p->button] = p->down != 0;
-                g_core_state.input_events.push_back({
+                g_core_state.input.mouse_button[p->button] = p->down != 0;
+                g_core_state.input.input_events.push_back({
                     p->down ? INPUT_EVENT_MOUSE_DOWN : INPUT_EVENT_MOUSE_UP,
                     p->button, p->x, p->y});
             }
-            g_core_state.mouse_x = p->x;
-            g_core_state.mouse_y = p->y;
+            g_core_state.input.mouse_x = p->x;
+            g_core_state.input.mouse_y = p->y;
             break;
         }
         default:
@@ -617,8 +617,8 @@ void GCore_BeginFrame(float dt) {
     // 每帧开始清零累计的鼠标增量；随后由 process_command 期间推送的
     // ECMD_INPUT_MOUSE_MOVE 重新累加，供脚本在 on_update 读取本帧增量。
     // 注意：必须在本帧命令处理之前清零，否则会抹掉刚累加的 delta。
-    gryce_core::g_core_state.mouse_delta_x = 0;
-    gryce_core::g_core_state.mouse_delta_y = 0;
+    gryce_core::g_core_state.input.mouse_delta_x = 0;
+    gryce_core::g_core_state.input.mouse_delta_y = 0;
 
     gryce_core::g_core_state.cmdbuf.swap();
     int count = 0;

@@ -1,8 +1,8 @@
-#include "GryceCore/component_api.h"
+﻿#include "GryceCore/component_api.h"
 #include "GryceCore/api_guard.h"
 #include "GryceCore/core_api.h"
 
-#include "internal_state.h"
+#include "runtime/engine_context.h"
 
 #include "ecs/world.h"
 

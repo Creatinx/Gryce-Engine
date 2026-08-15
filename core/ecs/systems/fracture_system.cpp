@@ -1,4 +1,4 @@
-#include "ecs/systems/fracture_system.h"
+﻿#include "ecs/systems/fracture_system.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,7 +11,7 @@
 #include "components/static_body.h"
 #include "components/transform.h"
 #include "components/mesh_renderer.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "utils/glog/glog_lib.h"

@@ -1,4 +1,4 @@
-#include "ecs/systems/subviewport_system.h"
+﻿#include "ecs/systems/subviewport_system.h"
 
 #include <cmath>
 #include <vector>
@@ -8,7 +8,7 @@
 #include "components/subviewport.h"
 #include "components/2d/sprite_2d.h"
 #include "components/transform.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "math/camera.h"
 #include "math/math.h"
 #include "render/render_context.h"

@@ -1,4 +1,4 @@
-#include "ecs/systems/render_system_2d.h"
+﻿#include "ecs/systems/render_system_2d.h"
 
 #include <algorithm>
 #include <map>
@@ -11,7 +11,7 @@
 #include "components/2d/component_2d.h"
 #include "components/2d/light_2d.h"
 #include "components/node2d.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "scene/scene.h"
 #include "utils/glog/glog_lib.h"
 

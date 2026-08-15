@@ -1,9 +1,9 @@
-#include "ecs/systems/animator_system.h"
+﻿#include "ecs/systems/animator_system.h"
 
 #include "animation/pose.h"
 #include "assets/asset_manager.h"
 #include "components/skinned_mesh_renderer.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "render/skinned_vertex.h"
 #include "scene/scene.h"
 #include "scene/entity.h"

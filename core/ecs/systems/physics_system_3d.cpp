@@ -1,4 +1,4 @@
-#include "ecs/systems/physics_system_3d.h"
+﻿#include "ecs/systems/physics_system_3d.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,7 +18,7 @@
 #include "components/physical_material.h"
 #include "assets/asset_manager.h"
 #include "assets/mesh_data.h"
-#include "ecs/query.h"
+#include "scene/query.h"
 #include "physics/physics_factory.h"
 #include "scene/entity.h"
 #include "utils/glog/glog_lib.h"
