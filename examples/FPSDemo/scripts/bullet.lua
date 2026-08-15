@@ -47,6 +47,11 @@ function on_update(dt)
     local t = engine.entity.get_transform(self_h)
     if not t then return end
 
+    -- 防御：on_start 拿不到变换时，用当前帧位置初始化线段起点
+    if prev_x == nil then
+        prev_x, prev_y, prev_z = t.pos.x, t.pos.y, t.pos.z
+    end
+
     -- 撞墙/落地检测：子弹被物理阻挡后速度归零（restitution=0 不反弹），
     -- 直接销毁，避免穿透或贴墙滞留到寿命结束。
     local v = engine.component.get(self_h, "RigidBody", "velocity")

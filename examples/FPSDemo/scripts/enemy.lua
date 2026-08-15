@@ -8,8 +8,6 @@ local spawn_pos = { x = 0, y = 0, z = 0 }
 local rest_y = 0.0
 local attack_cooldown = 0.0
 local grace_timer = 0.0   -- 出生缓冲期：玩家有反应时间，避免出生即被围殴
-local wander_angle = 0.0
-local wander_timer = 0.0
 
 local function get_player_h()
     return engine.entity.find("PlayerCamera")
@@ -26,8 +24,6 @@ function on_start()
     common.register_enemy(self_h, common.CFG.enemy_health)
     attack_cooldown = 0.0
     grace_timer = 2.0
-    wander_angle = 0.0
-    wander_timer = 0.0
 end
 
 local function get_player_pos()

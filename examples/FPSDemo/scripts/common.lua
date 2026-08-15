@@ -21,7 +21,7 @@ M.CFG = {
     enemy_damage = 16,
     enemy_attack_range = 3.2,
     enemy_aggro_range = 16.0,   -- 超出此距离不追击（避免出生即被蜂拥）
-    enemy_chase_speed = 6.2,
+    enemy_chase_speed = 7.5,   -- 玩家移动 6.0，追击必须明显更快才能追上
     enemy_patrol_speed = 1.4,
     enemy_patrol_radius = 6.0,
 }
@@ -101,7 +101,9 @@ function M.damage_enemy(h, dmg)
 end
 
 function M.enemy_alive(h)
-    return M.ENEMIES[h] ~= nil
+    -- 表里有记录 + 句柄仍然有效：场景重载（R 重开）后旧句柄
+    -- 的 handle 映射被清空，get_name 返回空串，应视为已失效。
+    return M.ENEMIES[h] ~= nil and engine.entity.get_name(h) ~= ""
 end
 
 -- 单位向量

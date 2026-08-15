@@ -10,13 +10,11 @@ local weapon_h = 0
 
 local yaw = 0.0
 local pitch = 0.0
-local mouse_init = false
 
 local shoot_cooldown = 0.0
 local jump_cooldown = 0.0
 
 -- 地面/身体参数
-local GROUND_Y = 0.0
 local BODY_REST = 0.8          -- 站立时刚体中心高度（底面贴地）
 local EYE = common.CFG.eye_height
 
@@ -83,7 +81,6 @@ function on_start()
     weapon_h = engine.entity.find("Weapon")
     yaw = 0.0
     pitch = 0.0
-    mouse_init = true
     shoot_cooldown = 0.0
     jump_cooldown = 0.0
     -- 锁定并隐藏鼠标，实现 FPS 视角

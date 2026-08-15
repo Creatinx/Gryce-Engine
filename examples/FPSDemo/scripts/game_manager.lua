@@ -14,7 +14,13 @@ end
 local function count_alive_enemies()
     local n = 0
     for h, _ in pairs(common.ENEMIES) do
-        if common.enemy_alive(h) then n = n + 1 end
+        if common.enemy_alive(h) then
+            n = n + 1
+        else
+            -- 顺带清理陈旧句柄（场景重载后旧 handle 失效），
+            -- 否则残留条目会让 count 永远 > 0，胜利永不触发。
+            common.ENEMIES[h] = nil
+        end
     end
     return n
 end
@@ -27,6 +33,11 @@ local function count_enemy_entities()
     return n
 end
 
+-- 本局敌人总数：在 on_start 时捕获（此时场景实体已就位）。
+-- 注意不能用"每帧实时数实体"做胜利条件——最后一个敌人被销毁后
+-- 实体数变成 0，会永远不判胜利。
+local enemy_total = 0
+
 function on_start()
     -- engine.state 跨场景重载/重进 Play 持久存在：必须无条件重置，
     -- 否则 R 重开会保留 lives=0（软锁）或残留旧 kills/health。
@@ -37,6 +48,7 @@ function on_start()
     engine.state.set("victory", false)
     engine.state.set("jumping", false)
     engine.state.set("invuln", 0)
+    enemy_total = count_enemy_entities()
     -- 背景音乐：仅在游戏运行时（Play Mode / 独立 exe）播放，编辑器编辑态不播
     local bgm = engine.entity.find("BGM")
     if bgm ~= 0 then engine.audio.play_on(bgm) end
@@ -55,6 +67,7 @@ function on_update(dt)
         if lives > 0 then
             engine.state.set("lives", lives - 1)
             engine.state.set("health", 100)
+            engine.state.set("invuln", 1.5)  -- 重生无敌，防止围殴秒杀
             local sp = engine.entity.find("SpawnPoint")
             local player = engine.entity.find("Player")
             if sp ~= 0 and player ~= 0 then
@@ -69,25 +82,25 @@ function on_update(dt)
         end
     end
 
-    -- 清剿胜利：要求场景里确实有 Enemy 实体，且全部被消灭。
-    -- 只数 ENEMIES 会在敌人脚本未注册时（加载失败）误判秒胜。
-    if not over and not victory and count_enemy_entities() > 0
+    -- 清剿胜利：本局确有敌人（enemy_total > 0）且全部被消灭。
+    -- count_alive_enemies 会清理陈旧句柄，避免重开后残留导致永不胜利。
+    if not over and not victory and enemy_total > 0
         and count_alive_enemies() == 0 then
         engine.state.set("victory", true)
     end
 
     -- HUD
     set_label("HealthLabel", string.format("HP: %d", health))
-    set_label("KillsLabel", string.format("击杀: %d", kills))
-    set_label("LivesLabel", string.format("生命: %d", lives))
-    set_label("EnemiesLabel", string.format("敌人: %d", count_alive_enemies()))
+    set_label("KillsLabel", string.format("Kills: %d", kills))
+    set_label("LivesLabel", string.format("Lives: %d", lives))
+    set_label("EnemiesLabel", string.format("Enemies: %d", count_alive_enemies()))
 
     if over then
-        set_label("MessageLabel", "游戏结束！ 按 R 重新开始")
+        set_label("MessageLabel", "GAME OVER - press R to restart")
     elseif victory then
-        set_label("MessageLabel", "通关！ 你消灭了所有敌人  按 R 重新开始")
+        set_label("MessageLabel", "VICTORY! All enemies eliminated - press R to restart")
     else
-        set_label("MessageLabel", "用 WASD 移动，鼠标瞄准，左键射击")
+        set_label("MessageLabel", "WASD move, mouse aim, LMB shoot")
     end
 
     -- 按 R (82) 重新开始

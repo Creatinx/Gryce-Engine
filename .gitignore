@@ -21,6 +21,7 @@ deps_cache/
 
 # Build logs
 *.log
+*.obj
 *.pdb
 *.ilk
 *.exp
