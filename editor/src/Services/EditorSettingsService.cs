@@ -20,6 +20,8 @@ public static class EditorSettingsService
         public bool ShowGrid { get; set; } = true;
         public bool ShowGizmos { get; set; } = true;
         public bool ShowStats { get; set; } = false;
+        // 上次打开的项目根（首启直接恢复，不再总是落到 examples/3dtest）
+        public string LastProject { get; set; } = "";
     }
 
     private static string SettingsPath =>
@@ -40,6 +42,7 @@ public static class EditorSettingsService
             result.ShowGrid = ReadBool(json, "show_grid") ?? true;
             result.ShowGizmos = ReadBool(json, "show_gizmos") ?? true;
             result.ShowStats = ReadBool(json, "show_stats") ?? false;
+            result.LastProject = ReadString(json, "last_project") ?? "";
         }
         catch (Exception ex)
         {
@@ -49,7 +52,8 @@ public static class EditorSettingsService
     }
 
     public static void Save(string language, string theme, bool mica, int autoSaveInterval,
-                            bool vsync, bool showGrid, bool showGizmos, bool showStats)
+                            bool vsync, bool showGrid, bool showGizmos, bool showStats,
+                            string lastProject = "")
     {
         try
         {
@@ -60,13 +64,22 @@ public static class EditorSettingsService
                           ",\"vsync\":" + (vsync ? "true" : "false") +
                           ",\"show_grid\":" + (showGrid ? "true" : "false") +
                           ",\"show_gizmos\":" + (showGizmos ? "true" : "false") +
-                          ",\"show_stats\":" + (showStats ? "true" : "false") + "}";
+                          ",\"show_stats\":" + (showStats ? "true" : "false") +
+                          ",\"last_project\":\"" + Escape(lastProject) + "\"}";
             File.WriteAllText(SettingsPath, json);
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"[EditorSettings] save failed: {ex.Message}");
         }
+    }
+
+    /// <summary>持久化"上次打开的项目"，保留其余设置不变。</summary>
+    public static void SaveLastProject(string projectRoot)
+    {
+        var s = Load();
+        Save(s.Language, s.Theme, s.MicaBackdrop, s.AutoSaveInterval, s.VSync,
+             s.ShowGrid, s.ShowGizmos, s.ShowStats, projectRoot);
     }
 
     private static string? ReadString(string json, string key)

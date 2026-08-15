@@ -392,6 +392,14 @@
                         <Run Text=": "/>
                         <Run Text="{Binding EntityCount, Mode=OneWay}" FontWeight="SemiBold"/>
                     </TextBlock>
+                    <Border Style="{StaticResource VerticalSeparatorStyle}" Margin="8,2"/>
+                    <TextBlock FontSize="10.5"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               MaxWidth="360"
+                               ToolTip="{Binding ProjectRootLabel}"
+                               Text="{Binding ProjectRootLabel}"/>
                 </StackPanel>
 
                 <TextBlock Grid.Column="1" FontSize="10.5"
@@ -399,6 +407,14 @@
                            VerticalAlignment="Center" HorizontalAlignment="Center"
                            Text="{Binding GizmoModeLabel}"
                            Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}"/>
+
+                <!-- Transient status toast (errors / important feedback) -->
+                <TextBlock x:Name="StatusToast" Grid.Column="2"
+                           FontSize="10.5" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           VerticalAlignment="Center" HorizontalAlignment="Right"
+                           TextTrimming="CharacterEllipsis" MaxWidth="520"
+                           Margin="12,0,8,0"/>
 
                 <TextBlock Grid.Column="3" FontSize="10"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"

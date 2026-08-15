@@ -17,6 +17,32 @@ public partial class EditorViewModel : INotifyPropertyChanged
 
     // Hierarchy
     public ObservableCollection<EntityModel> RootEntities { get; } = new();
+    // 增量刷新缓存：实体模型按 handle 复用，避免每次实体列表变化都重建整棵树
+    private readonly Dictionary<GEntityHandle, EntityModel> _entityModelCache = new();
+    private readonly Dictionary<GEntityHandle, int> _entityComponentSignature = new();
+
+    /// <summary>Transient status toast (message, isError). MainWindow shows it
+    /// in the status bar and fades it out.</summary>
+    public event Action<string, bool>? StatusToast;
+
+    /// <summary>Console + status-bar toast feedback for important operations.</summary>
+    public void Notify(string message, bool isError = false)
+    {
+        AppendConsole(message, isError ? LogLevel.Error : LogLevel.Info);
+        StatusToast?.Invoke(message, isError);
+    }
+
+    /// <summary>Current project root, shown in the status bar (helps users see
+    /// they are editing an example project vs their own).</summary>
+    public string ProjectRootLabel
+    {
+        get
+        {
+            string root = _engine.ProjectRoot;
+            string label = LocalizationService.Instance.T("status.project");
+            return string.IsNullOrEmpty(root) ? label : label + ": " + root;
+        }
+    }
 
     // Inspector
     private EntityModel? _selectedEntity;
@@ -369,10 +395,13 @@ public partial class EditorViewModel : INotifyPropertyChanged
                 _redoStack.Clear();
                 _pendingCreateActions.Clear();
                 _pendingComponentRestores.Clear();
+                _entityModelCache.Clear();
+                _entityComponentSignature.Clear();
                 System.Windows.Input.CommandManager.InvalidateRequerySuggested();
                 RefreshHierarchy();
                 RefreshInspector();
                 OnPropertyChanged(nameof(EntityCount));
+                OnPropertyChanged(nameof(ProjectRootLabel));
                 // Default to the project's main scene (project_settings.json
                 // "main_scene"), with the legacy scenes as fallbacks.
                 int rc = SceneAPI.GScene_Load(ProjectSettingsService.Load().MainScene);
@@ -408,43 +437,94 @@ public partial class EditorViewModel : INotifyPropertyChanged
     }
     public void RefreshHierarchy()
     {
-        RootEntities.Clear();
         int count = EntityAPI.GEntity_GetCount();
+        var present = new HashSet<GEntityHandle>();
+        var roots = new List<EntityModel>();
         for (int i = 0; i < count; i++)
         {
             var handle = EntityAPI.GEntity_GetAt(i);
             if (handle == GEntityHandle.Null) continue;
-
             var entityName = EntityAPI.GetNameUtf8(handle);
             if (entityName == null) continue;
+            present.Add(handle);
 
+            var model = GetOrCreateEntityModel(handle, entityName);
             var parent = EntityAPI.GEntity_GetParent(handle);
             if (parent == GEntityHandle.Null)
             {
-                var model = BuildEntityTree(handle, entityName);
-                RootEntities.Add(model);
+                roots.Add(model);
             }
         }
+
+        // 剪除已删除实体的缓存（句柄跨场景无效，必须清理）
+        foreach (var stale in _entityModelCache.Keys.Where(h => !present.Contains(h)).ToList())
+        {
+            _entityModelCache.Remove(stale);
+            _entityComponentSignature.Remove(stale);
+        }
+
+        SyncCollection(RootEntities, roots);
+        foreach (var h in present)
+            SyncEntityChildren(h);
     }
 
-    private EntityModel BuildEntityTree(GEntityHandle handle, string name)
+    /// <summary>返回实体的模型：新实体创建并刷新组件；已有实体只更新名称，
+    /// 组件数量变化时才刷新组件列表（避免逐实体反复 P/Invoke）。</summary>
+    private EntityModel GetOrCreateEntityModel(GEntityHandle handle, string name)
     {
-        var model = new EntityModel(handle, name);
-        model.RefreshTransform();
-        model.RefreshComponents();
-
-        int childCount = EntityAPI.GEntity_GetChildCount(handle);
-        for (int i = 0; i < childCount; i++)
+        if (!_entityModelCache.TryGetValue(handle, out var model))
         {
-            var childHandle = EntityAPI.GEntity_GetChildAt(handle, i);
-            if (childHandle == GEntityHandle.Null) continue;
-            var childName = EntityAPI.GetNameUtf8(childHandle);
-            if (childName != null)
-            {
-                model.Children.Add(BuildEntityTree(childHandle, childName));
-            }
+            model = new EntityModel(handle, name);
+            _entityModelCache[handle] = model;
+            model.RefreshComponents();
+            _entityComponentSignature[handle] = model.Components.Count;
+            return model;
+        }
+
+        if (model.Name != name) model.Name = name;
+
+        int compCount = ComponentAPI.GComponent_GetCount(handle);
+        if (!_entityComponentSignature.TryGetValue(handle, out var sig) || sig != compCount)
+        {
+            _entityComponentSignature[handle] = compCount;
+            model.RefreshComponents();
         }
         return model;
+    }
+
+    /// <summary>只在子实体集合变化时重建 Children，未变化的子树保留 UI 状态
+    /// （展开/选中），显著减少大场景下 Hierarchy 的刷新开销。</summary>
+    private void SyncEntityChildren(GEntityHandle parentHandle)
+    {
+        if (!_entityModelCache.TryGetValue(parentHandle, out var parentModel)) return;
+
+        var desired = new List<EntityModel>();
+        int childCount = EntityAPI.GEntity_GetChildCount(parentHandle);
+        for (int i = 0; i < childCount; i++)
+        {
+            var childHandle = EntityAPI.GEntity_GetChildAt(parentHandle, i);
+            if (childHandle == GEntityHandle.Null) continue;
+            var childName = EntityAPI.GetNameUtf8(childHandle);
+            if (childName == null) continue;
+            desired.Add(GetOrCreateEntityModel(childHandle, childName));
+        }
+        SyncCollection(parentModel.Children, desired);
+    }
+
+    /// <summary>集合内容不同时才替换，避免 WPF 容器（展开状态）被重建。</summary>
+    private static void SyncCollection(ObservableCollection<EntityModel> target, List<EntityModel> desired)
+    {
+        if (target.Count == desired.Count)
+        {
+            bool same = true;
+            for (int i = 0; i < target.Count; i++)
+            {
+                if (!ReferenceEquals(target[i], desired[i])) { same = false; break; }
+            }
+            if (same) return;
+        }
+        target.Clear();
+        foreach (var m in desired) target.Add(m);
     }
 
     public void SelectEntityByHandle(GEntityHandle handle)

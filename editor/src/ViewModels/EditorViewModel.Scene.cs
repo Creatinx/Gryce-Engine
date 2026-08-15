@@ -73,7 +73,7 @@ public partial class EditorViewModel
             _engine.ClearDirty();
         }
         else
-            AppendConsole("Failed to save scene.");
+            Notify("Failed to save scene.", true);
     }
 
     /// <summary>Saves the scene to the given path (used by Save As / auto-save UI).</summary>
@@ -90,7 +90,7 @@ public partial class EditorViewModel
         }
         else
         {
-            AppendConsole($"Failed to save scene: {path}");
+            Notify($"Failed to save scene: {path}", true);
         }
     }
 
@@ -118,7 +118,10 @@ public partial class EditorViewModel
     public void LoadSceneFromPath(string path)
     {
         int rc = SceneAPI.GScene_Load(path);
-        AppendConsole(rc == 0 ? $"Scene loaded: {path}" : $"Failed to load scene: {path}");
+        if (rc == 0)
+            AppendConsole($"Scene loaded: {path}");
+        else
+            Notify($"Failed to load scene: {path}", true);
     }
 
     // === Prefab 工作流 ===

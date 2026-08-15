@@ -11,18 +11,55 @@ public partial class App : Application
     public static EngineService Engine { get; private set; } = null!;
     public static EditorViewModel EditorVM { get; private set; } = null!;
 
+    public App()
+    {
+        // 编辑器内未处理异常：弹窗提示而不是无声闪退（保留控制台日志路径）。
+        DispatcherUnhandledException += (_, e) =>
+        {
+            try
+            {
+                MessageBox.Show($"Gryce Engine Editor error:\n{e.Exception.Message}",
+                                "Editor Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch
+            {
+                // 异常处理本身失败时不阻塞退出流程
+            }
+            e.Handled = true;
+        };
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
+        try
+        {
+            StartupCore(e);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Gryce Engine Editor failed to start:\n{ex.Message}",
+                            "Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown();
+        }
+    }
+
+    private void StartupCore(StartupEventArgs e)
+    {
+        var settings = Services.EditorSettingsService.Load();
+
         Engine = new EngineService();
 
-        // Initialize engine core (empty root => auto-detect examples/3dtest project)
-        Engine.Initialize("");
+        // 恢复上次打开的项目；没有则回退到示例项目（examples/3dtest）。
+        string startRoot = !string.IsNullOrWhiteSpace(settings.LastProject) &&
+                           System.IO.Directory.Exists(settings.LastProject)
+            ? settings.LastProject
+            : "";
+        Engine.Initialize(startRoot);
 
         // Restore persisted editor settings (language must be applied before the
         // ViewModel is created so localized VM strings use the right language).
-        var settings = Services.EditorSettingsService.Load();
         Engine.ReloadEditorSettings();
         if (settings.Language == "zh")
             Services.LocalizationService.Instance.Language = EditorLanguage.Chinese;

@@ -9,12 +9,15 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 
 namespace GryceEngine.Editor.Views;
 
 public partial class MainWindow
 {
     private EditorViewModel? VM => DataContext as EditorViewModel;
+    private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(4) };
 
     public MainWindow(EditorViewModel viewModel)
     {
@@ -26,7 +29,57 @@ public partial class MainWindow
         SourceInitialized += OnSourceInitialized;
         viewModel.RefreshHierarchy();
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        viewModel.StatusToast += ShowToast;
         UpdatePlaybackState(viewModel);
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        base.OnClosing(e);
+
+        var engine = App.Engine;
+        if (engine == null || !engine.IsInitialized || !engine.IsSceneDirty || engine.IsPlaying) return;
+
+        var loc = LocalizationService.Instance;
+        var result = MessageBox.Show(this,
+            loc.T("confirm.unsaved_message"),
+            loc.T("confirm.unsaved_title"),
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning);
+
+        if (result == MessageBoxResult.Yes)
+        {
+            VM?.SaveScene();
+        }
+        else if (result == MessageBoxResult.Cancel)
+        {
+            e.Cancel = true;
+        }
+        // No = discard unsaved changes and close.
+    }
+
+    /// <summary>Transient status toast: shows the message in the status bar and
+    /// fades it out after a few seconds (errors use a warning color).</summary>
+    private void ShowToast(string message, bool isError)
+    {
+        StatusToast.Text = message;
+        StatusToast.Opacity = 1.0;
+        StatusToast.BeginAnimation(OpacityProperty, null);
+        StatusToast.Foreground = isError
+            ? new SolidColorBrush(Color.FromRgb(0xE5, 0x48, 0x4D))
+            : (Brush)FindResource("TextFillColorSecondaryBrush");
+
+        _toastTimer.Stop();
+        _toastTimer.Tick -= OnToastTick;
+        _toastTimer.Tick += OnToastTick;
+        _toastTimer.Start();
+    }
+
+    private void OnToastTick(object? sender, EventArgs e)
+    {
+        _toastTimer.Stop();
+        StatusToast.BeginAnimation(OpacityProperty,
+            new DoubleAnimation(1.0, 0.0, TimeSpan.FromMilliseconds(400)));
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -98,7 +151,7 @@ public partial class MainWindow
                 VM?.SetSceneName(System.IO.Path.GetFileNameWithoutExtension(dialog.FileName));
             }
             else
-                VM?.AppendConsole($"Failed to load scene: {dialog.FileName}");
+                VM?.Notify($"Failed to load scene: {dialog.FileName}", true);
         }
     }
 
@@ -146,7 +199,7 @@ public partial class MainWindow
                 if (handle != GAssetHandle.Null)
                     VM?.AppendConsole($"Imported: {file} -> handle {handle}");
                 else
-                    VM?.AppendConsole($"Failed to import: {file}");
+                    VM?.Notify($"Failed to import: {file}", true);
             }
         }
     }
@@ -179,7 +232,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            VM?.AppendConsole($"Package failed: {ex.Message}");
+            VM?.Notify($"Package failed: {ex.Message}", true);
         }
     }
 
@@ -211,28 +264,6 @@ public partial class MainWindow
     {
         VM?.RefreshHierarchy();
         VM?.AppendConsole("View refreshed.");
-    }
-
-    // === Theme Switching ===
-
-    private void OnThemeDarkClick(object sender, RoutedEventArgs e)
-    {
-        ApplyTheme(ElementTheme.Dark);
-        if (VM != null) VM.CurrentTheme = "Dark";
-    }
-
-    private void OnThemeLightClick(object sender, RoutedEventArgs e)
-    {
-        ApplyTheme(ElementTheme.Light);
-        if (VM != null) VM.CurrentTheme = "Light";
-    }
-
-    private static void ApplyTheme(ElementTheme theme)
-    {
-        if (Application.Current.MainWindow is Window mainWindow)
-        {
-            ThemeManager.SetRequestedTheme(mainWindow, theme);
-        }
     }
 
     // === Settings & About ===

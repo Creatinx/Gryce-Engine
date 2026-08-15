@@ -91,6 +91,7 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
         Shutdown();
         Initialize(root);
         ProjectChanged?.Invoke(ProjectRoot);
+        EditorSettingsService.SaveLastProject(ProjectRoot);
     }
 
     /// <summary>
