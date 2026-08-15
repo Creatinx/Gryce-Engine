@@ -1,36 +1,29 @@
--- common.lua — FPSDemo 共享工具模块。
--- 提供四元数/向量数学、距离、以及敌人生命表（跨脚本实例共享）。
--- 通过 require("common") 使用（脚本共享 package.loaded，只加载一次）。
+-- common.lua — FPSDemo 共享工具：四元数/向量数学、敌人生命表、游戏参数。
+-- 模块级状态（ENEMIES）在脚本实例间共享，且跨场景重载持久存在：
+-- 场景重载后运行时句柄映射被清空，enemy_alive 用 get_name 校验过滤陈旧句柄。
+
 local M = {}
 
--- 敌人生命值表：handle -> hp。模块级状态在所有脚本实例间共享。
-M.ENEMIES = {}
-M.ENEMY_HP = 100
+M.ENEMIES = {}   -- handle -> hp
 
--- 玩家/武器参数（供 player/bullet/enemy 引用）
 M.CFG = {
     move_speed = 6.0,
     jump_force = 7.0,
-    eye_height = 0.8,          -- 相机相对角色刚体中心的抬升
-    mouse_sens = 0.0022,       -- 弧度/像素
+    eye_height = 0.8,           -- 相机相对刚体中心的抬升
+    mouse_sens = 0.0022,        -- 弧度/像素
     bullet_speed = 220.0,
     bullet_damage = 34,
     bullet_life = 2.5,
-    bullet_hit_range = 1.1,    -- 命中判定半径
+    bullet_hit_range = 1.1,     -- 命中判定半径
     enemy_health = 100,
     enemy_damage = 16,
     enemy_attack_range = 3.2,
-    enemy_aggro_range = 16.0,   -- 超出此距离不追击（避免出生即被蜂拥）
-    enemy_chase_speed = 7.5,   -- 玩家移动 6.0，追击必须明显更快才能追上
-    enemy_patrol_speed = 1.4,
-    enemy_patrol_radius = 6.0,
+    enemy_aggro_range = 16.0,   -- 超出不追击
+    enemy_chase_speed = 7.5,    -- 玩家移动 6.0，追击必须更快
 }
 
--- 三维距离
 function M.distance3(a, b)
-    local dx = a.x - b.x
-    local dy = a.y - b.y
-    local dz = a.z - b.z
+    local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
@@ -63,28 +56,32 @@ function M.qrotate(q, v)
     }
 end
 
--- 由 yaw（绕 Y，弧度）与 pitch（绕 X，弧度）组合四元数：q = qYaw * qPitch
+-- 由 yaw（绕 Y）/pitch（绕 X）组合四元数（前向 -Z 约定）
 function M.quat_from_yaw_pitch(yaw, pitch)
     local cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
     local cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
-    return {
-        x = cy * sp,
-        y = sy * cp,
-        z = -sy * sp,
-        w = cy * cp,
-    }
+    return { x = cy * sp, y = sy * cp, z = -sy * sp, w = cy * cp }
 end
 
--- 四元数归一化
 function M.qnormalize(q)
     local len = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
     if len < 1e-9 then return { x = 0, y = 0, z = 0, w = 1 } end
     return { x = q.x / len, y = q.y / len, z = q.z / len, w = q.w / len }
 end
 
--- 记录敌人初始生命（在 enemy 脚本 on_start 里调用）
+function M.normalize(v)
+    local len = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    if len < 1e-9 then return { x = 0, y = 0, z = 0 } end
+    return { x = v.x / len, y = v.y / len, z = v.z / len }
+end
+
 function M.register_enemy(h, hp)
-    M.ENEMIES[h] = hp or M.ENEMY_HP
+    M.ENEMIES[h] = hp or M.CFG.enemy_health
+end
+
+-- 存活判定：表里有记录 + 句柄仍然有效（场景重载后旧句柄 get_name 返回空串）
+function M.enemy_alive(h)
+    return M.ENEMIES[h] ~= nil and engine.entity.get_name(h) ~= ""
 end
 
 -- 敌人受击，返回是否死亡
@@ -98,19 +95,6 @@ function M.damage_enemy(h, dmg)
     end
     M.ENEMIES[h] = hp
     return false
-end
-
-function M.enemy_alive(h)
-    -- 表里有记录 + 句柄仍然有效：场景重载（R 重开）后旧句柄
-    -- 的 handle 映射被清空，get_name 返回空串，应视为已失效。
-    return M.ENEMIES[h] ~= nil and engine.entity.get_name(h) ~= ""
-end
-
--- 单位向量
-function M.normalize(v)
-    local len = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-    if len < 1e-9 then return { x = 0, y = 0, z = 0 } end
-    return { x = v.x / len, y = v.y / len, z = v.z / len }
 end
 
 return M

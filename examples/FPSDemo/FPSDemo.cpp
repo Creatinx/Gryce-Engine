@@ -228,10 +228,17 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    GRender_Shutdown();
-    GWindow_Destroy();
-    GPhysics_Shutdown();
+    // 清理顺序：先销毁 Core 世界（释放 GPU 资源需要渲染上下文仍存活），
+    // 再停物理后端，最后销毁渲染器与窗口（与 3dtest 的顺序一致，2dDemo 沿用了
+    // 旧的错误顺序会在退出时挂死）。
+    std::printf("[FPSDemo] shutdown core...\n");
     GCore_Shutdown();
+    std::printf("[FPSDemo] shutdown physics...\n");
+    GPhysics_Shutdown();
+    std::printf("[FPSDemo] shutdown renderer...\n");
+    GRender_Shutdown();
+    std::printf("[FPSDemo] destroy window...\n");
+    GWindow_Destroy();
     std::printf("[FPSDemo] exited\n");
     return 0;
 }

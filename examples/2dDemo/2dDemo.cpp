@@ -259,10 +259,12 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
+    // 清理顺序：先销毁 Core 世界（GPU 资源释放需要渲染上下文仍存活），
+    // 再停物理后端，最后销毁渲染器与窗口。旧顺序会在退出时挂死。
+    GCore_Shutdown();
+    GPhysics_Shutdown();
     GRender_Shutdown();
     GWindow_Destroy();
-    GPhysics_Shutdown();
-    GCore_Shutdown();
     std::printf("[2dDemo] exited\n");
     return 0;
 }

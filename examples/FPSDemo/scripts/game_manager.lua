@@ -1,8 +1,12 @@
--- game_manager.lua — FPS HUD、玩家生命、胜负判定、背景音乐。
--- 挂到 GameManager 实体。
+-- game_manager.lua — FPS HUD、玩家生命、胜负判定、背景音乐、重开。
+
 props = {}
 
 local common = require("common")
+
+-- 本局敌人总数：on_start 时捕获（场景实体已就位）。
+-- 不能用"每帧实时数实体"做胜利条件——最后一个敌人被销毁后实体数变 0。
+local enemy_total = 0
 
 local function set_label(name, text)
     local h = engine.entity.find(name)
@@ -17,15 +21,13 @@ local function count_alive_enemies()
         if common.enemy_alive(h) then
             n = n + 1
         else
-            -- 顺带清理陈旧句柄（场景重载后旧 handle 失效），
-            -- 否则残留条目会让 count 永远 > 0，胜利永不触发。
+            -- 清理陈旧句柄（场景重载后旧 handle 失效），避免胜利永不触发
             common.ENEMIES[h] = nil
         end
     end
     return n
 end
 
--- 场景中实际存在的 Enemy 实体总数（防止"敌人脚本没注册就判胜利"）
 local function count_enemy_entities()
     local n = 0
     local found = engine.entity.find_all("Enemy") or {}
@@ -33,14 +35,8 @@ local function count_enemy_entities()
     return n
 end
 
--- 本局敌人总数：在 on_start 时捕获（此时场景实体已就位）。
--- 注意不能用"每帧实时数实体"做胜利条件——最后一个敌人被销毁后
--- 实体数变成 0，会永远不判胜利。
-local enemy_total = 0
-
 function on_start()
-    -- engine.state 跨场景重载/重进 Play 持久存在：必须无条件重置，
-    -- 否则 R 重开会保留 lives=0（软锁）或残留旧 kills/health。
+    -- engine.state 跨场景重载/重进 Play 持久存在：必须无条件重置
     engine.state.set("health", 100)
     engine.state.set("kills", 0)
     engine.state.set("lives", 5)
@@ -49,10 +45,9 @@ function on_start()
     engine.state.set("jumping", false)
     engine.state.set("invuln", 0)
     enemy_total = count_enemy_entities()
-    -- 背景音乐：仅在游戏运行时（Play Mode / 独立 exe）播放，编辑器编辑态不播
+
     local bgm = engine.entity.find("BGM")
     if bgm ~= 0 then engine.audio.play_on(bgm) end
-    engine.log.info("FPSDemo: game_manager started")
 end
 
 function on_update(dt)
@@ -62,12 +57,12 @@ function on_update(dt)
     local over = engine.state.get("game_over") or false
     local victory = engine.state.get("victory") or false
 
-    -- 生命耗尽判定
+    -- 生命耗尽
     if health <= 0 and not over and not victory then
         if lives > 0 then
             engine.state.set("lives", lives - 1)
             engine.state.set("health", 100)
-            engine.state.set("invuln", 1.5)  -- 重生无敌，防止围殴秒杀
+            engine.state.set("invuln", 1.5)
             local sp = engine.entity.find("SpawnPoint")
             local player = engine.entity.find("Player")
             if sp ~= 0 and player ~= 0 then
@@ -82,28 +77,25 @@ function on_update(dt)
         end
     end
 
-    -- 清剿胜利：本局确有敌人（enemy_total > 0）且全部被消灭。
-    -- count_alive_enemies 会清理陈旧句柄，避免重开后残留导致永不胜利。
-    if not over and not victory and enemy_total > 0
-        and count_alive_enemies() == 0 then
+    -- 清剿胜利
+    if not over and not victory and enemy_total > 0 and count_alive_enemies() == 0 then
         engine.state.set("victory", true)
     end
 
-    -- HUD
+    -- HUD（ASCII：Roboto 无 CJK 字形）
     set_label("HealthLabel", string.format("HP: %d", health))
     set_label("KillsLabel", string.format("Kills: %d", kills))
     set_label("LivesLabel", string.format("Lives: %d", lives))
     set_label("EnemiesLabel", string.format("Enemies: %d", count_alive_enemies()))
-
     if over then
         set_label("MessageLabel", "GAME OVER - press R to restart")
     elseif victory then
-        set_label("MessageLabel", "VICTORY! All enemies eliminated - press R to restart")
+        set_label("MessageLabel", "VICTORY! Press R to restart")
     else
         set_label("MessageLabel", "WASD move, mouse aim, LMB shoot")
     end
 
-    -- 按 R (82) 重新开始
+    -- R (82) 重开
     if (over or victory) and engine.input.key_down(82) then
         engine.scene.load(engine.scene.current())
     end

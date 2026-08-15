@@ -22,6 +22,7 @@ deps_cache/
 # Build logs
 *.log
 *.obj
+!examples/FPSDemo/models/weapon.obj
 *.pdb
 *.ilk
 *.exp
