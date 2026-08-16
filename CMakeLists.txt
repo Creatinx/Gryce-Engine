@@ -1,7 +1,10 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.22)
 
-# 必须在 project() 之前禁用 C++20 modules 扫描，否则 CMake 4.x 在 C++23 下会自动启用
-set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+# 必须在 project() 之前禁用 C++20 modules 扫描，否则 CMake 4.x 在 C++23 下会自动启用。
+# 该变量是 CMake 3.28 引入的；旧版 CMake 默认不扫描 modules，无需设置。
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+    set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+endif()
 
 # 平台：Windows 下优先使用 MinGW GCC，未找到时让 CMake 自动检测（支持 MSVC fallback）
 # 注意：当使用 Visual Studio generator 时，保留 MSVC 选择，不强制切到 MinGW。

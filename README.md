@@ -155,6 +155,25 @@ python build.py --verbose          # 输出 ninja 详细日志
 单配置目录（`build/<Config>`），不生成 `.slnx` / `.vcxproj`。CLion 可直接打开项目
 根目录，用任意工具链配置。
 
+#### 方式 F：CLion
+
+1. 首次打开前先确保依赖已下载：终端执行 `python build.py --setup-deps`（或在
+   CLion 的终端里执行，依赖缓存在源码根 `build/deps/`，与 CLion 的构建目录无关）。
+2. `Settings → Build, Execution, Deployment → Toolchains`：选择 MinGW（MSYS2 UCRT64）
+   或 Visual Studio 工具链。
+3. `Settings → Build, Execution, Deployment → CMake`：Profile 选 Debug/Release，
+   **Generator 建议选 Ninja**（需 `ninja` 在 PATH，见下），Build directory 填
+   `build/Debug` 或 `build/Release`；Toolchain 选第 2 步配置的那个。
+4. 打开 `CMakeLists.txt` 后点 **Reload CMake Project**（或 File → Reload All）。
+   底部 CMake 工具窗口若报错，按报错提示处理（最常见是 CMake 版本过旧或依赖未下载）。
+
+> 项目要求 CMake ≥ 3.22（assimp/box2d 依赖的最低版本）；CLion 2022.3+ 自带 CMake
+> 即满足。若使用 MSVC 工具链且 CLion 默认选了 Visual Studio generator，可在 CMake
+> Profile 中手动改为 Ninja，避免生成 `.slnx/.vcxproj`。
+>
+> Ninja 安装：MSYS2 执行 `pacman -S mingw-w64-ucrt-x86_64-ninja`，或
+> `winget install Ninja-build.Ninja`。
+
 #### 方式 D：MSVC（Visual Studio 2022+ / 2026）
 
 ```powershell
