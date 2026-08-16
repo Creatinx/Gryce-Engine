@@ -43,6 +43,7 @@ public partial class MaterialEditorWindow : Window
         RoughnessBox.Tag = GMaterialField.Roughness;
         MetallicBox.Tag = GMaterialField.Metallic;
         OpacityBox.Tag = GMaterialField.Opacity;
+        AoBox.Tag = GMaterialField.AO;
 
         BuildMapFields();
         LoadAll();
@@ -104,6 +105,14 @@ public partial class MaterialEditorWindow : Window
             SetText(RoughnessBox, GetFloat(GMaterialField.Roughness));
             SetText(MetallicBox, GetFloat(GMaterialField.Metallic));
             SetText(OpacityBox, GetFloat(GMaterialField.Opacity));
+            SetText(AoBox, GetFloat(GMaterialField.AO));
+            SetText(EmissiveR, GetVec3(GMaterialField.EmissiveColor, 0));
+            SetText(EmissiveG, GetVec3(GMaterialField.EmissiveColor, 1));
+            SetText(EmissiveB, GetVec3(GMaterialField.EmissiveColor, 2));
+            SetText(UvScaleU, GetVec3(GMaterialField.UvScale, 0));
+            SetText(UvScaleV, GetVec3(GMaterialField.UvScale, 1));
+            SetText(UvOffsetU, GetVec3(GMaterialField.UvOffset, 0));
+            SetText(UvOffsetV, GetVec3(GMaterialField.UvOffset, 1));
 
             TwoSidedCheck.IsChecked = GetFloat(GMaterialField.TwoSided) > 0.5f;
             BlendCombo.SelectedIndex = GetFloat(GMaterialField.BlendMode) > 0.5f ? 1 : 0;
@@ -191,6 +200,44 @@ public partial class MaterialEditorWindow : Window
     {
         if (_syncing || sender is not TextBox box || box.Tag is not GMaterialField field) return;
         SetFloat(field, ReadFloat(box, 0));
+    }
+
+    private void OnEmissiveChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_syncing || EmissiveR == null || EmissiveG == null || EmissiveB == null) return;
+        SetVec3(GMaterialField.EmissiveColor,
+            ReadFloat(EmissiveR, 0), ReadFloat(EmissiveG, 0), ReadFloat(EmissiveB, 0));
+    }
+
+    private void OnUvChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_syncing || UvScaleU == null || UvScaleV == null || UvOffsetU == null || UvOffsetV == null) return;
+        SetVec3(GMaterialField.UvScale, ReadFloat(UvScaleU, 1), ReadFloat(UvScaleV, 1), 0);
+        SetVec3(GMaterialField.UvOffset, ReadFloat(UvOffsetU, 0), ReadFloat(UvOffsetV, 0), 0);
+    }
+
+    private void OnLoadMaterialClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = LocalizationService.Instance.T("material_editor.load"),
+            Filter = LocalizationService.Instance.T("material_editor.load_filter")
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        int rc = MaterialAPI.GMaterial_LoadFromFile(_entity, _compHash, dialog.FileName);
+        if (rc == 0)
+        {
+            App.Engine?.MarkSceneDirty();
+            LoadAll();
+            App.EditorVM?.AppendConsole(string.Format(
+                LocalizationService.Instance.T("material_editor.loaded"), dialog.FileName));
+        }
+        else
+        {
+            App.EditorVM?.Notify(string.Format(
+                LocalizationService.Instance.T("material_editor.load_failed"), dialog.FileName), true);
+        }
     }
 
     private void OnFlagChanged(object sender, RoutedEventArgs e)

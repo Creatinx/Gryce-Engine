@@ -34,6 +34,14 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -75,6 +83,52 @@
                     <TextBox x:Name="OpacityBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2"
                              Margin="0,8,3,0" Style="{StaticResource PropertyTextBoxStyle}" Text="1"
                              TextChanged="OnFloatChanged"/>
+
+                    <TextBlock Grid.Row="5" Grid.Column="0" Text="{loc:Loc material_editor.ao}"
+                               Style="{StaticResource PropertyLabelStyle}" Margin="0,8,0,0"/>
+                    <TextBox x:Name="AoBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2"
+                             Margin="0,8,3,0" Style="{StaticResource PropertyTextBoxStyle}" Text="0"
+                             TextChanged="OnFloatChanged"/>
+
+                    <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="3"
+                               Text="{loc:Loc material_editor.emissive}"
+                               Style="{StaticResource PropertyLabelStyle}" Margin="0,8,0,0"/>
+                    <TextBox x:Name="EmissiveR" Grid.Row="7" Grid.Column="0" Margin="0,2,3,2"
+                             Style="{StaticResource PropertyTextBoxStyle}" Text="0"
+                             TextChanged="OnEmissiveChanged"/>
+                    <TextBox x:Name="EmissiveG" Grid.Row="7" Grid.Column="1" Margin="0,2,3,2"
+                             Style="{StaticResource PropertyTextBoxStyle}" Text="0"
+                             TextChanged="OnEmissiveChanged"/>
+                    <TextBox x:Name="EmissiveB" Grid.Row="7" Grid.Column="2" Margin="0,2,3,2"
+                             Style="{StaticResource PropertyTextBoxStyle}" Text="0"
+                             TextChanged="OnEmissiveChanged"/>
+                    <TextBlock Grid.Row="7" Grid.Column="3" Text="RGB" FontSize="10"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="{loc:Loc material_editor.uv_scale}"
+                               Style="{StaticResource PropertyLabelStyle}" Margin="0,8,0,0"/>
+                    <TextBox x:Name="UvScaleU" Grid.Row="8" Grid.Column="1" Margin="0,8,3,2"
+                             Style="{StaticResource PropertyTextBoxStyle}" Text="1"
+                             TextChanged="OnUvChanged"/>
+                    <TextBox x:Name="UvScaleV" Grid.Row="8" Grid.Column="2" Margin="0,8,3,2"
+                             Style="{StaticResource PropertyTextBoxStyle}" Text="1"
+                             TextChanged="OnUvChanged"/>
+                    <TextBlock Grid.Row="8" Grid.Column="3" Text="UV" FontSize="10"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               VerticalAlignment="Center" Margin="4,0,0,0"/>
+
+                    <TextBlock Grid.Row="9" Grid.Column="0" Text="{loc:Loc material_editor.uv_offset}"
+                               Style="{StaticResource PropertyLabelStyle}" Margin="0,8,0,0"/>
+                    <TextBox x:Name="UvOffsetU" Grid.Row="9" Grid.Column="1" Margin="0,8,3,2"
+                             Style="{StaticResource PropertyTextBoxStyle}" Text="0"
+                             TextChanged="OnUvChanged"/>
+                    <TextBox x:Name="UvOffsetV" Grid.Row="9" Grid.Column="2" Margin="0,8,3,2"
+                             Style="{StaticResource PropertyTextBoxStyle}" Text="0"
+                             TextChanged="OnUvChanged"/>
+                    <TextBlock Grid.Row="9" Grid.Column="3" Text="UV" FontSize="10"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               VerticalAlignment="Center" Margin="4,0,0,0"/>
                 </Grid>
 
                 <!-- ══ 杂项 ══ -->
@@ -103,6 +157,9 @@
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
                     Margin="0,12,0,0">
+            <Button Content="{loc:Loc material_editor.load}" MinWidth="96" MinHeight="28"
+                    FontSize="11.5" Margin="0,0,8,0"
+                    Click="OnLoadMaterialClick"/>
             <Button Content="{loc:Loc common.close}" MinWidth="84" MinHeight="28" FontSize="11.5"
                     Click="OnCloseClick"/>
         </StackPanel>

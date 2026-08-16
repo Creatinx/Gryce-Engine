@@ -32,7 +32,7 @@ public partial class HierarchyView : UserControl
         if (ModalDialog.Show(dialog, Window.GetWindow(this)) == true &&
             !string.IsNullOrWhiteSpace(dialog.InputText))
         {
-            VM.RenameEntity(entity.Handle, dialog.InputText);
+            VM.RenameEntityUndoable(entity.Handle, dialog.InputText);
         }
     }
 
@@ -164,18 +164,22 @@ public partial class HierarchyView : UserControl
         var files = e.Data.GetData(DataFormats.FileDrop) as string[];
         if (files == null || files.Length == 0) return;
 
-        GEntityHandle parent = (sender as TreeViewItem)?.DataContext is EntityModel em
+        // 拖放目标实体（落在实体行上时）；模型/预置作为其子级，材质作用于其本身。
+        GEntityHandle targetEntity = (sender as TreeViewItem)?.DataContext is EntityModel em
             ? em.Handle
+            : GEntityHandle.Null;
+        GEntityHandle parent = targetEntity != GEntityHandle.Null
+            ? targetEntity
             : VM.SelectedEntity?.Handle ?? GEntityHandle.Null;
 
         foreach (var file in files)
         {
-            HandleDroppedFile(file, parent);
+            HandleDroppedFile(file, targetEntity, parent);
         }
         e.Handled = true;
     }
 
-    private void HandleDroppedFile(string file, GEntityHandle parent)
+    private void HandleDroppedFile(string file, GEntityHandle targetEntity, GEntityHandle parent)
     {
         string ext = System.IO.Path.GetExtension(file).ToLowerInvariant();
         switch (ext)
@@ -195,7 +199,9 @@ public partial class HierarchyView : UserControl
                 VM?.InstantiatePrefab(file, parent);
                 break;
             case ".gmat":
-                VM?.ApplyMaterialFileToSelection(file);
+                VM?.ApplyMaterialToEntity(
+                    targetEntity != GEntityHandle.Null ? targetEntity : VM?.SelectedEntity?.Handle ?? GEntityHandle.Null,
+                    file);
                 break;
             default:
                 VM?.AppendConsole($"Unsupported drop: {file}");

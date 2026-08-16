@@ -59,6 +59,8 @@ public partial class ViewportView
     private void EnterScriptMode(string? path)
     {
         _scriptMode = true;
+        _scriptDirty = false;
+        UpdateScriptDirtyIndicator();
         // Hidden (not Collapsed): Collapsed destroys the HwndHost window and
         // the embedded GLFW child together with its GL context, leaving the
         // sleeping render thread holding a dead context. Hidden keeps the
@@ -93,6 +95,7 @@ public partial class ViewportView
 
     private void OnOpenScriptRequested(string path)
     {
+        if (!ConfirmDiscardScriptChanges()) return;
         Dispatcher.BeginInvoke(new Action(() =>
         {
             TabScene.IsChecked = false;
@@ -111,6 +114,8 @@ public partial class ViewportView
 
     private async void LoadScriptFile(string? path)
     {
+        _scriptDirty = false;
+        UpdateScriptDirtyIndicator();
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
             path = FindNewScriptPath();
@@ -234,11 +239,51 @@ public partial class ViewportView
         }
         else if (cmd == "changed")
         {
+            _scriptDirty = true;
+            UpdateScriptDirtyIndicator();
             if (VM != null && !string.IsNullOrEmpty(_currentScriptPath))
             {
                 VM.AppendConsole($"[Script] modified: {System.IO.Path.GetFileName(_currentScriptPath)}");
             }
         }
+    }
+
+    /// <summary>脚本标签的脏标记：未保存时在标签前加 "* "。</summary>
+    private void UpdateScriptDirtyIndicator()
+    {
+        if (ScriptTabLabel == null) return;
+        string prefix = _scriptDirty
+            ? LocalizationService.Instance.T("script_editor.dirty_tab")
+            : string.Empty;
+        ScriptTabLabel.Text = prefix + LocalizationService.Instance.T("viewport.tab_script");
+    }
+
+    /// <summary>离开/切换脚本前确认未保存修改；true = 可以继续。</summary>
+    private bool ConfirmDiscardScriptChanges()
+    {
+        if (!_scriptMode || !_scriptDirty) return true;
+        var loc = LocalizationService.Instance;
+        var result = MessageBox.Show(
+            Window.GetWindow(this),
+            loc.T("script_editor.dirty_confirm_message"),
+            loc.T("script_editor.dirty_confirm_title"),
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning);
+        if (result == MessageBoxResult.Yes)
+        {
+            // 请求 Monaco 回传内容并保存，然后继续切换。
+            ScriptCommand("saveRequest");
+            _scriptDirty = false;
+            UpdateScriptDirtyIndicator();
+            return true;
+        }
+        if (result == MessageBoxResult.No)
+        {
+            _scriptDirty = false;
+            UpdateScriptDirtyIndicator();
+            return true;
+        }
+        return false;
     }
 
 
@@ -276,6 +321,8 @@ public partial class ViewportView
         try
         {
             File.WriteAllText(_currentScriptPath, text);
+            _scriptDirty = false;
+            UpdateScriptDirtyIndicator();
             VM?.AppendConsole($"Saved: {_currentScriptPath}");
             VM?.ReloadScripts();
         }

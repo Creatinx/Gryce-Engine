@@ -16,12 +16,21 @@ public partial class EditorViewModel
     /// <summary>Applies a .gmat material file to the selected renderer component.</summary>
     public void ApplyMaterialFileToSelection(string path)
     {
-        if (_selectedEntity == null || !System.IO.File.Exists(path)) return;
-        foreach (var comp in _selectedEntity.Components)
+        ApplyMaterialToEntity(_selectedEntity?.Handle ?? GEntityHandle.Null, path);
+    }
+
+    /// <summary>Applies a .gmat material file to the given entity's renderer
+    /// component（拖放材质到实体时使用目标实体，而不是当前选中项）。</summary>
+    public void ApplyMaterialToEntity(GEntityHandle entity, string path)
+    {
+        if (entity == GEntityHandle.Null || !System.IO.File.Exists(path)) return;
+        var target = FindEntity(entity, RootEntities);
+        if (target == null) return;
+        foreach (var comp in target.Components)
         {
             if (comp.TypeName is "MeshRenderer" or "SkinnedMeshRenderer")
             {
-                int rc = MaterialAPI.GMaterial_LoadFromFile(_selectedEntity.Handle, comp.TypeHash, path);
+                int rc = MaterialAPI.GMaterial_LoadFromFile(entity, comp.TypeHash, path);
                 if (rc == 0)
                 {
                     _engine.MarkSceneDirty();
@@ -83,8 +92,9 @@ public partial class EditorViewModel
         if (handle != GEntityHandle.Null)
         {
             _engine.MarkSceneDirty();
+            string? instanceJson = EntityAPI.ExportJsonUtf8(handle);
             PushUndo(new DeleteEntityAction(this, handle,
-                System.IO.Path.GetFileNameWithoutExtension(prefabPath), null, parent));
+                System.IO.Path.GetFileNameWithoutExtension(prefabPath), instanceJson, parent));
             AppendConsole($"Instantiated prefab: {prefabPath}");
             SelectEntityByHandle(handle);
         }

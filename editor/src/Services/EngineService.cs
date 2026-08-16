@@ -22,6 +22,9 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
     private bool _isPaused;
     private bool _initialized;
     private bool _sceneDirty;
+    private bool _autoSaveRetry;
+    private string? _deferredSavePath;
+    private int _deferredSaveTries;
 
     public bool IsPlaying { get => _isPlaying; private set { _isPlaying = value; OnPropertyChanged(); } }
     public bool IsPaused { get => _isPaused; private set { _isPaused = value; OnPropertyChanged(); } }
@@ -150,6 +153,14 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
     {
         _frameTimer.Stop();
         _autoSaveTimer.Stop();
+        // 退出前若还有被 2D 相机清理推迟的保存，直接落盘（宁可包含临时相机，
+        // 也不能丢用户的保存请求）。
+        if (_deferredSavePath != null)
+        {
+            string path = _deferredSavePath;
+            _deferredSavePath = null;
+            SaveSceneNow(path);
+        }
         if (IsInitialized)
         {
             CoreAPI.GCore_Shutdown();
@@ -162,6 +173,46 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
 
     /// <summary>Clears the dirty flag (after save / load / new scene).</summary>
     public void ClearDirty() => _sceneDirty = false;
+
+    public enum SaveResult
+    {
+        Completed,
+        Pending, // 需要先清理编辑器 2D 相机，稍后由帧循环落盘
+        Failed
+    }
+
+    /// <summary>保存场景的统一入口：需要清理编辑器 2D 相机时先推销毁命令，
+    /// 等核心处理完再写盘，避免临时相机被序列化进场景文件。</summary>
+    public SaveResult SaveScene(string path)
+    {
+        if (ViewportView.TryDestroyEditor2DCamera())
+        {
+            _deferredSavePath = path;
+            _deferredSaveTries = 0;
+            LogMessage?.Invoke("Scene save deferred: removing editor 2D camera first.");
+            return SaveResult.Pending;
+        }
+        return SaveSceneNow(path);
+    }
+
+    private SaveResult SaveSceneNow(string path)
+    {
+        var sb = new StringBuilder(512);
+        string target = string.IsNullOrWhiteSpace(path)
+            ? (SceneAPI.GScene_GetCurrentPath(sb, sb.Capacity) > 0
+                ? sb.ToString()
+                : (SceneAPI.GScene_GetMode() == 0
+                    ? "res:/scenes/scene_2d.gesc"
+                    : "res:/scenes/scene_3d.gesc"))
+            : path;
+        int result = SceneAPI.GScene_Save(target);
+        if (result == 0)
+        {
+            ClearDirty();
+            return SaveResult.Completed;
+        }
+        return SaveResult.Failed;
+    }
 
     /// <summary>
     /// Restarts the auto-save timer with the given interval in minutes.
@@ -190,6 +241,14 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
     {
         if (!IsInitialized || IsPlaying || !_sceneDirty) return;
 
+        // 拖拽/输入进行中：改为 5 秒后重试，而不是等下一个完整周期。
+        if (EditorInteractionState.IsBusy)
+        {
+            _autoSaveRetry = true;
+            _autoSaveTimer.Interval = TimeSpan.FromSeconds(5);
+            return;
+        }
+
         var sb = new StringBuilder(512);
         string path = SceneAPI.GScene_GetCurrentPath(sb, sb.Capacity) > 0
             ? sb.ToString()
@@ -197,16 +256,23 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
                 ? "res:/scenes/scene_2d.gesc"
                 : "res:/scenes/scene_3d.gesc");
 
-        int result = SceneAPI.GScene_Save(path);
-        if (result == 0)
+        var result = SaveScene(path);
+        if (result == SaveResult.Completed)
         {
-            ClearDirty();
             LogMessage?.Invoke($"Auto-saved scene: {path}");
         }
-        else
+        else if (result == SaveResult.Failed)
         {
             LogMessage?.Invoke($"Auto-save failed: {path}");
         }
+        ResetAutoSaveInterval();
+    }
+
+    private void ResetAutoSaveInterval()
+    {
+        if (!_autoSaveRetry) return;
+        _autoSaveRetry = false;
+        UpdateAutoSaveInterval(EditorSettings.AutoSaveInterval);
     }
 
     public void Play() => PushCommand(GCommandType.PlayMode);
@@ -261,8 +327,27 @@ public sealed class EngineService : INotifyPropertyChanged, IDisposable
         if (ViewportView.GameViewActive) Native.InputAPI.GInput_SyncToCore();
         CoreAPI.GCore_BeginFrame((float)_frameTimer.Interval.TotalSeconds);
         CoreAPI.GCore_EndFrame();
+        FlushDeferredSave();
         IsPlaying = CoreAPI.GCore_IsPlaying();
         IsPaused = CoreAPI.GCore_IsPaused();
+    }
+
+    /// <summary>帧循环里落盘被 2D 相机清理推迟的保存（销毁命令已随 BeginFrame 处理）。</summary>
+    private void FlushDeferredSave()
+    {
+        if (_deferredSavePath == null) return;
+        if (!ViewportView.Editor2DCameraDestroyed && ++_deferredSaveTries <= 240)
+        {
+            return;
+        }
+
+        string path = _deferredSavePath;
+        _deferredSavePath = null;
+        ViewportView.ResumeEditor2DCamera();
+        var result = SaveSceneNow(path);
+        LogMessage?.Invoke(result == SaveResult.Completed
+            ? $"Deferred save completed: {path}"
+            : $"Deferred save failed: {path}");
     }
 
     public void Dispose() => Shutdown();

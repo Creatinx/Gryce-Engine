@@ -20,6 +20,8 @@ public partial class InspectorView : UserControl
     private readonly Dictionary<TextBox, byte[]> _propertyBaselines = new();
     // Baseline captured on focus for incremental undo of Transform edits.
     private readonly Dictionary<TextBox, TransformBaseline> _transformBaselines = new();
+    // 实体名编辑的旧值（GotFocus 捕获，LostFocus 提交 undo）。
+    private string? _entityNameBaseline;
 
     public InspectorView()
     {
@@ -28,8 +30,21 @@ public partial class InspectorView : UserControl
 
     private void OnEntityNameChanged(object sender, RoutedEventArgs e)
     {
+        Services.EditorInteractionState.EndBusy();
         if (VM?.SelectedEntity == null) return;
-        VM.RenameEntity(VM.SelectedEntity.Handle, VM.SelectedEntity.Name);
+        var baseline = _entityNameBaseline;
+        _entityNameBaseline = null;
+        // 聚焦时记录的旧名与提交后的新名不同才推 undo（避免失焦未修改也入栈）。
+        if (baseline != null && !string.Equals(baseline, VM.SelectedEntity.Name, StringComparison.Ordinal))
+        {
+            VM.RenameEntityUndoable(VM.SelectedEntity.Handle, VM.SelectedEntity.Name);
+        }
+    }
+
+    private void OnEntityNameGotFocus(object sender, RoutedEventArgs e)
+    {
+        Services.EditorInteractionState.BeginBusy();
+        _entityNameBaseline = VM?.SelectedEntity?.Name;
     }
 
     private void OnAddComponentClick(object sender, RoutedEventArgs e)
@@ -52,6 +67,35 @@ public partial class InspectorView : UserControl
         if (sender is FrameworkElement fe && fe.Tag is ulong typeHash)
         {
             var contextMenu = new ContextMenu();
+            // 骨骼动画实体提供动画编辑器入口
+            if (fe.DataContext is ComponentModel animComp && animComp.TypeName == "SkinnedMeshRenderer")
+            {
+                var animItem = new MenuItem
+                {
+                    Header = LocalizationService.Instance.T("animation_editor.open"),
+                    InputGestureText = "..."
+                };
+                animItem.Icon = new TextBlock
+                {
+                    Text = "\uE768",
+                    FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
+                    FontSize = 12
+                };
+                animItem.Click += (_, _) =>
+                {
+                    if (VM.SelectedEntity != null)
+                    {
+                        var win = new AnimationEditorWindow(
+                            VM.SelectedEntity.Handle, typeHash, VM.SelectedEntity.Name)
+                        {
+                            Owner = Window.GetWindow(this)
+                        };
+                        win.Show();
+                    }
+                };
+                contextMenu.Items.Add(animItem);
+                contextMenu.Items.Add(new Separator());
+            }
             // Tilemap 组件提供数据编辑器入口
             if (fe.DataContext is ComponentModel comp && comp.TypeName == "Tilemap")
             {
@@ -295,6 +339,7 @@ public partial class InspectorView : UserControl
 
     private void OnPropertyGotFocus(object sender, RoutedEventArgs e)
     {
+        Services.EditorInteractionState.BeginBusy();
         if (sender is not TextBox tb || tb.Tag is not PropertyModel prop) return;
         var comp = FindCompFor(prop);
         if (comp == null || VM?.SelectedEntity == null) return;
@@ -317,6 +362,7 @@ public partial class InspectorView : UserControl
 
     private void OnPropertyCommit(object sender, RoutedEventArgs e)
     {
+        Services.EditorInteractionState.EndBusy();
         if (sender is not TextBox tb || tb.Tag is not PropertyModel prop) return;
         var comp = FindCompFor(prop);
         if (comp == null) return;
@@ -341,6 +387,7 @@ public partial class InspectorView : UserControl
 
     private void OnTransformGotFocus(object sender, RoutedEventArgs e)
     {
+        Services.EditorInteractionState.BeginBusy();
         if (sender is not TextBox tb || VM?.SelectedEntity == null) return;
         _transformBaselines[tb] = new TransformBaseline(
             VM.SelectedEntity.LocalPosition,
@@ -355,6 +402,7 @@ public partial class InspectorView : UserControl
 
     private void OnTransformCommit(object sender, RoutedEventArgs e)
     {
+        Services.EditorInteractionState.EndBusy();
         if (sender is not TextBox tb) return;
         if (_transformBaselines.TryGetValue(tb, out var bl))
         {

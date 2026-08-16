@@ -489,6 +489,7 @@ public partial class ViewportView
         _dragStartScaleX = scl.X; _dragStartScaleY = scl.Y; _dragStartScaleZ = scl.Z;
         EntityAPI.GEntity_GetLocalRotation(selected.Handle, out _dragStartRot);
         _dragCaptured = true;
+        Services.EditorInteractionState.BeginBusy();
 
         bool local = VM.IsGizmoLocal;
         var axes = local ? QuatToBasis(_dragStartRot) : QuatRot.Identity;
@@ -570,6 +571,7 @@ public partial class ViewportView
         EntityAPI.GEntity_GetLocalRotation(selected.Handle, out _dragStartRot);
         _dragStartScreenDist = Math.Sqrt((sx - cx) * (sx - cx) + (sy - cy) * (sy - cy));
         _dragCaptured = true;
+        Services.EditorInteractionState.BeginBusy();
     }
 
 
@@ -781,6 +783,7 @@ public partial class ViewportView
 
     private void EndGizmoDrag()
     {
+        if (_dragCaptured) Services.EditorInteractionState.EndBusy();
         ApplyPendingGizmoTransform();
         GEntityHandle h;
         lock (_gizmoApplyLock) { h = _gizmoApplyEntity; }
@@ -795,6 +798,18 @@ public partial class ViewportView
         }
         _dragCaptured = false;
         _dragAxis = -1;
+    }
+
+    /// <summary>取消拖拽（失焦/Esc）：清理状态但不推 undo，也不提交半成品变换。</summary>
+    private void CancelGizmoDrag()
+    {
+        if (_dragCaptured) Services.EditorInteractionState.EndBusy();
+        _dragCaptured = false;
+        _dragAxis = -1;
+        _dragMode = "";
+        _leftDown = false;
+        _rightDown = false;
+        _middleDown = false;
     }
 
     // =====================================================================

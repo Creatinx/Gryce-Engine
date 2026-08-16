@@ -40,7 +40,8 @@
   - 字体：TTF 动态图集（stb_truetype）；材质资源 `.gmat`、导入设置 `.gimport`。
 - **骨骼动画**
   - Skeleton / AnimationClip / Pose，CPU 插值 + GPU Skinning；128 骨上限，GL/VK 双后端蒙皮 PBR。
-  - `SkinnedMeshRenderer` + `AnimatorSystem`，编辑器 Animation 面板可查看片段与时长。
+  - `SkinnedMeshRenderer` + `AnimatorSystem`；编辑器内置动画/骨骼动画编辑器：片段播放、骨骼层级树、
+    轨道关键帧查看与 `.anim.json` 导出（核心新增骨骼/轨道/关键帧查询 C API）。
 - **物理**
   - 3D：Jolt Physics v5.2.0 — 刚体、静态体、角色控制器、Hinge/Fixed/Spring/Distance 关节、碎裂。
   - 2D：Box2D v3.0.0 — 刚体/静态体、圆形/多边形碰撞体、Distance/Spring 关节、角色控制器。
@@ -54,8 +55,11 @@
   - `editor/GryceEngine.Editor.csproj`（.NET Framework 4.8，iNKORE Fluent 主题），仅通过模块 DLL 的 **C API** 与 Core 通信。
   - Hierarchy / Inspector（反射字段编辑）/ Viewport / Project / Console / Animation / Toolbar 面板。
   - Play Mode：真实驱动物理与骨骼动画，停止时从快照恢复场景（类 Unity 行为）。
-  - 材质编辑器：PBR 参数 + 贴图槽，改动即时生效；Godot 风格 Create Entity 对话框。
+  - 材质编辑器：PBR 参数 + 贴图槽 + AO/自发光/UV，改动即时生效，支持加载 `.gmat`。
+  - 动画/骨骼动画编辑器（Inspector 右键 SkinnedMeshRenderer 打开）；脚本编辑器带 undo/redo 与未保存脏标记。
   - 深色/浅色主题、中/英本地化运行时切换并持久化；快捷键体系（Ctrl+S/Z/Y/N、Delete、F2、F、W/E/R、Ctrl+P、Ctrl+X/C/V/D）。
+  - 操作逻辑加固：统一的未保存场景确认（新建/加载/切换项目/关闭）、复制/粘贴 Undo 完整恢复、
+    快速连续创建的 Undo 按序绑定、2D 编辑器临时相机不入场景文件、自动保存不打断拖拽/输入。
 - **日志与性能**
   - 异步日志 `AsyncLogger`（内存 Sink 转发到编辑器 Console），帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
   - 热路径优化：每帧日志降级、Release 剔除 GL 错误检查、DrawItem 跨帧复用、重复材质绑定跳过、同步渲染模式下每帧网格上传预算（30/帧）。
@@ -138,12 +142,18 @@ python build.py --clean-all        # 完全清理（含 deps/，下次重新下�
 python build.py --jobs 8           # 并行任务数
 python build.py --build-dir build-mingw
 python build.py --no-lock          # 使用 CMake 默认编译器检测
-python build.py --msvc             # 强制 MSVC + Visual Studio 2026 generator
+python build.py --compiler msvc    # 强制 MSVC（Ninja generator，无需 VS 解决方案）
+python build.py --compiler gcc     # 强制 MinGW GCC
+python build.py --compiler clang   # 强制 Clang
+python build.py --editor           # Windows：同时构建 WPF Editor（dotnet）
+python build.py --configure        # 只配置，不编译
 python build.py --offline          # 离线模式（仅用本地缓存依赖）
 python build.py --verbose          # 输出 ninja 详细日志
 ```
 
-`build.py` 构建结束后会把生成的 `GryceEngine.slnx` 同步到仓库根目录，供 VS2026 直接打开。
+本项目不依赖 Visual Studio 解决方案：`build.py` 与 CMake 统一走 Ninja（或 Makefiles）
+单配置目录（`build/<Config>`），不生成 `.slnx` / `.vcxproj`。CLion 可直接打开项目
+根目录，用任意工具链配置。
 
 #### 方式 D：MSVC（Visual Studio 2022+ / 2026）
 
@@ -156,9 +166,11 @@ cmake --build build/Debug
 python build.py
 ```
 
-#### 方式 E：Visual Studio 2026
+#### 方式 E（可选）：Visual Studio / CLion 手动配置
 
-仓库根目录的 `CMakeSettings.json` 已内置 `x64-Debug` / `x64-Release`（Ninja）配置，可直接"打开文件夹"；也可命令行生成解决方案：
+仓库根目录的 `CMakeSettings.json` 已内置 `x64-Debug` / `x64-Release`（Ninja）配置，
+VS 可直接"打开文件夹"；CLion 用自带工具链配置即可。若确实需要 VS 解决方案，
+可手动生成（不再由 `build.py` 产生）：
 
 ```powershell
 cmake -S . -B out/vs -G "Visual Studio 18 2026" -A x64
@@ -175,7 +187,7 @@ build/Debug/bin/Debug/
 ├── 2dDemo.exe          # 2D 平台跳跃演示（场景驱动，编辑器可编辑关卡）
 └── gryce_tests.exe     # 单元测试
 
-editor/bin/x64/<Config>/net48/
+editor/bin/<Config>/net48/
 └── GryceEngine.Editor.exe   # WPF 编辑器（CMake 构建时自动复制 4 个原生 DLL + glfw 到该目录）
 ```
 
@@ -217,7 +229,7 @@ GryceGC 是 C++ 工具（`tools/grycegc/`），通过 GryceCore 的 GPack C API�
 ./build/Debug/bin/Debug/2dDemo.exe
 
 # WPF 编辑器（原生 DLL 已由 CMake 自动部署）
-./editor/bin/x64/Debug/net48/GryceEngine.Editor.exe
+./editor/bin/Debug/net48/GryceEngine.Editor.exe
 
 # 单元测试
 ./build/Debug/bin/Debug/gryce_tests.exe
@@ -315,7 +327,6 @@ Gryce-Engine/
 ├── CMakeSettings.json      # VS "打开文件夹" 配置
 ├── build.py                # 一键构建脚本
 ├── Directory.Build.props   # MSBuild 全局属性（编辑器 C# 工程）
-├── GryceEngine.slnx        # VS2026 解决方案（build.py 自动同步）
 └── GryceECLib_Integration_Plan.md  # 模块化 Core/Editor 分离的历史设计方案
 ```
 

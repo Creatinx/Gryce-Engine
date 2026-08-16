@@ -37,8 +37,15 @@ public partial class ViewportView
     {
         _renderThreadRunning = false;
         var thread = _renderThread;
+        if (thread == null) return;
+        if (!thread.Join(1000))
+        {
+            // 渲染线程卡在 GL 调用里（驱动 stall）：保留引用，
+            // 让 StartRenderThread 的存活检查阻止再起一个线程抢同一上下文。
+            LogFromRenderThread("[Viewport] Render thread did not exit in 1s; suppressing restart.");
+            return;
+        }
         _renderThread = null;
-        thread?.Join(1000);
     }
 
     /// <summary>Logs from the render thread: console output is marshaled to

@@ -100,8 +100,8 @@ props = {
 ### 5.1 构建游戏模板
 
 ```bat
-cmake -B build -G "Visual Studio 18 2026" -A x64
-cmake --build build --target GryceGame --config Release
+cmake -B build/Release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/Release --target GryceGame
 ```
 
 `templates/game_main.cpp`（GryceGame.exe）是一个独立入口：

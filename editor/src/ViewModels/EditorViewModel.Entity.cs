@@ -62,7 +62,7 @@ public partial class EditorViewModel
         {
             var action = new CreateEntityAction(this, name, componentTypeName);
             PushUndo(action);
-            _pendingCreateActions.Enqueue(action);
+            _pendingCreateActions.Enqueue((name, action));
         }
         if (!string.IsNullOrEmpty(componentTypeName))
         {
@@ -224,7 +224,10 @@ public partial class EditorViewModel
             if (newHandle != GEntityHandle.Null)
             {
                 _engine.MarkSceneDirty();
-                PushUndo(new DeleteEntityAction(this, newHandle, copyName, null, parent));
+                // Undo 需要能原样恢复副本，这里把新实体的完整 JSON 一并记下，
+                // 避免 Undo 时因 json==null 回退到创建空白实体。
+                string? copyJson = EntityAPI.ExportJsonUtf8(newHandle);
+                PushUndo(new DeleteEntityAction(this, newHandle, copyName, copyJson, parent));
                 AppendConsole($"Duplicated: {name}");
                 return newHandle;
             }
@@ -301,7 +304,8 @@ public partial class EditorViewModel
                 if (newHandle != GEntityHandle.Null)
                 {
                     _engine.MarkSceneDirty();
-                    PushUndo(new DeleteEntityAction(this, newHandle, _clipboardEntityName, null, parentHandle));
+                    string? copyJson = EntityAPI.ExportJsonUtf8(newHandle);
+                    PushUndo(new DeleteEntityAction(this, newHandle, _clipboardEntityName, copyJson, parentHandle));
                     AppendConsole($"Pasted: {_clipboardEntityName}");
                     SelectEntityByHandle(newHandle);
                     return;
@@ -362,6 +366,16 @@ public partial class EditorViewModel
         _engine.MarkSceneDirty();
     }
 
+    /// <summary>重命名并记录一条 undo（Hierarchy/Inspector 入口与 F2 快捷键一致）。</summary>
+    public void RenameEntityUndoable(GEntityHandle handle, string newName)
+    {
+        if (handle == GEntityHandle.Null) return;
+        string oldName = EntityAPI.GetNameUtf8(handle) ?? string.Empty;
+        if (string.Equals(oldName, newName, StringComparison.Ordinal)) return;
+        RenameEntity(handle, newName);
+        PushUndo(new RenameEntityAction(this, handle, oldName, newName));
+    }
+
     /// <summary>Sets the script_path of the entity's Script component.</summary>
 
 
@@ -410,7 +424,22 @@ public partial class EditorViewModel
 
     // === 资源拖放 / 导入 ===
 
+    /// <summary>单个待导入模型的队列项：实体创建后按 2 帧状态机挂载
+    /// MeshRenderer 并写入 mesh_path。队列化后连续拖入多个模型互不覆盖。</summary>
+    private sealed class PendingModelImport
+    {
+        public PendingModelImport(string name, string path)
+        {
+            Name = name;
+            Path = path;
+        }
 
+        public string Name { get; }
+        public string Path { get; }
+        public GEntityHandle MeshHandle { get; set; } = GEntityHandle.Null;
+    }
+
+    private readonly Queue<PendingModelImport> _pendingModels = new();
 
     /// <summary>Creates an entity from a model file and attaches a MeshRenderer
     /// (setup completes over the next engine frames via ApplyPendingModelSetup).</summary>
@@ -419,23 +448,22 @@ public partial class EditorViewModel
         if (string.IsNullOrWhiteSpace(filePath)) return;
         string name = System.IO.Path.GetFileNameWithoutExtension(filePath);
         CreateEntity(name, parent);
-        _pendingModelPath = filePath;
-        _pendingModelName = name;
-        _pendingMeshHandle = GEntityHandle.Null;
+        _pendingModels.Enqueue(new PendingModelImport(name, filePath));
     }
 
 
 
     private void ApplyPendingModelSetup()
     {
-        if (_pendingModelPath == null) return;
+        if (_pendingModels.Count == 0) return;
+        var pending = _pendingModels.Peek();
 
         // 第一帧：实体已出现 → 挂 MeshRenderer
-        if (_pendingMeshHandle == GEntityHandle.Null)
+        if (pending.MeshHandle == GEntityHandle.Null)
         {
-            var entity = FindNewestEntityByName(_pendingModelName ?? "", RootEntities);
+            var entity = FindNewestEntityByName(pending.Name, RootEntities);
             if (entity == null) return;
-            _pendingMeshHandle = entity.Handle;
+            pending.MeshHandle = entity.Handle;
             SelectEntityByHandle(entity.Handle);
             ulong hash = FindRegisteredTypeHash("MeshRenderer");
             if (hash != 0)
@@ -445,21 +473,34 @@ public partial class EditorViewModel
             return;
         }
 
-        // 第二帧：组件已挂上 → 设置 mesh_path（反射字符串字段）
-        if (ComponentAPI.GComponent_GetTypeHashAt(_pendingMeshHandle, 0, out ulong typeHash) == 0 &&
-            typeHash != 0)
+        // 第二帧：MeshRenderer 组件已挂上 → 设置 mesh_path（反射字符串字段）。
+        // 按组件类型名定位，而不是假定索引 0 就是 MeshRenderer。
+        ulong rendererHash = FindComponentTypeHash(pending.MeshHandle, "MeshRenderer");
+        if (rendererHash != 0)
         {
             var buf = new byte[256];
-            string path = _pendingModelPath ?? "";
+            string path = pending.Path;
             int count = Encoding.UTF8.GetBytes(path, 0, Math.Min(path.Length, 250), buf, 0);
             buf[count] = 0;
-            WritePropertyBytes(_pendingMeshHandle, typeHash, "mesh_path", buf);
+            WritePropertyBytes(pending.MeshHandle, rendererHash, "mesh_path", buf);
             _engine.MarkSceneDirty();
-            AppendConsole($"Imported model: {_pendingModelPath}");
-            _pendingModelPath = null;
-            _pendingModelName = null;
-            _pendingMeshHandle = GEntityHandle.Null;
+            AppendConsole($"Imported model: {pending.Path}");
+            _pendingModels.Dequeue();
         }
+    }
+
+    /// <summary>在实体的组件列表中按类型短名查找 type hash（找不到返回 0）。</summary>
+    internal ulong FindComponentTypeHash(GEntityHandle entity, string typeName)
+    {
+        int count = ComponentAPI.GComponent_GetCount(entity);
+        for (int i = 0; i < count; i++)
+        {
+            if (ComponentAPI.GComponent_GetTypeHashAt(entity, i, out ulong hash) != 0) continue;
+            var sb = new StringBuilder(128);
+            if (ComponentAPI.GComponent_GetTypeNameAt(entity, i, sb, sb.Capacity) < 0) continue;
+            if (sb.ToString() == typeName) return hash;
+        }
+        return 0;
     }
 
 

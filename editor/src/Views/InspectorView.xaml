@@ -63,6 +63,7 @@
                                  Background="Transparent" BorderThickness="0"
                                  Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                  CaretBrush="{DynamicResource TextFillColorPrimaryBrush}"
+                                 GotFocus="OnEntityNameGotFocus"
                                  LostFocus="OnEntityNameChanged"/>
 
                         <ComboBox Grid.Row="1" Grid.Column="1"

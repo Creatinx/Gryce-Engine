@@ -348,13 +348,20 @@ typedef struct {
 
 ### 5.7 GryceCore — 动画（`animator_api.h`）
 
-作用于 `SkinnedMeshRenderer`（查询模型自带动画片段）。
+作用于 `SkinnedMeshRenderer`（查询模型自带的骨架与动画片段；供编辑器动画/骨骼动画编辑器使用）。
 
 | 函数 | 说明 | 返回 |
 |---|---|---|
 | `int GAnimator_GetClipCount(GEntityHandle e, uint64_t hash)` | 动画片段数 | ≥ 0；`-1` 实体/组件无效 |
 | `int GAnimator_GetClipName(GEntityHandle e, uint64_t hash, int index, char* out, int size)` | 片段名 | 字符数；`-1` 失败 |
 | `float GAnimator_GetClipDuration(GEntityHandle e, uint64_t hash, int index)` | 片段时长（秒） | 时长；`-1` 失败 |
+| `int GAnimator_GetBoneCount(GEntityHandle e, uint64_t hash)` | 模型骨骼数量 | ≥ 0；`-1` 无效 |
+| `int GAnimator_GetBoneName(GEntityHandle e, uint64_t hash, int bone, char* out, int size)` | 骨骼名 | 字符数；`-1` 失败 |
+| `int GAnimator_GetBoneParentIndex(GEntityHandle e, uint64_t hash, int bone)` | 骨骼父级下标 | ≥ -1（-1 为根）；`-2` 失败 |
+| `int GAnimator_GetClipTrackCount(GEntityHandle e, uint64_t hash, int clip)` | 片段骨骼轨道数 | ≥ 0；`-1` 失败 |
+| `int GAnimator_GetClipTrackBone(GEntityHandle e, uint64_t hash, int clip, int track)` | 轨道对应的骨骼下标 | ≥ 0；`-1` 失败 |
+| `int GAnimator_GetClipKeyframeCount(GEntityHandle e, uint64_t hash, int clip, int track, int channel)` | 轨道通道关键帧数（0=平移,1=旋转,2=缩放） | ≥ 0；`-1` 失败 |
+| `int GAnimator_GetClipKeyframe(GEntityHandle e, uint64_t hash, int clip, int track, int channel, int key, float* out, int cap)` | 关键帧数据（out[0]=time；平移/缩放 out[1..3]=XYZ；旋转 out[1..4]=XYZW） | 写入 float 数（4 或 5）；`-1` 失败 |
 
 ### 5.8 GrycePlatform — 窗口（`window_api.h`）
 

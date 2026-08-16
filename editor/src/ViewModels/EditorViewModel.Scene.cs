@@ -38,6 +38,7 @@ public partial class EditorViewModel
 
     public void NewScene()
     {
+        if (!Services.UnsavedChangesGuard.CheckCanDiscard()) return;
         SceneAPI.GScene_New();
         CreateSceneSkeleton();
         AppendConsole("New scene created.");
@@ -46,6 +47,13 @@ public partial class EditorViewModel
         _redoStack.Clear();
         _pendingCreateActions.Clear();
         _pendingComponentRestores.Clear();
+        _pendingModels.Clear();
+        _clipboardEntity = GEntityHandle.Null;
+        _clipboardEntityName = string.Empty;
+        _clipboardIsCut = false;
+        _pendingEntityTypeAction = null;
+        _entityTypeSwitchPending = false;
+        _pendingOpenComponentPicker = false;
         System.Windows.Input.CommandManager.InvalidateRequerySuggested();
         OnPropertyChanged(nameof(EntityCount));
     }
@@ -79,11 +87,14 @@ public partial class EditorViewModel
             : (SceneAPI.GScene_GetMode() == 0
                 ? "res:/scenes/scene_2d.gesc"
                 : "res:/scenes/scene_3d.gesc");
-        int result = SceneAPI.GScene_Save(path);
-        if (result == 0)
+        var result = _engine.SaveScene(path);
+        if (result == EngineService.SaveResult.Completed)
         {
             AppendConsole($"Scene saved: {path}");
-            _engine.ClearDirty();
+        }
+        else if (result == EngineService.SaveResult.Pending)
+        {
+            AppendConsole("Scene save deferred (editor 2D camera cleanup).");
         }
         else
             Notify("Failed to save scene.", true);
@@ -95,11 +106,14 @@ public partial class EditorViewModel
     /// <summary>Saves the scene to the given path (used by Save As / auto-save UI).</summary>
     public void SaveSceneTo(string path)
     {
-        int result = SceneAPI.GScene_Save(path);
-        if (result == 0)
+        var result = _engine.SaveScene(path);
+        if (result == EngineService.SaveResult.Completed)
         {
             AppendConsole($"Scene saved: {path}");
-            _engine.ClearDirty();
+        }
+        else if (result == EngineService.SaveResult.Pending)
+        {
+            AppendConsole("Scene save deferred (editor 2D camera cleanup).");
         }
         else
         {
@@ -130,6 +144,7 @@ public partial class EditorViewModel
 
     public void LoadSceneFromPath(string path)
     {
+        if (!Services.UnsavedChangesGuard.CheckCanDiscard()) return;
         int rc = SceneAPI.GScene_Load(path);
         if (rc == 0)
             AppendConsole($"Scene loaded: {path}");
@@ -148,6 +163,19 @@ public partial class EditorViewModel
     {
         ConsoleText += text + Environment.NewLine;
         LogEntries.Add(new LogEntry(level, text, sourceFile, sourceLine));
+        // 控制台有上限：超出后裁剪最旧的一批，避免长时间运行内存无限增长、
+        // ConsoleText 拼接退化为 O(n²)。
+        if (LogEntries.Count > 4000)
+        {
+            int trim = 1000;
+            while (trim-- > 0 && LogEntries.Count > 0) LogEntries.RemoveAt(0);
+            var sb = new StringBuilder();
+            foreach (var entry in LogEntries)
+            {
+                sb.Append(entry.Message).Append(Environment.NewLine);
+            }
+            ConsoleText = sb.ToString();
+        }
     }
 
 

@@ -8,6 +8,10 @@
     <AssemblyName>GryceEngine.Editor</AssemblyName>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
+    <!-- 固定输出目录：无论 dotnet build 还是 VS 构建、无论 Platform 是什么，
+         产物统一落在 editor/bin/<Config>/net48/（核心 DLL 的 CMake 复制路径同此）。 -->
+    <OutputPath>bin\$(Configuration)\net48\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <LangVersion>12.0</LangVersion>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

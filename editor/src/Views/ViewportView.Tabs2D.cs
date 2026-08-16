@@ -23,6 +23,7 @@ public partial class ViewportView
 
     private void OnSceneTabClick(object sender, RoutedEventArgs e)
     {
+        if (!ConfirmDiscardScriptChanges()) return;
         // 离开游戏视图即停止 Play，恢复场景编辑态。
         if (VM != null && VM.IsPlaying) VM.Stop();
         EnterSceneView();
@@ -49,6 +50,7 @@ public partial class ViewportView
 
     private void On2DTabClick(object sender, RoutedEventArgs e)
     {
+        if (!ConfirmDiscardScriptChanges()) return;
         if (VM != null && VM.IsPlaying) VM.Stop();
         EnterSceneView();
         try { SceneAPI.GScene_SetMode(0); } catch { /* ignore */ }
@@ -66,6 +68,7 @@ public partial class ViewportView
 
     private void OnGameTabClick(object sender, RoutedEventArgs e)
     {
+        if (!ConfirmDiscardScriptChanges()) return;
         // Play 会通过 ViewportView.RequestGameView 钩子进入游戏视图；
         // 这里也补一次（幂等），确保手动点 Game 标签同样生效。
         if (VM != null && !VM.IsPlaying) VM.Play();
@@ -226,6 +229,8 @@ public partial class ViewportView
             CoreAPI.GCore_PushCommand(ref cmd);
             _editor2DCameraCreated = false;
         }
+        _editor2DCameraPendingDestroy = false;
+        _editor2DCameraRecreateSuppressed = false;
         _editor2DCamera = GEntityHandle.Null;
         _pending2DCameraName = null;
         _2dCameraReady = false;
@@ -243,6 +248,57 @@ public partial class ViewportView
         var cmd = GCommand.Create(GCommandType.CreateEntity, payload);
         CoreAPI.GCore_PushCommand(ref cmd);
         _editor2DCameraCreated = true;
+    }
+
+    /// <summary>保存前销毁编辑器 2D 相机实体；返回 true 表示确实有相机需要清理
+    /// （调用方应推迟保存，等 Editor2DCameraDestroyed 为 true 再写盘）。</summary>
+    public static bool TryDestroyEditor2DCamera()
+    {
+        var v = s_Instance;
+        if (v == null || !v._editor2DCameraCreated || v._editor2DCamera == GEntityHandle.Null ||
+            v._editor2DCameraPendingDestroy) return false;
+
+        Span<byte> payload = stackalloc byte[sizeof(int)];
+        BitConverterCompat.TryWriteBytes(payload, (int)v._editor2DCamera);
+        var cmd = GCommand.Create(GCommandType.DestroyEntity, payload);
+        CoreAPI.GCore_PushCommand(ref cmd);
+        v._editor2DCameraPendingDestroy = true;
+        v._editor2DCameraRecreateSuppressed = true;
+        v._editor2DCameraCreated = false;
+        return true;
+    }
+
+    /// <summary>核心是否已把编辑器 2D 相机实体从场景移除（销毁命令已处理）。</summary>
+    public static bool Editor2DCameraDestroyed
+    {
+        get
+        {
+            var v = s_Instance;
+            if (v == null || !v._editor2DCameraPendingDestroy) return true;
+            if (v._editor2DCamera == GEntityHandle.Null) return true;
+            try
+            {
+                int count = EntityAPI.GEntity_GetCount();
+                for (int i = 0; i < count; i++)
+                {
+                    if (EntityAPI.GEntity_GetAt(i) == v._editor2DCamera) return false;
+                }
+            }
+            catch { /* 查询失败时保守等待 */ }
+            return true;
+        }
+    }
+
+    /// <summary>保存完成后解除抑制，2D 视图下一帧重建编辑器相机。</summary>
+    public static void ResumeEditor2DCamera()
+    {
+        var v = s_Instance;
+        if (v == null) return;
+        v._editor2DCameraPendingDestroy = false;
+        v._editor2DCameraRecreateSuppressed = false;
+        v._editor2DCamera = GEntityHandle.Null;
+        v._2dCameraReady = false;
+        if (v._is2DMode) v._pending2DCameraName = "Editor2DCamera";
     }
 
 
@@ -307,6 +363,18 @@ public partial class ViewportView
     private void Update2DCameraSetup()
     {
         if (!_is2DMode) return;
+
+        // 保存前销毁编辑器相机的过程中禁止重建，直到保存完成（Resume 或超时）。
+        if (_editor2DCameraRecreateSuppressed)
+        {
+            if (_editor2DCameraPendingDestroy && Editor2DCameraDestroyed)
+            {
+                _editor2DCameraPendingDestroy = false;
+                _editor2DCamera = GEntityHandle.Null;
+                _2dCameraReady = false;
+            }
+            return;
+        }
 
         if (_pending2DCameraName != null)
         {

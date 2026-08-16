@@ -29,6 +29,7 @@ public partial class AnimationPanelView : UserControl
     private PropertyModel? _propLoop;
     private PropertyModel? _propSpeed;
     private PropertyModel? _propTime;
+    private EditorViewModel? _subscribedVm;
 
     public AnimationPanelView()
     {
@@ -60,14 +61,22 @@ public partial class AnimationPanelView : UserControl
 
     private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
+        if (_subscribedVm != null)
+        {
+            _subscribedVm.PropertyChanged -= OnVmPropertyChanged;
+            _subscribedVm = null;
+        }
         if (VM != null)
         {
-            VM.PropertyChanged += (_, args) =>
-            {
-                if (args.PropertyName == nameof(EditorViewModel.SelectedEntity))
-                    _lastRefreshedEntity = GEntityHandle.Null;
-            };
+            _subscribedVm = VM;
+            VM.PropertyChanged += OnVmPropertyChanged;
         }
+    }
+
+    private void OnVmPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(EditorViewModel.SelectedEntity))
+            _lastRefreshedEntity = GEntityHandle.Null;
     }
 
     private void RefreshAnimator()

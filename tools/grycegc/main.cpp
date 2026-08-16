@@ -78,7 +78,7 @@ const std::unordered_map<std::string, std::vector<std::string>>& category_extens
         {"audio",   {".wav", ".ogg", ".mp3", ".flac", ".aac"}},
         {"fonts",   {".ttf", ".otf", ".fnt", ".woff", ".woff2"}},
         {"config",  {".json", ".gryce", ".cfg", ".ini", ".toml", ".yaml",
-                     ".yml", ".mat", ".txt"}},
+                     ".yml", ".mat", ".gmat", ".txt"}},
     };
     return kExts;
 }

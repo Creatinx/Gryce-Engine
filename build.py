@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Gryce Engine -- one-click build script (Windows MinGW-w64/MSVC, Linux GCC/Clang)
+"""Gryce Engine -- one-click build script (pure CMake + Ninja, no VS solution)
 
 用法:
     python build.py [config] [选项]
 
 示例:
-    python build.py                    # 编译 Debug
-    python build.py Release            # 编译 Release
-    python build.py --setup-deps       # 仅下载依赖
-    python build.py --clean            # 清理构建产物（保留 deps）
-    python build.py --clean-all        # 完全清理（包括 deps）
-    python build.py --editor           # 预留：同时启用 Editor(C#) 编译开关
+    python build.py                          # Debug，自动检测编译器
+    python build.py Release --compiler msvc  # Release + MSVC（需 VS 开发者命令行）
+    python build.py --compiler gcc           # 显式 MinGW GCC
+    python build.py --compiler clang         # 显式 Clang
+    python build.py --editor                 # Windows 上同时构建 WPF Editor（dotnet）
+    python build.py --setup-deps             # 仅下载依赖
+    python build.py --configure              # 只配置，不编译
+    python build.py --clean                  # 清理构建产物（保留 deps）
+    python build.py --clean-all              # 完全清理（含 deps）
+
+本项目不依赖 Visual Studio 解决方案（无 .slnx / .vcxproj 生成）：
+build.py 与 CMake 统一走单配置目录（build/<Config>），优先使用 Ninja
+generator；CLion 可直接打开项目根目录，用任意工具链（MinGW / MSVC /
+Clang）自行配置构建。
 
 Linux 编译前置条件（安装 X11/GL 开发头文件，供 GLFW/GLEW 从源码构建）:
     sudo apt install build-essential cmake ninja-build python3 \
@@ -20,7 +28,6 @@ Linux 编译前置条件（安装 X11/GL 开发头文件，供 GLFW/GLEW 从源�
 """
 
 import argparse
-import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +44,7 @@ if os.name == 'nt':
         sys.stderr.reconfigure(errors='replace')
     except Exception:
         pass
+
 
 # ---------------------------------------------------------------------------
 # Colors (disabled on Windows without ANSI support)
@@ -103,8 +111,45 @@ def find_in_path(name):
     return shutil.which(name)
 
 
-def find_msys2_mingw():
-    """Search known MSYS2 MinGW paths for gcc/g++."""
+def load_msvc_environment():
+    """Locate Visual Studio via vswhere and import its x64 environment
+    (INCLUDE/LIB/PATH) so MSVC + Ninja works from any terminal, not just a
+    Developer prompt. Returns True on success."""
+    pf86 = os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")
+    vswhere = Path(pf86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    if not vswhere.exists():
+        return False
+    try:
+        result = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*",
+             "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+             "-property", "installationPath"],
+            capture_output=True, text=True, encoding='utf-8', errors='replace'
+        )
+        install_root = result.stdout.strip()
+        if not install_root:
+            return False
+        vcvars = Path(install_root) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+        if not vcvars.exists():
+            return False
+        env_result = subprocess.run(
+            f'call "{vcvars}" >nul 2>&1 && set',
+            shell=True, capture_output=True, text=True,
+            encoding='utf-8', errors='replace'
+        )
+        if env_result.returncode != 0:
+            return False
+        for line in env_result.stdout.splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                os.environ[key] = value
+        return True
+    except Exception:
+        return False
+
+
+def find_msys2_toolchain(compiler_name, compiler_cxx_name):
+    """Search known MSYS2 prefixes for the given compiler pair."""
     candidates = [
         Path("C:/msys64/ucrt64/bin"),
         Path("C:/msys64/mingw64/bin"),
@@ -114,10 +159,10 @@ def find_msys2_mingw():
         candidates.insert(0, Path(os.environ["MSYS2_PREFIX"]) / "bin")
 
     for base in candidates:
-        gcc = base / "gcc.exe"
-        gxx = base / "g++.exe"
-        if gcc.exists() and gxx.exists():
-            return str(gcc), str(gxx), str(base)
+        cc = base / (compiler_name + ".exe")
+        cxx = base / (compiler_cxx_name + ".exe")
+        if cc.exists() and cxx.exists():
+            return str(cc), str(cxx), str(base)
     return None, None, None
 
 
@@ -158,153 +203,103 @@ def ensure_deps(offline: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# Solution sync
+# Compiler / generator detection
 # ---------------------------------------------------------------------------
-def _fix_project_path(path, project_root):
-    """把解决方案中的项目路径修正为相对于项目根目录的路径。
+def resolve_compiler(family):
+    """Return (family, cc_path, cxx_path). Raises SystemExit on failure."""
+    if family == "msvc":
+        if not load_msvc_environment():
+            print(
+                f"{C_WARN}[WARN]{C_RESET} vcvars64 environment not loaded; "
+                "falling back to whatever is in PATH"
+            )
+        cl_path = find_in_path("cl")
+        if not cl_path:
+            print(f"{C_ERR}[ERROR] MSVC requested but cl.exe not found in PATH.{C_RESET}")
+            print("    Install Visual Studio C++ workload, then retry "
+                  "(build.py will load vcvars64 automatically).")
+            print("        python build.py --compiler msvc")
+            sys.exit(1)
+        print(f"{C_OK}[OK]{C_RESET} MSVC cl.exe: {cl_path}")
+        return "msvc", cl_path, cl_path
 
-    CMake 生成的 .slnx 中，所有相对路径都是相对于 build/（二进制目录）的。
-    将 .slnx 从 build/ 移到项目根目录时，所有相对路径都需要加上 build/ 前缀。
+    if family == "gcc":
+        cc, cxx = find_in_path("gcc"), find_in_path("g++")
+        if not (cc and cxx):
+            cc, cxx, msys_bin = find_msys2_toolchain("gcc", "g++")
+            if cc and msys_bin:
+                os.environ["PATH"] = msys_bin + os.pathsep + os.environ.get("PATH", "")
+        if not (cc and cxx):
+            print(f"{C_ERR}[ERROR] GCC/G++ not found in PATH.{C_RESET}")
+            sys.exit(1)
+        print(f"{C_OK}[OK]{C_RESET} GCC: {cc}")
+        return "gcc", cc, cxx
 
-    规则：
-      - 绝对路径（且位于项目根下）-> 相对路径
-      - 所有相对路径 -> 加上 build/ 前缀
-    """
-    path = path.replace('\\', '/')
-    p = Path(path)
-    if p.is_absolute():
-        try:
-            rel = p.relative_to(project_root)
-            return str(rel.as_posix())
-        except ValueError:
-            return path
-    return 'build/' + path
+    if family == "clang":
+        cc, cxx = find_in_path("clang"), find_in_path("clang++")
+        if not (cc and cxx):
+            cc, cxx, msys_bin = find_msys2_toolchain("clang", "clang++")
+            if cc and msys_bin:
+                os.environ["PATH"] = msys_bin + os.pathsep + os.environ.get("PATH", "")
+        if not (cc and cxx):
+            print(f"{C_ERR}[ERROR] Clang/Clang++ not found in PATH.{C_RESET}")
+            sys.exit(1)
+        print(f"{C_OK}[OK]{C_RESET} Clang: {cc}")
+        return "clang", cc, cxx
 
+    # auto: gcc -> MSYS2 MinGW -> clang -> MSVC
+    cc, cxx = find_in_path("gcc"), find_in_path("g++")
+    if cc and cxx:
+        print(f"{C_OK}[OK]{C_RESET} Found gcc in PATH: {cc}")
+        return "gcc", cc, cxx
+    cc, cxx, msys_bin = find_msys2_toolchain("gcc", "g++")
+    if cc and msys_bin:
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} Found MSYS2 MinGW: {msys_bin}")
+        os.environ["PATH"] = msys_bin + os.pathsep + os.environ.get("PATH", "")
+        return "gcc", cc, cxx
+    cc, cxx = find_in_path("clang"), find_in_path("clang++")
+    if cc and cxx:
+        print(f"{C_OK}[OK]{C_RESET} Found clang in PATH: {cc}")
+        return "clang", cc, cxx
+    cl_path = find_in_path("cl")
+    if cl_path:
+        print(f"{C_OK}[OK]{C_RESET} Found MSVC cl.exe in PATH: {cl_path}")
+        return "msvc", cl_path, cl_path
 
-def _sync_sln_text(project_root, build_dir, build_sln, root_sln):
-    """同步旧版文本格式 .sln。"""
-    content = build_sln.read_text(encoding='utf-8-sig')
-
-    # 修正所有 .vcxproj 路径：添加 build\ 前缀
-    def fix_vcxproj_path(match):
-        prefix = match.group(1)  # ="Name", "
-        path = match.group(2)    # 文件路径
-        suffix = match.group(3)  # ", {GUID}
-        if ':' in path:  # 绝对路径，跳过
-            return match.group(0)
-        if path.startswith('build\\') or path.startswith('build/'):
-            return match.group(0)
-        return f'{prefix}build\\{path}{suffix}'
-
-    content = re.sub(
-        r'(= "[^"]+", ")([^"]+\.vcxproj)(",)',
-        fix_vcxproj_path,
-        content
+    tips = (
+        "No supported compiler found. Install one of:\n"
+        "  * MSYS2 UCRT64 MinGW-w64 (recommended on Windows)\n"
+        "  * Visual Studio C++ (then run from a Developer prompt)\n"
+        "  * Clang / GCC on Linux/macOS"
     )
-
-    # 修正 GryceEngine.Editor 路径：绝对路径 -> 相对路径
-    content = re.sub(
-        r'"' + re.escape(str(project_root)) + r'[\\/]editor[\\/]GryceEngine\.Editor\.csproj"',
-        '"editor\\GryceEngine.Editor.csproj"',
-        content
-    )
-    # 也处理正斜杠版本
-    content = re.sub(
-        r'"' + re.escape(project_root.as_posix()) + r'/editor/GryceEngine\.Editor\.csproj"',
-        '"editor\\GryceEngine.Editor.csproj"',
-        content
-    )
-
-    root_sln.write_text(content, encoding='utf-8-sig')
-    print(f"{C_OK}[Gryce Engine]{C_RESET} Synced root solution: {root_sln}")
-
-    # 修正 .sln 文件头版本号为 VS2026
-    for sln_file in [root_sln, build_sln]:
-        if sln_file.exists():
-            sln_content = sln_file.read_text(encoding='utf-8-sig')
-            if '# Visual Studio Version 17' in sln_content:
-                sln_content = sln_content.replace(
-                    '# Visual Studio Version 17',
-                    '# Visual Studio Version 18'
-                )
-                sln_file.write_text(sln_content, encoding='utf-8-sig')
+    print(f"\n{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}\n\n{tips}")
+    sys.exit(1)
 
 
-def _sync_slnx_xml(project_root, build_dir, build_slnx, root_slnx):
-    """同步新版 XML 格式 .slnx（VS2026 默认生成）。"""
-    import xml.etree.ElementTree as ET
+def pick_generator(compiler_family, requested):
+    """Return (generator_name, ninja_path). None = let CMake default."""
+    ninja = find_in_path("ninja")
+    if requested == "ninja":
+        if not ninja:
+            print(f"{C_ERR}[ERROR] --generator ninja requested but ninja not found.{C_RESET}")
+            sys.exit(1)
+        return "Ninja", ninja
+    if requested == "make":
+        return None, None
 
-    tree = ET.parse(build_slnx)
-    root = tree.getroot()
+    if ninja:
+        print(f"{C_OK}[OK]{C_RESET} ninja: {ninja}")
+        return "Ninja", ninja
 
-    # .slnx 没有命名空间时 ElementTree 直接解析标签；有则保留前缀。
-    # 只修正 <Project Path="..."> 和 <BuildDependency Project="...">，
-    # 不要碰 <Platform Project="x64"> 或 <Build Project="false">。
-    def fix_elem(elem):
-        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-        if tag == 'Project' and 'Path' in elem.attrib:
-            elem.set('Path', _fix_project_path(elem.attrib['Path'], project_root))
-        if tag == 'BuildDependency' and 'Project' in elem.attrib:
-            elem.set('Project', _fix_project_path(elem.attrib['Project'], project_root))
-        for child in elem:
-            fix_elem(child)
-
-    fix_elem(root)
-
-    # 保持 XML 声明和缩进
-    root_slnx.write_bytes(b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='UTF-8'))
-    print(f"{C_OK}[Gryce Engine]{C_RESET} Synced root solution: {root_slnx}")
-
-
-def sync_solution_to_root(project_root, build_dir):
-    """将 CMake 生成的解决方案文件同步到项目根目录，修正路径使其可从根目录打开。
-
-    支持旧版 .sln 与 VS2026 默认生成的 .slnx。
-    """
-    build_sln = build_dir / "GryceEngine.sln"
-    build_slnx = build_dir / "GryceEngine.slnx"
-    root_sln = project_root / "GryceEngine.sln"
-    root_slnx = project_root / "GryceEngine.slnx"
-
-    if build_sln.exists():
-        _sync_sln_text(project_root, build_dir, build_sln, root_sln)
-    elif build_slnx.exists():
-        _sync_slnx_xml(project_root, build_dir, build_slnx, root_slnx)
-    else:
-        return
-
-    # 替换 vcxproj 中的 PlatformToolset 和 ToolsVersion 为 VS2026 标准，
-    # 避免 VS 显示升级标识
-    for base_dir in [build_dir, project_root / "out" / "vs"]:
-        if not base_dir.exists():
-            continue
-        for vcxproj in base_dir.glob("**/*.vcxproj"):
-            try:
-                vcx_content = vcxproj.read_text(encoding='utf-8')
-                changed = False
-                # 统一 PlatformToolset 为 v145（VS2026）
-                if '<PlatformToolset>v143</PlatformToolset>' in vcx_content:
-                    vcx_content = vcx_content.replace(
-                        '<PlatformToolset>v143</PlatformToolset>',
-                        '<PlatformToolset>v145</PlatformToolset>'
-                    )
-                    changed = True
-                # 统一 ToolsVersion 为 18.0（VS2026）
-                if 'ToolsVersion="17.0"' in vcx_content:
-                    vcx_content = vcx_content.replace(
-                        'ToolsVersion="17.0"', 'ToolsVersion="18.0"'
-                    )
-                    changed = True
-                if changed:
-                    vcxproj.write_text(vcx_content, encoding='utf-8')
-            except Exception:
-                pass
-
-    # 清理 .vs 缓存目录
-    for vs_dir in [project_root / ".vs", project_root / "out" / "vs" / ".vs"]:
-        if vs_dir.exists():
-            shutil.rmtree(vs_dir, ignore_errors=True)
-    print(f"{C_INFO}[Gryce Engine]{C_RESET} Cleaned VS solution cache")
+    if compiler_family == "msvc":
+        print(
+            f"{C_ERR}[ERROR] ninja not found; MSVC requires Ninja for a "
+            "solution-free build.{C_RESET}"
+        )
+        print("    Install ninja (e.g. pacman -S mingw-w64-ucrt-x86_64-ninja)")
+        sys.exit(1)
+    print(f"{C_WARN}[WARN] ninja not found, falling back to CMake default generator.{C_RESET}")
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +307,8 @@ def sync_solution_to_root(project_root, build_dir):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Gryce Engine build script -- wrapper around cmake + ninja"
+        description="Gryce Engine build script -- wrapper around cmake + ninja "
+                    "(pure CMake, no Visual Studio solution)"
     )
     parser.add_argument(
         "config", nargs="?", default="Debug",
@@ -320,8 +316,26 @@ def main():
         help="CMake build configuration (default: Debug)"
     )
     parser.add_argument(
+        "--compiler", default="auto",
+        choices=["auto", "gcc", "clang", "msvc"],
+        help="Compiler family to use (default: auto-detect)"
+    )
+    parser.add_argument(
+        "--msvc", action="store_true",
+        help="Deprecated alias for --compiler msvc"
+    )
+    parser.add_argument(
+        "--generator", default="auto",
+        choices=["auto", "ninja", "make"],
+        help="CMake generator family (default: auto, prefers Ninja)"
+    )
+    parser.add_argument(
         "--setup-deps", action="store_true",
         help="Only download and extract dependencies, do not build"
+    )
+    parser.add_argument(
+        "--configure", action="store_true",
+        help="Only run CMake configure, do not build"
     )
     parser.add_argument(
         "--clean", action="store_true",
@@ -333,7 +347,7 @@ def main():
     )
     parser.add_argument(
         "--verbose", action="store_true",
-        help="Pass --verbose to ninja"
+        help="Pass --verbose to the build tool"
     )
     parser.add_argument(
         "--jobs", "-j", type=int, default=0,
@@ -341,21 +355,15 @@ def main():
     )
     parser.add_argument(
         "--build-dir", default="build",
-        help="Build directory prefix (default: build)"
+        help="Build directory prefix (default: build; each config uses build/<Config>)"
     )
     parser.add_argument(
         "--no-lock", action="store_true",
-        help="Do NOT auto-lock compiler (use CMake default detection)"
-    )
-    parser.add_argument(
-        "--msvc", action="store_true",
-        help="Force MSVC compiler and Visual Studio 2026 generator"
+        help="Do NOT lock the compiler explicitly (use CMake default detection)"
     )
     parser.add_argument(
         "--editor", action="store_true",
-        help="预留：启用 Editor（C#）编译开关（-DGRYCE_BUILD_EDITOR=ON）。"
-             "当前 Editor 为 WPF，仅 Windows + Visual Studio generator 生效；"
-             "未来移植跨平台 UI 后在 Linux 上亦可用。"
+        help="Windows: also build the WPF Editor (C#/dotnet) via CMake target"
     )
     parser.add_argument(
         "--offline", action="store_true",
@@ -364,13 +372,14 @@ def main():
     args = parser.parse_args()
 
     config = args.config
-    # Visual Studio is a multi-config generator: use a single build root.
-    # Ninja is single-config: keep per-config subdirectories.
-    if args.msvc:
-        build_dir = Path(args.build_dir)
-    else:
-        build_dir = Path(args.build_dir) / config
+    # 纯 CMake 流程统一单配置目录 build/<Config>（Ninja/Make 均为单配置 generator）。
+    build_dir = Path(args.build_dir) / config
     project_root = Path(__file__).parent.resolve()
+
+    if args.msvc:
+        compiler = "msvc"
+    else:
+        compiler = args.compiler
 
     # -----------------------------------------------------------------------
     # 0. Setup deps only mode
@@ -383,96 +392,25 @@ def main():
     print(f"{C_INFO}[Gryce Engine]{C_RESET} Build configuration: {C_OK}{config}{C_RESET}")
 
     # -----------------------------------------------------------------------
-    # 1. Detect compiler
+    # 1. Resolve compiler
     # -----------------------------------------------------------------------
-    gcc_path = find_in_path("gcc")
-    gxx_path = find_in_path("g++")
-    cl_path = find_in_path("cl")
-    msys_bin = None
-    compiler_family = None
-
-    if args.msvc:
-        if not cl_path:
-            print(f"{C_ERR}[ERROR] --msvc requested but cl.exe not found in PATH.{C_RESET}")
-            print('    Open "x64 Native Tools Command Prompt for VS 2026" and run:')
-            print("        python build.py --msvc")
-            sys.exit(1)
-        print(f"{C_OK}[OK]{C_RESET} Forced MSVC cl.exe: {cl_path}")
-        compiler_family = "msvc"
-    elif not args.no_lock:
-        if gcc_path and gxx_path:
-            print(f"{C_OK}[OK]{C_RESET} Found gcc in PATH: {gcc_path}")
-            compiler_family = "gcc"
-        else:
-            gcc_path, gxx_path, msys_bin = find_msys2_mingw()
-            if gcc_path and msys_bin:
-                print(f"{C_INFO}[Gryce Engine]{C_RESET} Found MSYS2 MinGW: {msys_bin}")
-                os.environ["PATH"] = msys_bin + os.pathsep + os.environ.get("PATH", "")
-                compiler_family = "gcc"
-
-        if compiler_family is None and cl_path:
-            print(f"{C_OK}[OK]{C_RESET} Found MSVC cl.exe in PATH: {cl_path}")
-            compiler_family = "msvc"
-
-        if compiler_family is None:
-            if IS_WINDOWS:
-                tips = (
-                    "This project supports:\n"
-                    "  * MSYS2 UCRT64 MinGW-w64 (recommended)\n"
-                    "  * MSVC (Visual Studio 2026+)\n\n"
-                    "For MinGW (MSYS2 UCRT64 terminal):\n"
-                    "    pacman -S mingw-w64-ucrt-x86_64-gcc "
-                    "mingw-w64-ucrt-x86_64-cmake "
-                    "mingw-w64-ucrt-x86_64-ninja "
-                    "mingw-w64-ucrt-x86_64-glew "
-                    "mingw-w64-ucrt-x86_64-glfw\n\n"
-                    "Then either:\n"
-                    "    1. Run this script from the MSYS2 UCRT64 terminal.\n"
-                    "    2. Add C:\\msys64\\ucrt64\\bin to your system PATH and retry.\n\n"
-                    "For MSVC:\n"
-                    '    Open "x64 Native Tools Command Prompt for VS 2026" and run:\n'
-                    "        python build.py --msvc"
-                )
-            else:
-                tips = (
-                    "This project supports GCC and Clang.\n\n"
-                    "Install (Debian/Ubuntu):\n"
-                    "    sudo apt install g++ cmake ninja-build python3 \\\n"
-                    "        libx11-dev libxrandr-dev libxinerama-dev \\\n"
-                    "        libxcursor-dev libxi-dev libxkbcommon-dev \\\n"
-                    "        mesa-common-dev libgl-dev libglew-dev\n\n"
-                    "Then retry: python build.py"
-                )
-            print(f"\n{C_ERR}[ERROR] No supported compiler found in PATH.{C_RESET}\n\n{tips}")
-            sys.exit(1)
-    else:
-        print(f"{C_INFO}[Gryce Engine]{C_RESET} --no-lock: using CMake default compiler detection")
+    if args.no_lock:
         compiler_family = "auto"
+        cc_path = cxx_path = None
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} --no-lock: using CMake default compiler detection")
+    else:
+        compiler_family, cc_path, cxx_path = resolve_compiler(compiler)
 
     # -----------------------------------------------------------------------
-    # 2. Detect cmake, ninja and select generator
+    # 2. Detect cmake, pick generator
     # -----------------------------------------------------------------------
     cmake = find_in_path("cmake")
-    ninja = find_in_path("ninja")
-
     if not cmake:
         print(f"{C_ERR}[ERROR] cmake not found.{C_RESET}")
-        print(f"Install: pacman -S mingw-w64-ucrt-x86_64-cmake")
+        print("Install: pacman -S mingw-w64-ucrt-x86_64-cmake")
         sys.exit(1)
 
-    # Prefer Visual Studio 2026 when using MSVC so the generated solution
-    # opens in VS2026 without upgrade prompts.
-    generator = None
-    if compiler_family == "msvc":
-        generator = "Visual Studio 18 2026"
-        print(f"{C_OK}[OK]{C_RESET} Using generator: {generator} (MSVC)")
-    elif ninja:
-        generator = "Ninja"
-        print(f"{C_OK}[OK]{C_RESET} ninja: {ninja}")
-        print(f"{C_OK}[OK]{C_RESET} Using generator: {generator}")
-    else:
-        print(f"{C_WARN}[WARN] ninja not found, falling back to default generator.{C_RESET}")
-
+    generator, ninja = pick_generator(compiler_family, args.generator)
     print(f"{C_OK}[OK]{C_RESET} cmake: {cmake}")
 
     # -----------------------------------------------------------------------
@@ -481,7 +419,6 @@ def main():
     if args.clean_all:
         if build_dir.exists():
             clean_build_artifacts(build_dir)
-        # 真正的共享依赖目录位于源码根 build/deps/，必须一并删除才能强制重新下载
         shared_deps = Path(args.build_dir) / "deps"
         if shared_deps.exists():
             print(f"{C_INFO}[Gryce Engine]{C_RESET} Removing shared dependency cache: {shared_deps} ...")
@@ -501,16 +438,21 @@ def main():
         cache = build_dir / "CMakeCache.txt"
         if not cache.exists():
             return True
+        # 归一化（小写 + 正斜杠），避免 Windows 盘符/大小写差异导致每次都重配。
+        content = cache.read_text(encoding='utf-8', errors='ignore').lower().replace('\\', '/')
         if generator:
-            expected = f"CMAKE_GENERATOR:INTERNAL={generator}"
-            content = cache.read_text(encoding='utf-8', errors='ignore')
-            if expected not in content:
+            if f"cmake_generator:internal={generator.lower()}" not in content:
+                return True
+        if not args.no_lock and compiler_family != "auto":
+            cxx_lower = cxx_path.lower().replace('\\', '/')
+            if (f"cmake_cxx_compiler:filepath={cxx_lower}" not in content and
+                    f"cmake_cxx_compiler:uninitialized={cxx_lower}" not in content):
                 return True
         return False
 
     if needs_reconfigure():
         if build_dir.exists():
-            print(f"{C_WARN}[Gryce Engine]{C_RESET} {build_dir} exists but generator/cache mismatch, reconfiguring ...")
+            print(f"{C_WARN}[Gryce Engine]{C_RESET} {build_dir} exists but cache mismatch, reconfiguring ...")
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Configuring with CMake ...")
         configure_cmd = [
             cmake, "-B", str(build_dir),
@@ -519,37 +461,50 @@ def main():
         if generator:
             configure_cmd += ["-G", generator]
 
-        if not args.no_lock and compiler_family == "gcc" and gcc_path:
+        if not args.no_lock and compiler_family in ("gcc", "clang") and cc_path and cxx_path:
             configure_cmd += [
-                "-DCMAKE_C_COMPILER=" + gcc_path,
-                "-DCMAKE_CXX_COMPILER=" + gxx_path,
+                "-DCMAKE_C_COMPILER=" + cc_path,
+                "-DCMAKE_CXX_COMPILER=" + cxx_path,
+            ]
+        elif not args.no_lock and compiler_family == "msvc" and cc_path:
+            configure_cmd += [
+                "-DCMAKE_C_COMPILER=" + cc_path,
+                "-DCMAKE_CXX_COMPILER=" + cxx_path,
             ]
 
-        # 预留接口：启用 Editor（C#）编译开关。当前 WPF Editor 仅
-        # Windows + Visual Studio generator 生效，Linux 上暂不参与编译。
         if args.editor:
             configure_cmd += ["-DGRYCE_BUILD_EDITOR=ON"]
             if IS_WINDOWS:
                 print(
-                    f"{C_WARN}[Gryce Engine]{C_RESET} --editor: Editor(C#) build enabled "
-                    "(requires Visual Studio generator)"
+                    f"{C_INFO}[Gryce Engine]{C_RESET} --editor: WPF Editor will be built "
+                    "by the CMake 'GryceEditor' target via dotnet"
                 )
             else:
                 print(
-                    f"{C_WARN}[Gryce Engine]{C_RESET} --editor: GRYCE_BUILD_EDITOR=ON passed; "
-                    "WPF Editor is Windows-only, core will be unaffected"
+                    f"{C_WARN}[Gryce Engine]{C_RESET} --editor ignored: WPF Editor is "
+                    "Windows-only"
                 )
 
         configure_cmd += [str(project_root)]
-
         ok, output = run(configure_cmd, check=False)
         if not ok:
             print(f"{C_ERR}[ERROR] CMake configuration failed:{C_RESET}")
             print(output)
+            # 清理失败的缓存，下次运行会重新配置而不是复用坏缓存。
+            cache_file = build_dir / "CMakeCache.txt"
+            if cache_file.exists():
+                try:
+                    cache_file.unlink()
+                except OSError:
+                    pass
             sys.exit(1)
         print(f"{C_OK}[OK]{C_RESET} Configuration complete.")
     else:
         print(f"{C_INFO}[Gryce Engine]{C_RESET} Using existing configuration: {build_dir}")
+
+    if args.configure:
+        print(f"{C_OK}[Gryce Engine]{C_RESET} Configure-only mode; build skipped.")
+        sys.exit(0)
 
     # -----------------------------------------------------------------------
     # 6. Build
@@ -569,11 +524,8 @@ def main():
 
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
-
-    # -----------------------------------------------------------------------
-    # 7. Sync root solution
-    # -----------------------------------------------------------------------
-    sync_solution_to_root(project_root, Path(args.build_dir))
+    if args.editor and IS_WINDOWS:
+        print(f"  Editor:   editor/bin/{config}/net48/GryceEngine.Editor.exe")
 
 
 if __name__ == "__main__":

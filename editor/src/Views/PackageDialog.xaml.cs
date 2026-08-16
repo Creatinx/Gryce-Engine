@@ -99,8 +99,12 @@ public partial class PackageDialog : Window
         {
             using var proc = Process.Start(psi);
             if (proc == null) return false;
-            string output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+            // 同时读 stdout/stderr，避免子进程写满任一管道时互相等待导致死锁。
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            await Task.WhenAll(stdoutTask, stderrTask);
             proc.WaitForExit();
+            string output = stdoutTask.Result + stderrTask.Result;
             foreach (string raw in output.Split('\n'))
             {
                 string line = raw.TrimEnd('\r');
@@ -175,7 +179,7 @@ public partial class PackageDialog : Window
             $"--out \"{outDir}\"";
         LogLine($"Package: {tool} {args}");
 
-        var result = await System.Threading.Tasks.Task.Run(() => RunPackager(tool, args));
+        var result = await RunPackager(tool, args);
 
         foreach (string raw in result.Output.Split('\n'))
         {
@@ -213,7 +217,8 @@ public partial class PackageDialog : Window
         PlatformBox.IsEnabled = !busy;
     }
 
-    private static (int ExitCode, string Output) RunPackager(string tool, string args)
+    private static async System.Threading.Tasks.Task<(int ExitCode, string Output)> RunPackager(
+        string tool, string args)
     {
         try
         {
@@ -227,8 +232,11 @@ public partial class PackageDialog : Window
             };
             using var proc = Process.Start(psi);
             if (proc == null) return (-1, "failed to start grycegc");
-            string output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            await Task.WhenAll(stdoutTask, stderrTask);
             proc.WaitForExit();
+            string output = stdoutTask.Result + stderrTask.Result;
             return (proc.ExitCode, output);
         }
         catch (Exception ex)

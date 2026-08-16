@@ -566,11 +566,11 @@ endif()
 # ----------------------------------------------------------------------------
 # Rule: whenever a native library is manually copied for the editor, the copy
 # must also be expressed here so a fresh CMake build deploys everything.
-# Output layout matches the csproj: editor/bin/x64/<Config>/net48.
+# Output layout matches the csproj (fixed OutputPath): editor/bin/<Config>/net48.
 # Only meaningful on Windows (WPF Editor is Windows-only); skipped on Linux.
 # ============================================================================
 if(WIN32)
-set(GRYCE_EDITOR_BIN "${CMAKE_SOURCE_DIR}/editor/bin/x64/$<CONFIG>/net48")
+set(GRYCE_EDITOR_BIN "${CMAKE_SOURCE_DIR}/editor/bin/$<CONFIG>/net48")
 
 function(gryce_copy_dll_to_editor TARGET_NAME)
     add_custom_command(TARGET ${TARGET_NAME} POST_BUILD

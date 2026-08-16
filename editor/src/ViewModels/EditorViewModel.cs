@@ -256,7 +256,7 @@ public partial class EditorViewModel : INotifyPropertyChanged
     private readonly Stack<IUndoableAction> _undoStack = new();
     private readonly Stack<IUndoableAction> _redoStack = new();
     // Created-entity actions whose handle is resolved when the entity appears.
-    private readonly Queue<CreateEntityAction> _pendingCreateActions = new();
+    private readonly Queue<(string Name, CreateEntityAction Action)> _pendingCreateActions = new();
     // Component restores that must wait for the async AddComponent command to
     // complete on the next engine frame before their fields can be written.
     private readonly List<(GEntityHandle Entity, ulong TypeHash, ComponentSnapshot Snapshot, int Retries)> _pendingComponentRestores = new();
@@ -395,8 +395,12 @@ public partial class EditorViewModel : INotifyPropertyChanged
                 _redoStack.Clear();
                 _pendingCreateActions.Clear();
                 _pendingComponentRestores.Clear();
+                _pendingModels.Clear();
                 _entityModelCache.Clear();
                 _entityComponentSignature.Clear();
+                _clipboardEntity = GEntityHandle.Null;
+                _clipboardEntityName = string.Empty;
+                _clipboardIsCut = false;
                 System.Windows.Input.CommandManager.InvalidateRequerySuggested();
                 RefreshHierarchy();
                 RefreshInspector();
@@ -688,16 +692,30 @@ public partial class EditorViewModel : INotifyPropertyChanged
     {
         var name = _pendingSelectEntityName;
         _pendingSelectEntityName = null;
-        if (name == null) return;
-        var created = FindNewestEntityByName(name, RootEntities);
-        if (created == null) return;
-
-        SelectEntityByHandle(created.Handle);
-        if (_pendingCreateActions.Count > 0)
+        EntityModel? created = null;
+        if (name != null)
         {
-            _pendingCreateActions.Dequeue().Handle = created.Handle;
+            created = FindNewestEntityByName(name, RootEntities);
+            if (created != null) SelectEntityByHandle(created.Handle);
         }
-        if (_pendingOpenComponentPicker)
+
+        // 为队列里每一个待解析的创建动作绑定句柄：连续快速创建多个实体时，
+        // 每个 action 都能正确恢复，Undo 不会再退化成删除当前选中项。
+        var claimed = new HashSet<GEntityHandle>();
+        while (_pendingCreateActions.Count > 0)
+        {
+            var (actionName, action) = _pendingCreateActions.Dequeue();
+            if (action.Handle != GEntityHandle.Null) continue;
+            // 同名实体按创建顺序（队列顺序）依次绑定，避免两个 action 都指向最新实体。
+            var resolved = FindNewestEntityByName(actionName, RootEntities, claimed);
+            if (resolved != null)
+            {
+                action.Handle = resolved.Handle;
+                claimed.Add(resolved.Handle);
+            }
+        }
+
+        if (_pendingOpenComponentPicker && created != null)
         {
             _pendingOpenComponentPicker = false;
             // Defer to the next dispatch so the entity-list callback completes
@@ -705,11 +723,17 @@ public partial class EditorViewModel : INotifyPropertyChanged
             var vm = this;
             System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
             {
-                if (vm.SelectedEntity == null) return;
+                if (vm.SelectedEntity == null || !ReferenceEquals(vm.SelectedEntity, created)) return;
                 ModalDialog.Show(new Views.AddComponentDialog(vm, renameEntityToType: true),
                                  System.Windows.Application.Current.MainWindow);
             }), System.Windows.Threading.DispatcherPriority.Normal);
         }
+    }
+
+    /// <summary>把 Redo 重新创建的实体动作重新入队，等实体出现后绑定新句柄。</summary>
+    internal void EnqueuePendingCreateAction(CreateEntityAction action, string name)
+    {
+        _pendingCreateActions.Enqueue((name, action));
     }
 
     private static EntityModel? FindEntity(GEntityHandle handle, ObservableCollection<EntityModel> entities)
@@ -800,14 +824,20 @@ public partial class EditorViewModel : INotifyPropertyChanged
     }
 
     private static EntityModel? FindNewestEntityByName(string name, ObservableCollection<EntityModel> roots)
+        => FindNewestEntityByName(name, roots, new HashSet<GEntityHandle>());
+
+    private static EntityModel? FindNewestEntityByName(
+        string name, ObservableCollection<EntityModel> roots, HashSet<GEntityHandle> excluded)
     {
         EntityModel? newest = null;
         foreach (var e in roots)
         {
-            if (e.Name == name && (newest == null || e.Handle > newest.Handle))
+            if (e.Name == name && !excluded.Contains(e.Handle) &&
+                (newest == null || e.Handle > newest.Handle))
                 newest = e;
-            var child = FindNewestEntityByName(name, e.Children);
-            if (child != null && (newest == null || child.Handle > newest.Handle))
+            var child = FindNewestEntityByName(name, e.Children, excluded);
+            if (child != null && !excluded.Contains(child.Handle) &&
+                (newest == null || child.Handle > newest.Handle))
                 newest = child;
         }
         return newest;

@@ -29,6 +29,8 @@ public partial class ViewportView
             _cameraResolveCounter = 0;
         }
         if (_mainCamera == GEntityHandle.Null) return;
+        // 用户正在编辑主相机本体（Inspector/Gizmo）时不要每帧覆写它的 Transform。
+        if (VM?.SelectedEntity?.Handle == _mainCamera) return;
         var cam = _sceneCamera;
         double px, py, pz, fwdX, fwdY, fwdZ;
         lock (_cameraLock)
@@ -102,6 +104,8 @@ public partial class ViewportView
             _cameraResolveCounter = 0;
         }
         if (_mainCamera == GEntityHandle.Null) return;
+        // 同上：选中主相机时停止覆写，让用户摆放的变换生效。
+        if (VM?.SelectedEntity?.Handle == _mainCamera) return;
 
         var cam = _sceneCamera;
         try
@@ -122,17 +126,33 @@ public partial class ViewportView
         try
         {
             int count = EntityAPI.GEntity_GetCount();
+            GEntityHandle containsFallback = GEntityHandle.Null;
             for (int i = 0; i < count; i++)
             {
                 var h = EntityAPI.GEntity_GetAt(i);
                 if (h == GEntityHandle.Null) continue;
                 var name = EntityAPI.GetNameUtf8(h);
-                if (name != null &&
-                    (name == "MainCamera" || name.Contains("Camera")))
+                if (name == "MainCamera") return h;
+                if (containsFallback == GEntityHandle.Null && name != null &&
+                    name.Contains("Camera"))
                 {
-                    return h;
+                    containsFallback = h;
                 }
             }
+            // 优先选真正挂了 Camera 组件的实体（名字启发式只做最后兜底）。
+            for (int i = 0; i < count; i++)
+            {
+                var h = EntityAPI.GEntity_GetAt(i);
+                if (h == GEntityHandle.Null) continue;
+                int comps = ComponentAPI.GComponent_GetCount(h);
+                for (int c = 0; c < comps; c++)
+                {
+                    var sb = new StringBuilder(128);
+                    if (ComponentAPI.GComponent_GetTypeNameAt(h, c, sb, sb.Capacity) < 0) continue;
+                    if (sb.ToString() == "Camera") return h;
+                }
+            }
+            return containsFallback;
         }
         catch { /* ignore */ }
         return GEntityHandle.Null;
@@ -400,12 +420,69 @@ public partial class ViewportView
         if (down) _nativeKeys.Add(vk);
         else _nativeKeys.Remove(vk);
         if (_isGameView)
+        {
             InputAPI.GInput_InjectKey(vk, down ? GInputAction.Press : GInputAction.Release);
+        }
+        else if (down && _rendererInitialized)
+        {
+            HandleSceneNativeShortcut(vk);
+        }
         if (down && vk == 0x1B) // Escape
         {
             _pointerLocked = false;
             SetGameCursorLocked(false);
             SetViewportCapture(false);
+            CancelGizmoDrag();
+        }
+    }
+
+    /// <summary>GLFW 子窗口持有键盘焦点时（WPF 快捷键收不到键），在这里分发
+    /// 场景编辑器快捷键，保证 W/E/R、F、Delete、Ctrl+Z/Y/S/D/X/C/V/P 在
+    /// 视口聚焦时同样生效。</summary>
+    private void HandleSceneNativeShortcut(int vk)
+    {
+        bool ctrl = KeyHeld(0x11);
+        bool shift = KeyHeld(0x10);
+        if (ctrl)
+        {
+            switch (vk)
+            {
+                case 0x5A: // Ctrl+Z
+                    if (shift) VM?.RedoCommand.Execute(null);
+                    else VM?.UndoCommand.Execute(null);
+                    return;
+                case 0x59: // Ctrl+Y
+                    VM?.RedoCommand.Execute(null);
+                    return;
+                case 0x53: // Ctrl+S
+                    VM?.SaveScene();
+                    return;
+                case 0x44: // Ctrl+D
+                    VM?.DuplicateSelectedEntity();
+                    return;
+                case 0x58: // Ctrl+X
+                    VM?.CutSelectedEntity();
+                    return;
+                case 0x43: // Ctrl+C
+                    VM?.CopySelectedEntity();
+                    return;
+                case 0x56: // Ctrl+V
+                    VM?.PasteToSelected();
+                    return;
+                case 0x50: // Ctrl+P
+                    VM?.TogglePlayMode();
+                    return;
+            }
+        }
+
+        switch (vk)
+        {
+            case 0x57: VM?.SetGizmoMode("Translate"); break; // W
+            case 0x45: VM?.SetGizmoMode("Rotate"); break;    // E
+            case 0x52: VM?.SetGizmoMode("Scale"); break;     // R
+            case 0x46: VM?.FocusSelectedEntity(); break;     // F
+            case 0x2E: VM?.DeleteSelectedEntity(); break;    // Delete
+            case 0x71: VM?.RenameSelectedEntity(); break;    // F2
         }
     }
 
@@ -542,6 +619,7 @@ public partial class ViewportView
         _pointerLocked = false;
         SetGameCursorLocked(false);
         SetViewportCapture(false);
+        CancelGizmoDrag();
     }
 
 

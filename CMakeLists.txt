@@ -69,10 +69,8 @@ option(GRYCE_ENABLE_SANITIZERS  "Enable ASan/UBSan in Debug (GCC/Clang only)" OF
 option(GRYCE_ENABLE_LTO           "Enable Link-Time Optimization in Release" ON)
 option(GRYCE_STATIC_RUNTIME       "Use static C++ runtime (/MT) on MSVC" OFF)
 
-# 预留接口：Editor（C#）编译开关。
-# 当前 WPF Editor 仅支持 Windows 上的 Visual Studio generator（见下方
-# include_external_msproject）。未来若移植到跨平台 UI（如 Avalonia），
-# 可在 Linux 上通过 -DGRYCE_BUILD_EDITOR=ON 或 build.py --editor 启用。
+# WPF Editor（C#）编译开关：Windows 上通过 dotnet 构建，与 generator 无关
+# （Ninja / Makefiles / Visual Studio 均可）。非 Windows 平台忽略。
 option(GRYCE_BUILD_EDITOR        "Build the (C#) Editor" OFF)
 
 # ---------------------------------------------------------------------------
@@ -120,14 +118,29 @@ add_subdirectory(examples)
 # add_subdirectory(editor)
 
 # ---------------------------------------------------------------------------
-# WPF Editor 集成到 VS 解决方案（仅 Visual Studio generator + GRYCE_BUILD_EDITOR 生效）
+# WPF Editor：纯 CMake 自定义目标（dotnet build），不依赖 VS 解决方案。
+# 依赖核心 DLL 目标，保证 POST_BUILD 的 DLL 复制先于编辑器编译完成。
 # ---------------------------------------------------------------------------
-if(GRYCE_BUILD_EDITOR AND CMAKE_GENERATOR MATCHES "Visual Studio")
-    include_external_msproject(
-        GryceEngine.Editor
-        ${CMAKE_SOURCE_DIR}/editor/GryceEngine.Editor.csproj
-        TYPE FAE04EC0-301F-11D3-BF4B-00C04F79EFBC
-    )
+if(GRYCE_BUILD_EDITOR)
+    if(WIN32)
+        find_program(GRYCE_DOTNET dotnet)
+        if(GRYCE_DOTNET)
+            add_custom_target(GryceEditor ALL
+                COMMAND "${GRYCE_DOTNET}" build
+                        "${CMAKE_SOURCE_DIR}/editor/GryceEngine.Editor.csproj"
+                        -c "$<CONFIG>" --nologo
+                COMMENT "Building WPF Editor (dotnet) ..."
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                USES_TERMINAL
+                VERBATIM
+            )
+            add_dependencies(GryceEditor GryceCore GryceRenderer GrycePlatform GrycePhysics)
+        else()
+            message(WARNING "GRYCE_BUILD_EDITOR=ON but dotnet not found; editor skipped")
+        endif()
+    else()
+        message(WARNING "GRYCE_BUILD_EDITOR=ON ignored: WPF Editor is Windows-only")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

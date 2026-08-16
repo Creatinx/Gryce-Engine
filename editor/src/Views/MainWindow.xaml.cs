@@ -46,24 +46,12 @@ public partial class MainWindow
         WriteEditorLog("MainWindow.OnClosing cancel=" + e.Cancel + "\r\n" + Environment.StackTrace);
 
         var engine = App.Engine;
-        if (engine == null || !engine.IsInitialized || !engine.IsSceneDirty || engine.IsPlaying) return;
+        if (engine == null || !engine.IsInitialized) return;
 
-        var loc = LocalizationService.Instance;
-        var result = MessageBox.Show(this,
-            loc.T("confirm.unsaved_message"),
-            loc.T("confirm.unsaved_title"),
-            MessageBoxButton.YesNoCancel,
-            MessageBoxImage.Warning);
-
-        if (result == MessageBoxResult.Yes)
-        {
-            VM?.SaveScene();
-        }
-        else if (result == MessageBoxResult.Cancel)
+        if (!Services.UnsavedChangesGuard.CheckCanDiscard(this))
         {
             e.Cancel = true;
         }
-        // No = discard unsaved changes and close.
     }
 
     protected override void OnClosed(EventArgs e)
@@ -189,14 +177,7 @@ public partial class MainWindow
         };
         if (dialog.ShowDialog() == true)
         {
-            int result = SceneAPI.GScene_Load(dialog.FileName);
-            if (result == 0)
-            {
-                VM?.AppendConsole($"Scene loaded: {dialog.FileName}");
-                VM?.SetSceneName(System.IO.Path.GetFileNameWithoutExtension(dialog.FileName));
-            }
-            else
-                VM?.Notify($"Failed to load scene: {dialog.FileName}", true);
+            VM?.LoadSceneFromPath(dialog.FileName);
         }
     }
 
@@ -212,6 +193,11 @@ public partial class MainWindow
         if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
         {
             WriteEditorLog("OnOpenProjectClick: selected " + dialog.SelectedPath);
+            if (!Services.UnsavedChangesGuard.CheckCanDiscard(this))
+            {
+                WriteEditorLog("OnOpenProjectClick: cancelled by unsaved-changes guard");
+                return;
+            }
             App.Engine.ReloadProject(dialog.SelectedPath);
             WriteEditorLog("OnOpenProjectClick: ReloadProject returned");
         }
@@ -226,6 +212,11 @@ public partial class MainWindow
         if (ModalDialog.Show(dialog, this) == true && dialog.CreatedProjectRoot != null)
         {
             WriteEditorLog("OnNewProjectClick: created " + dialog.CreatedProjectRoot);
+            if (!Services.UnsavedChangesGuard.CheckCanDiscard(this))
+            {
+                WriteEditorLog("OnNewProjectClick: cancelled by unsaved-changes guard");
+                return;
+            }
             App.Engine.ReloadProject(dialog.CreatedProjectRoot);
             WriteEditorLog("OnNewProjectClick: ReloadProject returned");
             // 加载脚手架生成的主场景，并让视图刷新到底层实体树。

@@ -69,11 +69,17 @@ internal class CreateEntityAction(EditorViewModel vm, string name, string? compo
     public string Description => $"Create '{name}'";
     public GEntityHandle Handle { get; set; } = GEntityHandle.Null;
 
-    public void Execute() => vm.CreateEntitySilent(name, componentTypeName);
+    public void Execute()
+    {
+        vm.CreateEntitySilent(name, componentTypeName);
+        // Redo 新建的实体句柄要重新绑定到本 action，否则再次 Undo 会用旧句柄
+        // 删不到实体，留下孤儿实体。
+        vm.EnqueuePendingCreateAction(this, name);
+    }
     public void Undo()
     {
         if (Handle != GEntityHandle.Null) vm.DeleteEntitySilent(Handle);
-        else vm.DeleteSelectedEntitySilent();
+        else vm.AppendConsole("Undo create: entity handle not resolved yet; skipped (no entity deleted).");
     }
 }
 

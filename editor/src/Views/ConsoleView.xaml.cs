@@ -1,6 +1,7 @@
 using GryceEngine.Editor.Models;
 using GryceEngine.Editor.ViewModels;
 using System;
+using System.Collections.Specialized;
 using System.Linq;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -18,19 +19,25 @@ public partial class ConsoleView : UserControl
     private bool _showWarning = true;
     private bool _showError = true;
     private LogEntry? _selectedEntry;
+    private EditorViewModel? _subscribedVm;
 
     public ConsoleView()
     {
         InitializeComponent();
         DataContextChanged += (_, _) =>
         {
-            if (VM != null)
-                VM.LogEntries.CollectionChanged += (_, _) =>
-                {
-                    UpdateEntryCount();
-                    AutoScrollToBottom();
-                };
+            if (_subscribedVm != null)
+                _subscribedVm.LogEntries.CollectionChanged -= OnLogEntriesChanged;
+            _subscribedVm = VM;
+            if (_subscribedVm != null)
+                _subscribedVm.LogEntries.CollectionChanged += OnLogEntriesChanged;
         };
+    }
+
+    private void OnLogEntriesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        UpdateEntryCount();
+        AutoScrollToBottom();
     }
 
     private void OnClearClick(object sender, RoutedEventArgs e)

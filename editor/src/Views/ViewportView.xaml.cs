@@ -44,12 +44,16 @@ public partial class ViewportView : UserControl, IDisposable
     private bool _scriptMode;
     private bool _scriptWebReady;
     private bool _scriptLoadingContent;
+    private bool _scriptDirty;
     private string? _currentScriptPath;
     private string? _scriptInitialContent;
 
     /// <summary>Raised by the project panel to open a .lua file in the
     /// viewport's Script tab.</summary>
     public static Action<string>? OpenScriptRequested;
+
+    /// <summary>单例引用：供 EngineService 在保存前清理 2D 编辑器相机。</summary>
+    private static ViewportView? s_Instance;
 
     /// <summary>True while the Game tab is active. EngineService uses this to
     /// sync editor-injected input into the core so Lua scripts can read it.</summary>
@@ -70,6 +74,8 @@ public partial class ViewportView : UserControl, IDisposable
     private GEntityHandle _editor2DCamera = GEntityHandle.Null;
     private string? _pending2DCameraName;
     private bool _editor2DCameraCreated;
+    private bool _editor2DCameraPendingDestroy;
+    private bool _editor2DCameraRecreateSuppressed;
     private bool _2dCameraReady;
     private double _2dCenterX, _2dCenterY;
     private float _2dZoom = 1.0f;
@@ -204,6 +210,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        s_Instance = this;
         _vmCached = DataContext as EditorViewModel;
         OpenScriptRequested += OnOpenScriptRequested;
         RequestGameView = EnterGameView;
@@ -251,6 +258,7 @@ public partial class ViewportView : UserControl, IDisposable
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        if (ReferenceEquals(s_Instance, this)) s_Instance = null;
         OpenScriptRequested -= OnOpenScriptRequested;
         if (ReferenceEquals(RequestGameView, (Action)EnterGameView)) RequestGameView = null;
         if (ReferenceEquals(RequestSceneView, (Action)EnterSceneView)) RequestSceneView = null;
