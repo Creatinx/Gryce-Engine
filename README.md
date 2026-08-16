@@ -157,10 +157,17 @@ python build.py --verbose          # 输出 ninja 详细日志
 
 #### 方式 F：CLion
 
+CLion 26.x 直接支持 CMakePresets：打开项目后
+`Settings → Build, Execution, Deployment → CMake`，在 Profile 下拉里选择
+**Debug (Ninja)** / **Release (Ninja)** / **Debug + Editor** 预设即可
+（预设与 build.py 共用 `build/Debug`、`build/Release` 目录）。
+
 1. 首次打开前先确保依赖已下载：终端执行 `python build.py --setup-deps`（或在
    CLion 的终端里执行，依赖缓存在源码根 `build/deps/`，与 CLion 的构建目录无关）。
 2. `Settings → Build, Execution, Deployment → Toolchains`：选择 MinGW（MSYS2 UCRT64）
-   或 Visual Studio 工具链。
+   或 Visual Studio 工具链。**注意：Toolchain 必须与 build.py 的编译器一致**
+   （build.py 默认 `auto` 会选 MinGW；若用 `--compiler msvc`，CLion 需选 Visual
+   Studio 工具链），否则共用 `build/<Config>` 缓存时会报 toolchain 不匹配。
 3. `Settings → Build, Execution, Deployment → CMake`：Profile 选 Debug/Release，
    **Generator 建议选 Ninja**（需 `ninja` 在 PATH，见下），Build directory 填
    `build/Debug` 或 `build/Release`；Toolchain 选第 2 步配置的那个。
@@ -170,6 +177,11 @@ python build.py --verbose          # 输出 ninja 详细日志
 > 项目要求 CMake ≥ 3.22（assimp/box2d 依赖的最低版本）；CLion 2022.3+ 自带 CMake
 > 即满足。若使用 MSVC 工具链且 CLion 默认选了 Visual Studio generator，可在 CMake
 > Profile 中手动改为 Ninja，避免生成 `.slnx/.vcxproj`。
+>
+> 若 CLion 打开后"识别不到目标"：先看底部 CMake 工具窗口的报错；最常见原因是
+> Profile 的 Build directory 指向了旧缓存（如根 `build/` 下残留的旧 CMakeCache，
+> 或 build.py 用不同编译器生成的缓存）。删掉该目录的 `CMakeCache.txt` 后 Reload，
+> 或换用预设/独立目录 `cmake-build-debug` 即可。
 >
 > Ninja 安装：MSYS2 执行 `pacman -S mingw-w64-ucrt-x86_64-ninja`，或
 > `winget install Ninja-build.Ninja`。
