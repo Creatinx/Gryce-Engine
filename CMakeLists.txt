@@ -117,30 +117,17 @@ endif()
 
 add_subdirectory(examples)
 
-# editor 已封存至 backup/，WPF Editor 走 C API 调用 GryceCore DLL
-# add_subdirectory(editor)
-
 # ---------------------------------------------------------------------------
-# WPF Editor：纯 CMake 自定义目标（dotnet build），不依赖 VS 解决方案。
-# 依赖核心 DLL 目标，保证 POST_BUILD 的 DLL 复制先于编辑器编译完成。
+# WPF Editor（editor/CMakeLists.txt）
+#
+# 仅当 GRYCE_BUILD_EDITOR=ON 且 Windows 时挂载。编辑器目标不加入 ALL：
+# 普通 `cmake --build <dir>` 不会编译它；显式 `cmake --build <dir>
+# --target GryceEditor` 时会先编译核心 DLL 依赖（POST_BUILD 自动复制
+# 原生 DLL 到 editor/bin/<Config>/net48/），再执行 dotnet 构建。
 # ---------------------------------------------------------------------------
 if(GRYCE_BUILD_EDITOR)
     if(WIN32)
-        find_program(GRYCE_DOTNET dotnet)
-        if(GRYCE_DOTNET)
-            add_custom_target(GryceEditor ALL
-                COMMAND "${GRYCE_DOTNET}" build
-                        "${CMAKE_SOURCE_DIR}/editor/GryceEngine.Editor.csproj"
-                        -c "$<CONFIG>" --nologo
-                COMMENT "Building WPF Editor (dotnet) ..."
-                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                USES_TERMINAL
-                VERBATIM
-            )
-            add_dependencies(GryceEditor GryceCore GryceRenderer GrycePlatform GrycePhysics)
-        else()
-            message(WARNING "GRYCE_BUILD_EDITOR=ON but dotnet not found; editor skipped")
-        endif()
+        add_subdirectory(editor)
     else()
         message(WARNING "GRYCE_BUILD_EDITOR=ON ignored: WPF Editor is Windows-only")
     endif()

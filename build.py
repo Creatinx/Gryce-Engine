@@ -522,6 +522,21 @@ def main():
         print(output)
         sys.exit(1)
 
+    # Editor 目标不属于 ALL（根 CMake 约定），显式编译它；
+    # 该目标依赖核心 DLL，会先构建/复制原生库再执行 dotnet。
+    if args.editor and IS_WINDOWS:
+        print(f"{C_INFO}[Gryce Engine]{C_RESET} Building WPF Editor (GryceEditor target) ...")
+        editor_cmd = [cmake, "--build", str(build_dir), "--target", "GryceEditor"]
+        if args.verbose:
+            editor_cmd.append("--verbose")
+        if args.jobs > 0:
+            editor_cmd += ["-j", str(args.jobs)]
+        ok, output = run(editor_cmd, check=False)
+        if not ok:
+            print(f"{C_ERR}[ERROR] Editor build failed:{C_RESET}")
+            print(output)
+            sys.exit(1)
+
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
     if args.editor and IS_WINDOWS:
