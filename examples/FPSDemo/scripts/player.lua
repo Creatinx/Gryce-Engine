@@ -8,8 +8,9 @@ local common = require("common")
 local self_h, cam_h, weapon_h = 0, 0, 0
 local yaw, pitch = 0.0, 0.0
 local shoot_cd, jump_cd = 0.0, 0.0
+local look_locked = true
+local skip_shot = false
 
-local BODY_REST = 0.8          -- 站立时刚体中心高度（底面贴地）
 local EYE = common.CFG.eye_height
 
 local function quat_yaw_only()
@@ -35,12 +36,16 @@ local function spawn_bullet()
     local right = common.qrotate(q, { x = 1, y = 0, z = 0 })
     local up = common.qrotate(q, { x = 0, y = 1, z = 0 })
 
-    local b = engine.entity.create("Bullet")
-    engine.entity.set_transform(b, {
+    local origin = {
         x = cam_t.pos.x + fwd.x * 0.95 + right.x * 0.28 - up.x * 0.22,
         y = cam_t.pos.y + fwd.y * 0.95 + right.y * 0.28 - up.y * 0.22,
         z = cam_t.pos.z + fwd.z * 0.95 + right.z * 0.28 - up.z * 0.22,
-    }, { x = 0, y = 0, z = 0, w = 1 }, { x = 0.08, y = 0.08, z = 0.08 })
+    }
+    local b = engine.entity.create("Bullet")
+    engine.entity.set_transform(b, origin, { x = 0, y = 0, z = 0, w = 1 },
+                                { x = 0.08, y = 0.08, z = 0.08 })
+    -- 记录子弹出生点，供 bullet.lua 在首帧补上 P0->P1 的命中检测，避免近距离穿透。
+    engine.state.set("bullet_spawn_" .. tostring(b), origin)
 
     engine.component.set(b, "MeshRenderer", "mesh_path", "res:/models/cube_pbr.obj")
     engine.component.set(b, "RigidBody", "mass", 0.1)
@@ -66,6 +71,8 @@ function on_start()
     weapon_h = engine.entity.find("Weapon")
     yaw, pitch = 0.0, 0.0
     shoot_cd, jump_cd = 0.0, 0.0
+    look_locked = true
+    skip_shot = false
     -- 请求鼠标锁定：独立 exe 由平台回调锁定；编辑器里点击锁定（编辑器不注册
     -- 该回调，仅更新核心状态，光标由编辑器点击控制）。
     engine.input.mouse_locked(true)
@@ -78,11 +85,23 @@ function on_update(dt)
     local t = engine.entity.get_transform(self_h)
     if not t then return end
 
-    -- 鼠标视角
-    local dx, dy = engine.input.mouse_delta()
-    yaw = yaw - dx * common.CFG.mouse_sens
-    pitch = pitch - dy * common.CFG.mouse_sens
-    if pitch > 1.55 then pitch = 1.55 elseif pitch < -1.55 then pitch = -1.55 end
+    -- 鼠标视角：Esc 解锁，左键重新锁定（重锁那一帧不射击）
+    if engine.input.key_down(256) and look_locked then
+        look_locked = false
+        engine.input.mouse_locked(false)
+    end
+    if not look_locked and engine.input.mouse_down(0) then
+        look_locked = true
+        engine.input.mouse_locked(true)
+        skip_shot = true
+    end
+
+    if look_locked then
+        local dx, dy = engine.input.mouse_delta()
+        yaw = yaw - dx * common.CFG.mouse_sens
+        pitch = pitch - dy * common.CFG.mouse_sens
+        if pitch > 1.55 then pitch = 1.55 elseif pitch < -1.55 then pitch = -1.55 end
+    end
 
     -- 移动方向（相对 yaw）
     local yq = quat_yaw_only()
@@ -105,7 +124,9 @@ function on_update(dt)
 
     -- 水平速度 + 保留垂直（重力/跳跃）
     local _, vy, _ = get_vel(self_h)
-    local grounded = t.pos.y <= BODY_REST + 0.06
+    -- 接地判定用竖直速度而非位置：站上掩体（y≈1.8）时同样可以跳，
+    -- 位置判断会把"站在掩体上"误判为空中，导致 jumping 状态卡死。
+    local grounded = vy >= -0.05 and vy <= 0.2
 
     if engine.input.key_down(32) and grounded and jump_cd <= 0
         and not engine.state.get("jumping") then
@@ -145,7 +166,8 @@ function on_update(dt)
 
     -- 射击（左键 / F）
     if shoot_cd > 0 then shoot_cd = shoot_cd - dt end
-    if (engine.input.mouse_down(0) or engine.input.key_down(70)) and shoot_cd <= 0 then
+    if (engine.input.mouse_down(0) or engine.input.key_down(70))
+        and shoot_cd <= 0 and look_locked and not skip_shot then
         shoot_cd = 0.16
         spawn_bullet()
     end
@@ -178,4 +200,6 @@ function on_update(dt)
         if inv < 0 then inv = 0 end
         engine.state.set("invuln", inv)
     end
+
+    skip_shot = false
 end

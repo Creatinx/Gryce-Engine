@@ -9,6 +9,7 @@ endif()
 # 平台：Windows 下优先使用 MinGW GCC，未找到时让 CMake 自动检测（支持 MSVC fallback）
 # 注意：当使用 Visual Studio generator 时，保留 MSVC 选择，不强制切到 MinGW。
 if(WIN32 AND NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
+
     # Visual Studio generator 明确使用 MSVC，不要覆盖
     set(_using_vs_generator FALSE)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
@@ -72,9 +73,8 @@ option(GRYCE_ENABLE_SANITIZERS  "Enable ASan/UBSan in Debug (GCC/Clang only)" OF
 option(GRYCE_ENABLE_LTO           "Enable Link-Time Optimization in Release" ON)
 option(GRYCE_STATIC_RUNTIME       "Use static C++ runtime (/MT) on MSVC" OFF)
 
-# WPF Editor（C#）编译开关：Windows 上通过 dotnet 构建，与 generator 无关
-# （Ninja / Makefiles / Visual Studio 均可）。非 Windows 平台忽略。
-option(GRYCE_BUILD_EDITOR        "Build the (C#) Editor" OFF)
+# GryceEditor（C++/ImGui）编译开关
+option(GRYCE_BUILD_EDITOR "Build the ImGui-based Editor" ON)
 
 # ---------------------------------------------------------------------------
 # 编译器选项
@@ -118,19 +118,12 @@ endif()
 add_subdirectory(examples)
 
 # ---------------------------------------------------------------------------
-# WPF Editor（editor/CMakeLists.txt）
-#
-# 仅当 GRYCE_BUILD_EDITOR=ON 且 Windows 时挂载。编辑器目标不加入 ALL：
-# 普通 `cmake --build <dir>` 不会编译它；显式 `cmake --build <dir>
-# --target GryceEditor` 时会先编译核心 DLL 依赖（POST_BUILD 自动复制
-# 原生 DLL 到 editor/bin/<Config>/net48/），再执行 dotnet 构建。
+# ImGui Docking Editor（editor/CMakeLists.txt）
+# 基于 ImGui Docking 分支的 C++ 原生编辑器（替代旧 WPF 编辑器）。
+# 纯 C++ 实现，跨平台，直接渲染到引擎 OpenGL/Vulkan 上下文。
 # ---------------------------------------------------------------------------
-if(GRYCE_BUILD_EDITOR)
-    if(WIN32)
-        add_subdirectory(editor)
-    else()
-        message(WARNING "GRYCE_BUILD_EDITOR=ON ignored: WPF Editor is Windows-only")
-    endif()
+if(WIN32)
+    add_subdirectory(editor)
 endif()
 
 # ---------------------------------------------------------------------------

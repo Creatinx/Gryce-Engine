@@ -9,6 +9,7 @@
 #include "export.h"
 #include "components/component.h"
 #include "components/transform.h"
+#include "components/hierarchy_components.h"
 #include "ecs/component_store.h"
 #include "ecs/types.h"
 #include "scene/uuid.h"
@@ -108,6 +109,10 @@ public:
     // Transform 快捷访问
     components::Transform* transform() const { return transform_; }
 
+    // ECS 层级组件快捷访问（用于系统查询）
+    components::ParentComponent* parent_component() const { return parent_comp_; }
+    components::ChildrenComponent* children_component() const { return children_comp_; }
+
     // 世界变换矩阵（递归乘以父级）
     math::Matrix4f world_transform() const;
 
@@ -143,6 +148,8 @@ private:
 
     std::vector<std::unique_ptr<components::Component>> components_;
     components::Transform* transform_ = nullptr; // 指向 components_ 中的 Transform
+    components::ParentComponent* parent_comp_ = nullptr; // 指向 components_ 中的 ParentComponent
+    components::ChildrenComponent* children_comp_ = nullptr; // 指向 components_ 中的 ChildrenComponent
 
     ecs::ComponentStore* store_ = nullptr;
 

@@ -161,9 +161,9 @@ int main(int argc, char* argv[]) {
         GCore_Shutdown();
         return 1;
     }
-    // 实际窗口/帧缓冲尺寸（高 DPI 缩放下可能与请求值不同）
+    // 实际帧缓冲尺寸（高 DPI 缩放下可能与请求值不同，渲染 viewport 必须用帧缓冲）
     int win_w = 0, win_h = 0;
-    GWindow_GetSize(&win_w, &win_h);
+    GWindow_GetFramebufferSize(&win_w, &win_h);
     if (win_w > 0 && win_h > 0) {
         width = win_w;
         height = win_h;
@@ -202,7 +202,7 @@ int main(int argc, char* argv[]) {
         GInput_SyncToCore();
 
         int cur_w = 0, cur_h = 0;
-        GWindow_GetSize(&cur_w, &cur_h);
+        GWindow_GetFramebufferSize(&cur_w, &cur_h);
         if (cur_w > 0 && cur_h > 0 && (cur_w != last_w || cur_h != last_h)) {
             last_w = cur_w;
             last_h = cur_h;

@@ -113,6 +113,8 @@ nlohmann::json SceneSerializer::serialize_entity(const Entity& entity) {
     nlohmann::json components = nlohmann::json::array();
     for (const auto& comp : entity.components()) {
         if (comp->type() == std::string("Transform")) continue; // Transform 已单独处理
+        if (comp->type() == std::string("ParentComponent")) continue; // 内部运行时数据
+        if (comp->type() == std::string("ChildrenComponent")) continue; // 内部运行时数据
         nlohmann::json comp_json;
         comp_json["type"] = comp->type();
         comp_json["enabled"] = comp->enabled;

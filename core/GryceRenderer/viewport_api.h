@@ -29,6 +29,12 @@ GRYCE_RENDERER_API void GViewport_GetSize(int* out_w, int* out_h);
 GRYCE_RENDERER_API void GViewport_SetCamera(GEntityHandle camera_entity);
 GRYCE_RENDERER_API GEntityHandle GViewport_GetCamera(void);
 
+// 设置编辑器相机参数（直接使用，不依赖场景中的 Camera 实体）
+GRYCE_RENDERER_API void GViewport_SetEditorCamera(
+    float pos_x, float pos_y, float pos_z,
+    float yaw, float pitch,
+    float fov, float near_plane, float far_plane);
+
 GRYCE_RENDERER_API void GGameView_SetSize(int w, int h);
 GRYCE_RENDERER_API void GGameView_GetSize(int* out_w, int* out_h);
 GRYCE_RENDERER_API void GGameView_SetCamera(GEntityHandle camera_entity);

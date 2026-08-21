@@ -26,8 +26,15 @@ end
 function on_start()
     self_h = engine.self()
     lifetime = common.CFG.bullet_life
+    local spawn = engine.state.get("bullet_spawn_" .. tostring(self_h))
+    if spawn then
+        prev_x, prev_y, prev_z = spawn.x, spawn.y, spawn.z
+        engine.state.set("bullet_spawn_" .. tostring(self_h), nil)
+    end
     local t = engine.entity.get_transform(self_h)
-    if t then prev_x, prev_y, prev_z = t.pos.x, t.pos.y, t.pos.z end
+    if t and prev_x == nil then
+        prev_x, prev_y, prev_z = t.pos.x, t.pos.y, t.pos.z
+    end
 end
 
 function on_update(dt)

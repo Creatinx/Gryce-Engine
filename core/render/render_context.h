@@ -66,18 +66,21 @@ public:
     RHIShaderHandle create_shader();
     RHITextureHandle create_texture();
     RHIFramebufferHandle create_framebuffer();
+    RHIBufferHandle create_buffer();
 
     // 资源销毁（push 到 CMDBUFFER，必须在 start() 之后调用）
     void destroy_mesh(RHIMeshHandle handle);
     void destroy_shader(RHIShaderHandle handle);
     void destroy_texture(RHITextureHandle handle);
     void destroy_framebuffer(RHIFramebufferHandle handle);
+    void destroy_buffer(RHIBufferHandle handle);
 
     // 通过句柄访问实际资源（必须在渲染线程使用）
     IMesh* mesh(RHIMeshHandle handle) const;
     IShader* shader(RHIShaderHandle handle) const;
     ITexture* texture(RHITextureHandle handle) const;
     IFramebuffer* framebuffer(RHIFramebufferHandle handle) const;
+    IBuffer* buffer(RHIBufferHandle handle) const;
 
     // 渲染命令（必须在 start() 之后调用，push 到 CMDBUFFER）
     // -----------------------------------------------------------------------
@@ -112,7 +115,7 @@ public:
     // 深度写入开关（默认开；渲染透明物体时关闭、渲染完恢复）
     void set_depth_write(bool enabled);
     void set_blend(bool enabled);
-    void set_cull_face(bool enabled);
+    void set_cull_face(CullMode mode);
     void set_framebuffer(RHIFramebufferHandle fb);
     void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader);
     void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader);

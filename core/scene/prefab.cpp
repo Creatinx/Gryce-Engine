@@ -455,7 +455,8 @@ bool Prefab::revert(Entity* instance_root) {
         std::vector<components::Component*> to_remove;
         for (const auto& comp : instance_root->components()) {
             const std::string type = comp->type();
-            if (type != "Transform" && type != "PrefabInstance") {
+            if (type != "Transform" && type != "PrefabInstance"
+                && type != "ParentComponent" && type != "ChildrenComponent") {
                 to_remove.push_back(comp.get());
             }
         }
@@ -468,7 +469,7 @@ bool Prefab::revert(Entity* instance_root) {
                 nlohmann::json t_json;
                 comp->serialize(t_json);
                 instance_root->transform()->deserialize(t_json);
-            } else if (type != "PrefabInstance") {
+            } else if (type != "PrefabInstance" && type != "ParentComponent" && type != "ChildrenComponent") {
                 auto new_comp = components::ComponentFactory::instance().create(type);
                 if (!new_comp) continue;
                 nlohmann::json c_json;

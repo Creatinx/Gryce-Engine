@@ -37,8 +37,8 @@ bool GLBackend::init(void* native_window) {
     make_current(native_window);
 
     GLFWwindow* current = glfwGetCurrentContext();
-    GLOG_ERROR("GLBackend::init: window={} current context={}",
-               static_cast<void*>(window_), static_cast<void*>(current));
+    GLOG_INFO("GLBackend::init: window={} current context={}",
+              static_cast<void*>(window_), static_cast<void*>(current));
     if (!current) {
         GLOG_ERROR("GLBackend::init: no current OpenGL context after make_current");
         return false;
@@ -349,18 +349,18 @@ void GLBackend::set_blend_equation(BlendEquation mode) {
     state_cache_valid_ = true;
 }
 
-void GLBackend::set_cull_face(bool enabled) {
-    if (state_cache_valid_ && cull_face_enabled_ == enabled) {
+void GLBackend::set_cull_face(CullMode mode) {
+    if (state_cache_valid_ && cull_face_mode_ == mode) {
         return;
     }
-    if (enabled) {
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-        glFrontFace(GL_CCW);
-    } else {
+    if (mode == CullMode::None) {
         glDisable(GL_CULL_FACE);
+    } else {
+        glEnable(GL_CULL_FACE);
+        glCullFace(mode == CullMode::Front ? GL_FRONT : GL_BACK);
+        glFrontFace(GL_CCW);
     }
-    cull_face_enabled_ = enabled;
+    cull_face_mode_ = mode;
     state_cache_valid_ = true;
 }
 
@@ -437,6 +437,19 @@ ITexture* GLBackend::texture(RHITextureHandle handle) {
 
 IFramebuffer* GLBackend::framebuffer(RHIFramebufferHandle handle) {
     return framebuffer_pool_.get_if_alive(handle.index, handle.generation);
+}
+
+RHIBufferHandle GLBackend::create_buffer() {
+    uint32_t index = buffer_pool_.allocate();
+    return {index, buffer_pool_.generation(index)};
+}
+
+void GLBackend::destroy_buffer(RHIBufferHandle handle) {
+    buffer_pool_.deallocate(handle.index, handle.generation);
+}
+
+IBuffer* GLBackend::buffer(RHIBufferHandle handle) {
+    return buffer_pool_.get_if_alive(handle.index, handle.generation);
 }
 
 const char* GLBackend::api_name() const {

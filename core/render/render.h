@@ -17,6 +17,7 @@ class IMesh;
 class IShader;
 class ITexture;
 class IFramebuffer;
+class IBuffer;
 
 // ---------------------------------------------------------------------------
 // RenderBackendCapabilities — 后端能力查询
@@ -95,7 +96,7 @@ public:
         (void)src_factor; (void)dst_factor;
     }
     virtual void set_blend_equation(BlendEquation mode) { (void)mode; }
-    virtual void set_cull_face(bool enabled) = 0;
+    virtual void set_cull_face(CullMode mode) = 0;
 
     // 绘制（使用 RHI 句柄）
     virtual void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) = 0;
@@ -106,18 +107,21 @@ public:
     virtual RHIShaderHandle create_shader() = 0;
     virtual RHITextureHandle create_texture() = 0;
     virtual RHIFramebufferHandle create_framebuffer() = 0;
+    virtual RHIBufferHandle create_buffer() = 0;
 
     // 销毁资源（渲染线程安全）
     virtual void destroy_mesh(RHIMeshHandle handle) = 0;
     virtual void destroy_shader(RHIShaderHandle handle) = 0;
     virtual void destroy_texture(RHITextureHandle handle) = 0;
     virtual void destroy_framebuffer(RHIFramebufferHandle handle) = 0;
+    virtual void destroy_buffer(RHIBufferHandle handle) = 0;
 
     // 通过句柄访问实际对象（供渲染线程使用）
     virtual IMesh* mesh(RHIMeshHandle handle) = 0;
     virtual IShader* shader(RHIShaderHandle handle) = 0;
     virtual ITexture* texture(RHITextureHandle handle) = 0;
     virtual IFramebuffer* framebuffer(RHIFramebufferHandle handle) = 0;
+    virtual IBuffer* buffer(RHIBufferHandle handle) = 0;
 
     // 帧缓冲
     virtual void bind_framebuffer(RHIFramebufferHandle fb) { (void)fb; }

@@ -52,6 +52,7 @@ GRYCE_CORE_API int GComponent_RemoveComponent(GEntityHandle entity, uint64_t com
 
 GRYCE_CORE_API int GComponent_GetRegisteredTypeCount(void);
 GRYCE_CORE_API int GComponent_GetRegisteredTypeInfo(int index, uint64_t* out_hash, char* out_name, int name_buf_size);
+GRYCE_CORE_API int GComponent_GetRegisteredTypeCategory(int index, char* out_category, int category_buf_size);
 
 #ifdef __cplusplus
 }

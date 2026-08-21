@@ -24,6 +24,8 @@ public:
     std::unique_ptr<render::Material> material;
     // 广告牌（Sprite3D）：忽略自身旋转，始终面向相机（局部 +Z 朝向相机）
     bool billboard = false;
+    // 关闭深度测试的网格（FPS 武器等 viewmodel）：始终绘制在场景之上。
+    bool depth_test = true;
 
     MeshRenderer();
     explicit MeshRenderer(const std::string& path);

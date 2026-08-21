@@ -32,6 +32,8 @@ public:
     /// stores the error message in err (if provided).
     bool run_string(const char* code, std::string* err = nullptr);
     bool run_file(const char* path, std::string* err = nullptr);
+    // 读取全局字符串（测试/宿主桥接；不存在返回 false）
+    bool get_global_string(const char* name, std::string& out);
 
     // Per-frame context pushed by ScriptSystem before invoking a script:
     void set_current_entity(scene::Entity* e) { current_entity_ = e; }

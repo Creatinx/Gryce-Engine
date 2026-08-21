@@ -330,6 +330,7 @@ private:
     };
     std::vector<DrawItem> opaque_items_;
     std::vector<DrawItem> transparent_items_;
+    std::vector<DrawItem> viewmodel_items_;
     std::vector<SkinnedDrawItem> skinned_opaque_items_;
     std::vector<SkinnedDrawItem> skinned_transparent_items_;
 
@@ -349,7 +350,7 @@ private:
     std::array<RHITextureHandle, k_max_cascades> shadow_maps_;
     std::array<RHIFramebufferHandle, k_max_cascades> shadow_fbos_;
     std::array<int, k_max_cascades> cascade_sizes_ = {2048, 1024, 512, 512};
-    std::array<float, k_max_cascades> cascade_biases_ = {0.0015f, 0.003f, 0.006f, 0.012f};
+    std::array<float, k_max_cascades> cascade_biases_ = {0.0005f, 0.001f, 0.002f, 0.004f};
     std::array<math::Matrix4f, k_max_cascades> cascade_light_space_matrices_;
     std::array<float, k_max_cascades + 1> cascade_split_distances_;
     std::array<float, k_max_cascades> cascade_texel_sizes_;

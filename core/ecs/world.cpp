@@ -106,6 +106,7 @@ static void sort_systems_by_priority(std::vector<std::unique_ptr<ISystem>>& syst
 
 void World::update(float dt) {
     if (!initialized_ || !scene_ || !updates_enabled_) return;
+    sort_systems_by_priority(systems_);
     // 先驱动组件级 update，再按阶段跑 System update
     scene_->update(dt);
     for (auto phase : {ISystem::Phase::PreUpdate, ISystem::Phase::Update, ISystem::Phase::PostUpdate}) {
@@ -119,6 +120,7 @@ void World::update(float dt) {
 
 void World::render(render::RenderContext& ctx) {
     if (!initialized_ || !scene_) return;
+    sort_systems_by_priority(systems_);
     for (auto phase : {ISystem::Phase::PreRender, ISystem::Phase::Render, ISystem::Phase::PostRender}) {
         for (const auto& sys : systems_) {
             if (sys->enabled && sys->phase() == phase) {

@@ -15,7 +15,7 @@ namespace gryce_engine::components {
 // ComponentFactory — 组件类型注册表
 // 通过类型名字符串反序列化时创建对应组件。
 // ---------------------------------------------------------------------------
-class ComponentFactory {
+class GRYCE_API ComponentFactory {
 public:
     using Creator = std::function<std::unique_ptr<Component>()>;
 
@@ -23,6 +23,8 @@ public:
 
     void register_type(const std::string& type, Creator creator);
     void register_type(const std::string& type, Creator creator, const std::string& description);
+    void register_type(const std::string& type, Creator creator, const std::string& description,
+                       const std::string& category);
     std::unique_ptr<Component> create(const std::string& type) const;
     bool has_type(const std::string& type) const;
 
@@ -30,6 +32,8 @@ public:
     std::vector<std::string> all_types() const;
     // 组件描述；未注册或没有描述返回空字符串
     const char* description(const std::string& type) const;
+    // 组件分类：Node3D / Node2D / Other（Create Entity 对话框分组用）
+    const char* category(const std::string& type) const;
 
 private:
     ComponentFactory() = default;
@@ -37,6 +41,7 @@ private:
     struct TypeInfo {
         Creator creator;
         std::string description;
+        std::string category = "Other";
     };
 
     std::unordered_map<std::string, TypeInfo> creators_;

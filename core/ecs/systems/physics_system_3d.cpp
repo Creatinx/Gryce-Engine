@@ -12,6 +12,8 @@
 #include "components/box_collider.h"
 #include "components/sphere_collider.h"
 #include "components/plane_collider.h"
+#include "components/3d/colliders.h"
+#include "components/3d/system_components.h"
 #include "components/character_controller_3d.h"
 #include "components/joint_3d.h"
 #include "components/transform.h"
@@ -49,6 +51,25 @@ float compute_body_volume(scene::Entity* entity) {
     }
     if (auto* sphere = entity->get_component<components::SphereCollider>()) {
         const float r = sphere->radius * std::max(scale.x, std::max(scale.y, scale.z));
+        return (4.0f / 3.0f) * k_pi * r * r * r;
+    }
+    if (auto* capsule = entity->get_component<components::CapsuleCollider>()) {
+        const float r = capsule->radius * std::max(scale.x, std::max(scale.y, scale.z));
+        const float h = capsule->height * scale.y;
+        const float cyl_h = std::max(0.0f, h - 2.0f * r);
+        return k_pi * r * r * cyl_h + (4.0f / 3.0f) * k_pi * r * r * r;
+    }
+    if (auto* cylinder = entity->get_component<components::CylinderCollider>()) {
+        const float r = cylinder->radius * std::max(scale.x, scale.z);
+        const float h = cylinder->height * scale.y;
+        return k_pi * r * r * h;
+    }
+    if (auto* tv = entity->get_component<components::TriggerVolume>()) {
+        if (tv->is_box) {
+            math::Vector3f s = mul_per_component(tv->size, scale);
+            return s.x * s.y * s.z;
+        }
+        const float r = tv->radius * std::max(scale.x, std::max(scale.y, scale.z));
         return (4.0f / 3.0f) * k_pi * r * r * r;
     }
     // 无限平面视为零体积
@@ -93,7 +114,12 @@ bool has_physics_shape(scene::Entity* entity) {
     if (mr && !mr->mesh_path.empty()) return true;
     return entity->get_component<components::BoxCollider>() != nullptr ||
            entity->get_component<components::SphereCollider>() != nullptr ||
-           entity->get_component<components::PlaneCollider>() != nullptr;
+           entity->get_component<components::PlaneCollider>() != nullptr ||
+           entity->get_component<components::CapsuleCollider>() != nullptr ||
+           entity->get_component<components::CylinderCollider>() != nullptr ||
+           entity->get_component<components::ConvexMeshCollider>() != nullptr ||
+           entity->get_component<components::MeshCollider>() != nullptr ||
+           entity->get_component<components::TriggerVolume>() != nullptr;
 }
 
 // 实体任一碰撞体标记为触发器（is_trigger）即为传感器。
@@ -108,6 +134,19 @@ bool entity_has_trigger(scene::Entity* entity) {
     if (auto* plane = entity->get_component<components::PlaneCollider>()) {
         if (plane->is_trigger) return true;
     }
+    if (auto* capsule = entity->get_component<components::CapsuleCollider>()) {
+        if (capsule->is_trigger) return true;
+    }
+    if (auto* cylinder = entity->get_component<components::CylinderCollider>()) {
+        if (cylinder->is_trigger) return true;
+    }
+    if (auto* convex = entity->get_component<components::ConvexMeshCollider>()) {
+        if (convex->is_trigger) return true;
+    }
+    if (auto* mesh = entity->get_component<components::MeshCollider>()) {
+        if (mesh->is_trigger) return true;
+    }
+    if (entity->get_component<components::TriggerVolume>() != nullptr) return true;
     return false;
 }
 
@@ -141,6 +180,25 @@ struct PhysicsSystem3D::Impl {
         bool has_plane = false;
         math::Vector3f last_plane_normal;
         float last_plane_offset = 0.0f;
+        bool has_capsule = false;
+        float last_capsule_radius = 0.0f;
+        float last_capsule_height = 0.0f;
+        math::Vector3f last_capsule_center;
+        bool has_cylinder = false;
+        float last_cylinder_radius = 0.0f;
+        float last_cylinder_height = 0.0f;
+        math::Vector3f last_cylinder_center;
+        bool has_convex_mesh = false;
+        std::string last_convex_mesh_path;
+        math::Vector3f last_convex_center;
+        bool has_mesh_collider = false;
+        std::string last_mesh_collider_path;
+        bool last_mesh_collider_convex = false;
+        bool has_trigger_volume = false;
+        bool last_trigger_volume_is_box = false;
+        math::Vector3f last_trigger_volume_size;
+        float last_trigger_volume_radius = 0.0f;
+        math::Vector3f last_trigger_volume_center;
 
         // 材质/质量缓存，用于检测是否需要重建 body
         float last_mass = 0.0f;
@@ -313,11 +371,18 @@ struct PhysicsSystem3D::Impl {
         const bool has_mesh = mr && !mr->mesh_path.empty();
         const std::string current_mesh = mr ? mr->mesh_path : std::string();
 
-        // Mesh takes precedence when building the shape (see create_shape_for_slot).
-        // If the entity also carries primitive collider components, those are NOT
-        // used for the shape, so they must not drive the "changed" detection here;
-        // otherwise every frame reports a change and rebuilds all bodies.
-        if (has_mesh) {
+        const bool has_explicit =
+            entity->get_component<components::BoxCollider>() != nullptr ||
+            entity->get_component<components::SphereCollider>() != nullptr ||
+            entity->get_component<components::PlaneCollider>() != nullptr ||
+            entity->get_component<components::CapsuleCollider>() != nullptr ||
+            entity->get_component<components::CylinderCollider>() != nullptr ||
+            entity->get_component<components::ConvexMeshCollider>() != nullptr ||
+            entity->get_component<components::MeshCollider>() != nullptr ||
+            entity->get_component<components::TriggerVolume>() != nullptr;
+
+        // 显式碰撞体优先；无显式碰撞体时回退到 MeshRenderer 网格。
+        if (has_mesh && !has_explicit) {
             return current_mesh != slot.last_mesh_path ||
                    entity_has_trigger(entity) != slot.last_is_trigger;
         }
@@ -351,7 +416,62 @@ struct PhysicsSystem3D::Impl {
             return true;
         }
 
-        if (current_mesh != slot.last_mesh_path) return true;
+        auto* capsule = entity->get_component<components::CapsuleCollider>();
+        if (capsule) {
+            if (!slot.has_capsule || capsule->radius != slot.last_capsule_radius ||
+                capsule->height != slot.last_capsule_height ||
+                capsule->center != slot.last_capsule_center) {
+                return true;
+            }
+        } else if (slot.has_capsule) {
+            return true;
+        }
+
+        auto* cylinder = entity->get_component<components::CylinderCollider>();
+        if (cylinder) {
+            if (!slot.has_cylinder || cylinder->radius != slot.last_cylinder_radius ||
+                cylinder->height != slot.last_cylinder_height ||
+                cylinder->center != slot.last_cylinder_center) {
+                return true;
+            }
+        } else if (slot.has_cylinder) {
+            return true;
+        }
+
+        auto* convex = entity->get_component<components::ConvexMeshCollider>();
+        if (convex) {
+            if (!slot.has_convex_mesh || convex->mesh_path != slot.last_convex_mesh_path ||
+                convex->center != slot.last_convex_center) {
+                return true;
+            }
+        } else if (slot.has_convex_mesh) {
+            return true;
+        }
+
+        auto* mesh_c = entity->get_component<components::MeshCollider>();
+        if (mesh_c) {
+            if (!slot.has_mesh_collider || mesh_c->mesh_path != slot.last_mesh_collider_path ||
+                mesh_c->convex != slot.last_mesh_collider_convex) {
+                return true;
+            }
+        } else if (slot.has_mesh_collider) {
+            return true;
+        }
+
+        auto* tv = entity->get_component<components::TriggerVolume>();
+        if (tv) {
+            if (!slot.has_trigger_volume ||
+                tv->is_box != slot.last_trigger_volume_is_box ||
+                tv->size != slot.last_trigger_volume_size ||
+                tv->radius != slot.last_trigger_volume_radius ||
+                tv->center != slot.last_trigger_volume_center) {
+                return true;
+            }
+        } else if (slot.has_trigger_volume) {
+            return true;
+        }
+
+        if (!has_explicit && current_mesh != slot.last_mesh_path) return true;
 
         if (entity_has_trigger(entity) != slot.last_is_trigger) return true;
 
@@ -405,31 +525,32 @@ struct PhysicsSystem3D::Impl {
         slot.has_box = false;
         slot.has_sphere = false;
         slot.has_plane = false;
+        slot.has_capsule = false;
+        slot.has_cylinder = false;
+        slot.has_convex_mesh = false;
+        slot.has_mesh_collider = false;
+        slot.has_trigger_volume = false;
+        slot.last_mesh_path.clear();
 
-        auto* mr = entity->get_component<components::MeshRenderer>();
-        if (mr && !mr->mesh_path.empty()) {
-            auto mesh_data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+        const auto scale_pos = [&scale](const math::Vector3f& p) {
+            return math::Vector3f(p.x * scale.x, p.y * scale.y, p.z * scale.z);
+        };
+        const auto fill_mesh_points = [&](const std::string& path,
+                                          physics::ShapeType mesh_type,
+                                          bool keep_indices) {
+            auto mesh_data = assets::AssetManager::instance().load_mesh(path);
             if (!mesh_data || mesh_data->vertices.empty()) {
-                GLOG_WARN("PhysicsSystem3D: no mesh data for entity '{}'", entity->name());
-                return;
+                GLOG_WARN("PhysicsSystem3D: no mesh data for entity '{}' ({})", entity->name(), path);
+                return false;
             }
-
-            // 静态物体用精确三角网格，动态刚体用凸包（Jolt MeshShape 不能用于动态）
-            // 顶点需乘 transform scale：Jolt body transform 只含位置/旋转（无 scale），
-            // 若不缩放顶点，碰撞体尺寸会与渲染（模型矩阵含 scale）不一致，导致物体穿透地面。
-            const bool is_static = entity->get_component<components::StaticBody>() != nullptr;
-            const auto scale_pos = [&scale](const math::Vector3f& p) {
-                return math::Vector3f(p.x * scale.x, p.y * scale.y, p.z * scale.z);
-            };
-            if (is_static) {
-                desc.type = physics::ShapeType::Mesh;
-                desc.points.reserve(mesh_data->vertices.size());
-                for (const auto& v : mesh_data->vertices) {
-                    desc.points.push_back(scale_pos(v.position));
-                }
+            desc.type = mesh_type;
+            desc.points.reserve(mesh_data->vertices.size());
+            for (const auto& v : mesh_data->vertices) {
+                desc.points.push_back(scale_pos(v.position));
+            }
+            if (keep_indices) {
                 desc.indices = mesh_data->indices;
                 if (desc.indices.empty()) {
-                    // 没有索引时从 vertices 顺序生成三角面（假设每 3 个顶点一组）
                     desc.indices.reserve((mesh_data->vertices.size() / 3) * 3);
                     for (uint32_t i = 0; i + 2 < mesh_data->vertices.size(); i += 3) {
                         desc.indices.push_back(i);
@@ -437,44 +558,100 @@ struct PhysicsSystem3D::Impl {
                         desc.indices.push_back(i + 2);
                     }
                 }
-            } else {
-                desc.type = physics::ShapeType::ConvexHull;
-                desc.points.reserve(mesh_data->vertices.size());
-                for (const auto& v : mesh_data->vertices) {
-                    desc.points.push_back(scale_pos(v.position));
-                }
             }
-            slot.last_mesh_path = mr->mesh_path;
-        } else {
-            // 无网格：从原始碰撞体组件构建基本形状
-            slot.last_mesh_path.clear();
-            auto* box = entity->get_component<components::BoxCollider>();
-            auto* sphere = entity->get_component<components::SphereCollider>();
-            auto* plane = entity->get_component<components::PlaneCollider>();
-            if (box) {
+            return true;
+        };
+
+        // 显式碰撞体组件优先，其次回退到 MeshRenderer 网格。
+        if (auto* box = entity->get_component<components::BoxCollider>()) {
+            desc.type = physics::ShapeType::Box;
+            desc.size = mul_per_component(box->size, scale) * 0.5f;
+            desc.offset = mul_per_component(box->center, scale);
+            slot.has_box = true;
+            slot.last_box_size = box->size;
+            slot.last_box_center = box->center;
+        } else if (auto* sphere = entity->get_component<components::SphereCollider>()) {
+            desc.type = physics::ShapeType::Sphere;
+            desc.size = math::Vector3f(sphere->radius * std::max(scale.x, std::max(scale.y, scale.z)), 0.0f, 0.0f);
+            desc.offset = mul_per_component(sphere->center, scale);
+            slot.has_sphere = true;
+            slot.last_sphere_radius = sphere->radius;
+            slot.last_sphere_center = sphere->center;
+        } else if (auto* plane = entity->get_component<components::PlaneCollider>()) {
+            desc.type = physics::ShapeType::Plane;
+            slot.has_plane = true;
+            slot.last_plane_normal = plane->normal;
+            slot.last_plane_offset = plane->offset;
+        } else if (auto* capsule = entity->get_component<components::CapsuleCollider>()) {
+            desc.type = physics::ShapeType::Capsule;
+            const float r = capsule->radius * std::max(scale.x, std::max(scale.y, scale.z));
+            const float half = std::max(0.0f, (capsule->height - 2.0f * capsule->radius) * 0.5f) * scale.y;
+            desc.size = math::Vector3f(r, half, 0.0f);
+            desc.offset = mul_per_component(capsule->center, scale);
+            slot.has_capsule = true;
+            slot.last_capsule_radius = capsule->radius;
+            slot.last_capsule_height = capsule->height;
+            slot.last_capsule_center = capsule->center;
+        } else if (auto* cylinder = entity->get_component<components::CylinderCollider>()) {
+            desc.type = physics::ShapeType::Cylinder;
+            desc.size = math::Vector3f(cylinder->radius * std::max(scale.x, scale.z),
+                                       cylinder->height * 0.5f * scale.y, 0.0f);
+            desc.offset = mul_per_component(cylinder->center, scale);
+            slot.has_cylinder = true;
+            slot.last_cylinder_radius = cylinder->radius;
+            slot.last_cylinder_height = cylinder->height;
+            slot.last_cylinder_center = cylinder->center;
+        } else if (auto* convex = entity->get_component<components::ConvexMeshCollider>()) {
+            if (convex->mesh_path.empty() ||
+                !fill_mesh_points(convex->mesh_path, physics::ShapeType::ConvexHull, false)) {
+                return;
+            }
+            desc.offset = mul_per_component(convex->center, scale);
+            slot.has_convex_mesh = true;
+            slot.last_convex_mesh_path = convex->mesh_path;
+            slot.last_convex_center = convex->center;
+            slot.last_mesh_path = convex->mesh_path;
+        } else if (auto* mesh_c = entity->get_component<components::MeshCollider>()) {
+            if (mesh_c->mesh_path.empty() ||
+                !fill_mesh_points(mesh_c->mesh_path,
+                                  mesh_c->convex ? physics::ShapeType::ConvexHull : physics::ShapeType::Mesh,
+                                  !mesh_c->convex)) {
+                return;
+            }
+            slot.has_mesh_collider = true;
+            slot.last_mesh_collider_path = mesh_c->mesh_path;
+            slot.last_mesh_collider_convex = mesh_c->convex;
+            slot.last_mesh_path = mesh_c->mesh_path;
+        } else if (auto* tv = entity->get_component<components::TriggerVolume>()) {
+            if (tv->is_box) {
                 desc.type = physics::ShapeType::Box;
-                // BoxCollider.size 是完整尺寸，Jolt BoxShape 需要半宽
-                desc.size = mul_per_component(box->size, scale) * 0.5f;
-                desc.offset = mul_per_component(box->center, scale);
-                slot.has_box = true;
-                slot.last_box_size = box->size;
-                slot.last_box_center = box->center;
-            } else if (sphere) {
-                desc.type = physics::ShapeType::Sphere;
-                desc.size = math::Vector3f(sphere->radius * std::max(scale.x, std::max(scale.y, scale.z)), 0.0f, 0.0f);
-                desc.offset = mul_per_component(sphere->center, scale);
-                slot.has_sphere = true;
-                slot.last_sphere_radius = sphere->radius;
-                slot.last_sphere_center = sphere->center;
-            } else if (plane) {
-                desc.type = physics::ShapeType::Plane;
-                slot.has_plane = true;
-                slot.last_plane_normal = plane->normal;
-                slot.last_plane_offset = plane->offset;
+                desc.size = mul_per_component(tv->size, scale) * 0.5f;
             } else {
+                desc.type = physics::ShapeType::Sphere;
+                desc.size = math::Vector3f(tv->radius * std::max(scale.x, std::max(scale.y, scale.z)), 0.0f, 0.0f);
+            }
+            desc.offset = mul_per_component(tv->center, scale);
+            slot.has_trigger_volume = true;
+            slot.last_trigger_volume_is_box = tv->is_box;
+            slot.last_trigger_volume_size = tv->size;
+            slot.last_trigger_volume_radius = tv->radius;
+            slot.last_trigger_volume_center = tv->center;
+        } else if (auto* mr = entity->get_component<components::MeshRenderer>()) {
+            if (mr->mesh_path.empty()) {
                 GLOG_WARN("PhysicsSystem3D: entity '{}' has no collider or mesh", entity->name());
                 return;
             }
+            const bool is_static = entity->get_component<components::StaticBody>() != nullptr;
+            // 静态物体用精确三角网格，动态刚体用凸包（Jolt MeshShape 不能用于动态）
+            if (!fill_mesh_points(mr->mesh_path,
+                                  is_static ? physics::ShapeType::Mesh : physics::ShapeType::ConvexHull,
+                                  is_static)) {
+                return;
+            }
+            slot.last_mesh_path = mr->mesh_path;
+        } else {
+            GLOG_WARN("PhysicsSystem3D: entity '{}' has no collider or mesh", entity->name());
+            return;
         }
 
         slot.shape = world->create_shape(desc);
@@ -885,6 +1062,32 @@ struct PhysicsSystem3D::Impl {
             }
         }
     }
+
+    void update_raycast_components(scene::Scene& scene) {
+        if (!world) return;
+        scene.foreach([&](scene::Entity* entity) {
+            if (!entity || !entity->enabled) return;
+            auto* ray = entity->get_component<components::RayCast3D>();
+            if (!ray) return;
+            auto* t = entity->transform();
+            if (!t) return;
+            math::Vector3f dir = t->rotation.rotate_vector(ray->direction);
+            if (dir.length_sq() < 1e-9f) {
+                ray->hit = false;
+                return;
+            }
+            dir = dir.normalized();
+            auto hit = world->raycast(t->position, dir, ray->max_distance);
+            if (hit.has_value()) {
+                ray->hit = true;
+                ray->hit_point = hit->point;
+                ray->hit_normal = hit->normal;
+                ray->hit_distance = hit->distance;
+            } else {
+                ray->hit = false;
+            }
+        });
+    }
 };
 
 PhysicsSystem3D::PhysicsSystem3D()
@@ -1026,6 +1229,9 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
 
     // 取回本帧碰撞/触发事件并更新 last_collision_impulse
     impl_->drain_collision_events_internal();
+
+    // 填充 RayCast3D 组件结果
+    impl_->update_raycast_components(scene);
 
     // 清理已销毁实体对应的 body，同时级联销毁关联的关节
     for (auto it = impl_->slots.begin(); it != impl_->slots.end();) {

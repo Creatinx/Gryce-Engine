@@ -27,6 +27,7 @@ enum class ShapeType {
     Box,
     Sphere,
     Capsule,
+    Cylinder,
     Plane,
     ConvexHull, // 由模型顶点构建的凸包碰撞体（用于动态刚体）
     Mesh        // 由模型顶点+索引构建的三角网格碰撞体（主要用于静态物体）
@@ -78,6 +79,7 @@ struct MaterialDesc {
     float friction = 0.5f;
     float restitution = 0.2f;
     float density = 1.0f;
+    bool is_sensor = false;
 };
 
 struct RaycastHit {
@@ -91,7 +93,10 @@ enum class JointType {
     Distance,
     Fixed,
     Hinge,
-    Spring
+    Spring,
+    Prismatic,
+    Wheel,
+    Rope
 };
 
 struct JointDesc2D {
@@ -100,6 +105,8 @@ struct JointDesc2D {
     BodyHandle body_b = k_invalid_body;
     math::Vector2f anchor_a;
     math::Vector2f anchor_b;
+    math::Vector2f axis_a{1.0f, 0.0f};
+    math::Vector2f axis_b{1.0f, 0.0f};
     float length = 1.0f;
     float frequency = 0.0f;
     float damping = 0.0f;

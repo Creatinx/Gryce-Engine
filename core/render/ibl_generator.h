@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "math/math.h"
+#include "render/export.h"
 
 namespace gryce_engine {
 namespace assets { struct TextureData; }
@@ -46,7 +47,7 @@ struct IBLData {
     }
 };
 
-class IBLGenerator {
+class GRYCE_RENDERER_API IBLGenerator {
 public:
     // 从 equirectangular HDR/EXR TextureData 生成 IBL 资源。
     // radiance_size：环境 cubemap 边长（建议 512 或 256）

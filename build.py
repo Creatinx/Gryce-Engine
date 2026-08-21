@@ -363,7 +363,7 @@ def main():
     )
     parser.add_argument(
         "--editor", action="store_true",
-        help="Windows: also build the WPF Editor (C#/dotnet) via CMake target"
+        help="Deprecated: Editor is now built by default (C++/ImGui)"
     )
     parser.add_argument(
         "--offline", action="store_true",
@@ -448,6 +448,9 @@ def main():
             if (f"cmake_cxx_compiler:filepath={cxx_lower}" not in content and
                     f"cmake_cxx_compiler:uninitialized={cxx_lower}" not in content):
                 return True
+        editor_cache_on = "gryce_build_editor:bool=on" in content
+        if editor_cache_on != args.editor:
+            return True
         return False
 
     if needs_reconfigure():
@@ -476,13 +479,7 @@ def main():
             configure_cmd += ["-DGRYCE_BUILD_EDITOR=ON"]
             if IS_WINDOWS:
                 print(
-                    f"{C_INFO}[Gryce Engine]{C_RESET} --editor: WPF Editor will be built "
-                    "by the CMake 'GryceEditor' target via dotnet"
-                )
-            else:
-                print(
-                    f"{C_WARN}[Gryce Engine]{C_RESET} --editor ignored: WPF Editor is "
-                    "Windows-only"
+                    f"{C_INFO}[Gryce Engine]{C_RESET} --editor: C++/ImGui Editor will be built"
                 )
 
         configure_cmd += [str(project_root)]
@@ -522,25 +519,9 @@ def main():
         print(output)
         sys.exit(1)
 
-    # Editor 目标不属于 ALL（根 CMake 约定），显式编译它；
-    # 该目标依赖核心 DLL，会先构建/复制原生库再执行 dotnet。
-    if args.editor and IS_WINDOWS:
-        print(f"{C_INFO}[Gryce Engine]{C_RESET} Building WPF Editor (GryceEditor target) ...")
-        editor_cmd = [cmake, "--build", str(build_dir), "--target", "GryceEditor"]
-        if args.verbose:
-            editor_cmd.append("--verbose")
-        if args.jobs > 0:
-            editor_cmd += ["-j", str(args.jobs)]
-        ok, output = run(editor_cmd, check=False)
-        if not ok:
-            print(f"{C_ERR}[ERROR] Editor build failed:{C_RESET}")
-            print(output)
-            sys.exit(1)
-
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
-    if args.editor and IS_WINDOWS:
-        print(f"  Editor:   editor/bin/{config}/net48/GryceEngine.Editor.exe")
+    print(f"  Editor:   GryceEditor (C++/ImGui)")
 
 
 if __name__ == "__main__":

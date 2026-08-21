@@ -11,6 +11,7 @@ add_library(GryceCore SHARED)
 set_target_properties(GryceCore PROPERTIES
     OUTPUT_NAME GryceCore
     RUNTIME_OUTPUT_NAME GryceCore
+    PREFIX ""
     EXPORT_NAME GryceCore
     FOLDER "Core"
 )
@@ -76,12 +77,15 @@ target_sources(GryceCore
         scene/prefab.cpp
         scene/scene_serializer.cpp
         script/lua_runtime.cpp
+        script/big_number.cpp
+        script/lua_math_bindings.cpp
         ecs/systems/script_system.cpp
         ecs/world.cpp
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
         ecs/systems/fracture_system.cpp
         ecs/systems/subviewport_system.cpp
+        ecs/systems/hierarchy_system.cpp
         # Render 核心（与 backend 无关）
         render/render_context.cpp
         render/material.cpp
@@ -97,6 +101,8 @@ target_sources(GryceCore
         render/render_pipeline.cpp
         render/shadow_pass.cpp
         render/postprocess_pass.cpp
+        # Godot 式渲染器抽象层
+        render/renderer_compositor.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -113,6 +119,7 @@ target_sources(GryceCore
             components/component.h
             components/component_factory.h
             components/transform.h
+            components/hierarchy_components.h
             components/physics_body.h
             components/node2d.h
             components/node3d.h
@@ -142,6 +149,16 @@ target_sources(GryceCore
             components/2d/camera_2d.h
             components/2d/parallax_background.h
             components/2d/particle_emitter.h
+            components/3d/visual_components.h
+            components/3d/colliders.h
+            components/3d/navigation_components.h
+            components/3d/system_components.h
+            components/2d/anim_components.h
+            components/2d/visual_components.h
+            components/2d/physics_components.h
+            components/2d/navigation_components.h
+            components/2d/misc_components.h
+            components/common/system_components.h
             components/audio_source.h
             audio/audio_engine.h
             resources/tileset.h
@@ -184,6 +201,7 @@ target_sources(GryceCore
             ecs/systems/physics_system_2d.h
             ecs/systems/fracture_system.h
             ecs/systems/animator_system.h
+            ecs/systems/hierarchy_system.h
             math/math.h
             math/camera.h
             utils/glog/glog_lib.h
@@ -191,6 +209,18 @@ target_sources(GryceCore
             reflection/reflection.h
             # 渲染抽象/管线实现在 GryceCore（render_pipeline.cpp 等），头文件随实现归位
             render/render_pipeline.h
+            # Godot 式渲染器抽象层
+            render/rendering_device.h
+            render/renderer_compositor.h
+            render/renderer_scene_render.h
+            render/renderer_fog.h
+            render/renderer_gi.h
+            render/storage_rd/light_storage.h
+            render/storage_rd/material_storage.h
+            render/storage_rd/mesh_storage.h
+            render/storage_rd/texture_storage.h
+            render/storage_rd/particles_storage.h
+            render/storage_rd/utilities.h
 )
 
 target_include_directories(GryceCore
@@ -238,6 +268,7 @@ add_library(GryceRenderer SHARED)
 set_target_properties(GryceRenderer PROPERTIES
     OUTPUT_NAME GryceRenderer
     RUNTIME_OUTPUT_NAME GryceRenderer
+    PREFIX ""
     EXPORT_NAME GryceRenderer
     FOLDER "Core"
 )
@@ -249,6 +280,36 @@ target_sources(GryceRenderer
         api/render_api.cpp
         render/render.cpp
         render/renderer2d_impl.cpp
+        # Godot 式渲染器实现
+        render/render_forward_basic.cpp
+        render/renderer_canvas_render_rd.cpp
+        render/compositor_basic.cpp
+        render/compositor_forward_clustered.cpp
+        # Forward Clustered 渲染器
+        render/renderer_rd/cluster_builder_rd.cpp
+        render/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp
+        render/renderer_rd/forward_clustered/render_forward_clustered.cpp
+        render/renderer_rd/forward_clustered/shadow_system_rd.cpp
+        # 后处理效果
+        render/renderer_rd/effects/ssr.cpp
+        render/renderer_rd/effects/ssil.cpp
+        render/renderer_rd/effects/bokeh_dof.cpp
+        render/renderer_rd/effects/fsr2.cpp
+        render/renderer_rd/effects/subsurface_scattering.cpp
+        # GI 系统
+        render/renderer_rd/environment/sdfgi.cpp
+        render/renderer_rd/environment/voxel_gi.cpp
+        render/renderer_rd/environment/fog.cpp
+        render/renderer_rd/environment/reflection_probe.cpp
+        # Storage 系统实现
+        render/storage_rd/mesh_storage_impl.cpp
+        render/storage_rd/material_storage_impl.cpp
+        render/storage_rd/texture_storage_impl.cpp
+        render/storage_rd/light_storage_impl.cpp
+        render/storage_rd/decal_storage.cpp
+        # RenderingServer + Compositor Effect
+        render/compositor_effect.cpp
+        render/rendering_server_default.cpp
         render/opengl/gl_backend.cpp
         render/opengl/gl_frame_pacing.cpp
         render/opengl/gl_buffer.cpp
@@ -279,6 +340,43 @@ target_sources(GryceRenderer
             render/font_atlas.h
             render/renderer2d_impl.h
             render/imgui_backend.h
+            # Godot 式渲染器实现头文件
+            render/renderer_canvas_render.h
+            render/render_forward_basic.h
+            render/renderer_canvas_render_rd.h
+            render/compositor_basic.h
+            render/compositor_forward_clustered.h
+            # Forward Clustered 头文件
+            render/renderer_rd/cluster_builder_rd.h
+            render/renderer_rd/forward_clustered/scene_shader_forward_clustered.h
+            render/renderer_rd/forward_clustered/render_forward_clustered.h
+            render/renderer_rd/forward_clustered/shadow_system_rd.h
+            # 后处理效果头文件
+            render/renderer_rd/effects/ssr.h
+            render/renderer_rd/effects/ssil.h
+            render/renderer_rd/effects/bokeh_dof.h
+            render/renderer_rd/effects/fsr2.h
+            # GI 系统头文件
+            render/renderer_rd/environment/sdfgi.h
+            render/renderer_rd/environment/voxel_gi.h
+            render/renderer_rd/environment/fog.h
+            render/renderer_rd/environment/reflection_probe.h
+            # Storage 系统头文件
+            render/storage_rd/decal_storage.h
+            render/storage_rd/mesh_storage.h
+            render/storage_rd/material_storage.h
+            render/storage_rd/texture_storage.h
+            render/storage_rd/light_storage.h
+            render/storage_rd/particles_storage.h
+            render/storage_rd/utilities.h
+            render/storage_rd/mesh_storage_impl.h
+            render/storage_rd/material_storage_impl.h
+            render/storage_rd/texture_storage_impl.h
+            render/storage_rd/light_storage_impl.h
+            # RenderingServer + Compositor Effect 头文件
+            render/compositor_effect.h
+            render/rendering_server.h
+            render/rendering_server_default.h
             render/opengl/gl_backend.h
             render/opengl/gl_buffer.h
             render/opengl/gl_shader.h
@@ -350,6 +448,13 @@ set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/assets/tinyexr_impl.cpp
     ${CMAKE_SOURCE_DIR}/third_party/tinyexr/miniz.c
     PROPERTIES COMPILE_FLAGS -w
+)
+
+# 新增组件后反射注册表符号较多，MSVC 需要 /bigobj（GCC/Clang 忽略该 genex）
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/reflection/builtin_reflections.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/components/component_factory.cpp
+    PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/bigobj>"
 )
 
 # ImGui OpenGL3 backend 使用项目已有的 GLEW 加载器
@@ -466,6 +571,7 @@ add_library(GrycePlatform SHARED)
 set_target_properties(GrycePlatform PROPERTIES
     OUTPUT_NAME GrycePlatform
     RUNTIME_OUTPUT_NAME GrycePlatform
+    PREFIX ""
     EXPORT_NAME GrycePlatform
     FOLDER "Core"
 )
@@ -509,6 +615,7 @@ add_library(GrycePhysics SHARED)
 set_target_properties(GrycePhysics PROPERTIES
     OUTPUT_NAME GrycePhysics
     RUNTIME_OUTPUT_NAME GrycePhysics
+    PREFIX ""
     EXPORT_NAME GrycePhysics
     FOLDER "Core"
 )
@@ -574,11 +681,12 @@ set(GRYCE_EDITOR_BIN "${CMAKE_SOURCE_DIR}/editor/bin/$<CONFIG>/net48")
 
 function(gryce_copy_dll_to_editor TARGET_NAME)
     add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${GRYCE_EDITOR_BIN}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:${TARGET_NAME}>"
-            "${GRYCE_EDITOR_BIN}/"
-        COMMENT "Copying $<TARGET_FILE_NAME:${TARGET_NAME}> to editor output"
+        COMMAND ${CMAKE_COMMAND}
+            -DGRYCE_EDITOR_BIN="${GRYCE_EDITOR_BIN}"
+            -DGRYCE_SRC="$<TARGET_FILE:${TARGET_NAME}>"
+            -DGRYCE_NAME="$<TARGET_FILE_NAME:${TARGET_NAME}>"
+            -P "${CMAKE_SOURCE_DIR}/cmake/editor_deploy.cmake"
+        COMMENT "Deploying $<TARGET_FILE_NAME:${TARGET_NAME}> to editor output"
     )
 endfunction()
 
@@ -593,11 +701,12 @@ if(TARGET glfw)
     # copy to GrycePlatform, which links glfw; the $<TARGET_FILE:glfw> genex
     # resolves the DLL path globally.
     add_custom_command(TARGET GrycePlatform POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${GRYCE_EDITOR_BIN}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:glfw>"
-            "${GRYCE_EDITOR_BIN}/"
-        COMMENT "Copying $<TARGET_FILE_NAME:glfw> to editor output"
+        COMMAND ${CMAKE_COMMAND}
+            -DGRYCE_EDITOR_BIN="${GRYCE_EDITOR_BIN}"
+            -DGRYCE_SRC="$<TARGET_FILE:glfw>"
+            -DGRYCE_NAME="$<TARGET_FILE_NAME:glfw>"
+            -P "${CMAKE_SOURCE_DIR}/cmake/editor_deploy.cmake"
+        COMMENT "Deploying $<TARGET_FILE_NAME:glfw> to editor output"
     )
 endif()
 endif()

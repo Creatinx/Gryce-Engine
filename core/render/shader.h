@@ -84,6 +84,36 @@ struct PostProcessParams {
     float ssao_tan_half = 0.577f;
     float ssao_aspect = 1.777f;
 
+    // SSR（屏幕空间反射，默认关闭）
+    int ssr_enabled = 0;
+    float ssr_max_roughness = 0.6f;
+    int ssr_max_steps = 64;
+    float ssr_thickness = 0.1f;
+    float ssr_bilateral_filter = 0.5f;
+
+    // SSIL（屏幕空间间接光照，默认关闭）
+    int ssil_enabled = 0;
+    float ssil_strength = 0.3f;
+    float ssil_radius = 2.0f;
+
+    // Bokeh DOF（景深，默认关闭）
+    int dof_enabled = 0;
+    float dof_focus_distance = 10.0f;
+    float dof_focus_radius = 5.0f;   // 聚焦范围（距离两侧）
+    float dof_blur_amount = 3.0f;
+    float dof_max_coc = 20.0f;       // 最大弥散圆半径（像素）
+
+    // FSR2（超分辨率，默认关闭）
+    int fsr2_enabled = 0;
+    float fsr2_sharpness = 0.5f;
+    int fsr2_render_width = 0;
+    int fsr2_render_height = 0;
+
+    // SSS（次表面散射，默认关闭）
+    int sss_enabled = 0;
+    float sss_strength = 1.0f;
+    float sss_scale = 10.0f;
+
     math::Vector4f lift = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
     math::Vector4f gamma = math::Vector4f(1.0f, 1.0f, 1.0f, 0.0f);
     math::Vector4f gain = math::Vector4f(1.0f, 1.0f, 1.0f, 0.0f);

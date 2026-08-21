@@ -5,11 +5,68 @@ props = {}
 
 local common = require("common")
 
+local ARENA_LIMIT = 19.0
+local ENEMY_RADIUS = 0.5
+-- 竞技场内的掩体 AABB（x/z 范围），用于阻止纯脚本敌人穿墙/穿掩体。
+local COVERS = {
+    { minx = 3.5, maxx = 6.5, minz = 2.2, maxz = 3.8 },
+    { minx = -5.25, maxx = -2.75, minz = -3.6, maxz = -2.4 },
+    { minx = 2.2, maxx = 3.8, minz = -8.4, maxz = -5.6 },
+    { minx = -7.6, maxx = -4.4, minz = 8.5, maxz = 9.5 },
+}
+
 local self_h = 0
 local rest_y = 0.0
 local attack_cd = 0.0
 local grace = 2.0            -- 出生缓冲期，给玩家反应时间
 local chasing = false
+
+local function clamp_arena(x, z)
+    if x < -ARENA_LIMIT then x = -ARENA_LIMIT elseif x > ARENA_LIMIT then x = ARENA_LIMIT end
+    if z < -ARENA_LIMIT then z = -ARENA_LIMIT elseif z > ARENA_LIMIT then z = ARENA_LIMIT end
+    return x, z
+end
+
+local function push_out_of_covers(x, z)
+    local nx, nz = x, z
+    for _, c in ipairs(COVERS) do
+        local cx = math.max(c.minx, math.min(x, c.maxx))
+        local cz = math.max(c.minz, math.min(z, c.maxz))
+        local dx, dz = x - cx, z - cz
+        local d2 = dx * dx + dz * dz
+        if d2 < 1e-9 then
+            -- 圆心已进入掩体内部：沿最小穿透轴推出。
+            local left = x - c.minx
+            local right = c.maxx - x
+            local top = z - c.minz
+            local bottom = c.maxz - z
+            local m = math.min(left, right, top, bottom)
+            if m == left then
+                nx = c.minx - ENEMY_RADIUS
+            elseif m == right then
+                nx = c.maxx + ENEMY_RADIUS
+            elseif m == top then
+                nz = c.minz - ENEMY_RADIUS
+            else
+                nz = c.maxz + ENEMY_RADIUS
+            end
+        else
+            local d = math.sqrt(d2)
+            if d < ENEMY_RADIUS then
+                local push = ENEMY_RADIUS - d
+                nx = x + dx / d * push
+                nz = z + dz / d * push
+            end
+        end
+    end
+    return nx, nz
+end
+
+local function resolve_world_collision(x, z)
+    x, z = clamp_arena(x, z)
+    x, z = push_out_of_covers(x, z)
+    return x, z
+end
 
 function on_start()
     self_h = engine.self()
@@ -77,9 +134,10 @@ function on_update(dt)
     end
     if attack_cd > 0 then attack_cd = attack_cd - dt end
 
-    -- 移动并保持高度
-    t.pos.x = t.pos.x + vx * dt
-    t.pos.z = t.pos.z + vz * dt
+    -- 移动并保持高度（做简单的竞技场/掩体碰撞，防止敌人穿墙）
+    local next_x = t.pos.x + vx * dt
+    local next_z = t.pos.z + vz * dt
+    t.pos.x, t.pos.z = resolve_world_collision(next_x, next_z)
     t.pos.y = rest_y
     engine.entity.set_transform(self_h, t.pos, t.rot, t.scale)
 end

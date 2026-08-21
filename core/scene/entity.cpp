@@ -19,6 +19,13 @@ Entity::Entity(const std::string& name)
     // 因此 Transform 的注册会延迟到 set_store() 中处理。
     transform_ = static_cast<components::Transform*>(
         add_component(std::make_unique<components::Transform>()));
+
+    // 添加 ECS 层级组件（ParentComponent + ChildrenComponent），
+    // 使层级数据对 ECS 组件池查询可见。
+    parent_comp_ = static_cast<components::ParentComponent*>(
+        add_component(std::make_unique<components::ParentComponent>()));
+    children_comp_ = static_cast<components::ChildrenComponent*>(
+        add_component(std::make_unique<components::ChildrenComponent>()));
 }
 
 void Entity::set_store(ecs::ComponentStore* store) {
@@ -154,9 +161,13 @@ void Entity::set_parent(Entity* parent) {
     // 可能导致本对象立即析构（use-after-free 隐患）。
     // 因此所有成员写入必须在 remove_child 之前完成，
     // remove_child 之后不得再访问 this，直接返回。
-    // 需要“重挂父级”的正确路径是 detach_child() + add_child()。
+    // 需要"重挂父级"的正确路径是 detach_child() + add_child()。
     Entity* old_parent = parent_;
     parent_ = parent;
+    // 同步 ParentComponent 的 parent_id
+    if (parent_comp_) {
+        parent_comp_->parent_id = parent ? parent->id() : ecs::k_invalid_entity;
+    }
     if (old_parent) {
         old_parent->remove_child(this); // 此后 this 可能已析构
         return;
@@ -174,11 +185,23 @@ Entity* Entity::insert_child(std::unique_ptr<Entity> child, size_t index) {
     if (index > children_.size()) index = children_.size();
     Entity* raw = child.get();
     raw->parent_ = this;
+    // 同步子实体的 ParentComponent
+    if (raw->parent_comp_) {
+        raw->parent_comp_->parent_id = id_;
+    }
     // 子实体继承父实体的组件存储池
     if (store_) {
         raw->set_store(store_);
     }
     children_.insert(children_.begin() + static_cast<ptrdiff_t>(index), std::move(child));
+    // 同步 ChildrenComponent 的 child_ids
+    if (children_comp_) {
+        children_comp_->child_ids.clear();
+        children_comp_->child_ids.reserve(children_.size());
+        for (const auto& c : children_) {
+            children_comp_->child_ids.push_back(c->id());
+        }
+    }
     return raw;
 }
 
@@ -187,7 +210,19 @@ bool Entity::remove_child(Entity* child) {
     for (auto it = children_.begin(); it != children_.end(); ++it) {
         if (it->get() == child) {
             child->parent_ = nullptr;
+            // 同步子实体的 ParentComponent
+            if (child->parent_comp_) {
+                child->parent_comp_->parent_id = ecs::k_invalid_entity;
+            }
             children_.erase(it);
+            // 同步 ChildrenComponent 的 child_ids
+            if (children_comp_) {
+                children_comp_->child_ids.clear();
+                children_comp_->child_ids.reserve(children_.size());
+                for (const auto& c : children_) {
+                    children_comp_->child_ids.push_back(c->id());
+                }
+            }
             return true;
         }
     }
@@ -201,6 +236,18 @@ std::unique_ptr<Entity> Entity::detach_child(Entity* child) {
             std::unique_ptr<Entity> owned = std::move(*it);
             children_.erase(it);
             owned->parent_ = nullptr;
+            // 同步子实体的 ParentComponent
+            if (owned->parent_comp_) {
+                owned->parent_comp_->parent_id = ecs::k_invalid_entity;
+            }
+            // 同步 ChildrenComponent 的 child_ids
+            if (children_comp_) {
+                children_comp_->child_ids.clear();
+                children_comp_->child_ids.reserve(children_.size());
+                for (const auto& c : children_) {
+                    children_comp_->child_ids.push_back(c->id());
+                }
+            }
             return owned;
         }
     }
@@ -212,6 +259,14 @@ std::vector<std::unique_ptr<Entity>> Entity::detach_all_children() {
     children_.clear();
     for (auto& child : owned) {
         child->parent_ = nullptr;
+        // 同步子实体的 ParentComponent
+        if (child->parent_comp_) {
+            child->parent_comp_->parent_id = ecs::k_invalid_entity;
+        }
+    }
+    // 同步 ChildrenComponent 的 child_ids
+    if (children_comp_) {
+        children_comp_->child_ids.clear();
     }
     return owned;
 }
@@ -252,15 +307,20 @@ std::unique_ptr<Entity> Entity::clone() const {
     clone_entity->enabled = enabled;
     clone_entity->prefab_template_uuid_ = prefab_template_uuid_;
 
-    // 深拷贝所有组件（除 Transform 外，Transform 由构造函数自动创建）
+    // 深拷贝所有组件（除 Transform 和层级组件外，它们由构造函数自创建）
     for (const auto& comp : components_) {
-        if (comp->type() == std::string("Transform")) {
+        const std::string ctype = comp->type();
+        if (ctype == "Transform") {
             // 深拷贝 Transform 数据
             nlohmann::json t_json;
             comp->serialize(t_json);
             if (clone_entity->transform_) {
                 clone_entity->transform_->deserialize(t_json);
             }
+            continue;
+        }
+        if (ctype == "ParentComponent" || ctype == "ChildrenComponent") {
+            // 层级组件由构造函数自动创建，且 clone 时层级关系由 add_child 重建
             continue;
         }
         auto new_comp = components::ComponentFactory::instance().create(comp->type());
@@ -288,7 +348,8 @@ nlohmann::json Entity::snapshot_runtime_state() const {
 
     nlohmann::json comps = nlohmann::json::array();
     for (const auto& comp : components_) {
-        if (comp->type() == std::string("Transform")) continue;
+        const std::string ctype = comp->type();
+        if (ctype == "Transform" || ctype == "ParentComponent" || ctype == "ChildrenComponent") continue;
         nlohmann::json c_json;
         c_json["type"] = comp->type();
         comp->snapshot_runtime_state(c_json);

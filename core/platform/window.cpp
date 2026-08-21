@@ -377,6 +377,15 @@ void Window::get_size(int& width, int& height) const {
     }
 }
 
+void Window::get_framebuffer_size(int& width, int& height) const {
+    if (handle_) {
+        glfwGetFramebufferSize(handle_, &width, &height);
+    } else {
+        width = width_;
+        height = height_;
+    }
+}
+
 void Window::set_vsync(bool enabled) {
     if (!handle_) return;
     if (context_type_ != WindowContextType::OpenGL) return;

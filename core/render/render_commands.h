@@ -33,6 +33,15 @@ enum class BlendEquation {
 };
 
 // ---------------------------------------------------------------------------
+// CullMode — 剔除面模式
+// ---------------------------------------------------------------------------
+enum class CullMode : uint8_t {
+    None,   // 不剔除
+    Back,   // 剔除背面（默认）
+    Front   // 剔除正面（用于阴影贴图渲染以减少 Peter Panning）
+};
+
+// ---------------------------------------------------------------------------
 // RenderCommandType — 结构化渲染命令类型
 // ---------------------------------------------------------------------------
 enum class RenderCommandType : uint8_t {
@@ -77,7 +86,7 @@ struct RenderCommandTyped {
         struct { bool enabled; } blend;
         struct { BlendFactor src; BlendFactor dst; } blend_func;
         BlendEquation blend_equation;
-        struct { bool enabled; } cull_face;
+        struct { CullMode mode; } cull_face;
         struct { bool enabled; int iterations; } gpu_busy_spin;
         int swap_interval;
         int uniform_int;
@@ -154,10 +163,10 @@ struct RenderCommandTyped {
         return cmd;
     }
 
-    static RenderCommandTyped make_set_cull_face(bool enabled) {
+    static RenderCommandTyped make_set_cull_face(CullMode mode) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetCullFace;
-        cmd.cull_face = {enabled};
+        cmd.cull_face = {mode};
         return cmd;
     }
 

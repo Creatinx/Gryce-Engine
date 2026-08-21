@@ -151,6 +151,13 @@ python build.py --offline          # 离线模式（仅用本地缓存依赖）
 python build.py --verbose          # 输出 ninja 详细日志
 ```
 
+> **MinGW 与 MSVC 双工具链支持**：`gcc`（MSYS2 UCRT64）与 `msvc` 均可用上述
+> build.py 流程构建，核心 DLL 命名统一为 `GryceCore(d).dll` /
+> `GryceRenderer(d).dll` / `GrycePlatform(d).dll` / `GrycePhysics(d).dll`
+> （MinGW 不再带 `lib` 前缀），WPF 编辑器从任一工具链构建都能加载。
+> 编辑器正在运行时 DLL/exe 会被锁定：原生 DLL 部署失败只告警不中断构建，
+> 关闭编辑器后重跑构建即可完成部署（dotnet 编译的 exe 复制同理）。
+
 本项目不依赖 Visual Studio 解决方案：`build.py` 与 CMake 统一走 Ninja（或 Makefiles）
 单配置目录（`build/<Config>`），不生成 `.slnx` / `.vcxproj`。CLion 可直接打开项目
 根目录，用任意工具链配置。

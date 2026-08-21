@@ -226,4 +226,64 @@ int GLMesh::get_component_count(VertexType type) const {
     return 3;
 }
 
+// ---------------------------------------------------------------------------
+// GLStorageBuffer
+// ---------------------------------------------------------------------------
+
+GLStorageBuffer::GLStorageBuffer() = default;
+
+GLStorageBuffer::~GLStorageBuffer() {
+    destroy();
+}
+
+bool GLStorageBuffer::create(size_t size, const void* data, BufferUsage usage) {
+    destroy();
+
+    switch (usage) {
+        case BufferUsage::Static:  gl_usage_ = GL_STATIC_DRAW;  break;
+        case BufferUsage::Dynamic: gl_usage_ = GL_DYNAMIC_DRAW; break;
+        case BufferUsage::Stream:  gl_usage_ = GL_STREAM_DRAW;  break;
+    }
+
+    glGenBuffers(1, &ssbo_);
+    if (!ssbo_) {
+        GLOG_ERROR("GLStorageBuffer::create: glGenBuffers failed");
+        return false;
+    }
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(size), data, gl_usage_);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    GL_CHECK_ERROR();
+
+    size_ = size;
+    GLOG_DEBUG("GLStorageBuffer::create: ssbo={}, size={}", ssbo_, size);
+    return true;
+}
+
+void GLStorageBuffer::update(const void* data, size_t size, size_t offset) {
+    if (!ssbo_) return;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER,
+                    static_cast<GLintptr>(offset),
+                    static_cast<GLsizeiptr>(size),
+                    data);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    GL_CHECK_ERROR();
+}
+
+void GLStorageBuffer::bind(uint32_t binding_point) const {
+    if (!ssbo_) return;
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding_point, ssbo_);
+    GL_CHECK_ERROR();
+}
+
+void GLStorageBuffer::destroy() {
+    if (ssbo_) {
+        glDeleteBuffers(1, &ssbo_);
+        ssbo_ = 0;
+        size_ = 0;
+    }
+}
+
 } // namespace gryce_engine::render

@@ -42,7 +42,7 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
             backend->set_blend_equation(cmd.blend_equation);
             break;
         case RenderCommandType::SetCullFace:
-            backend->set_cull_face(cmd.cull_face.enabled);
+            backend->set_cull_face(cmd.cull_face.mode);
             break;
         case RenderCommandType::BindFramebuffer:
             backend->bind_framebuffer(cmd.framebuffer);
@@ -121,7 +121,7 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
 struct CommandStateCache {
     bool depth_test = false;
     bool blend = false;
-    bool cull_face = false;
+    CullMode cull_face = CullMode::Back;
     BlendFactor blend_src = BlendFactor::One;
     BlendFactor blend_dst = BlendFactor::One;
     BlendEquation blend_eq = BlendEquation::Add;
@@ -160,8 +160,8 @@ struct CommandStateCache {
                 break;
             }
             case RenderCommandType::SetCullFace: {
-                if (initialized && cull_face == cmd.cull_face.enabled) return false;
-                cull_face = cmd.cull_face.enabled;
+                if (initialized && cull_face == cmd.cull_face.mode) return false;
+                cull_face = cmd.cull_face.mode;
                 break;
             }
             case RenderCommandType::SetViewport: {

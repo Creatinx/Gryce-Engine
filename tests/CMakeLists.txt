@@ -22,6 +22,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             physics_2d_test.cpp
             fracture_test.cpp
             lua_script_test.cpp
+            lua_math_test.cpp
             tilemap_test.cpp
             render2d_test.cpp
             scene_serialization_test.cpp
@@ -33,6 +34,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             reflection_2d_test.cpp
             ray_test.cpp
             pick_test.cpp
+            new_components_test.cpp
             scale_benchmark_test.cpp
             backend_smoke_test.cpp
     )

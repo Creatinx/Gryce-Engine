@@ -1,4 +1,5 @@
 #include "script/lua_runtime.h"
+#include "script/lua_math_bindings.h"
 
 #include "GryceCore/types.h"
 #include "runtime/engine_context.h"
@@ -969,6 +970,10 @@ bool LuaRuntime::init() {
 
     luaL_openlibs(L_);
 
+    // GryceSRT 数学扩展与超高精度数值模块（math.* / big.*）
+    register_gryce_math_library(L_);
+    register_big_number_library(L_);
+
     // engine.state 共享状态表（跨实体/跨场景）
     lua_newtable(L_);
     state_table_ref_ = luaL_ref(L_, LUA_REGISTRYINDEX);
@@ -1028,6 +1033,15 @@ bool LuaRuntime::run_file(const char* path, std::string* err) {
     std::ostringstream ss;
     ss << in.rdbuf();
     return run_string(ss.str().c_str(), err);
+}
+
+bool LuaRuntime::get_global_string(const char* name, std::string& out) {
+    if (!L_ || !name) return false;
+    lua_getglobal(L_, name);
+    const bool ok = lua_isstring(L_, -1) != 0;
+    if (ok) out = lua_tostring(L_, -1);
+    lua_pop(L_, 1);
+    return ok;
 }
 
 void LuaRuntime::set_current_scene(scene::Scene* scene) {

@@ -72,6 +72,73 @@ function on_update(dt)
 end
 ```
 
+## 2.2 数学库（`math.*` 扩展）
+
+GryceSRT 在标准 `math` 库之上补充了常用游戏数学函数：
+
+| 函数 | 说明 |
+|---|---|
+| `math.lerp(a, b, t)` | 线性插值：`a + (b-a)*t` |
+| `math.inv_lerp(a, b, v)` | 反插值：把 `v` 映射到 `[0,1]` 区间 |
+| `math.remap(v, a, b, c, d)` | 把 `v` 从 `[a,b]` 重映射到 `[c,d]` |
+| `math.clamp(v, lo, hi)` | 限制到 `[lo, hi]` |
+| `math.smoothstep(e0, e1, x)` / `math.smootherstep(...)` | 平滑阶跃（Hermite / Quintic） |
+| `math.sign(v)` | 返回 -1 / 0 / 1 |
+| `math.wrap(v, len)` | 循环取模（始终落在 `[0, len)`） |
+| `math.pingpong(t, len)` | 0→len→0 往复 |
+| `math.move_towards(cur, target, max_delta)` | 以最大步长逼近目标 |
+| `math.damp(cur, target, lambda, dt)` | 指数衰减逼近（帧率无关） |
+| `math.angle_delta(a, b)` / `math.angle_lerp(a, b, t)` | 最短路径角度差 / 角度插值（弧度） |
+| `math.round(v)` / `math.snap(v, step)` | 四舍五入 / 按步长吸附 |
+| `math.approximately(a, b, eps?)` | 近似相等（默认 1e-6） |
+| `math.ease_linear(t)` / `ease_in_quad` / `ease_out_quad` / `ease_in_out_quad` / `ease_in_out_cubic` / `ease_in_out_sine` | 缓动曲线 |
+
+## 2.3 超高精度数值（`big.*`）
+
+GryceSRT 内置任意精度十进制模块：`big` 提供大整数与超高精度浮点，
+默认保留 **32 位小数**，可随时指定更高精度。
+
+```lua
+-- 精确小数运算（0.1 + 0.2 == 0.3，不存在 double 误差）
+local a = big.decimal("0.1")
+local b = big.decimal("0.2")
+print(a + b)          -- 0.3
+
+-- 高精度除法 / 开方
+local third = big.decimal("1") / big.decimal("3")   -- 0.333...（32 位）
+print(big.decimal("2", 60):sqrt(60))                -- √2 精确到 60 位小数
+
+-- 大整数（Fibonacci(100) 精确值）
+local x, y = big.int(0), big.int(1)
+for i = 1, 100 do x, y = y, x + y end
+print(x)              -- 354224848179261915075
+
+-- 常量
+print(big.pi(50))     -- π 精确到 50 位小数
+print(big.e(30))      -- e 精确到 30 位小数
+```
+
+`big` 模块 API：
+
+| 函数 | 说明 |
+|---|---|
+| `big.decimal(x, precision?)` / `big.new(...)` | 构造超高精度浮点；`x` 为数字/字符串/大数 |
+| `big.int(x)` | 构造整数（小数向零截断） |
+| `big.is_big(x)` | 是否为 big 数值 |
+| `big.abs / neg / floor / ceil / round(x)` | 一元运算 |
+| `big.sqrt(x, precision?)` / `big.pow(x, exp, precision?)` | 开方 / 整数次幂 |
+| `big.cmp(a, b)` | 比较，返回 -1 / 0 / 1 |
+| `big.to_float(x)` / `big.to_string(x, places?)` | 转 double / 字符串 |
+| `big.precision(n?)` | 读取/设置默认小数位（默认 32） |
+| `big.pi(precision?)` / `big.e(precision?)` | π / e 常量 |
+
+实例支持算术运算符（`+ - * /`、一元负号、`== ~= < <= > >=`）与
+方法（`:add()` `:sub()` `:mul()` `:div(precision?)` `:pow(exp, precision?)`
+`:sqrt(precision?)` `:floor()` `:ceil()` `:round()` `:abs()` `:neg()`
+`:cmp(b)` `:to_float()` `:to_string(places?)` `:precision(n?)`）。
+
+除零会抛出运行时错误（`big division by zero`），可在 Lua 侧用 `pcall` 捕获。
+
 ## 3. 暴露属性（props）
 
 脚本顶部的 `props` 表会被同步到组件并序列化：

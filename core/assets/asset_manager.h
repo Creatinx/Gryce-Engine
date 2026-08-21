@@ -132,26 +132,20 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// 显式特化声明
+// 显式特化声明（必须标记 GRYCE_API 以便 DLL 导出）
 template<>
-AssetHandle<MeshData> AssetManager::load<MeshData>(const std::string& path);
+GRYCE_API AssetHandle<MeshData> AssetManager::load<MeshData>(const std::string& path);
 
 template<>
-AssetHandle<TextureData> AssetManager::load<TextureData>(const std::string& path);
+GRYCE_API AssetHandle<TextureData> AssetManager::load<TextureData>(const std::string& path);
 
 // 异步加载特化声明
 template<>
-void AssetManager::load_async<MeshData>(const std::string& path,
-                                         std::function<void(AssetHandle<MeshData>)> on_complete);
+GRYCE_API void AssetManager::load_async<MeshData>(const std::string& path,
+                                                   std::function<void(AssetHandle<MeshData>)> on_complete);
 
 template<>
-void AssetManager::load_async<TextureData>(const std::string& path,
-                                            std::function<void(AssetHandle<TextureData>)> on_complete);
-// ---------------------------------------------------------------------------
-template<>
-AssetHandle<MeshData> AssetManager::load<MeshData>(const std::string& path);
-
-template<>
-AssetHandle<TextureData> AssetManager::load<TextureData>(const std::string& path);
+GRYCE_API void AssetManager::load_async<TextureData>(const std::string& path,
+                                                      std::function<void(AssetHandle<TextureData>)> on_complete);
 
 } // namespace gryce_engine::assets

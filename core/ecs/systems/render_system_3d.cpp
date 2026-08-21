@@ -1,11 +1,14 @@
-﻿#include "ecs/systems/render_system_3d.h"
+#include "ecs/systems/render_system_3d.h"
 
 #include "render/render_pipeline.h"
 #include "render/render_context.h"
+#include "render/rendering_server.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
+#include "components/transform.h"
+#include "components/light.h"
 #include "assets/asset_manager.h"
 #include "scene/query.h"
 #include "utils/glog/glog_lib.h"
@@ -77,7 +80,56 @@ void RenderSystem3D::on_render(scene::Scene& scene, render::RenderContext& ctx) 
         });
     }
 
-    pipeline_->render_scene(scene, ctx);
+    // 如果存在 RenderingServer，通过它提交场景数据
+    if (rs_) {
+        // 提交实体渲染数据
+        foreach_with_components<components::MeshRenderer, components::Transform>(
+            scene,
+            [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* transform) {
+                if (!mr || !mr->enabled || !entity) return;
+                rs_->entity_set_transform(entity->id(), transform->local_matrix());
+                rs_->entity_set_visible(entity->id(), true);
+            });
+
+        // 提交光源数据
+        foreach_with_component<components::Light>(
+            scene,
+            [&](scene::Entity* entity, components::Light* light) {
+                if (!light || !light->enabled || !entity) return;
+
+                // 获取或创建光源 RID
+                uint32_t light_id = 0;
+                auto it = entity_light_map_.find(entity->id());
+                if (it != entity_light_map_.end()) {
+                    light_id = it->second;
+                } else {
+                    // 首次见到该实体，创建光源
+                    auto lt = static_cast<render::LightType>(light->light_type);
+                    light_id = rs_->light_create(lt);
+                    entity_light_map_[entity->id()] = light_id;
+                }
+
+                // 更新光源属性
+                rs_->light_set_color(light_id, light->color);
+                rs_->light_set_param(light_id, render::LightParam::Energy, light->intensity);
+                rs_->light_set_param(light_id, render::LightParam::Range, light->range);
+                rs_->light_set_param(light_id, render::LightParam::SpotAngle, light->spot_angle);
+                rs_->light_set_param(light_id, render::LightParam::SpotSoftness, light->spot_softness);
+
+                // 更新光源变换
+                auto* t = entity->get_component<components::Transform>();
+                if (t) {
+                    rs_->light_set_transform(light_id, t->local_matrix());
+                }
+            });
+
+        // 设置场景并渲染帧
+        rs_->set_scene(&scene);
+        rs_->render_frame();
+    } else {
+        // 回退到旧的 RenderPipeline 方式
+        pipeline_->render_scene(scene, ctx);
+    }
 }
 
 } // namespace gryce_engine::ecs

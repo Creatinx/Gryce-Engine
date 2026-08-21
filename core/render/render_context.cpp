@@ -8,6 +8,7 @@
 #include "render/render.h"
 #include "render/mesh.h"
 #include "render/shader.h"
+#include "render/buffer.h"
 #include "render/texture.h"
 #include "render/framebuffer.h"
 #include "utils/glog/glog_lib.h"
@@ -43,7 +44,7 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
             backend->set_blend_equation(cmd.blend_equation);
             break;
         case RenderCommandType::SetCullFace:
-            backend->set_cull_face(cmd.cull_face.enabled);
+            backend->set_cull_face(cmd.cull_face.mode);
             break;
         case RenderCommandType::BindFramebuffer:
             backend->bind_framebuffer(cmd.framebuffer);
@@ -339,6 +340,10 @@ RHIFramebufferHandle RenderContext::create_framebuffer() {
     return backend_ ? backend_->create_framebuffer() : RHIFramebufferHandle{};
 }
 
+RHIBufferHandle RenderContext::create_buffer() {
+    return backend_ ? backend_->create_buffer() : RHIBufferHandle{};
+}
+
 // ---------------------------------------------------------------------------
 // 资源访问（渲染线程使用）
 // ---------------------------------------------------------------------------
@@ -356,6 +361,10 @@ ITexture* RenderContext::texture(RHITextureHandle handle) const {
 
 IFramebuffer* RenderContext::framebuffer(RHIFramebufferHandle handle) const {
     return backend_ ? backend_->framebuffer(handle) : nullptr;
+}
+
+IBuffer* RenderContext::buffer(RHIBufferHandle handle) const {
+    return backend_ ? backend_->buffer(handle) : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +485,21 @@ void RenderContext::destroy_framebuffer(RHIFramebufferHandle handle) {
     }
 }
 
+void RenderContext::destroy_buffer(RHIBufferHandle handle) {
+    if (!handle.is_valid()) return;
+    if (running_) {
+        enqueue_destroy([this, handle]() {
+            if (backend_) backend_->destroy_buffer(handle);
+        });
+    } else {
+        if (backend_ && sync_submit_seq_ != sync_waited_seq_) {
+            backend_->wait_gpu_idle();
+            sync_waited_seq_ = sync_submit_seq_;
+        }
+        if (backend_) backend_->destroy_buffer(handle);
+    }
+}
+
 void RenderContext::set_shader(RHIShaderHandle shader) {
     if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_shader(shader));
@@ -593,9 +617,9 @@ void RenderContext::set_blend(bool enabled) {
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_blend(enabled));
 }
 
-void RenderContext::set_cull_face(bool enabled) {
+void RenderContext::set_cull_face(CullMode mode) {
     if (!cmd_buffer_) return;
-    cmd_buffer_->push_typed(RenderCommandTyped::make_set_cull_face(enabled));
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_cull_face(mode));
 }
 
 void RenderContext::set_framebuffer(RHIFramebufferHandle fb) {

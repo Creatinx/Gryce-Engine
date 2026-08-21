@@ -5,6 +5,7 @@ build_mingw_test/
 build_ninja_msvc/
 build_editor_check/
 build_editor_check2/
+build-msvc/
 cmake-build-*/
 out/
 x64/

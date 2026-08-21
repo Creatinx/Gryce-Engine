@@ -1,4 +1,4 @@
-﻿#include "GryceRenderer/render_api.h"
+#include "GryceRenderer/render_api.h"
 #include "GryceCore/api_guard.h"
 #include "GryceRenderer/viewport_api.h"
 #include "GryceCore/core_api.h"
@@ -56,6 +56,9 @@ struct RendererState {
     int gameview_h = 720;
     GEntityHandle viewport_camera = 0;
     GEntityHandle gameview_camera = 0;
+    // 编辑器相机：非 Game 模式直接使用这些参数，不依赖场景实体
+    math::Camera editor_camera;
+    bool editor_camera_valid = false;
     std::string display_mode = "Shaded";
     bool scene_2d_only = false;
 
@@ -498,22 +501,47 @@ static void render_world_internal(GEntityHandle camera_override = 0) {
             upload_pending_meshes(*world->scene(), *g_renderer.ctx);
         }
         g_renderer.pipeline->set_viewport(g_renderer.viewport_w, g_renderer.viewport_h);
-        // 从场景中解析主摄像机与光源，喂给渲染管线（此前未设置 camera_，
-        // render_scene 直接 return，场景始终画不出来）。
+        // 编辑器场景（非 Game 模式）：直接使用编辑器提供的相机，不依赖场景实体。
+        // Game 模式：通过 GGameView_SetCamera 指定的实体读取相机。
         math::Camera camera;
-        // GameView 独立相机：GGameView_SetCamera 指定的实体优先，
-        // 否则回退到场景主相机（SceneView 行为）。
-        scene::Entity* camera_entity = nullptr;
         if (camera_override != 0) {
-            camera_entity = gryce_core::EntityResolver::resolve(camera_override);
+            // GameView：从场景实体读取相机
+            scene::Entity* camera_entity = gryce_core::EntityResolver::resolve(camera_override);
+            if (!camera_entity) {
+                camera_entity = find_main_camera_entity(*world->scene());
+            }
+            if (!build_scene_camera(camera_entity,
+                    g_renderer.viewport_w, g_renderer.viewport_h, camera)) {
+                // 兜底用编辑器相机
+                camera = g_renderer.editor_camera;
+            }
+        } else {
+            // SceneView：直接使用编辑器相机
+            if (g_renderer.editor_camera_valid) {
+                camera = g_renderer.editor_camera;
+            } else if (scene::Entity* main_cam = find_main_camera_entity(*world->scene())) {
+                // 独立 exe / 无编辑器相机时回退到场景主相机（Lua 驱动的 FPS
+                // 相机等），避免 GRender_RenderWorld 永远用固定机位渲染。
+                if (!build_scene_camera(main_cam,
+                        g_renderer.viewport_w, g_renderer.viewport_h, camera)) {
+                    camera.set_position(math::Vector3f(0.0f, 2.0f, 5.0f));
+                    camera.set_yaw(0.0f);
+                    camera.set_pitch(-30.0f);
+                    camera.set_fov(60.0f);
+                    camera.set_near_far(0.1f, 1000.0f);
+                }
+            } else {
+                camera.set_position(math::Vector3f(0.0f, 2.0f, 5.0f));
+                camera.set_yaw(0.0f);
+                camera.set_pitch(-30.0f);
+                camera.set_fov(60.0f);
+                camera.set_near_far(0.1f, 1000.0f);
+            }
         }
-        if (!camera_entity) {
-            camera_entity = find_main_camera_entity(*world->scene());
-        }
-        if (build_scene_camera(camera_entity,
-                g_renderer.viewport_w, g_renderer.viewport_h, camera)) {
-            g_renderer.pipeline->set_camera(camera);
-        }
+        camera.set_aspect(g_renderer.viewport_h > 0
+            ? static_cast<float>(g_renderer.viewport_w) / static_cast<float>(g_renderer.viewport_h)
+            : 16.0f / 9.0f);
+        g_renderer.pipeline->set_camera(camera);
         std::vector<RenderPipeline::Light> lights;
         collect_scene_lights(*world->scene(), lights);
         g_renderer.pipeline->set_lights(lights);
@@ -750,6 +778,19 @@ GEntityHandle GViewport_GetCamera(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.viewport_camera;
+}
+
+void GViewport_SetEditorCamera(float pos_x, float pos_y, float pos_z,
+                                float yaw, float pitch,
+                                float fov, float near_plane, float far_plane) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.editor_camera.set_position(math::Vector3f(pos_x, pos_y, pos_z));
+    g_renderer.editor_camera.set_yaw(yaw);
+    g_renderer.editor_camera.set_pitch(pitch);
+    g_renderer.editor_camera.set_fov(fov);
+    g_renderer.editor_camera.set_near_far(near_plane, far_plane);
+    g_renderer.editor_camera_valid = true;
 }
 
 void GGameView_SetSize(int w, int h) {

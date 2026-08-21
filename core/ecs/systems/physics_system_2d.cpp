@@ -12,6 +12,8 @@
 #include "components/circle_collider_2d.h"
 #include "components/character_controller_2d.h"
 #include "components/joint_2d.h"
+#include "components/2d/physics_components.h"
+#include "components/2d/tilemap.h"
 #include "components/2d/component_2d.h"
 #include "components/transform.h"
 #include "scene/query.h"
@@ -67,6 +69,19 @@ float compute_density_for_circle(float mass, float radius) {
     return mass / area;
 }
 
+float compute_density_for_polygon(float mass, const std::vector<math::Vector2f>& pts) {
+    float area = 0.0f;
+    const int n = static_cast<int>(pts.size());
+    for (int i = 0; i < n; ++i) {
+        const auto& a = pts[i];
+        const auto& b = pts[(i + 1) % n];
+        area += a.x * b.y - b.x * a.y;
+    }
+    area = std::abs(area) * 0.5f;
+    if (area <= 1e-6f) return 1.0f;
+    return mass / area;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -92,6 +107,23 @@ struct PhysicsSystem2D::Impl {
         float last_circle_radius = 0.0f;
         math::Vector2f last_circle_center;
         bool has_circle = false;
+
+        bool has_polygon = false;
+        std::vector<math::Vector2f> last_polygon_points;
+        math::Vector2f last_polygon_offset;
+        bool has_capsule = false;
+        float last_capsule_radius = 0.0f;
+        float last_capsule_height = 0.0f;
+        math::Vector2f last_capsule_offset;
+        bool has_edge = false;
+        math::Vector2f last_edge_p1;
+        math::Vector2f last_edge_p2;
+        bool has_tilemap_collider = false;
+        int last_tilemap_hash = 0;
+        bool has_area = false;
+        bool last_area_is_box = false;
+        math::Vector2f last_area_size;
+        float last_area_radius = 0.0f;
 
         // 速度/重力缓存：仅在变化时唤醒，避免每帧 wake_up 使睡眠机制失效
         math::Vector2f last_velocity;
@@ -171,6 +203,18 @@ struct PhysicsSystem2D::Impl {
         float mass = determine_mass(entity);
         physics::MaterialDesc mat = make_material(entity);
 
+        const auto is_sensor = [&]() {
+            if (entity->get_component<components::d2::Area2D>()) return true;
+            if (auto* b = entity->get_component<components::BoxCollider2D>()) return b->is_trigger;
+            if (auto* c = entity->get_component<components::CircleCollider2D>()) return c->is_trigger;
+            if (auto* p = entity->get_component<components::d2::PolygonCollider2D>()) return p->is_trigger;
+            if (auto* c = entity->get_component<components::d2::CapsuleCollider2D>()) return c->is_trigger;
+            if (auto* e = entity->get_component<components::d2::EdgeCollider2D>()) return e->is_trigger;
+            if (auto* t = entity->get_component<components::d2::TileMapCollider>()) return t->is_trigger;
+            return false;
+        };
+        mat.is_sensor = is_sensor();
+
         auto* box = entity->get_component<components::BoxCollider2D>();
         if (box) {
             math::Vector2f half_extents = math::Vector2f(box->size.x * scale.x * 0.5f,
@@ -203,6 +247,114 @@ struct PhysicsSystem2D::Impl {
         } else {
             slot.has_circle = false;
         }
+
+        auto* polygon = entity->get_component<components::d2::PolygonCollider2D>();
+        if (polygon) {
+            std::vector<math::Vector2f> pts;
+            pts.reserve(polygon->points.size());
+            for (const auto& p : polygon->points) {
+                pts.emplace_back(p.x * scale.x, p.y * scale.y);
+            }
+            math::Vector2f offset(polygon->offset.x * scale.x, polygon->offset.y * scale.y);
+            mat.density = compute_density_for_polygon(mass, pts);
+            physics::ShapeHandle sh = world->add_polygon_shape(slot.body, pts, offset, mat);
+            if (sh != physics::k_invalid_shape) {
+                slot.shapes.push_back(sh);
+            }
+            slot.has_polygon = true;
+            slot.last_polygon_points = polygon->points;
+            slot.last_polygon_offset = polygon->offset;
+        } else {
+            slot.has_polygon = false;
+        }
+
+        auto* capsule = entity->get_component<components::d2::CapsuleCollider2D>();
+        if (capsule) {
+            const float r = capsule->radius * std::max(std::abs(scale.x), std::abs(scale.y));
+            const float half = std::max(0.0f, capsule->height * 0.5f - capsule->radius) * scale.y;
+            math::Vector2f offset(capsule->offset.x * scale.x, capsule->offset.y * scale.y);
+            mat.density = compute_density_for_circle(mass, r);
+            physics::ShapeHandle sh = world->add_capsule_shape(
+                slot.body, math::Vector2f(offset.x, offset.y - half),
+                math::Vector2f(offset.x, offset.y + half), r, mat);
+            if (sh != physics::k_invalid_shape) {
+                slot.shapes.push_back(sh);
+            }
+            slot.has_capsule = true;
+            slot.last_capsule_radius = capsule->radius;
+            slot.last_capsule_height = capsule->height;
+            slot.last_capsule_offset = capsule->offset;
+        } else {
+            slot.has_capsule = false;
+        }
+
+        auto* edge = entity->get_component<components::d2::EdgeCollider2D>();
+        if (edge) {
+            math::Vector2f p1(edge->p1.x * scale.x, edge->p1.y * scale.y);
+            math::Vector2f p2(edge->p2.x * scale.x, edge->p2.y * scale.y);
+            physics::ShapeHandle sh = world->add_segment_shape(slot.body, p1, p2, mat);
+            if (sh != physics::k_invalid_shape) {
+                slot.shapes.push_back(sh);
+            }
+            slot.has_edge = true;
+            slot.last_edge_p1 = edge->p1;
+            slot.last_edge_p2 = edge->p2;
+        } else {
+            slot.has_edge = false;
+        }
+
+        auto* tilemap = entity->get_component<components::d2::tilemap::Tilemap>();
+        auto* tile_collider = entity->get_component<components::d2::TileMapCollider>();
+        if (tile_collider && tilemap) {
+            const int w = tilemap->map_width;
+            const int h = tilemap->map_height;
+            if (w > 0 && h > 0) {
+                int hash = 0;
+                for (int y = 0; y < h; ++y) {
+                    for (int x = 0; x < w; ++x) {
+                        const size_t idx = static_cast<size_t>(y * w + x);
+                        const int tile = idx < tilemap->tiles.size() ? tilemap->tiles[idx] : -1;
+                        hash = hash * 31 + tile;
+                        if (tile < 0) continue;
+                        math::Vector2f half(tilemap->cell_width * 0.5f, tilemap->cell_height * 0.5f);
+                        math::Vector2f offset(
+                            x * tilemap->cell_width + tilemap->cell_width * 0.5f,
+                            y * tilemap->cell_height + tilemap->cell_height * 0.5f);
+                        physics::ShapeHandle sh = world->add_box_shape(slot.body, half, offset, 0.0f, mat);
+                        if (sh != physics::k_invalid_shape) {
+                            slot.shapes.push_back(sh);
+                        }
+                    }
+                }
+                slot.last_tilemap_hash = hash;
+            }
+            slot.has_tilemap_collider = true;
+        } else {
+            slot.has_tilemap_collider = false;
+        }
+
+        auto* area = entity->get_component<components::d2::Area2D>();
+        if (area) {
+            if (area->is_box) {
+                math::Vector2f half(area->size.x * scale.x * 0.5f, area->size.y * scale.y * 0.5f);
+                physics::ShapeHandle sh = world->add_box_shape(slot.body, half, math::Vector2f::zero(), 0.0f, mat);
+                if (sh != physics::k_invalid_shape) {
+                    slot.shapes.push_back(sh);
+                }
+            } else {
+                const float r = area->radius * std::max(std::abs(scale.x), std::abs(scale.y));
+                physics::ShapeHandle sh = world->add_circle_shape(slot.body, r, math::Vector2f::zero(), mat);
+                if (sh != physics::k_invalid_shape) {
+                    slot.shapes.push_back(sh);
+                }
+            }
+            slot.has_area = true;
+            slot.last_area_is_box = area->is_box;
+            slot.last_area_size = area->size;
+            slot.last_area_radius = area->radius;
+        } else {
+            slot.has_area = false;
+        }
     }
 
     bool shapes_changed(const Slot& slot, scene::Entity* entity) const {
@@ -224,6 +376,60 @@ struct PhysicsSystem2D::Impl {
                 return true;
             }
         } else if (slot.has_circle) {
+            return true;
+        }
+
+        auto* polygon = entity->get_component<components::d2::PolygonCollider2D>();
+        if (polygon) {
+            if (!slot.has_polygon || polygon->points != slot.last_polygon_points ||
+                polygon->offset != slot.last_polygon_offset) {
+                return true;
+            }
+        } else if (slot.has_polygon) {
+            return true;
+        }
+
+        auto* capsule = entity->get_component<components::d2::CapsuleCollider2D>();
+        if (capsule) {
+            if (!slot.has_capsule || capsule->radius != slot.last_capsule_radius ||
+                capsule->height != slot.last_capsule_height ||
+                capsule->offset != slot.last_capsule_offset) {
+                return true;
+            }
+        } else if (slot.has_capsule) {
+            return true;
+        }
+
+        auto* edge = entity->get_component<components::d2::EdgeCollider2D>();
+        if (edge) {
+            if (!slot.has_edge || edge->p1 != slot.last_edge_p1 || edge->p2 != slot.last_edge_p2) {
+                return true;
+            }
+        } else if (slot.has_edge) {
+            return true;
+        }
+
+        auto* tilemap = entity->get_component<components::d2::tilemap::Tilemap>();
+        auto* tile_collider = entity->get_component<components::d2::TileMapCollider>();
+        if (tile_collider) {
+            int hash = 0;
+            if (tilemap && tilemap->map_width > 0 && tilemap->map_height > 0) {
+                for (size_t i = 0; i < tilemap->tiles.size(); ++i) {
+                    hash = hash * 31 + tilemap->tiles[i];
+                }
+            }
+            if (!slot.has_tilemap_collider || hash != slot.last_tilemap_hash) return true;
+        } else if (slot.has_tilemap_collider) {
+            return true;
+        }
+
+        auto* area = entity->get_component<components::d2::Area2D>();
+        if (area) {
+            if (!slot.has_area || area->is_box != slot.last_area_is_box ||
+                area->size != slot.last_area_size || area->radius != slot.last_area_radius) {
+                return true;
+            }
+        } else if (slot.has_area) {
             return true;
         }
 
@@ -484,12 +690,75 @@ struct PhysicsSystem2D::Impl {
 
         scene.foreach([&](scene::Entity* entity) {
             if (!entity || !entity->enabled) return;
-            auto* joint = entity->get_component<components::Joint2D>();
-            if (!joint) return;
-            if (!joint->body_a_uuid.is_valid() || !joint->body_b_uuid.is_valid()) return;
+            scene::UUID body_a_uuid;
+            scene::UUID body_b_uuid;
+            physics::JointDesc2D desc;
+            bool found = false;
 
-            scene::Entity* body_a = scene.find_entity_by_uuid(joint->body_a_uuid);
-            scene::Entity* body_b = scene.find_entity_by_uuid(joint->body_b_uuid);
+            if (auto* j = entity->get_component<components::Joint2D>()) {
+                body_a_uuid = j->body_a_uuid;
+                body_b_uuid = j->body_b_uuid;
+                desc.type = j->joint_type;
+                desc.anchor_a = j->anchor_a;
+                desc.anchor_b = j->anchor_b;
+                desc.length = j->length;
+                desc.frequency = j->frequency;
+                desc.damping = j->damping;
+                desc.collide_connected = j->collide_connected;
+                found = true;
+            } else if (auto* j = entity->get_component<components::d2::HingeJoint2D>()) {
+                body_a_uuid = j->body_a_uuid;
+                body_b_uuid = j->body_b_uuid;
+                desc.type = physics::JointType::Hinge;
+                desc.anchor_a = j->anchor_a;
+                desc.anchor_b = j->anchor_b;
+                desc.collide_connected = j->collide_connected;
+                found = true;
+            } else if (auto* j = entity->get_component<components::d2::WeldJoint2D>()) {
+                body_a_uuid = j->body_a_uuid;
+                body_b_uuid = j->body_b_uuid;
+                desc.type = physics::JointType::Fixed;
+                desc.anchor_a = j->anchor_a;
+                desc.anchor_b = j->anchor_b;
+                desc.collide_connected = j->collide_connected;
+                found = true;
+            } else if (auto* j = entity->get_component<components::d2::PrismaticJoint2D>()) {
+                body_a_uuid = j->body_a_uuid;
+                body_b_uuid = j->body_b_uuid;
+                desc.type = physics::JointType::Prismatic;
+                desc.anchor_a = j->anchor_a;
+                desc.anchor_b = j->anchor_b;
+                desc.axis_a = j->axis;
+                desc.min_length = j->lower_translation;
+                desc.max_length = j->upper_translation;
+                desc.collide_connected = j->collide_connected;
+                found = true;
+            } else if (auto* j = entity->get_component<components::d2::WheelJoint2D>()) {
+                body_a_uuid = j->body_a_uuid;
+                body_b_uuid = j->body_b_uuid;
+                desc.type = physics::JointType::Wheel;
+                desc.anchor_a = j->anchor_a;
+                desc.anchor_b = j->anchor_b;
+                desc.axis_a = j->axis;
+                desc.frequency = j->frequency;
+                desc.damping = j->damping;
+                desc.collide_connected = j->collide_connected;
+                found = true;
+            } else if (auto* j = entity->get_component<components::d2::RopeJoint2D>()) {
+                body_a_uuid = j->body_a_uuid;
+                body_b_uuid = j->body_b_uuid;
+                desc.type = physics::JointType::Rope;
+                desc.anchor_a = j->anchor_a;
+                desc.anchor_b = j->anchor_b;
+                desc.length = j->length;
+                desc.collide_connected = j->collide_connected;
+                found = true;
+            }
+            if (!found) return;
+            if (!body_a_uuid.is_valid() || !body_b_uuid.is_valid()) return;
+
+            scene::Entity* body_a = scene.find_entity_by_uuid(body_a_uuid);
+            scene::Entity* body_b = scene.find_entity_by_uuid(body_b_uuid);
             if (!body_a || !body_b) return;
 
             auto it_a = slots.find(body_a->uuid());
@@ -503,16 +772,8 @@ struct PhysicsSystem2D::Impl {
             const scene::UUID& uuid = entity->uuid();
             auto it = joints.find(uuid);
             if (it == joints.end()) {
-                physics::JointDesc2D desc;
-                desc.type = joint->joint_type;
                 desc.body_a = handle_a;
                 desc.body_b = handle_b;
-                desc.anchor_a = joint->anchor_a;
-                desc.anchor_b = joint->anchor_b;
-                desc.length = joint->length;
-                desc.frequency = joint->frequency;
-                desc.damping = joint->damping;
-                desc.collide_connected = joint->collide_connected;
                 physics::JointHandle jh = world->create_joint(desc);
                 if (jh != physics::k_invalid_joint) {
                     JointSlot jslot;
@@ -535,6 +796,34 @@ struct PhysicsSystem2D::Impl {
                 ++it;
             }
         }
+    }
+
+    void update_raycast_components(scene::Scene& scene) {
+        if (!world) return;
+        scene.foreach([&](scene::Entity* entity) {
+            if (!entity || !entity->enabled) return;
+            auto* ray = entity->get_component<components::d2::RayCast2D>();
+            if (!ray) return;
+            const auto wt = world_2d(entity);
+            const float c = std::cos(wt.rotation);
+            const float s = std::sin(wt.rotation);
+            math::Vector2f dir(ray->direction.x * c - ray->direction.y * s,
+                               ray->direction.x * s + ray->direction.y * c);
+            if (dir.length_sq() < 1e-9f) {
+                ray->hit = false;
+                return;
+            }
+            dir = dir.normalized();
+            auto hit = world->raycast(wt.position, dir, ray->max_distance);
+            if (hit.has_value()) {
+                ray->hit = true;
+                ray->hit_point = hit->point;
+                ray->hit_normal = hit->normal;
+                ray->hit_distance = hit->fraction * ray->max_distance;
+            } else {
+                ray->hit = false;
+            }
+        });
     }
 };
 
@@ -585,9 +874,15 @@ void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
         if (!t) return;
         bool has_rb = entity->get_component<components::RigidBody2D>() != nullptr;
         bool has_static = entity->get_component<components::StaticBody2D>() != nullptr;
-        if (!has_rb && !has_static) return;
+        bool has_area = entity->get_component<components::d2::Area2D>() != nullptr;
+        if (!has_rb && !has_static && !has_area) return;
         bool has_collider = entity->get_component<components::BoxCollider2D>() != nullptr ||
-                            entity->get_component<components::CircleCollider2D>() != nullptr;
+                            entity->get_component<components::CircleCollider2D>() != nullptr ||
+                            entity->get_component<components::d2::PolygonCollider2D>() != nullptr ||
+                            entity->get_component<components::d2::CapsuleCollider2D>() != nullptr ||
+                            entity->get_component<components::d2::EdgeCollider2D>() != nullptr ||
+                            entity->get_component<components::d2::TileMapCollider>() != nullptr ||
+                            has_area;
         if (!has_collider) return;
 
         const scene::UUID& uuid = entity->uuid();
@@ -670,6 +965,9 @@ void PhysicsSystem2D::on_update(scene::Scene& scene, float dt) {
             rb->acceleration = math::Vector2f::zero();
         }
     });
+
+    // 填充 RayCast2D 组件结果
+    impl_->update_raycast_components(scene);
 
     // 清理已销毁的实体对应的 body，同时级联销毁关联的关节
     for (auto it = impl_->slots.begin(); it != impl_->slots.end();) {

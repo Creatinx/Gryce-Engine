@@ -324,6 +324,7 @@ ShapeHandle Box2DPhysicsWorld2D::add_box_shape(BodyHandle body, const math::Vect
     def.friction = material.friction;
     def.restitution = material.restitution;
     def.density = material.density;
+    def.isSensor = material.is_sensor;
 
     b2ShapeId shape_id = b2CreatePolygonShape(body_id, &def, &polygon);
     if (!b2Shape_IsValid(shape_id)) return k_invalid_shape;
@@ -347,6 +348,7 @@ ShapeHandle Box2DPhysicsWorld2D::add_circle_shape(BodyHandle body, float radius,
     def.friction = material.friction;
     def.restitution = material.restitution;
     def.density = material.density;
+    def.isSensor = material.is_sensor;
 
     b2ShapeId shape_id = b2CreateCircleShape(body_id, &def, &circle);
     if (!b2Shape_IsValid(shape_id)) return k_invalid_shape;
@@ -371,13 +373,74 @@ ShapeHandle Box2DPhysicsWorld2D::add_capsule_shape(BodyHandle body, const math::
     def.friction = material.friction;
     def.restitution = material.restitution;
     def.density = material.density;
+    def.isSensor = material.is_sensor;
 
     b2ShapeId shape_id = b2CreateCapsuleShape(body_id, &def, &capsule);
     if (!b2Shape_IsValid(shape_id)) return k_invalid_shape;
 
     uint32_t index = alloc_shape_slot();
     shapes_[index].id = shape_id;
-    return static_cast<ShapeHandle>(index + 1);
+    return encode_handle(index, shapes_[index].generation);
+}
+
+ShapeHandle Box2DPhysicsWorld2D::add_polygon_shape(BodyHandle body, const std::vector<math::Vector2f>& points,
+                                                    const math::Vector2f& offset,
+                                                    const MaterialDesc& material) {
+    if (!initialized_) return k_invalid_shape;
+    b2BodyId body_id = get_body_id(body);
+    if (!b2Body_IsValid(body_id)) return k_invalid_shape;
+
+    const int n = static_cast<int>(points.size());
+    if (n < 3) return k_invalid_shape;
+
+    b2Vec2 raw[64];
+    const int count = n > 64 ? 64 : n;
+    for (int i = 0; i < count; ++i) {
+        raw[i] = to_b2(points[i]);
+    }
+    b2Hull hull = b2ComputeHull(raw, count);
+    if (hull.count < 3) return k_invalid_shape;
+
+    b2Transform xf = b2Transform_identity;
+    xf.p = to_b2(offset);
+    b2Polygon polygon = b2MakeOffsetPolygon(&hull, 0.0f, xf);
+
+    b2ShapeDef def = b2DefaultShapeDef();
+    def.friction = material.friction;
+    def.restitution = material.restitution;
+    def.density = material.density;
+    def.isSensor = material.is_sensor;
+
+    b2ShapeId shape_id = b2CreatePolygonShape(body_id, &def, &polygon);
+    if (!b2Shape_IsValid(shape_id)) return k_invalid_shape;
+
+    uint32_t index = alloc_shape_slot();
+    shapes_[index].id = shape_id;
+    return encode_handle(index, shapes_[index].generation);
+}
+
+ShapeHandle Box2DPhysicsWorld2D::add_segment_shape(BodyHandle body, const math::Vector2f& p1,
+                                                    const math::Vector2f& p2,
+                                                    const MaterialDesc& material) {
+    if (!initialized_) return k_invalid_shape;
+    b2BodyId body_id = get_body_id(body);
+    if (!b2Body_IsValid(body_id)) return k_invalid_shape;
+
+    b2Segment segment;
+    segment.point1 = to_b2(p1);
+    segment.point2 = to_b2(p2);
+    b2ShapeDef def = b2DefaultShapeDef();
+    def.friction = material.friction;
+    def.restitution = material.restitution;
+    def.density = 0.0f; // 线段无体积
+    def.isSensor = material.is_sensor;
+
+    b2ShapeId shape_id = b2CreateSegmentShape(body_id, &def, &segment);
+    if (!b2Shape_IsValid(shape_id)) return k_invalid_shape;
+
+    uint32_t index = alloc_shape_slot();
+    shapes_[index].id = shape_id;
+    return encode_handle(index, shapes_[index].generation);
 }
 
 void Box2DPhysicsWorld2D::destroy_shape(ShapeHandle handle) {
@@ -465,6 +528,48 @@ JointHandle Box2DPhysicsWorld2D::create_joint(const JointDesc2D& desc) {
             def.localAnchorB = to_b2(desc.anchor_b);
             def.collideConnected = desc.collide_connected;
             joint_id = b2CreateWeldJoint(world_, &def);
+            break;
+        }
+        case JointType::Prismatic: {
+            b2PrismaticJointDef def = b2DefaultPrismaticJointDef();
+            def.bodyIdA = body_a;
+            def.bodyIdB = body_b;
+            def.localAnchorA = to_b2(desc.anchor_a);
+            def.localAnchorB = to_b2(desc.anchor_b);
+            def.localAxisA = to_b2(desc.axis_a);
+            def.enableLimit = desc.min_length < desc.max_length;
+            def.lowerTranslation = desc.min_length;
+            def.upperTranslation = desc.max_length;
+            def.collideConnected = desc.collide_connected;
+            joint_id = b2CreatePrismaticJoint(world_, &def);
+            break;
+        }
+        case JointType::Wheel: {
+            b2WheelJointDef def = b2DefaultWheelJointDef();
+            def.bodyIdA = body_a;
+            def.bodyIdB = body_b;
+            def.localAnchorA = to_b2(desc.anchor_a);
+            def.localAnchorB = to_b2(desc.anchor_b);
+            def.localAxisA = to_b2(desc.axis_a);
+            def.enableSpring = desc.frequency > 0.0f;
+            def.hertz = desc.frequency;
+            def.dampingRatio = desc.damping;
+            def.collideConnected = desc.collide_connected;
+            joint_id = b2CreateWheelJoint(world_, &def);
+            break;
+        }
+        case JointType::Rope: {
+            b2DistanceJointDef def = b2DefaultDistanceJointDef();
+            def.bodyIdA = body_a;
+            def.bodyIdB = body_b;
+            def.localAnchorA = to_b2(desc.anchor_a);
+            def.localAnchorB = to_b2(desc.anchor_b);
+            def.length = desc.length;
+            def.enableLimit = true;
+            def.minLength = 0.0f;
+            def.maxLength = desc.length;
+            def.collideConnected = desc.collide_connected;
+            joint_id = b2CreateDistanceJoint(world_, &def);
             break;
         }
     }

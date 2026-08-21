@@ -8,6 +8,7 @@
 #include "GryceCore/entity_api.h"
 #include "GryceCore/scene_api.h"
 #include "GryceCore/types.h"
+#include "assets/asset_manager.h"
 
 // 射线拾取 C API 测试：带 MeshRenderer 的实体应能被世界空间射线命中。
 class PickTest : public ::testing::Test {
@@ -25,6 +26,7 @@ protected:
 
     void TearDown() override {
         GCore_Shutdown();
+        gryce_engine::assets::AssetManager::instance().clear();
     }
 
     static GEntityHandle CreateCube()

@@ -58,6 +58,7 @@ public:
     void set_title(const std::string& title);
     void set_size(int width, int height);
     void get_size(int& width, int& height) const;
+    void get_framebuffer_size(int& width, int& height) const;
     // 切换 OS 标题栏/边框（GLFW_DECORATED），启动画面用无边框，编辑器恢复有边框
     void set_decorated(bool decorated);
     // 设置窗口位置（屏幕坐标）

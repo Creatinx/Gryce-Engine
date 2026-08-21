@@ -21,6 +21,11 @@
 
 #include <typeinfo>
 
+#if defined(__GNUC__) || defined(__clang__)
+#include <cxxabi.h>
+#include <cstdlib>
+#endif
+
 using gryce_engine::scene::Entity;
 
 using gryce_engine::reflection::Registry;
@@ -151,21 +156,27 @@ static std::vector<gryce_engine::components::Component*> get_components(Entity* 
 }
 
 // Helper: get type name from a component via RTTI typeid
+static std::string demangle_type_name(const char* raw) {
+#if defined(__GNUC__) || defined(__clang__)
+    int status = 0;
+    char* demangled = abi::__cxa_demangle(raw, nullptr, nullptr, &status);
+    if (status == 0 && demangled) {
+        std::string out(demangled);
+        std::free(demangled);
+        return out;
+    }
+#endif
+    return raw ? std::string(raw) : std::string();
+}
 
 static std::string get_component_type_name(gryce_engine::components::Component* comp) {
-
     if (!comp) return "";
-
     const char* raw = typeid(*comp).name();
-
-    // MSVC: prefix "class " or "struct " ¡ª strip it
-
-    if (std::strncmp(raw, "class ", 6) == 0) raw += 6;
-
-    else if (std::strncmp(raw, "struct ", 7) == 0) raw += 7;
-
-    return std::string(raw);
-
+    std::string name = demangle_type_name(raw);
+    // MSVC: prefix "class " or "struct " -- strip it
+    if (name.rfind("class ", 0) == 0) name.erase(0, 6);
+    else if (name.rfind("struct ", 0) == 0) name.erase(0, 7);
+    return name;
 }
 
 } // namespace
@@ -224,10 +235,11 @@ std::string get_component_type_name(gryce_engine::components::Component* comp) {
     GRYCE_API_GUARD();
     if (!comp) return "";
     const char* raw = typeid(*comp).name();
+    std::string demangled = demangle_type_name(raw);
     // MSVC: prefix "class " or "struct " -- strip it
-    if (std::strncmp(raw, "class ", 6) == 0) raw += 6;
-    else if (std::strncmp(raw, "struct ", 7) == 0) raw += 7;
-    return std::string(raw);
+    if (demangled.rfind("class ", 0) == 0) demangled.erase(0, 6);
+    else if (demangled.rfind("struct ", 0) == 0) demangled.erase(0, 7);
+    return demangled;
 }
 } // namespace gryce_core
 
@@ -515,6 +527,25 @@ int GComponent_GetRegisteredTypeInfo(int index, uint64_t* out_hash, char* out_na
     std::strncpy(out_name, name.c_str(), static_cast<size_t>(name_buf_size) - 1);
 
     out_name[name_buf_size - 1] = '\0';
+
+    return 0;
+
+}
+
+int GComponent_GetRegisteredTypeCategory(int index, char* out_category, int category_buf_size) {
+    GRYCE_API_GUARD();
+
+    if (!out_category || category_buf_size <= 0) return -1;
+
+    auto types = ComponentFactory::instance().all_types();
+
+    if (index < 0 || index >= static_cast<int>(types.size())) return -1;
+
+    const char* category = ComponentFactory::instance().category(types[index]);
+
+    std::strncpy(out_category, category, static_cast<size_t>(category_buf_size) - 1);
+
+    out_category[category_buf_size - 1] = '\0';
 
     return 0;
 

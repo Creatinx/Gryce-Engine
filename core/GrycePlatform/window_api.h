@@ -32,6 +32,7 @@ GRYCE_PLATFORM_API void GWindow_Destroy(void);
 GRYCE_PLATFORM_API bool GWindow_IsValid(void);
 
 GRYCE_PLATFORM_API void GWindow_GetSize(int* out_w, int* out_h);
+GRYCE_PLATFORM_API void GWindow_GetFramebufferSize(int* out_w, int* out_h);
 GRYCE_PLATFORM_API void GWindow_SetSize(int w, int h);
 GRYCE_PLATFORM_API GWindowHandle GWindow_GetNativeHandle(void);
 GRYCE_PLATFORM_API GWindowHandle GWindow_GetRenderHandle(void);

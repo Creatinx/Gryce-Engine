@@ -272,7 +272,7 @@ void RenderPipeline::begin_shadow_pass(RenderContext& ctx, int cascade) {
     ctx.clear_depth();
     ctx.set_depth_test(true);
     ctx.set_depth_write(true);
-    ctx.set_cull_face(!cull_disabled_);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
     // Normal Offset Shadow Mapping：沿法线把几何推向光源（每级按自己的 texel 尺寸）
     ctx.set_uniform_float(shadow_shader_, "uNormalOffset",
                           cascade_texel_sizes_[cascade] * normal_offset_scale_);

@@ -22,15 +22,15 @@
       "parent": null,
       "transform": {
         "position": [
-          60.0,
-          30.0,
-          60.0
+          -57.54323959350586,
+          83.28648376464844,
+          0.9984972476959229
         ],
         "rotation": [
-          -0.14452660083770752,
-          0.3779720067977905,
-          0.059864889830350876,
-          0.912505030632019
+          -0.3258737325668335,
+          0.5414542555809021,
+          0.23937448859214783,
+          0.7371115684509277
         ],
         "scale": [
           1.0,
@@ -89,6 +89,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -194,6 +195,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -347,6 +349,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -443,9 +446,9 @@
           "type": "RigidBody",
           "use_gravity": true,
           "velocity": [
-            1.1363514296203192e-12,
+            1.862798652309261e-13,
             -500.0,
-            3.9991989754517565e-13
+            6.555809362171136e-14
           ]
         },
         {
@@ -470,14 +473,14 @@
       "transform": {
         "position": [
           229.03756713867188,
-          -735008.125,
+          -780647.125,
           80.63339233398438
         ],
         "rotation": [
-          0.029540877789258957,
-          0.07783468812704086,
-          0.39523881673812866,
-          -0.9147980213165283
+          -0.03416050598025322,
+          -0.08687029033899307,
+          -0.44890180230140686,
+          0.8886922001838684
         ],
         "scale": [
           1.0,
@@ -531,6 +534,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -636,6 +640,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -733,7 +738,7 @@
           "use_gravity": true,
           "velocity": [
             0.0,
-            -88.12791442871094,
+            -464.1305236816406,
             0.0
           ]
         },
@@ -755,7 +760,7 @@
       "transform": {
         "position": [
           40.0,
-          -366.0184326171875,
+          -10952.421875,
           0.0
         ],
         "rotation": [
@@ -776,6 +781,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -861,6 +867,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -946,6 +953,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [

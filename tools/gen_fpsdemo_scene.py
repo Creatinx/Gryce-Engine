@@ -125,9 +125,10 @@ def material(albedo=(0.5, 0.5, 0.52, 1.0), metallic=0.0, roughness=0.85):
     }
 
 
-def mesh_renderer(path, albedo, metallic=0.0, roughness=0.85):
+def mesh_renderer(path, albedo, metallic=0.0, roughness=0.85, depth_test=True):
     return {
         "billboard": False,
+        "depth_test": depth_test,
         "enabled": True,
         "material": material(albedo, metallic, roughness),
         "mesh_path": "res:/models/" + path,
@@ -213,7 +214,8 @@ def build():
                             script_component("player.lua")]))
     entities.append(entity("SpawnPoint", (0.0, 0.8, 6.0), []))
     entities.append(entity("Weapon", (0.3, 1.2, 0.5),
-                           [mesh_renderer("weapon.obj", (0.28, 0.29, 0.32, 1.0), metallic=0.5, roughness=0.3)],
+                           [mesh_renderer("weapon.obj", (0.28, 0.29, 0.32, 1.0),
+                                          metallic=0.5, roughness=0.3, depth_test=False)],
                            scale=(1.4, 1.4, 1.4)))
     entities.append(entity("MainLight", (0.0, 8.0, 0.0), [light_component()]))
 
@@ -247,15 +249,15 @@ def build():
 
     # --- HUD（ASCII：Roboto 无 CJK 字形，fallback 只覆盖 ASCII）---
     hud = [
-        ("HealthLabel", "HP: 100", (0.05, 0.82)),
-        ("KillsLabel", "Kills: 0", (0.05, 0.76)),
-        ("LivesLabel", "Lives: 5", (0.05, 0.70)),
-        ("EnemiesLabel", "Enemies: 6", (0.05, 0.64)),
-        ("Crosshair", "+", (0.0, 0.0)),
-        ("MessageLabel", "WASD move, mouse aim, LMB shoot", (0.0, 0.35)),
+        ("HealthLabel", "HP: 100", (20.0, 20.0)),
+        ("KillsLabel", "Kills: 0", (20.0, 52.0)),
+        ("LivesLabel", "Lives: 5", (20.0, 80.0)),
+        ("EnemiesLabel", "Enemies: 6", (20.0, 108.0)),
+        ("Crosshair", "+", (640.0, 358.0)),
+        ("MessageLabel", "WASD move, mouse aim, LMB shoot", (640.0, 76.0)),
     ]
-    for name, text, _ in hud:
-        entities.append(entity(name, (0.0, 0.0, 0.0), [label_component(text)]))
+    for name, text, pos in hud:
+        entities.append(entity(name, (pos[0], pos[1], 0.0), [label_component(text)]))
 
     # --- 音效 / 音乐 ---
     entities.append(entity("BGM", (0.0, 0.0, 0.0),

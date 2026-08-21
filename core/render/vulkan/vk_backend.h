@@ -53,7 +53,7 @@ public:
     void set_blend(bool enabled) override;
     void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) override;
     void set_blend_equation(BlendEquation mode) override;
-    void set_cull_face(bool enabled) override;
+    void set_cull_face(CullMode mode) override;
     void bind_framebuffer(RHIFramebufferHandle fb) override;
     void unbind_framebuffer() override;
 
@@ -64,16 +64,19 @@ public:
     RHIShaderHandle create_shader() override;
     RHITextureHandle create_texture() override;
     RHIFramebufferHandle create_framebuffer() override;
+    RHIBufferHandle create_buffer() override;
 
     void destroy_mesh(RHIMeshHandle handle) override;
     void destroy_shader(RHIShaderHandle handle) override;
     void destroy_texture(RHITextureHandle handle) override;
     void destroy_framebuffer(RHIFramebufferHandle handle) override;
+    void destroy_buffer(RHIBufferHandle handle) override;
 
     IMesh* mesh(RHIMeshHandle handle) override;
     IShader* shader(RHIShaderHandle handle) override;
     ITexture* texture(RHITextureHandle handle) override;
     IFramebuffer* framebuffer(RHIFramebufferHandle handle) override;
+    IBuffer* buffer(RHIBufferHandle handle) override;
 
     void set_swap_interval(int interval) override;
     void set_gpu_busy_spin(bool enabled, int iterations) override {}
@@ -177,7 +180,7 @@ private:
     bool depth_test_enabled_ = true;
     bool depth_write_enabled_ = true;
     bool blend_enabled_ = false;
-    bool cull_face_enabled_ = true;
+    CullMode cull_face_mode_ = CullMode::Back;
     BlendFactor blend_src_factor_ = BlendFactor::SrcAlpha;
     BlendFactor blend_dst_factor_ = BlendFactor::OneMinusSrcAlpha;
     BlendEquation blend_equation_ = BlendEquation::Add;

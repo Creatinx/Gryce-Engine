@@ -349,6 +349,8 @@ bool Scene::apply_hot_reload_entity(Entity* existing, const nlohmann::json& e_js
     std::vector<components::Component*> to_remove;
     for (const auto& comp : existing->components()) {
         if (comp->type() == std::string("Transform")) continue;
+        if (comp->type() == std::string("ParentComponent")) continue;
+        if (comp->type() == std::string("ChildrenComponent")) continue;
         if (new_comp_types.find(comp->type()) == new_comp_types.end()) {
             to_remove.push_back(comp.get());
         }
@@ -360,7 +362,8 @@ bool Scene::apply_hot_reload_entity(Entity* existing, const nlohmann::json& e_js
     // 更新/添加组件
     for (const auto& c_json : e_json.value("components", nlohmann::json::array())) {
         std::string type = c_json.value("type", "");
-        if (type.empty() || type == "Transform") continue;
+        if (type.empty() || type == "Transform"
+            || type == "ParentComponent" || type == "ChildrenComponent") continue;
 
         auto* comp = existing->get_component_by_type(type);
         if (comp) {

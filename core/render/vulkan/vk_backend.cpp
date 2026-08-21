@@ -514,14 +514,17 @@ void VulkanBackend::set_blend_equation(BlendEquation mode) {
     blend_equation_ = mode;
 }
 
-void VulkanBackend::set_cull_face(bool enabled) {
-    cull_face_enabled_ = enabled;
+void VulkanBackend::set_cull_face(CullMode mode) {
+    cull_face_mode_ = mode;
 }
 
 void VulkanBackend::apply_dynamic_state(VkCommandBuffer cmd) {
     if (!supports_dynamic_state_ || cmd == VK_NULL_HANDLE) return;
     // Negative viewport height restores OpenGL's Y convention, so keep OpenGL winding.
-    set_cull_mode_cached(cmd, cull_face_enabled_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+    VkCullModeFlags vk_cull = VK_CULL_MODE_NONE;
+    if (cull_face_mode_ == CullMode::Back) vk_cull = VK_CULL_MODE_BACK_BIT;
+    else if (cull_face_mode_ == CullMode::Front) vk_cull = VK_CULL_MODE_FRONT_BIT;
+    set_cull_mode_cached(cmd, vk_cull);
     set_front_face_cached(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
     set_depth_test_cached(cmd, depth_test_enabled_ ? VK_TRUE : VK_FALSE);
     set_depth_write_cached(cmd, depth_write_enabled_ ? VK_TRUE : VK_FALSE);
@@ -1005,6 +1008,21 @@ ITexture* VulkanBackend::texture(RHITextureHandle handle) {
 
 IFramebuffer* VulkanBackend::framebuffer(RHIFramebufferHandle handle) {
     return framebuffer_pool_.get_if_alive(handle.index, handle.generation);
+}
+
+// ---------------------------------------------------------------------------
+// 缓冲（暂存桩，Vulkan 后端尚未实现完整的 IBuffer 支持）
+// ---------------------------------------------------------------------------
+RHIBufferHandle VulkanBackend::create_buffer() {
+    return RHIBufferHandle{};
+}
+
+void VulkanBackend::destroy_buffer(RHIBufferHandle /*handle*/) {
+    // 暂不实现
+}
+
+IBuffer* VulkanBackend::buffer(RHIBufferHandle /*handle*/) {
+    return nullptr;
 }
 
 const char* VulkanBackend::api_name() const {

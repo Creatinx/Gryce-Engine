@@ -371,7 +371,7 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
     }
 
     ctx.set_depth_test(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
 
     // Pass 1：GTAO（从深度重建视图位置，地平线搜索）
@@ -415,7 +415,7 @@ void RenderPipeline::render_contact_shadow(RenderContext& ctx) {
     const math::Vector3f light_dir_view = view.transform_vector(math::Vector3f(-light_dir.x, -light_dir.y, -light_dir.z));
 
     ctx.set_depth_test(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
 
     ctx.set_framebuffer(contact_shadow_fbo_);
@@ -487,7 +487,7 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     ctx.set_framebuffer(to_viewport ? viewport_fbo_ : RHIFramebufferHandle{});
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_depth_test(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
 
     ctx.set_shader(tonemap_shader_);
@@ -549,7 +549,7 @@ void RenderPipeline::render_bloom(RenderContext& ctx) {
     }
 
     ctx.set_depth_test(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
 
     // 后处理参数同步到 bloom shader（Vulkan push constants / GL bind 时应用）
@@ -617,7 +617,7 @@ void RenderPipeline::render_auto_exposure(RenderContext& ctx) {
     }
 
     ctx.set_depth_test(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
     for (RHIShaderHandle h : {lum_average_shader_, exposure_update_shader_}) {
         IShader* s = ctx_->shader(h);
@@ -671,7 +671,7 @@ void RenderPipeline::render_taa(RenderContext& ctx) {
     const int write = taa_ping_;
 
     ctx.set_depth_test(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
     if (IShader* s = ctx_->shader(taa_resolve_shader_)) {
         s->set_post_process_params(pp_params_);

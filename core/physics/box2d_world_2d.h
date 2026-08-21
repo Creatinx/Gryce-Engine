@@ -57,6 +57,12 @@ public:
     ShapeHandle add_capsule_shape(BodyHandle body, const math::Vector2f& p1,
                                   const math::Vector2f& p2, float radius,
                                   const MaterialDesc& material = {}) override;
+    ShapeHandle add_polygon_shape(BodyHandle body, const std::vector<math::Vector2f>& points,
+                                  const math::Vector2f& offset,
+                                  const MaterialDesc& material = {}) override;
+    ShapeHandle add_segment_shape(BodyHandle body, const math::Vector2f& p1,
+                                  const math::Vector2f& p2,
+                                  const MaterialDesc& material = {}) override;
     void destroy_shape(ShapeHandle handle) override;
 
     std::optional<RaycastHit2D> raycast(const math::Vector2f& origin, const math::Vector2f& direction, float max_distance) const override;

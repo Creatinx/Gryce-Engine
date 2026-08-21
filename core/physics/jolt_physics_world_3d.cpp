@@ -15,6 +15,7 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
@@ -563,6 +564,18 @@ ShapeHandle JoltPhysicsWorld3D::create_shape(const ShapeDesc& desc) {
             auto result = settings.Create();
             if (result.HasError()) {
                 GLOG_ERROR("Jolt: failed to create capsule shape: {}", result.GetError().c_str());
+                return k_invalid_shape;
+            }
+            shape = result.Get();
+            break;
+        }
+        case ShapeType::Cylinder: {
+            // Jolt 圆柱为绕 Y 轴；desc.size.x = 半径, desc.size.y = 半高
+            JPH::CylinderShapeSettings settings(desc.size.x, desc.size.y);
+            settings.mDensity = desc.density;
+            auto result = settings.Create();
+            if (result.HasError()) {
+                GLOG_ERROR("Jolt: failed to create cylinder shape: {}", result.GetError().c_str());
                 return k_invalid_shape;
             }
             shape = result.Get();

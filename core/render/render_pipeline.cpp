@@ -909,7 +909,7 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
     // 天空盒：关深度测试/写入、关剔除（从立方体内部观察），画完后恢复
     ctx.set_depth_test(false);
     ctx.set_depth_write(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
 
     // 去掉 view 的平移分量，让天空盒始终跟随相机
@@ -933,7 +933,7 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
 
     ctx.set_depth_test(true);
     ctx.set_depth_write(true);
-    ctx.set_cull_face(!cull_disabled_);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,10 +1001,12 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     // 容器为成员变量，每帧 clear() 复用 capacity，避免反复堆分配。
     auto& opaque_items = opaque_items_;
     auto& transparent_items = transparent_items_;
+    auto& viewmodel_items = viewmodel_items_;
     auto& skinned_opaque_items = skinned_opaque_items_;
     auto& skinned_transparent_items = skinned_transparent_items_;
     opaque_items.clear();
     transparent_items.clear();
+    viewmodel_items.clear();
     skinned_opaque_items.clear();
     skinned_transparent_items.clear();
     const math::Vector3f cam_pos = camera_->position();
@@ -1026,7 +1028,9 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
             float dist_sq = (pos - cam_pos).length_sq();
             DrawItem item{mr->gpu_mesh_handle(), mat, model, dist_sq};
-            if (transparent) {
+            if (!mr->depth_test) {
+                viewmodel_items.push_back(item);
+            } else if (transparent) {
                 transparent_items.push_back(item);
             } else {
                 opaque_items.push_back(item);
@@ -1082,6 +1086,18 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         ctx.set_depth_write(true);
     }
 
+    // 2e. Viewmodel（FPS 武器）：关闭深度测试/深度写，保证枪械不被墙壁遮挡。
+    if (!viewmodel_items.empty()) {
+        ctx.set_blend(false);
+        ctx.set_depth_test(false);
+        ctx.set_depth_write(false);
+        for (const auto& item : viewmodel_items) {
+            render_mesh_internal(item.mesh, item.material, item.model, ctx);
+        }
+        ctx.set_depth_test(true);
+        ctx.set_depth_write(true);
+    }
+
     if (hdr_enabled_) {
         end_hdr_forward_pass(ctx);
         // 3. 屏幕空间环境光遮蔽（深度 → GTAO → 模糊）
@@ -1113,7 +1129,7 @@ void RenderPipeline::render_mesh_internal(RHIMeshHandle mesh, const Material* ma
 
     // 双面材质关闭背面剔除
     const bool two_sided = material && material->two_sided;
-    ctx.set_cull_face(!cull_disabled_ && !two_sided);
+    ctx.set_cull_face((cull_disabled_ || two_sided) ? CullMode::None : CullMode::Back);
 
     ctx.set_shader(pbr_shader_);
     ctx.set_uniform_mat4(pbr_shader_, "uModel", model);
@@ -1143,7 +1159,7 @@ void RenderPipeline::render_skinned_mesh_internal(RHIMeshHandle mesh, const Mate
 
     // 双面材质关闭背面剔除
     const bool two_sided = material && material->two_sided;
-    ctx.set_cull_face(!cull_disabled_ && !two_sided);
+    ctx.set_cull_face((cull_disabled_ || two_sided) ? CullMode::None : CullMode::Back);
 
     ctx.set_shader(skinned_pbr_shader_);
     ctx.set_uniform_mat4(skinned_pbr_shader_, "uModel", model);
@@ -1169,7 +1185,7 @@ void RenderPipeline::begin_forward_pass(RenderContext& ctx) {
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_depth_test(true);
     ctx.set_depth_write(true);
-    ctx.set_cull_face(!cull_disabled_);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
 }
 
 void RenderPipeline::end_forward_pass(RenderContext& ctx) {
@@ -1585,7 +1601,7 @@ void RenderPipeline::begin_hdr_forward_pass(RenderContext& ctx) {
     // 保留旧值，场景物体全部被深度测试剔除（OpenGL 视口网格可见但物体不可见）。
     ctx.set_depth_test(true);
     ctx.set_depth_write(true);
-    ctx.set_cull_face(!cull_disabled_);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
     ctx.clear(0.15f, 0.15f, 0.18f, 1.0f);
     ctx.clear_depth();
 }
@@ -1638,7 +1654,7 @@ void RenderPipeline::render_grid(RenderContext& ctx) {
     // 网格透明混合，深度测试开启但深度写入关闭，避免遮挡场景物体。
     ctx.set_depth_test(true);
     ctx.set_depth_write(false);
-    ctx.set_cull_face(false);
+    ctx.set_cull_face(CullMode::None);
     ctx.set_blend(true);
 
     ctx.set_shader(grid_shader_);
@@ -1658,7 +1674,7 @@ void RenderPipeline::render_grid(RenderContext& ctx) {
 
     // 恢复默认状态（不透明物体需要这些状态）
     ctx.set_depth_write(true);
-    ctx.set_cull_face(!cull_disabled_);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
     ctx.set_blend(false);
 }
 

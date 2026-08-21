@@ -657,7 +657,7 @@ void Renderer2D::begin_frame(float screen_width, float screen_height) {
     if (context_alive()) {
         ctx_->set_depth_test(false);
         ctx_->set_blend(true);
-        ctx_->set_cull_face(false);
+        ctx_->set_cull_face(CullMode::None);
         set_blend_mode(BlendMode::Alpha);
     }
 
@@ -727,7 +727,7 @@ void Renderer2D::end_frame() {
     if (context_alive()) {
         ctx_->set_depth_test(false);
         ctx_->set_blend(true);
-        ctx_->set_cull_face(false);
+        ctx_->set_cull_face(CullMode::None);
     }
 
     bool use_bloom = bloom_params_.enabled && bloom_initialized_;
@@ -744,7 +744,7 @@ void Renderer2D::end_frame() {
             backend->clear(0.0f, 0.0f, 0.0f, 0.0f);
             backend->set_depth_test(false);
             backend->set_blend(true);
-            backend->set_cull_face(false);
+            backend->set_cull_face(CullMode::None);
         });
     }
 
@@ -847,7 +847,7 @@ void Renderer2D::render_shadow_pass() {
         backend->clear_depth();
         backend->set_depth_test(true);
         backend->set_blend(false);
-        backend->set_cull_face(false);
+        backend->set_cull_face(CullMode::None);
 
         mesh_ptr->upload_vertices(verts_shared->data(),
                                   static_cast<uint32_t>(verts_shared->size() * sizeof(ShadowCasterVertex)),
@@ -934,7 +934,7 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         backend->set_viewport(0, 0, sw, sh);
         backend->set_depth_test(false);
         backend->set_blend(true);
-        backend->set_cull_face(false);
+        backend->set_cull_face(CullMode::None);
 
         // 创建默认 fallback 纹理（成员变量，仅渲染线程访问；
         // shutdown 时通过命令在同一线程删除，避免函数级 static 造成进程级泄漏）
@@ -1054,7 +1054,7 @@ void Renderer2D::render_bloom_pass() {
             backend->set_viewport(0, 0, w, h);
             backend->set_depth_test(false);
             backend->set_blend(false);
-            backend->set_cull_face(false);
+            backend->set_cull_face(CullMode::None);
 
             // 全屏三角形
             struct FSVertex { float x, y, u, v; };
@@ -1120,7 +1120,7 @@ void Renderer2D::render_bloom_pass() {
         backend->set_viewport(0, 0, w, h);
         backend->set_depth_test(false);
         backend->set_blend(false);
-        backend->set_cull_face(false);
+        backend->set_cull_face(CullMode::None);
 
         struct FSVertex { float x, y, u, v; };
         FSVertex verts[] = {

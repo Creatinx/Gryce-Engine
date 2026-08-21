@@ -1,4 +1,4 @@
-﻿#include "GryceCore/core_api.h"
+#include "GryceCore/core_api.h"
 #include "GryceCore/scene_api.h"
 #include "GryceCore/api_guard.h"
 #include "runtime/engine_context.h"
@@ -9,6 +9,7 @@
 #include "ecs/systems/fracture_system.h"
 #include "ecs/systems/subviewport_system.h"
 #include "ecs/systems/script_system.h"
+#include "ecs/systems/hierarchy_system.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "scene/scene_serializer.h"
@@ -176,6 +177,9 @@ static void drain_log_messages() {
 
 std::string reflection_lookup_name(const std::string& full_name) {
     GRYCE_API_GUARD();
+    // Component::type() 的显示名与 C++ 类名不一致时，需要映射到反射注册名。
+    // 例如 Lua 动态创建 Script 组件时 type_name 是 "Script"，但反射键是 "ScriptComponent"。
+    if (full_name == "Script") return "ScriptComponent";
     // 反射注册表使用短名；取最后一个 "::" 之后的段。
     // 2D 组件位于 d2::basic_rect / d2::sprite / d2::light 等嵌套命名空间，
     // 仅剥 "gryce_engine::components::" 前缀会留下 "d2::xxx::Type" 查不到。
@@ -577,6 +581,7 @@ int GCore_Init(const GCoreInitDesc* desc) {
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::FractureSystem>());
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::SubViewportSystem>());
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::ScriptSystem>());
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::HierarchySystem>());
     gryce_core::g_core_state.world->init();
 
     gryce_core::g_core_state.entity_map.rebuild(gryce_core::g_core_state.world->scene());

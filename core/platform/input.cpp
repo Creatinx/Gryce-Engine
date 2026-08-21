@@ -97,19 +97,11 @@ void InputManager::update(Window* window) {
         mouse_delta_x_ = x - mouse_prev_x_;
         mouse_delta_y_ = y - mouse_prev_y_;
 
-        // 如果鼠标锁定，重置到窗口中心
-        if (mouse_locked_) {
-            int w, h;
-            window->get_size(w, h);
-            double center_x = w / 2.0;
-            double center_y = h / 2.0;
-            glfwSetCursorPos(static_cast<GLFWwindow*>(window->native_handle()), center_x, center_y);
-            mouse_prev_x_ = center_x;
-            mouse_prev_y_ = center_y;
-        } else {
-            mouse_prev_x_ = x;
-            mouse_prev_y_ = y;
-        }
+        // GLFW_CURSOR_DISABLED 下 glfwSetCursorPos 不生效，若仍把 prev 改成中心，
+        // 下一帧 delta 会变成“累计位置 - 中心”，鼠标动一点视角就会甩一整圈。
+        // 直接以当前虚拟光标位置作为下一帧基线。
+        mouse_prev_x_ = x;
+        mouse_prev_y_ = y;
     } else {
         // 无焦点：delta 归零，不更新鼠标位置
         mouse_delta_x_ = 0.0;

@@ -165,6 +165,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": false,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -296,6 +297,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -402,6 +404,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -508,6 +511,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -614,6 +618,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -720,6 +725,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -826,6 +832,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -932,6 +939,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -1038,6 +1046,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -1144,6 +1153,7 @@
       "components": [
         {
           "billboard": false,
+          "depth_test": true,
           "enabled": true,
           "material": {
             "albedo_color": [
@@ -1471,8 +1481,8 @@
       "enabled": true,
       "transform": {
         "position": [
-          0.0,
-          0.0,
+          20.0,
+          20.0,
           0.0
         ],
         "rotation": [
@@ -1511,8 +1521,8 @@
       "enabled": true,
       "transform": {
         "position": [
-          0.0,
-          0.0,
+          20.0,
+          52.0,
           0.0
         ],
         "rotation": [
@@ -1551,8 +1561,8 @@
       "enabled": true,
       "transform": {
         "position": [
-          0.0,
-          0.0,
+          20.0,
+          80.0,
           0.0
         ],
         "rotation": [
@@ -1591,8 +1601,8 @@
       "enabled": true,
       "transform": {
         "position": [
-          0.0,
-          0.0,
+          20.0,
+          108.0,
           0.0
         ],
         "rotation": [
@@ -1631,8 +1641,8 @@
       "enabled": true,
       "transform": {
         "position": [
-          0.0,
-          0.0,
+          640.0,
+          358.0,
           0.0
         ],
         "rotation": [
@@ -1671,8 +1681,8 @@
       "enabled": true,
       "transform": {
         "position": [
-          0.0,
-          0.0,
+          640.0,
+          76.0,
           0.0
         ],
         "rotation": [

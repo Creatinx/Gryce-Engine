@@ -58,6 +58,12 @@ public:
     virtual ShapeHandle add_capsule_shape(BodyHandle body, const math::Vector2f& p1,
                                           const math::Vector2f& p2, float radius,
                                           const MaterialDesc& material = {}) = 0;
+    virtual ShapeHandle add_polygon_shape(BodyHandle body, const std::vector<math::Vector2f>& points,
+                                          const math::Vector2f& offset,
+                                          const MaterialDesc& material = {}) = 0;
+    virtual ShapeHandle add_segment_shape(BodyHandle body, const math::Vector2f& p1,
+                                          const math::Vector2f& p2,
+                                          const MaterialDesc& material = {}) = 0;
     virtual void destroy_shape(ShapeHandle handle) = 0;
 
     // 射线检测

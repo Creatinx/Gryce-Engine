@@ -7,19 +7,35 @@
 namespace gryce_engine::render {
 
 // ---------------------------------------------------------------------------
+// TextureType — 纹理类型（2D / Cube / Array / 3D）
+// ---------------------------------------------------------------------------
+enum class TextureType {
+    Texture2D,
+    TextureCube,
+    Texture2DArray,
+    Texture3D
+};
+
+// ---------------------------------------------------------------------------
 // TextureFormat — 跨 API 纹理格式
 // ---------------------------------------------------------------------------
 enum class TextureFormat {
+    R8,
+    RG8,
     RGB8,
     RGBA8,
+    SRGB8_ALPHA8,
+    R16F,
+    RG16F,
     RGBA16F,
+    R32F,
+    RG32F,
     RGBA32F,
     Depth16,
     Depth24,
-    Depth24Stencil8,
-    Depth32F,
-    R8,
-    RG8,
+    Depth24Stencil8,    // 对应 D24S8
+    Depth32F,           // 对应 D32F
+    D32FS8,
     // --- 压缩格式（块压缩，按 4x4 block 存储）---
     BC1_RGB,        // DXT1
     BC1_RGBA,       // DXT1 + 1bit alpha
@@ -73,6 +89,12 @@ namespace TextureSlots {
     constexpr int kTonemapExposure = 31; // 自动曝光 1x1 曝光值
     constexpr int kTAAHistory    = 32; // TAA 历史帧
     constexpr int kTonemapContactShadow = 34; // 屏幕空间接触阴影（半分辨率）
+    constexpr int kSSRTexture         = 35; // SSR 屏幕空间反射
+    constexpr int kSSRHiZ             = 36; // SSR HiZ 缓冲
+    constexpr int kSSILTexture        = 37; // SSIL 屏幕空间间接光照
+    constexpr int kDOFHalf            = 38; // DOF 半分辨率缓冲
+    constexpr int kDOFBlur            = 39; // DOF 模糊缓冲
+    constexpr int kFSR2Output         = 40; // FSR2 超分辨率输出
 
     // 天空盒
     constexpr int kSkyboxCube   = 21;
