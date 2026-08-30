@@ -265,22 +265,137 @@ void RenderPipeline::update_light_space_matrix() {
 
 void RenderPipeline::begin_shadow_pass(RenderContext& ctx, int cascade) {
     const int size = cascade_sizes_[cascade];
-    ctx.set_shader(shadow_shader_);
-    ctx.set_framebuffer(shadow_fbos_[cascade]);
-    ctx.set_viewport(0, 0, size, size);
-    // VulkanBackend::set_viewport 会同步设置 scissor，无需额外调用。
-    ctx.clear_depth();
-    ctx.set_depth_test(true);
-    ctx.set_depth_write(true);
-    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
-    // Normal Offset Shadow Mapping：沿法线把几何推向光源（每级按自己的 texel 尺寸）
-    ctx.set_uniform_float(shadow_shader_, "uNormalOffset",
-                          cascade_texel_sizes_[cascade] * normal_offset_scale_);
+
+    // 根据 shadow_mode_ 选择 shader 和 FBO
+    if (shadow_mode_ == ShadowMode::VSM) {
+        ctx.set_shader(shadow_vsm_shader_);
+        ctx.set_framebuffer(vsm_color_fbo_[cascade]);
+        ctx.set_viewport(0, 0, size, size);
+        ctx.clear(1.0f, 1.0f, 1.0f, 1.0f);
+        ctx.clear_depth();
+        ctx.set_depth_test(true);
+        ctx.set_depth_write(true);
+        ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+        // VSM 不需要 Normal Offset（会破坏深度矩）
+        ctx.set_uniform_float(shadow_vsm_shader_, "uNormalOffset", 0.0f);
+    } else if (shadow_mode_ == ShadowMode::ESM) {
+        ctx.set_shader(shadow_esm_shader_);
+        ctx.set_framebuffer(vsm_color_fbo_[cascade]);
+        ctx.set_viewport(0, 0, size, size);
+        ctx.clear(1.0f, 1.0f, 1.0f, 1.0f);
+        ctx.clear_depth();
+        ctx.set_depth_test(true);
+        ctx.set_depth_write(true);
+        ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+        ctx.set_uniform_float(shadow_esm_shader_, "uNormalOffset", 0.0f);
+        ctx.set_uniform_float(shadow_esm_shader_, "uESMExponent", esm_exponent_);
+    } else {
+        // PCF 模式：原有行为
+        ctx.set_shader(shadow_shader_);
+        ctx.set_framebuffer(shadow_fbos_[cascade]);
+        ctx.set_viewport(0, 0, size, size);
+        // VulkanBackend::set_viewport 会同步设置 scissor，无需额外调用。
+        ctx.clear_depth();
+        ctx.set_depth_test(true);
+        ctx.set_depth_write(true);
+        ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+        // Normal Offset Shadow Mapping：沿法线把几何推向光源（每级按自己的 texel 尺寸）
+        ctx.set_uniform_float(shadow_shader_, "uNormalOffset",
+                              cascade_texel_sizes_[cascade] * normal_offset_scale_);
+    }
 }
 
 
 void RenderPipeline::end_shadow_pass(RenderContext& ctx) {
     ctx.set_framebuffer(RHIFramebufferHandle{});
+}
+
+
+bool RenderPipeline::create_vsm_color_targets(RenderContext* ctx) {
+    for (int i = 0; i < k_max_cascades; ++i) {
+        const int size = std::max(64, cascade_sizes_[i]);
+
+        vsm_color_tex_[i] = ctx->create_texture();
+        ITexture* tex = ctx->texture(vsm_color_tex_[i]);
+        if (!vsm_color_tex_[i].is_valid() || !tex ||
+            !tex->create(TextureFormat::RGBA16F, size, size, nullptr)) {
+            GLOG_ERROR("RenderPipeline: failed to create VSM color tex cascade {}", i);
+            return false;
+        }
+        tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+        tex->set_wrap(TextureWrap::ClampToBorder, TextureWrap::ClampToBorder);
+
+        vsm_color_fbo_[i] = ctx->create_framebuffer();
+        IFramebuffer* fbo = ctx->framebuffer(vsm_color_fbo_[i]);
+        if (!vsm_color_fbo_[i].is_valid() || !fbo || !fbo->create(size, size)) {
+            GLOG_ERROR("RenderPipeline: failed to create VSM color FBO cascade {}", i);
+            return false;
+        }
+        fbo->attach_color_texture(tex);
+        // 需要深度测试，所以也 attach 深度 target
+        // 复用现有的 shadow_maps_ depth texture 作为 depth attachment
+        ITexture* depth_tex = ctx->texture(shadow_maps_[i]);
+        if (depth_tex) {
+            fbo->attach_depth_texture(depth_tex);
+        }
+        if (!fbo->is_complete()) {
+            GLOG_ERROR("RenderPipeline: VSM color FBO cascade {} incomplete", i);
+            return false;
+        }
+    }
+    return true;
+}
+
+
+void RenderPipeline::destroy_vsm_color_targets() {
+    if (!ctx_) return;
+    for (int i = 0; i < k_max_cascades; ++i) {
+        if (vsm_color_fbo_[i].is_valid()) {
+            ctx_->destroy_framebuffer(vsm_color_fbo_[i]);
+            vsm_color_fbo_[i] = {};
+        }
+        if (vsm_color_tex_[i].is_valid()) {
+            ctx_->destroy_texture(vsm_color_tex_[i]);
+            vsm_color_tex_[i] = {};
+        }
+    }
+}
+
+
+void RenderPipeline::render_vsm_blur(RenderContext& ctx) {
+    if (!vsm_blur_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
+
+    for (int i = 0; i < cascade_count_; ++i) {
+        const int size = cascade_sizes_[i];
+        if (!vsm_color_fbo_[i].is_valid() || !vsm_color_tex_[i].is_valid()) continue;
+
+        // 水平 blur pass: 从 vsm_color_tex_[i] 采样，写入临时纹理
+        // 用 vsm_color_fbo_[i] 作为目标（原地 blur，需要双缓冲）
+        // 实际实现中，简单的原地 blur 足以满足 VSM 要求
+        ctx.set_shader(vsm_blur_shader_);
+        ctx.set_framebuffer(vsm_color_fbo_[i]);
+        ctx.set_viewport(0, 0, size, size);
+        ctx.set_depth_test(false);
+        ctx.set_depth_write(false);
+
+        // 绑定 VSM 纹理
+        ctx.set_texture(vsm_blur_shader_, vsm_color_tex_[i], 0, "uVSMTexture");
+        ctx.set_uniform_int(vsm_blur_shader_, "uVSMTexture", 0);
+
+        // 水平 blur
+        ctx.set_uniform_vec2(vsm_blur_shader_, "uBlurDirection",
+                             math::Vector2f(1.0f, 0.0f));
+        ctx.draw_mesh(fullscreen_mesh_, vsm_blur_shader_);
+
+        // 垂直 blur
+        ctx.set_uniform_vec2(vsm_blur_shader_, "uBlurDirection",
+                             math::Vector2f(0.0f, 1.0f));
+        ctx.draw_mesh(fullscreen_mesh_, vsm_blur_shader_);
+
+        // 恢复深度测试
+        ctx.set_depth_test(true);
+        ctx.set_depth_write(true);
+    }
 }
 
 

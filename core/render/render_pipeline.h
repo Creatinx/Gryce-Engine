@@ -9,6 +9,17 @@
 #include "render/rhi_handle.h"
 #include "render/export.h"
 #include "render/shader.h"
+#include "render/renderer_rd/effects/bokeh_dof.h"
+#include "render/renderer_rd/effects/motion_blur.h"
+#include "render/renderer_rd/environment/reflection_probe.h"
+#include "render/storage_rd/decal_storage.h"
+#include "render/renderer_rd/effects/ssr.h"
+#include "render/renderer_rd/environment/fog.h"
+#include "render/renderer_rd/effects/water.h"
+#include "render/renderer_rd/environment/sdfgi.h"
+#include "render/renderer_rd/environment/voxel_gi.h"
+#include "render/renderer_rd/effects/ssil.h"
+#include "render/renderer_rd/shadow/shadow_atlas.h"
 
 namespace gryce_engine {
 namespace math { class Camera; }
@@ -28,6 +39,11 @@ class Material;
 class IImGuiBackend;
 
 // ---------------------------------------------------------------------------
+// GI 全局光照模式
+// ---------------------------------------------------------------------------
+enum class GIMode { None = 0, SDFGI = 1, VoxelGI = 2 };
+
+// ---------------------------------------------------------------------------
 // RenderPipeline — 前向渲染管线
 // Shadow Map -> Skybox -> Forward PBR Lighting（多光源：方向光/点光/聚光，
 // 不透明 + 透明两阶段）-> HDR Tone Mapping
@@ -35,6 +51,8 @@ class IImGuiBackend;
 class GRYCE_RENDERER_API RenderPipeline {
 public:
     enum class LightType { Directional = 0, Point = 1, Spot = 2 };
+    // VSM (Variance Shadow Maps) / ESM (Exponential Shadow Maps)
+    enum class ShadowMode { PCF = 0, VSM = 1, ESM = 2 };
 
     struct Light {
         LightType type = LightType::Directional;
@@ -67,9 +85,26 @@ public:
     bool resize_shadow_map(RenderContext* ctx);
     void set_shadow_enabled(bool enabled) { shadow_enabled_ = enabled; }
     bool shadow_enabled() const { return shadow_enabled_; }
+    // 点光源阴影（双抛物面映射 + PCF 软阴影）
+    void set_point_shadow_enabled(bool enabled) { point_shadow_enabled_ = enabled; }
+    bool point_shadow_enabled() const { return point_shadow_enabled_; }
+    void set_point_shadow_size(int size) { point_shadow_size_ = size; }
+    int point_shadow_size() const { return point_shadow_size_; }
+
+    // Shadow Atlas 阴影贴图图集（将多个光源阴影打包到一张纹理）
+    void set_shadow_atlas_enabled(bool enabled) { shadow_atlas_enabled_ = enabled; }
+    bool shadow_atlas_enabled() const { return shadow_atlas_enabled_; }
     // 阴影正交盒半径（世界单位），阴影盒跟随相机焦点
     void set_shadow_area(float size) { shadow_area_ = size; }
     void set_cull_disabled(bool disabled) { cull_disabled_ = disabled; }
+
+    // -----------------------------------------------------------------------
+    // VSM / ESM 可选阴影方案
+    // -----------------------------------------------------------------------
+    void set_shadow_mode(ShadowMode mode) { shadow_mode_ = mode; }
+    ShadowMode shadow_mode() const { return shadow_mode_; }
+    void set_esm_exponent(float exp) { esm_exponent_ = exp; }
+    float esm_exponent() const { return esm_exponent_; }
 
     // -----------------------------------------------------------------------
     // CSM 级联阴影（Cascaded Shadow Maps）
@@ -160,6 +195,48 @@ public:
     }
 
     // -----------------------------------------------------------------------
+    // SSR 屏幕空间反射（Screen Space Reflections，默认关闭）
+    // -----------------------------------------------------------------------
+    void set_ssr_enabled(bool enabled) { ssr_enabled_ = enabled; }
+    bool ssr_enabled() const { return ssr_enabled_; }
+    void set_ssr_params(float max_steps, float fade_range);
+
+    // -----------------------------------------------------------------------
+    // 体积雾（Volumetric Fog，默认关闭）
+    // -----------------------------------------------------------------------
+    void set_fog_enabled(bool enabled) { fog_enabled_ = enabled; }
+    bool fog_enabled() const { return fog_enabled_; }
+    void set_fog_params(const math::Vector3f& color, float density, float height);
+
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Bokeh DOF 景深（默认关闭）
+    // -----------------------------------------------------------------------
+    void set_dof_enabled(bool enabled) {
+        dof_enabled_ = enabled;
+        pp_params_.dof_enabled = enabled ? 1 : 0;
+    }
+    bool dof_enabled() const { return dof_enabled_; }
+    void set_dof_params(float focus_dist, float focus_range, float blur_amount) {
+        pp_params_.dof_focus_distance = focus_dist;
+        pp_params_.dof_focus_radius = focus_range;
+        pp_params_.dof_blur_amount = blur_amount;
+    }
+
+    // -----------------------------------------------------------------------
+    // Motion Blur 运动模糊（默认关闭）
+    // -----------------------------------------------------------------------
+    void set_motion_blur_enabled(bool enabled) {
+        motion_blur_enabled_ = enabled;
+        pp_params_.motion_blur_enabled = enabled ? 1 : 0;
+    }
+    bool motion_blur_enabled() const { return motion_blur_enabled_; }
+    void set_motion_blur_amount(float amount) {
+        motion_blur_amount_ = amount;
+        pp_params_.motion_blur_amount = amount;
+    }
+
+    // -----------------------------------------------------------------------
     // 屏幕空间接触阴影（Contact Shadow）：主 pass 后沿方向光方向半分辨率
     // 步进采样深度，补落地悬浮（Peter-Panning）脚底的黑。默认关闭。
     // -----------------------------------------------------------------------
@@ -167,9 +244,62 @@ public:
     bool contact_shadow_enabled() const { return contact_shadow_enabled_; }
     void set_contact_shadow_params(float strength, float radius_world, int steps);
 
+    // -----------------------------------------------------------------------
+    // GI 全局光照系统（SDFGI / VoxelGI / SSIL）
+    // -----------------------------------------------------------------------
+    void set_gi_enabled(bool enabled) { gi_enabled_ = enabled; }
+    bool gi_enabled() const { return gi_enabled_; }
+    void set_gi_mode(GIMode mode) { gi_mode_ = mode; }
+    GIMode gi_mode() const { return gi_mode_; }
+    void set_gi_indirect_intensity(float intensity) { gi_indirect_intensity_ = intensity; }
+    float gi_indirect_intensity() const { return gi_indirect_intensity_; }
+    void set_sdfgi_enabled(bool enabled) { sdfgi_enabled_ = enabled; }
+    bool sdfgi_enabled() const { return sdfgi_enabled_; }
+    void set_voxel_gi_enabled(bool enabled) { voxel_gi_enabled_ = enabled; }
+    bool voxel_gi_enabled() const { return voxel_gi_enabled_; }
+    void set_ssil_enabled(bool enabled) {
+        ssil_enabled_ = enabled;
+        pp_params_.ssil_enabled = enabled ? 1 : 0;
+    }
+    bool ssil_enabled() const { return ssil_enabled_; }
+    SDFGI_RD& sdfgi() { return sdfgi_; }
+    VoxelGI_RD& voxel_gi() { return voxel_gi_; }
+    SSIL_RD& ssil() { return ssil_; }
+
     // Scene View 网格线开关
     void set_grid_enabled(bool enabled) { grid_enabled_ = enabled; }
     bool grid_enabled() const { return grid_enabled_; }
+
+    // -----------------------------------------------------------------------
+    // Water 水面渲染（默认关闭）
+    // -----------------------------------------------------------------------
+    void set_water_enabled(bool enabled) { water_enabled_ = enabled; }
+    bool water_enabled() const { return water_enabled_; }
+    void set_water_height(float h) { water_height_ = h; }
+    float water_height() const { return water_height_; }
+    void set_water_params(float amplitude, float frequency, float speed, float steepness,
+                          const math::Vector3f& color, float level = 0.0f) {
+        water_.set_water_params(amplitude, frequency, speed, steepness, level, color);
+    }
+    Water_RD& water_system() { return water_; }
+
+    // -----------------------------------------------------------------------
+    // Reflection Probe（反射探针）：局部 IBL 覆盖，当 probe 可用时覆盖全局 IBL
+    // -----------------------------------------------------------------------
+    void set_probe_system_enabled(bool enabled) { probe_system_enabled_ = enabled; }
+    bool probe_system_enabled() const { return probe_system_enabled_; }
+    ReflectionProbeRD& probe_system() { return probe_system_; }
+
+    // -----------------------------------------------------------------------
+    // Decal 贴花系统：在场景表面投影贴花纹理
+    // -----------------------------------------------------------------------
+    void set_decal_enabled(bool enabled) { decal_enabled_ = enabled; }
+    bool decal_enabled() const { return decal_enabled_; }
+    int add_decal(const DecalData& decal) { return decal_storage_.add_decal(decal); }
+    void remove_decal(int index) { decal_storage_.remove_decal(index); }
+    void update_decal(int index, const DecalData& decal) { decal_storage_.update_decal(index, decal); }
+    void clear_decals() { decal_storage_.clear(); }
+    DecalStorage& decal_storage() { return decal_storage_; }
 
     // 环境光（叠加到所有物体的间接光），默认 (0.15, 0.15, 0.15)
     void set_ambient(const math::Vector3f& color) { ambient_ = color; }
@@ -244,8 +374,7 @@ public:
 
     // 重建 HDR / 视口渲染目标（编辑器 Viewport 面板尺寸变化时调用）。
     // 线程约束：调用前必须 pause_render_thread()，调用后 resume_render_thread()。
-    // 注意：仅 OpenGL 后端使用（Vulkan 下 shader 与 FBO 的 render pass 绑定，
-    // 重建需要额外处理，本轮视口输出只在 GL 端启用）。
+    // Vulkan 后端重建后需要配合 hot_reload() 让 pipeline 重新绑定 render pass。
     bool resize_render_targets(int width, int height);
 
     // -----------------------------------------------------------------------
@@ -270,6 +399,13 @@ public:
     // 调用方应保证在 present() 之后调用（与场景热重载相同的时机约束）。
     // 返回成功重载的 shader 数量。
     int poll_shader_hot_reload(RenderContext& ctx);
+
+    // -----------------------------------------------------------------------
+    // 延迟渲染管线（Deferred Rendering）：GBuffer → Lighting Pass
+    // 默认关闭，开启后向前渲染切换为 g_buffer → deferred_lighting 流程。
+    // -----------------------------------------------------------------------
+    void set_deferred_enabled(bool enabled) { deferred_enabled_ = enabled; }
+    bool deferred_enabled() const { return deferred_enabled_; }
 
     // 设置 ImGui 后端引用（用于 resize 时 invalidate 旧的 descriptor set 缓存）
     void set_imgui_backend(IImGuiBackend* backend) { imgui_backend_ = backend; }
@@ -297,6 +433,11 @@ private:
     void render_skinned_mesh_internal(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
                                       std::shared_ptr<const std::vector<math::Matrix4f>> palette,
                                       RenderContext& ctx);
+    void render_mesh_to_gbuffer(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
+                                RenderContext& ctx);
+    void render_skinned_mesh_to_gbuffer(RHIMeshHandle mesh, const Material* material, const math::Matrix4f& model,
+                                        std::shared_ptr<const std::vector<math::Matrix4f>> palette,
+                                        RenderContext& ctx);
 
     // 视锥体：6 个平面 ax+by+cz+d=0，Vector4f 存储 (a,b,c,d)
     struct Frustum {
@@ -343,6 +484,11 @@ private:
 
     RHIShaderHandle pbr_shader_;
     RHIShaderHandle shadow_shader_;
+    RHIShaderHandle shadow_atlas_shader_;  // Shadow Atlas 阴影贴图集 shader
+    RHIShaderHandle point_shadow_shader_;  // 点光源双抛物面阴影
+    RHIShaderHandle shadow_vsm_shader_;    // VSM 阴影
+    RHIShaderHandle shadow_esm_shader_;    // ESM 阴影
+    RHIShaderHandle vsm_blur_shader_;      // VSM 模糊
     RHIShaderHandle skinned_pbr_shader_;   // 可选：加载失败则蒙皮渲染禁用
     RHIShaderHandle grid_shader_;          // 可选：加载失败则 Scene View 网格线禁用
 
@@ -361,10 +507,14 @@ private:
     float pcss_light_size_ = 0.05f;
     float pcss_max_radius_ = 16.0f;
     float pcss_tap_scale_ = 1.0f;
+    ShadowMode shadow_mode_ = ShadowMode::PCF;
+    float esm_exponent_ = 80.0f;
     int debug_view_ = 0;
     PostProcessParams pp_params_;
 
     bool shadow_enabled_ = true;
+    bool shadow_atlas_enabled_ = false;
+    ShadowAtlas shadow_atlas_;            // Shadow Atlas 阴影贴图集
     float shadow_area_ = 15.0f;
     int shadow_light_index_ = -1;
 
@@ -425,6 +575,17 @@ private:
     RHIFramebufferHandle hdr_fbo_;
     RHIShaderHandle tonemap_shader_;
     RHIMeshHandle fullscreen_mesh_;
+
+    // Deferred Rendering：GBuffer（3x MRT 彩色 + 1x 深度）
+    bool deferred_enabled_ = false;
+    bool gbuffer_targets_valid_ = false;
+    RHITextureHandle gbuffer_albedo_metallic_;   // RT0: RGB=albedo, A=metallic
+    RHITextureHandle gbuffer_normal_roughness_;  // RT1: RGB=normal(enc), A=roughness
+    RHITextureHandle gbuffer_emissive_ao_;       // RT2: RGB=emissive, A=AO
+    RHITextureHandle gbuffer_depth_;             // Depth
+    RHIFramebufferHandle gbuffer_fbo_;
+    RHIShaderHandle gbuffer_shader_;
+    RHIShaderHandle deferred_lighting_shader_;
 
     // Bloom：D 链（阈值 + 降采样模糊）+ U 链（上采样合成），全部半分辨率
     static constexpr int k_bloom_levels = 5;
@@ -500,6 +661,67 @@ private:
     int contact_shadow_steps_ = 4;
     bool contact_shadow_targets_valid_ = false;
 
+    // SSR 屏幕空间反射
+    SSR_RD ssr_;
+    bool ssr_enabled_ = false;
+    float ssr_max_steps_ = 64;
+    float ssr_fade_range_ = 10.0f;
+
+    // 体积雾（Volumetric Fog）
+    VolumetricFog_RD fog_;
+    bool fog_enabled_ = false;
+    math::Vector3f fog_color_ = math::Vector3f(0.5f, 0.5f, 0.5f);
+    float fog_density_ = 0.01f;
+    float fog_height_ = 20.0f;
+
+    // 水面渲染（Water）
+    Water_RD water_;
+    bool water_enabled_ = false;
+    float water_height_ = 0.0f;
+    float water_time_ = 0.0f;
+
+    // Bokeh DOF 景深
+    BokehDOF_RD dof_;
+    bool dof_enabled_ = false;
+    float dof_focus_distance_ = 10.0f;
+    float dof_focus_range_ = 5.0f;
+    float dof_blur_amount_ = 4.0f;
+
+    // Motion Blur 运动模糊
+    MotionBlur_RD motion_blur_;
+    bool motion_blur_enabled_ = false;
+    float motion_blur_amount_ = 0.5f;
+
+    // GI 全局光照系统
+    SDFGI_RD sdfgi_;
+    VoxelGI_RD voxel_gi_;
+    SSIL_RD ssil_;
+    bool gi_enabled_ = false;
+    GIMode gi_mode_ = GIMode::None;
+    float gi_indirect_intensity_ = 1.0f;
+    bool sdfgi_enabled_ = false;
+    bool voxel_gi_enabled_ = false;
+    bool ssil_enabled_ = false;
+
+    // 点光源阴影（双抛物面映射）
+    static constexpr int k_max_point_shadows = 4;
+    static constexpr int k_default_point_shadow_size = 512;
+    int point_shadow_size_ = k_default_point_shadow_size;
+    bool point_shadow_enabled_ = true;
+    std::vector<RHITextureHandle> point_shadow_tex_;       // 每点光源 1 张纹理
+    std::vector<RHIFramebufferHandle> point_shadow_fbo_;    // 每点光源 1 个 FBO（双抛物面共享）
+    bool create_point_shadow_targets(RenderContext* ctx);
+    void destroy_point_shadow_targets();
+    void render_point_shadows(RenderContext& ctx, scene::Scene& scene);
+    void bind_point_shadow_uniforms(RenderContext& ctx, RHIShaderHandle shader);
+
+    // VSM/ESM 彩色阴影目标（RGBA16F / R16F）
+    std::array<RHITextureHandle, k_max_cascades> vsm_color_tex_;
+    std::array<RHIFramebufferHandle, k_max_cascades> vsm_color_fbo_;
+    bool create_vsm_color_targets(RenderContext* ctx);
+    void destroy_vsm_color_targets();
+    void render_vsm_blur(RenderContext& ctx);
+
     int ssao_w_ = 0;
     int ssao_h_ = 0;
     RHIShaderHandle gtao_shader_;
@@ -523,9 +745,32 @@ private:
     bool create_hdr_target(RenderContext* ctx);
     bool create_viewport_target(RenderContext* ctx);
     bool create_fullscreen_mesh(RenderContext* ctx);
+    bool create_gbuffer_targets(RenderContext* ctx);
+    void destroy_gbuffer_targets();
+    void begin_gbuffer_pass(RenderContext& ctx);
+    void end_gbuffer_pass(RenderContext& ctx);
+    void begin_deferred_lighting_pass(RenderContext& ctx);
+    void end_deferred_lighting_pass(RenderContext& ctx);
+    void render_deferred_lighting_to_hdr(RenderContext& ctx);
     void begin_hdr_forward_pass(RenderContext& ctx);
     void end_hdr_forward_pass(RenderContext& ctx);
     void render_tonemap(RenderContext& ctx);
+
+    // -----------------------------------------------------------------------
+    // Reflection Probe / Decal 成员
+    // -----------------------------------------------------------------------
+    ReflectionProbeRD probe_system_;
+    bool probe_system_enabled_ = false;
+
+    DecalStorage decal_storage_;
+    bool decal_enabled_ = false;
+    RHIShaderHandle decal_shader_;
+    RHIMeshHandle decal_box_mesh_;
+
+    bool create_decal_box_mesh(RenderContext* ctx);
+    void render_decal_forward(RenderContext& ctx);
+    void render_decal_deferred(RenderContext& ctx);
+    void bind_probe_ibl(RenderContext& ctx, RHIShaderHandle shader, const math::Vector3f& position);
 };
 
 } // namespace gryce_engine::render

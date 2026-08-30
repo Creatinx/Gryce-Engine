@@ -7,8 +7,9 @@ layout(binding = 0) uniform sampler2D uHDRTexture;
 layout(binding = 1) uniform sampler2D uBloomTexture;
 layout(binding = 2) uniform sampler2D uLUTTexture;
 layout(binding = 3) uniform sampler2D uExposureTexture;
+layout(binding = 5) uniform sampler2D uContactShadowTexture;
 
-// 与 C++ VulkanShader::PostProcessPushData 严格对齐（std430，176 字节）
+// 与 C++ VulkanShader::PostProcessPushData 严格对齐（std430）
 layout(push_constant) uniform PushConstants {
     float exposure;
     float ev100;
@@ -39,8 +40,15 @@ layout(push_constant) uniform PushConstants {
     float ae_speed;
     int taa_enabled;
     float taa_weight;
-    float _pad0;
-    float _pad1;
+    int ssao_enabled;
+    float ssao_strength;
+    float ssao_radius;
+    float ssao_near;
+    float ssao_far;
+    float ssao_tan_half;
+    float ssao_aspect;
+    int cs_enabled;      // 复用原 8 字节 padding
+    float cs_strength;
 } pc;
 
 vec3 reinhard(vec3 hdr) {
@@ -141,6 +149,12 @@ void main() {
 
     if (pc.bloom_enabled != 0) {
         hdr += texture(uBloomTexture, vTexCoord).rgb * pc.bloom_intensity;
+    }
+
+    // 屏幕空间接触阴影：补物体落地处的 Peter-Panning 悬浮亮缝
+    if (pc.cs_enabled != 0) {
+        float cs = texture(uContactShadowTexture, vTexCoord).r;
+        hdr *= mix(1.0, cs, pc.cs_strength);
     }
 
     vec3 ldr;

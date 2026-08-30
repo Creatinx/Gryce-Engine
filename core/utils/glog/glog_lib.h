@@ -95,7 +95,7 @@ struct LogEntry {
 // 包装现有后端：日志照常转发到原后端，同时写入固定容量环形缓冲。
 // 线程安全（独立 mutex），snapshot() 拷贝读取，渲染/逻辑线程均可安全写日志。
 // ---------------------------------------------------------------------------
-class MemoryLogSink : public ILogger {
+class GRYCE_API MemoryLogSink : public ILogger {
 public:
     explicit MemoryLogSink(std::unique_ptr<ILogger> inner, size_t capacity = 1000);
 

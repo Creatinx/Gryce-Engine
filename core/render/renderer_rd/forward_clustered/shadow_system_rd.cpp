@@ -51,6 +51,13 @@ bool ShadowSystemRD::init(RenderContext* ctx) {
     initialized_ = true;
     GLOG_INFO("ShadowSystemRD initialized ({} cascades, max {}x{})",
               k_max_cascades, cascade_sizes_[0], cascade_sizes_[0]);
+
+    // 初始化 Shadow Atlas
+    if (!shadow_atlas_.init(ctx)) {
+        GLOG_WARN("ShadowSystemRD: failed to init ShadowAtlas, atlas disabled");
+        shadow_atlas_enabled_ = false;
+    }
+
     return true;
 }
 
@@ -93,6 +100,7 @@ void ShadowSystemRD::shutdown() {
     point_light_positions_.clear();
 
     current_shadow_lights_.clear();
+    shadow_atlas_.destroy();
     initialized_ = false;
 }
 
@@ -411,9 +419,48 @@ void ShadowSystemRD::update(const math::Camera& camera,
 // 渲染所有阴影贴图
 // ---------------------------------------------------------------------------
 void ShadowSystemRD::render_shadows(RenderContext* ctx) {
-    if (!has_directional_shadow_) return;
+    if (shadow_atlas_enabled_ && shadow_atlas_.valid()) {
+        // Shadow Atlas 模式：为所有阴影光源分配 atlas slot
+        // 帧开始时清空上一次的 slot 分配
+        shadow_atlas_.free_all();
 
-    // 渲染 CSM 级联阴影
+        // 为方向光（CSM 级联）分配 slot
+        if (has_directional_shadow_) {
+            for (int i = 0; i < cascade_count_; ++i) {
+                const int slot_size = cascade_sizes_[i];
+                int slot_idx = shadow_atlas_.allocate(slot_size, i);
+                if (slot_idx < 0) {
+                    GLOG_WARN("ShadowAtlas: failed to allocate cascade {} slot", i);
+                }
+            }
+        }
+
+        // 为聚光灯分配 slot
+        for (size_t i = 0; i < spot_shadow_fbo_.size(); ++i) {
+            const int slot_size = spot_shadow_size_;
+            int slot_idx = shadow_atlas_.allocate(slot_size, (uint32_t)(k_max_cascades + i));
+            if (slot_idx < 0) {
+                GLOG_WARN("ShadowAtlas: failed to allocate spot shadow {} slot", i);
+            }
+        }
+
+        // 为点光源分配 slot
+        for (size_t i = 0; i < point_shadow_fbo_.size(); ++i) {
+            const int slot_size = point_shadow_size_;
+            int slot_idx = shadow_atlas_.allocate(slot_size, (uint32_t)(k_max_cascades + 100 + i));
+            if (slot_idx < 0) {
+                GLOG_WARN("ShadowAtlas: failed to allocate point shadow {} slot", i);
+            }
+        }
+
+        // 清空图集深度
+        ctx->set_framebuffer(shadow_atlas_.atlas_fbo());
+        ctx->set_viewport(0, 0, shadow_atlas_.atlas_size(), shadow_atlas_.atlas_size());
+        ctx->clear_depth();
+        return;
+    }
+
+    // 传统模式：渲染 CSM 级联阴影
     for (int i = 0; i < cascade_count_; ++i) {
         _render_cascade(ctx, i, current_light_dir_);
     }

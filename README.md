@@ -410,7 +410,7 @@ Gryce-Engine/
 
 ## 已知限制与下一步
 
-- 编辑器 Viewport 目前以 **OpenGL 后端** 驱动（内嵌 GLFW HWND），Vulkan 后端由 demo 与运行时使用；Vulkan 编辑器集成待跟进。
+- 编辑器 Viewport 支持 **OpenGL / Vulkan** 双后端（ImGui 编辑器，Vulkan 默认）。
 - 世界空间变换查询（`GEntity_GetWorldPosition/Rotation/Scale`）尚未实现（返回 -1）。
 - GameView 与 SceneView 目前共用同一管线/纹理；独立 GameView FBO 待实现。
 - `GPhysics_Raycast` 暂未把命中体映射回实体（`out_entity` 恒为 0）。

@@ -89,6 +89,8 @@ public:
     void set_uniform_int(RHIShaderHandle shader, const char* name, int value);
     void set_uniform_float(RHIShaderHandle shader, const std::string& name, float value);
     void set_uniform_float(RHIShaderHandle shader, const char* name, float value);
+    void set_uniform_vec2(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector2f& value);
+    void set_uniform_vec2(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector2f& value);
     void set_uniform_vec3(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector3f& value);
     void set_uniform_vec3(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector3f& value);
     void set_uniform_vec4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector4f& value);

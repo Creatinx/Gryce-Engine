@@ -96,6 +96,11 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
             if (s) s->set_vec3(cmd.uniform_name, cmd.uniform_vec3);
             break;
         }
+        case RenderCommandType::SetUniformVec2: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->set_vec2(cmd.uniform_name, cmd.uniform_vec2);
+            break;
+        }
         case RenderCommandType::SetUniformVec4: {
             IShader* s = backend->shader(cmd.shader);
             if (s) s->set_vec4(cmd.uniform_name, cmd.uniform_vec4);
@@ -521,6 +526,15 @@ void RenderContext::set_uniform_float(RHIShaderHandle shader, const std::string&
 void RenderContext::set_uniform_float(RHIShaderHandle shader, const char* name, float value) {
     if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_float(shader, name ? name : "", value));
+}
+
+void RenderContext::set_uniform_vec2(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector2f& value) {
+    set_uniform_vec2(shader, name.c_str(), value);
+}
+
+void RenderContext::set_uniform_vec2(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector2f& value) {
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_vec2(shader, name ? name : "", value));
 }
 
 void RenderContext::set_uniform_vec3(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector3f& value) {

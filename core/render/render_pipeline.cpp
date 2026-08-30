@@ -33,6 +33,11 @@
 namespace gryce_engine::render {
 
 namespace {
+// Decal 深度纹理采样器 slot（避免与现有 TextureSlots 冲突）
+constexpr int kDecalDepthSlot = 41;
+} // anonymous namespace
+
+namespace {
 
 // ---------------------------------------------------------------------------
 // 网格本地包围球缓存：按 mesh_path 缓存本地中心与半径，避免每帧重复遍历顶点。
@@ -146,6 +151,12 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         return false;
     }
 
+    // 初始化 Shadow Atlas（失败不阻塞，仅禁用 atlas 功能）
+    if (!shadow_atlas_.init(ctx)) {
+        GLOG_WARN("RenderPipeline: ShadowAtlas init failed, atlas disabled");
+        shadow_atlas_enabled_ = false;
+    }
+
     if (hdr_enabled_) {
         if (!create_hdr_target(ctx)) {
             GLOG_WARN("RenderPipeline: HDR target failed, falling back to LDR");
@@ -188,6 +199,40 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         GLOG_ERROR("RenderPipeline: failed to load shadow shader");
         return false;
     }
+
+    // VSM/ESM 阴影 shader（可选：加载失败降级为 PCF）
+    shadow_vsm_shader_ = load_shader("shadow_vsm", shadow_fbos_[0], false, false);
+    if (!shadow_vsm_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: shadow_vsm shader unavailable, VSM disabled");
+    }
+    shadow_esm_shader_ = load_shader("shadow_esm", shadow_fbos_[0], false, false);
+    if (!shadow_esm_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: shadow_esm shader unavailable, ESM disabled");
+    }
+    // VSM blur shader 需要全屏四边形的 FBO（后处理管线），用 shadow_fbos_[0] 作为占位
+    // 实际使用时会在 render_vsm_blur 中设置正确的 FBO
+    vsm_blur_shader_ = load_shader("vsm_blur", shadow_fbos_[0], false, false);
+    if (!vsm_blur_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: vsm_blur shader unavailable, VSM blur disabled");
+    }
+    // 创建 VSM 彩色阴影目标
+    if (!create_vsm_color_targets(ctx)) {
+        GLOG_WARN("RenderPipeline: VSM color targets failed, VSM/ESM disabled");
+    }
+
+    // Shadow Atlas shader（使用 atlas FBO 作为渲染目标；失败不阻塞）
+    if (shadow_atlas_.valid()) {
+        shadow_atlas_shader_ = load_shader("shadow_atlas", shadow_atlas_.atlas_fbo(), false, false);
+        if (!shadow_atlas_shader_.is_valid()) {
+            GLOG_WARN("RenderPipeline: shadow_atlas shader unavailable, atlas disabled");
+            shadow_atlas_enabled_ = false;
+        }
+    }
+
+    // 点光源阴影（双抛物面映射）：需要 RGBA16F 颜色目标，用空 FBO 加载
+    // 但在 FBO 创建之前无法加载 shader（需要 render pass），
+    // 延迟到 create_point_shadow_targets 之后加载。
+    // 先创建目标，再加载 shader（在点光源阴影目标创建后统一处理）
 
     // tonemap 管线的 render pass 必须与实际绘制目标一致：视口离屏输出开启时
     // 画到 viewport_fbo_（RGBA8、无深度），否则画到默认 framebuffer（交换链
@@ -299,9 +344,110 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         }
     }
 
+    // ---- Reflection Probe 初始化 ----
+    if (!probe_system_.init(ctx)) {
+        GLOG_WARN("RenderPipeline: ReflectionProbeRD init failed, probe system disabled");
+        probe_system_enabled_ = false;
+    }
+
+    // ---- Decal 初始化 ----
+    decal_storage_.init(ctx);
+    // 加载 decal shader（后处理管线，从 HDR 深度读取，blend 到 HDR 颜色）
+    decal_shader_ = load_shader("decal", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!decal_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: decal shader unavailable, decal rendering disabled");
+        decal_enabled_ = false;
+    }
+    // 创建 decal 包围盒 mesh（单位立方体）
+    if (decal_shader_.is_valid() && !create_decal_box_mesh(ctx)) {
+        GLOG_WARN("RenderPipeline: decal box mesh creation failed, decal rendering disabled");
+        decal_enabled_ = false;
+    }
+
+    // ---- Deferred Rendering（可选，需要 HDR 管线） ----
+    if (deferred_enabled_ && hdr_enabled_) {
+        if (!create_gbuffer_targets(ctx)) {
+            GLOG_WARN("RenderPipeline: gbuffer targets failed, fallback to forward");
+            deferred_enabled_ = false;
+        }
+        if (deferred_enabled_) {
+            gbuffer_shader_ = load_shader("g_buffer", gbuffer_fbo_, true, false);
+            if (!gbuffer_shader_.is_valid()) {
+                GLOG_WARN("RenderPipeline: g_buffer shader unavailable, fallback to forward");
+                deferred_enabled_ = false;
+            }
+        }
+        if (deferred_enabled_) {
+            deferred_lighting_shader_ = load_shader("deferred_lighting", hdr_fbo_, true, false);
+            if (!deferred_lighting_shader_.is_valid()) {
+                GLOG_WARN("RenderPipeline: deferred_lighting shader unavailable, fallback to forward");
+                deferred_enabled_ = false;
+            }
+        }
+        if (!deferred_enabled_) {
+            destroy_gbuffer_targets();
+        }
+    }
+
+    // ---- 点光源双抛物面阴影（可选） ----
+    if (point_shadow_enabled_ && !create_point_shadow_targets(ctx)) {
+        GLOG_WARN("RenderPipeline: point shadow targets failed, point shadow disabled");
+        point_shadow_enabled_ = false;
+    }
+    if (point_shadow_enabled_ && !point_shadow_fbo_.empty() && point_shadow_fbo_[0].is_valid()) {
+        point_shadow_shader_ = load_shader("point_shadow_map", point_shadow_fbo_[0], true, false);
+        if (!point_shadow_shader_.is_valid()) {
+            GLOG_WARN("RenderPipeline: point_shadow_map shader unavailable, point shadow disabled");
+            point_shadow_enabled_ = false;
+        }
+    } else {
+        point_shadow_enabled_ = false;
+    }
+    if (!point_shadow_enabled_) {
+        destroy_point_shadow_targets();
+    }
+
+    // SSR 屏幕空间反射
+    ssr_.init(ctx);
+
+    // 体积雾
+    fog_.init(ctx, shader_dir_);
+
+    // Bokeh DOF 景深
+    dof_.init(ctx);
+    if (hdr_enabled_ && dof_.valid()) {
+        dof_.create_targets(viewport_width_, viewport_height_);
+    }
+
+    // Motion Blur 运动模糊
+    motion_blur_.init(ctx, shader_dir_);
+    if (hdr_enabled_ && motion_blur_.valid()) {
+        motion_blur_.create_targets(viewport_width_, viewport_height_);
+    }
+
+    // ---- GI 全局光照系统初始化 ----
+    sdfgi_.init(ctx);
+    voxel_gi_.init(ctx);
+    ssil_.init(ctx);
+    if (hdr_enabled_ && ssil_.valid()) {
+        ssil_.create_targets(viewport_width_, viewport_height_);
+    }
+
+    // ---- 水面渲染初始化 ----
+    water_.init(ctx, shader_dir_);
+    if (hdr_enabled_ && water_.valid()) {
+        water_.create_targets(viewport_width_, viewport_height_);
+    }
+
     initialized_ = true;
-    GLOG_INFO("RenderPipeline initialized (PBR + multi-light + CSM + {}{})",
-              hdr_enabled_ ? "HDR" : "LDR", pp_params_.bloom_enabled ? " + bloom" : "");
+    GLOG_INFO("RenderPipeline initialized (PBR + multi-light + CSM + {}{}{}{}{}{}{}{})",
+              hdr_enabled_ ? "HDR" : "LDR", pp_params_.bloom_enabled ? " + bloom" : "",
+              deferred_enabled_ ? " + deferred" : "",
+              ssr_.valid() ? " + SSR" : "",
+              fog_.valid() ? " + Fog" : "",
+              sdfgi_.valid() ? " + SDFGI" : "",
+              voxel_gi_.valid() ? " + VoxelGI" : "",
+              ssil_.valid() ? " + SSIL" : "");
     return true;
 }
 
@@ -379,11 +525,38 @@ void RenderPipeline::shutdown() {
         ctx_->destroy_shader(contact_shadow_shader_);
         contact_shadow_shader_ = RHIShaderHandle{};
     }
+    if (owns_shaders_ && point_shadow_shader_.is_valid()) {
+        ctx_->destroy_shader(point_shadow_shader_);
+        point_shadow_shader_ = RHIShaderHandle{};
+    }
+    if (owns_shaders_ && shadow_vsm_shader_.is_valid()) {
+        ctx_->destroy_shader(shadow_vsm_shader_);
+        shadow_vsm_shader_ = RHIShaderHandle{};
+    }
+    if (owns_shaders_ && shadow_esm_shader_.is_valid()) {
+        ctx_->destroy_shader(shadow_esm_shader_);
+        shadow_esm_shader_ = RHIShaderHandle{};
+    }
+    if (owns_shaders_ && vsm_blur_shader_.is_valid()) {
+        ctx_->destroy_shader(vsm_blur_shader_);
+        vsm_blur_shader_ = RHIShaderHandle{};
+    }
+    destroy_vsm_color_targets();
+    destroy_point_shadow_targets();
     destroy_contact_shadow_targets();
     destroy_bloom_targets();
     destroy_auto_exposure_targets();
     destroy_taa_targets();
     destroy_ssao_targets();
+    destroy_gbuffer_targets();
+    if (owns_shaders_ && gbuffer_shader_.is_valid()) {
+        ctx_->destroy_shader(gbuffer_shader_);
+        gbuffer_shader_ = RHIShaderHandle{};
+    }
+    if (owns_shaders_ && deferred_lighting_shader_.is_valid()) {
+        ctx_->destroy_shader(deferred_lighting_shader_);
+        deferred_lighting_shader_ = RHIShaderHandle{};
+    }
     if (lut_texture_.is_valid()) {
         ctx_->destroy_texture(lut_texture_);
         lut_texture_ = RHITextureHandle{};
@@ -413,11 +586,37 @@ void RenderPipeline::shutdown() {
     if (owns_shaders_) {
         if (pbr_shader_.is_valid()) ctx_->destroy_shader(pbr_shader_);
         if (shadow_shader_.is_valid()) ctx_->destroy_shader(shadow_shader_);
+        if (shadow_atlas_shader_.is_valid()) ctx_->destroy_shader(shadow_atlas_shader_);
         if (skinned_pbr_shader_.is_valid()) ctx_->destroy_shader(skinned_pbr_shader_);
     }
     pbr_shader_ = RHIShaderHandle{};
     shadow_shader_ = RHIShaderHandle{};
+    shadow_atlas_shader_ = RHIShaderHandle{};
     skinned_pbr_shader_ = RHIShaderHandle{};
+
+    shadow_atlas_.destroy();
+
+    ssr_.destroy();
+    fog_.destroy();
+    dof_.destroy();
+    motion_blur_.destroy();
+    sdfgi_.destroy();
+    voxel_gi_.destroy();
+    ssil_.destroy();
+    water_.destroy();
+
+    // Reflection Probe / Decal 清理
+    probe_system_.destroy();
+    decal_storage_.destroy();
+    if (owns_shaders_ && decal_shader_.is_valid()) {
+        ctx_->destroy_shader(decal_shader_);
+        decal_shader_ = RHIShaderHandle{};
+    }
+    if (decal_box_mesh_.is_valid()) {
+        ctx_->destroy_mesh(decal_box_mesh_);
+        decal_box_mesh_ = RHIMeshHandle{};
+    }
+
     ctx_ = nullptr;
     initialized_ = false;
 }
@@ -463,6 +662,11 @@ int RenderPipeline::poll_shader_hot_reload(RenderContext& ctx) {
     check(taa_resolve_shader_);
     check(gtao_shader_);
     check(ssao_blur_shader_);
+    check(decal_shader_);
+    check(point_shadow_shader_);
+    check(shadow_vsm_shader_);
+    check(shadow_esm_shader_);
+    check(vsm_blur_shader_);
 
     if (to_reload.empty()) return 0;
 
@@ -525,6 +729,17 @@ void RenderPipeline::set_viewport(int width, int height) {
     viewport_height_ = height;
 }
 
+void RenderPipeline::set_ssr_params(float max_steps, float fade_range) {
+    ssr_max_steps_ = max_steps;
+    ssr_fade_range_ = fade_range;
+}
+
+void RenderPipeline::set_fog_params(const math::Vector3f& color, float density, float height) {
+    fog_color_ = color;
+    fog_density_ = density;
+    fog_height_ = height;
+}
+
 bool RenderPipeline::Frustum::contains_sphere(const math::Vector3f& center, float radius) const {
     for (int i = 0; i < 6; ++i) {
         const math::Vector3f normal(planes[i].x, planes[i].y, planes[i].z);
@@ -568,7 +783,8 @@ bool RenderPipeline::is_inside_frustum(const Frustum& frustum, const math::Matri
         // 无法计算边界时保守保留
         return true;
     }
-    return frustum.contains_sphere(center, radius);
+    bool inside = frustum.contains_sphere(center, radius);
+    return inside;
 }
 
 bool RenderPipeline::is_inside_frustum_skinned(const Frustum& frustum, const math::Matrix4f& world_transform,
@@ -942,6 +1158,20 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
 void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     if (!initialized_ || !camera_) return;
 
+    // ---- SDFGI 更新（每帧，在场景渲染之前） ----
+    if (sdfgi_enabled_ && sdfgi_.valid()) {
+        // 收集方向光方向与颜色
+        std::vector<math::Vector3f> light_dirs;
+        std::vector<math::Vector3f> light_colors;
+        for (const auto& light : lights_) {
+            if (light.type == LightType::Directional) {
+                light_dirs.push_back(light.direction.normalized());
+                light_colors.push_back(light.color * light.intensity);
+            }
+        }
+        sdfgi_.update(camera_->position(), light_dirs, light_colors);
+    }
+
     // TAA 抖动序列推进（投影矩阵每帧取不同子像素偏移）
     if (pp_params_.taa_enabled != 0) {
         ++taa_frame_;
@@ -964,26 +1194,312 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
     // 1. Shadow pass（仅第一个方向光；逐级联渲染，每级独立剔除/分辨率/bias）
     if (render_shadow) {
-        for (int c = 0; c < cascade_count_; ++c) {
-            const Frustum shadow_frustum = extract_frustum(cascade_light_space_matrices_[c]);
-            begin_shadow_pass(ctx, c);
-            ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
-                scene,
-                [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
-                    if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
-                    const math::Matrix4f& model = entity->world_transform();
-                    if (!is_inside_frustum(shadow_frustum, model, mr->mesh_path)) return;
-                    ctx.set_uniform_mat4(shadow_shader_, "uModel", model);
-                    ctx.set_uniform_mat4(shadow_shader_, "uLightSpaceMatrix",
-                                         cascade_light_space_matrices_[c]);
-                    ctx.draw_mesh(mr->gpu_mesh_handle(), shadow_shader_);
-                });
-            end_shadow_pass(ctx);
+        if (shadow_atlas_enabled_ && shadow_atlas_.valid() && shadow_atlas_shader_.is_valid()) {
+            // ---- Shadow Atlas 模式：所有级联渲染到同一张图集纹理 ----
+            shadow_atlas_.free_all();
+
+            // 为每个级联分配 atlas slot
+            int slot_indices[k_max_cascades];
+            for (int c = 0; c < cascade_count_; ++c) {
+                slot_indices[c] = shadow_atlas_.allocate(cascade_sizes_[c], (uint32_t)c);
+                if (slot_indices[c] < 0) {
+                    GLOG_WARN("ShadowAtlas: failed to allocate cascade {} slot", c);
+                }
+            }
+
+            // 绑定 atlas FBO 并清空整张图集深度
+            ctx.set_framebuffer(shadow_atlas_.atlas_fbo());
+            ctx.set_viewport(0, 0, shadow_atlas_.atlas_size(), shadow_atlas_.atlas_size());
+            ctx.clear_depth();
+            ctx.set_depth_test(true);
+            ctx.set_depth_write(true);
+            ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+
+            for (int c = 0; c < cascade_count_; ++c) {
+                if (slot_indices[c] < 0) continue;
+
+                const auto& slot = shadow_atlas_.get_slot(slot_indices[c]);
+                ctx.set_viewport(slot.x, slot.y, slot.size, slot.size);
+                ctx.set_shader(shadow_atlas_shader_);
+
+                // Normal Offset Shadow Mapping
+                ctx.set_uniform_float(shadow_atlas_shader_, "uNormalOffset",
+                                      cascade_texel_sizes_[c] * normal_offset_scale_);
+                // Atlas UV 变换：将 NDC 映射到 atlas slot 区域
+                math::Vector4f uv_xform = shadow_atlas_.slot_uv_transform(slot_indices[c]);
+                ctx.set_uniform_vec4(shadow_atlas_shader_, "uAtlasOffset", uv_xform);
+
+                const Frustum shadow_frustum = extract_frustum(cascade_light_space_matrices_[c]);
+                ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+                    scene,
+                    [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
+                        if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
+                        const math::Matrix4f& model = entity->world_transform();
+                        if (!is_inside_frustum(shadow_frustum, model, mr->mesh_path)) return;
+                        ctx.set_uniform_mat4(shadow_atlas_shader_, "uModel", model);
+                        ctx.set_uniform_mat4(shadow_atlas_shader_, "uLightSpaceMatrix",
+                                             cascade_light_space_matrices_[c]);
+                        // [Alpha Test]
+                        if (mr->material && mr->material->albedo_texture().is_valid()) {
+                            ctx.set_texture(shadow_atlas_shader_, mr->material->albedo_texture(),
+                                            TextureSlots::kPBRAlbedo, "");
+                            ctx.set_uniform_int(shadow_atlas_shader_, "uAlbedoMap", TextureSlots::kPBRAlbedo);
+                            ctx.set_uniform_int(shadow_atlas_shader_, "uUseAlbedoMap", 1);
+                        } else {
+                            ctx.set_uniform_int(shadow_atlas_shader_, "uUseAlbedoMap", 0);
+                        }
+                        ctx.draw_mesh(mr->gpu_mesh_handle(), shadow_atlas_shader_);
+                    });
+            }
+            ctx.set_framebuffer(RHIFramebufferHandle{});
+        } else {
+            // ---- 传统模式：每级联独立渲染 ----
+            for (int c = 0; c < cascade_count_; ++c) {
+                const Frustum shadow_frustum = extract_frustum(cascade_light_space_matrices_[c]);
+                begin_shadow_pass(ctx, c);
+
+                // 根据 shadow_mode_ 选择正确的 shader 句柄
+                RHIShaderHandle current_shadow = shadow_shader_;
+                if (shadow_mode_ == ShadowMode::VSM) {
+                    current_shadow = shadow_vsm_shader_;
+                } else if (shadow_mode_ == ShadowMode::ESM) {
+                    current_shadow = shadow_esm_shader_;
+                }
+
+                ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+                    scene,
+                    [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
+                        if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
+                        const math::Matrix4f& model = entity->world_transform();
+                        if (!is_inside_frustum(shadow_frustum, model, mr->mesh_path)) return;
+                        ctx.set_uniform_mat4(current_shadow, "uModel", model);
+                        ctx.set_uniform_mat4(current_shadow, "uLightSpaceMatrix",
+                                             cascade_light_space_matrices_[c]);
+                        // [Alpha Test] 绑定材质 albedo 纹理以供 alpha discard
+                        if (mr->material && mr->material->albedo_texture().is_valid()) {
+                            ctx.set_texture(current_shadow, mr->material->albedo_texture(),
+                                            TextureSlots::kPBRAlbedo, "");
+                            ctx.set_uniform_int(current_shadow, "uAlbedoMap", TextureSlots::kPBRAlbedo);
+                            ctx.set_uniform_int(current_shadow, "uUseAlbedoMap", 1);
+                        } else {
+                            ctx.set_uniform_int(current_shadow, "uUseAlbedoMap", 0);
+                        }
+                        // ESM 额外参数
+                        if (shadow_mode_ == ShadowMode::ESM) {
+                            ctx.set_uniform_float(current_shadow, "uESMExponent", esm_exponent_);
+                        }
+                        ctx.draw_mesh(mr->gpu_mesh_handle(), current_shadow);
+                    });
+                end_shadow_pass(ctx);
+            }
+
+            // VSM 模式下对每级级联做 blur 以减少 light bleeding
+            if (shadow_mode_ == ShadowMode::VSM) {
+                render_vsm_blur(ctx);
+            }
         }
     }
 
-    // 2. Forward PBR pass (HDR target or backbuffer)
-    if (hdr_enabled_) {
+    // 1b. 点光源双抛物面阴影（在 CSM 之后、GBuffer/Forward pass 之前）
+    render_point_shadows(ctx, scene);
+
+    // 2. Forward PBR pass or Deferred GBuffer pass (HDR target or backbuffer)
+    if (deferred_enabled_ && hdr_enabled_) {
+        // Deferred Rendering Path
+        // 2a. GBuffer pass: render scene to MRT
+        begin_gbuffer_pass(ctx);
+        render_skybox(ctx);
+        render_grid(ctx);
+        bind_global_uniforms(ctx);
+        // 收集绘制项（同 forward）
+        last_bound_material_pbr_ = nullptr;
+        last_bound_material_skinned_ = nullptr;
+        auto& opaque_items = opaque_items_;
+        auto& transparent_items = transparent_items_;
+        auto& viewmodel_items = viewmodel_items_;
+        auto& skinned_opaque_items = skinned_opaque_items_;
+        auto& skinned_transparent_items = skinned_transparent_items_;
+        opaque_items.clear();
+        transparent_items.clear();
+        viewmodel_items.clear();
+        skinned_opaque_items.clear();
+        skinned_transparent_items.clear();
+        const math::Vector3f cam_pos = camera_->position();
+        ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+            scene,
+            [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
+                if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
+                math::Matrix4f model = entity->world_transform();
+                if (mr->billboard && camera_) {
+                    model = math::billboard_matrix(
+                        math::Vector3f(model(0, 3), model(1, 3), model(2, 3)),
+                        entity->transform()->scale,
+                        camera_->position());
+                }
+                if (!is_inside_frustum(camera_frustum, model, mr->mesh_path)) return;
+                const Material* mat = mr->material.get();
+                const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
+                math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
+                float dist_sq = (pos - cam_pos).length_sq();
+                DrawItem item{mr->gpu_mesh_handle(), mat, model, dist_sq};
+                if (!mr->depth_test) {
+                    viewmodel_items.push_back(item);
+                } else if (transparent) {
+                    transparent_items.push_back(item);
+                } else {
+                    opaque_items.push_back(item);
+                }
+            });
+        // 蒙皮网格
+        if (skinned_pbr_shader_.is_valid()) {
+            ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+                scene,
+                [&](scene::Entity* entity, components::SkinnedMeshRenderer* mr, components::Transform* /*transform*/) {
+                    if (!mr->enabled || mr->model_path.empty() || !mr->gpu_mesh_handle().is_valid() || !mr->palette()) return;
+                    const math::Matrix4f& model = entity->world_transform();
+                    if (!is_inside_frustum_skinned(camera_frustum, model, mr->model_path)) return;
+                    const Material* mat = mr->material.get();
+                    const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
+                    math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
+                    float dist_sq = (pos - cam_pos).length_sq();
+                    SkinnedDrawItem item{mr->gpu_mesh_handle(), mat, model, mr->palette(), dist_sq};
+                    if (transparent) {
+                        skinned_transparent_items.push_back(std::move(item));
+                    } else {
+                        skinned_opaque_items.push_back(std::move(item));
+                    }
+                });
+        }
+        // GBuffer 不透明物体（使用 g_buffer shader）
+        ctx.set_shader(gbuffer_shader_);
+        ctx.set_blend(false);
+        ctx.set_depth_write(true);
+        for (const auto& item : opaque_items) {
+            render_mesh_to_gbuffer(item.mesh, item.material, item.model, ctx);
+        }
+        for (const auto& item : skinned_opaque_items) {
+            render_skinned_mesh_to_gbuffer(item.mesh, item.material, item.model, item.palette, ctx);
+        }
+        end_gbuffer_pass(ctx);
+
+        // 2b. Deferred Lighting Pass: full-screen quad, read GBuffer, write HDR
+        begin_deferred_lighting_pass(ctx);
+        render_deferred_lighting_to_hdr(ctx);
+        end_deferred_lighting_pass(ctx);
+
+        // 2b'. Decal 贴花（Deferred Lighting 后、透明前，blend 合成到 HDR 颜色）
+        if (decal_enabled_ && decal_shader_.is_valid() && decal_box_mesh_.is_valid()) {
+            render_decal_deferred(ctx);
+        }
+
+        // 2c. 透明物体：使用 forward PBR 在 HDR target 上叠层
+        if (!transparent_items.empty() || !skinned_transparent_items.empty()) {
+            std::sort(transparent_items.begin(), transparent_items.end(),
+                      [](const DrawItem& a, const DrawItem& b) { return a.dist_sq > b.dist_sq; });
+            std::sort(skinned_transparent_items.begin(), skinned_transparent_items.end(),
+                      [](const SkinnedDrawItem& a, const SkinnedDrawItem& b) { return a.dist_sq > b.dist_sq; });
+            ctx.set_framebuffer(hdr_fbo_);
+            ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+            ctx.set_blend(true);
+            ctx.set_depth_write(false);
+            ctx.set_depth_test(true);
+            ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+            ctx.set_shader(pbr_shader_);
+            for (const auto& item : transparent_items) {
+                render_mesh_internal(item.mesh, item.material, item.model, ctx);
+            }
+            for (const auto& item : skinned_transparent_items) {
+                render_skinned_mesh_internal(item.mesh, item.material, item.model, item.palette, ctx);
+            }
+            ctx.set_blend(false);
+            ctx.set_depth_write(true);
+        }
+        // 2d. Viewmodel（FPS 武器）
+        if (!viewmodel_items.empty()) {
+            ctx.set_framebuffer(hdr_fbo_);
+            ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+            ctx.set_blend(false);
+            ctx.set_depth_test(false);
+            ctx.set_depth_write(false);
+            ctx.set_cull_face(CullMode::None);
+            ctx.set_shader(pbr_shader_);
+            for (const auto& item : viewmodel_items) {
+                render_mesh_internal(item.mesh, item.material, item.model, ctx);
+            }
+            ctx.set_depth_test(true);
+            ctx.set_depth_write(true);
+        }
+
+        // ---- 水面渲染（透明物体后，SSR 前，Deferred 路径） ----
+        if (water_enabled_ && water_.valid() && camera_ && hdr_fbo_.is_valid()) {
+            water_time_ += 0.016f;
+
+            const float water_y = water_height_;
+            math::Vector3f ref_cam_pos = camera_->position();
+            ref_cam_pos.y = 2.0f * water_y - ref_cam_pos.y;
+
+            water_.render_reflection(&ctx, ref_cam_pos, water_y);
+
+            ctx.set_framebuffer(hdr_fbo_);
+            ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+
+            math::Matrix4f view_proj = get_projection_matrix() * camera_->get_view_matrix();
+            water_.render_water(&ctx,
+                                water_.reflection_tex(),
+                                hdr_color_,
+                                hdr_depth_,
+                                view_proj,
+                                camera_->position(),
+                                water_time_,
+                                water_height_);
+
+            ctx.set_framebuffer(hdr_fbo_);
+            ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+        }
+
+        // SSR 屏幕空间反射（HDR 渲染后、SSIL/SSAO 前）
+        if (ssr_enabled_ && ssr_.valid()) {
+            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_,
+                        pp_params_, viewport_width_, viewport_height_);
+        }
+
+        // SSIL 屏幕空间间接光照（SSR 后、SSAO 前）
+        if (ssil_enabled_ && ssil_.valid()) {
+            ssil_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_,
+                         pp_params_, viewport_width_, viewport_height_);
+        }
+
+        // 体积雾（PBR/Deferred 渲染后、后处理前）
+        if (fog_enabled_ && fog_.valid() && camera_) {
+            math::Matrix4f inv_vp = (get_projection_matrix() * camera_->get_view_matrix()).inverse();
+            fog_.render(&ctx, hdr_depth_, inv_vp, camera_->get_view_matrix(),
+                        camera_->position(), fog_color_, fog_density_, fog_height_,
+                        camera_->near_plane(), camera_->far_plane());
+            fog_.render_apply(&ctx, hdr_color_, hdr_depth_, inv_vp, camera_->position());
+        }
+
+        // 后处理：SSAO, Contact Shadow, Bloom, DOF, Motion Blur, Auto Exposure, TAA, Tonemap
+        render_ssao(ctx);
+        render_contact_shadow(ctx);
+        render_bloom(ctx);
+        // DOF
+        if (dof_enabled_ && dof_.valid()) {
+            dof_.render(&ctx, hdr_color_, hdr_depth_, pp_params_, viewport_width_, viewport_height_);
+            if (dof_.dof_tex().is_valid()) {
+                hdr_color_ = dof_.dof_tex();
+            }
+        }
+        // Motion Blur
+        if (motion_blur_enabled_ && motion_blur_.valid()) {
+            motion_blur_.render(&ctx, hdr_color_, hdr_depth_, RHITextureHandle{}, pp_params_, viewport_width_, viewport_height_);
+            if (motion_blur_.output_tex().is_valid()) {
+                hdr_color_ = motion_blur_.output_tex();
+            }
+        }
+        render_auto_exposure(ctx);
+        render_taa(ctx);
+        render_tonemap(ctx);
+    } else if (hdr_enabled_) {
         begin_hdr_forward_pass(ctx);
     } else {
         begin_forward_pass(ctx);
@@ -1068,6 +1584,11 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         render_skinned_mesh_internal(item.mesh, item.material, item.model, item.palette, ctx);
     }
 
+    // 2c'. Decal 贴花（不透明后、透明前，blend 合成到 HDR 颜色）
+    if (decal_enabled_ && decal_shader_.is_valid() && decal_box_mesh_.is_valid()) {
+        render_decal_forward(ctx);
+    }
+
     // 2d. 透明物体：按到相机距离从远到近排序，blend 开、深度写关
     if (!transparent_items.empty() || !skinned_transparent_items.empty()) {
         std::sort(transparent_items.begin(), transparent_items.end(),
@@ -1100,12 +1621,79 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
     if (hdr_enabled_) {
         end_hdr_forward_pass(ctx);
+
+        // ---- 水面渲染（透明物体后，SSR 前） ----
+        if (water_enabled_ && water_.valid() && camera_ && hdr_fbo_.is_valid()) {
+            water_time_ += 0.016f; // 约 60fps 时间增量
+
+            // 计算反射相机（镜面反射：翻转相机关于水面）
+            const float water_y = water_height_;
+            math::Vector3f ref_cam_pos = camera_->position();
+            ref_cam_pos.y = 2.0f * water_y - ref_cam_pos.y;
+
+            // 设置反射 FBO
+            water_.render_reflection(&ctx, ref_cam_pos, water_y);
+
+            // 反射场景渲染：使用原始场景的相机方向，但翻转 Y
+            // 简化的反射渲染：使用当前 HDR 颜色作为折射纹理
+            // 渲染水面网格到当前 HDR FBO（直接 alpha blend）
+            math::Matrix4f view_proj = get_projection_matrix() * camera_->get_view_matrix();
+            water_.render_water(&ctx,
+                                water_.reflection_tex(),  // 反射纹理
+                                hdr_color_,                // 折射纹理（使用场景颜色）
+                                hdr_depth_,                // 深度纹理
+                                view_proj,
+                                camera_->position(),
+                                water_time_,
+                                water_height_);
+
+            // 恢复 HDR FBO 状态
+            ctx.set_framebuffer(hdr_fbo_);
+            ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+        }
+
+        // SSR 屏幕空间反射（HDR 渲染后、SSIL/SSAO 前）
+        if (ssr_enabled_ && ssr_.valid()) {
+            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_,
+                        pp_params_, viewport_width_, viewport_height_);
+        }
+
+        // 3. SSIL 屏幕空间间接光照（SSR 后、SSAO 前）
+        if (ssil_enabled_ && ssil_.valid()) {
+            RHITextureHandle normal_roughness = deferred_enabled_ ? gbuffer_normal_roughness_ : RHITextureHandle{};
+            ssil_.render(&ctx, hdr_color_, hdr_depth_, normal_roughness,
+                         pp_params_, viewport_width_, viewport_height_);
+        }
+
+        // 体积雾（PBR 渲染后、后处理前）
+        if (fog_enabled_ && fog_.valid() && camera_) {
+            math::Matrix4f inv_vp = (get_projection_matrix() * camera_->get_view_matrix()).inverse();
+            fog_.render(&ctx, hdr_depth_, inv_vp, camera_->get_view_matrix(),
+                        camera_->position(), fog_color_, fog_density_, fog_height_,
+                        camera_->near_plane(), camera_->far_plane());
+            fog_.render_apply(&ctx, hdr_color_, hdr_depth_, inv_vp, camera_->position());
+        }
+
         // 3. 屏幕空间环境光遮蔽（深度 → GTAO → 模糊）
         render_ssao(ctx);
         // 3a. 屏幕空间接触阴影（补 Peter-Panning 脚底黑）
         render_contact_shadow(ctx);
         // 4. Bloom（阈值 → 降采样链 → 上采样合成）
         render_bloom(ctx);
+        // 4a. DOF 景深（Bloom 后，TAA 前）
+        if (dof_enabled_ && dof_.valid()) {
+            dof_.render(&ctx, hdr_color_, hdr_depth_, pp_params_, viewport_width_, viewport_height_);
+            if (dof_.dof_tex().is_valid()) {
+                hdr_color_ = dof_.dof_tex();
+            }
+        }
+        // 4b. Motion Blur 运动模糊（DOF 后，自动曝光前）
+        if (motion_blur_enabled_ && motion_blur_.valid()) {
+            motion_blur_.render(&ctx, hdr_color_, hdr_depth_, RHITextureHandle{}, pp_params_, viewport_width_, viewport_height_);
+            if (motion_blur_.output_tex().is_valid()) {
+                hdr_color_ = motion_blur_.output_tex();
+            }
+        }
         // 5. 自动曝光（GPU 亮度反馈，更新曝光纹理）
         render_auto_exposure(ctx);
         // 6. TAA（时域累积 + 抖动 + 邻域钳制）
@@ -1139,6 +1727,12 @@ void RenderPipeline::render_mesh_internal(RHIMeshHandle mesh, const Material* ma
     if (material && material != last_bound_material_pbr_) {
         material->bind(&ctx, pbr_shader_);
         last_bound_material_pbr_ = material;
+    }
+
+    // 当 probe 系统启用且有可用 probe 时，覆盖全局 IBL
+    if (probe_system_enabled_ && probe_system_.probe_count() > 0) {
+        math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
+        bind_probe_ibl(ctx, pbr_shader_, pos);
     }
 
     ctx.draw_mesh(mesh, pbr_shader_);
@@ -1176,7 +1770,152 @@ void RenderPipeline::render_skinned_mesh_internal(RHIMeshHandle mesh, const Mate
         last_bound_material_skinned_ = material;
     }
 
+    // 当 probe 系统启用且有可用 probe 时，覆盖全局 IBL
+    if (probe_system_enabled_ && probe_system_.probe_count() > 0) {
+        math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
+        bind_probe_ibl(ctx, skinned_pbr_shader_, pos);
+    }
+
     ctx.draw_mesh(mesh, skinned_pbr_shader_);
+}
+
+void RenderPipeline::render_mesh_to_gbuffer(RHIMeshHandle mesh, const Material* material,
+                                             const math::Matrix4f& model, RenderContext& ctx) {
+    if (!mesh.is_valid() || !gbuffer_shader_.is_valid() || !camera_) return;
+
+    const bool two_sided = material && material->two_sided;
+    ctx.set_cull_face((cull_disabled_ || two_sided) ? CullMode::None : CullMode::Back);
+
+    ctx.set_shader(gbuffer_shader_);
+    ctx.set_uniform_mat4(gbuffer_shader_, "uModel", model);
+    ctx.set_uniform_mat4(gbuffer_shader_, "uView", camera_->get_view_matrix());
+    ctx.set_uniform_mat4(gbuffer_shader_, "uProjection", get_projection_matrix());
+    ctx.set_uniform_int(gbuffer_shader_, "uTwoSided", two_sided ? 1 : 0);
+
+    // Bind material properties to GBuffer shader
+    if (material) {
+        ctx.set_uniform_vec3(gbuffer_shader_, "uAlbedoColor", material->albedo_color);
+        ctx.set_uniform_float(gbuffer_shader_, "uRoughness", material->roughness);
+        ctx.set_uniform_float(gbuffer_shader_, "uMetallic", material->metallic);
+        ctx.set_uniform_float(gbuffer_shader_, "uAO", material->ao);
+        ctx.set_uniform_vec3(gbuffer_shader_, "uEmissiveColor", material->emissive_color);
+        ctx.set_uniform_vec4(gbuffer_shader_, "uUVTransform",
+                             math::Vector4f(material->uv_scale.x, material->uv_scale.y,
+                                            material->uv_offset.x, material->uv_offset.y));
+        ctx.set_uniform_float(gbuffer_shader_, "uOpacity", material->opacity);
+
+        // Bind textures
+        auto bind_gbuffer_tex = [&](const RHITextureHandle& tex_handle, int slot, const char* uniform_name) {
+            if (tex_handle.is_valid()) {
+                ITexture* tex = ctx_->texture(tex_handle);
+                if (tex) tex->bind(slot);
+                ctx.set_texture(gbuffer_shader_, tex_handle, slot, "");
+                ctx.set_uniform_int(gbuffer_shader_, uniform_name, slot);
+            }
+        };
+
+        bind_gbuffer_tex(material->albedo_texture(), TextureSlots::kPBRAlbedo, "uAlbedoMap");
+        bind_gbuffer_tex(material->normal_texture(), TextureSlots::kPBRNormal, "uNormalMap");
+        bind_gbuffer_tex(material->roughness_texture(), TextureSlots::kPBRRoughness, "uRoughnessMap");
+        bind_gbuffer_tex(material->metallic_texture(), TextureSlots::kPBRMetallic, "uMetallicMap");
+        bind_gbuffer_tex(material->ao_texture(), TextureSlots::kPBRAO, "uAOMap");
+        bind_gbuffer_tex(material->emissive_texture(), TextureSlots::kPBREmissive, "uEmissiveMap");
+
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap", material->albedo_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap", material->normal_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap", material->roughness_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap", material->metallic_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap", material->ao_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap", material->emissive_texture().is_valid() ? 1 : 0);
+    } else {
+        // Default material
+        ctx.set_uniform_vec3(gbuffer_shader_, "uAlbedoColor", math::Vector3f(1.0f, 1.0f, 1.0f));
+        ctx.set_uniform_float(gbuffer_shader_, "uRoughness", 0.5f);
+        ctx.set_uniform_float(gbuffer_shader_, "uMetallic", 0.0f);
+        ctx.set_uniform_float(gbuffer_shader_, "uAO", 1.0f);
+        ctx.set_uniform_vec3(gbuffer_shader_, "uEmissiveColor", math::Vector3f::zero());
+        ctx.set_uniform_float(gbuffer_shader_, "uOpacity", 1.0f);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap", 0);
+    }
+
+    ctx.draw_mesh(mesh, gbuffer_shader_);
+}
+
+void RenderPipeline::render_skinned_mesh_to_gbuffer(RHIMeshHandle mesh, const Material* material,
+                                                     const math::Matrix4f& model,
+                                                     std::shared_ptr<const std::vector<math::Matrix4f>> palette,
+                                                     RenderContext& ctx) {
+    if (!mesh.is_valid() || !gbuffer_shader_.is_valid() || !camera_) return;
+
+    const bool two_sided = material && material->two_sided;
+    ctx.set_cull_face((cull_disabled_ || two_sided) ? CullMode::None : CullMode::Back);
+
+    ctx.set_shader(gbuffer_shader_);
+    ctx.set_uniform_mat4(gbuffer_shader_, "uModel", model);
+    ctx.set_uniform_mat4(gbuffer_shader_, "uView", camera_->get_view_matrix());
+    ctx.set_uniform_mat4(gbuffer_shader_, "uProjection", get_projection_matrix());
+    ctx.set_uniform_int(gbuffer_shader_, "uTwoSided", two_sided ? 1 : 0);
+
+    // Palette
+    if (palette && !palette->empty()) {
+        ctx.set_uniform_mat4_array(gbuffer_shader_, "uBonePalette", std::move(palette));
+    }
+
+    // Bind material (same as above)
+    if (material) {
+        ctx.set_uniform_vec3(gbuffer_shader_, "uAlbedoColor", material->albedo_color);
+        ctx.set_uniform_float(gbuffer_shader_, "uRoughness", material->roughness);
+        ctx.set_uniform_float(gbuffer_shader_, "uMetallic", material->metallic);
+        ctx.set_uniform_float(gbuffer_shader_, "uAO", material->ao);
+        ctx.set_uniform_vec3(gbuffer_shader_, "uEmissiveColor", material->emissive_color);
+        ctx.set_uniform_vec4(gbuffer_shader_, "uUVTransform",
+                             math::Vector4f(material->uv_scale.x, material->uv_scale.y,
+                                            material->uv_offset.x, material->uv_offset.y));
+        ctx.set_uniform_float(gbuffer_shader_, "uOpacity", material->opacity);
+
+        auto bind_gbuffer_tex = [&](const RHITextureHandle& tex_handle, int slot, const char* uniform_name) {
+            if (tex_handle.is_valid()) {
+                ITexture* tex = ctx_->texture(tex_handle);
+                if (tex) tex->bind(slot);
+                ctx.set_texture(gbuffer_shader_, tex_handle, slot, "");
+                ctx.set_uniform_int(gbuffer_shader_, uniform_name, slot);
+            }
+        };
+
+        bind_gbuffer_tex(material->albedo_texture(), TextureSlots::kPBRAlbedo, "uAlbedoMap");
+        bind_gbuffer_tex(material->normal_texture(), TextureSlots::kPBRNormal, "uNormalMap");
+        bind_gbuffer_tex(material->roughness_texture(), TextureSlots::kPBRRoughness, "uRoughnessMap");
+        bind_gbuffer_tex(material->metallic_texture(), TextureSlots::kPBRMetallic, "uMetallicMap");
+        bind_gbuffer_tex(material->ao_texture(), TextureSlots::kPBRAO, "uAOMap");
+        bind_gbuffer_tex(material->emissive_texture(), TextureSlots::kPBREmissive, "uEmissiveMap");
+
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap", material->albedo_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap", material->normal_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap", material->roughness_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap", material->metallic_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap", material->ao_texture().is_valid() ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap", material->emissive_texture().is_valid() ? 1 : 0);
+    } else {
+        ctx.set_uniform_vec3(gbuffer_shader_, "uAlbedoColor", math::Vector3f(1.0f, 1.0f, 1.0f));
+        ctx.set_uniform_float(gbuffer_shader_, "uRoughness", 0.5f);
+        ctx.set_uniform_float(gbuffer_shader_, "uMetallic", 0.0f);
+        ctx.set_uniform_float(gbuffer_shader_, "uAO", 1.0f);
+        ctx.set_uniform_vec3(gbuffer_shader_, "uEmissiveColor", math::Vector3f::zero());
+        ctx.set_uniform_float(gbuffer_shader_, "uOpacity", 1.0f);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap", 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap", 0);
+    }
+
+    ctx.draw_mesh(mesh, gbuffer_shader_);
 }
 
 void RenderPipeline::begin_forward_pass(RenderContext& ctx) {
@@ -1233,14 +1972,29 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
     upload_ibl_textures(ctx, shader);
 
     const bool use_shadow = shadow_enabled_ && shadow_light_index_ >= 0 && shadow_maps_[0].is_valid();
-    // 级联 0（兼容旧路径/旧 SPIR-V）
-    if (shadow_maps_[0].is_valid()) {
-        ITexture* shadow_map_ptr = ctx_->texture(shadow_maps_[0]);
-        if (shadow_map_ptr) {
-            shadow_map_ptr->bind(TextureSlots::kPBRShadow);
+
+    // Shadow Atlas 模式：绑定图集纹理和 slot 变换信息
+    if (shadow_atlas_enabled_ && shadow_atlas_.valid()) {
+        ITexture* atlas_tex_ptr = ctx_->texture(shadow_atlas_.atlas_tex());
+        if (atlas_tex_ptr) {
+            atlas_tex_ptr->bind(TextureSlots::kPBRShadow);
         }
-        ctx.set_texture(shader, shadow_maps_[0], TextureSlots::kPBRShadow, "");
+        ctx.set_texture(shader, shadow_atlas_.atlas_tex(), TextureSlots::kPBRShadow, "");
         ctx.set_uniform_int(shader, "uShadowMap", TextureSlots::kPBRShadow);
+        ctx.set_uniform_int(shader, "uShadowAtlasEnabled", 1);
+        // 传递 atlas 尺寸（用于 shader 中计算 slot UV）
+        ctx.set_uniform_float(shader, "uShadowAtlasSize", (float)shadow_atlas_.atlas_size());
+    } else {
+        ctx.set_uniform_int(shader, "uShadowAtlasEnabled", 0);
+        // 级联 0（兼容旧路径/旧 SPIR-V）
+        if (shadow_maps_[0].is_valid()) {
+            ITexture* shadow_map_ptr = ctx_->texture(shadow_maps_[0]);
+            if (shadow_map_ptr) {
+                shadow_map_ptr->bind(TextureSlots::kPBRShadow);
+            }
+            ctx.set_texture(shader, shadow_maps_[0], TextureSlots::kPBRShadow, "");
+            ctx.set_uniform_int(shader, "uShadowMap", TextureSlots::kPBRShadow);
+        }
     }
     // 级联 1..3 比较 sampler + PCSS 原始深度 sampler
     static constexpr int shadow_slots[k_max_cascades] = {
@@ -1301,6 +2055,22 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
     ctx.set_uniform_float(shader, "uPCSSMaxRadius", pcss_max_radius_);
     ctx.set_uniform_float(shader, "uPCSSBlockerScale", pcss_tap_scale_);
 
+    // ---- VSM/ESM 阴影绑定 ----
+    ctx.set_uniform_int(shader, "uShadowMode", static_cast<int>(shadow_mode_));
+    ctx.set_uniform_float(shader, "uESMExponent", esm_exponent_);
+    // VSM/ESM 纹理绑定到 slot 45-48（与 vsm_esm_shadow.h 中 k_vsm_tex_slot 一致）
+    static constexpr int vsm_slots[k_max_cascades] = {45, 46, 47, 48};
+    static constexpr const char* vsm_names[k_max_cascades] = {
+        "uVSMTexture0", "uVSMTexture1", "uVSMTexture2", "uVSMTexture3",
+    };
+    for (int i = 0; i < k_max_cascades; ++i) {
+        if (!vsm_color_tex_[i].is_valid()) continue;
+        ITexture* tex = ctx_->texture(vsm_color_tex_[i]);
+        if (tex) tex->bind(vsm_slots[i]);
+        ctx.set_texture(shader, vsm_color_tex_[i], vsm_slots[i], "");
+        ctx.set_uniform_int(shader, vsm_names[i], vsm_slots[i]);
+    }
+
     // 每级 light view-proj（Vulkan 后端会做 NDC z 重映射）
     auto cascade_mats = std::make_shared<std::vector<math::Matrix4f>>();
     cascade_mats->reserve(k_max_cascades);
@@ -1321,11 +2091,53 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
     ctx.set_uniform_int(shader, "uSSAOTexture", TextureSlots::kPBRSSAO);
     ctx.set_uniform_int(shader, "uUseSSAO", use_ssao ? 1 : 0);
     ctx.set_uniform_float(shader, "uSSAOStrength", pp_params_.ssao_strength);
+
+    // SSIL 屏幕空间间接光照
+    const bool use_ssil = ssil_enabled_ && ssil_.valid() && ssil_.ssil_tex().is_valid();
+    if (use_ssil) {
+        ITexture* ssil_ptr = ctx_->texture(ssil_.ssil_tex());
+        if (ssil_ptr) ssil_ptr->bind(TextureSlots::kSSILTexture);
+        ctx.set_texture(shader, ssil_.ssil_tex(), TextureSlots::kSSILTexture, "");
+    }
+    ctx.set_uniform_int(shader, "uUseSSIL", use_ssil ? 1 : 0);
+
+    // SDFGI 间接光照（已废弃，使用新版 GI 统一绑定）
+    // 保留旧绑定以兼容旧 shader
+    const bool use_sdfgi = sdfgi_enabled_ && sdfgi_.valid() && sdfgi_.gi_texture().is_valid();
+    if (use_sdfgi) {
+        ITexture* sdfgi_ptr = ctx_->texture(sdfgi_.gi_texture());
+        if (sdfgi_ptr) sdfgi_ptr->bind(TextureSlots::kSDFGITexture);
+        ctx.set_texture(shader, sdfgi_.gi_texture(), TextureSlots::kSDFGITexture, "");
+    }
+    ctx.set_uniform_int(shader, "uUseSDFGI", use_sdfgi ? 1 : 0);
+
+    // ---- GI 统一绑定（GIMode: None/SDFGI/VoxelGI） ----
+    const int gi_mode_val = static_cast<int>(gi_mode_);
+    RHITextureHandle gi_tex;
+    bool gi_active = gi_enabled_;
+    if (gi_active && gi_mode_ == GIMode::SDFGI && sdfgi_.valid() && sdfgi_.gi_texture().is_valid()) {
+        gi_tex = sdfgi_.gi_texture();
+    } else if (gi_active && gi_mode_ == GIMode::VoxelGI && voxel_gi_.valid() && voxel_gi_.voxel_tex().is_valid()) {
+        gi_tex = voxel_gi_.voxel_tex();
+    } else {
+        gi_active = false;
+    }
+
+    if (gi_active && gi_tex.is_valid()) {
+        ITexture* gi_ptr = ctx_->texture(gi_tex);
+        if (gi_ptr) gi_ptr->bind(TextureSlots::kGITexture);
+        ctx.set_texture(shader, gi_tex, TextureSlots::kGITexture, "");
+    }
+    ctx.set_uniform_int(shader, "uGIEnabled", gi_active ? 1 : 0);
+    ctx.set_uniform_int(shader, "uGIMode", gi_mode_val);
+    ctx.set_uniform_float(shader, "uGIIndirectIntensity", gi_indirect_intensity_);
 }
 
 void RenderPipeline::bind_global_uniforms(RenderContext& ctx) {
     bind_per_frame_uniforms(ctx, pbr_shader_);
     bind_per_frame_uniforms(ctx, skinned_pbr_shader_);
+    bind_point_shadow_uniforms(ctx, pbr_shader_);
+    bind_point_shadow_uniforms(ctx, skinned_pbr_shader_);
 }
 
 void RenderPipeline::upload_lights(RenderContext& ctx, RHIShaderHandle shader) {
@@ -1559,6 +2371,44 @@ bool RenderPipeline::resize_render_targets(int width, int height) {
             GLOG_WARN("RenderPipeline: resize GTAO targets failed, disabled");
             pp_params_.ssao_enabled = 0;
         }
+        // GBuffer resize
+        if (deferred_enabled_ && gbuffer_targets_valid_) {
+            destroy_gbuffer_targets();
+            if (!create_gbuffer_targets(ctx_)) {
+                GLOG_WARN("RenderPipeline: resize GBuffer targets failed, deferred disabled");
+                deferred_enabled_ = false;
+            }
+        }
+
+        // SSR HiZ
+        if (ssr_.valid()) {
+            ssr_.create_hiz(width, height);
+        }
+
+        // 体积雾 target
+        if (fog_.valid()) {
+            fog_.create_targets(width, height);
+        }
+
+        // DOF target
+        if (dof_.valid()) {
+            dof_.create_targets(width, height);
+        }
+
+        // Motion Blur target
+        if (motion_blur_.valid()) {
+            motion_blur_.create_targets(width, height);
+        }
+
+        // SSIL target
+        if (ssil_.valid()) {
+            ssil_.create_targets(width, height);
+        }
+
+        // Water target
+        if (water_.valid()) {
+            water_.create_targets(width, height);
+        }
     }
     return true;
 }
@@ -1676,6 +2526,356 @@ void RenderPipeline::render_grid(RenderContext& ctx) {
     ctx.set_depth_write(true);
     ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
     ctx.set_blend(false);
+}
+
+// ===========================================================================
+// Reflection Probe IBL 绑定
+// ===========================================================================
+void RenderPipeline::bind_probe_ibl(RenderContext& ctx, RHIShaderHandle shader, const math::Vector3f& position) {
+    if (!shader.is_valid()) return;
+
+    // 查找最近的 probe
+    RHITextureHandle irr = probe_system_.nearest_irradiance(position);
+    RHITextureHandle pre = probe_system_.nearest_prefilter(position);
+    if (!irr.is_valid() || !pre.is_valid()) return;
+
+    // 覆盖全局 IBL：绑定 probe 的 irradiance 和 prefilter 到标准 IBL slot
+    // uIrradianceMap 和 uPrefilterMap 已在 upload_ibl_textures 中绑定，
+    // 此处用 probe 的纹理覆盖，复用相同的 texture unit slot。
+    ITexture* irr_tex = ctx_->texture(irr);
+    if (irr_tex) {
+        irr_tex->bind(TextureSlots::kIBLIrradiance);
+        ctx.set_texture(shader, irr, TextureSlots::kIBLIrradiance, "");
+    }
+
+    ITexture* pre_tex = ctx_->texture(pre);
+    if (pre_tex) {
+        pre_tex->bind(TextureSlots::kIBLPrefilter);
+        ctx.set_texture(shader, pre, TextureSlots::kIBLPrefilter, "");
+    }
+}
+
+// ===========================================================================
+// Decal 包围盒 mesh 创建（单位立方体）
+// ===========================================================================
+bool RenderPipeline::create_decal_box_mesh(RenderContext* ctx) {
+    if (!ctx) return false;
+
+    decal_box_mesh_ = ctx->create_mesh();
+    IMesh* mesh = ctx->mesh(decal_box_mesh_);
+    if (!decal_box_mesh_.is_valid() || !mesh) {
+        GLOG_ERROR("RenderPipeline: failed to create decal box mesh");
+        return false;
+    }
+
+    // 单位立方体顶点（只含位置，12 个三角形，每个三角形 3 个顶点）
+    struct Vertex {
+        float x, y, z;
+    };
+    static constexpr Vertex k_vertices[] = {
+        // 正面 (+Z)
+        {-0.5f, -0.5f,  0.5f}, { 0.5f, -0.5f,  0.5f}, { 0.5f,  0.5f,  0.5f},
+        {-0.5f, -0.5f,  0.5f}, { 0.5f,  0.5f,  0.5f}, {-0.5f,  0.5f,  0.5f},
+        // 背面 (-Z)
+        {-0.5f,  0.5f, -0.5f}, { 0.5f,  0.5f, -0.5f}, { 0.5f, -0.5f, -0.5f},
+        {-0.5f,  0.5f, -0.5f}, { 0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f},
+        // 右面 (+X)
+        { 0.5f, -0.5f, -0.5f}, { 0.5f,  0.5f, -0.5f}, { 0.5f,  0.5f,  0.5f},
+        { 0.5f, -0.5f, -0.5f}, { 0.5f,  0.5f,  0.5f}, { 0.5f, -0.5f,  0.5f},
+        // 左面 (-X)
+        {-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f,  0.5f}, {-0.5f,  0.5f,  0.5f},
+        {-0.5f, -0.5f, -0.5f}, {-0.5f,  0.5f,  0.5f}, {-0.5f,  0.5f, -0.5f},
+        // 上面 (+Y)
+        {-0.5f,  0.5f, -0.5f}, {-0.5f,  0.5f,  0.5f}, { 0.5f,  0.5f,  0.5f},
+        {-0.5f,  0.5f, -0.5f}, { 0.5f,  0.5f,  0.5f}, { 0.5f,  0.5f, -0.5f},
+        // 下面 (-Y)
+        {-0.5f, -0.5f, -0.5f}, { 0.5f, -0.5f, -0.5f}, { 0.5f, -0.5f,  0.5f},
+        {-0.5f, -0.5f, -0.5f}, { 0.5f, -0.5f,  0.5f}, {-0.5f, -0.5f,  0.5f},
+    };
+    static constexpr int k_vertex_count = sizeof(k_vertices) / sizeof(Vertex);
+
+    // 使用与 grid mesh 相同的 VertexLayout 模式
+    struct DecalVertex {
+        float x, y, z;
+    };
+    static_assert(sizeof(DecalVertex) == sizeof(Vertex));
+
+    mesh->upload_vertices(k_vertices, k_vertex_count * sizeof(Vertex), k_vertex_count);
+
+    VertexLayout layout;
+    layout.stride = sizeof(DecalVertex);
+    layout.attributes = {
+        {0, VertexType::Float3, false, 0},
+    };
+    mesh->set_layout(layout);
+
+    return true;
+}
+
+// ===========================================================================
+// Decal 渲染（Forward 路径）
+// ===========================================================================
+void RenderPipeline::render_decal_forward(RenderContext& ctx) {
+    if (!decal_shader_.is_valid() || !decal_box_mesh_.is_valid() || !camera_) return;
+    if (decal_storage_.decal_count() == 0) return;
+
+    const int decal_count = decal_storage_.decal_count();
+    const auto& decals = decal_storage_.decals();
+
+    // 绑定 depth 纹理（HDR 深度）
+    RHITextureHandle depth_tex = hdr_enabled_ ? hdr_depth_ : RHITextureHandle{};
+    if (!depth_tex.is_valid()) return;
+
+    ITexture* depth_ptr = ctx_->texture(depth_tex);
+    if (depth_ptr) depth_ptr->bind(kDecalDepthSlot);
+    ctx.set_texture(decal_shader_, depth_tex, kDecalDepthSlot, "");
+    ctx.set_uniform_int(decal_shader_, "uDepthTexture", kDecalDepthSlot);
+
+    // 逆 VP 矩阵
+    math::Matrix4f inv_vp = (get_projection_matrix() * camera_->get_view_matrix()).inverse();
+    ctx.set_uniform_mat4(decal_shader_, "uInvViewProj", inv_vp);
+
+    // 屏幕尺寸
+    ctx.set_uniform_float(decal_shader_, "uScreenWidth", (float)viewport_width_);
+    ctx.set_uniform_float(decal_shader_, "uScreenHeight", (float)viewport_height_);
+
+    // 渲染状态：blend 开、深度读/写关（基于 depth buffer 投影）
+    ctx.set_framebuffer(hdr_fbo_);
+    ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+    ctx.set_blend(true);
+    ctx.set_depth_test(false);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(CullMode::None);
+
+    ctx.set_shader(decal_shader_);
+    ctx.set_uniform_mat4(decal_shader_, "uView", camera_->get_view_matrix());
+    ctx.set_uniform_mat4(decal_shader_, "uProjection", get_projection_matrix());
+
+    for (int i = 0; i < decal_count; ++i) {
+        const DecalData& d = decals[i];
+        if (!d.enabled) continue;
+
+        // 构建 decal 世界矩阵（TRS: translate * rotate * scale）
+        math::Matrix4f model = math::Matrix4f::translate(d.position);
+
+        // 欧拉角旋转（ZYX 顺序）
+        math::Matrix4f rot = math::Matrix4f::identity();
+        if (std::abs(d.rotation.z) > 1e-6f)
+            rot = rot * math::Matrix4f::rotate(d.rotation.z * 3.14159265f / 180.0f, math::Vector3f(0, 0, 1));
+        if (std::abs(d.rotation.y) > 1e-6f)
+            rot = rot * math::Matrix4f::rotate(d.rotation.y * 3.14159265f / 180.0f, math::Vector3f(0, 1, 0));
+        if (std::abs(d.rotation.x) > 1e-6f)
+            rot = rot * math::Matrix4f::rotate(d.rotation.x * 3.14159265f / 180.0f, math::Vector3f(1, 0, 0));
+        model = model * rot;
+
+        math::Matrix4f scale = math::Matrix4f::scale(d.scale);
+        model = model * scale;
+
+        ctx.set_uniform_mat4(decal_shader_, "uModel", model);
+
+        // 世界 → 贴花局部矩阵（逆矩阵）
+        math::Matrix4f world_to_decal = model.inverse();
+        ctx.set_uniform_mat4(decal_shader_, "uWorldToDecal", world_to_decal);
+
+        // 贴花属性
+        ctx.set_uniform_vec3(decal_shader_, "uDecalAlbedo", d.albedo);
+        ctx.set_uniform_float(decal_shader_, "uDecalOpacity", d.opacity);
+
+        // 贴花纹理
+        // 注意：DecalData 使用 float 存储纹理句柄（简化设计），
+        // 实际使用时需要通过纹理系统传入合法的 RHITextureHandle。
+        // 此处简化为仅使用颜色，纹理支持需要对接纹理管理系统。
+        ctx.set_uniform_int(decal_shader_, "uUseAlbedoTex", 0);
+
+        ctx.draw_mesh(decal_box_mesh_, decal_shader_);
+    }
+
+    // 恢复渲染状态
+    ctx.set_blend(false);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+}
+
+// ===========================================================================
+// Decal 渲染（Deferred 路径）
+// ===========================================================================
+void RenderPipeline::render_decal_deferred(RenderContext& ctx) {
+    // Deferred 路径的 decal 渲染与 forward 路径相同：
+    // 在 Lighting Pass 后，使用 box mesh 在 HDR 颜色上 blend decal 颜色
+    render_decal_forward(ctx);
+}
+
+// ---------------------------------------------------------------------------
+// 点光源双抛物面阴影
+// ---------------------------------------------------------------------------
+bool RenderPipeline::create_point_shadow_targets(RenderContext* ctx) {
+    if (!ctx) return false;
+    destroy_point_shadow_targets();
+
+    const int count = static_cast<int>(k_max_point_shadows);
+    point_shadow_tex_.resize(count);
+    point_shadow_fbo_.resize(count);
+
+    for (int i = 0; i < count; ++i) {
+        // 创建 RGBA16F 纹理存储双抛物面深度
+        point_shadow_tex_[i] = ctx->create_texture();
+        ITexture* tex = ctx->texture(point_shadow_tex_[i]);
+        if (!point_shadow_tex_[i].is_valid() || !tex ||
+            !tex->create(TextureFormat::RGBA16F, point_shadow_size_, point_shadow_size_, nullptr)) {
+            GLOG_ERROR("RenderPipeline: point shadow tex {} failed", i);
+            destroy_point_shadow_targets();
+            return false;
+        }
+        tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+        tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+        // 创建 FBO（无深度附件，深度写入颜色附件）
+        point_shadow_fbo_[i] = ctx->create_framebuffer();
+        IFramebuffer* fbo = ctx->framebuffer(point_shadow_fbo_[i]);
+        if (!point_shadow_fbo_[i].is_valid() || !fbo ||
+            !fbo->create(point_shadow_size_, point_shadow_size_)) {
+            GLOG_ERROR("RenderPipeline: point shadow fbo {} failed", i);
+            destroy_point_shadow_targets();
+            return false;
+        }
+        fbo->attach_color_texture(tex);
+        if (!fbo->is_complete()) {
+            GLOG_ERROR("RenderPipeline: point shadow fbo {} incomplete", i);
+            destroy_point_shadow_targets();
+            return false;
+        }
+    }
+    return true;
+}
+
+void RenderPipeline::destroy_point_shadow_targets() {
+    if (!ctx_) return;
+    for (auto& fb : point_shadow_fbo_) {
+        if (fb.is_valid()) {
+            ctx_->destroy_framebuffer(fb);
+            fb = RHIFramebufferHandle{};
+        }
+    }
+    point_shadow_fbo_.clear();
+    for (auto& tex : point_shadow_tex_) {
+        if (tex.is_valid()) {
+            ctx_->destroy_texture(tex);
+            tex = RHITextureHandle{};
+        }
+    }
+    point_shadow_tex_.clear();
+}
+
+void RenderPipeline::render_point_shadows(RenderContext& ctx, scene::Scene& scene) {
+    if (!point_shadow_enabled_ || !point_shadow_shader_.is_valid()) return;
+    if (point_shadow_tex_.empty() || point_shadow_fbo_.empty()) return;
+
+    // 统计场景中点光源数量
+    int point_count = 0;
+    for (const auto& light : lights_) {
+        if (light.type == LightType::Point) ++point_count;
+    }
+    if (point_count == 0) return;
+
+    const int shadow_count = std::min(point_count, static_cast<int>(k_max_point_shadows));
+
+    int light_idx = 0;
+    for (int s = 0; s < shadow_count; ++s) {
+        // 找到下一个点光源
+        while (light_idx < static_cast<int>(lights_.size()) &&
+               lights_[light_idx].type != LightType::Point) {
+            ++light_idx;
+        }
+        if (light_idx >= static_cast<int>(lights_.size())) break;
+
+        const Light& light = lights_[light_idx];
+        const math::Vector3f light_pos = light.position;
+        const float range = light.range;
+
+        // 双抛物面映射：分别渲染 front face (z>=0) 和 back face (z<0)
+        for (int face = 0; face < 2; ++face) {
+            ctx.set_shader(point_shadow_shader_);
+            ctx.set_framebuffer(point_shadow_fbo_[s]);
+            ctx.set_viewport(0, 0, point_shadow_size_, point_shadow_size_);
+            // 不清除，直接覆盖（双抛物面两 face 共用一个纹理）
+            if (face == 0) {
+                ctx.clear(1.0f, 0.0f, 0.0f, 1.0f); // 默认深度 1.0（远）
+            }
+            ctx.set_depth_test(false); // 无深度缓冲，直接写入颜色
+            ctx.set_depth_write(false);
+            ctx.set_cull_face(CullMode::None);
+
+            ctx.set_uniform_int(point_shadow_shader_, "uParaboloidFace", face);
+            ctx.set_uniform_float(point_shadow_shader_, "uPointLightRange", range);
+            ctx.set_uniform_vec3(point_shadow_shader_, "uPointLightPos", light_pos);
+
+            // 遍历场景中所有 mesh
+            ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+                scene,
+                [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
+                    if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
+                    const math::Matrix4f& model = entity->world_transform();
+
+                    ctx.set_uniform_mat4(point_shadow_shader_, "uModel", model);
+
+                    // 绑定 albedo 纹理做 alpha test（使用标准 PBR albedo slot）
+                    if (mr->material && mr->material->albedo_texture().is_valid()) {
+                        ctx.set_texture(point_shadow_shader_, mr->material->albedo_texture(),
+                                        TextureSlots::kPBRAlbedo, "");
+                        ctx.set_uniform_int(point_shadow_shader_, "uAlbedoMap", TextureSlots::kPBRAlbedo);
+                        ctx.set_uniform_int(point_shadow_shader_, "uUseAlbedoMap", 1);
+                    } else {
+                        ctx.set_uniform_int(point_shadow_shader_, "uUseAlbedoMap", 0);
+                    }
+                    ctx.set_uniform_float(point_shadow_shader_, "uOpacity", 1.0f);
+
+                    ctx.draw_mesh(mr->gpu_mesh_handle(), point_shadow_shader_);
+                });
+        }
+
+        ++light_idx;
+    }
+
+    ctx.set_framebuffer(RHIFramebufferHandle{});
+}
+
+void RenderPipeline::bind_point_shadow_uniforms(RenderContext& ctx, RHIShaderHandle shader) {
+    if (!shader.is_valid()) return;
+
+    // 统计点光源数量
+    int point_count = 0;
+    for (const auto& light : lights_) {
+        if (light.type == LightType::Point) ++point_count;
+    }
+    const int shadow_count = std::min(point_count, static_cast<int>(k_max_point_shadows));
+
+    ctx.set_uniform_int(shader, "uPointShadowCount", shadow_count);
+
+    // 绑定点光源阴影纹理
+    if (shadow_count > 0 && !point_shadow_tex_.empty() && point_shadow_tex_[0].is_valid()) {
+        ITexture* tex0 = ctx_->texture(point_shadow_tex_[0]);
+        if (tex0) tex0->bind(TextureSlots::kPointShadow0);
+        ctx.set_texture(shader, point_shadow_tex_[0], TextureSlots::kPointShadow0, "");
+        ctx.set_uniform_int(shader, "uPointShadowMap0", TextureSlots::kPointShadow0);
+    }
+    if (shadow_count > 1 && point_shadow_tex_.size() > 1 && point_shadow_tex_[1].is_valid()) {
+        ITexture* tex1 = ctx_->texture(point_shadow_tex_[1]);
+        if (tex1) tex1->bind(TextureSlots::kPointShadow1);
+        ctx.set_texture(shader, point_shadow_tex_[1], TextureSlots::kPointShadow1, "");
+        ctx.set_uniform_int(shader, "uPointShadowMap1", TextureSlots::kPointShadow1);
+    }
+
+    // 上传点光源位置和范围
+    int point_idx = 0;
+    for (int i = 0; i < static_cast<int>(lights_.size()) && point_idx < k_max_point_shadows; ++i) {
+        if (lights_[i].type != LightType::Point) continue;
+        char name[48];
+        std::snprintf(name, sizeof(name), "uPointLightPosWorld[%d]", point_idx);
+        ctx.set_uniform_vec3(shader, name, lights_[i].position);
+        std::snprintf(name, sizeof(name), "uPointLightRange[%d]", point_idx);
+        ctx.set_uniform_float(shader, name, lights_[i].range);
+        ++point_idx;
+    }
 }
 
 } // namespace gryce_engine::render

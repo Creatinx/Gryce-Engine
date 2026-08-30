@@ -94,6 +94,11 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
             if (s) s->set_vec3(cmd.uniform_name, cmd.uniform_vec3);
             break;
         }
+        case RenderCommandType::SetUniformVec2: {
+            IShader* s = backend->shader(cmd.shader);
+            if (s) s->set_vec2(cmd.uniform_name, cmd.uniform_vec2);
+            break;
+        }
         case RenderCommandType::SetUniformVec4: {
             IShader* s = backend->shader(cmd.shader);
             if (s) s->set_vec4(cmd.uniform_name, cmd.uniform_vec4);

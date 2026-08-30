@@ -75,6 +75,7 @@ using namespace gryce_engine;
 
 // 前向声明：定义在文件后部的工具函数
 static math::Vector3f mul_per_component(const math::Vector3f& a, const math::Vector3f& b);
+static void ensure_render_effects_demo_entities(scene::Scene& scene);
 
 // ---------------------------------------------------------------------------
 // 生成测试纹理（棋盘格 BMP，top-down，24bpp）
@@ -512,6 +513,86 @@ static void ensure_physics_demo_entities(scene::Scene& scene) {
     create_character_entity(scene, "DemoCharacter");
     create_trigger_demo_entities(scene);
     ensure_material_showcase_entities(scene);
+    ensure_render_effects_demo_entities(scene);
+}
+
+// ---------------------------------------------------------------------------
+// 渲染效果演示: SSR, 点阴影, 水, DOF, 贴花, 雾, GI
+// ---------------------------------------------------------------------------
+static void ensure_render_effects_demo_entities(scene::Scene& scene) {
+    constexpr float k_ground_top = -1.75f;
+    const float cube_y = k_ground_top + 1.5f;
+
+    // 1. 高反射金属球 (SSR 演示)
+    if (!scene.find_entity_by_name("DemoSSRSphere")) {
+        scene::Entity* e = scene.create_entity("DemoSSRSphere");
+        e->transform()->position = math::Vector3f(0.0f, cube_y, -12.0f);
+        e->transform()->scale = math::Vector3f(3.0f, 3.0f, 3.0f);
+        auto* mr = e->add_component<components::MeshRenderer>("res:/models/sphere_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->name = "SSRSphere";
+            mr->material->albedo_color = math::Vector3f(0.5f, 0.5f, 0.5f);
+            mr->material->roughness = 0.05f;
+            mr->material->metallic = 1.0f;
+            mr->material->ao = 1.0f;
+        }
+    }
+
+    // 2. 更多点光源 (点阴影演示)
+    // 红色点光源
+    if (!scene.find_entity_by_name("DemoPointLight_Red")) {
+        scene::Entity* e = scene.create_entity("DemoPointLight_Red");
+        e->transform()->position = math::Vector3f(-15.0f, 5.0f, -10.0f);
+        auto* light = e->add_component<components::Light>();
+        light->light_type = components::Light::Type::Point;
+        light->color = math::Vector3f(1.0f, 0.2f, 0.2f);
+        light->intensity = 40.0f;
+        light->range = 20.0f;
+    }
+    // 蓝色点光源
+    if (!scene.find_entity_by_name("DemoPointLight_Blue")) {
+        scene::Entity* e = scene.create_entity("DemoPointLight_Blue");
+        e->transform()->position = math::Vector3f(15.0f, 5.0f, -10.0f);
+        auto* light = e->add_component<components::Light>();
+        light->light_type = components::Light::Type::Point;
+        light->color = math::Vector3f(0.2f, 0.4f, 1.0f);
+        light->intensity = 40.0f;
+        light->range = 20.0f;
+    }
+
+    // 3. 水面 (Water 演示)
+    if (!scene.find_entity_by_name("DemoWaterPlane")) {
+        scene::Entity* e = scene.create_entity("DemoWaterPlane");
+        e->transform()->position = math::Vector3f(0.0f, -1.0f, 0.0f);
+        // 使用一个大的平面网格，实体本身不需要 MeshRenderer，水由 Water_RD 系统渲染
+        // 这里只作为标记实体，方便后续扩展
+    }
+
+    // 4. DOF 演示实体: 在不同距离放置物体
+    if (!scene.find_entity_by_name("DemoDOF_Far")) {
+        scene::Entity* e = scene.create_entity("DemoDOF_Far");
+        e->transform()->position = math::Vector3f(-20.0f, cube_y, -15.0f);
+        e->transform()->scale = math::Vector3f(2.0f, 2.0f, 2.0f);
+        auto* mr = e->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->name = "DOFFar";
+            mr->material->albedo_color = math::Vector3f(0.2f, 0.8f, 0.2f);
+            mr->material->roughness = 0.5f;
+            mr->material->metallic = 0.5f;
+        }
+    }
+    if (!scene.find_entity_by_name("DemoDOF_Near")) {
+        scene::Entity* e = scene.create_entity("DemoDOF_Near");
+        e->transform()->position = math::Vector3f(-5.0f, cube_y, -20.0f);
+        e->transform()->scale = math::Vector3f(2.0f, 2.0f, 2.0f);
+        auto* mr = e->add_component<components::MeshRenderer>("res:/models/cube_pbr.obj");
+        if (mr && mr->material) {
+            mr->material->name = "DOFNear";
+            mr->material->albedo_color = math::Vector3f(0.8f, 0.2f, 0.2f);
+            mr->material->roughness = 0.3f;
+            mr->material->metallic = 0.8f;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -793,10 +874,9 @@ static void show_physics_debug_panel(scene::Scene* scene, scene::Entity* selecte
             }
         }
 
-        auto preset_getter = [](void* data, int idx, const char** out_text) -> bool {
+        auto preset_getter = [](void* data, int idx) -> const char* {
             auto* presets = static_cast<const components::PhysicalMaterialPreset*>(data);
-            *out_text = presets[idx].name;
-            return true;
+            return presets[idx].name;
         };
 
         if (ImGui::Combo("Preset", &current, preset_getter,
@@ -1034,6 +1114,7 @@ int main(int argc, char* argv[])
     bool screenshot_mode = false;
     float screenshot_delay = 0.0f; // --screenshot-delay N：启动 N 秒后再截图（默认立即）
     bool vulkan_validation = false; // 默认关闭 validation，需要时通过 --vulkan-validation 开启
+    bool no_contact_shadow = false; // DIAG: --no-contact-shadow 关闭接触阴影（对比验证用）
     float auto_close_seconds = 0.0f; // --auto-close N：运行 N 秒后自动关闭，用于 CI/关机测试
     int record_frames = 0;            // --record-frames N：连续录制 N 帧（用于生成视频）
     float record_delay = 0.0f;        // --record-delay N：延迟 N 秒后开始录制
@@ -1051,6 +1132,8 @@ int main(int argc, char* argv[])
             screenshot_delay = static_cast<float>(std::atof(argv[++i]));
         } else if (std::strcmp(argv[i], "--vulkan-validation") == 0) {
             vulkan_validation = true;
+        } else if (std::strcmp(argv[i], "--no-contact-shadow") == 0) {
+            no_contact_shadow = true;
         } else if (std::strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             auto_close_seconds = static_cast<float>(std::atof(argv[++i]));
         } else if (std::strcmp(argv[i], "--record-frames") == 0 && i + 1 < argc) {
@@ -1188,6 +1271,9 @@ int main(int argc, char* argv[])
         render_ctx.shutdown();
         platform::Window::shutdown_sdk();
         return -1;
+    }
+    if (no_contact_shadow) {
+        pipeline.set_contact_shadow_enabled(false);
     }
 
     // 天空盒（同样必须在 start() 之前设置）
@@ -1488,6 +1574,20 @@ int main(int argc, char* argv[])
         pipeline.set_camera(camera);
         pipeline.set_lights(collect_lights(*world.scene()));
         pipeline.set_viewport(w, h);
+
+        // 应用新渲染效果
+        pipeline.set_ssr_enabled(debug_panel.ssr_enabled());
+        pipeline.set_dof_enabled(debug_panel.dof_enabled());
+        pipeline.set_dof_params(debug_panel.dof_focus_distance(), debug_panel.dof_focus_range(), 4.0f);
+        pipeline.set_motion_blur_enabled(debug_panel.motion_blur_enabled());
+        pipeline.set_motion_blur_amount(debug_panel.motion_blur_amount());
+        pipeline.set_fog_enabled(debug_panel.fog_enabled());
+        pipeline.set_fog_params(math::Vector3f(0.5f, 0.5f, 0.5f), debug_panel.fog_density(), debug_panel.fog_height());
+        pipeline.set_water_enabled(debug_panel.water_enabled());
+        pipeline.set_point_shadow_enabled(debug_panel.point_shadow_enabled());
+        pipeline.set_shadow_atlas_enabled(debug_panel.shadow_atlas_enabled());
+        pipeline.set_shadow_mode(static_cast<render::RenderPipeline::ShadowMode>(debug_panel.shadow_mode()));
+        pipeline.set_gi_mode(static_cast<render::GIMode>(debug_panel.gi_mode()));
 
         // -------------------------------------------------------------------
         // 3D + 2D 场景渲染由 ECS World 驱动

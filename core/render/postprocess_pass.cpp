@@ -397,6 +397,9 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
 
 
 void RenderPipeline::render_contact_shadow(RenderContext& ctx) {
+    // 每帧先复位：本 pass 未执行时（禁用/资源失效），tonemap 的
+    // Vulkan push constants 里的 cs_enabled 必须为 0，避免采样上一帧残留值。
+    pp_params_.cs_enabled = 0;
     if (!contact_shadow_enabled_ || !contact_shadow_targets_valid_) return;
     if (!contact_shadow_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
     if (!camera_) return;
@@ -413,6 +416,21 @@ void RenderPipeline::render_contact_shadow(RenderContext& ctx) {
     }
     const math::Matrix4f view = camera_->get_view_matrix();
     const math::Vector3f light_dir_view = view.transform_vector(math::Vector3f(-light_dir.x, -light_dir.y, -light_dir.z));
+
+    // 每帧从相机/光源更新接触阴影参数（Vulkan push constants / GL bind 时应用）
+    pp_params_.cs_enabled = 1;
+    pp_params_.cs_near = near_p;
+    pp_params_.cs_far = far_p;
+    pp_params_.cs_tan_half = tan_half;
+    pp_params_.cs_aspect = aspect;
+    pp_params_.cs_radius = contact_shadow_radius_;
+    pp_params_.cs_steps = contact_shadow_steps_;
+    pp_params_.cs_strength = contact_shadow_strength_;
+    pp_params_.cs_light_dir_view = math::Vector4f(
+        light_dir_view.x, light_dir_view.y, light_dir_view.z, 0.0f);
+    if (IShader* s = ctx_->shader(contact_shadow_shader_)) {
+        s->set_post_process_params(pp_params_);
+    }
 
     ctx.set_depth_test(false);
     ctx.set_cull_face(CullMode::None);
@@ -482,8 +500,8 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
     const bool to_viewport = viewport_output_enabled_ && viewport_fbo_.is_valid();
-    GLOG_DEBUG("RenderPipeline::render_tonemap: to_viewport={} viewport_fbo_={} viewport={}x{}",
-              to_viewport, viewport_fbo_.index, viewport_width_, viewport_height_);
+    GLOG_INFO("RenderPipeline::render_tonemap: to_viewport={} viewport_fbo_={} viewport_output_enabled_={} viewport={}x{} viewport_color_valid={}",
+              to_viewport, viewport_fbo_.is_valid(), viewport_output_enabled_, viewport_width_, viewport_height_, viewport_color_.is_valid());
     ctx.set_framebuffer(to_viewport ? viewport_fbo_ : RHIFramebufferHandle{});
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_depth_test(false);
@@ -523,15 +541,18 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     if (exp) exp->bind(TextureSlots::kTonemapExposure);
     ctx.set_texture(tonemap_shader_, exp_in, TextureSlots::kTonemapExposure, "uExposureTexture");
     ctx.set_uniform_int(tonemap_shader_, "uExposureTexture", TextureSlots::kTonemapExposure);
-    // 屏幕空间接触阴影：半分辨率因子贴图，乘到 HDR 颜色（禁用时保持全亮）
-    if (contact_shadow_enabled_ && contact_shadow_targets_valid_ && contact_shadow_tex_.is_valid()) {
-        ctx.set_texture(tonemap_shader_, contact_shadow_tex_, TextureSlots::kTonemapContactShadow, "uContactShadowTexture");
-        ctx.set_uniform_int(tonemap_shader_, "uContactShadowTexture", TextureSlots::kTonemapContactShadow);
-        ctx.set_uniform_int(tonemap_shader_, "uContactShadowEnabled", 1);
-        ctx.set_uniform_float(tonemap_shader_, "uContactShadowStrength", contact_shadow_strength_);
-    } else {
-        ctx.set_uniform_int(tonemap_shader_, "uContactShadowEnabled", 0);
-    }
+    // 屏幕空间接触阴影：半分辨率因子贴图，乘到 HDR 颜色（禁用时保持全亮）。
+    // 始终绑定合法纹理（禁用时绑 HDR 自身，shader 以 uContactShadowEnabled /
+    // push constant cs_enabled 跳过），避免 Vulkan 的 binding 5 采样到未定义描述符。
+    const bool cs_valid = contact_shadow_enabled_ && contact_shadow_targets_valid_ &&
+                          contact_shadow_tex_.is_valid();
+    const RHITextureHandle cs_tex = cs_valid ? contact_shadow_tex_ : hdr_in;
+    ITexture* cs = ctx_->texture(cs_tex);
+    if (cs) cs->bind(TextureSlots::kTonemapContactShadow);
+    ctx.set_texture(tonemap_shader_, cs_tex, TextureSlots::kTonemapContactShadow, "uContactShadowTexture");
+    ctx.set_uniform_int(tonemap_shader_, "uContactShadowTexture", TextureSlots::kTonemapContactShadow);
+    ctx.set_uniform_int(tonemap_shader_, "uContactShadowEnabled", cs_valid ? 1 : 0);
+    ctx.set_uniform_float(tonemap_shader_, "uContactShadowStrength", contact_shadow_strength_);
     tonemap_ptr->set_post_process_params(pp_params_);
 
     ctx.draw_mesh(fullscreen_mesh_, tonemap_shader_);
@@ -767,5 +788,288 @@ void RenderPipeline::set_auto_exposure_params(float target_luminance, float min_
 // ---------------------------------------------------------------------------
 // Scene View 网格线
 // ---------------------------------------------------------------------------
+
+// ===========================================================================
+// Deferred Rendering — GBuffer Targets & Passes
+// ===========================================================================
+
+bool RenderPipeline::create_gbuffer_targets(RenderContext* ctx) {
+    // RT0: Albedo (RGB) + Metallic (A) — RGBA8
+    gbuffer_albedo_metallic_ = ctx->create_texture();
+    ITexture* albedo_metallic = ctx->texture(gbuffer_albedo_metallic_);
+    if (!gbuffer_albedo_metallic_.is_valid() || !albedo_metallic ||
+        !albedo_metallic->create(TextureFormat::RGBA8, viewport_width_, viewport_height_, nullptr)) {
+        GLOG_ERROR("RenderPipeline: GBuffer albedo_metallic texture failed");
+        return false;
+    }
+    albedo_metallic->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    albedo_metallic->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    // RT1: Normal (RGB) + Roughness (A) — RGBA16F
+    gbuffer_normal_roughness_ = ctx->create_texture();
+    ITexture* normal_roughness = ctx->texture(gbuffer_normal_roughness_);
+    if (!gbuffer_normal_roughness_.is_valid() || !normal_roughness ||
+        !normal_roughness->create(TextureFormat::RGBA16F, viewport_width_, viewport_height_, nullptr)) {
+        GLOG_ERROR("RenderPipeline: GBuffer normal_roughness texture failed");
+        return false;
+    }
+    normal_roughness->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    normal_roughness->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    // RT2: Emissive (RGB) + AO (A) — RGBA16F
+    gbuffer_emissive_ao_ = ctx->create_texture();
+    ITexture* emissive_ao = ctx->texture(gbuffer_emissive_ao_);
+    if (!gbuffer_emissive_ao_.is_valid() || !emissive_ao ||
+        !emissive_ao->create(TextureFormat::RGBA16F, viewport_width_, viewport_height_, nullptr)) {
+        GLOG_ERROR("RenderPipeline: GBuffer emissive_ao texture failed");
+        return false;
+    }
+    emissive_ao->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    emissive_ao->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    // Depth
+    gbuffer_depth_ = ctx->create_texture();
+    ITexture* depth = ctx->texture(gbuffer_depth_);
+    if (!gbuffer_depth_.is_valid() || !depth ||
+        !depth->create(TextureFormat::Depth24, viewport_width_, viewport_height_, nullptr)) {
+        GLOG_ERROR("RenderPipeline: GBuffer depth texture failed");
+        return false;
+    }
+
+    // FBO
+    gbuffer_fbo_ = ctx->create_framebuffer();
+    IFramebuffer* fbo = ctx->framebuffer(gbuffer_fbo_);
+    if (!gbuffer_fbo_.is_valid() || !fbo || !fbo->create(viewport_width_, viewport_height_)) {
+        GLOG_ERROR("RenderPipeline: GBuffer FBO creation failed");
+        return false;
+    }
+    fbo->attach_color_texture(albedo_metallic);
+    fbo->attach_color_texture(normal_roughness);
+    fbo->attach_color_texture(emissive_ao);
+    fbo->attach_depth_texture(depth);
+    if (!fbo->is_complete()) {
+        GLOG_ERROR("RenderPipeline: GBuffer FBO incomplete");
+        return false;
+    }
+    gbuffer_targets_valid_ = true;
+    GLOG_INFO("RenderPipeline: GBuffer targets created ({}x{})", viewport_width_, viewport_height_);
+    return true;
+}
+
+void RenderPipeline::destroy_gbuffer_targets() {
+    if (!ctx_) return;
+    if (gbuffer_fbo_.is_valid()) { ctx_->destroy_framebuffer(gbuffer_fbo_); gbuffer_fbo_ = RHIFramebufferHandle{}; }
+    if (gbuffer_albedo_metallic_.is_valid()) { ctx_->destroy_texture(gbuffer_albedo_metallic_); gbuffer_albedo_metallic_ = RHITextureHandle{}; }
+    if (gbuffer_normal_roughness_.is_valid()) { ctx_->destroy_texture(gbuffer_normal_roughness_); gbuffer_normal_roughness_ = RHITextureHandle{}; }
+    if (gbuffer_emissive_ao_.is_valid()) { ctx_->destroy_texture(gbuffer_emissive_ao_); gbuffer_emissive_ao_ = RHITextureHandle{}; }
+    if (gbuffer_depth_.is_valid()) { ctx_->destroy_texture(gbuffer_depth_); gbuffer_depth_ = RHITextureHandle{}; }
+    gbuffer_targets_valid_ = false;
+}
+
+void RenderPipeline::begin_gbuffer_pass(RenderContext& ctx) {
+    if (!gbuffer_fbo_.is_valid() || !gbuffer_shader_.is_valid()) return;
+    ctx.set_shader(gbuffer_shader_);
+    ctx.set_framebuffer(gbuffer_fbo_);
+    ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.clear(0.0f, 0.0f, 0.0f, 0.0f);
+    ctx.clear_depth();
+}
+
+void RenderPipeline::end_gbuffer_pass(RenderContext& ctx) {
+    (void)ctx;
+}
+
+void RenderPipeline::begin_deferred_lighting_pass(RenderContext& ctx) {
+    if (!deferred_lighting_shader_.is_valid() || !hdr_fbo_.is_valid()) return;
+    ctx.set_shader(deferred_lighting_shader_);
+    ctx.set_framebuffer(hdr_fbo_);
+    ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+    ctx.set_depth_test(false);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(CullMode::None);
+    ctx.set_blend(false);
+    ctx.clear(0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+void RenderPipeline::end_deferred_lighting_pass(RenderContext& ctx) {
+    (void)ctx;
+}
+
+void RenderPipeline::render_deferred_lighting_to_hdr(RenderContext& ctx) {
+    if (!deferred_lighting_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
+    if (!gbuffer_targets_valid_) return;
+
+    ctx.set_shader(deferred_lighting_shader_);
+
+    // Bind GBuffer textures
+    ITexture* albedo_metallic = ctx_->texture(gbuffer_albedo_metallic_);
+    if (albedo_metallic) albedo_metallic->bind(TextureSlots::kPBRAlbedo);
+    ctx.set_texture(deferred_lighting_shader_, gbuffer_albedo_metallic_, TextureSlots::kPBRAlbedo, "");
+    ctx.set_uniform_int(deferred_lighting_shader_, "uGBufferAlbedo", TextureSlots::kPBRAlbedo);
+
+    ITexture* normal_roughness = ctx_->texture(gbuffer_normal_roughness_);
+    if (normal_roughness) normal_roughness->bind(TextureSlots::kPBRNormal);
+    ctx.set_texture(deferred_lighting_shader_, gbuffer_normal_roughness_, TextureSlots::kPBRNormal, "");
+    ctx.set_uniform_int(deferred_lighting_shader_, "uGBufferNormal", TextureSlots::kPBRNormal);
+
+    ITexture* emissive_ao = ctx_->texture(gbuffer_emissive_ao_);
+    if (emissive_ao) emissive_ao->bind(TextureSlots::kPBRAO);
+    ctx.set_texture(deferred_lighting_shader_, gbuffer_emissive_ao_, TextureSlots::kPBRAO, "");
+    ctx.set_uniform_int(deferred_lighting_shader_, "uGBufferEmissive", TextureSlots::kPBRAO);
+
+    // Depth texture for deferred lighting
+    ITexture* depth = ctx_->texture(gbuffer_depth_);
+    if (depth) depth->bind(TextureSlots::kPBRShadowDepth);
+    ctx.set_texture_raw_depth(deferred_lighting_shader_, gbuffer_depth_, TextureSlots::kPBRShadowDepth, "");
+    ctx.set_uniform_int(deferred_lighting_shader_, "uGBufferDepth", TextureSlots::kPBRShadowDepth);
+
+    // Camera uniforms
+    if (camera_) {
+        ctx.set_uniform_vec3(deferred_lighting_shader_, "uCameraPos", camera_->position());
+        ctx.set_uniform_mat4(deferred_lighting_shader_, "uViewMatrix", camera_->get_view_matrix());
+        ctx.set_uniform_mat4(deferred_lighting_shader_, "uProjectionMatrix", get_projection_matrix());
+        // Inverse view-projection for world-space reconstruction
+        math::Matrix4f inv_vp = (get_projection_matrix() * camera_->get_view_matrix()).inverse();
+        ctx.set_uniform_mat4(deferred_lighting_shader_, "uInvViewProj", inv_vp);
+        ctx.set_uniform_float(deferred_lighting_shader_, "uNear", camera_->near_plane());
+        ctx.set_uniform_float(deferred_lighting_shader_, "uFar", camera_->far_plane());
+    }
+
+    ctx.set_uniform_vec3(deferred_lighting_shader_, "uAmbient", ambient_);
+
+    // Lights
+    upload_lights(ctx, deferred_lighting_shader_);
+
+    // Shadow maps
+    const bool use_shadow = shadow_enabled_ && shadow_light_index_ >= 0 && shadow_maps_[0].is_valid();
+    if (shadow_maps_[0].is_valid()) {
+        ITexture* shadow_map_ptr = ctx_->texture(shadow_maps_[0]);
+        if (shadow_map_ptr) shadow_map_ptr->bind(TextureSlots::kPBRShadow);
+        ctx.set_texture(deferred_lighting_shader_, shadow_maps_[0], TextureSlots::kPBRShadow, "");
+        ctx.set_uniform_int(deferred_lighting_shader_, "uShadowMap", TextureSlots::kPBRShadow);
+    }
+    static constexpr int shadow_slots[k_max_cascades] = {
+        TextureSlots::kPBRShadow, TextureSlots::kPBRShadowC1,
+        TextureSlots::kPBRShadowC2, TextureSlots::kPBRShadowC3,
+    };
+    static constexpr int depth_slots[k_max_cascades] = {
+        TextureSlots::kPBRShadowDepth, TextureSlots::kPBRShadowDepth1,
+        TextureSlots::kPBRShadowDepth2, TextureSlots::kPBRShadowDepth3,
+    };
+    static constexpr const char* shadow_names[k_max_cascades] = {
+        "uShadowMap", "uShadowMap1", "uShadowMap2", "uShadowMap3",
+    };
+    static constexpr const char* depth_names[k_max_cascades] = {
+        "uShadowMapDepth", "uShadowMapDepth1", "uShadowMapDepth2", "uShadowMapDepth3",
+    };
+    for (int i = 1; i < k_max_cascades; ++i) {
+        if (!shadow_maps_[i].is_valid()) continue;
+        ITexture* tex = ctx_->texture(shadow_maps_[i]);
+        if (tex) tex->bind(shadow_slots[i]);
+        ctx.set_texture(deferred_lighting_shader_, shadow_maps_[i], shadow_slots[i], "");
+        ctx.set_uniform_int(deferred_lighting_shader_, shadow_names[i], shadow_slots[i]);
+    }
+    for (int i = 0; i < k_max_cascades; ++i) {
+        if (!shadow_maps_[i].is_valid()) continue;
+        ctx.set_texture_raw_depth(deferred_lighting_shader_, shadow_maps_[i], depth_slots[i], "");
+        ctx.set_uniform_int(deferred_lighting_shader_, depth_names[i], depth_slots[i]);
+    }
+    ctx.set_uniform_int(deferred_lighting_shader_, "uUseShadowMap", use_shadow ? 1 : 0);
+    ctx.set_uniform_int(deferred_lighting_shader_, "uCascadeCount", cascade_count_);
+    ctx.set_uniform_int(deferred_lighting_shader_, "uPCSSEnabled", pcss_enabled_ ? 1 : 0);
+    math::Vector4f splits(cascade_split_distances_[0], cascade_split_distances_[1],
+                          cascade_split_distances_[2], cascade_split_distances_[3]);
+    ctx.set_uniform_vec4(deferred_lighting_shader_, "uCascadeSplits", splits);
+    math::Vector4f far_blend(cascade_split_distances_[cascade_count_], 0.15f, 0.0f, 0.0f);
+    ctx.set_uniform_vec4(deferred_lighting_shader_, "uCascadeFarBlend", far_blend);
+    math::Vector4f biases(cascade_biases_[0], cascade_biases_[1],
+                          cascade_biases_[2], cascade_biases_[3]);
+    ctx.set_uniform_vec4(deferred_lighting_shader_, "uCascadeBias", biases);
+    ctx.set_uniform_float(deferred_lighting_shader_, "uPCSSLightSize", pcss_light_size_);
+    ctx.set_uniform_float(deferred_lighting_shader_, "uPCSSMaxRadius", pcss_max_radius_);
+    ctx.set_uniform_float(deferred_lighting_shader_, "uPCSSBlockerScale", pcss_tap_scale_);
+    auto cascade_mats = std::make_shared<std::vector<math::Matrix4f>>();
+    cascade_mats->reserve(k_max_cascades);
+    for (int i = 0; i < k_max_cascades; ++i) {
+        cascade_mats->push_back(cascade_light_space_matrices_[i]);
+    }
+    ctx.set_uniform_mat4_array(deferred_lighting_shader_, "uCascadeLightSpace", std::move(cascade_mats));
+
+    // ---- VSM/ESM 阴影绑定 ----
+    ctx.set_uniform_int(deferred_lighting_shader_, "uShadowMode", static_cast<int>(shadow_mode_));
+    ctx.set_uniform_float(deferred_lighting_shader_, "uESMExponent", esm_exponent_);
+    static constexpr int vsm_slots[4] = {45, 46, 47, 48};
+    static constexpr const char* vsm_names[4] = {
+        "uVSMTexture0", "uVSMTexture1", "uVSMTexture2", "uVSMTexture3",
+    };
+    for (int i = 0; i < 4; ++i) {
+        if (!vsm_color_tex_[i].is_valid()) continue;
+        ITexture* tex = ctx_->texture(vsm_color_tex_[i]);
+        if (tex) tex->bind(vsm_slots[i]);
+        ctx.set_texture(deferred_lighting_shader_, vsm_color_tex_[i], vsm_slots[i], "");
+        ctx.set_uniform_int(deferred_lighting_shader_, vsm_names[i], vsm_slots[i]);
+    }
+
+    // IBL
+    upload_ibl_textures(ctx, deferred_lighting_shader_);
+
+    // SSAO
+    const bool use_ssao = pp_params_.ssao_enabled != 0 && ssao_targets_valid_;
+    const RHITextureHandle ssao_tex = use_ssao ? ssao_tex_[1] : (ssao_fallback_tex_.is_valid() ? ssao_fallback_tex_ : ssao_tex_[0]);
+    ITexture* ssao_ptr = ctx_->texture(ssao_tex);
+    if (ssao_ptr) ssao_ptr->bind(TextureSlots::kPBRSSAO);
+    ctx.set_texture(deferred_lighting_shader_, ssao_tex, TextureSlots::kPBRSSAO, "");
+    ctx.set_uniform_int(deferred_lighting_shader_, "uSSAOTexture", TextureSlots::kPBRSSAO);
+    ctx.set_uniform_int(deferred_lighting_shader_, "uUseSSAO", use_ssao ? 1 : 0);
+    ctx.set_uniform_float(deferred_lighting_shader_, "uSSAOStrength", pp_params_.ssao_strength);
+
+    // SSIL 屏幕空间间接光照
+    const bool use_ssil = ssil_enabled_ && ssil_.valid() && ssil_.ssil_tex().is_valid();
+    if (use_ssil) {
+        ITexture* ssil_ptr = ctx_->texture(ssil_.ssil_tex());
+        if (ssil_ptr) ssil_ptr->bind(TextureSlots::kSSILTexture);
+        ctx.set_texture(deferred_lighting_shader_, ssil_.ssil_tex(), TextureSlots::kSSILTexture, "");
+    }
+    ctx.set_uniform_int(deferred_lighting_shader_, "uUseSSIL", use_ssil ? 1 : 0);
+
+    // SDFGI 间接光照（已废弃，保留旧绑定以兼容旧 shader）
+    const bool use_sdfgi = sdfgi_enabled_ && sdfgi_.valid() && sdfgi_.gi_texture().is_valid();
+    if (use_sdfgi) {
+        ITexture* sdfgi_ptr = ctx_->texture(sdfgi_.gi_texture());
+        if (sdfgi_ptr) sdfgi_ptr->bind(TextureSlots::kSDFGITexture);
+        ctx.set_texture(deferred_lighting_shader_, sdfgi_.gi_texture(), TextureSlots::kSDFGITexture, "");
+    }
+    ctx.set_uniform_int(deferred_lighting_shader_, "uUseSDFGI", use_sdfgi ? 1 : 0);
+
+    // ---- GI 统一绑定（GIMode: None/SDFGI/VoxelGI） ----
+    {
+        const int gi_mode_val = static_cast<int>(gi_mode_);
+        RHITextureHandle gi_tex;
+        bool gi_active = gi_enabled_;
+        if (gi_active && gi_mode_ == GIMode::SDFGI && sdfgi_.valid() && sdfgi_.gi_texture().is_valid()) {
+            gi_tex = sdfgi_.gi_texture();
+        } else if (gi_active && gi_mode_ == GIMode::VoxelGI && voxel_gi_.valid() && voxel_gi_.voxel_tex().is_valid()) {
+            gi_tex = voxel_gi_.voxel_tex();
+        } else {
+            gi_active = false;
+        }
+        if (gi_active && gi_tex.is_valid()) {
+            ITexture* gi_ptr = ctx_->texture(gi_tex);
+            if (gi_ptr) gi_ptr->bind(TextureSlots::kGITexture);
+            ctx.set_texture(deferred_lighting_shader_, gi_tex, TextureSlots::kGITexture, "");
+        }
+        ctx.set_uniform_int(deferred_lighting_shader_, "uGIEnabled", gi_active ? 1 : 0);
+        ctx.set_uniform_int(deferred_lighting_shader_, "uGIMode", gi_mode_val);
+        ctx.set_uniform_float(deferred_lighting_shader_, "uGIIndirectIntensity", gi_indirect_intensity_);
+    }
+
+    // 点光源阴影
+    bind_point_shadow_uniforms(ctx, deferred_lighting_shader_);
+
+    ctx.draw_mesh(fullscreen_mesh_, deferred_lighting_shader_);
+}
 
 } // namespace gryce_engine::render

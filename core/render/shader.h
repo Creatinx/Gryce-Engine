@@ -84,6 +84,18 @@ struct PostProcessParams {
     float ssao_tan_half = 0.577f;
     float ssao_aspect = 1.777f;
 
+    // 屏幕空间接触阴影（每帧由管线从相机/光源更新；Vulkan push constants 需要）
+    int cs_enabled = 0;
+    float cs_near = 0.1f;
+    float cs_far = 100.0f;
+    float cs_tan_half = 0.577f;
+    float cs_aspect = 1.777f;
+    float cs_radius = 0.5f;
+    int cs_steps = 4;
+    float cs_strength = 0.6f;
+    // 视图空间方向光方向（指向光源），xyz 有效
+    math::Vector4f cs_light_dir_view = math::Vector4f(0.0f, 1.0f, 0.0f, 0.0f);
+
     // SSR（屏幕空间反射，默认关闭）
     int ssr_enabled = 0;
     float ssr_max_roughness = 0.6f;
@@ -102,6 +114,10 @@ struct PostProcessParams {
     float dof_focus_radius = 5.0f;   // 聚焦范围（距离两侧）
     float dof_blur_amount = 3.0f;
     float dof_max_coc = 20.0f;       // 最大弥散圆半径（像素）
+
+    // Motion Blur（运动模糊，默认关闭）
+    int motion_blur_enabled = 0;
+    float motion_blur_amount = 0.5f;  // 模糊强度 0~1
 
     // FSR2（超分辨率，默认关闭）
     int fsr2_enabled = 0;

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "math/math.h"
+#include "export.h"
 
 // 前向声明 miniaudio 类型，避免在每个包含处引入完整头文件
 struct ma_engine;
@@ -17,7 +18,7 @@ namespace gryce_engine::audio {
 // AudioEngine — 全局音频引擎（封装 miniaudio）。
 // 负责设备初始化、监听器位置、以及 Sound 实例的生命周期。
 // ---------------------------------------------------------------------------
-class AudioEngine {
+class GRYCE_API AudioEngine {
 public:
     AudioEngine();
     ~AudioEngine();

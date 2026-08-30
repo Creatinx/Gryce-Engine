@@ -25,6 +25,12 @@
 #include <dxgiformat.h> // DXGI_FORMAT
 #include <d3d12.h>      // D3D12_CPU_DESCRIPTOR_HANDLE
 
+// Clang/GCC warnings with -Weverything
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wold-style-cast" // warning: use of old-style cast
+#endif
+
 // Initialization data, for ImGui_ImplDX12_Init()
 struct ImGui_ImplDX12_InitInfo
 {
@@ -45,7 +51,7 @@ struct ImGui_ImplDX12_InitInfo
     D3D12_GPU_DESCRIPTOR_HANDLE LegacySingleSrvGpuDescriptor;
 #endif
 
-    ImGui_ImplDX12_InitInfo()   { memset(this, 0, sizeof(*this)); }
+    ImGui_ImplDX12_InitInfo()   { memset((void*)this, 0, sizeof(*this)); }
 };
 
 // Follow "Getting Started" link and check examples/ folder to learn about using backends!
@@ -53,13 +59,6 @@ IMGUI_IMPL_API bool     ImGui_ImplDX12_Init(ImGui_ImplDX12_InitInfo* info);
 IMGUI_IMPL_API void     ImGui_ImplDX12_Shutdown();
 IMGUI_IMPL_API void     ImGui_ImplDX12_NewFrame();
 IMGUI_IMPL_API void     ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandList* graphics_command_list);
-
-#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-// Legacy initialization API Obsoleted in 1.91.5
-// - font_srv_cpu_desc_handle and font_srv_gpu_desc_handle are handles to a single SRV descriptor to use for the internal font texture, they must be in 'srv_descriptor_heap'
-// - When we introduced the ImGui_ImplDX12_InitInfo struct we also added a 'ID3D12CommandQueue* CommandQueue' field.
-IMGUI_IMPL_API bool     ImGui_ImplDX12_Init(ID3D12Device* device, int num_frames_in_flight, DXGI_FORMAT rtv_format, ID3D12DescriptorHeap* srv_descriptor_heap, D3D12_CPU_DESCRIPTOR_HANDLE font_srv_cpu_desc_handle, D3D12_GPU_DESCRIPTOR_HANDLE font_srv_gpu_desc_handle);
-#endif
 
 // Use if you want to reset your rendering device without losing Dear ImGui state.
 IMGUI_IMPL_API bool     ImGui_ImplDX12_CreateDeviceObjects();
@@ -76,5 +75,17 @@ struct ImGui_ImplDX12_RenderState
     ID3D12Device*               Device;
     ID3D12GraphicsCommandList*  CommandList;
 };
+
+#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+// Legacy initialization API Obsoleted in 1.91.5
+// - font_srv_cpu_desc_handle and font_srv_gpu_desc_handle are handles to a single SRV descriptor to use for the internal font texture, they must be in 'srv_descriptor_heap'
+// - When we introduced the ImGui_ImplDX12_InitInfo struct we also added a 'ID3D12CommandQueue* CommandQueue' field.
+// - DOES NOT SUPPORT ImGuiBackendFlags_RendererHasTextures.
+//IMGUI_IMPL_API bool     ImGui_ImplDX12_Init(ID3D12Device* device, int num_frames_in_flight, DXGI_FORMAT rtv_format, ID3D12DescriptorHeap* srv_descriptor_heap, D3D12_CPU_DESCRIPTOR_HANDLE font_srv_cpu_desc_handle, D3D12_GPU_DESCRIPTOR_HANDLE font_srv_gpu_desc_handle);
+#endif
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 #endif // #ifndef IMGUI_DISABLE

@@ -53,6 +53,7 @@ int post_process_binding(int slot) {
     if (slot == TextureSlots::kTonemapLUT) return 2;
     if (slot == TextureSlots::kTonemapExposure) return 3;
     if (slot == TextureSlots::kTAAHistory) return 4;
+    if (slot == TextureSlots::kTonemapContactShadow) return 5;
     return 0;
 }
 } // namespace
@@ -175,6 +176,7 @@ bool VulkanShader::load_program(const std::string& name,
     set_color_output_enabled(color_output);
     set_post_process(post_process);
     set_skybox(skybox);
+    contact_shadow_ = post_process && name == "contact_shadow";
     skinned_ = skinned;
     return create_pipeline();
 }
@@ -279,16 +281,18 @@ bool VulkanShader::create_pipeline() {
               reinterpret_cast<void*>(render_pass), color_output_enabled_, post_process_);
 
     if (post_process_ || skybox_) {
-        // Post-process / skybox descriptor layout: 5 combined image samplers
-        VkDescriptorSetLayoutBinding bindings[5]{};
-        for (int i = 0; i < 5; ++i) {
+        // Post-process / skybox descriptor layout: 6 combined image samplers
+        // （binding 5 = 接触阴影贴图，tonemap 用；其余 pass 不使用）
+        VkDescriptorSetLayoutBinding bindings[6]{};
+        for (int i = 0; i < 6; ++i) {
             bindings[i].binding = i;
             bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[i].descriptorCount = 1;
             bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
 
-        VkDescriptorBindingFlags binding_flags[5] = {
+        VkDescriptorBindingFlags binding_flags[6] = {
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -297,18 +301,19 @@ bool VulkanShader::create_pipeline() {
         };
         VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info{};
         binding_flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        binding_flags_info.bindingCount = 5;
+        binding_flags_info.bindingCount = 6;
         binding_flags_info.pBindingFlags = binding_flags;
 
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        layout_info.bindingCount = 5;
+        layout_info.bindingCount = 6;
         layout_info.pBindings = bindings;
         layout_info.pNext = &binding_flags_info;
         vkCreateDescriptorSetLayout(device_->device(), &layout_info, nullptr, &descriptor_set_layout_);
 
         // Push constants: post-process 为 exposure+mode（fragment）；
+        // 接触阴影用独立小块（48 字节），避免共享块超过设备 maxPushConstantsSize；
         // skybox 为 view+projection 两个 mat4（vertex）。
         VkPushConstantRange push_range{};
         if (skybox_) {
@@ -318,7 +323,8 @@ bool VulkanShader::create_pipeline() {
         } else {
             push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             push_range.offset = 0;
-            push_range.size = sizeof(PostProcessPushData);
+            push_range.size = contact_shadow_ ? sizeof(ContactShadowPushData)
+                                              : sizeof(PostProcessPushData);
         }
 
         VkPipelineLayoutCreateInfo pl_info{};
@@ -337,7 +343,7 @@ bool VulkanShader::create_pipeline() {
 
         VkDescriptorPoolSize pool_size{};
         pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_size.descriptorCount = static_cast<uint32_t>(frames) * 5;
+        pool_size.descriptorCount = static_cast<uint32_t>(frames) * 6;
 
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1107,46 +1113,21 @@ void VulkanShader::push_constants(VkCommandBuffer cmd) const {
     // push constant 是命令缓冲状态：每帧重录 CB 后必须无条件重新写入，
     // 不能用脏标记跨帧跳过（否则验证层报 VUID-vkCmdDraw-None-08601，
     // 且着色器读到的是未定义数据）。
-    if (post_process_) {
-        PostProcessPushData data{};
-        data.exposure = pp_params_.exposure;
-        data.ev100 = pp_params_.ev100;
-        data.mode = pp_params_.tone_map_mode;
-        data.dithering = pp_params_.dithering;
-        data.white_point = pp_params_.white_point;
-        data.black_point = pp_params_.black_point;
-        data.contrast = pp_params_.contrast;
-        data.saturation = pp_params_.saturation;
-        data.lift = pp_params_.lift;
-        data.gamma = pp_params_.gamma;
-        data.gain = pp_params_.gain;
-        data.shadows = pp_params_.shadows;
-        data.midtones = pp_params_.midtones;
-        data.highlights = pp_params_.highlights;
-        data.bloom_enabled = pp_params_.bloom_enabled;
-        data.bloom_threshold = pp_params_.bloom_threshold;
-        data.bloom_intensity = pp_params_.bloom_intensity;
-        data.film_grain = pp_params_.film_grain;
-        data.vignette = pp_params_.vignette;
-        data.chromatic_aberration = pp_params_.chromatic_aberration;
-        data.use_lut = pp_params_.use_lut;
-        data.lut_strength = pp_params_.lut_strength;
-        data.auto_exposure = pp_params_.auto_exposure;
-        data.ae_target_luminance = pp_params_.ae_target_luminance;
-        data.ae_min_exposure = pp_params_.ae_min_exposure;
-        data.ae_max_exposure = pp_params_.ae_max_exposure;
-        data.ae_speed = pp_params_.ae_speed;
-        data.taa_enabled = pp_params_.taa_enabled;
-        data.taa_weight = pp_params_.taa_weight;
-        data.ssao_enabled = pp_params_.ssao_enabled;
-        data.ssao_strength = pp_params_.ssao_strength;
-        data.ssao_radius = pp_params_.ssao_radius;
-        data.ssao_near = pp_params_.ssao_near;
-        data.ssao_far = pp_params_.ssao_far;
-        data.ssao_tan_half = pp_params_.ssao_tan_half;
-        data.ssao_aspect = pp_params_.ssao_aspect;
+    if (contact_shadow_) {
+        ContactShadowPushData data{};
+        data.enabled = pp_params_.cs_enabled;
+        data.near_plane = pp_params_.cs_near;
+        data.far_plane = pp_params_.cs_far;
+        data.tan_half_fov = pp_params_.cs_tan_half;
+        data.aspect = pp_params_.cs_aspect;
+        data.radius = pp_params_.cs_radius;
+        data.steps = pp_params_.cs_steps;
+        data.strength = pp_params_.cs_strength;
+        data.light_dir_view = pp_params_.cs_light_dir_view;
         vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(data), &data);
+    } else if (post_process_) {
+        push_post_process_constants(cmd, pp_params_);
     } else if (skybox_) {
         float matrices[2 * 16];
         for (int i = 0; i < 16; ++i) {
@@ -1222,6 +1203,8 @@ void VulkanShader::push_post_process_constants(VkCommandBuffer cmd,
     data.ssao_far = params.ssao_far;
     data.ssao_tan_half = params.ssao_tan_half;
     data.ssao_aspect = params.ssao_aspect;
+    data.cs_enabled = params.cs_enabled;
+    data.cs_strength = params.cs_strength;
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(data), &data);
 }

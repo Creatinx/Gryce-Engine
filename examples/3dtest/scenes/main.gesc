@@ -22,15 +22,15 @@
       "parent": null,
       "transform": {
         "position": [
-          -57.54323959350586,
-          83.28648376464844,
-          0.9984972476959229
+          -1.2349371910095215,
+          9.596688270568848,
+          -1.235890507698059
         ],
         "rotation": [
-          -0.3258737325668335,
-          0.5414542555809021,
-          0.23937448859214783,
-          0.7371115684509277
+          0.058551330119371414,
+          0.5577934384346008,
+          -0.03949304297566414,
+          0.826969563961029
         ],
         "scale": [
           1.0,
@@ -446,9 +446,9 @@
           "type": "RigidBody",
           "use_gravity": true,
           "velocity": [
-            1.862798652309261e-13,
+            9.0010891264352e-14,
             -500.0,
-            6.555809362171136e-14
+            3.1677815887998576e-14
           ]
         },
         {
@@ -473,14 +473,14 @@
       "transform": {
         "position": [
           229.03756713867188,
-          -780647.125,
+          -799003.375,
           80.63339233398438
         ],
         "rotation": [
-          -0.03416050598025322,
-          -0.08687029033899307,
-          -0.44890180230140686,
-          0.8886922001838684
+          0.03543201461434364,
+          0.08934789150953293,
+          0.463654100894928,
+          -0.8807874321937561
         ],
         "scale": [
           1.0,
@@ -738,7 +738,7 @@
           "use_gravity": true,
           "velocity": [
             0.0,
-            -464.1305236816406,
+            -322.0906066894531,
             0.0
           ]
         },
@@ -760,7 +760,7 @@
       "transform": {
         "position": [
           40.0,
-          -10952.421875,
+          -5258.57275390625,
           0.0
         ],
         "rotation": [
@@ -1124,6 +1124,379 @@
         ]
       },
       "uuid": "e1bcf226-025b-4336-a894-f3810c96aee7"
+    },
+    {
+      "components": [
+        {
+          "billboard": false,
+          "depth_test": true,
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.10000000149011612,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 1.0,
+            "metallic_map_path": "",
+            "name": "SSRSphere",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.05000000074505806,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/sphere_pbr.obj",
+          "type": "MeshRenderer"
+        }
+      ],
+      "enabled": true,
+      "name": "DemoSSRSphere",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          -0.25,
+          -12.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          3.0,
+          3.0,
+          3.0
+        ]
+      },
+      "uuid": "bdf7aed1-3c98-4e02-80ea-5415e265c617"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            1.0,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "enabled": true,
+          "intensity": 40.0,
+          "light_type": 1,
+          "range": 20.0,
+          "spot_angle": 45.0,
+          "spot_softness": 0.20000000298023224,
+          "type": "Light"
+        }
+      ],
+      "enabled": true,
+      "name": "DemoPointLight_Red",
+      "parent": null,
+      "transform": {
+        "position": [
+          -15.0,
+          5.0,
+          -10.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "ddede00a-8c77-4d95-abd4-76f0e9b4ee93"
+    },
+    {
+      "components": [
+        {
+          "color": [
+            0.20000000298023224,
+            0.4000000059604645,
+            1.0
+          ],
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "enabled": true,
+          "intensity": 40.0,
+          "light_type": 1,
+          "range": 20.0,
+          "spot_angle": 45.0,
+          "spot_softness": 0.20000000298023224,
+          "type": "Light"
+        }
+      ],
+      "enabled": true,
+      "name": "DemoPointLight_Blue",
+      "parent": null,
+      "transform": {
+        "position": [
+          15.0,
+          5.0,
+          -10.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "ba6c5a95-f345-43ff-aeb3-8d68bab6d413"
+    },
+    {
+      "components": [],
+      "enabled": true,
+      "name": "DemoWaterPlane",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "uuid": "c6628786-26e2-4944-aa67-4ae0664f674b"
+    },
+    {
+      "components": [
+        {
+          "billboard": false,
+          "depth_test": true,
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.20000000298023224,
+              0.800000011920929,
+              0.20000000298023224
+            ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.10000000149011612,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.5,
+            "metallic_map_path": "",
+            "name": "DOFFar",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.5,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        }
+      ],
+      "enabled": true,
+      "name": "DemoDOF_Far",
+      "parent": null,
+      "transform": {
+        "position": [
+          -20.0,
+          -0.25,
+          -15.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          2.0,
+          2.0,
+          2.0
+        ]
+      },
+      "uuid": "2e393459-233b-4c31-9771-5c461cc9f889"
+    },
+    {
+      "components": [
+        {
+          "billboard": false,
+          "depth_test": true,
+          "enabled": true,
+          "material": {
+            "albedo_color": [
+              0.800000011920929,
+              0.20000000298023224,
+              0.20000000298023224
+            ],
+            "albedo_map_path": "",
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "ao": 1.0,
+            "ao_map_path": "",
+            "blend_mode": 0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.10000000149011612,
+            "density": 1.0,
+            "drag_coefficient": 0.0,
+            "emissive_color": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "emissive_map_path": "",
+            "metallic": 0.800000011920929,
+            "metallic_map_path": "",
+            "name": "DOFNear",
+            "normal_map_path": "",
+            "opacity": 1.0,
+            "preset_name": "",
+            "roughness": 0.30000001192092896,
+            "roughness_map_path": "",
+            "sheen": 0.0,
+            "sheen_tint": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "softness": 0.0,
+            "two_sided": false,
+            "use_albedo_map": true,
+            "use_ao_map": true,
+            "use_emissive_map": true,
+            "use_metallic_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "uv_offset": [
+              0.0,
+              0.0
+            ],
+            "uv_scale": [
+              1.0,
+              1.0
+            ]
+          },
+          "mesh_path": "res:/models/cube_pbr.obj",
+          "type": "MeshRenderer"
+        }
+      ],
+      "enabled": true,
+      "name": "DemoDOF_Near",
+      "parent": null,
+      "transform": {
+        "position": [
+          -5.0,
+          -0.25,
+          -20.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          2.0,
+          2.0,
+          2.0
+        ]
+      },
+      "uuid": "be76926f-d289-477b-b6a6-570fa96cc752"
     }
   ],
   "name": "Scene",

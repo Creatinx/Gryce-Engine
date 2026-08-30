@@ -65,6 +65,10 @@ class GRYCE_RENDERER_API CompositorEffectManager {
 public:
     CompositorEffectManager() = default;
     ~CompositorEffectManager() = default;
+    CompositorEffectManager(const CompositorEffectManager&) = delete;
+    CompositorEffectManager& operator=(const CompositorEffectManager&) = delete;
+    CompositorEffectManager(CompositorEffectManager&&) = default;
+    CompositorEffectManager& operator=(CompositorEffectManager&&) = default;
 
     // 注册效果
     void add_effect(std::unique_ptr<CompositorEffect> effect);

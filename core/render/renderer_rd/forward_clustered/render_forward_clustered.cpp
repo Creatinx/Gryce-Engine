@@ -674,6 +674,9 @@ void RenderForwardClustered::_render_opaque_pass(RenderContext* ctx) {
             std::string tex_name = "uSpotShadowMap" + std::to_string(s);
             ctx->set_uniform_int(shader, tex_name.c_str(), kSpotSlots[s]);
         }
+        // 聚光灯阴影贴图尺寸（16-tap PCF 需要 texel 大小）
+        ctx->set_uniform_float(shader, "uSpotShadowSize",
+            static_cast<float>(shadow_system_->spot_shadow_size()));
 
         // SSAO
         ctx->set_uniform_int(shader, "uUseSSAO", pp_params_.ssao_enabled ? 1 : 0);

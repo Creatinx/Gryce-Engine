@@ -46,6 +46,12 @@ uniform sampler2D uShadowMapDepth1;
 uniform sampler2D uShadowMapDepth2;
 uniform sampler2D uShadowMapDepth3;
 
+// ---- VSM/ESM 阴影纹理（RGBA16F 颜色纹理，与 PCF 共享级联） ----
+uniform sampler2D uVSMTexture0;
+uniform sampler2D uVSMTexture1;
+uniform sampler2D uVSMTexture2;
+uniform sampler2D uVSMTexture3;
+
 uniform samplerCube uIrradianceMap;
 uniform samplerCube uPrefilterMap;
 uniform sampler2D uBRDFLUT;
@@ -59,6 +65,14 @@ uniform int uUseEmissiveMap;
 uniform int uUseIBL;
 uniform float uIBLIntensity;
 uniform int uTwoSided;
+
+// ---------------------------------------------------------------------------
+// GI 全局光照（SDFGI / VoxelGI）
+// ---------------------------------------------------------------------------
+uniform sampler2D uGITexture;
+uniform int uGIEnabled;
+uniform int uGIMode; // 0=None, 1=SDFGI, 2=VoxelGI
+uniform float uGIIndirectIntensity;
 
 // ---------------------------------------------------------------------------
 // 光照 / 相机
@@ -80,6 +94,14 @@ uniform int uUseShadowMap;
 uniform int uShadowLightIndex; // 产生阴影的方向光下标，-1 表示无
 uniform int uHDREnabled;       // 1=输出线性 HDR（由 tonemap pass 处理）
 
+// ---- 点光源阴影（双抛物面映射） ----
+// 最多 4 个点光源阴影，每个 2 个 face（front/back）
+uniform int uPointShadowCount;
+uniform sampler2D uPointShadowMap0;
+uniform sampler2D uPointShadowMap1;
+uniform vec3 uPointLightPosWorld[4];
+uniform float uPointLightRange[4];
+
 // ---- CSM 级联阴影 ----
 uniform int uCascadeCount;
 uniform vec4 uCascadeSplits;      // xyz = near, s1, s2, s3（相机空间距离）
@@ -92,6 +114,10 @@ uniform int uPCSSEnabled;
 uniform float uPCSSLightSize;     // 光源尺寸（texel 单位）
 uniform float uPCSSMaxRadius;     // 最大 PCF 半径（texel）
 uniform float uPCSSBlockerScale;  // 半影缩放
+
+// ---- VSM/ESM 阴影模式选择 ----
+uniform int uShadowMode;           // 0=PCF, 1=VSM, 2=ESM
+uniform float uESMExponent;        // ESM 指数参数（默认 40.0）
 
 // ---- HDR 分析视图 ----
 uniform int uDebugMode;           // 0 Final, 1 Albedo, 2 Normal, 3 Roughness,
@@ -305,6 +331,134 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
 }
 
 // ---------------------------------------------------------------------------
+// 点光源双抛物面阴影 + PCF
+// ---------------------------------------------------------------------------
+float point_shadow_sample(vec3 frag_pos, vec3 light_pos, float range, sampler2D shadow_tex) {
+    vec3 to_light = frag_pos - light_pos;
+    float dist = length(to_light);
+    if (dist >= range) return 1.0;
+    vec3 dir = to_light / dist;
+
+    // 双抛物面映射
+    float a = 1.0 / (1.0 + abs(dir.z));
+    vec2 uv = dir.xy * a * 0.5 + 0.5;
+    float depth = dist / range;
+
+    // 16-tap 旋转 Poisson PCF
+    float angle = interleaved_gradient_noise(gl_FragCoord.xy) * 6.2831853;
+    float s = sin(angle);
+    float c = cos(angle);
+    mat2 rot = mat2(c, -s, s, c);
+    float texel = 1.0 / float(textureSize(shadow_tex, 0));
+    float lit = 0.0;
+    for (int i = 0; i < 16; ++i) {
+        vec2 offset = rot * k_shadow_poisson[i] * texel * 2.0;
+        float d = texture(shadow_tex, uv + offset).r;
+        lit += (depth - 0.005 < d) ? 1.0 : 0.0;
+    }
+    return lit / 16.0;
+}
+
+float point_shadow(vec3 frag_pos, int light_index, vec3 light_pos, float range) {
+    if (uPointShadowCount <= 0 || light_index >= uPointShadowCount) return 1.0;
+    // 根据 light_index 选择纹理
+    if (light_index == 0) return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap0);
+    if (light_index == 1) return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap1);
+    return 1.0;
+}
+
+// ---------------------------------------------------------------------------
+// VSM 采样: Chebyshev 不等式求最大概率
+// ---------------------------------------------------------------------------
+float vsm_sample(sampler2D vsm_tex, vec2 uv, float frag_depth) {
+    vec2 moments = texture(vsm_tex, uv).rg;
+    if (frag_depth <= moments.x) return 1.0;
+    float variance = max(moments.y - moments.x * moments.x, 0.00001);
+    float d = frag_depth - moments.x;
+    float p_max = variance / (variance + d * d);
+    return p_max;
+}
+
+// ---------------------------------------------------------------------------
+// ESM 采样
+// ---------------------------------------------------------------------------
+float esm_sample(sampler2D esm_tex, vec2 uv, float frag_depth, float exponent) {
+    float occluded = texture(esm_tex, uv).r;
+    return clamp(exp(exponent * (occluded + exp(-exponent * frag_depth))) - 1.0, 0.0, 1.0);
+}
+
+// 工具：根据级联索引返回 VSM/ESM 纹理
+sampler2D vsm_tex_for_cascade(int cascade) {
+    if (cascade == 0) return uVSMTexture0;
+    if (cascade == 1) return uVSMTexture1;
+    if (cascade == 2) return uVSMTexture2;
+    return uVSMTexture3;
+}
+
+// ---------------------------------------------------------------------------
+// VSM/ESM 级联阴影采样（替代 PCF/PCSS 路径）
+// ---------------------------------------------------------------------------
+float cascade_shadow_vsm_esm(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cascade) {
+    out_cascade = 0;
+    if (uUseShadowMap == 0 || uCascadeCount <= 0) return 1.0;
+
+    vec4 view_pos = uView * vec4(frag_pos, 1.0);
+    float depth = -view_pos.z;
+    int cascade = cascade_from_depth(depth);
+    out_cascade = cascade;
+
+    vec4 light_pos = uCascadeLightSpace[cascade] * vec4(frag_pos, 1.0);
+    vec3 proj = light_pos.xyz / light_pos.w;
+    proj = proj * 0.5 + 0.5;
+
+    if (proj.z > 1.0) return 1.0;
+    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
+
+    float lit = 1.0;
+    vec2 sm_uv = proj.xy;
+    float frag_depth = proj.z;
+    sampler2D sm_tex = vsm_tex_for_cascade(cascade);
+
+    if (uShadowMode == 1) {
+        // VSM: Chebyshev 不等式
+        lit = vsm_sample(sm_tex, sm_uv, frag_depth);
+    } else {
+        // ESM: 指数深度比较
+        lit = esm_sample(sm_tex, sm_uv, frag_depth, uESMExponent);
+    }
+
+    // 阴影贴图覆盖范围边缘淡出为全亮，消除硬边
+    float edge = min(min(proj.x, 1.0 - proj.x), min(proj.y, 1.0 - proj.y));
+    float fade = smoothstep(0.0, 0.05, edge);
+    lit = mix(1.0, lit, fade);
+
+    // Cascade Blend：级联边界交叉淡入淡出
+    if (cascade < uCascadeCount - 1) {
+        float far_i = cascade_boundary(cascade + 1);
+        float next_far = cascade_boundary(cascade + 2);
+        float band = max(uCascadeFarBlend.y * (next_far - far_i), 1e-4);
+        float t = clamp((depth - (far_i - band)) / band, 0.0, 1.0);
+        if (t > 0.0) {
+            int c2 = cascade + 1;
+            vec4 lp2 = uCascadeLightSpace[c2] * vec4(frag_pos, 1.0);
+            vec3 p2 = lp2.xyz / lp2.w;
+            p2 = p2 * 0.5 + 0.5;
+            float lit2 = 1.0;
+            if (p2.z <= 1.0 && p2.x >= 0.0 && p2.x <= 1.0 && p2.y >= 0.0 && p2.y <= 1.0) {
+                sampler2D sm_tex2 = vsm_tex_for_cascade(c2);
+                if (uShadowMode == 1) {
+                    lit2 = vsm_sample(sm_tex2, p2.xy, p2.z);
+                } else {
+                    lit2 = esm_sample(sm_tex2, p2.xy, p2.z, uESMExponent);
+                }
+            }
+            lit = mix(lit, lit2, t);
+        }
+    }
+    return lit;
+}
+
+// ---------------------------------------------------------------------------
 // 主函数
 // ---------------------------------------------------------------------------
 void main() {
@@ -341,7 +495,11 @@ void main() {
             L = normalize(-uLightDir[i]);
             radiance = uLightColor[i] * uLightIntensity[i];
             if (i == uShadowLightIndex) {
-                shadow = cascade_shadow(vFragPos, N, L, shadow_cascade);
+                if (uShadowMode == 0) {
+                    shadow = cascade_shadow(vFragPos, N, L, shadow_cascade);
+                } else {
+                    shadow = cascade_shadow_vsm_esm(vFragPos, N, L, shadow_cascade);
+                }
                 shadow_factor = shadow;
             }
         } else {
@@ -365,6 +523,11 @@ void main() {
                 float spot = smoothstep(cos_outer, cos_inner, cos_angle);
                 if (spot <= 0.0) continue;
                 radiance *= spot;
+            }
+
+            // 点光源阴影（双抛物面 PCF）
+            if (uLightType[i] == 1 && uPointShadowCount > 0) {
+                shadow = point_shadow(vFragPos, i, uLightPos[i], range);
             }
         }
 
@@ -445,6 +608,13 @@ void main() {
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
         ambient = (kD * diffuse + specular) * ao * uIBLIntensity * ssao_factor;
     }
+
+    // GI 全局光照间接采样（叠加到环境光之上）
+    if (uGIEnabled != 0) {
+        vec3 gi_indirect = texture(uGITexture, vScreenUV).rgb;
+        ambient += gi_indirect * albedo * uGIIndirectIntensity;
+    }
+
     vec3 emissive = uEmissiveColor * (uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
     // HDR 分析视图

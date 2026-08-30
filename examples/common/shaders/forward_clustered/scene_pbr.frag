@@ -108,6 +108,7 @@ uniform sampler2DShadow uSpotShadowMap1;
 uniform sampler2DShadow uSpotShadowMap2;
 uniform sampler2DShadow uSpotShadowMap3;
 uniform mat4 uSpotLightSpace[4];
+uniform float uSpotShadowSize; // 阴影贴图宽度（正方形，用于 PCF texel 计算）
 
 // ---------------------------------------------------------------------------
 // 调试
@@ -318,8 +319,16 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
 }
 
 // ===========================================================================
-// 聚光灯阴影采样
+// 聚光灯阴影采样（16-tap 旋转 Poisson PCF 软阴影）
 // ===========================================================================
+float spot_shadow_compare(int index, vec3 coords) {
+    if (index == 0) return texture(uSpotShadowMap0, coords);
+    if (index == 1) return texture(uSpotShadowMap1, coords);
+    if (index == 2) return texture(uSpotShadowMap2, coords);
+    if (index == 3) return texture(uSpotShadowMap3, coords);
+    return 1.0;
+}
+
 float spot_shadow_sample(int index, vec3 frag_pos, vec3 normal, vec3 light_dir) {
     if (index >= uSpotShadowCount) return 1.0;
 
@@ -331,13 +340,25 @@ float spot_shadow_sample(int index, vec3 frag_pos, vec3 normal, vec3 light_dir) 
     if (proj.z > 1.0 || proj.z < 0.0) return 1.0;
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
 
-    float bias = max(0.001 * (1.0 - dot(normal, light_dir)), 0.0001);
+    // 16-tap 旋转 Poisson PCF 软阴影（复用 CSM 的 Poisson 核和 IGN 噪声）
+    float texel_size = 1.0 / uSpotShadowSize;
+    float angle = interleaved_gradient_noise(gl_FragCoord.xy) * 6.2831853;
+    float s = sin(angle);
+    float c = cos(angle);
+    mat2 rot = mat2(c, -s, s, c);
 
-    if (index == 0) return texture(uSpotShadowMap0, vec3(proj.xy, proj.z - bias));
-    if (index == 1) return texture(uSpotShadowMap1, vec3(proj.xy, proj.z - bias));
-    if (index == 2) return texture(uSpotShadowMap2, vec3(proj.xy, proj.z - bias));
-    if (index == 3) return texture(uSpotShadowMap3, vec3(proj.xy, proj.z - bias));
-    return 1.0;
+    // 硬编码 bias = max(0.001 * (1 - N·L), 0.0001)，可调
+    float bias = max(0.001 * (1.0 - dot(normal, light_dir)), 0.0001);
+    // 固定 PCF 半径 2.0 texel，与 CSM PCF 默认值一致
+    float radius = 2.0;
+
+    float lit = 0.0;
+    vec3 coords = vec3(proj.xy, proj.z - bias);
+    for (int i = 0; i < 16; ++i) {
+        vec2 offset = rot * k_shadow_poisson[i];
+        lit += spot_shadow_compare(index, vec3(coords.xy + offset * texel_size * radius, coords.z));
+    }
+    return lit / 16.0;
 }
 
 // ===========================================================================

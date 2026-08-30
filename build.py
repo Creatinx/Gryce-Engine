@@ -9,7 +9,7 @@
     python build.py Release --compiler msvc  # Release + MSVC（需 VS 开发者命令行）
     python build.py --compiler gcc           # 显式 MinGW GCC
     python build.py --compiler clang         # 显式 Clang
-    python build.py --editor                 # Windows 上同时构建 WPF Editor（dotnet）
+    python build.py --editor                 # (No-op) Editor is now built by default (C++/ImGui)
     python build.py --setup-deps             # 仅下载依赖
     python build.py --configure              # 只配置，不编译
     python build.py --clean                  # 清理构建产物（保留 deps）
@@ -363,7 +363,7 @@ def main():
     )
     parser.add_argument(
         "--editor", action="store_true",
-        help="Deprecated: Editor is now built by default (C++/ImGui)"
+        help="(No-op) Editor is now built by default (C++/ImGui)"
     )
     parser.add_argument(
         "--offline", action="store_true",
@@ -448,9 +448,6 @@ def main():
             if (f"cmake_cxx_compiler:filepath={cxx_lower}" not in content and
                     f"cmake_cxx_compiler:uninitialized={cxx_lower}" not in content):
                 return True
-        editor_cache_on = "gryce_build_editor:bool=on" in content
-        if editor_cache_on != args.editor:
-            return True
         return False
 
     if needs_reconfigure():
@@ -474,13 +471,6 @@ def main():
                 "-DCMAKE_C_COMPILER=" + cc_path,
                 "-DCMAKE_CXX_COMPILER=" + cxx_path,
             ]
-
-        if args.editor:
-            configure_cmd += ["-DGRYCE_BUILD_EDITOR=ON"]
-            if IS_WINDOWS:
-                print(
-                    f"{C_INFO}[Gryce Engine]{C_RESET} --editor: C++/ImGui Editor will be built"
-                )
 
         configure_cmd += [str(project_root)]
         ok, output = run(configure_cmd, check=False)
@@ -521,7 +511,7 @@ def main():
 
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
-    print(f"  Editor:   GryceEditor (C++/ImGui)")
+    print(f"  Editor:   GryceEditor (C++/ImGui, built by default)")
 
 
 if __name__ == "__main__":

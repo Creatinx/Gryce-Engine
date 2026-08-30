@@ -452,6 +452,7 @@ void GLShader::apply_post_process_params() const {
         {"uAEMaxExposure", p.ae_max_exposure},
         {"uAESpeed", p.ae_speed},
         {"uTAAWeight", p.taa_weight},
+        {"uMotionBlurAmount", p.motion_blur_amount},
         {"uSSAOStrength", p.ssao_strength},
         {"uSSAORadius", p.ssao_radius},
         {"uSSAONear", p.ssao_near},
@@ -472,6 +473,7 @@ void GLShader::apply_post_process_params() const {
         {"uAutoExposure", p.auto_exposure},
         {"uTAAEnabled", p.taa_enabled},
         {"uSSAOEnabled", p.ssao_enabled},
+        {"uMotionBlurEnabled", p.motion_blur_enabled},
     };
     for (const auto& u : ints) {
         int loc = get_uniform_location(u.name);

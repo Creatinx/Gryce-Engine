@@ -131,6 +131,9 @@ private:
     bool color_output_enabled_ = true;
     bool post_process_ = false;
     bool skybox_ = false;
+    // 接触阴影：独立小 push constant 块（48 字节），不占用共享后处理块。
+    // 共享块已 224 字节，追加接触阴影字段会超过设备 maxPushConstantsSize(256)。
+    bool contact_shadow_ = false;
     // 骨骼蒙皮管线：顶点布局追加 bone ids/weights（stride 88），
     // 描述符布局追加 palette UBO（binding 8，vertex stage）
     bool skinned_ = false;
@@ -300,9 +303,26 @@ private:
         float ssao_far;
         float ssao_tan_half;
         float ssao_aspect;
-        float _pad[2];
+        // 复用原 8 字节 padding：tonemap 用 push constants 判断是否应用接触阴影
+        int cs_enabled;      // offset 216
+        float cs_strength;   // offset 220
     };
     static_assert(sizeof(PostProcessPushData) == 224, "PostProcessPushData must be 224 bytes");
+
+    // 接触阴影专用 push constant（std430，48 字节，< 设备 maxPushConstantsSize）
+    struct ContactShadowPushData {
+        int enabled;
+        float near_plane;
+        float far_plane;
+        float tan_half_fov;
+        float aspect;
+        float radius;
+        int steps;
+        float strength;
+        math::Vector4f light_dir_view; // offset 32（16 对齐）
+    };
+    static_assert(sizeof(ContactShadowPushData) == 48,
+                  "ContactShadowPushData must be 48 bytes");
 };
 
 } // namespace gryce_engine::render

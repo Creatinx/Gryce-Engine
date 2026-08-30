@@ -20,7 +20,7 @@ target_compile_definitions(GryceCore PRIVATE GRYCE_CORE_BUILDING)
 
 target_sources(GryceCore
     PRIVATE
-        # C API 实现
+        # C API 实现（core_api 包含 g_core_state/api_mutex 等核心符号，必须留在 GryceCore）
         api/core_api.cpp
         api/entity_api.cpp
         api/component_api.cpp
@@ -84,7 +84,7 @@ target_sources(GryceCore
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
         ecs/systems/fracture_system.cpp
-        ecs/systems/subviewport_system.cpp
+        # subviewport_system 移至 GryceRenderer（依赖 RenderPipeline）
         ecs/systems/hierarchy_system.cpp
         # Render 核心（与 backend 无关）
         render/render_context.cpp
@@ -98,11 +98,7 @@ target_sources(GryceCore
         render/render2d.cpp
         render/font_atlas.cpp
         render/ibl_generator.cpp
-        render/render_pipeline.cpp
-        render/shadow_pass.cpp
-        render/postprocess_pass.cpp
-        # Godot 式渲染器抽象层
-        render/renderer_compositor.cpp
+        # 渲染管线实现在 GryceRenderer（render_pipeline.cpp 依赖 RD 新特性）
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
@@ -290,12 +286,17 @@ target_sources(GryceRenderer
         render/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp
         render/renderer_rd/forward_clustered/render_forward_clustered.cpp
         render/renderer_rd/forward_clustered/shadow_system_rd.cpp
+        # Shadow Atlas
+        render/renderer_rd/shadow/shadow_atlas.cpp
+        render/renderer_rd/shadow/vsm_esm_shadow.cpp
         # 后处理效果
         render/renderer_rd/effects/ssr.cpp
         render/renderer_rd/effects/ssil.cpp
         render/renderer_rd/effects/bokeh_dof.cpp
         render/renderer_rd/effects/fsr2.cpp
         render/renderer_rd/effects/subsurface_scattering.cpp
+        render/renderer_rd/effects/motion_blur.cpp
+        render/renderer_rd/effects/water.cpp
         # GI 系统
         render/renderer_rd/environment/sdfgi.cpp
         render/renderer_rd/environment/voxel_gi.cpp
@@ -310,6 +311,13 @@ target_sources(GryceRenderer
         # RenderingServer + Compositor Effect
         render/compositor_effect.cpp
         render/rendering_server_default.cpp
+        # 渲染管线（依赖 RD 新特性，位于 GryceRenderer）
+        render/render_pipeline.cpp
+        render/shadow_pass.cpp
+        render/postprocess_pass.cpp
+        render/renderer_compositor.cpp
+        # SubViewportSystem（依赖 RenderPipeline 等 RD 类型）
+        ecs/systems/subviewport_system.cpp
         render/opengl/gl_backend.cpp
         render/opengl/gl_frame_pacing.cpp
         render/opengl/gl_buffer.cpp

@@ -587,6 +587,6 @@ class MultiAction : IUndoableAction { ... }  // 批量操作
 | `GRender_RenderGameView` | 与 SceneView 共用管线/纹理 |
 | `GPhysics_CreateBody` 实体绑定 | 未从实体 Transform 同步初始位置 |
 | `GPhysics_Raycast` 实体映射 | `out_entity` 恒为 `0` |
-| 编辑器 Viewport 仅 OpenGL 后端 | Vulkan 编辑器集成待跟进 |
+| 编辑器 Viewport | OpenGL / Vulkan 后端均可用（Vulkan 离屏输出 + ImGui 采样） |
 | 无独立 GameView FBO | 当前与 SceneView 共用 |
 | 大规模场景优化 | GPU Instancing 未启用 |

@@ -114,6 +114,12 @@ if(GRYCE_SHADER_TARGET)
     list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
 endif()
 
+# 编辑器也使用 common/shaders 中的 Vulkan 着色器
+gryce_compile_vulkan_shaders("${GRYCE_SHARED_SHADERS_DIR}")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
 # 把着色器 target 暴露给父目录，editor 可依赖
 set(GRYCE_EXAMPLE_SHADER_TARGETS "${GRYCE_SHADER_TARGETS}" PARENT_SCOPE)
 

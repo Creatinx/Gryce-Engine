@@ -9,6 +9,7 @@
 #include "math/math.h"
 #include "math/camera.h"
 #include "render/storage_rd/light_storage.h"
+#include "render/renderer_rd/shadow/shadow_atlas.h"
 
 namespace gryce_engine::render {
 
@@ -86,11 +87,18 @@ public:
     // 获取所有光照投影矩阵（CSM + Spot + Point）
     const std::vector<math::Matrix4f>& all_light_matrices() const { return light_matrices_; }
 
+    // Shadow Atlas 访问
+    ShadowAtlas& shadow_atlas() { return shadow_atlas_; }
+    const ShadowAtlas& shadow_atlas() const { return shadow_atlas_; }
+    void set_shadow_atlas_enabled(bool enabled) { shadow_atlas_enabled_ = enabled; }
+    bool shadow_atlas_enabled() const { return shadow_atlas_enabled_; }
+
     // 设置参数
     void set_cascade_sizes(const std::array<int, k_max_cascades>& sizes) { cascade_sizes_ = sizes; }
     void set_cascade_biases(const std::array<float, k_max_cascades>& biases) { cascade_biases_ = biases; }
     void set_cascade_split_lambda(float lambda) { cascade_split_lambda_ = lambda; }
     void set_spot_shadow_size(int size) { spot_shadow_size_ = size; }
+    int spot_shadow_size() const { return spot_shadow_size_; }
     void set_point_shadow_size(int size) { point_shadow_size_ = size; }
 
     // CSM 阴影贴图参数访问（供 shader 使用）
@@ -152,6 +160,10 @@ private:
     std::vector<ShadowLight> current_shadow_lights_;
     math::Vector3f current_light_dir_;
     bool has_directional_shadow_ = false;
+
+    // Shadow Atlas
+    ShadowAtlas shadow_atlas_;
+    bool shadow_atlas_enabled_ = false;
 };
 
 } // namespace gryce_engine::render

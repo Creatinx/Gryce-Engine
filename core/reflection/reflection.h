@@ -95,6 +95,8 @@ struct FieldInfo {
     bool has_range = false;
     float range_min = 0.0f;
     float range_max = 0.0f;
+    // Vector3f/Vector4f 颜色字段：Inspector 用 ColorEdit 而非 DragFloat 编辑
+    bool is_color = false;
 
     // obj 为组件对象地址；dst/src 为对应 C++ 类型对象地址
     std::function<void(const void* obj, void* dst)> read;
@@ -193,6 +195,15 @@ public:
         return *this;
     }
 
+    // 颜色字段（Vector3f/Vector4f）：Inspector 用颜色选择器编辑
+    template<typename M>
+    TypeBuilder& add_field_color(const char* name, M C::* mp) {
+        FieldInfo f = make_field<M>(name, mp, false);
+        f.is_color = true;
+        info_->fields.push_back(std::move(f));
+        return *this;
+    }
+
     // 枚举字段：在 Inspector 中以整型下拉框编辑。
     template<typename M>
     TypeBuilder& add_field_enum(const char* name, M C::* mp) {
@@ -279,6 +290,9 @@ void register_builtin_reflections();
 
 #define GRYCE_REFLECT_FIELD_RANGE(field, min_val, max_val) \
         .add_field_ranged(#field, &GRYCE_ReflectCurrent::field, min_val, max_val)
+
+#define GRYCE_REFLECT_FIELD_COLOR(field) \
+        .add_field_color(#field, &GRYCE_ReflectCurrent::field)
 
 #define GRYCE_REFLECT_FIELD_ENUM(field) \
         .add_field_enum(#field, &GRYCE_ReflectCurrent::field)

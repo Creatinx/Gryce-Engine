@@ -5,12 +5,15 @@ _(You may browse this at https://github.com/ocornut/imgui/blob/master/docs/FONTS
 The code in Dear ImGui embeds a copy of [ProggyClean.ttf](https://github.com/bluescan/proggyfonts) by Tristan Grimmer,
 a 13 pixels high, pixel-perfect font used by default. ProggyClean does not scale very nicely.
 
-The code in Dear ImGui embeds a partial copy of [ProggyVector.ttf](https://github.com/bluescan/proggyfonts) by Tristan Grimmer and Source Foundry Authors,
-a font mimicking ProggyClean which does scale nicely.
+The code in Dear ImGui embeds a partial copy of [ProggyForever.ttf](https://github.com/ocornut/proggyforever) by Disco Hello & Tristan Grimmer,
+a new font mimicking ProggyClean which does scale nicely.
 
 We embed fonts in the code so you can use Dear ImGui without any file system access.
-If you use either of those fonts in your shipping product you should include their license as part of your software (see below for links).
 If you don't use them you can set `IMGUI_DISABLE_DEFAULT_FONT` in your [imconfig.h](https://github.com/ocornut/imgui/blob/master/imconfig.h) file to ship binaries without the fonts and save about ~26 KB.
+
+Calling io.Fonts->AddFontDefaultVector() loads ProggyForever.
+Calling io.Fonts->AddFontDefaultBitmap() loads ProggyClean.
+Calling io.Fonts->AddFontDefault() selects one based on the expected default font size (when `style.FontSizeBase * style.FontScaleMain * style.FontSizeDpi >= 15` we use ProggyForever).
 
 You may also load external .TTF/.OTF files, see instructions on this page.
 In the [misc/fonts/](https://github.com/ocornut/imgui/tree/master/misc/fonts) folder you can find a few suggested fonts, provided as a convenience.
@@ -74,6 +77,17 @@ Some solutions:
   You can use the `ImFontGlyphRangesBuilder` for this purpose and rebuilding your atlas between frames when new characters are needed. This will be the biggest win!
 - Set `io.Fonts.Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;` to disable rounding the texture height to the next power of two.
 
+### (5) Reduce texture resizes/copy on startup
+
+🆕 Since 1.92, the ImFontAtlas is initially created using a 512x128 texture, then grows as glyphs and fonts are used. Atlas growth leads to alloc+copy, and both the old and new sized textures are present in memory for a short time (typically one frame). If you use known fonts and want to reduce initial growth, you may set `TexMinWidth` and `TexMinHeight` during initializaton.
+
+```cpp
+ImFontAtlas* atlas = io.Fonts;
+atlas->TexMinWidth = 1024;
+atlas->TexMinHeight = 1024;
+atlas->AddFont(...);
+```
+
 ##### [Return to Index](#index)
 
 ---------------------------------------
@@ -82,7 +96,7 @@ Some solutions:
 
 v1.92 introduces a newer, dynamic font system. It requires backend to support the `ImGuiBackendFlags_HasTextures` feature:
 - Users of icons, Asian and non-English languages do not need to pre-build all glyphs ahead of time. Saving on loading time, memory, and also reducing issues with missing glyphs. Specifying glyph ranges is not needed anymore.
-- `PushFont(NULL, new_size)` may be used anytime to change font size.
+- `PushFont(nullptr, new_size)` may be used anytime to change font size.
 - Packing custom rectangles is more convenient as pixels may be written to immediately.
 - Any update to fonts previously required backend specific calls to re-upload the texture, and said calls were not portable across backends. It is now possible to scale fonts etc. in a way that doesn't require you to make backend-specific calls.
 - It is possible to plug a custom loader/backend to any font source.
@@ -116,13 +130,13 @@ style.FontSizeBase = 20.0f;
 **Load default font:**
 ```cpp
 ImGuiIO& io = ImGui::GetIO();
-io.Fonts->AddFontDefault();        // Load embedded font (auto-selected).
-```
-```cpp
 io.Fonts->AddFontDefaultVector();  // Load embedded scalable font.
 ```
 ```cpp
 io.Fonts->AddFontDefaultBitmap();  // Load embedded bitmap font (legacy).
+```
+```cpp
+io.Fonts->AddFontDefault();        // Load embedded font (legacy: auto-selected between the two above).
 ```
 
 **Load .TTF/.OTF file with:**
@@ -167,7 +181,7 @@ ImFont* font = io.Fonts->AddFontFromFileTTF("font.ttf", size_pixels, &config);
 🆕 **Since 1.92, with an up to date backend: specifying glyph ranges is unnecessary.**
 ```cpp
 // Load a first font
-ImFont* font = io.Fonts->AddFontDefault();
+ImFont* font = io.Fonts->AddFontDefaultVector();
 ImFontConfig config;
 config.MergeMode = true;
 io.Fonts->AddFontFromFileTTF("DroidSans.ttf", 0.0f, &config);           // Merge into first font to add e.g. Asian characters
@@ -291,7 +305,7 @@ Example Setup:
 // Merge icons into default tool font
 #include "IconsFontAwesome.h"
 ImGuiIO& io = ImGui::GetIO();
-io.Fonts->AddFontDefault();
+io.Fonts->AddFontDefaultVector();
 ImFontConfig config;
 config.MergeMode = true;
 config.GlyphMinAdvanceX = 13.0f; // Use if you want to make the icon monospaced
@@ -448,7 +462,7 @@ As an alternative to rendering colorful glyphs using imgui_freetype with `ImGuiF
 #### Pseudo-code:
 ```cpp
 // Add font, then register two custom 13x13 rectangles mapped to glyph 'a' and 'b' of this font
-ImFont* font = io.Fonts->AddFontDefault();
+ImFont* font = io.Fonts->AddFontDefaultVector();
 int rect_ids[2];
 rect_ids[0] = io.Fonts->AddCustomRectFontGlyph(font, 'a', 13, 13, 13+1);
 rect_ids[1] = io.Fonts->AddCustomRectFontGlyph(font, 'b', 13, 13, 13+1);
@@ -561,7 +575,20 @@ You can use the `UTF-8 Encoding viewer` in `Metrics/Debugger` to verify the cont
 
 ## Credits/Licenses For Fonts Included In Repository
 
-Some fonts files are available in the `misc/fonts/` folder:
+Embedded in source code:
+
+**ProggyClean.ttf**, by Tristan Grimmer
+<br>MIT License
+<br>(recommended loading setting: Size = 13.0, GlyphOffset.y = +1, PixelSnapH = true)
+<br>https://github.com/bluescan/proggyfonts
+
+**ProggyForever.ttf**, by Disco Hello, Tristan Grimmer
+<BR>MIT License
+<BR>https://github.com/ocornut/proggyforever
+
+Extra fonts files are available in the `misc/fonts/` folder.
+Compared to 2014 when they were first introduced, we now have better font support and we embed ProggyForever.
+I believe all the files here are unnecessary nowadays. You can find font yourself. They might eventually be removed.
 
 **Roboto-Medium.ttf**, by Christian Robetson
 <br>Apache License 2.0
@@ -576,19 +603,10 @@ Some fonts files are available in the `misc/fonts/` folder:
 <br>Apache License 2.0
 <br>https://www.fontsquirrel.com/fonts/droid-sans
 
-**ProggyClean.ttf**, by Tristan Grimmer
-<br>MIT License
-<br>(recommended loading setting: Size = 13.0, GlyphOffset.y = +1)
-<br>https://github.com/bluescan/proggyfonts
-
 **ProggyTiny.ttf**, by Tristan Grimmer
 <br>MIT License
 <br>(recommended loading setting: Size = 10.0, GlyphOffset.y = +1)
 <br>https://github.com/bluescan/proggyfonts
-
-**ProggyVector.ttf**, by Tristan Grimmer, Source Foundry Authors
-<BR>MIT License + Bitstream Vera License
-<BR>https://github.com/bluescan/proggyfonts
 
 **Karla-Regular.ttf**, by Jonathan Pinhorn
 <br>SIL OPEN FONT LICENSE Version 1.1

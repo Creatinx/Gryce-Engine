@@ -81,6 +81,7 @@ void draw_material_editor(render::Material* material) {
     texture_field("Roughness Map", material->roughness_map_path, material->use_roughness_map);
     texture_field("Metallic Map", material->metallic_map_path, material->use_metallic_map);
     texture_field("AO Map", material->ao_map_path, material->use_ao_map);
+    texture_field("Emissive Map", material->emissive_map_path, material->use_emissive_map);
 }
 
 void draw_camera_editor(components::Camera* cam) {
@@ -365,6 +366,50 @@ void DebugPanel::show(platform::Window* window, scene::Scene* scene, math::Camer
     if (ImGui::SliderInt("CS Steps", &cs_steps, 1, 16)) {
         if (pipeline) pipeline->set_contact_shadow_params(cs_strength, cs_radius, cs_steps);
     }
+
+    // ---- 新增渲染效果 ----
+    ImGui::Separator();
+    ImGui::Text("Render Effects");
+
+    // 点光源阴影
+    ImGui::Checkbox("Point Shadow", &point_shadow_enabled_);
+
+    // 阴影模式选择
+    const char* k_shadow_modes[] = { "PCF", "VSM", "ESM" };
+    ImGui::Combo("Shadow Mode", &shadow_mode_, k_shadow_modes, 3);
+
+    // 阴影图集
+    ImGui::Checkbox("Shadow Atlas", &shadow_atlas_enabled_);
+
+    // SSR
+    ImGui::Checkbox("SSR", &ssr_enabled_);
+
+    // 体积雾
+    ImGui::Checkbox("Volumetric Fog", &fog_enabled_);
+    if (fog_enabled_) {
+        ImGui::SliderFloat("Fog Density", &fog_density_, 0.001f, 0.1f, "%.3f");
+        ImGui::SliderFloat("Fog Height", &fog_height_, 1.0f, 50.0f, "%.1f");
+    }
+
+    // 景深
+    ImGui::Checkbox("DOF", &dof_enabled_);
+    if (dof_enabled_) {
+        ImGui::SliderFloat("DOF Focus Dist", &dof_focus_distance_, 1.0f, 100.0f, "%.1f");
+        ImGui::SliderFloat("DOF Focus Range", &dof_focus_range_, 1.0f, 50.0f, "%.1f");
+    }
+
+    // 运动模糊
+    ImGui::Checkbox("Motion Blur", &motion_blur_enabled_);
+    if (motion_blur_enabled_) {
+        ImGui::SliderFloat("MB Amount", &motion_blur_amount_, 0.1f, 2.0f, "%.1f");
+    }
+
+    // 全局光照
+    const char* k_gi_modes[] = { "None", "SDFGI", "VoxelGI" };
+    ImGui::Combo("GI Mode", &gi_mode_, k_gi_modes, 3);
+
+    // 水
+    ImGui::Checkbox("Water", &water_enabled_);
 
     // -----------------------------------------------------------------------
     // HDR / Tone Mapping

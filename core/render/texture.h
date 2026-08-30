@@ -95,6 +95,16 @@ namespace TextureSlots {
     constexpr int kDOFHalf            = 38; // DOF 半分辨率缓冲
     constexpr int kDOFBlur            = 39; // DOF 模糊缓冲
     constexpr int kFSR2Output         = 40; // FSR2 超分辨率输出
+    constexpr int kMotionVectors      = 41; // Motion Blur 运动向量（半分辨率）
+
+    // 点光源双抛物面阴影（最多 k_max_point_shadows 个）
+    constexpr int kPointShadow0       = 43;
+    constexpr int kPointShadow1       = 44;
+
+    // GI 全局光照
+    constexpr int kGITexture           = 45; // SDFGI/VoxelGI 共享纹理槽
+    constexpr int kSDFGITexture       = 45; // SDFGI 间接光照贴图（兼容旧名）
+    constexpr int kVoxelGITexture     = 46; // VoxelGI 体素光照贴图
 
     // 天空盒
     constexpr int kSkyboxCube   = 21;

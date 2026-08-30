@@ -61,6 +61,7 @@ enum class RenderCommandType : uint8_t {
     SetTexture,
     SetUniformInt,
     SetUniformFloat,
+    SetUniformVec2,
     SetUniformVec3,
     SetUniformVec4,
     SetUniformMat4,
@@ -102,6 +103,7 @@ struct RenderCommandTyped {
     // 供 PCSS blocker search / SSAO 重建深度读取真实深度值）
     bool texture_raw_depth = false;
     std::string uniform_name;
+    math::Vector2f uniform_vec2;
     math::Vector3f uniform_vec3;
     math::Vector4f uniform_vec4;
     math::Matrix4f uniform_mat4;
@@ -217,6 +219,15 @@ struct RenderCommandTyped {
         cmd.shader = s;
         cmd.uniform_name = std::move(name);
         cmd.uniform_float = value;
+        return cmd;
+    }
+
+    static RenderCommandTyped make_set_uniform_vec2(RHIShaderHandle s, std::string name, const math::Vector2f& value) {
+        RenderCommandTyped cmd;
+        cmd.type = RenderCommandType::SetUniformVec2;
+        cmd.shader = s;
+        cmd.uniform_name = std::move(name);
+        cmd.uniform_vec2 = value;
         return cmd;
     }
 
