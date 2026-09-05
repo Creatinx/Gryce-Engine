@@ -260,6 +260,8 @@ if(GRYCE_ENABLE_UI)
         ${GRYCE_UTILS_SRC_DIR}/ui/engine_bridge.cpp
         ${GRYCE_UTILS_SRC_DIR}/ui/dsl/lexer.cpp
         ${GRYCE_UTILS_SRC_DIR}/ui/dsl/parser.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/dsl/semantic_analyzer.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/dsl/ast_optimizer.cpp
     )
     target_include_directories(gryce_ui_static PUBLIC
         ${GRYCE_UTILS_INCLUDE_DIR}
