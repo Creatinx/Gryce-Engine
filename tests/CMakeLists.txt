@@ -21,8 +21,6 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             physics_3d_test.cpp
             physics_2d_test.cpp
             fracture_test.cpp
-            lua_script_test.cpp
-            lua_math_test.cpp
             tilemap_test.cpp
             render2d_test.cpp
             scene_serialization_test.cpp
@@ -40,12 +38,19 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_parser_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_builder_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_renderer_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:dsl_lexer_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:script_vm_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:engine_bridge_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:script_vm2_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:js_engine_bridge_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:js_math_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:js_big_bridge_test.cpp>
     )
     target_link_libraries(gryce_tests
         PRIVATE
             GryceCore GryceRenderer GrycePlatform GrycePhysics
+            $<$<BOOL:${GRYCE_ENABLE_ECS}>:gryce_ecs_static>
+            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:gryce_script_static>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:gryce_ui_static>
             GTest::gtest_main
     )

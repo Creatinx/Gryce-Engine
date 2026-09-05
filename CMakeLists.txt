@@ -80,7 +80,7 @@ option(GRYCE_BUILD_EDITOR "Build the ImGui-based Editor" ON)
 option(GRYCE_ENABLE_ECS     "Enable ECS module" ON)
 option(GRYCE_ENABLE_PHYSICS "Enable Physics module" ON)
 option(GRYCE_ENABLE_AUDIO   "Enable Audio module" ON)
-option(GRYCE_ENABLE_SCRIPT  "Enable Lua scripting" ON)
+option(GRYCE_ENABLE_SCRIPT  "Enable QuickJS scripting" ON)
 option(GRYCE_ENABLE_UI      "Enable UI module" ON)
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ if(GRYCE_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-add_subdirectory(examples)
+# examples 目录已清空，所有 demo 已移除
 
 # ===========================================================================
 # GryceEngineUtils — 嵌入式渲染器框架（公共包装层）
@@ -209,20 +209,24 @@ if(GRYCE_ENABLE_AUDIO)
     set_target_properties(gryce_audio_static PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 
-# ---- 脚本库（可选）------------------------------------------------------
+# ---- QuickJS 脚本引擎 -------------------------------------------------
+add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/quickjs ${CMAKE_BINARY_DIR}/third_party/quickjs)
+
+# ---- 脚本库（QuickJS 运行时 + 绑定，可选）--------------------------------
+# 源文件已编译到 GryceCore；本 target 仅传播头文件和链接依赖。
 if(GRYCE_ENABLE_SCRIPT)
-    # Lua 脚本引擎内部保留在 GryceCore；此 target 提供统一的公共包含面
     add_library(gryce_script_static INTERFACE)
     target_include_directories(gryce_script_static INTERFACE
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
+        ${CMAKE_SOURCE_DIR}/third_party
     )
-    target_link_libraries(gryce_script_static INTERFACE GryceCore)
+    target_link_libraries(gryce_script_static INTERFACE
+        GryceCore
+        GryceQuickJS
+    )
     set_target_properties(gryce_script_static PROPERTIES FOLDER "GryceEngineUtils")
 endif()
-
-# ---- QuickJS 脚本引擎（UI 系统用）----------------------------------------
-add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/quickjs ${CMAKE_BINARY_DIR}/third_party/quickjs)
 
 # ---- UI 库（可选，独立于 ECS）--------------------------------------------
 if(GRYCE_ENABLE_UI)
@@ -254,6 +258,7 @@ if(GRYCE_ENABLE_UI)
         ${GRYCE_UTILS_SRC_DIR}/ui/ui_renderer.cpp
         ${GRYCE_UTILS_SRC_DIR}/ui/script_vm.cpp
         ${GRYCE_UTILS_SRC_DIR}/ui/engine_bridge.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/dsl/lexer.cpp
     )
     target_include_directories(gryce_ui_static PUBLIC
         ${GRYCE_UTILS_INCLUDE_DIR}
@@ -304,7 +309,15 @@ if(WIN32 AND GRYCE_BUILD_EDITOR AND EXISTS "${CMAKE_SOURCE_DIR}/editor/CMakeList
 endif()
 
 # ---------------------------------------------------------------------------
+# Examples（示例项目）
+# ---------------------------------------------------------------------------
+option(GRYCE_BUILD_EXAMPLES "Build the example projects" ON)
+if(GRYCE_BUILD_EXAMPLES AND EXISTS "${CMAKE_SOURCE_DIR}/examples/CMakeLists.txt")
+    add_subdirectory(examples)
+endif()
+
+# ---------------------------------------------------------------------------
 # IDE 分组
 # ---------------------------------------------------------------------------
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT 2dDemo)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT editor)
