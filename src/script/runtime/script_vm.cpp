@@ -79,6 +79,74 @@ static void init_console(JSContext* ctx) {
 } // namespace
 
 // ============================================================================
+// 模块代码准备 — 将 ES Module 语法的 export 转换为 exports.xxx 赋值，
+// 并包装为 IIFE（eval_module 与 compile_script 共用，保证字节码语义一致）
+// ============================================================================
+
+namespace {
+
+std::string wrap_module_code(const std::string& code) {
+    std::string processed = code;
+
+    // 1. export function name(...) -> exports.name = function(...)
+    processed = std::regex_replace(processed,
+        std::regex("export\\s+function\\s+(\\w+)"),
+        "exports.$1 = function");
+
+    // 2. export const/let/var name -> exports.name
+    processed = std::regex_replace(processed,
+        std::regex("export\\s+(const|let|var)\\s+"),
+        "exports.");
+
+    // 3. export default expr -> exports.default = expr
+    processed = std::regex_replace(processed,
+        std::regex("export\\s+default\\s+"),
+        "exports.default = ");
+
+    // 4. 处理 export { name1, name2 } 形式
+    {
+        std::regex export_brace_regex("export\\s*\\{\\s*([^}]+)\\s*\\}\\s*;?");
+        std::string result;
+        auto begin = std::sregex_iterator(processed.begin(), processed.end(), export_brace_regex);
+        auto end = std::sregex_iterator();
+        size_t last_pos = 0;
+        for (auto it = begin; it != end; ++it) {
+            result += processed.substr(last_pos, it->position() - last_pos);
+            std::string replacement;
+            std::string list = (*it)[1].str();
+            size_t start = 0;
+            while (start < list.size()) {
+                while (start < list.size() && (list[start] == ' ' || list[start] == '\t'))
+                    ++start;
+                if (start >= list.size()) break;
+                size_t end = start;
+                while (end < list.size() && list[end] != ',')
+                    ++end;
+                std::string name = list.substr(start, end - start);
+                while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
+                    name.pop_back();
+                if (!name.empty()) {
+                    replacement += "exports." + name + " = " + name + "; ";
+                }
+                start = end + 1;
+            }
+            result += replacement;
+            last_pos = it->position() + it->length();
+        }
+        result += processed.substr(last_pos);
+        processed = result;
+    }
+
+    std::string wrapped;
+    wrapped += "(function(exports) {\n";
+    wrapped += processed;
+    wrapped += "\nreturn exports;\n})({})";
+    return wrapped;
+}
+
+} // namespace
+
+// ============================================================================
 // ScriptVM 实现
 // ============================================================================
 
@@ -148,74 +216,78 @@ ScriptResult ScriptVM::eval_module(const std::string& code, const std::string& f
         return {false, "", "ScriptVM not initialized"};
     }
 
-    // 使用 IIFE + exports 对象模拟 ES Module
-    // 将 export 声明转换为 exports.xxx = ... 赋值
-    // 使得模块导出的函数/变量可以通过 exports 对象访问
-
-    std::string processed = code;
-
-    // 1. export function name(...) -> exports.name = function(...)
-    processed = std::regex_replace(processed,
-        std::regex("export\\s+function\\s+(\\w+)"),
-        "exports.$1 = function");
-
-    // 2. export const/let/var name -> exports.name
-    processed = std::regex_replace(processed,
-        std::regex("export\\s+(const|let|var)\\s+"),
-        "exports.");
-
-    // 3. export default expr -> exports.default = expr
-    processed = std::regex_replace(processed,
-        std::regex("export\\s+default\\s+"),
-        "exports.default = ");
-
-    // 4. 处理 export { name1, name2 } 形式
-    // 将其转换为 exports.name1 = name1; exports.name2 = name2;
-    // 使用 std::sregex_iterator 逐项替换
-    {
-        std::regex export_brace_regex("export\\s*\\{\\s*([^}]+)\\s*\\}\\s*;?");
-        std::string result;
-        auto begin = std::sregex_iterator(processed.begin(), processed.end(), export_brace_regex);
-        auto end = std::sregex_iterator();
-        size_t last_pos = 0;
-        for (auto it = begin; it != end; ++it) {
-            // 添加匹配前的文本
-            result += processed.substr(last_pos, it->position() - last_pos);
-            // 生成替换文本
-            std::string replacement;
-            std::string list = (*it)[1].str();
-            size_t start = 0;
-            while (start < list.size()) {
-                while (start < list.size() && (list[start] == ' ' || list[start] == '\t'))
-                    ++start;
-                if (start >= list.size()) break;
-                size_t end = start;
-                while (end < list.size() && list[end] != ',')
-                    ++end;
-                std::string name = list.substr(start, end - start);
-                while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
-                    name.pop_back();
-                if (!name.empty()) {
-                    replacement += "exports." + name + " = " + name + "; ";
-                }
-                start = end + 1;
-            }
-            result += replacement;
-            last_pos = it->position() + it->length();
-        }
-        // 添加剩余文本
-        result += processed.substr(last_pos);
-        processed = result;
-    }
-
-    std::string wrapped_code;
-    wrapped_code += "(function(exports) {\n";
-    wrapped_code += processed;
-    wrapped_code += "\nreturn exports;\n})({})";
+    // 使用 IIFE + exports 对象模拟 ES Module（与 compile_script 共用转换逻辑）
+    const std::string wrapped_code = wrap_module_code(code);
 
     // 以全局模式执行包装后的代码
     JSValue result = JS_Eval(ctx_, wrapped_code.c_str(), wrapped_code.size(),
                               filename.c_str(), JS_EVAL_TYPE_GLOBAL);
+
+    ScriptResult sr = jsvalue_to_result(ctx_, result);
+
+    if (sr.success && out_module_ns) {
+        if (JS_IsObject(result)) {
+            *out_module_ns = JS_DupValue(ctx_, result);
+        } else {
+            *out_module_ns = JS_UNDEFINED;
+        }
+    } else if (out_module_ns) {
+        *out_module_ns = JS_UNDEFINED;
+    }
+
+    JS_FreeValue(ctx_, result);
+    return sr;
+}
+
+std::vector<uint8_t> ScriptVM::compile_script(const std::string& code, const std::string& filename,
+                                              bool as_module, std::string* error) {
+    if (!initialized_ || !ctx_) {
+        if (error) *error = "ScriptVM not initialized";
+        return {};
+    }
+
+    const std::string src = as_module ? wrap_module_code(code) : code;
+
+    // 仅编译不执行；结果是被序列化前的一次性函数字节码对象
+    JSValue bc = JS_Eval(ctx_, src.c_str(), src.size(), filename.c_str(),
+                         JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(bc)) {
+        const std::string err = consume_exception();
+        if (error) *error = err;
+        JS_FreeValue(ctx_, bc);
+        return {};
+    }
+
+    size_t size = 0;
+    uint8_t* buf = JS_WriteObject(ctx_, &size, bc, JS_WRITE_OBJ_BYTECODE);
+    JS_FreeValue(ctx_, bc);
+    if (!buf) {
+        if (error) *error = "JS_WriteObject failed";
+        return {};
+    }
+
+    std::vector<uint8_t> out(buf, buf + size);
+    js_free(ctx_, buf);
+    return out;
+}
+
+ScriptResult ScriptVM::eval_bytecode(const std::vector<uint8_t>& bytecode, const std::string& filename,
+                                     JSValue* out_module_ns) {
+    if (!initialized_ || !ctx_) {
+        return {false, "", "ScriptVM not initialized"};
+    }
+    if (bytecode.empty()) {
+        return {false, "", "empty bytecode"};
+    }
+
+    JSValue bc = JS_ReadObject(ctx_, bytecode.data(), bytecode.size(), JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(bc)) {
+        JS_FreeValue(ctx_, bc);
+        return {false, "", "JS_ReadObject failed: " + consume_exception()};
+    }
+
+    // JS_EvalFunction 消费 bc（内部释放）
+    JSValue result = JS_EvalFunction(ctx_, bc);
 
     ScriptResult sr = jsvalue_to_result(ctx_, result);
 

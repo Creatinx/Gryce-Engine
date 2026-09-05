@@ -83,6 +83,17 @@ public:
     ScriptResult eval_module(const std::string& code, const std::string& filename,
                              JSValue* out_module_ns);
 
+    // 编译 JS 源码为平台无关字节码（打包器使用；须与引擎使用同一 QuickJS 版本）。
+    // as_module=true 时按模块语义处理（export 转换 + IIFE 包装，与 eval_module 一致）。
+    // 失败返回空 vector，error（可选）接收错误信息。
+    std::vector<uint8_t> compile_script(const std::string& code, const std::string& filename,
+                                        bool as_module, std::string* error = nullptr);
+
+    // 加载并执行字节码（compile_script 产物）。调用前须已注册引擎绑定。
+    // out_module_ns（可选）接收模块导出对象（as_module 编译时有效）。
+    ScriptResult eval_bytecode(const std::vector<uint8_t>& bytecode, const std::string& filename,
+                               JSValue* out_module_ns = nullptr);
+
     // 调用模块命名空间导出的函数
     ScriptResult call_module_function(JSValue module_ns, const char* func_name,
                                       const std::vector<JSValueWrapper>& args = {});

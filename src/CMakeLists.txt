@@ -1,4 +1,4 @@
-﻿# src/CMakeLists.txt
+# src/CMakeLists.txt
 # Gryce Engine 模块化核心库 — 拆分为 GryceCore / GryceRenderer / GrycePlatform / GrycePhysics
 
 # ============================================================================
@@ -38,6 +38,8 @@ target_sources(GryceCore
         resources/resource_path.cpp
         resources/gpack_bundle.cpp
         resources/pak_bundle.cpp
+        resources/aes_gcm.cpp
+        resources/resource_loader.cpp
         assets/asset_manager.cpp
         assets/async_loader.cpp
         assets/obj_loader.cpp
@@ -166,6 +168,9 @@ target_sources(GryceCore
             resources/project.h
             resources/resource_path.h
             resources/gpack_bundle.h
+            resources/pak_bundle.h
+            resources/aes_gcm.h
+            resources/resource_loader.h
             physics/physics_point.h
             physics/physics_types.h
             physics/physics_world_2d.h

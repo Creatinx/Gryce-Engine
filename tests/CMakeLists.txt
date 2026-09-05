@@ -50,6 +50,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:js_big_bridge_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:script_system_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:lua2js_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:crypto_pack_test.cpp>
     )
     target_link_libraries(gryce_tests
         PRIVATE

@@ -28,6 +28,8 @@
 
 #include "GryceCore/core_api.h"
 #include "resources/pak_bundle.h"
+#include "resources/resource_loader.h"
+#include "script/runtime/script_vm.h"
 
 #include <algorithm>
 #include <array>
@@ -794,8 +796,14 @@ void print_usage(const char* argv0) {
         "  --build-dir <dir> CMake build directory (default: build)\n"
         "  --config <cfg>    Debug or Release (default: Release)\n"
         "  --out <dir>       output parent directory (default: build/game)\n"
-        "  --author <name>   author stored in gdata (default: %USERNAME%)\n"
-        "  --single          pack everything into one <name>.gpkg\n",
+        "  --author <name>   author stored in gdata (default: %%USERNAME%%)\n"
+        "  --single          pack everything into one <name>.gpkg\n"
+        "\n"
+        "Pak mode（UI 资源发布包）:\n"
+        "  --pak             enable pak mode (no project/runtime assembly)\n"
+        "  --assets <dir>    assets directory to pack [required with --pak]\n"
+        "  --output <file>   output .pak path (default: game.pak)\n"
+        "  --dev             dev mode: pack raw files, no bytecode/encryption\n",
         argv0);
 }
 
@@ -805,6 +813,9 @@ int main(int argc, char* argv[]) {
     std::string project, name = "MyGame", build_dir = "build", config = "Release",
                 out = "build/game", author;
     bool single = false;
+    bool pak_mode = false;
+    bool dev_mode = false;
+    std::string assets, output_pak = "game.pak";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         auto need = [&](const char* opt) -> const char* {
@@ -828,6 +839,14 @@ int main(int argc, char* argv[]) {
             if (const char* v = need("--author")) author = v;
         } else if (arg == "--single") {
             single = true;
+        } else if (arg == "--pak") {
+            pak_mode = true;
+        } else if (arg == "--assets") {
+            if (const char* v = need("--assets")) assets = v;
+        } else if (arg == "--output") {
+            if (const char* v = need("--output")) output_pak = v;
+        } else if (arg == "--dev") {
+            dev_mode = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -836,6 +855,84 @@ int main(int argc, char* argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    // ==========================================================================
+    // Pak 模式：将 assets 目录打包为发布 .pak（JS 字节码 + DSL 加密）
+    // ==========================================================================
+    if (pak_mode) {
+        if (assets.empty()) {
+            std::cerr << "[grycegc] ERROR: --pak requires --assets <dir>\n";
+            return 1;
+        }
+        std::error_code ec;
+        if (!fs::is_directory(assets, ec)) {
+            std::cerr << "[grycegc] ERROR: assets directory not found: " << assets << "\n";
+            return 1;
+        }
+        const std::vector<FileEntry> files = collect_project_files(assets);
+        if (files.empty()) {
+            std::cerr << "[grycegc] ERROR: no packable resources found in " << assets << "\n";
+            return 1;
+        }
+
+        // Release 模式需要 QuickJS 编译 JS 字节码
+        GryceEngineUtils::script::ScriptVM vm;
+        if (!dev_mode && !vm.init()) {
+            std::cerr << "[grycegc] ERROR: failed to init ScriptVM (QuickJS)\n";
+            return 1;
+        }
+
+        gryce_engine::resources::PakWriter writer;
+        for (const FileEntry& file : files) {
+            const std::string ext = to_lower(fs::path(file.internal_path).extension().string());
+            std::ifstream in(file.source_path, std::ios::binary);
+            if (!in) {
+                std::cerr << "[grycegc] ERROR: failed to read " << file.source_path << "\n";
+                return 1;
+            }
+            std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+
+            bool ok = false;
+            if (!dev_mode && ext == ".js") {
+                const std::string text(data.begin(), data.end());
+                std::string compile_err;
+                std::vector<uint8_t> bc = vm.compile_script(text, file.internal_path, true, &compile_err);
+                if (bc.empty()) {
+                    std::cerr << "[grycegc] ERROR: failed to compile " << file.internal_path
+                              << ": " << compile_err << "\n";
+                    return 1;
+                }
+                ok = writer.add_buffer(file.internal_path,
+                                       gryce_engine::resources::ResourceLoader::pack_js_bytecode(bc));
+            } else if (!dev_mode && ext == ".uif") {
+                const std::string text(data.begin(), data.end());
+                ok = writer.add_buffer(file.internal_path,
+                                       gryce_engine::resources::ResourceLoader::pack_ui_text(text));
+            } else {
+                ok = writer.add_buffer(file.internal_path, data);
+            }
+            if (!ok) {
+                std::cerr << "[grycegc] ERROR: PakWriter::add_buffer('" << file.internal_path << "') failed\n";
+                return 1;
+            }
+        }
+
+        if (!writer.write(output_pak)) {
+            std::cerr << "[grycegc] ERROR: PakWriter::write('" << output_pak << "') failed\n";
+            return 1;
+        }
+
+        // 读回验证
+        gryce_engine::resources::PakReader reader;
+        if (!reader.open(output_pak) || reader.manifest().size() != files.size()) {
+            std::cerr << "[grycegc] ERROR: .pak verification failed for " << output_pak << "\n";
+            return 1;
+        }
+        std::printf("[grycegc] %s: %zu resources, %s\n", output_pak.c_str(), files.size(),
+                    dev_mode ? "dev mode (no encryption)" : "release mode (AES-256-GCM)");
+        return 0;
     }
 
     if (project.empty()) {

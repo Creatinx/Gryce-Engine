@@ -110,6 +110,9 @@ bool PakReader::open(const std::string& path) {
         std::fclose(f);
         return false;
     }
+    // 尽早记录路径与文件大小，供后续 manifest 校验与读取使用
+    path_ = path;
+    file_size_ = file_size;
 
     char magic[4] = {};
     if (std::fread(magic, 1, 4, f) != 4 || std::memcmp(magic, "GPAK", 4) != 0) {
@@ -207,7 +210,6 @@ bool PakReader::open(const std::string& path) {
 
     path_ = path;
     file_ = f;
-    file_size_ = file_size;
     return true;
 }
 
