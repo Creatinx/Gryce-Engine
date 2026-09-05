@@ -53,7 +53,7 @@ GryceGC（grycegc.exe）
 ├── project.gproj            # 项目清单（名称/版本/入口场景/物理/窗口）
 ├── project_settings.json    # 运行时设置（渲染参数 + main_scene）
 ├── scenes/                  # 场景 .gesc
-├── scripts/                 # Lua 脚本 .lua
+├── scripts/                 # JS 脚本 .js（ES Module，QuickJS 运行时）
 ├── shaders/                 # 着色器 .vert/.frag/.glsl/.spv ...（示例项目共用 common/shaders/）
 ├── models/                  # 模型 .obj/.fbx/.gltf/...
 ├── textures/                # 贴图 .png/.jpg/.dds/...
@@ -127,7 +127,7 @@ Core 与编辑器读取的设置文件。**Core 当前只消费 `main_scene` 字
 | 类别 | 扩展名 |
 |---|---|
 | `scenes` | `.gesc` `.scene` `.tscn` |
-| `scripts` | `.lua` |
+| `scripts` | `.js` |
 | `shaders` | `.vert` `.frag` `.geom` `.tesc` `.tese` `.comp` `.glsl` `.hlsl` `.spv` |
 | `models` | `.obj` `.fbx` `.gltf` `.glb` `.dae` `.ply` `.stl` `.3ds` `.blend` |
 | `textures` | `.png` `.jpg` `.jpeg` `.bmp` `.tga` `.dds` `.ktx` `.hdr` `.exr` `.gif` `.webp` |
@@ -272,7 +272,7 @@ build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame ^
 2. 文件不存在时，从已挂载的包中按内部路径（`scenes/main.gesc`）提取到临时目录并返回；
 3. 都找不到时返回空，调用方记录警告。
 
-> 场景（`.gesc`）、Lua 脚本（`.lua`）、着色器、贴图、tileset JSON、模型等一律走该入口；
+> 场景（`.gesc`）、JS 脚本（`.js`）、着色器、贴图、tileset JSON、模型等一律走该入口；
 > 任何直接以 `ResourcePath::resolve` + 文件流打开的资源都不会在打包产物中生效。
 
 ### 5.3 主场景
@@ -281,7 +281,7 @@ build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame ^
   `res:/scenes/main.gesc`；
 - 模板启动时 `GCore_SetAutoLoadMainScene(true)`；编辑器不启用（由编辑器自行管理场景）；
 - `--scene` 覆盖时模板跳过自动加载，改为显式加载指定场景；
-- 运行中切场景用 Lua：`engine.scene.load("res:/scenes/xxx.gesc")`。
+- 运行中切场景用 JS：`engine.scene.load("res:/scenes/xxx.gesc")`。
 
 ### 5.4 物理
 
@@ -313,5 +313,7 @@ build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame ^
 
 ---
 
-> 相关文档：[GryceSRT 脚本 API](./GryceSRT_API.md)（Lua 脚本）、
-> [已实现功能](./已实现功能.md)（功能状态）、[架构说明](./架构说明.md)（模块划分）。
+> 相关文档：[脚本 API 参考](./SCRIPT_API_REFERENCE.md)（QuickJS）、
+> [ECS 脚本指南](./ECS_SCRIPT_GUIDE.md)、[.uif DSL 规范](./UI_DSL_SPEC.md)、
+> [迁移指南](./MIGRATION_GUIDE.md)、[已实现功能](./已实现功能.md)（功能状态）、
+> [架构说明](./架构说明.md)（模块划分）。

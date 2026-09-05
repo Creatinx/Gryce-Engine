@@ -15,6 +15,10 @@
 | [C API 调用文档](./docs/C-API调用文档.md) | C API 完整调用文档：模块划分、生命周期、命令队列、逐函数参考、C / C# 示例 |
 | [已实现功能](./docs/已实现功能.md) | 已实现功能清单（模块、组件、系统、示例、测试、工具）与未实现 / TODO |
 | [架构说明](./docs/架构说明.md) | 模块架构、线程模型、数据流 |
+| [.uif DSL 规范](./docs/UI_DSL_SPEC.md) | 界面标记语言：EBNF 语法、15 控件属性清单、完整示例、常见错误 |
+| [脚本 API 参考](./docs/SCRIPT_API_REFERENCE.md) | `engine.*` / `math.*` / `big.*` 全部签名、类型映射、字节码与加密加载 |
+| [ECS 脚本指南](./docs/ECS_SCRIPT_GUIDE.md) | ES Module 结构、生命周期、props 双向同步、热重载、错误处理 |
+| [迁移指南](./docs/MIGRATION_GUIDE.md) | XML→DSL 转换对照、lua2js 存量脚本导入、Lua→JS 语法对照 |
 
 ---
 
@@ -63,7 +67,7 @@
 - **日志与性能**
   - 异步日志 `AsyncLogger`（内存 Sink 转发到编辑器 Console），帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
   - 热路径优化：每帧日志降级、Release 剔除 GL 错误检查、DrawItem 跨帧复用、重复材质绑定跳过、同步渲染模式下每帧网格上传预算（30/帧）。
-- **脚本系统（规划）**：计划引入 Lua 脚本层（玩法逻辑、组件行为、热重载）；引擎核心继续以 C++ 实现并通过绑定层暴露 API。
+- **脚本系统**：QuickJS 唯一脚本运行时（GryceSRT），ES Module 驱动实体生命周期（on_start/on_update/on_destroy）、props 双向同步、JS/UI 热重载、Lua→JS 迁移工具（lua2js）；支持 AES 加密字节码与 GPAK 发布打包。
 
 ---
 
@@ -281,7 +285,7 @@ Gryce-Engine/
 │   ├── render/             # 渲染核心 + OpenGL/Vulkan 后端（opengl/、vulkan/）
 │   ├── resources/          # 资源路径（res:/）、项目根、gpack
 │   ├── scene/              # Scene/Entity/Transform 层级/Prefab/序列化
-│   ├── script/             # Lua 脚本运行时（GryceSRT）
+│   ├── script/             # QuickJS 脚本运行时（GryceSRT：ScriptVM/绑定/工具）
 │   ├── server/             # 网络服务（预留）
 │   ├── ui/                 # UI 系统（标记语言解析、控件库、布局、渲染、QuickJS、热重载、加密）
 │   ├── runtime/            # 运行时命令缓冲

@@ -1,25 +1,27 @@
 # GryceSRT 脚本 API 与游戏打包手册
 
-> GryceSRT = GryceEngine Script Runtime（Core 内嵌 Lua 5.4）。
+> GryceSRT = GryceEngine Script Runtime（Core 内嵌 QuickJS）。
 > 脚本通过 `Script` 组件挂到实体上，播放/打包运行时由 ScriptSystem 驱动。
-> 玩法逻辑（角色控制、AI、关卡流程等）可以完全用 Lua 编写；
-> 示例项目（`examples/`）已清空。可在此创建 GryceGC-A 项目用于测试和开发。
+> 玩法逻辑（角色控制、AI、关卡流程等）用 **ES Module JavaScript** 编写；
+> Lua 运行时已完全移除，存量 Lua 脚本可用 `lua2js` 迁移（见 [迁移指南](./MIGRATION_GUIDE.md)）。
 
 ## 1. 脚本生命周期
 
-在 `.lua` 中定义以下可选函数：
+在 `.js` 中定义以下可选导出函数：
 
-```lua
-props = { speed = 1.0, label = "hello" }  -- 暴露属性（Inspector 可编辑、随场景保存）
+```js
+export const props = { speed: 1.0, label: "hello" };  // 暴露属性（Inspector 可编辑、随场景保存）
 
-function on_start() end          -- 实体创建/组件挂载、或播放开始时调用一次
-function on_update(dt) end       -- 每帧调用，dt 为帧时间（秒）
-function on_destroy() end        -- 组件移除/场景关闭/重载前调用
+export function on_start() {}          // 实体创建/组件挂载、或播放开始时调用一次
+export function on_update(dt) {}       // 每帧调用，dt 为帧时间（秒）
+export function on_destroy() {}        // 组件移除/场景关闭/重载前调用
 ```
 
-脚本顶层代码在加载时执行一次（相当于 `require`）。每个实体拥有独立环境，全局变量互不污染。
+脚本顶层代码在加载时执行一次。每个模块拥有独立作用域，全局变量互不污染。
 
 ## 2. `engine.*` API
+
+完整签名与示例见 [脚本 API 参考](./SCRIPT_API_REFERENCE.md)。摘要：
 
 | 分组 | 函数 | 说明 |
 |---|---|---|
@@ -28,53 +30,51 @@ function on_destroy() end        -- 组件移除/场景关闭/重载前调用
 | | `engine.entity.get_name(h)` | 实体名 |
 | | `engine.entity.find(name)` | 按名字查找实体，返回句柄（0 = 未找到） |
 | | `engine.entity.find_all(prefix)` | 查找名字为 `prefix` 或 `prefix<数字>` 的全部实体，返回句柄数组 |
-| | `engine.entity.create(name)` | 在当前场景创建实体，返回句柄（脚本遍历期间安全） |
-| | `engine.entity.destroy(h)` | 延迟销毁实体（本帧脚本遍历结束后生效），返回 bool |
-| | `engine.entity.aabb(h)` | 实体 AABB `{x, y, w, h}`（中心+尺寸；优先取碰撞盒） |
-| | `engine.entity.get_transform(h)` | 返回 `{pos={x,y,z}, rot={x,y,z,w}, scale={x,y,z}}` |
-| | `engine.entity.set_transform(h, pos, rot, scale)` | 写回变换（三个表均可省略） |
-| 组件 | `engine.component.has(h, type)` | 实体是否有该类型组件 |
-| | `engine.component.get(h, type, prop)` | 读取组件字段（number/string/bool/`{x,y}`/`{x,y,z,w}`/`{r,g,b,a}`/int） |
-| | `engine.component.set(h, type, prop, value)` | 写组件字段；**组件不存在时自动创建**（含 Script/Sprite2D/RigidBody2D 等所有注册类型） |
-| 状态 | `engine.state.get/set/has(key)` | 跨实体、跨场景共享的游戏状态表（任意 Lua 值） |
+| | `engine.entity.create(name, parent?)` | 在当前场景创建实体（脚本遍历期间安全） |
+| | `engine.entity.destroy(h)` | 延迟销毁实体（本帧脚本遍历结束后生效） |
+| | `engine.entity.aabb(h)` | 实体 AABB `{x, y, z, w, h, d}` |
+| | `engine.entity.get_transform(h)` | 返回 `{position, rotation, scale}`（各为 `{x,y,z}`） |
+| | `engine.entity.set_transform(h, transform)` | 写回变换 |
+| 组件 | `engine.component.has(h?, type)` | 实体是否有该类型组件（h 省略用 `engine.self()`） |
+| | `engine.component.get(h?, type)` | 读取组件字段 `{prop: value}` |
+| | `engine.component.set(h?, type, props)` | 写组件字段 |
+| 状态 | `engine.state.get/set/has(key)` | 跨实体、跨场景共享的游戏状态 |
 | 输入 | `engine.input.key_down(key)` | 按键是否按住（GLFW 键码，如 W=87） |
 | | `engine.input.mouse_pos()` | 返回鼠标 x, y |
 | | `engine.input.mouse_down(button)` | 鼠标键是否按住（0=左，1=右，2=中） |
 | 时间 | `engine.time.delta()` / `engine.time.elapsed()` | 帧时间 / 累计运行时间（秒） |
 | 日志 | `engine.log.info/warn/error(msg)` | 输出到引擎日志/编辑器控制台 |
-| 场景 | `engine.scene.load(path)` | 切换到指定场景（`res:/...`），经命令队列延迟到本帧结束后生效；返回 `0` 成功 / `-1` 失败 |
-| | `engine.scene.current()` | 当前场景的 `res:/` 路径；无场景时返回 `nil` |
-| 音频 | `engine.audio.play_on(h)` | 播放实体上 `AudioSource` 组件，返回 bool |
-| 特效 | `engine.fx.burst(h)` | 实体上 `ParticleEmitter2D` 爆发一次，返回 bool |
-| JSON | `engine.json.read(path)` | 读取项目内 JSON（支持从 .gpkg 提取），返回 Lua 表 / `nil` |
-| 物理 | `engine.physics.set_gravity(x, y)` / `get_gravity()` | 设置/读取当前 2D 物理世界重力（脚本可在关卡切换时调整） |
-
-> `require("common")` 可加载 `res:/scripts/` 下的模块（打包产物中脚本位于 .gpkg 内也能
-> require）。2dDemo 的 `scripts/common.lua` 是共享工具模块示例。
+| 场景 | `engine.scene.load(path)` | 切换到指定场景（`res:/...`） |
+| | `engine.scene.current()` | 当前场景的 `res:/` 路径 |
+| 音频 | `engine.audio.play_on(h)` | 播放实体上 `AudioSource` 组件 |
+| 特效 | `engine.fx.burst(h)` | 实体上 `ParticleEmitter2D` 爆发一次 |
+| JSON | `engine.json.read(path)` | 读取项目内 JSON |
+| 物理 | `engine.physics.set_gravity(x, y)` / `get_gravity()` | 设置/读取当前 2D 物理世界重力 |
 
 ## 2.1 主场景（Main Scene）
 
-Core 增加“主场景”概念：游戏启动时自动进入主场景。
+Core 增加"主场景"概念：游戏启动时自动进入主场景。
 
 - 主场景配置：`project_settings.json` 的 `"main_scene"` 字段（如 `"main_scene":"res:/scenes/main.gesc"`），缺省为 `res:/scenes/main.gesc`。
 - 游戏入口（GryceGame 模板）在 `GCore_Init` 前调用 `GCore_SetAutoLoadMainScene(true)`，Core 初始化完成后自动加载主场景；命令行 `--scene <path>` 可覆盖。
 - 编辑器默认加载主场景：打开项目后编辑器自动加载 `main_scene` 指定的场景（缺省
   `res:/scenes/main.gesc`），新建项目会立即把脚手架生成的 `main.gesc` 保存为主场景。
-- 运行中切换场景用 Lua：`engine.scene.load("res:/scenes/xxx.gesc")`。
+- 运行中切换场景：`engine.scene.load("res:/scenes/xxx.gesc")`。
 
 示例（在脚本里按下某个键切换到另一个场景）：
 
-```lua
-function on_update(dt)
-    if engine.input.key_down(32) then          -- Space
-        engine.scene.load("res:/scenes/level2.gesc")
-    end
-end
+```js
+export function on_update(dt) {
+    if (engine.input.key_down(32)) {          // Space
+        engine.scene.load("res:/scenes/level2.gesc");
+    }
+}
 ```
 
 ## 2.2 数学库（`math.*` 扩展）
 
-GryceSRT 在标准 `math` 库之上补充了常用游戏数学函数：
+GryceSRT 在标准 `Math` 之外补充了常用游戏数学函数（全部已注册，见
+[脚本 API 参考](./SCRIPT_API_REFERENCE.md)）：
 
 | 函数 | 说明 |
 |---|---|
@@ -91,76 +91,58 @@ GryceSRT 在标准 `math` 库之上补充了常用游戏数学函数：
 | `math.angle_delta(a, b)` / `math.angle_lerp(a, b, t)` | 最短路径角度差 / 角度插值（弧度） |
 | `math.round(v)` / `math.snap(v, step)` | 四舍五入 / 按步长吸附 |
 | `math.approximately(a, b, eps?)` | 近似相等（默认 1e-6） |
-| `math.ease_linear(t)` / `ease_in_quad` / `ease_out_quad` / `ease_in_out_quad` / `ease_in_out_cubic` / `ease_in_out_sine` | 缓动曲线 |
+| `math.ease_linear(t)` / `ease_in_quad` / `ease_out_quad` / `ease_in_out_quad` / `ease_in_out_cubic` / `ease_in_out_sine` 等 21 个缓动曲线 | 缓动函数 |
 
 ## 2.3 超高精度数值（`big.*`）
 
 GryceSRT 内置任意精度十进制模块：`big` 提供大整数与超高精度浮点，
-默认保留 **32 位小数**，可随时指定更高精度。
+默认保留 **32 位小数**，可随时指定更高精度。所有函数以**字符串**返回。
 
-```lua
--- 精确小数运算（0.1 + 0.2 == 0.3，不存在 double 误差）
-local a = big.decimal("0.1")
-local b = big.decimal("0.2")
-print(a + b)          -- 0.3
+```js
+// 精确小数运算（0.1 + 0.2 == 0.3，不存在 double 误差）
+big.decimal_add("0.1", "0.2");            // "0.3"
 
--- 高精度除法 / 开方
-local third = big.decimal("1") / big.decimal("3")   -- 0.333...（32 位）
-print(big.decimal("2", 60):sqrt(60))                -- √2 精确到 60 位小数
+// 高精度除法 / 开方
+big.decimal_div("1", "3");                // "0.333..."（32 位）
+big.decimal_sqrt("2", 60);                // √2 精确到 60 位小数
 
--- 大整数（Fibonacci(100) 精确值）
-local x, y = big.int(0), big.int(1)
-for i = 1, 100 do x, y = y, x + y end
-print(x)              -- 354224848179261915075
-
--- 常量
-print(big.pi(50))     -- π 精确到 50 位小数
-print(big.e(30))      -- e 精确到 30 位小数
+// 大整数（Fibonacci(100) 精确值）
+let x = big.int("0"), y = big.int("1");
+for (let i = 0; i < 100; i++) { const t = big.int_add(x, y); x = y; y = t; }
+// x == "354224848179261915075"
 ```
 
-`big` 模块 API：
+完整 API 见 [脚本 API 参考](./SCRIPT_API_REFERENCE.md) 第 5 节：
+`big.int*`（int/int_add/int_sub/int_mul/int_div/int_mod/int_pow/int_neg/int_abs/int_compare/int_sign）
+与 `big.decimal*`（decimal/decimal_add/decimal_sub/decimal_mul/decimal_div/decimal_pow/
+decimal_sqrt/decimal_compare/decimal_floor/decimal_ceil/decimal_round/decimal_neg/
+decimal_abs/decimal_sign）。
 
-| 函数 | 说明 |
-|---|---|
-| `big.decimal(x, precision?)` / `big.new(...)` | 构造超高精度浮点；`x` 为数字/字符串/大数 |
-| `big.int(x)` | 构造整数（小数向零截断） |
-| `big.is_big(x)` | 是否为 big 数值 |
-| `big.abs / neg / floor / ceil / round(x)` | 一元运算 |
-| `big.sqrt(x, precision?)` / `big.pow(x, exp, precision?)` | 开方 / 整数次幂 |
-| `big.cmp(a, b)` | 比较，返回 -1 / 0 / 1 |
-| `big.to_float(x)` / `big.to_string(x, places?)` | 转 double / 字符串 |
-| `big.precision(n?)` | 读取/设置默认小数位（默认 32） |
-| `big.pi(precision?)` / `big.e(precision?)` | π / e 常量 |
-
-实例支持算术运算符（`+ - * /`、一元负号、`== ~= < <= > >=`）与
-方法（`:add()` `:sub()` `:mul()` `:div(precision?)` `:pow(exp, precision?)`
-`:sqrt(precision?)` `:floor()` `:ceil()` `:round()` `:abs()` `:neg()`
-`:cmp(b)` `:to_float()` `:to_string(places?)` `:precision(n?)`）。
-
-除零会抛出运行时错误（`big division by zero`），可在 Lua 侧用 `pcall` 捕获。
+除零会抛出运行时错误（如 `big.int_div: division by zero`），可在 JS 侧用 `try/catch` 捕获。
 
 ## 3. 暴露属性（props）
 
-脚本顶部的 `props` 表会被同步到组件并序列化：
+脚本导出的 `props` 对象会被同步到组件并序列化：
 
-```lua
-props = {
-    speed = 2.5,        -- 浮点，Inspector 显示数字框
-    label = "player"    -- 字符串，Inspector 显示文本框
-}
+```js
+export const props = {
+    speed: 2.5,        // 数字 -> 浮点 prop
+    label: "player"    // 字符串 -> 字符串 prop
+};
 ```
 
-- Inspector 修改后立即写回 Lua 环境（下一帧生效）。
+- Inspector 修改后立即写回 JS 模块的 `props` 对象（下一帧生效）。
 - 随场景保存（.gesc）。
 - 热重载（保存脚本/`ReloadScripts`）会保留 Inspector 里改过的值。
 
 ## 4. 示例脚本
 
-示例项目（`examples/`）已清空。可参考 GryceSRT API 和 GryceGC-A 标准创建自己的 Lua 脚本项目。
+可参考 GryceSRT API、[ECS 脚本指南](./ECS_SCRIPT_GUIDE.md) 和 GryceGC-A 标准创建
+自己的 JS 脚本项目（`examples/` 已清空）。
 
 ## 5. GryceGC 打包（GryceSPC）
 
-> GryceGC-A 项目组织与打包标准的完整说明见 [GryceGC-A 标准](./GryceGC-A.md)。示例项目中 `scripts/` 目录下的 Lua 脚本位于 `.gesc` 场景文件同目录，打包时统一归入 `scripts` 类别。
+> GryceGC-A 项目组织与打包标准的完整说明见 [GryceGC-A 标准](./GryceGC-A.md)。示例项目中 `scripts/` 目录下的 JS 脚本位于 `.gesc` 场景文件同目录，打包时统一归入 `scripts` 类别。
 
 ### 5.1 构建游戏模板
 
@@ -189,6 +171,10 @@ assets/*.gpkg         资源包（GPAK 格式，场景、脚本、着色器、�
 gdata                 包元数据：源文件记录（path + SHA-256 + size）、
                       64 字节 SHA-512 密钥（key_sha512_hex）、作者/项目/时间
 ```
+
+发布包加密：`grycegc --pak --assets ./assets --output game.pak`（release 加密）会将
+`.js` 编译为 QuickJS 字节码并 AES-256-GCM 加密、`.uif` DSL 文本加密，运行时由
+`ResourceLoader` 解密加载（见 [脚本 API 参考](./SCRIPT_API_REFERENCE.md) 第 7 节）。
 
 `gdata` 中的密钥由打包的源文件记录派生（SHA-512，64 字节，hex 编码 128 字符），
 可用于校验包内容是否被改动；作者等信息通过 `--author` 传入（默认取 `%USERNAME%`）。
