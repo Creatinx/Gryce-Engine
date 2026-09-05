@@ -11,7 +11,7 @@ if(GRYCE_BUILD_GAME_TEMPLATE)
         # which the packaged game resolves from runtime/ via delay-load.
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
-    target_include_directories(GryceGame PRIVATE ${CMAKE_SOURCE_DIR}/core)
+    target_include_directories(GryceGame PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(GryceGame PRIVATE
         GryceCore
         GryceRenderer

@@ -37,10 +37,16 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             new_components_test.cpp
             scale_benchmark_test.cpp
             backend_smoke_test.cpp
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_parser_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_builder_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_renderer_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:script_vm_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:engine_bridge_test.cpp>
     )
     target_link_libraries(gryce_tests
         PRIVATE
             GryceCore GryceRenderer GrycePlatform GrycePhysics
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:gryce_ui_static>
             GTest::gtest_main
     )
     target_compile_definitions(gryce_tests PRIVATE

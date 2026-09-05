@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Window id="TestWindow" title="Test">
+    <Button id="MyButton" text="Click Me" style="Primary" onClick="OnButtonClick" />
+    <Text id="MyLabel" text="Hello World" color="#FFFFFF" font-size="20" />
+</Window>

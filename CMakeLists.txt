@@ -76,6 +76,13 @@ option(GRYCE_STATIC_RUNTIME       "Use static C++ runtime (/MT) on MSVC" OFF)
 # GryceEditor（C++/ImGui）编译开关
 option(GRYCE_BUILD_EDITOR "Build the ImGui-based Editor" ON)
 
+# GryceEngineUtils 嵌入式渲染器框架：可选模块
+option(GRYCE_ENABLE_ECS     "Enable ECS module" ON)
+option(GRYCE_ENABLE_PHYSICS "Enable Physics module" ON)
+option(GRYCE_ENABLE_AUDIO   "Enable Audio module" ON)
+option(GRYCE_ENABLE_SCRIPT  "Enable Lua scripting" ON)
+option(GRYCE_ENABLE_UI      "Enable UI module" ON)
+
 # ---------------------------------------------------------------------------
 # 编译器选项
 # ---------------------------------------------------------------------------
@@ -101,7 +108,7 @@ include(cmake/deps_resolver.cmake)
 # ---------------------------------------------------------------------------
 # 子目录
 # ---------------------------------------------------------------------------
-add_subdirectory(core)
+add_subdirectory(src)
 
 # GryceSPC: standalone game template (GryceGC packaging entry point)
 option(GRYCE_BUILD_GAME_TEMPLATE "Build the standalone game template (GryceSPC)" ON)
@@ -117,12 +124,182 @@ endif()
 
 add_subdirectory(examples)
 
+# ===========================================================================
+# GryceEngineUtils — 嵌入式渲染器框架（公共包装层）
+#
+# 底层实现复用 src/ 中的 DLL 模块（GryceCore / GryceRenderer / GrycePlatform /
+# GrycePhysics），这里的 "static" target 只编译包装层源码（只包装，不重写），
+# 并通过 GRYCE_ENABLE_* 选项控制可选模块（ECS / 物理 / 音频 / 脚本）。
+# ===========================================================================
+set(GRYCE_UTILS_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/include)
+set(GRYCE_UTILS_SRC_DIR ${CMAKE_SOURCE_DIR}/src)
+
+# ---- 数学库（必选，header-only re-export）-------------------------------
+add_library(gryce_math_static INTERFACE)
+target_include_directories(gryce_math_static INTERFACE
+    ${GRYCE_UTILS_INCLUDE_DIR}
+    ${GRYCE_UTILS_SRC_DIR}
+)
+target_link_libraries(gryce_math_static INTERFACE GryceCore gryce::compile_options)
+set_target_properties(gryce_math_static PROPERTIES FOLDER "GryceEngineUtils")
+
+# ---- 平台库（必选，window/input）----------------------------------------
+add_library(gryce_platform_static INTERFACE)
+target_include_directories(gryce_platform_static INTERFACE
+    ${GRYCE_UTILS_INCLUDE_DIR}
+    ${GRYCE_UTILS_SRC_DIR}
+)
+target_link_libraries(gryce_platform_static INTERFACE GrycePlatform gryce_math_static)
+set_target_properties(gryce_platform_static PROPERTIES FOLDER "GryceEngineUtils")
+
+# ---- 核心渲染器库（必选）------------------------------------------------
+add_library(gryce_renderer_static STATIC
+    ${GRYCE_UTILS_SRC_DIR}/renderer/renderer.cpp
+)
+target_include_directories(gryce_renderer_static PUBLIC
+        ${GRYCE_UTILS_INCLUDE_DIR}
+        ${GRYCE_UTILS_SRC_DIR}
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+target_link_libraries(gryce_renderer_static PUBLIC
+    GryceRenderer GrycePlatform GryceCore gryce_math_static
+)
+# renderer.cpp 中 UI 集成代码按模块开关编译（关闭时提供空实现）
+if(GRYCE_ENABLE_UI)
+    target_compile_definitions(gryce_renderer_static PRIVATE GRYCE_ENABLE_UI)
+endif()
+set_target_properties(gryce_renderer_static PROPERTIES FOLDER "GryceEngineUtils")
+
+# ---- ECS 库（可选）------------------------------------------------------
+if(GRYCE_ENABLE_ECS)
+    add_library(gryce_ecs_static STATIC
+        ${GRYCE_UTILS_SRC_DIR}/ecs/gryce_world.cpp
+    )
+    target_include_directories(gryce_ecs_static PUBLIC
+        ${GRYCE_UTILS_INCLUDE_DIR}
+        ${GRYCE_UTILS_SRC_DIR}
+    )
+    target_link_libraries(gryce_ecs_static PUBLIC gryce_renderer_static GryceCore)
+    set_target_properties(gryce_ecs_static PROPERTIES FOLDER "GryceEngineUtils")
+endif()
+
+# ---- 物理库（可选，独立于 ECS）------------------------------------------
+if(GRYCE_ENABLE_PHYSICS)
+    add_library(gryce_physics_static STATIC
+        ${GRYCE_UTILS_SRC_DIR}/physics/gryce_physics_world.cpp
+    )
+    target_include_directories(gryce_physics_static PUBLIC
+        ${GRYCE_UTILS_INCLUDE_DIR}
+        ${GRYCE_UTILS_SRC_DIR}
+    )
+    target_link_libraries(gryce_physics_static PUBLIC GrycePhysics gryce_math_static)
+    set_target_properties(gryce_physics_static PROPERTIES FOLDER "GryceEngineUtils")
+endif()
+
+# ---- 音频库（可选，独立于 ECS）------------------------------------------
+if(GRYCE_ENABLE_AUDIO)
+    add_library(gryce_audio_static STATIC
+        ${GRYCE_UTILS_SRC_DIR}/audio/gryce_audio_engine.cpp
+    )
+    target_include_directories(gryce_audio_static PUBLIC
+        ${GRYCE_UTILS_INCLUDE_DIR}
+        ${GRYCE_UTILS_SRC_DIR}
+    )
+    target_link_libraries(gryce_audio_static PUBLIC GryceCore gryce_math_static)
+    set_target_properties(gryce_audio_static PROPERTIES FOLDER "GryceEngineUtils")
+endif()
+
+# ---- 脚本库（可选）------------------------------------------------------
+if(GRYCE_ENABLE_SCRIPT)
+    # Lua 脚本引擎内部保留在 GryceCore；此 target 提供统一的公共包含面
+    add_library(gryce_script_static INTERFACE)
+    target_include_directories(gryce_script_static INTERFACE
+        ${GRYCE_UTILS_INCLUDE_DIR}
+        ${GRYCE_UTILS_SRC_DIR}
+    )
+    target_link_libraries(gryce_script_static INTERFACE GryceCore)
+    set_target_properties(gryce_script_static PROPERTIES FOLDER "GryceEngineUtils")
+endif()
+
+# ---- QuickJS 脚本引擎（UI 系统用）----------------------------------------
+add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/quickjs ${CMAKE_BINARY_DIR}/third_party/quickjs)
+
+# ---- UI 库（可选，独立于 ECS）--------------------------------------------
+if(GRYCE_ENABLE_UI)
+    add_library(gryce_ui_static STATIC
+        ${GRYCE_UTILS_SRC_DIR}/ui/ui.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/widget.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/stylesheet.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/animation.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/ui_draw.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/label.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/button.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/panel.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/image.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/text_input.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/slider.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/checkbox.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/progress_bar.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/scroll_view.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/divider.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/toolbar.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/menubar.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/combobox.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/radiobutton.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/spinbox.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/factory.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/uif_parser.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/uif_builder.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/style_preset.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/ui_renderer.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/script_vm.cpp
+        ${GRYCE_UTILS_SRC_DIR}/ui/engine_bridge.cpp
+    )
+    target_include_directories(gryce_ui_static PUBLIC
+        ${GRYCE_UTILS_INCLUDE_DIR}
+        ${GRYCE_UTILS_SRC_DIR}
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+    target_link_libraries(gryce_ui_static PUBLIC
+        gryce_renderer_static
+        GryceQuickJS
+    )
+    set_target_properties(gryce_ui_static PROPERTIES FOLDER "GryceEngineUtils")
+endif()
+
+# ---- 统一入口 target：按选项聚合所有启用的模块 ---------------------------
+add_library(GryceEngineUtils INTERFACE)
+target_include_directories(GryceEngineUtils INTERFACE ${GRYCE_UTILS_INCLUDE_DIR})
+target_link_libraries(GryceEngineUtils INTERFACE
+    gryce_renderer_static
+    gryce_platform_static
+    gryce_math_static
+)
+if(GRYCE_ENABLE_ECS)
+    target_link_libraries(GryceEngineUtils INTERFACE gryce_ecs_static)
+endif()
+if(GRYCE_ENABLE_PHYSICS)
+    target_link_libraries(GryceEngineUtils INTERFACE gryce_physics_static)
+endif()
+if(GRYCE_ENABLE_AUDIO)
+    target_link_libraries(GryceEngineUtils INTERFACE gryce_audio_static)
+endif()
+if(GRYCE_ENABLE_SCRIPT)
+    target_link_libraries(GryceEngineUtils INTERFACE gryce_script_static)
+endif()
+if(GRYCE_ENABLE_UI)
+    target_link_libraries(GryceEngineUtils INTERFACE gryce_ui_static)
+endif()
+set_target_properties(GryceEngineUtils PROPERTIES FOLDER "GryceEngineUtils")
+
 # ---------------------------------------------------------------------------
 # ImGui Docking Editor（editor/CMakeLists.txt）
 # 基于 ImGui Docking 分支的 C++ 原生编辑器（替代旧 WPF 编辑器）。
 # 纯 C++ 实现，跨平台，直接渲染到引擎 OpenGL/Vulkan 上下文。
+# 编辑器源码目录在重建完成前可能没有 CMakeLists.txt（见最近一次
+# "remove C++ ImGui editor" 提交），此时跳过，避免 configure 失败。
 # ---------------------------------------------------------------------------
-if(WIN32)
+if(WIN32 AND GRYCE_BUILD_EDITOR AND EXISTS "${CMAKE_SOURCE_DIR}/editor/CMakeLists.txt")
     add_subdirectory(editor)
 endif()
 

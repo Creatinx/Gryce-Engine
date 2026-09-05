@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Window id="SettingsWindow" title="Settings" layout="vertical" padding="15" spacing="8" width="600" height="400">
+    <Text id="SettingsTitle" text="Game Settings" font-size="20" color="#FFFFFF" />
+    <ScrollView id="SettingsScroll" width="100%" height="300">
+        <Panel id="AudioSection" layout="vertical" spacing="5">
+            <Text id="AudioHeader" text="Audio" font-size="16" />
+            <Slider id="MasterVolume" value="80" min="0" max="100" onChange="OnMasterVolumeChange" />
+            <Slider id="MusicVolume" value="70" min="0" max="100" onChange="OnMusicVolumeChange" />
+            <Slider id="SFXVolume" value="90" min="0" max="100" onChange="OnSFXVolumeChange" />
+        </Panel>
+        <Divider id="AudioDivider" />
+        <Panel id="VideoSection" layout="vertical" spacing="5">
+            <Text id="VideoHeader" text="Video" font-size="16" />
+            <ComboBox id="ResolutionCombo" onChange="OnResolutionChange" />
+            <CheckBox id="FullscreenToggle" text="Fullscreen" checked="false" />
+        </Panel>
+    </ScrollView>
+    <Panel id="BottomBar" layout="horizontal" spacing="10" align="right">
+        <Button id="ApplyBtn" text="Apply" style="Primary" onClick="OnApply" />
+        <Button id="ResetBtn" text="Reset" onClick="OnReset" />
+        <Button id="BackBtn" text="Back" onClick="OnBack" />
+    </Panel>
+</Window>

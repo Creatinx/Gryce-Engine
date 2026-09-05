@@ -58,6 +58,24 @@ function(add_gryce_demo_legacy target_name subdir source_file)
     _gryce_demo_post_build(${target_name})
 endfunction()
 
+# 辅助函数：注册一个基于新 GryceEngineUtils API 的 demo（不依赖 examples_common）。
+# 可选第三个参数指定源文件名（默认 main.cpp）。
+function(add_gryce_utils_demo target_name subdir)
+    set(_demo_src main.cpp)
+    if(ARGC GREATER 2)
+        set(_demo_src ${ARGV2})
+    endif()
+    add_executable(${target_name})
+    target_sources(${target_name} PRIVATE
+        ${subdir}/${_demo_src}
+    )
+    target_link_libraries(${target_name} PRIVATE GryceEngineUtils)
+    set_target_properties(${target_name} PROPERTIES
+        FOLDER "Examples"
+    )
+    _gryce_demo_post_build(${target_name})
+endfunction()
+
 function(_gryce_demo_post_build target_name)
     if(WIN32 AND MINGW)
         target_link_options(${target_name} PRIVATE
@@ -92,7 +110,7 @@ set(GRYCE_SHADER_TARGETS)
 # 仓库约定：手动复制的文件必须在 CMake 里自动补齐，因此 configure 时
 # 统一从 common/shaders 同步到每个 demo 的 shaders 目录，避免三处漂移。
 set(GRYCE_SHARED_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/shaders")
-foreach(_demo_dir IN ITEMS 2dDemo 3dtest FPSDemo)
+foreach(_demo_dir IN ITEMS 2dDemo 3dtest FPSDemo minimal ecs_demo ui_demo uitest)
     set(_demo_shaders_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_demo_dir}/shaders")
     if(IS_DIRECTORY "${GRYCE_SHARED_SHADERS_DIR}")
         file(COPY "${GRYCE_SHARED_SHADERS_DIR}/" DESTINATION "${_demo_shaders_dir}")
@@ -114,6 +132,26 @@ if(GRYCE_SHADER_TARGET)
     list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
 endif()
 
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/minimal/shaders")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/ecs_demo/shaders")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/ui_demo/shaders")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
+gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/uitest/shaders")
+if(GRYCE_SHADER_TARGET)
+    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
+endif()
+
 # 编辑器也使用 common/shaders 中的 Vulkan 着色器
 gryce_compile_vulkan_shaders("${GRYCE_SHARED_SHADERS_DIR}")
 if(GRYCE_SHADER_TARGET)
@@ -126,14 +164,24 @@ set(GRYCE_EXAMPLE_SHADER_TARGETS "${GRYCE_SHADER_TARGETS}" PARENT_SCOPE)
 # ---------------------------------------------------------------------------
 # 现有综合演示（尽可能覆盖所有功能）
 # ---------------------------------------------------------------------------
-add_gryce_demo_legacy(3dtest 3dtest 3dtest.cpp)
 add_gryce_demo_legacy(2dDemo 2dDemo 2dDemo.cpp)
 add_gryce_demo_legacy(FPSDemo FPSDemo FPSDemo.cpp)
+
+# 新 API 示例
+add_gryce_utils_demo(3dtest 3dtest 3dtest.cpp)
+add_gryce_utils_demo(minimal minimal)
+add_gryce_utils_demo(ecs_demo ecs_demo)
+add_gryce_utils_demo(ui_demo ui_demo)
+add_gryce_utils_demo(uitest uitest)
 
 # 示例可执行文件依赖对应 SPIR-V
 if(GRYCE_SHADER_TARGETS)
     add_dependencies(3dtest ${GRYCE_SHADER_TARGETS})
     add_dependencies(2dDemo ${GRYCE_SHADER_TARGETS})
     add_dependencies(FPSDemo ${GRYCE_SHADER_TARGETS})
+    add_dependencies(minimal ${GRYCE_SHADER_TARGETS})
+    add_dependencies(ecs_demo ${GRYCE_SHADER_TARGETS})
+    add_dependencies(ui_demo ${GRYCE_SHADER_TARGETS})
+    add_dependencies(uitest ${GRYCE_SHADER_TARGETS})
 endif()
 

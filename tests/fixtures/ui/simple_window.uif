@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Window id="MainWindow" title="Main Menu" layout="vertical" padding="10" spacing="5">
+    <Panel id="HeaderPanel" layout="horizontal" spacing="10" align="center">
+        <Text id="TitleText" text="Hello World" color="#FFFFFF" font-size="24" />
+        <Button id="CloseBtn" text="X" style="Danger" onClick="OnClose" />
+    </Panel>
+    <Button id="StartBtn" text="Start Game" style="Primary" onClick="OnStart" />
+    <Button id="SettingsBtn" text="Settings" onClick="OnSettings" />
+    <Text id="PlayerName" text="{Player.Name}" color="#AAAAAA" />
+    <Slider id="VolumeSlider" min="0" max="100" value="50" onChange="OnVolumeChange" />
+    <Image id="Logo" src="textures/logo.png" />
+    <List id="ItemList" />
+</Window>

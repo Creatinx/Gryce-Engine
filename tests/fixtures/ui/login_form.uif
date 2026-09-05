@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Window id="LoginWindow" title="Login" layout="vertical" padding="20" spacing="10" width="400" height="300">
+    <Text id="PromptText" text="Please enter your credentials" font-size="16" color="#CCCCCC" />
+    <TextInput id="UsernameInput" text="Username" placeholder="Enter username" />
+    <TextInput id="PasswordInput" text="Password" placeholder="Enter password" />
+    <Panel id="ButtonPanel" layout="horizontal" spacing="10" align="right">
+        <Button id="LoginBtn" text="Login" style="Primary" onClick="OnLogin" />
+        <Button id="CancelBtn" text="Cancel" onClick="OnCancel" />
+    </Panel>
+    <CheckBox id="RememberMe" text="Remember me" checked="true" onChange="OnRememberToggle" />
+</Window>

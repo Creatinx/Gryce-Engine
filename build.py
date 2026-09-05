@@ -369,6 +369,26 @@ def main():
         "--offline", action="store_true",
         help="Skip network downloads; use only local cached dependencies"
     )
+    parser.add_argument(
+        "--no-ecs", action="store_true",
+        help="Disable the optional ECS module (GRYCE_ENABLE_ECS=OFF)"
+    )
+    parser.add_argument(
+        "--no-physics", action="store_true",
+        help="Disable the optional Physics module (GRYCE_ENABLE_PHYSICS=OFF)"
+    )
+    parser.add_argument(
+        "--no-audio", action="store_true",
+        help="Disable the optional Audio module (GRYCE_ENABLE_AUDIO=OFF)"
+    )
+    parser.add_argument(
+        "--no-script", action="store_true",
+        help="Disable the optional Lua scripting module (GRYCE_ENABLE_SCRIPT=OFF)"
+    )
+    parser.add_argument(
+        "--no-ui", action="store_true",
+        help="Disable the optional UI module (GRYCE_ENABLE_UI=OFF)"
+    )
     args = parser.parse_args()
 
     config = args.config
@@ -461,6 +481,18 @@ def main():
         if generator:
             configure_cmd += ["-G", generator]
 
+        # GryceEngineUtils 可选模块开关（嵌入式渲染器框架）
+        if args.no_ecs:
+            configure_cmd += ["-DGRYCE_ENABLE_ECS=OFF"]
+        if args.no_physics:
+            configure_cmd += ["-DGRYCE_ENABLE_PHYSICS=OFF"]
+        if args.no_audio:
+            configure_cmd += ["-DGRYCE_ENABLE_AUDIO=OFF"]
+        if args.no_script:
+            configure_cmd += ["-DGRYCE_ENABLE_SCRIPT=OFF"]
+        if args.no_ui:
+            configure_cmd += ["-DGRYCE_ENABLE_UI=OFF"]
+
         if not args.no_lock and compiler_family in ("gcc", "clang") and cc_path and cxx_path:
             configure_cmd += [
                 "-DCMAKE_C_COMPILER=" + cc_path,
@@ -512,6 +544,7 @@ def main():
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
     print(f"  Editor:   GryceEditor (C++/ImGui, built by default)")
+    print(f"  Demos:    minimal / ecs_demo / 3dtest / ui_demo (GryceEngineUtils API)")
 
 
 if __name__ == "__main__":
