@@ -39,6 +39,7 @@ __pycache__/
 .idea/
 .vs/
 .vscode/
+.trae/
 *.user
 *.sln
 *.vcxproj
