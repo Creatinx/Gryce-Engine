@@ -4,14 +4,14 @@
 > 一个 **GryceGC-A 项目** 是磁盘上一个自描述的目录（`project.gryce` 清单 +
 > `project_settings.json` 运行时设置 + 分类资源子目录），由 **GryceGC**（`tools/grycegc`，
 > 构建产物 `grycegc.exe`）打包成可独立分发的游戏目录（`exe + runtime/ + assets/*.gpkg +
-> gdata`），再由 **GryceSPC 模板**（`templates/game_main.cpp`，构建产物 `GryceGame.exe`）
+> gdata`），再由 **GryceSPC 模板**（`templates/GameTemplates.cpp`，构建产物 `GryceGame.exe`）
 > 作为游戏入口运行。
 >
 > 本文档与实现代码同步维护；实现入口：
 > [`tools/grycegc/main.cpp`](../tools/grycegc/main.cpp)、
-> [`templates/game_main.cpp`](../templates/game_main.cpp)、
-> [`core/api/core_api.cpp`](../core/api/core_api.cpp)（自动挂载 / 主场景）、
-> [`core/assets/asset_manager.cpp`](../core/assets/asset_manager.cpp)（包内资源解析）。
+> [`templates/GameTemplates.cpp`](templates/GameTemplates.cpp)、
+> [`src/api/core_api.cpp`](../src/api/core_api.cpp)（自动挂载 / 主场景）、
+> [`src/assets/asset_manager.cpp`](../src/assets/asset_manager.cpp)（包内资源解析）。
 
 ---
 
@@ -56,7 +56,7 @@ GryceGC（grycegc.exe）
 ├── project_settings.json    # 运行时设置（渲染参数 + main_scene）
 ├── scenes/                  # 场景 .gesc
 ├── scripts/                 # Lua 脚本 .lua
-├── shaders/                 # 着色器 .vert/.frag/.glsl/.spv ...
+├── shaders/                 # 着色器 .vert/.frag/.glsl/.spv ...（示例项目共用 common/shaders/）
 ├── models/                  # 模型 .obj/.fbx/.gltf/...
 ├── textures/                # 贴图 .png/.jpg/.dds/...
 ├── audio/                   # 音频 .wav/.ogg/...
@@ -236,7 +236,7 @@ build/bin/Release/grycegc.exe --project examples/2dDemo --name 2dDemo ^
 
 ## 4. 游戏入口（GryceSPC 模板）
 
-`templates/game_main.cpp`（`GryceGame.exe`）是发布游戏的唯一入口，职责：
+`templates/GameTemplates.cpp`（`GryceGame.exe`）是发布游戏的唯一入口，职责：
 
 1. **启动早期扩展 DLL 搜索路径**：模板对核心 DLL 使用延迟加载（MSVC `/DELAYLOAD`），
    `main()` 先把 `<exe>/runtime/` 加入 DLL 搜索目录，再首次调用引擎 API；

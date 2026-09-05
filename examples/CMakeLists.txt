@@ -107,54 +107,11 @@ endfunction()
 set(GRYCE_SHADER_TARGETS)
 
 # 着色器单一来源：examples/common/shaders（76 个 .vert/.frag）。
-# 仓库约定：手动复制的文件必须在 CMake 里自动补齐，因此 configure 时
-# 统一从 common/shaders 同步到每个 demo 的 shaders 目录，避免三处漂移。
+# 所有 demo 和编辑器共用 common/shaders/ 中的着色器，不做目录复制。
 set(GRYCE_SHARED_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/shaders")
-foreach(_demo_dir IN ITEMS 2dDemo 3dtest FPSDemo minimal ecs_demo ui_demo uitest)
-    set(_demo_shaders_dir "${CMAKE_CURRENT_SOURCE_DIR}/${_demo_dir}/shaders")
-    if(IS_DIRECTORY "${GRYCE_SHARED_SHADERS_DIR}")
-        file(COPY "${GRYCE_SHARED_SHADERS_DIR}/" DESTINATION "${_demo_shaders_dir}")
-    endif()
-endforeach()
-
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/3dtest/shaders")
-if(GRYCE_SHADER_TARGET)
-    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
-endif()
-
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/2dDemo/shaders")
-if(GRYCE_SHADER_TARGET)
-    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
-endif()
-
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/FPSDemo/shaders")
-if(GRYCE_SHADER_TARGET)
-    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
-endif()
-
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/minimal/shaders")
-if(GRYCE_SHADER_TARGET)
-    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
-endif()
-
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/ecs_demo/shaders")
-if(GRYCE_SHADER_TARGET)
-    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
-endif()
-
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/ui_demo/shaders")
-if(GRYCE_SHADER_TARGET)
-    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
-endif()
-
-gryce_compile_vulkan_shaders("${CMAKE_CURRENT_SOURCE_DIR}/uitest/shaders")
-if(GRYCE_SHADER_TARGET)
-    list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
-endif()
-
-# 编辑器也使用 common/shaders 中的 Vulkan 着色器
 gryce_compile_vulkan_shaders("${GRYCE_SHARED_SHADERS_DIR}")
 if(GRYCE_SHADER_TARGET)
+    set(GRYCE_SHARED_SHADER_TARGET "${GRYCE_SHADER_TARGET}")
     list(APPEND GRYCE_SHADER_TARGETS "${GRYCE_SHADER_TARGET}")
 endif()
 

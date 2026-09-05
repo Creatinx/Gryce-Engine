@@ -1,4 +1,4 @@
-﻿#include "GryceCore/component_api.h"
+#include "GryceCore/component_api.h"
 #include "GryceCore/api_guard.h"
 #include "GryceCore/core_api.h"
 
@@ -133,7 +133,7 @@ static int field_type_code(FieldType ft) {
 
 }
 
-// Helper: get all components on an entity (excluding Transform which is internal)
+// Helper: get all components on an entity (excluding internal components)
 
 static std::vector<gryce_engine::components::Component*> get_components(Entity* e) {
 
@@ -143,9 +143,13 @@ static std::vector<gryce_engine::components::Component*> get_components(Entity* 
 
     for (const auto& comp : e->components()) {
 
-        // Skip Transform (internal, every entity has it)
+        // Skip internal components that every entity has
 
         if (dynamic_cast<gryce_engine::components::Transform*>(comp.get())) continue;
+
+        if (dynamic_cast<gryce_engine::components::ParentComponent*>(comp.get())) continue;
+
+        if (dynamic_cast<gryce_engine::components::ChildrenComponent*>(comp.get())) continue;
 
         out.push_back(comp.get());
 

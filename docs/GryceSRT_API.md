@@ -162,7 +162,7 @@ props = {
 
 ## 5. GryceGC 打包（GryceSPC）
 
-> GryceGC-A 项目组织与打包标准的完整说明见 [GryceGC-A 标准](./GryceGC-A.md)。
+> GryceGC-A 项目组织与打包标准的完整说明见 [GryceGC-A 标准](./GryceGC-A.md)。示例项目中 `scripts/` 目录下的 Lua 脚本位于 `.gesc` 场景文件同目录，打包时统一归入 `scripts` 类别。
 
 ### 5.1 构建游戏模板
 
@@ -171,7 +171,7 @@ cmake -B build/Release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/Release --target GryceGame
 ```
 
-`templates/game_main.cpp`（GryceGame.exe）是一个独立入口：
+`../templates/GameTemplates.cpp`（GryceGame.exe）是一个独立入口：
 Core 初始化 → 物理挂载 → Platform 创建窗口 → Renderer → 播放循环（脚本随 `GCore_BeginFrame` 运行）。
 
 ### 5.2 打包

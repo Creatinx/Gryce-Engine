@@ -328,7 +328,7 @@ GryceGC 是 C++ 工具（`tools/grycegc/`），通过 GryceCore 的 GPack C API�
 ```text
 Gryce-Engine/
 ├── cmake/                  # CMake 工具脚本（编译器选项、依赖解析、着色器编译）
-├── core/                   # 引擎核心源码（4 个模块化 DLL）
+├── src/                    # 引擎核心源码（4 个模块化 DLL + 全部子系统）
 │   ├── api/                # C API 实现（core/entity/component/scene/asset/material/animator/physics/render/platform）
 │   ├── GryceCore/          # GryceCore.dll 公共 C API 头文件（types/core/entity/component/scene/asset/material/animator）
 │   ├── GryceRenderer/      # GryceRenderer.dll 公共 C API 头文件（render/viewport）
@@ -346,26 +346,32 @@ Gryce-Engine/
 │   ├── render/             # 渲染核心 + OpenGL/Vulkan 后端（opengl/、vulkan/）
 │   ├── resources/          # 资源路径（res:/）、项目根、gpack
 │   ├── scene/              # Scene/Entity/Transform 层级/Prefab/序列化
+│   ├── script/             # Lua 脚本运行时（GryceSRT）
+│   ├── server/             # 网络服务（预留）
+│   ├── ui/                 # UI 系统（标记语言解析、控件库、布局、渲染、QuickJS、热重载、加密）
+│   ├── runtime/            # 运行时命令缓冲
 │   └── utils/              # 日志（AsyncLogger）、帧率限制
 ├── docs/                   # 文档（C API / GryceSRT / GryceGC-A / 已实现功能 / 架构说明）
-├── editor/                 # WPF 编辑器（C#，.NET Framework 4.8）
-│   ├── src/Native/         # C API 的 P/Invoke 包装（与头文件一一对应）
-│   ├── src/Services/       # EngineService（引擎生命周期、命令下发、自动保存）
-│   ├── src/ViewModels/     # EditorViewModel 等（回调注册、面板刷新）
-│   └── src/Views/          # 面板 XAML（Hierarchy/Inspector/Viewport/Project/Console/Animation/...）
+├── editor/                 # WPF 编辑器构建产物（Native DLL 自动部署，csproj 在 editor 根）
 ├── examples/               # 示例游戏项目
-│   ├── common/             # 示例公共框架（app_launcher、调试面板）
+│   ├── common/             # 示例公共框架（app_launcher、调试面板、着色器）
 │   ├── 3dtest/             # 3D 综合演示（PBR/阴影/物理/关节/角色/碎裂/动画/音频/场景热重载）
-│   └── 2dDemo/             # 2D 平台跳跃（关卡/昼夜/光照/物理/敌人/枪械/过关）
+│   ├── 2dDemo/             # 2D 平台跳跃（关卡/昼夜/光照/物理/敌人/枪械/过关）
+│   ├── ecs_demo/           # ECS 基础演示
+│   ├── minimal/            # 最小化启动示例
+│   ├── ui_demo/            # UI 系统演示
+│   └── uitest/             # UI 控件测试
+├── include/                # 公共头文件
+│   └── GryceEngineUtils/   # 引擎工具 API 包装
 ├── tests/                  # 单元测试（GTest）
-├── third_party/            # 第三方库源码（imgui、imguizmo、json、stb、miniaudio、tinyexr）
-├── tools/                  # 工具脚本（deps_manager.py、gen_skybox.py、gen_skinned_fixture.py）
+├── templates/              # 发布模板（GryceGame.exe 入口）
+├── third_party/            # 第三方库源码（imgui、imguizmo、json、stb、miniaudio、tinyexr、quickjs、pugixml、yoga）
+├── tools/                  # 工具脚本（deps_manager.py、grycegc/、gen_skybox.py、gen_skinned_fixture.py）
 ├── deps_cache/             # 依赖源码本地缓存（gitignore）
 ├── CMakeLists.txt          # 根 CMake
 ├── CMakeSettings.json      # VS "打开文件夹" 配置
 ├── build.py                # 一键构建脚本
-├── Directory.Build.props   # MSBuild 全局属性（编辑器 C# 工程）
-└── GryceECLib_Integration_Plan.md  # 模块化 Core/Editor 分离的历史设计方案
+└── Directory.Build.props   # MSBuild 全局属性（编辑器 C# 工程）
 ```
 
 ---
@@ -402,8 +408,8 @@ Gryce-Engine/
 ## 开发约定
 
 - **C API 是 Editor 与 Core 之间的唯一通道**：任何新增的编辑器功能都应优先以 C API 暴露，避免直接 `#include` 内部头文件。
-- **手动复制链接库必须同步到 CMake**：每当手动向编辑器输出目录复制某个原生 DLL（例如新增第三方库），必须在 `core/CMakeLists.txt` 中通过 `gryce_copy_dll_to_editor(<target>)` 或等价的 `add_custom_command(TARGET ... POST_BUILD ...)` 添加自动复制规则，保证全新 CMake 构建即可完整部署。
-- **公共头文件集中在模块目录**：`core/GryceCore/`、`core/GryceRenderer/`、`core/GrycePlatform/`、`core/GrycePhysics/`，新 API 的声明与实现一一对应。
+- **手动复制链接库必须同步到 CMake**：每当手动向编辑器输出目录复制某个原生 DLL（例如新增第三方库），必须在 `src/CMakeLists.txt` 中通过 `gryce_copy_dll_to_editor(<target>)` 或等价的 `add_custom_command(TARGET ... POST_BUILD ...)` 添加自动复制规则，保证全新 CMake 构建即可完整部署。
+- **公共头文件集中在模块目录**：`src/GryceCore/`、`src/GryceRenderer/`、`src/GrycePlatform/`、`src/GrycePhysics/`，新 API 的声明与实现一一对应。
 - **提交信息遵循 Conventional Commits**（`feat:` / `fix:` / `docs:` / `perf:` 等）。
 
 ---
@@ -416,7 +422,7 @@ Gryce-Engine/
 - `GPhysics_Raycast` 暂未把命中体映射回实体（`out_entity` 恒为 0）。
 - 渲染显示模式（线框等）、Gizmo 操作命令（`ECMD_GIZMO_*`）为占位实现。
 - 大规模 3D 场景（>1000 entity）尚未启用 GPU Instancing。
-- 脚本系统处于规划阶段（计划 LuaJIT/sol2，暴露 Scene/Entity/Component API）。
+- UI 系统加密与发布（AES-256-GCM、JS 字节码编译、.pak 打包）处于开发阶段。
 
 详见 [已实现功能](./docs/已实现功能.md)。
 

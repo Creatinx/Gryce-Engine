@@ -19,6 +19,7 @@
 #include "assets/skinned_mesh_data.h"
 #include "assets/texture_data.h"
 #include "resources/gpack_bundle.h"
+#include "resources/pak_bundle.h"
 
 namespace gryce_engine::assets {
 
@@ -97,6 +98,7 @@ private:
     struct MountedBundle {
         int id = 0;
         std::unique_ptr<resources::GPackReader> reader;
+        std::unique_ptr<resources::PakReader> pak_reader;
         std::unordered_map<std::string, std::string> extracted_temp_paths;
     };
 

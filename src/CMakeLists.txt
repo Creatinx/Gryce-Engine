@@ -39,6 +39,7 @@ target_sources(GryceCore
         resources/project.cpp
         resources/resource_path.cpp
         resources/gpack_bundle.cpp
+        resources/pak_bundle.cpp
         assets/asset_manager.cpp
         assets/async_loader.cpp
         assets/obj_loader.cpp
@@ -241,9 +242,9 @@ target_compile_definitions(GryceCore PUBLIC
     $<$<BOOL:${GRYCE_HAS_NLOHMANN_JSON}>:GRYCE_HAS_NLOHMANN_JSON>
 )
 
-# Windows: 链接 imm32（IME）和 winmm（高精度定时器）
+# Windows: 链接 imm32（IME）、winmm（高精度定时器）和 bcrypt（CNG 随机数）
 if(WIN32)
-    target_link_libraries(GryceCore PUBLIC imm32 winmm)
+    target_link_libraries(GryceCore PUBLIC imm32 winmm bcrypt)
 endif()
 
 # 链接 nlohmann/json

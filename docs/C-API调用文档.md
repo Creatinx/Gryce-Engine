@@ -7,24 +7,24 @@
 | `GryceCore.dll` | `core/GryceCore/` | 生命周期、命令队列、场景/实体/组件、反射属性、资源、材质、动画、日志、回调 |
 | `GrycePlatform.dll` | `core/GrycePlatform/` | 窗口（自建 GLFW 或外部 HWND）、输入、光标 |
 | `GryceRenderer.dll` | `core/GryceRenderer/` | 渲染上下文、OpenGL/Vulkan 后端、视口/GameView 纹理 |
-| `GrycePhysics.dll` | `core/GrycePhysics/` | Jolt（3D）/ Box2D（2D）物理世界、刚体、射线检测 |
+| `GrycePhysics.dll` | `src/GrycePhysics/` | Jolt（3D）/ Box2D（2D）物理世界、刚体、射线检测 |
 
 头文件清单：
 
 ```text
-core/GryceCore/types.h            # 共享基础类型（所有模块依赖）
-core/GryceCore/core_api.h         # GCore_*：初始化、帧、命令队列、回调、日志
-core/GryceCore/entity_api.h       # GEntity_*：实体查询、变换、Prefab、JSON 导入导出
-core/GryceCore/component_api.h    # GComponent_*：组件增删、反射属性读写
-core/GryceCore/scene_api.h        # GScene_*：场景加载/保存/新建/拾取
-core/GryceCore/asset_api.h        # GAsset_*：资源导入/加载/卸载
-core/GryceCore/material_api.h     # GMaterial_*：PBR 材质字段读写
-core/GryceCore/animator_api.h     # GAnimator_*：动画片段查询
-core/GrycePlatform/window_api.h   # GWindow_*：窗口生命周期与 GL 上下文
-core/GrycePlatform/input_api.h    # GInput_*：输入注入与查询
-core/GryceRenderer/render_api.h   # GRender_*：渲染生命周期与帧驱动
-core/GryceRenderer/viewport_api.h # GViewport_* / GGameView_*：视口尺寸与相机
-core/GrycePhysics/physics_api.h   # GPhysics_*：物理初始化与刚体操作
+src/GryceCore/types.h             # 共享基础类型（所有模块依赖）
+src/GryceCore/core_api.h          # GCore_*：初始化、帧、命令队列、回调、日志
+src/GryceCore/entity_api.h        # GEntity_*：实体查询、变换、Prefab、JSON 导入导出
+src/GryceCore/component_api.h     # GComponent_*：组件增删、反射属性读写
+src/GryceCore/scene_api.h         # GScene_*：场景加载/保存/新建/拾取
+src/GryceCore/asset_api.h         # GAsset_*：资源导入/加载/卸载
+src/GryceCore/material_api.h      # GMaterial_*：PBR 材质字段读写
+src/GryceCore/animator_api.h      # GAnimator_*：动画片段查询
+src/GrycePlatform/window_api.h    # GWindow_*：窗口生命周期与 GL 上下文
+src/GrycePlatform/input_api.h     # GInput_*：输入注入与查询
+src/GryceRenderer/render_api.h    # GRender_*：渲染生命周期与帧驱动
+src/GryceRenderer/viewport_api.h  # GViewport_* / GGameView_*：视口尺寸与相机
+src/GrycePhysics/physics_api.h   # GPhysics_*：物理初始化与刚体操作
 ```
 
 ---
