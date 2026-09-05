@@ -1,21 +1,23 @@
 // GryceGC - GryceEngine Global Compiler (GryceSPC packaging tool).
 //
 // Packages a game project's res:// content into one or more .gpkg resource
-// archives (GPAK format) and assembles a standalone game directory:
+// archives (GPAK v3 with random Base64 store names) and assembles a standalone
+// game directory:
 //   <out>/<name>/<name>.exe         template executable
 //   <out>/<name>/runtime/           core runtime DLLs
 //   <out>/<name>/assets/*.gpkg      game content archives (no raw res/ copy)
 //   <out>/<name>/project_settings.json
 //                                   raw copy of the runtime settings (the game
 //                                   entry reads it from the project root)
-//   <out>/<name>/project.gryce      project manifest (documentation)
+//   <out>/<name>/project.gproj      project manifest (documentation)
 //   <out>/<name>/gdata              package metadata: source-file records,
 //                                   a 64-byte SHA-512 key, author info
 //
-// The archives are written by GryceCore's GPackWriter through its C API
-// (GCore_PackCreate / GCore_PackAddFile / GCore_PackWrite), so the on-disk
-// layout always stays in sync with the reader used by the runtime
-// (GPackReader; GCore_Init mounts every *.gpkg/*.gpack in the project root).
+// The archives are written by GryceCore's PakWriter (GPAK v3: random Base64
+// store names + a manifest mapping them back to logical paths), so the on-disk
+// layout always stays in sync with the reader used by the runtime (PakReader;
+// GCore_Init mounts every *.gpkg/*.gpack in the project root). PakReader
+// understands both GPAK v1 and v3, so legacy archives keep working.
 //
 // Usage:
 //   grycegc --project examples/3dtest --name MyGame
@@ -25,7 +27,6 @@
 //   build/game/MyGame/MyGame.exe            (project root defaults to exe dir)
 
 #include "GryceCore/core_api.h"
-#include "resources/gpack_bundle.h"
 #include "resources/pak_bundle.h"
 
 #include <algorithm>
@@ -733,9 +734,9 @@ bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug
 // The game entry reads project_settings.json from the project root (exe dir)
 // as a real file; it is also packed into config.gpkg, but the raw copy keeps
 // the packaged game booting with the correct main scene / settings even when
-// bundle extraction is unavailable. project.gryce is copied as documentation.
+// bundle extraction is unavailable. project.gproj is copied as documentation.
 void copy_project_metadata(const fs::path& project, const fs::path& out_dir) {
-    for (const char* name : {"project_settings.json", "project.gryce"}) {
+    for (const char* name : {"project_settings.json", "project.gproj"}) {
         std::error_code ec;
         const fs::path src = project / name;
         if (!fs::is_regular_file(src, ec)) continue;
@@ -749,77 +750,36 @@ void copy_project_metadata(const fs::path& project, const fs::path& out_dir) {
 }
 
 bool write_bundle(const std::vector<FileEntry>& files, const fs::path& output_path,
-                  size_t& entry_count, bool use_pak_format) {
-    if (use_pak_format) {
-        // 使用 PakWriter：随机 Base64 名称
-        gryce_engine::resources::PakWriter writer;
-        bool ok = true;
-        for (const FileEntry& file : files) {
-            if (!writer.add_file(file.internal_path, file.source_path.string())) {
-                std::cerr << "[grycegc] ERROR: PakWriter::add_file('" << file.internal_path << "') failed\n";
-                ok = false;
-                break;
-            }
-        }
-        if (ok && !writer.write(output_path.string())) {
-            std::cerr << "[grycegc] ERROR: PakWriter::write('" << output_path << "') failed\n";
-            ok = false;
-        }
-        if (!ok) return false;
-
-        // 读回验证
-        gryce_engine::resources::PakReader reader;
-        if (!reader.open(output_path.string())) {
-            std::cerr << "[grycegc] ERROR: .pak verification failed to open " << output_path << "\n";
-            return false;
-        }
-        if (reader.manifest().size() != files.size()) {
-            std::cerr << "[grycegc] ERROR: .pak verification mismatch in " << output_path << "\n";
-            return false;
-        }
-        entry_count += reader.manifest().size();
-        const uintmax_t size = fs::file_size(output_path);
-        std::printf("[grycegc] %s: %zu files, %.2f MiB (random Base64 names, manifest)\n",
-                    output_path.filename().string().c_str(), entry_count,
-                    static_cast<double>(size) / (1024.0 * 1024.0));
-        return true;
-    }
-
-    // 原始 .gpkg 格式（使用 GPackWriter C API）
-    GPackHandle handle = GCore_PackCreate();
-    if (!handle) {
-        std::cerr << "[grycegc] ERROR: GCore_PackCreate failed for " << output_path << "\n";
-        return false;
-    }
+                  size_t& entry_count) {
+    // 使用 PakWriter（GPAK v3）：随机 Base64 存储名 + manifest 映射逻辑路径。
+    gryce_engine::resources::PakWriter writer;
     bool ok = true;
     for (const FileEntry& file : files) {
-        const std::string src = file.source_path.string();
-        if (GCore_PackAddFile(handle, file.internal_path.c_str(), src.c_str()) != 0) {
-            std::cerr << "[grycegc] ERROR: GCore_PackAddFile('" << file.internal_path << "') failed\n";
+        if (!writer.add_file(file.internal_path, file.source_path.string())) {
+            std::cerr << "[grycegc] ERROR: PakWriter::add_file('" << file.internal_path << "') failed\n";
             ok = false;
             break;
         }
     }
-    if (ok && GCore_PackWrite(handle, output_path.string().c_str()) != 0) {
-        std::cerr << "[grycegc] ERROR: GCore_PackWrite('" << output_path << "') failed\n";
+    if (ok && !writer.write(output_path.string())) {
+        std::cerr << "[grycegc] ERROR: PakWriter::write('" << output_path << "') failed\n";
         ok = false;
     }
-    GCore_PackDestroy(handle);
     if (!ok) return false;
 
-    // Read-back verification using the same reader the runtime uses.
-    gryce_engine::resources::GPackReader reader;
+    // 读回验证
+    gryce_engine::resources::PakReader reader;
     if (!reader.open(output_path.string())) {
-        std::cerr << "[grycegc] ERROR: verification failed to open " << output_path << "\n";
+        std::cerr << "[grycegc] ERROR: .gpkg verification failed to open " << output_path << "\n";
         return false;
     }
-    if (reader.entries().size() != files.size()) {
-        std::cerr << "[grycegc] ERROR: verification mismatch in " << output_path << "\n";
+    if (reader.manifest().size() != files.size()) {
+        std::cerr << "[grycegc] ERROR: .gpkg verification mismatch in " << output_path << "\n";
         return false;
     }
-    entry_count += reader.entries().size();
+    entry_count += reader.manifest().size();
     const uintmax_t size = fs::file_size(output_path);
-    std::printf("[grycegc] %s: %zu files, %.2f MiB\n",
+    std::printf("[grycegc] %s: %zu files, %.2f MiB (random Base64 names, manifest)\n",
                 output_path.filename().string().c_str(), entry_count,
                 static_cast<double>(size) / (1024.0 * 1024.0));
     return true;
@@ -835,8 +795,7 @@ void print_usage(const char* argv0) {
         "  --config <cfg>    Debug or Release (default: Release)\n"
         "  --out <dir>       output parent directory (default: build/game)\n"
         "  --author <name>   author stored in gdata (default: %USERNAME%)\n"
-        "  --single          pack everything into one <name>.gpkg\n"
-        "  --pak             use .pak format with random Base64 resource names\n",
+        "  --single          pack everything into one <name>.gpkg\n",
         argv0);
 }
 
@@ -845,7 +804,7 @@ void print_usage(const char* argv0) {
 int main(int argc, char* argv[]) {
     std::string project, name = "MyGame", build_dir = "build", config = "Release",
                 out = "build/game", author;
-    bool single = false, use_pak = false;
+    bool single = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         auto need = [&](const char* opt) -> const char* {
@@ -869,8 +828,6 @@ int main(int argc, char* argv[]) {
             if (const char* v = need("--author")) author = v;
         } else if (arg == "--single") {
             single = true;
-        } else if (arg == "--pak") {
-            use_pak = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -943,11 +900,11 @@ int main(int argc, char* argv[]) {
     }
 
     size_t total_entries = 0;
-    const std::string bundle_ext = use_pak ? ".pak" : ".gpkg";
+    constexpr const char* kBundleExt = ".gpkg";
     for (const auto& [key, members] : bundles) {
         const std::string suffix = single ? "" : "." + key;
-        const fs::path bundle_path = assets_dir / (name + suffix + bundle_ext);
-        if (!write_bundle(members, bundle_path, total_entries, use_pak)) {
+        const fs::path bundle_path = assets_dir / (name + suffix + kBundleExt);
+        if (!write_bundle(members, bundle_path, total_entries)) {
             return 1;
         }
     }
@@ -963,8 +920,7 @@ int main(int argc, char* argv[]) {
 
     std::printf("[grycegc] packaged %s -> %s\n", name.c_str(), out_dir.string().c_str());
     std::printf("[grycegc] %s.exe + runtime/%zu DLLs + assets/%zu .%s (%zu resources) + gdata\n",
-                name.c_str(), copied.size(), bundles.size(),
-                use_pak ? "pak" : "gpkg", total_entries);
+                name.c_str(), copied.size(), bundles.size(), "gpkg", total_entries);
     std::printf("[grycegc] run with: %s (project root defaults to exe dir)\n",
                 (out_dir / (name + ".exe")).string().c_str());
     return 0;

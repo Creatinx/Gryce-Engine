@@ -1,11 +1,9 @@
-# src/CMakeLists.txt
+﻿# src/CMakeLists.txt
 # Gryce Engine 模块化核心库 — 拆分为 GryceCore / GryceRenderer / GrycePlatform / GrycePhysics
 
 # ============================================================================
 # GryceCore.dll — ECS、Scene、Entity、Component、Math、UUID、Reflection、Assets
 # ============================================================================
-add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/lua ${CMAKE_BINARY_DIR}/third_party/lua)
-
 add_library(GryceCore SHARED)
 
 set_target_properties(GryceCore PROPERTIES
@@ -77,9 +75,12 @@ target_sources(GryceCore
         scene/scene.cpp
         scene/prefab.cpp
         scene/scene_serializer.cpp
-        script/lua_runtime.cpp
         script/big_number.cpp
-        script/lua_math_bindings.cpp
+        script/runtime/script_vm.cpp
+        script/runtime/script_context.cpp
+        script/bindings/engine_bridge.cpp
+        script/bindings/math_bridge.cpp
+        script/bindings/big_bridge.cpp
         ecs/systems/script_system.cpp
         ecs/world.cpp
         ecs/component_store.cpp
@@ -231,8 +232,8 @@ target_include_directories(GryceCore
 
 target_link_libraries(GryceCore PUBLIC gryce::compile_options)
 
-# GryceSRT 脚本运行时：链接 Lua 静态库
-target_link_libraries(GryceCore PRIVATE GryceLua)
+# GryceSRT 脚本运行时：链接 QuickJS 静态库
+target_link_libraries(GryceCore PRIVATE GryceQuickJS)
 
 # 不导出所有符号，避免 libstdc++ 等静态库符号污染
 # 导出由各头文件中的 GRYCE_API / __declspec(dllexport) 控制
@@ -719,3 +720,4 @@ if(TARGET glfw)
     )
 endif()
 endif()
+

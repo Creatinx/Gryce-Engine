@@ -117,6 +117,9 @@ add_subdirectory(templates)
 # GryceGC: C++ resource packager (GryceSPC packaging tool)
 add_subdirectory(tools/grycegc)
 
+# GryceLua2JS: Lua -> JS migration helper
+add_subdirectory(tools/lua2js)
+
 if(GRYCE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

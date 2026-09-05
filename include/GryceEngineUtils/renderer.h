@@ -97,6 +97,11 @@ public:
     void window_size(int& w, int& h) const;
     void* native_window();
 
+    // ---- 键盘查询（供脚本/玩法逻辑读取）-----------------------------------
+    // key 为 GLFW 键码；held=按住，pressed=本帧刚按下
+    bool key_held(int key) const;
+    bool key_pressed(int key) const;
+
     // ---- UI 集成 ----------------------------------------------------------
     // 注册 UIManager 后，end_frame() 会在 3D 渲染之后自动绘制 UI 并转发输入
     void set_ui_manager(ui::UIManager* ui);

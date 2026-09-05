@@ -1,4 +1,4 @@
-﻿#include "ecs/systems/script_system.h"
+#include "ecs/systems/script_system.h"
 
 #include "components/script_component.h"
 #include "assets/asset_manager.h"
@@ -6,18 +6,16 @@
 #include "scene/entity.h"
 #include "scene/scene.h"
 #include "ecs/world.h"
-#include "script/lua_runtime.h"
 #include "runtime/engine_context.h"
+#include "script/runtime/script_context.h"
+#include "script/bindings/engine_bridge.h"
+#include "script/bindings/math_bridge.h"
+#include "script/bindings/big_bridge.h"
 #include "utils/glog/glog_lib.h"
 
 #include <algorithm>
 #include <fstream>
 #include <sstream>
-
-extern "C" {
-#include "lua.h"
-#include "lauxlib.h"
-}
 
 namespace gryce_engine::ecs {
 
@@ -30,26 +28,52 @@ inline bool contains(const std::vector<components::ScriptComponent*>& v,
 
 } // namespace
 
+// ============================================================================
+// 全局 ScriptVM 实例（延迟初始化，首次加载脚本时自动创建）
+// ============================================================================
+
+GryceEngineUtils::script::ScriptVM& ScriptSystem::vm() {
+    static GryceEngineUtils::script::ScriptVM instance;
+    static bool initialized = false;
+    if (!initialized) {
+        if (instance.init()) {
+            // 注册 engine.* / math.* / big.* 绑定
+            GryceEngineUtils::script::register_engine_bindings(instance.context());
+            GryceEngineUtils::script::register_math_bindings(instance.context());
+            GryceEngineUtils::script::register_big_bindings(instance.context());
+            initialized = true;
+            GLOG_INFO("ScriptSystem: global ScriptVM initialized with engine.* / math.* / big.* bindings");
+        } else {
+            GLOG_ERROR("ScriptSystem: failed to initialize global ScriptVM");
+        }
+    }
+    return instance;
+}
+
+// ============================================================================
+// on_update
+// ============================================================================
+
 void ScriptSystem::on_update(scene::Scene& scene, float dt) {
-    auto& rt = script::LuaRuntime::instance();
+    auto& rt = ScriptSystem::vm();
     if (!rt.initialized()) return;
 
-    rt.set_delta(dt);
-    rt.set_current_scene(&scene);
+    auto& ctx = GryceEngineUtils::script::ScriptContext::instance();
+    ctx.set_delta_time(dt);
+    ctx.set_current_scene(&scene);
+    ctx.reset_frame();
     seen_.clear();
 
-    // 输入事件分发：把本帧缓存的事件逐条派发给定义 _input 的脚本
-    // （先分发再执行 on_update，类比 Godot 的 _input 早于 _process）。
+    // 输入事件分发
     dispatch_input_events();
 
-    // 快照遍历：脚本在 on_update 里通过 engine.entity.create 创建实体是安全的
-    // （新实体下一帧才进入脚本驱动，避免遍历期间修改场景层级）。
+    // 快照遍历
     std::vector<scene::Entity*> entities;
     scene.root()->foreach([&](scene::Entity* e) {
         entities.push_back(e);
     });
 
-    // 按 process_priority 降序收集所有脚本组件，值越大 on_update 越先执行。
+    // 按 process_priority 降序收集
     std::vector<components::ScriptComponent*> comps;
     for (scene::Entity* e : entities) {
         auto* comp = e->get_component<components::ScriptComponent>();
@@ -65,20 +89,7 @@ void ScriptSystem::on_update(scene::Scene& scene, float dt) {
         process_entity(comp, dt);
     }
 
-    // engine.entity.destroy 的延迟销毁：先卸载脚本（env/unref），再销毁实体，
-    // 避免遍历期间销毁 + 脚本环境泄漏。
-    for (scene::Entity* e : rt.take_pending_destroy()) {
-        if (!e) continue;
-        if (auto* comp = e->get_component<components::ScriptComponent>()) {
-            unload(comp);
-            loaded_.erase(std::remove(loaded_.begin(), loaded_.end(), comp), loaded_.end());
-        }
-        scene.destroy_entity(e);
-    }
-
-    // Drop bookkeeping for components that no longer exist (removed via the
-    // editor or other paths; the component object is still alive so unload is
-    // safe and releases its Lua environment).
+    // 清理已移除的组件
     loaded_.erase(std::remove_if(loaded_.begin(), loaded_.end(),
         [&](components::ScriptComponent* c) {
             if (contains(seen_, c)) return false;
@@ -103,16 +114,19 @@ void ScriptSystem::process_entity(components::ScriptComponent* comp, float dt) {
         }
     }
 
-    // per-node 暂停（pause_mode）：全局暂停时，只有 pause_mode 的脚本继续更新。
+    // 全局暂停过滤
     if (gryce_core::g_core_state.paused && !comp->pause_mode) {
+        return;
+    }
+
+    // 错误暂停：on_start/on_update 抛异常后停止驱动，直到重载
+    if (comp->paused_on_error) {
         return;
     }
 
     call_method(comp, "on_update", dt, true);
 }
 
-// 把本帧缓存的输入事件逐条派发给定义了 _input 的脚本组件。
-// _input(type, a, b, c)：type 为 engine.input 的常量，a/b/c 是位置参数。
 void ScriptSystem::dispatch_input_events() {
     auto& state = gryce_core::g_core_state;
     if (state.input.input_events.empty()) return;
@@ -136,10 +150,14 @@ void ScriptSystem::dispatch_input_events() {
     state.input.input_events.clear();
 }
 
+// ============================================================================
+// 加载 & 卸载
+// ============================================================================
+
 bool ScriptSystem::load(components::ScriptComponent* comp) {
-    auto& rt = script::LuaRuntime::instance();
-    lua_State* L = rt.state();
-    if (!L) return false;
+    auto& rt = ScriptSystem::vm();
+    JSContext* ctx = rt.context();
+    if (!ctx) return false;
 
     comp->last_error.clear();
     comp->reported_error = false;
@@ -149,6 +167,7 @@ bool ScriptSystem::load(components::ScriptComponent* comp) {
         comp->last_error = "cannot resolve script: " + comp->script_path;
         return false;
     }
+
     std::string src;
     auto it = source_cache_.find(comp->script_path);
     if (it != source_cache_.end()) {
@@ -169,52 +188,43 @@ bool ScriptSystem::load(components::ScriptComponent* comp) {
         return false;
     }
 
-    // Preserve Inspector-edited props across a hot reload: remember the old
-    // values, let the script re-declare defaults, then re-apply old values.
+    // 记住旧 prop 值用于热重载
     const auto old_props = comp->props;
 
-    // Per-component environment: env.__index = _G
-    lua_newtable(L);                          // env
-    lua_newtable(L);                          // mt
-    lua_pushglobaltable(L);                   // _G
-    lua_setfield(L, -2, "__index");
-    lua_setmetatable(L, -2);                  // env (mt popped)
+    // 加载模块
+    JSValue module_ns = JS_UNDEFINED;
+    std::string module_filename = comp->script_path;
+    // 替换路径分隔符，使文件名在错误信息中可读
+    auto result = rt.eval_module(src, module_filename, &module_ns);
 
-    if (luaL_loadbuffer(L, src.c_str(), src.size(),
-                        comp->script_path.c_str()) != LUA_OK) {
-        const char* msg = lua_tostring(L, -1);
-        comp->last_error = msg ? msg : "script compile error";
-        lua_pop(L, 2);                        // error + env
+    if (!result.success) {
+        comp->last_error = result.error_msg;
+        if (!JS_IsUndefined(module_ns)) JS_FreeValue(ctx, module_ns);
         return false;
     }
 
-    lua_pushvalue(L, -2);                     // env copy
-    lua_setupvalue(L, -2, 1);                 // chunk._ENV = env
+    // 存储模块命名空间
+    module_ns_map_[comp] = JS_DupValue(ctx, module_ns);
+    JS_FreeValue(ctx, module_ns);
 
-    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-        const char* msg = lua_tostring(L, -1);
-        comp->last_error = msg ? msg : "script load error";
-        lua_pop(L, 2);                        // error + env
-        return false;
-    }
-
-    lua_pushvalue(L, -1);                     // env copy
-    comp->env_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    lua_pop(L, 1);                            // env
-
-    comp->chunk_ref = -1;                     // top-level already executed
     comp->script_loaded = true;
     comp->start_called = false;
     comp->reported_error = false;
+    comp->paused_on_error = false;
 
-    // 热重载前清空旧信号连接并释放其回调引用，避免 on_start 里重复 connect。
-    for (const auto& sig : comp->signals) {
-        if (sig.callback_ref >= 0) luaL_unref(L, LUA_REGISTRYINDEX, sig.callback_ref);
-    }
-    comp->signals.clear();
+    // 登记到 loaded_，使 reload_all / on_shutdown 能真正卸载并释放模块
+    if (!contains(loaded_, comp)) loaded_.push_back(comp);
 
+    // 调用 on_start
     call_method(comp, "on_start");
+    if (comp->paused_on_error) {
+        comp->last_error = "on_start failed: " + comp->last_error;
+    }
+
+    // 同步 props
     sync_props_from_env(comp);
+
+    // 热重载：恢复旧 prop 值
     for (const auto& old : old_props) {
         for (auto& p : comp->props) {
             if (p.name == old.name && p.type == old.type) {
@@ -229,36 +239,159 @@ bool ScriptSystem::load(components::ScriptComponent* comp) {
             }
         }
     }
+
     return true;
 }
 
-void ScriptSystem::sync_props_from_env(components::ScriptComponent* comp) {
-    auto& rt = script::LuaRuntime::instance();
-    lua_State* L = rt.state();
-    if (!L || comp->env_ref < 0) return;
+void ScriptSystem::unload(components::ScriptComponent* comp) {
+    if (comp->script_loaded) {
+        call_method(comp, "on_destroy");
+    }
 
-    comp->props.clear();
-    lua_rawgeti(L, LUA_REGISTRYINDEX, comp->env_ref);   // env
-    lua_getfield(L, -1, "props");                        // env, props
-    if (lua_istable(L, -1)) {
-        lua_pushnil(L);                                   // env, props, key
-        while (lua_next(L, -2) != 0) {                    // env, props, key, val
-            if (lua_type(L, -2) == LUA_TSTRING) {
-                components::ScriptProp p;
-                p.name = lua_tostring(L, -2) ? lua_tostring(L, -2) : "";
-                if (lua_isnumber(L, -1)) {
-                    p.type = 0;
-                    p.f = static_cast<float>(lua_tonumber(L, -1));
-                } else if (lua_isstring(L, -1)) {
-                    p.type = 1;
-                    p.s = lua_tostring(L, -1) ? lua_tostring(L, -1) : "";
-                }
-                comp->props.push_back(std::move(p));
-            }
-            lua_pop(L, 1);                                // env, props, key
+    auto& rt = ScriptSystem::vm();
+    JSContext* ctx = rt.context();
+    if (ctx) {
+        auto it = module_ns_map_.find(comp);
+        if (it != module_ns_map_.end()) {
+            JS_FreeValue(ctx, it->second);
+            module_ns_map_.erase(it);
         }
     }
-    lua_pop(L, 2);                                        // (empty)
+
+    comp->script_loaded = false;
+    comp->start_called = false;
+    comp->paused_on_error = false;
+}
+
+// ============================================================================
+// 方法调用
+// ============================================================================
+
+void ScriptSystem::call_method(components::ScriptComponent* comp,
+                                const char* method, float arg, bool has_arg) {
+    auto& rt = ScriptSystem::vm();
+    JSContext* ctx = rt.context();
+    if (!ctx) return;
+
+    auto it = module_ns_map_.find(comp);
+    if (it == module_ns_map_.end()) return;
+
+    // 生命周期方法可选：模块未导出时静默跳过（不视为错误）
+    JSValue func = JS_GetPropertyStr(ctx, it->second, method);
+    const bool has_method = JS_IsFunction(ctx, func);
+    JS_FreeValue(ctx, func);
+    if (!has_method) return;
+
+    // 设置当前实体上下文（使用 GEntityHandle）
+    {
+        auto* owner = comp->owner();
+        int handle = 0;
+        if (owner) {
+            handle = gryce_core::g_core_state.entity_map.lookup(owner->uuid());
+        }
+        GryceEngineUtils::script::ScriptContext::instance().set_current_entity(handle);
+    }
+
+    std::vector<GryceEngineUtils::script::JSValueWrapper> args;
+    if (has_arg) args.push_back(GryceEngineUtils::script::JSValueWrapper(arg));
+
+    auto result = rt.call_module_function(it->second, method, args);
+    if (!result.success) {
+        comp->last_error = result.error_msg;
+        handle_error(comp);
+        // 生命周期方法抛异常则暂停该实体（on_destroy 除外，避免阻塞卸载）
+        if (std::strcmp(method, "on_destroy") != 0) {
+            comp->paused_on_error = true;
+        }
+    }
+}
+
+void ScriptSystem::call_method_int(components::ScriptComponent* comp,
+                                    const char* method, int type, int a, int b, int c) {
+    auto& rt = ScriptSystem::vm();
+    JSContext* ctx = rt.context();
+    if (!ctx) return;
+
+    auto it = module_ns_map_.find(comp);
+    if (it == module_ns_map_.end()) return;
+
+    // 事件方法可选：模块未导出时静默跳过
+    JSValue func = JS_GetPropertyStr(ctx, it->second, method);
+    const bool has_method = JS_IsFunction(ctx, func);
+    JS_FreeValue(ctx, func);
+    if (!has_method) return;
+
+    // 设置当前实体上下文（使用 GEntityHandle）
+    {
+        auto* owner = comp->owner();
+        int handle = 0;
+        if (owner) {
+            handle = gryce_core::g_core_state.entity_map.lookup(owner->uuid());
+        }
+        GryceEngineUtils::script::ScriptContext::instance().set_current_entity(handle);
+    }
+
+    auto result = rt.call_module_function(it->second, method, {
+        GryceEngineUtils::script::JSValueWrapper(type),
+        GryceEngineUtils::script::JSValueWrapper(a),
+        GryceEngineUtils::script::JSValueWrapper(b),
+        GryceEngineUtils::script::JSValueWrapper(c)
+    });
+    if (!result.success) {
+        comp->last_error = result.error_msg;
+        handle_error(comp);
+    }
+}
+
+// ============================================================================
+// Props 同步
+// ============================================================================
+
+void ScriptSystem::sync_props_from_env(components::ScriptComponent* comp) {
+    auto& rt = ScriptSystem::vm();
+    JSContext* ctx = rt.context();
+    if (!ctx) return;
+
+    auto it = module_ns_map_.find(comp);
+    if (it == module_ns_map_.end()) return;
+
+    comp->props.clear();
+
+    // 读取模块的 props 导出
+    JSValue props_val = JS_GetPropertyStr(ctx, it->second, "props");
+    if (JS_IsObject(props_val)) {
+        JSPropertyEnum* props_tab = nullptr;
+        uint32_t props_len = 0;
+        int ret = JS_GetOwnPropertyNames(ctx, &props_tab, &props_len, props_val,
+                                          JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY);
+        if (ret == 0) {
+            for (uint32_t i = 0; i < props_len; ++i) {
+                const char* key = JS_AtomToCString(ctx, props_tab[i].atom);
+                if (!key) continue;
+
+                JSValue val = JS_GetProperty(ctx, props_val, props_tab[i].atom);
+                components::ScriptProp p;
+                p.name = key;
+
+                if (JS_IsNumber(val)) {
+                    p.type = 0;
+                    double d;
+                    JS_ToFloat64(ctx, &d, val);
+                    p.f = static_cast<float>(d);
+                } else if (JS_IsString(val)) {
+                    p.type = 1;
+                    const char* s = JS_ToCString(ctx, val);
+                    if (s) { p.s = s; JS_FreeCString(ctx, s); }
+                }
+
+                comp->props.push_back(std::move(p));
+                JS_FreeValue(ctx, val);
+                JS_FreeCString(ctx, key);
+            }
+            js_free(ctx, props_tab);
+        }
+    }
+    JS_FreeValue(ctx, props_val);
 }
 
 bool ScriptSystem::get_prop(components::ScriptComponent* comp, const char* name,
@@ -302,111 +435,59 @@ bool ScriptSystem::set_prop(components::ScriptComponent* comp, const char* name,
 
 void ScriptSystem::write_prop_to_env(components::ScriptComponent* comp,
                                      const char* name, float value) {
-    auto& rt = script::LuaRuntime::instance();
-    lua_State* L = rt.state();
-    if (!L || comp->env_ref < 0) return;
-    lua_rawgeti(L, LUA_REGISTRYINDEX, comp->env_ref);   // env
-    lua_pushnumber(L, value);
-    lua_setfield(L, -2, name);
-    lua_pop(L, 1);
+    auto& rt = ScriptSystem::vm();
+    JSContext* ctx = rt.context();
+    if (!ctx) return;
+
+    auto it = module_ns_map_.find(comp);
+    if (it == module_ns_map_.end()) return;
+
+    // 写入模块导出的 props 对象（不存在则创建）
+    JSValue props = JS_GetPropertyStr(ctx, it->second, "props");
+    if (!JS_IsObject(props)) {
+        JS_FreeValue(ctx, props);
+        props = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, it->second, "props", JS_DupValue(ctx, props));
+    }
+    JS_SetPropertyStr(ctx, props, name, JS_NewFloat64(ctx, value));
+    JS_FreeValue(ctx, props);
 }
 
 void ScriptSystem::write_prop_to_env(components::ScriptComponent* comp,
                                      const char* name, const std::string& value) {
-    auto& rt = script::LuaRuntime::instance();
-    lua_State* L = rt.state();
-    if (!L || comp->env_ref < 0) return;
-    lua_rawgeti(L, LUA_REGISTRYINDEX, comp->env_ref);   // env
-    lua_pushlstring(L, value.c_str(), value.size());
-    lua_setfield(L, -2, name);
-    lua_pop(L, 1);
+    auto& rt = ScriptSystem::vm();
+    JSContext* ctx = rt.context();
+    if (!ctx) return;
+
+    auto it = module_ns_map_.find(comp);
+    if (it == module_ns_map_.end()) return;
+
+    // 写入模块导出的 props 对象（不存在则创建）
+    JSValue props = JS_GetPropertyStr(ctx, it->second, "props");
+    if (!JS_IsObject(props)) {
+        JS_FreeValue(ctx, props);
+        props = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, it->second, "props", JS_DupValue(ctx, props));
+    }
+    JS_SetPropertyStr(ctx, props, name, JS_NewString(ctx, value.c_str()));
+    JS_FreeValue(ctx, props);
 }
 
-void ScriptSystem::unload(components::ScriptComponent* comp) {
-    if (comp->script_loaded && comp->env_ref >= 0) {
-        call_method(comp, "on_destroy");
-    }
-    auto& rt = script::LuaRuntime::instance();
-    lua_State* L = rt.state();
-    if (L) {
-        if (comp->env_ref >= 0) {
-            luaL_unref(L, LUA_REGISTRYINDEX, comp->env_ref);
-            comp->env_ref = -1;
-        }
-        if (comp->chunk_ref >= 0) {
-            luaL_unref(L, LUA_REGISTRYINDEX, comp->chunk_ref);
-            comp->chunk_ref = -1;
-        }
-    }
-    comp->script_loaded = false;
-    comp->start_called = false;
-}
-
-void ScriptSystem::call_method(components::ScriptComponent* comp,
-                               const char* method, float arg, bool has_arg) {
-    auto& rt = script::LuaRuntime::instance();
-    lua_State* L = rt.state();
-    if (!L || comp->env_ref < 0) return;
-
-    lua_rawgeti(L, LUA_REGISTRYINDEX, comp->env_ref);   // env
-    lua_getfield(L, -1, method);                        // env, fn
-    if (!lua_isfunction(L, -1)) {
-        lua_pop(L, 2);
-        return;
-    }
-
-    rt.set_current_entity(comp->owner());
-    if (has_arg) lua_pushnumber(L, arg);
-    const int rc = lua_pcall(L, has_arg ? 1 : 0, 0, 0);
-    if (rc != LUA_OK) {
-        const char* msg = lua_tostring(L, -1);
-        comp->last_error = msg ? msg : "script error";
-        lua_pop(L, 1);                                  // error
-        lua_pop(L, 1);                                  // env
-        handle_error(comp);
-        return;
-    }
-    lua_pop(L, 1);                                      // env
-}
-
-// 调用脚本的带整型参数方法（用于 _input 事件分发）。
-void ScriptSystem::call_method_int(components::ScriptComponent* comp,
-                                   const char* method, int type, int a, int b, int c) {
-    auto& rt = script::LuaRuntime::instance();
-    lua_State* L = rt.state();
-    if (!L || comp->env_ref < 0) return;
-
-    lua_rawgeti(L, LUA_REGISTRYINDEX, comp->env_ref);   // env
-    lua_getfield(L, -1, method);                        // env, fn
-    if (!lua_isfunction(L, -1)) {
-        lua_pop(L, 2);
-        return;
-    }
-
-    rt.set_current_entity(comp->owner());
-    lua_pushinteger(L, type);
-    lua_pushinteger(L, a);
-    lua_pushinteger(L, b);
-    lua_pushinteger(L, c);
-    const int rc = lua_pcall(L, 4, 0, 0);
-    if (rc != LUA_OK) {
-        const char* msg = lua_tostring(L, -1);
-        comp->last_error = msg ? msg : "script error";
-        lua_pop(L, 1);                                  // error
-        lua_pop(L, 1);                                  // env
-        handle_error(comp);
-        return;
-    }
-    lua_pop(L, 1);                                      // env
-}
+// ============================================================================
+// 错误处理
+// ============================================================================
 
 void ScriptSystem::handle_error(components::ScriptComponent* comp) {
     if (comp->reported_error) return;
     comp->reported_error = true;
-    GLOG_ERROR("GryceSRT: script error on '{}': {}",
+    GLOG_ERROR("ScriptSystem: script error on '{}': {}",
                comp->owner() ? comp->owner()->name() : "?",
                comp->last_error);
 }
+
+// ============================================================================
+// 热重载 & 关闭
+// ============================================================================
 
 void ScriptSystem::reload_all() {
     source_cache_.clear();
@@ -418,7 +499,7 @@ void ScriptSystem::reload_all() {
 void ScriptSystem::on_shutdown(scene::Scene& scene) {
     (void)scene;
     reload_all();
-    script::LuaRuntime::instance().set_current_scene(nullptr);
+    GryceEngineUtils::script::ScriptContext::instance().set_current_scene(nullptr);
 }
 
 } // namespace gryce_engine::ecs

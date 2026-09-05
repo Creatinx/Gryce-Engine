@@ -23,7 +23,7 @@ namespace gryce_core {
 //
 // 引擎的全局运行时状态从 api/internal_state.h 移到这里，作为与 C API 胶水
 // 层无关的领域模块：script/ecs 等核心代码只依赖 runtime/engine_context.h，
-// 不再反向依赖 api/。后续可按需注入到 World / LuaRuntime 而非直接读全局。
+// 不再反向依赖 api/。后续可按需注入到 World / ScriptVM 而非直接读全局。
 // ---------------------------------------------------------------------------
 
 // 回调表（C API 层向编辑器转发事件）

@@ -1,18 +1,22 @@
 #pragma once
 
-#include <vector>
 #include <unordered_map>
+#include <vector>
+
+#include <quickjs/quickjs.h>
 
 #include "ecs/system.h"
 #include "export.h"
+#include "script/runtime/script_vm.h"
 
 namespace gryce_engine::components { class ScriptComponent; }
 namespace gryce_engine::scene { class Entity; }
+namespace gryce_engine::scene { class Scene; }
 
 namespace gryce_engine::ecs {
 
-/// GryceSRT driver: loads .lua scripts into per-component environments and
-/// calls on_start / on_update(dt) / on_destroy, every invocation under pcall.
+/// GryceSRT driver: loads .js scripts into per-component module scopes and
+/// calls on_start / on_update(dt) / on_destroy via QuickJS ScriptVM.
 class GRYCE_API ScriptSystem : public ISystem {
 public:
     const char* name() const override { return "ScriptSystem"; }
@@ -21,6 +25,9 @@ public:
 
     void on_update(scene::Scene& scene, float dt) override;
     void on_shutdown(scene::Scene& scene) override;
+
+    /// 析构时卸载全部脚本并释放模块命名空间，避免 QuickJS gc 对象泄漏。
+    ~ScriptSystem() override { reload_all(); }
 
     /// Unloads every loaded script; they reload on the next update.
     void reload_all();
@@ -44,10 +51,15 @@ private:
     void dispatch_input_events();
     void handle_error(components::ScriptComponent* comp);
 
+    /// 全局 ScriptVM 实例（延迟初始化）
+    static GryceEngineUtils::script::ScriptVM& vm();
+
+    /// 组件 -> 模块命名空间映射
+    std::unordered_map<components::ScriptComponent*, JSValue> module_ns_map_;
+
     std::vector<components::ScriptComponent*> loaded_;
     std::vector<components::ScriptComponent*> seen_;
-    // Cached script source per res: path, so N entities sharing one script
-    // read + compile from memory instead of touching the disk every frame.
+    // Cached script source per script path
     std::unordered_map<std::string, std::string> source_cache_;
 };
 

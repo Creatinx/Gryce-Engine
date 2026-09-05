@@ -9,7 +9,7 @@
 namespace gryce_engine::components {
 
 /// Exposed script property (from the script's `props` table). type:
-/// 0 = float, 1 = string. Values stay in sync with the Lua environment and are
+/// 0 = float, 1 = string. Values stay in sync with the script environment and are
 /// serialized with the scene.
 struct GRYCE_API ScriptProp {
     std::string name;
@@ -18,21 +18,10 @@ struct GRYCE_API ScriptProp {
     std::string s;
 };
 
-/// A signal connection recorded by engine.signal.connect(name, target, cb).
-/// callback_ref lives in the Lua registry; target_env_ref is the target
-/// component's per-component environment (used to set the current entity while
-/// the callback runs). Runtime state, not serialized.
-struct GRYCE_API ScriptSignal {
-    std::string name;
-    int target_handle = 0;      // target entity handle (restores current_entity)
-    int target_env_ref = -1;    // target component's per-component env (registry ref)
-    int callback_ref = -1;      // target callback (registry ref)
-};
-
-/// ScriptComponent (GryceSRT): binds a .lua file to an entity. The Lua
+/// ScriptComponent: binds a .js file to an entity. The JS
 /// callbacks (on_start / on_update / on_destroy) are driven by ScriptSystem.
-/// Only script_path + enabled are serialized; the Lua env/chunk references are
-/// runtime state managed by ScriptSystem.
+/// Only script_path + enabled are serialized; the module namespace is runtime
+/// state managed by ScriptSystem.
 class GRYCE_API ScriptComponent : public Component {
 public:
     std::string script_path;
@@ -71,18 +60,16 @@ public:
     }
 
     // --- runtime state (not serialized; managed by ScriptSystem) ---
-    int env_ref = -1;       // lua registry ref to the per-component env table
-    int chunk_ref = -1;     // lua registry ref to the loaded chunk
     bool script_loaded = false;
     bool start_called = false;
     bool reported_error = false;
+    bool paused_on_error = false; // on_update/on_start 抛异常后暂停该实体，直到重载
     std::string last_error;
     std::vector<ScriptProp> props;
 
-    // --- Godot-like Node scheduling / communication ---
+    // --- Godot-like Node scheduling ---
     int process_priority = 0; // 值越大 on_update 越先执行（默认 0）
     bool pause_mode = false;  // true = 全局暂停时仍执行 on_update（类比 process_mode）
-    std::vector<ScriptSignal> signals; // engine.signal.connect 记录
 };
 
 } // namespace gryce_engine::components

@@ -17,6 +17,22 @@
 
 #include <quickjs/quickjs.h>
 
+namespace GryceEngineUtils {
+class Renderer;
+namespace ecs { class World; }
+namespace ui { class UIManager; }
+
+// 游戏玩法桥接运行时：宿主把依赖注入给引擎，供 QuickJS 脚本透过
+// engine.game.* 生成/移动/销毁 3D 实体、读取输入、改 UI 控件。
+// 由宿主调用 EngineBridge::set_game_runtime 填充（可留空字段）。
+struct GameRuntime {
+    ecs::World* world = nullptr;      // 3D 实体所在 ECS World
+    Renderer*   renderer = nullptr;   // 输入查询与渲染窗口
+};
+
+using UIManager = ui::UIManager;
+} // namespace GryceEngineUtils
+
 namespace GryceEngineUtils::ui {
 
 class ScriptVM;
@@ -34,9 +50,14 @@ public:
     // 获取当前 vm（用于事件回调中调用 JS 函数）
     static ScriptVM* vm() { return vm_; }
 
+    // 注入游戏玩法桥接运行时（engine.game.* 依赖它）
+    static void set_game_runtime(const GryceEngineUtils::GameRuntime& rt) { game_runtime_ = rt; }
+    static const GryceEngineUtils::GameRuntime& game_runtime() { return game_runtime_; }
+
 private:
     static UIManager* ui_manager_;
     static ScriptVM* vm_;
+    static GryceEngineUtils::GameRuntime game_runtime_;
 };
 
 } // namespace GryceEngineUtils::ui

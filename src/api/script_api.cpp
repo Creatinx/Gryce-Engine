@@ -1,11 +1,10 @@
-﻿#include "GryceCore/script_api.h"
+#include "GryceCore/script_api.h"
 
 #include "runtime/engine_context.h"
 #include "components/script_component.h"
 #include "ecs/systems/script_system.h"
 #include "ecs/world.h"
 #include "scene/entity.h"
-#include "script/lua_runtime.h"
 
 #include <cstring>
 #include <string>
@@ -29,33 +28,27 @@ gryce_engine::ecs::ScriptSystem* script_system() {
 extern "C" {
 
 const char* GScript_GetVersion(void) {
-    return "GryceSRT 0.1.0 (Lua 5.4.7)";
+    return "GryceSRT 0.2.0 (QuickJS)";
 }
 
+// GScript_RunString and GScript_RunFile are deprecated.
+// Script execution is now driven by ECS ScriptComponent + ScriptSystem with QuickJS.
 int GScript_RunString(const char* code, char* err_out, int err_cap) {
-    auto& rt = gryce_engine::script::LuaRuntime::instance();
-    if (!rt.initialized() && !rt.init()) return -1;
-
-    std::string err;
-    const bool ok = rt.run_string(code, &err);
-    if (!ok && err_out && err_cap > 0) {
-        std::strncpy(err_out, err.c_str(), static_cast<size_t>(err_cap) - 1);
+    if (err_out && err_cap > 0) {
+        const char* msg = "GScript_RunString is deprecated; use ECS ScriptComponent with QuickJS";
+        std::strncpy(err_out, msg, static_cast<size_t>(err_cap) - 1);
         err_out[err_cap - 1] = '\0';
     }
-    return ok ? 0 : -1;
+    return -1;
 }
 
 int GScript_RunFile(const char* path, char* err_out, int err_cap) {
-    auto& rt = gryce_engine::script::LuaRuntime::instance();
-    if (!rt.initialized() && !rt.init()) return -1;
-
-    std::string err;
-    const bool ok = rt.run_file(path, &err);
-    if (!ok && err_out && err_cap > 0) {
-        std::strncpy(err_out, err.c_str(), static_cast<size_t>(err_cap) - 1);
+    if (err_out && err_cap > 0) {
+        const char* msg = "GScript_RunFile is deprecated; use ECS ScriptComponent with QuickJS";
+        std::strncpy(err_out, msg, static_cast<size_t>(err_cap) - 1);
         err_out[err_cap - 1] = '\0';
     }
-    return ok ? 0 : -1;
+    return -1;
 }
 
 int GScript_GetPropCount(GEntityHandle entity, int* out_count) {

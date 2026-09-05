@@ -19,7 +19,6 @@
 #include "components/component_factory.h"
 #include "resources/project.h"
 #include "resources/gpack_bundle.h"
-#include "script/lua_runtime.h"
 #include "utils/glog/glog_lib.h"
 
 #include <nlohmann/json.hpp>
@@ -585,8 +584,7 @@ int GCore_Init(const GCoreInitDesc* desc) {
 
     gryce_core::g_core_state.entity_map.rebuild(gryce_core::g_core_state.world->scene());
 
-    // GryceSRT: bring up the Lua runtime together with the core.
-    script::LuaRuntime::instance().init();
+    // GryceSRT: ScriptVM is lazily initialized by ScriptSystem on first use.
 
     gryce_core::g_core_state.initialized = true;
 
@@ -612,8 +610,6 @@ void GCore_Shutdown(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(gryce_core::g_core_state.init_mutex);
     if (!gryce_core::g_core_state.initialized) return;
-
-    script::LuaRuntime::instance().shutdown();
 
     if (gryce_core::g_core_state.world) {
         gryce_core::g_core_state.world->shutdown();

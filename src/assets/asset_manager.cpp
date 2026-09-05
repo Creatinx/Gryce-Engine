@@ -600,31 +600,16 @@ void AssetManager::maybe_evict_unlocked() {
 }
 
 int AssetManager::mount_bundle(const std::string& pack_path) {
-    // 检测 .pak 格式，使用 PakReader
-    const bool is_pak = ends_with_ci(pack_path, ".pak");
-
-    if (is_pak) {
-        auto pak_reader = std::make_unique<resources::PakReader>();
-        if (!pak_reader->open(pack_path)) return -1;
-
-        std::lock_guard<std::mutex> lock(mutex_);
-        int id = next_bundle_id_++;
-        MountedBundle bundle;
-        bundle.id = id;
-        bundle.pak_reader = std::move(pak_reader);
-        bundles_[id] = std::move(bundle);
-        GLOG_INFO("AssetManager: mounted .pak bundle '{}' (id={})", pack_path, id);
-        return id;
-    }
-
-    auto reader = std::make_unique<resources::GPackReader>();
-    if (!reader->open(pack_path)) return -1;
+    // 统一使用 PakReader（GPAK v3，随机 Base64 存储名 + manifest）。PakReader
+    // 同时也兼容 GPAK v1，因此历史 .gpkg/.gpack 归档也能挂载。
+    auto pak_reader = std::make_unique<resources::PakReader>();
+    if (!pak_reader->open(pack_path)) return -1;
 
     std::lock_guard<std::mutex> lock(mutex_);
     int id = next_bundle_id_++;
     MountedBundle bundle;
     bundle.id = id;
-    bundle.reader = std::move(reader);
+    bundle.pak_reader = std::move(pak_reader);
     bundles_[id] = std::move(bundle);
     GLOG_INFO("AssetManager: mounted bundle '{}' (id={})", pack_path, id);
     return id;
@@ -650,14 +635,8 @@ std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) 
     for (auto& [id, bundle] : bundles_) {
         (void)id;
 
-        // 检查资源是否在 bundle 中（支持 GPackReader 和 PakReader）
-        bool found = false;
-        if (bundle.reader && bundle.reader->contains(internal_path)) {
-            found = true;
-        } else if (bundle.pak_reader && bundle.pak_reader->contains(internal_path)) {
-            found = true;
-        }
-        if (!found) continue;
+        // 检查资源是否在 bundle 中（PakReader 兼容 v1/v3：v3 经 manifest 映射）
+        if (!bundle.pak_reader || !bundle.pak_reader->contains(internal_path)) continue;
 
         // 检查是否已提取
         auto it = bundle.extracted_temp_paths.find(internal_path);
@@ -666,12 +645,7 @@ std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) 
         }
 
         // 读取数据
-        std::vector<uint8_t> data;
-        if (bundle.reader) {
-            data = bundle.reader->read(internal_path);
-        } else if (bundle.pak_reader) {
-            data = bundle.pak_reader->read(internal_path);
-        }
+        std::vector<uint8_t> data = bundle.pak_reader->read(internal_path);
         if (data.empty()) continue;
 
         // 按内部路径保持目录结构解出（<temp>/gryce_bundle/<bundle_id>/...），
@@ -697,17 +671,12 @@ std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) 
             const std::string dir = parent_dir_of(internal_path);
             for (auto& [dep_bundle_id, dep_bundle] : bundles_) {
                 (void)dep_bundle_id;
+                if (!dep_bundle.pak_reader) continue;
 
-                // 获取该 bundle 中所有资源的路径列表
+                // 获取该 bundle 中所有资源的路径列表（manifest 原始路径）
                 std::vector<std::string> all_paths;
-                if (dep_bundle.reader) {
-                    for (const auto& entry : dep_bundle.reader->entries()) {
-                        all_paths.push_back(entry.path);
-                    }
-                } else if (dep_bundle.pak_reader) {
-                    for (const auto& me : dep_bundle.pak_reader->manifest()) {
-                        all_paths.push_back(me.original_path);
-                    }
+                for (const auto& me : dep_bundle.pak_reader->manifest()) {
+                    all_paths.push_back(me.original_path);
                 }
 
                 for (const std::string& entry_path : all_paths) {
@@ -716,12 +685,7 @@ std::string AssetManager::extract_from_bundle_unlocked(const std::string& path) 
                     if (!dir.empty() && entry_path.rfind(dir, 0) != 0) continue;
                     if (dep_bundle.extracted_temp_paths.count(entry_path)) continue;
 
-                    std::vector<uint8_t> dep_data;
-                    if (dep_bundle.reader) {
-                        dep_data = dep_bundle.reader->read(entry_path);
-                    } else if (dep_bundle.pak_reader) {
-                        dep_data = dep_bundle.pak_reader->read(entry_path);
-                    }
+                    std::vector<uint8_t> dep_data = dep_bundle.pak_reader->read(entry_path);
                     if (dep_data.empty()) continue;
                     const std::string dep_rel = sanitize_internal_path(entry_path);
                     std::filesystem::path dep_path =

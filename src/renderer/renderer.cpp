@@ -87,7 +87,7 @@ std::string find_project_root() {
                 std::filesystem::is_directory(dir / "src")) {
                 std::string exe_name = exe_path.stem().string();
                 std::filesystem::path candidate = dir / "examples" / exe_name;
-                if (std::filesystem::exists(candidate / "project.gryce")) {
+                if (std::filesystem::exists(candidate / "project.gproj")) {
                     return candidate.string();
                 }
                 return dir.string();
@@ -105,7 +105,7 @@ std::string find_project_root() {
                 std::filesystem::is_directory(dir / "src")) {
                 std::string exe_name = exe_path.stem().string();
                 std::filesystem::path candidate = dir / "examples" / exe_name;
-                if (std::filesystem::exists(candidate / "project.gryce")) {
+                if (std::filesystem::exists(candidate / "project.gproj")) {
                     return candidate.string();
                 }
                 return dir.string();
@@ -581,6 +581,14 @@ void Renderer::window_size(int& w, int& h) const {
     if (impl_ && impl_->window) {
         impl_->window->get_size(w, h);
     }
+}
+
+bool Renderer::key_held(int key) const {
+    return impl_ ? impl_->input.is_key_held(key) : false;
+}
+
+bool Renderer::key_pressed(int key) const {
+    return impl_ ? impl_->input.is_key_pressed(key) : false;
 }
 void* Renderer::native_window() {
     return impl_ && impl_->window ? impl_->window->native_handle() : nullptr;
