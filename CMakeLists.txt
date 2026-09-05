@@ -272,6 +272,8 @@ if(GRYCE_ENABLE_UI)
         gryce_renderer_static
         GryceQuickJS
     )
+    # 双轨解析开关：DSL 为现行默认路径；原 pugixml XML 路径仍保留供回退
+    target_compile_definitions(gryce_ui_static PUBLIC GRYCE_UIF_DSL=1)
     set_target_properties(gryce_ui_static PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 

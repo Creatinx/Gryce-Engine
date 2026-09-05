@@ -19,6 +19,8 @@
 #endif
 #include "pugixml/pugixml.hpp"
 
+#include "GryceEngineUtils/ui/dsl/ast.h"
+#include "GryceEngineUtils/ui/dsl/semantic_analyzer.h"
 #include "GryceEngineUtils/ui/widget.h"
 
 namespace GryceEngineUtils::ui {
@@ -45,6 +47,17 @@ public:
     // 返回构建结果，包含根控件指针
     UIBuildResult build(const pugi::xml_document& doc);
 
+    // 从 DSL AST 构建控件树（阶段四入口之一）。
+    // roots: 由 Parser 产出（可经 SemanticAnalyzer / ASTOptimizer）的 AST 节点
+    UIBuildResult build(const std::vector<dsl::ASTNode>& roots);
+
+    // 全流程便捷入口：DSL 源码 -> Lexer -> Parser -> SemanticAnalyzer ->
+    // ASTOptimizer -> UIBuilder，产出控件树。
+    // 成功时返回 result.success == true。
+    static UIBuildResult build_from_dsl_source(
+        const std::string& source,
+        std::vector<dsl::SemanticError>* semantic_errors = nullptr);
+
     // 获取 .uif → Widget 类型名映射表
     static const std::unordered_map<std::string, std::string>& type_aliases();
 
@@ -58,8 +71,14 @@ public:
 private:
     bool cleanup_on_failure_ = true;
 
-    // 递归构建控件树
+    // 递归构建控件树（XML）
     Widget* build_node(const pugi::xml_node& xml_node, int& count);
+
+    // 递归构建控件树（DSL AST）
+    Widget* build_ast_node(const dsl::ASTNode& node, int& count);
+
+    // 将 DSL ASTValue 转成 set_property 用的字符串
+    static std::string ast_value_to_string(const dsl::ASTValue& v);
 
     // 将 .uif 类型名映射到 Widget 类型名
     std::string resolve_type_name(const char* uif_name) const;
