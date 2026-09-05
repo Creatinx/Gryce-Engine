@@ -221,8 +221,6 @@ cmake -S . -B out/vs -G "Visual Studio 18 2026" -A x64
 ```text
 build/Debug/bin/Debug/
 ├── GryceCore.dll / GrycePlatform.dll / GryceRenderer.dll / GrycePhysics.dll
-├── 3dtest.exe          # 3D 综合演示
-├── 2dDemo.exe          # 2D 平台跳跃演示（场景驱动，编辑器可编辑关卡）
 └── gryce_tests.exe     # 单元测试
 
 editor/bin/<Config>/net48/
@@ -235,11 +233,8 @@ editor/bin/<Config>/net48/
 # 构建打包工具（随主构建一起生成 build/bin/<Config>/grycegc.exe）
 cmake --build build --target GryceGC --config Release
 
-# 打包（Debug/Release 均可）：不复制 res/，而是将资源按类别打包为多个 .gpkg
-build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame --build-dir build --config Release --out build/game --author "Your Name"
-
-# 2D 演示（2dDemo）同样是一个 GryceGC-A 项目，可直接打包运行
-build/bin/Release/grycegc.exe --project examples/2dDemo --name 2dDemo --build-dir build --config Release --out build/game --author "Your Name"
+# 打包（Debug/Release 均可）：将 GryceGC-A 项目打包为独立游戏
+	build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame --build-dir build --config Release --out build/game --author "Your Name"
 
 # 运行产物（无 res/ 目录）：
 #   <out>/<name>/MyGame.exe        游戏入口
@@ -257,69 +252,9 @@ GryceGC 是 C++ 工具（`tools/grycegc/`），通过 GryceCore 的 GPack C API�
 ### 运行
 
 ```powershell
-# 3D 综合演示（默认 Vulkan 后端）
-./build/Debug/bin/Debug/3dtest.exe
-
-# 3D 综合演示（OpenGL 兼容后端）
-./build/Debug/bin/Debug/3dtest.exe --opengl
-
-# 2D 平台跳跃演示
-./build/Debug/bin/Debug/2dDemo.exe
-
-# WPF 编辑器（原生 DLL 已由 CMake 自动部署）
-./editor/bin/Debug/net48/GryceEngine.Editor.exe
-
 # 单元测试
 ./build/Debug/bin/Debug/gryce_tests.exe
 ```
-
-#### 演示程序命令行参数
-
-| 参数 | 说明 |
-|---|---|
-| `--vulkan` | 使用 Vulkan 后端（默认） |
-| `--opengl` | 使用 OpenGL 兼容后端 |
-| `--vulkan-validation` | 启用 Vulkan 验证层 |
-| `--screenshot` | 首帧后请求截图（写入引擎根目录 `screenshot_vulkan.bmp` / `screenshot_opengl.bmp`） |
-| `--screenshot-delay <秒>` | 延迟指定秒数后截图 |
-| `--auto-close <秒>` | 运行指定秒数后自动退出（CI 用） |
-
----
-
-## 控制说明
-
-### 3D 演示（3dtest）
-
-| 按键 | 功能 |
-|------|------|
-| `W/A/S/D`、`方向键` | 移动 |
-| `Space` / `Left Ctrl` | 上升 / 下降 |
-| `Left Shift` | 冲刺 |
-| `Right Shift` | 角色控制器跳跃（角色演示） |
-| `鼠标移动` | 视角 |
-| `Tab` | 锁定 / 释放鼠标 |
-| `ESC` | 退出程序 |
-| `R` | 重置 3D 场景 |
-| `鼠标左键` | 拾取并拖拽物体（重力枪） |
-| `F1` | 切换线框模式（仅 OpenGL 后端） |
-| `F2` | 触发 Cube 碎裂演示 |
-| `F3` | 保存当前场景到 `res:/scenes/main.gesc` |
-| `F4` | 重建触发器演示 |
-
-### 2D 演示（2dDemo）
-
-场景驱动的 2D 平台跳跃游戏：3 个编辑器可加载关卡（`scenes/level_*.gesc` + `levels.json`），
-玩法逻辑全部写在 GryceSRT Lua 脚本（`scripts/*.lua`）；包含关卡过关系统、昼夜循环
-（白天/黄昏/夜晚/黎明）、2D 光照、Box2D 物理、巡逻敌人、可升级枪械（鼠标瞄准射击、
-拾取升级三发）与终点过关条件。同样的脚本在编辑器 Play 模式、独立 exe 与打包产物中运行。
-
-| 按键 | 功能 |
-|------|------|
-| `A/D`、`方向键` | 左右移动 |
-| `Space` / `W` / `上方向键` | 跳跃 |
-| `鼠标左键` / `Z` | 射击（鼠标瞄准） |
-| `R` | 重新开始游戏 |
-| `ESC` | 退出程序 |
 
 ---
 
@@ -380,7 +315,7 @@ Gryce-Engine/
 
 ```text
 ┌────────────────────────────────────────────────────────────┐
-│ Application（3dtest / 2dDemo）— C++，直接链接引擎内部 API  │
+│ Application（GryceEngineUtils API）— 直接链接引擎内部 API  │
 └───────────────────────────────┬────────────────────────────┘
                                 │
 ┌───────────────────────────────▼────────────────────────────┐

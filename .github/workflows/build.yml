@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        run: cmake --build build --target gryce_tests 3dtest 2dDemo FPSDemo grycegc
+        run: cmake --build build --target gryce_tests GryceGC GryceGame
 
       - name: Run tests
         shell: msys2 {0}
@@ -69,7 +69,7 @@ jobs:
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
-        run: cmake --build build --target gryce_tests 3dtest 2dDemo FPSDemo grycegc
+        run: cmake --build build --target gryce_tests GryceGC GryceGame
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
@@ -97,21 +97,7 @@ jobs:
         run: cmake -B build -G "Visual Studio 17 2022" -A x64
 
       - name: Build
-        run: cmake --build build --config Debug --target gryce_tests 3dtest 2dDemo FPSDemo grycegc
+        run: cmake --build build --config Debug --target gryce_tests GryceGC GryceGame
 
       - name: Run tests
         run: ctest -C Debug --test-dir build --output-on-failure
-
-  editor:
-    name: WPF editor build
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: microsoft/setup-msbuild@v2
-
-      - name: Restore NuGet packages
-        run: msbuild editor/GryceEngine.Editor.csproj /t:Restore /p:Configuration=Debug /p:Platform=x64
-
-      - name: Build editor
-        run: msbuild editor/GryceEngine.Editor.csproj /p:Configuration=Debug /p:Platform=x64 /v:minimal

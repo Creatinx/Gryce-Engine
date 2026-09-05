@@ -544,7 +544,7 @@ def main():
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
     print(f"  Binaries: {build_dir}/bin/{config}/")
     print(f"  Editor:   GryceEditor (C++/ImGui, built by default)")
-    print(f"  Demos:    minimal / ecs_demo / 3dtest / ui_demo (GryceEngineUtils API)")
+    print(f"  Demos:    (examples/ directory cleared, no active demos)")
 
 
 if __name__ == "__main__":

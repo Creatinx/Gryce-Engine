@@ -3,7 +3,7 @@
 > GryceSRT = GryceEngine Script Runtime（Core 内嵌 Lua 5.4）。
 > 脚本通过 `Script` 组件挂到实体上，播放/打包运行时由 ScriptSystem 驱动。
 > 玩法逻辑（角色控制、AI、关卡流程等）可以完全用 Lua 编写；
-> `examples/2dDemo` 就是一套完整的 Lua 驱动的平台跳跃游戏。
+> 示例项目（`examples/`）已清空。可在此创建 GryceGC-A 项目用于测试和开发。
 
 ## 1. 脚本生命周期
 
@@ -154,11 +154,9 @@ props = {
 - 随场景保存（.gesc）。
 - 热重载（保存脚本/`ReloadScripts`）会保留 Inspector 里改过的值。
 
-## 4. 示例脚本（`examples/3dtest/scripts/`）
+## 4. 示例脚本
 
-- `rotate.lua`：绕 Z 轴自转，速度由 `props.speed` 控制。
-- `move.lua`：WASD + Space/Ctrl 移动，速度 `props.speed`。
-- `timer.lua`：按 `props.interval` 秒定时打日志。
+示例项目（`examples/`）已清空。可参考 GryceSRT API 和 GryceGC-A 标准创建自己的 Lua 脚本项目。
 
 ## 5. GryceGC 打包（GryceSPC）
 
@@ -177,7 +175,7 @@ Core 初始化 → 物理挂载 → Platform 创建窗口 → Renderer → 播�
 ### 5.2 打包
 
 ```bat
-build/bin/Release/grycegc.exe --project examples/3dtest --name MyGame ^
+build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame ^
     --build-dir build --config Release --out build/game --author "Your Name"
 ```
 

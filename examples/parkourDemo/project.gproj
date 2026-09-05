@@ -1,0 +1,10 @@
+{
+  "name": "ParkourRun",
+  "version": "0.1.0",
+  "engine_version": ">=0.1.0",
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "title": "Gryce Engine - Parkour Run (3D 跑酷)"
+  }
+}

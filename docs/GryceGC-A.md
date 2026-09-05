@@ -1,7 +1,7 @@
-# GryceGC-A 项目与打包标准
+﻿# GryceGC-A 项目与打包标准
 
 > GryceGC-A（Standard A）是 Gryce Engine 的游戏项目组织 + 发布打包标准：
-> 一个 **GryceGC-A 项目** 是磁盘上一个自描述的目录（`project.gryce` 清单 +
+> 一个 **GryceGC-A 项目** 是磁盘上一个自描述的目录（`project.gproj` 清单 +
 > `project_settings.json` 运行时设置 + 分类资源子目录），由 **GryceGC**（`tools/grycegc`，
 > 构建产物 `grycegc.exe`）打包成可独立分发的游戏目录（`exe + runtime/ + assets/*.gpkg +
 > gdata`），再由 **GryceSPC 模板**（`templates/GameTemplates.cpp`，构建产物 `GryceGame.exe`）
@@ -18,8 +18,8 @@
 ## 1. 标准总览
 
 ```text
-examples/2dDemo（或任意游戏项目目录）
-  │  1. 项目自描述：project.gryce + project_settings.json
+examples/<your-project-dir>（或任意游戏项目目录）
+  │  1. 项目自描述：project.gproj + project_settings.json
   │  2. 资源按类别分目录：scenes/ scripts/ shaders/ models/ textures/
   │     audio/ fonts/ config/ tilesets/ ...
   ▼
@@ -33,9 +33,7 @@ GryceGC（grycegc.exe）
   └─ gdata               包元数据（源文件 SHA-256 记录 + 64 字节 SHA-512 密钥 + 作者）
 ```
 
-“最新标准”的要点（与历史打包方式相比）：
 
-- 不再复制 `res/` 目录，游戏内容全部进入 `.gpkg` 资源包；
 - 游戏入口对核心 DLL **延迟加载**，从 `runtime/` 子目录解析；
 - Core 启动时自动挂载项目根与 `assets/` 下的 `.gpkg/.gpack`，`res:/` 资源统一走
   “真实文件优先、包内提取兜底”；
@@ -52,7 +50,7 @@ GryceGC（grycegc.exe）
 
 ```text
 <project>/
-├── project.gryce            # 项目清单（名称/版本/入口场景/物理/窗口）
+├── project.gproj            # 项目清单（名称/版本/入口场景/物理/窗口）
 ├── project_settings.json    # 运行时设置（渲染参数 + main_scene）
 ├── scenes/                  # 场景 .gesc
 ├── scripts/                 # Lua 脚本 .lua
@@ -66,7 +64,7 @@ GryceGC（grycegc.exe）
 └── ...（其它资源自动归入 misc）
 ```
 
-### 2.1 `project.gryce` — 项目清单
+### 2.1 `project.gproj` — 项目清单
 
 声明式元数据（供工具链 / 编辑器 / 示例识别项目）。当前字段：
 
@@ -80,7 +78,7 @@ GryceGC（grycegc.exe）
 | `physics.backend_3d` | string | 3D 物理后端（`jolt`） |
 | `window.width/height/title` | int/string | 默认窗口尺寸与标题 |
 
-示例（`examples/2dDemo/project.gryce`）：
+示例（`<your-project-dir>/project.gproj`）：
 
 ```json
 {
@@ -176,7 +174,7 @@ cmake --build build --target GryceGame GryceGC --config Release
 打包示例（2dDemo）：
 
 ```bat
-build/bin/Release/grycegc.exe --project examples/2dDemo --name 2dDemo ^
+build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame ^
     --build-dir build --config Release --out build/game --author "Your Name"
 ```
 
@@ -202,7 +200,7 @@ build/bin/Release/grycegc.exe --project examples/2dDemo --name 2dDemo ^
 │   ├── <name>.textures.gpkg
 │   ├── ...（每类别一个，--single 时只有 <name>.gpkg）
 ├── project_settings.json   # 项目根设置原样复制（游戏入口从 exe 目录读取 main_scene 等）
-├── project.gryce           # 项目清单（文档用途，同时也在 config 包内）
+├── project.gproj           # 项目清单（文档用途，同时也在 config 包内）
 └── gdata                  # 包元数据（JSON）
 ```
 
@@ -297,7 +295,7 @@ build/bin/Release/grycegc.exe --project examples/2dDemo --name 2dDemo ^
 
 项目要符合最新的 GryceGC-A 标准，需满足：
 
-- [ ] 目录包含 `project.gryce`（`name` 与目录名一致）与 `project_settings.json`
+- [ ] 目录包含 `project.gproj`（`name` 与目录名一致）与 `project_settings.json`
       （含 `main_scene`）；
 - [ ] `scenes/` 下有 `main.gesc`（或 `main_scene` 指向的实际场景文件）；
 - [ ] 资源按类别目录组织，源文件（`.cpp/.h/...`）与构建产物不会混入资源目录；
@@ -311,14 +309,7 @@ build/bin/Release/grycegc.exe --project examples/2dDemo --name 2dDemo ^
 
 ## 7. 仓库中的 GryceGC-A 项目
 
-- `examples/3dtest` — 3D 综合演示（PBR/阴影/物理/关节/角色/碎裂/动画/音频）；
-- `examples/2dDemo` — 2D 平台跳跃游戏（Tilemap/2D 光照/昼夜循环/粒子/视差/音效/角色控制器/
-  敌人/枪械/关卡过关条件），关卡为编辑器可加载的 `.gesc` 场景（`scenes/level_*.gesc`），
-  **玩法逻辑全部在 GryceSRT Lua 脚本**（`scripts/*.lua`）；打包产物的 GryceGame 模板会同步
-  输入并运行同一套 Lua 玩法，可独立游玩。
-
-两者同时保留“开发模式”可执行文件（直接链接引擎内部 C++ API 的 `3dtest.exe` /
-`2dDemo.exe`）与发布产物（GryceGame 模板）跑同一套 Lua 玩法；发布走 GryceGC-A 打包流程。
+示例目录（`examples/`）已清空，可在此创建新的 GryceGC-A 项目。
 
 ---
 
