@@ -39,6 +39,7 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_builder_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:ui_renderer_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:dsl_lexer_test.cpp>
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:dsl_parser_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:script_vm_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_UI}>:engine_bridge_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:script_vm2_test.cpp>
