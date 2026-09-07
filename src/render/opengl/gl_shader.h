@@ -62,6 +62,9 @@ private:
     // Shader 热重载：load_program 记录的源文件信息（resolved 目录 + 最后修改时间）
     std::string source_name_;
     std::string source_dir_;
+    // 实际命中的源文件可读路径（磁盘或 bundle 解出的临时路径），供 mtime 跟踪
+    std::string source_vert_path_;
+    std::string source_frag_path_;
     std::filesystem::file_time_type vert_mtime_{};
     std::filesystem::file_time_type frag_mtime_{};
 

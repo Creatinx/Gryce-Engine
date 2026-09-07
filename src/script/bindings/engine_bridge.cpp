@@ -197,6 +197,9 @@ static JSValue js_entity_find_all(JSContext* ctx, JSValueConst this_val,
 }
 
 // engine.entity.create(name, parent) -> handle
+// 同步创建实体并返回真实句柄：复用 GEntity_ImportJson（在当前调用栈内建实体，
+// 未初始化 world / scene 时返回 0），使「创建后立刻移动/设置」的写法在同一帧成立。
+// 原异步 ECMD_CREATE_ENTITY 命令路径保留在核心中供其他入口使用。
 static JSValue js_entity_create(JSContext* ctx, JSValueConst this_val,
                                  int argc, JSValueConst* argv) {
     const char* name = "NewEntity";
@@ -210,20 +213,18 @@ static JSValue js_entity_create(JSContext* ctx, JSValueConst this_val,
         JS_ToInt32(ctx, &parent, argv[1]);
     }
 
-    struct Payload { char name[128]; GEntityHandle parent; };
-    Payload p;
-    std::memset(&p, 0, sizeof(p));
-    std::strncpy(p.name, name, sizeof(p.name) - 1);
-    p.parent = parent;
-
-    GCommand cmd;
-    std::memset(&cmd, 0, sizeof(cmd));
-    cmd.type = ECMD_CREATE_ENTITY;
-    std::memcpy(cmd.payload, &p, sizeof(p));
-    GCore_PushCommand(&cmd);
+    // 构造最小实体 JSON 同步建实体。JSON 仅含 name 与空 components/transform，
+    // 后续由 set_transform / set_mesh 配置。ImportJson 返回根实体句柄。
+    std::string json = "{";
+    json += "\"name\":\"" + std::string(name) + "\"";
+    json += ",\"transform\":{\"position\":{\"x\":0,\"y\":0,\"z\":0},"
+            "\"rotation\":{\"x\":0,\"y\":0,\"z\":0,\"w\":1},"
+            "\"scale\":{\"x\":1,\"y\":1,\"z\":1}}";
+    json += ",\"components\":[]}";
+    GEntityHandle h = GEntity_ImportJson(json.c_str(), parent);
 
     if (argc >= 1) JS_FreeCString(ctx, name);
-    return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, h);
 }
 
 // engine.entity.destroy(handle)
@@ -240,6 +241,34 @@ static JSValue js_entity_destroy(JSContext* ctx, JSValueConst this_val,
     GCore_PushCommand(&cmd);
 
     return JS_UNDEFINED;
+}
+
+// engine.entity.set_mesh(handle, path, r, g, b, roughness, metallic)
+// 给实体（无则加）MeshRenderer 组件并设置网格路径与材质颜色。
+// 通过核心 C API GComponent_MeshSetMaterial（内部直接操作嵌套 material）。
+static JSValue js_entity_set_mesh(JSContext* ctx, JSValueConst this_val,
+                                  int argc, JSValueConst* argv) {
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "set_mesh: handle and path required");
+    }
+    int32_t handle;
+    if (JS_ToInt32(ctx, &handle, argv[0])) return JS_EXCEPTION;
+    const char* path = JS_ToCString(ctx, argv[1]);
+    if (!path) return JS_ThrowTypeError(ctx, "set_mesh: path must be a string");
+
+    double r = 1.0, g = 1.0, b = 1.0, rough = 0.6, metal = 0.0;
+    if (argc > 2) JS_ToFloat64(ctx, &r, argv[2]);
+    if (argc > 3) JS_ToFloat64(ctx, &g, argv[3]);
+    if (argc > 4) JS_ToFloat64(ctx, &b, argv[4]);
+    if (argc > 5) JS_ToFloat64(ctx, &rough, argv[5]);
+    if (argc > 6) JS_ToFloat64(ctx, &metal, argv[6]);
+
+    int rc = GComponent_MeshSetMaterial(handle, path,
+                                        static_cast<float>(r), static_cast<float>(g),
+                                        static_cast<float>(b),
+                                        static_cast<float>(rough), static_cast<float>(metal));
+    JS_FreeCString(ctx, path);
+    return JS_NewInt32(ctx, rc);
 }
 
 // engine.entity.aabb(handle) -> {x, y, z, w, h, d} | null
@@ -851,6 +880,7 @@ void register_engine_bindings(JSContext* ctx) {
     JS_SetPropertyStr(ctx, entity_obj, "find_all", JS_NewCFunction(ctx, js_entity_find_all, "find_all", 1));
     JS_SetPropertyStr(ctx, entity_obj, "create", JS_NewCFunction(ctx, js_entity_create, "create", 2));
     JS_SetPropertyStr(ctx, entity_obj, "destroy", JS_NewCFunction(ctx, js_entity_destroy, "destroy", 1));
+    JS_SetPropertyStr(ctx, entity_obj, "set_mesh", JS_NewCFunction(ctx, js_entity_set_mesh, "set_mesh", 7));
     JS_SetPropertyStr(ctx, entity_obj, "aabb", JS_NewCFunction(ctx, js_entity_aabb, "aabb", 1));
     JS_SetPropertyStr(ctx, entity_obj, "get_transform", JS_NewCFunction(ctx, js_entity_get_transform, "get_transform", 1));
     JS_SetPropertyStr(ctx, entity_obj, "set_transform", JS_NewCFunction(ctx, js_entity_set_transform, "set_transform", 2));

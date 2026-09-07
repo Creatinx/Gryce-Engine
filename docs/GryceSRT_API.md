@@ -3,7 +3,7 @@
 > GryceSRT = GryceEngine Script Runtime（Core 内嵌 QuickJS）。
 > 脚本通过 `Script` 组件挂到实体上，播放/打包运行时由 ScriptSystem 驱动。
 > 玩法逻辑（角色控制、AI、关卡流程等）用 **ES Module JavaScript** 编写；
-> Lua 运行时已完全移除，存量 Lua 脚本可用 `lua2js` 迁移（见 [迁移指南](./MIGRATION_GUIDE.md)）。
+> Lua 运行时已完全移除，存量 Lua 脚本需手工重写（见 [迁移指南](./MIGRATION_GUIDE.md)）。
 
 ## 1. 脚本生命周期
 
@@ -55,7 +55,7 @@ export function on_destroy() {}        // 组件移除/场景关闭/重载前调
 
 Core 增加"主场景"概念：游戏启动时自动进入主场景。
 
-- 主场景配置：`project_settings.json` 的 `"main_scene"` 字段（如 `"main_scene":"res:/scenes/main.gesc"`），缺省为 `res:/scenes/main.gesc`。
+- 主场景配置：`project.gproj`（唯一配置）的 `"main_scene"` 字段（如 `"main_scene":"res:/scenes/main.gesc"`），缺省为 `res:/scenes/main.gesc`。
 - 游戏入口（GryceGame 模板）在 `GCore_Init` 前调用 `GCore_SetAutoLoadMainScene(true)`，Core 初始化完成后自动加载主场景；命令行 `--scene <path>` 可覆盖。
 - 编辑器默认加载主场景：打开项目后编辑器自动加载 `main_scene` 指定的场景（缺省
   `res:/scenes/main.gesc`），新建项目会立即把脚手架生成的 `main.gesc` 保存为主场景。
@@ -157,27 +157,36 @@ Core 初始化 → 物理挂载 → Platform 创建窗口 → Renderer → 播�
 ### 5.2 打包
 
 ```bat
-build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame ^
+build/bin/Release/GryceGC.exe --project <your-project-dir> --name MyGame ^
     --build-dir build --config Release --out build/game --author "Your Name"
 ```
 
 输出 `build/game/MyGame/`（无 `res/` 目录）：
 
 ```text
-MyGame.exe            游戏入口（对核心 DLL 延迟加载，从 runtime/ 解析）
+MyGame.exe            游戏入口（唯一固定运行时，GryceGame 模板）
+GFryceCore[d].dll 等     运行时 DLL 的加载期闭包镜像（MinGW 构建平铺到根目录）*
 runtime/              核心运行时 DLL（GryceCore / Renderer / Platform / Physics / glfw）
                       + MSVC/MinGW/GCC 运行时（vcruntime/msvcp140 或 libgcc/libstdc++ 等，兜底用）
-assets/*.gpkg         资源包（GPAK 格式，场景、脚本、着色器、模型、纹理等）
-gdata                 包元数据：源文件记录（path + SHA-256 + size）、
-                      64 字节 SHA-512 密钥（key_sha512_hex）、作者/项目/时间
+assets/*.gpkg         每个资源一个加密 .gpkg（GPAK v4，随机 Base64 名，
+                      data 区 ChaCha20 加密；场景、脚本、着色器、模型、纹理等）
+project.data          唯一状态文件（JSON）：清单 + 运行时设置 + 打包元数据
+                      （源文件记录 path+SHA-256+size、64 字节 SHA-512 密钥
+                      key_sha512_hex、ChaCha20 解密密钥 enc_key_hex、作者/项目/时间）
 ```
 
-发布包加密：`grycegc --pak --assets ./assets --output game.pak`（release 加密）会将
+> `runtime/` 是引擎 DLL/GLFW/CRT 的规范化存放地。由于进程加载优先级是「exe 同目录 >
+> runtime/」，`GryceGC` 会按工具链补齐根目录闭包：**MSVC**（`/DELAYLOAD`）只需把启动期静态
+> 导入的 CRT 额外平铺到根目录；**MinGW**（无 `/DELAYLOAD`）把 `runtime/` 的完整闭包镜像到
+> 根目录，保证 exe 与各引擎 DLL 在进程启动期的静态导入即可解析。
+
+发布包加密：`GryceGC --pak --assets ./assets --output game.pak`（release 加密）会将
 `.js` 编译为 QuickJS 字节码并 AES-256-GCM 加密、`.uif` DSL 文本加密，运行时由
 `ResourceLoader` 解密加载（见 [脚本 API 参考](./SCRIPT_API_REFERENCE.md) 第 7 节）。
 
-`gdata` 中的密钥由打包的源文件记录派生（SHA-512，64 字节，hex 编码 128 字符），
-可用于校验包内容是否被改动；作者等信息通过 `--author` 传入（默认取 `%USERNAME%`）。
+根目录 `project.gproj` 中的 `key_sha512_hex` 密钥由打包的源文件记录派生（SHA-512，64 字节，
+hex 编码 128 字符），可用于校验包内容是否被改动；`.gpkg` 解密密钥 `enc_key_hex` 亦存于
+`project.gproj`。作者等信息通过 `--author` 传入（默认取 `%USERNAME%`）。
 
 ### 5.3 运行
 
@@ -188,8 +197,9 @@ MyGame.exe --scene res:/scenes/script_test.gesc   # 覆盖主场景
 ```
 
 项目根默认取 exe 所在目录（`res:/` 以它为根），Core 启动时自动挂载
-`assets/` 下的 `.gpkg`，并进入主场景（`project_settings.json` 的 `main_scene`）。
+`assets/` 下的 `.gpkg`，并进入主场景（`project.gproj` 的 `main_scene`）。
 编辑器菜单「文件 → 打包运行（GryceGC）」会自动完成打包。
 
-运行时加载策略：优先使用系统安装的 VC++ 运行时（System32）；系统缺失时，
-引擎 DLL 回退到 `runtime/` 里打包的运行时。
+运行时加载策略：MSVC 优先使用系统安装的 VC++ 运行时（System32）；系统缺失时，引擎 DLL
+回退到 `runtime/` 里打包的运行时（Debug CRT 由 `grycegc` 额外平铺到根目录）；MinGW 的
+CRT（libgcc/libstdc++/libwinpthread）通过根目录闭包在启动期解析。

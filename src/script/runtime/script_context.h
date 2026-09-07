@@ -43,6 +43,17 @@ public:
     void set_key_state(int key, bool down);
     bool is_key_down(int key) const;
 
+    // 以"当前按下"的按键集合整体刷新状态；不在集合中的键视为抬起。
+    // 接受任意可迭代的整型容器（如核心 InputState::keys_down 的 unordered_set）。
+    template <class KeySet>
+    void set_held_keys(const KeySet& keys) {
+        std::lock_guard<std::mutex> lock(input_mutex_);
+        for (int i = 0; i < 512; ++i) key_states_[i] = false;
+        for (int k : keys) {
+            if (k >= 0 && k < 512) key_states_[k] = true;
+        }
+    }
+
     void set_mouse_pos(float x, float y);
     void get_mouse_pos(float* out_x, float* out_y) const;
 

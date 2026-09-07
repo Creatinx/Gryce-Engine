@@ -18,6 +18,7 @@
 #include "components/script_component.h"
 #include "components/component_factory.h"
 #include "resources/project.h"
+#include "resources/pak_bundle.h"
 #include "resources/gpack_bundle.h"
 #include "utils/glog/glog_lib.h"
 
@@ -40,10 +41,44 @@ using gryce_engine::resources::Project;
 
 namespace {
 
+// 将 16 进制字符串解码为 32 字节密钥，供 PakReader 解密 .gpkg（GPAK v4）。
+void load_pak_crypto_key(const std::string& root) {
+    if (root.empty()) return;
+    try {
+        // 解密密钥现在与项目配置合并于根目录唯一的 project.data（JSON）中。
+        std::ifstream in(root + "/project.data");
+        if (!in) return;
+        nlohmann::json j;
+        in >> j;
+        if (!j.contains("enc_key_hex") || !j["enc_key_hex"].is_string()) return;
+        const std::string hex = j["enc_key_hex"].get<std::string>();
+        if (hex.size() != 64) return;
+        std::string key;
+        key.reserve(32);
+        auto hexval = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        for (size_t i = 0; i < hex.size(); i += 2) {
+            const int hi = hexval(hex[i]);
+            const int lo = hexval(hex[i + 1]);
+            if (hi < 0 || lo < 0) return;
+            key.push_back(static_cast<char>((hi << 4) | lo));
+        }
+        resources::set_pak_crypto_key(key);
+        GLOG_INFO("GCore: loaded .gpkg decryption key from project.data");
+    } catch (const std::exception& e) {
+        GLOG_WARN("GCore: failed to load pak decryption key ({})", e.what());
+    }
+}
+
 // Mount every .gpack/.gpkg bundle found in the project root so res:/
 // resources can be read from packaged archives (GryceGC output).
 void mount_project_bundles(const std::string& root) {
     if (root.empty()) return;
+    load_pak_crypto_key(root);
     // GryceGC puts the archives under <root>/assets/; older layouts placed
     // them directly in the project root, so scan both.
     const std::vector<std::string> dirs = {root, root + "/assets"};
@@ -61,12 +96,14 @@ void mount_project_bundles(const std::string& root) {
     }
 }
 
-// Read the project's project_settings.json and apply the fields the core
-// owns (currently the main scene; render settings are owned by the editor).
+// Read the project's single config file (project.data) and apply the fields
+// the core owns (currently the main scene; render settings are owned by the
+// editor). project.data is the only state file in the game root, containing
+// the merged project manifest + runtime settings + package metadata.
 void load_project_settings(const std::string& root) {
     if (root.empty()) return;
     try {
-        std::ifstream in(root + "/project_settings.json");
+        std::ifstream in(root + "/project.data");
         if (!in) return;
         nlohmann::json j;
         in >> j;
@@ -76,7 +113,7 @@ void load_project_settings(const std::string& root) {
                       Project::instance().main_scene());
         }
     } catch (const std::exception& e) {
-        GLOG_WARN("GCore: failed to read project_settings.json ({})", e.what());
+        GLOG_WARN("GCore: failed to read project.data ({})", e.what());
     }
 }
 

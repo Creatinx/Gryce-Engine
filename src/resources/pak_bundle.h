@@ -87,6 +87,9 @@ private:
     // 原始路径 -> 随机名称 快速查找
     mutable std::unordered_map<std::string, std::string> lookup_;
     uint64_t file_size_ = 0;
+    // GPAK v4 数据区加密状态：encrypted_ 标记 data 区是否加密，nonce_ 存储 12 字节随机 nonce
+    uint8_t encrypted_ = 0;
+    std::vector<uint8_t> nonce_;
     mutable std::mutex read_mutex_;
 };
 
@@ -117,5 +120,17 @@ private:
     // Manifest 条目
     std::vector<PakManifestEntry> manifest_;
 };
+
+// ---------------------------------------------------------------------------
+// GPAK v4 数据区加密（ChaCha20 流加密）
+//
+// 设置 32 字节加解密密钥后，PakWriter::write 会对 data 区做 ChaCha20 加密并
+// 写出 GPAK v4（header 增加 flags + nonce）；PakReader 在读取时用同一密钥解密。
+// 未设置密钥时写出不加密的 v4 包（或读已有的加密包时若密钥缺失则返回空数据）。
+//
+// 密钥按 32 字节原样传入（调用方负责随机生成），供 PakWriter 加密封包、PakReader
+// 读取解包共用。为空或长度不为 32 时视为"不加密"。
+// ---------------------------------------------------------------------------
+GRYCE_API void set_pak_crypto_key(const std::string& key);
 
 } // namespace gryce_engine::resources

@@ -11,12 +11,19 @@ if(GRYCE_BUILD_GAME_TEMPLATE)
         # which the packaged game resolves from runtime/ via delay-load.
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
-    target_include_directories(GryceGame PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    # include/ 提供 GryceEngineUtils 的头文件；src/ 提供 GryceCore/render 等头
+    target_include_directories(GryceGame PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    target_compile_definitions(GryceGame PRIVATE GRYCE_ENABLE_UI)
     target_link_libraries(GryceGame PRIVATE
         GryceCore
         GryceRenderer
         GrycePlatform
         GrycePhysics
+        # 嵌入式 Renderer/UIManager/.uif UI 系统（聚合 UiStatic/RendererStatic 等）
+        GryceEngineUtils
     )
     # GryceGC packages the runtime DLLs into a "runtime/" subfolder next to
     # the exe; delay-load them so the game entry can extend the DLL search

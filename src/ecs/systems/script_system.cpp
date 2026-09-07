@@ -62,6 +62,8 @@ void ScriptSystem::on_update(scene::Scene& scene, float dt) {
     ctx.set_delta_time(dt);
     ctx.set_current_scene(&scene);
     ctx.reset_frame();
+    // 将核心本轮已同步的"按下键集合"镜像进脚本上下文，使 engine.input.key_down 生效
+    ctx.set_held_keys(gryce_core::g_core_state.input.keys_down);
     seen_.clear();
 
     // 输入事件分发

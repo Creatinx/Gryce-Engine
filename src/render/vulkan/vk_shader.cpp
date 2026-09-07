@@ -1,7 +1,10 @@
 #include "vk_shader.h"
 
+#include "vk_glsl_compiler.h"
 #include "render/mesh.h"
 #include "render/texture.h"
+#include "render/render.h"
+#include "render/shader_source_resolver.h"
 #include "vk_buffer.h"
 #include "vk_device.h"
 #include "vk_swapchain.h"
@@ -13,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <unordered_map>
 #include <vector>
 #include <filesystem>
 #include <system_error>
@@ -20,6 +24,34 @@
 namespace gryce_engine::render {
 
 namespace {
+
+// SPIR-V 编译缓存：按源码内容作键，二次加载同名同内容 shader 时直接复用已编译
+// 产物，避免每帧/每对象重复编译。shader 变体由各管线的 name 区分（如 pbr /
+// skinned_pbr / gtao ...），故以 (stage + 完整源码) 为键是安全的。
+using SpirvCache = std::unordered_map<std::string, std::vector<uint32_t>>;
+SpirvCache& spirv_cache() {
+    static SpirvCache cache;
+    return cache;
+}
+
+// 编译单个阶段，命中缓存则直接返回，避免重复编译。
+bool compile_or_cached(const std::string& key, const std::string& source,
+                       const std::string& file, GlslStage stage,
+                       std::vector<uint32_t>& out, std::string& err) {
+    auto& cache = spirv_cache();
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+        out = it->second;
+        return true;
+    }
+    if (!compile_glsl_to_spirv(source, file, stage, out, err)) {
+        return false;
+    }
+    if (!out.empty()) {
+        cache.emplace(key, out);
+    }
+    return true;
+}
 // 将全局 texture slot 映射到 Vulkan PBR shader 的 descriptor binding。
 // 必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 中的 layout(binding=...) 一致。
 int slot_to_binding(int slot) {
@@ -149,22 +181,57 @@ bool VulkanShader::load_program(const std::string& name,
     if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') {
         dir += '/';
     }
+    shader_dir_ = shader_dir;
 
-    std::string spirv_dir = dir + "spirv/";
-    std::string vert_path = spirv_dir + "vulkan_" + name + ".vert.spv";
-    std::string frag_path = spirv_dir + "vulkan_" + name + ".frag.spv";
-
-    if (!load_spirv_files(vert_path, frag_path)) {
-        GLOG_ERROR("VulkanShader::load_program: failed to load SPIR-V for '{}'", name);
-        return false;
+    // 1) 首编路径：源码 → shaderc 运行时编译（项目覆盖 + core 兜底两级解析）。
+    //    命中即记录源码路径，供热重载 mtime 追踪。
+    bool compiled_from_source = false;
+    ShaderSourceSet src = resolve_shader_source(name, shader_dir, RenderAPI::Vulkan);
+    if (src.valid()) {
+        const std::string vert_key = "vk_vert|" + src.vertex;
+        const std::string frag_key = "vk_frag|" + src.fragment;
+        std::string err;
+        std::vector<uint32_t> vert_code, frag_code;
+        if (compile_or_cached(vert_key, src.vertex, src.vertex_path, GlslStage::Vertex, vert_code, err) &&
+            compile_or_cached(frag_key, src.fragment, src.fragment_path, GlslStage::Fragment, frag_code, err)) {
+            vert_module_ = create_shader_module(vert_code);
+            frag_module_ = create_shader_module(frag_code);
+            if (vert_module_ && frag_module_) {
+                compiled_from_source = true;
+                vertex_source_path_ = src.vertex_path;
+                fragment_source_path_ = src.fragment_path;
+                spirv_dir_.clear();
+            } else {
+                GLOG_ERROR("VulkanShader: failed to create shader modules for '{}' (first-run compile)", name);
+                return false;
+            }
+        } else {
+            GLOG_WARN("VulkanShader: first-run compile of '{}' failed ({}); falling back to pre-compiled SPIR-V", name, err);
+        }
     }
 
-    // 记录 SPIR-V 文件信息供热重载使用
+    // 2) 源码不可用或编译失败 → 回退预编译 `.spv` 产物。
+    if (!compiled_from_source) {
+        std::string spirv_dir = dir + "spirv/";
+        std::string vert_path = spirv_dir + "vulkan_" + name + ".vert.spv";
+        std::string frag_path = spirv_dir + "vulkan_" + name + ".frag.spv";
+        if (!load_spirv_files(vert_path, frag_path)) {
+            GLOG_ERROR("VulkanShader::load_program: failed to load SPIR-V for '{}'", name);
+            return false;
+        }
+        spirv_dir_ = spirv_dir;
+        vertex_source_path_.clear();
+        fragment_source_path_.clear();
+        std::error_code ec;
+        vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
+        frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
+    } else {
+        std::error_code ec;
+        vert_mtime_ = std::filesystem::last_write_time(src.vertex_path, ec);
+        frag_mtime_ = std::filesystem::last_write_time(src.fragment_path, ec);
+    }
+
     source_name_ = name;
-    spirv_dir_ = spirv_dir;
-    std::error_code ec;
-    vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
-    frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
 
     if (target) {
         auto* vk_target = dynamic_cast<VulkanFramebuffer*>(target);
@@ -178,26 +245,37 @@ bool VulkanShader::load_program(const std::string& name,
     set_skybox(skybox);
     contact_shadow_ = post_process && name == "contact_shadow";
     skinned_ = skinned;
+    if (compiled_from_source) {
+        GLOG_INFO("VulkanShader: first-run compiled '{}'", name);
+    }
     return create_pipeline();
 }
 
 bool VulkanShader::shader_files_changed() const {
-    if (source_name_.empty() || spirv_dir_.empty()) return false;
+    if (source_name_.empty()) return false;
     std::error_code ec;
-    auto vert_mtime = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv", ec);
+    // 首编路径：比较命中的源码文件 mtime（项目覆盖/core 兜底都可能变化）。
+    if (!vertex_source_path_.empty() && !fragment_source_path_.empty()) {
+        auto vert_mtime = std::filesystem::last_write_time(vertex_source_path_, ec);
+        if (ec) return false;
+        auto frag_mtime = std::filesystem::last_write_time(fragment_source_path_, ec);
+        if (ec) return false;
+        return vert_mtime != vert_mtime_ || frag_mtime != frag_mtime_;
+    }
+    // 回退路径：比较预编译 SPIR-V 文件 mtime。
+    if (spirv_dir_.empty()) return false;
+    auto v = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv", ec);
     if (ec) return false;
-    auto frag_mtime = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv", ec);
+    auto f = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv", ec);
     if (ec) return false;
-    return vert_mtime != vert_mtime_ || frag_mtime != frag_mtime_;
+    return v != vert_mtime_ || f != frag_mtime_;
 }
 
 bool VulkanShader::reload() {
-    if (source_name_.empty() || spirv_dir_.empty() || !device_ || !device_->is_valid()) {
+    if (source_name_.empty() || shader_dir_.empty() || !device_ || !device_->is_valid()) {
         return false;
     }
     VkDevice dev = device_->device();
-    std::string vert_path = spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv";
-    std::string frag_path = spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv";
 
     // 先备份旧资源；重建成功后统一销毁，失败则回退，保证加载过程不出问题。
     VkPipeline old_pipeline = pipeline_;
@@ -224,7 +302,34 @@ bool VulkanShader::reload() {
     ubo_buffers_.clear();
     palette_buffers_.clear();
 
-    if (!load_spirv_files(vert_path, frag_path) || !create_pipeline()) {
+    // 重建 shader module：有源码路径 → 重解析 + 首编；否则回退 `.spv`。
+    bool rebuilt = false;
+    bool use_source = !vertex_source_path_.empty() || !fragment_source_path_.empty();
+    if (use_source) {
+        ShaderSourceSet src = resolve_shader_source(source_name_, shader_dir_, RenderAPI::Vulkan);
+        if (src.valid()) {
+            const std::string vert_key = "vk_vert|" + src.vertex;
+            const std::string frag_key = "vk_frag|" + src.fragment;
+            std::string err;
+            std::vector<uint32_t> vert_code, frag_code;
+            if (compile_or_cached(vert_key, src.vertex, src.vertex_path, GlslStage::Vertex, vert_code, err) &&
+                compile_or_cached(frag_key, src.fragment, src.fragment_path, GlslStage::Fragment, frag_code, err)) {
+                vert_module_ = create_shader_module(vert_code);
+                frag_module_ = create_shader_module(frag_code);
+                rebuilt = vert_module_ && frag_module_;
+            }
+            // 解析可能命中不同位置（项目覆盖后落到别处），无论成败都刷新路径记录
+            vertex_source_path_ = src.vertex_path;
+            fragment_source_path_ = src.fragment_path;
+        }
+    }
+    if (!rebuilt && !spirv_dir_.empty()) {
+        std::string vert_path = spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv";
+        std::string frag_path = spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv";
+        rebuilt = load_spirv_files(vert_path, frag_path);
+    }
+
+    if (!rebuilt || !create_pipeline()) {
         // 回退：销毁刚创建的部分资源，恢复旧资源
         if (vert_module_) vkDestroyShaderModule(dev, vert_module_, nullptr);
         if (frag_module_) vkDestroyShaderModule(dev, frag_module_, nullptr);
@@ -268,8 +373,15 @@ bool VulkanShader::reload() {
     old_fallback_cube.reset();
 
     std::error_code ec;
-    vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
-    frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
+    if (!vertex_source_path_.empty() && !fragment_source_path_.empty()) {
+        vert_mtime_ = std::filesystem::last_write_time(vertex_source_path_, ec);
+        frag_mtime_ = std::filesystem::last_write_time(fragment_source_path_, ec);
+    } else if (!spirv_dir_.empty()) {
+        std::string vert_path = spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv";
+        std::string frag_path = spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv";
+        vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
+        frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
+    }
 
     GLOG_INFO("VulkanShader: hot-reloaded '{}'", source_name_);
     return true;

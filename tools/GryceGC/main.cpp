@@ -5,22 +5,25 @@
 // game directory:
 //   <out>/<name>/<name>.exe         template executable
 //   <out>/<name>/runtime/           core runtime DLLs
-//   <out>/<name>/assets/*.gpkg      game content archives (no raw res/ copy)
-//   <out>/<name>/project_settings.json
-//                                   raw copy of the runtime settings (the game
-//                                   entry reads it from the project root)
-//   <out>/<name>/project.gproj      project manifest (documentation)
-//   <out>/<name>/gdata              package metadata: source-file records,
-//                                   a 64-byte SHA-512 key, author info
+//   <out>/<name>/assets/*.gpkg      game content archives (one encrypted .gpkg
+//                                   per resource; GPAK v4, random Base64 names)
+//   <out>/<name>/project.data      the single config + metadata file in the game
+//                                   root (JSON): project manifest + runtime
+//                                   settings merged, plus the pack metadata that
+//                                   used to live in gdata — source-file records,
+//                                   a 64-byte SHA-512 key, the ChaCha20 decryption
+//                                   key (enc_key_hex) and author info.
 //
-// The archives are written by GryceCore's PakWriter (GPAK v3: random Base64
-// store names + a manifest mapping them back to logical paths), so the on-disk
-// layout always stays in sync with the reader used by the runtime (PakReader;
-// GCore_Init mounts every *.gpkg/*.gpack in the project root). PakReader
-// understands both GPAK v1 and v3, so legacy archives keep working.
+// The archives are written by GryceCore's PakWriter (GPAK v4: random Base64
+// store names + a manifest mapping them back to logical paths, data area
+// ChaCha20-encrypted when a 32-byte key is set), so the on-disk layout always
+// stays in sync with the reader used by the runtime (PakReader; GCore_Init
+// mounts every *.gpkg/*.gpack in the project root). PakReader understands GPAK
+// v1, v3 and v4, so legacy archives keep working.
 //
 // Usage:
-//   grycegc --project examples/3dtest --name MyGame
+//   GryceGC --init <project-dir> [--name <name>]      create a standard GryceGC-A project
+//   GryceGC --project examples/3dtest --name MyGame
 //           --build-dir build --config Release --out build/game
 //
 // The packaged game is run with:
@@ -34,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <cstdio>
@@ -42,9 +46,12 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <nlohmann/json.hpp>
+#include <random>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -67,33 +74,232 @@ std::string to_lower(std::string s) {
     return s;
 }
 
-// Resource categories: each category becomes its own .gpkg (multiple archives
-// are supported by design). `misc` catches everything else.
-const std::unordered_map<std::string, std::vector<std::string>>& category_extensions() {
-    static const std::unordered_map<std::string, std::vector<std::string>> kExts = {
-        {"scenes",  {".gesc", ".scene", ".tscn"}},
-        {"scripts", {".lua"}},
-        {"shaders", {".vert", ".frag", ".geom", ".tesc", ".tese", ".comp",
-                     ".glsl", ".hlsl", ".spv"}},
-        {"models",  {".obj", ".fbx", ".gltf", ".glb", ".dae", ".ply", ".stl",
-                     ".3ds", ".blend"}},
-        {"textures", {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds", ".ktx",
-                      ".hdr", ".exr", ".gif", ".webp"}},
-        {"audio",   {".wav", ".ogg", ".mp3", ".flac", ".aac"}},
-        {"fonts",   {".ttf", ".otf", ".fnt", ".woff", ".woff2"}},
-        {"config",  {".json", ".gryce", ".cfg", ".ini", ".toml", ".yaml",
-                     ".yml", ".mat", ".gmat", ".txt"}},
-    };
-    return kExts;
-}
-
-std::string classify(const std::string& ext) {
-    for (const auto& [category, exts] : category_extensions()) {
-        if (std::find(exts.begin(), exts.end(), ext) != exts.end()) {
-            return category;
+// Normalize a default project name (derived from the --init target directory)
+// to PascalCase, e.g. "my-game" -> "MyGame", "ecs_demo" -> "EcsDemo". Explicit
+// --name values are always used verbatim, never passed through here.
+std::string to_pascal_case(std::string s) {
+    std::string out;
+    bool at_word_start = true;
+    for (unsigned char c : s) {
+        if (std::isalnum(c)) {
+            if (at_word_start) out.push_back(static_cast<char>(std::toupper(c)));
+            else out.push_back(static_cast<char>(std::tolower(c)));
+            at_word_start = false;
+        } else {
+            at_word_start = true;  // non-alnum separates words
         }
     }
-    return "misc";
+    if (out.empty()) out = "MyGame";
+    return out;
+}
+
+// 随机字节（Windows CNG / Linux /dev/urandom）
+bool random_bytes(uint8_t* out, size_t len) {
+#if defined(_WIN32)
+    return BCryptGenRandom(nullptr, out, static_cast<ULONG>(len),
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#else
+    FILE* f = std::fopen("/dev/urandom", "rb");
+    if (!f) return false;
+    const size_t n = std::fread(out, 1, len, f);
+    std::fclose(f);
+    return n == len;
+#endif
+}
+
+std::string bytes_to_hex(const uint8_t* data, size_t len) {
+    static const char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        out.push_back(kHex[data[i] >> 4]);
+        out.push_back(kHex[data[i] & 0x0F]);
+    }
+    return out;
+}
+
+// 32 字节随机数 -> Base64URL 编码（43 字符，无填充），用于 .gpkg 包文件名。
+std::string random_base64_name() {
+    uint8_t bytes[32];
+    if (!random_bytes(bytes, sizeof(bytes))) {
+        static std::mt19937_64 rng(std::chrono::steady_clock::now().time_since_epoch().count());
+        for (size_t i = 0; i < sizeof(bytes); i += 8) {
+            const uint64_t v = rng();
+            std::memcpy(bytes + i, &v, sizeof(bytes) - i < 8 ? sizeof(bytes) - i : 8);
+        }
+    }
+    static const char kBase64Url[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    std::string out;
+    out.reserve(43);
+    for (size_t i = 0; i < sizeof(bytes); i += 3) {
+        const uint32_t b = (static_cast<uint32_t>(bytes[i]) << 16) |
+                           (i + 1 < sizeof(bytes) ? static_cast<uint32_t>(bytes[i + 1]) << 8 : 0) |
+                           (i + 2 < sizeof(bytes) ? static_cast<uint32_t>(bytes[i + 2]) : 0);
+        out.push_back(kBase64Url[(b >> 18) & 0x3F]);
+        out.push_back(kBase64Url[(b >> 12) & 0x3F]);
+        out.push_back(i + 1 < sizeof(bytes) ? kBase64Url[(b >> 6) & 0x3F] : '=');
+        out.push_back(i + 2 < sizeof(bytes) ? kBase64Url[b & 0x3F] : '=');
+    }
+    while (!out.empty() && out.back() == '=') out.pop_back();
+    return out;
+}
+
+// The tool prints UTF-8 Chinese to the console; the default Windows console is
+// GBK (CP936) and mangles it. Switch stdout/stderr to UTF-8 so log lines with
+// 中文 render correctly in both cmd and Windows Terminal.
+void init_utf8_console() {
+#if defined(_WIN32)
+    if (SetConsoleOutputCP(CP_UTF8)) SetConsoleCP(CP_UTF8);
+#endif
+}
+
+// Directory that contains the running GryceGC executable. In the standard build
+// layout the engine runtime DLLs sit at the same level (同级), so this is the
+// default source for the DLLs copied into the packaged game.
+std::string get_exe_dir() {
+#if defined(_WIN32)
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    const fs::path p(buf);
+    return p.has_parent_path() ? p.parent_path().generic_string() : std::string();
+#elif defined(__linux__)
+    char buf[4096];
+    const auto n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return {};
+    buf[n] = '\0';
+    const fs::path p(buf);
+    return p.has_parent_path() ? p.parent_path().generic_string() : std::string();
+#else
+    return {};
+#endif
+}
+
+// Locate an engine runtime DLL in dir whose (lower-cased) name starts with the
+// given prefix, tolerating the debug `d` suffix and a `lib` prefix. E.g. prefix
+// "grycecore" matches GryceCore.dll / GryceCored.dll / libGryceCore.dll, and
+// "glfw3" matches glfw3.dll / glfw3d.dll. Returns empty on no match.
+fs::path find_sibling_dll(const fs::path& dir, const std::string& prefix) {
+    std::error_code ec;
+    fs::directory_iterator it(dir, ec);
+    for (const auto& entry : it) {
+        std::error_code e2;
+        if (!entry.is_regular_file(e2)) continue;
+        const std::string name = to_lower(entry.path().filename().string());
+        if (name.size() < 5 || name.compare(name.size() - 4, 4, ".dll") != 0) continue;
+        if (name.compare(0, prefix.size(), prefix) == 0) return entry.path();
+    }
+    return {};
+}
+
+// Locate the Vulkan shader compiler runtime DLL (shaderc_shared.dll) shipped
+// with a Vulkan SDK. It is loaded at runtime via LoadLibrary/dlopen (see
+// vk_glsl_compiler.cpp), so it has no link-time dependency and is optional for
+// GL-only runtimes. Resolution mirrors assemble_dist.py: prefer VULKAN_SDK env,
+// fall back to the default install root. Returns empty on no match.
+fs::path find_shaderc_dll() {
+#if defined(_WIN32)
+    std::vector<fs::path> cands;
+    const char* env = std::getenv("VULKAN_SDK");
+    if (!env || !*env) env = std::getenv("VULKAN_SDK_DIR");
+    if (env && *env) cands.push_back(fs::path(env) / "Bin" / "shaderc_shared.dll");
+    cands.push_back(fs::path("C:/VulkanSDK") / "Bin" / "shaderc_shared.dll");
+    for (const fs::path& c : cands) {
+        std::error_code e;
+        if (fs::is_regular_file(c, e)) return c;
+    }
+#else
+    // POSIX: runtime loader probes libshaderc_shared.so / libshaderc_combined.so
+    // from the process loader path; nothing to stage beside the exe here.
+#endif
+    return {};
+}
+
+// Whether the sibling DLLs in dir are a debug build, inferred from the core
+// runtime DLL carrying the `d` suffix (e.g. GryceCored.dll).
+bool sibling_is_debug(const fs::path& dir) {
+    const fs::path core = find_sibling_dll(dir, "grycecore");
+    if (core.empty()) return false;
+    const std::string stem = core.stem().string();
+    return !stem.empty() && (stem.back() == 'd' || stem.back() == 'D');
+}
+
+// 定位引擎默认 shader 目录（core 全套源码）。优先随包部署副本（GryceGC 同级的
+// shaders/runtime/shaders/assets/shaders），否则上溯到仓库根找 src/render/shaders。
+// 以存在 forward_clustered 子目录作为有效标识，避免误命中无关 shaders/ 目录。
+fs::path find_core_shaders_dir(const fs::path& exe_dir) {
+    std::error_code ec;
+    for (const char* rel : {"shaders", "runtime/shaders", "assets/shaders", "../shaders"}) {
+        const fs::path c = exe_dir / rel;
+        if (fs::is_directory(c / "forward_clustered", ec)) return c;
+        ec.clear();
+    }
+    fs::path d = exe_dir;
+    for (int i = 0; i < 12 && !d.empty(); ++i) {
+        if (fs::is_directory(d / "src", ec) && fs::exists(d / "CMakeLists.txt", ec)) {
+            const fs::path c = d / "src" / "render" / "shaders";
+            if (fs::is_directory(c / "forward_clustered", ec)) return c;
+            return fs::path();
+        }
+        d = d.parent_path();
+    }
+    return fs::path();
+}
+
+// 收集 core 默认 shader 源文件（internal 前缀 "shaders/"），跳过项目已覆盖的
+// 同 internal 路径文件——这样打包产物里任意 shader 键只有一份，bundle 提取
+// 天然确定"项目覆盖优先、core 兜底"的顺序。打的是源文件（.vert/.frag），
+// 首次运行才由 GL/Vulkan 后端编译。
+std::vector<FileEntry> collect_core_shader_files(const fs::path& engine_shaders,
+                                                 const std::unordered_set<std::string>& project_paths) {
+    std::vector<FileEntry> files;
+    std::error_code ec;
+    fs::recursive_directory_iterator it(engine_shaders, ec);
+    const fs::recursive_directory_iterator end;
+    for (; it != end && !ec; it.increment(ec)) {
+        const fs::directory_entry& entry = *it;
+        if (entry.is_directory(ec)) continue;
+        if (!entry.is_regular_file(ec)) continue;
+        const std::string ext = to_lower(entry.path().extension().string());
+        if (ext != ".vert" && ext != ".frag") continue;
+        fs::path rel = fs::relative(entry.path(), engine_shaders, ec);
+        if (ec) continue;
+        const std::string internal = to_lower(std::string("shaders/") + rel.generic_string());
+        if (internal == "shaders/") continue;
+        if (project_paths.count(internal)) continue; // 项目覆盖优先
+        files.push_back({internal, entry.path()});
+    }
+    std::sort(files.begin(), files.end(),
+              [](const FileEntry& a, const FileEntry& b) { return a.internal_path < b.internal_path; });
+    return files;
+}
+
+// Candidate runtime DLL locations relative to the GryceGC executable (读取依赖
+// dist 同级 runtime/)。Each candidate may be a flat dir (DLLs next to the exe)
+// or a dist layout: engine DLLs sit in the target's own `runtime/` subfolder or
+// under the sibling GryceEngineUtils/lib (a few levels up from dist/GryceGC/).
+std::vector<fs::path> runtime_candidates(const fs::path& exe_dir) {
+    std::vector<fs::path> out;
+    out.push_back(exe_dir);
+    out.push_back(exe_dir / "runtime");
+    fs::path up = exe_dir;
+    for (int i = 0; i < 3; ++i) {
+        if (up.has_parent_path()) up = up.parent_path(); else break;
+        out.push_back(up / "GryceEngineUtils" / "lib");
+        out.push_back(up / "runtime");
+        out.push_back(up);
+    }
+    return out;
+}
+
+// Return the first candidate dir that actually contains an engine core DLL.
+fs::path find_runtime_dir_near_exe(const fs::path& exe_dir) {
+    for (const fs::path& c : runtime_candidates(exe_dir)) {
+        std::error_code e;
+        if (fs::is_directory(c, e) && !find_sibling_dll(c, "grycecore").empty()) return c;
+    }
+    return {};
 }
 
 // Files / directories that never belong in a resource archive.
@@ -456,26 +662,40 @@ fs::path find_msvc_crt_dir(const fs::path& build_dir, bool debug) {
 // (ucrtbased.dll) from the Windows Kits / System32.
 bool copy_msvc_runtime(const fs::path& build_dir, bool debug,
                        const fs::path& runtime_dir,
+                       const fs::path& out_dir,
                        std::vector<std::string>& copied) {
     const fs::path src_dir = find_msvc_crt_dir(build_dir, debug);
     size_t found = 0;
+    std::error_code ec;
+
+    // The CRT is statically imported by the exe at process start, i.e. BEFORE
+    // main() can run SetDllDirectoryW("runtime"). It must therefore sit next to
+    // the exe (out_dir), not only in runtime/. Keep both copies so the runtime/
+    // folder stays complete for DLLs resolved later (harmless duplication).
+    auto copy_crt = [&](const fs::path& src, const std::string& dll_name) {
+        std::error_code ec;
+        fs::copy_file(src, runtime_dir / dll_name, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime " << src << "\n";
+            return false;
+        }
+        fs::copy_file(src, out_dir / dll_name, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime to root " << src << "\n";
+            return false;
+        }
+        copied.push_back(dll_name);
+        ++found;
+        return true;
+    };
 
     // Prefer the VS redist folder: copy every DLL it contains.
     bool from_redist = src_dir.filename() != fs::path("System32");
     if (from_redist) {
-        std::error_code ec;
         for (const auto& entry : fs::directory_iterator(src_dir, ec)) {
             if (!entry.is_regular_file(ec)) continue;
             if (entry.path().extension() != ".dll") continue;
-            fs::copy_file(entry.path(), runtime_dir / entry.path().filename(),
-                          fs::copy_options::overwrite_existing, ec);
-            if (ec) {
-                std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime "
-                          << entry.path() << "\n";
-                return false;
-            }
-            copied.push_back(entry.path().filename().string());
-            ++found;
+            if (!copy_crt(entry.path(), entry.path().filename().string())) return false;
         }
     } else {
         // System32 fallback: copy the common CRT names.
@@ -493,16 +713,9 @@ bool copy_msvc_runtime(const fs::path& build_dir, bool debug,
         };
         const std::vector<std::string>& names = debug ? kDebug : kRelease;
         for (const std::string& dll : names) {
-            std::error_code ec;
             const fs::path src = src_dir / dll;
             if (!fs::is_regular_file(src, ec)) continue;
-            fs::copy_file(src, runtime_dir / dll, fs::copy_options::overwrite_existing, ec);
-            if (ec) {
-                std::cerr << "[grycegc] ERROR: failed to copy MSVC runtime " << src << "\n";
-                return false;
-            }
-            copied.push_back(dll);
-            ++found;
+            if (!copy_crt(src, dll)) return false;
         }
     }
 
@@ -529,14 +742,7 @@ bool copy_msvc_runtime(const fs::path& build_dir, bool debug,
         }
         if (ucrt_src.empty()) ucrt_src = fs::path("C:\\Windows\\System32") / "ucrtbased.dll";
         if (fs::is_regular_file(ucrt_src, ec)) {
-            fs::copy_file(ucrt_src, runtime_dir / "ucrtbased.dll",
-                          fs::copy_options::overwrite_existing, ec);
-            if (ec) {
-                std::cerr << "[grycegc] ERROR: failed to copy ucrtbased.dll\n";
-                return false;
-            }
-            copied.push_back("ucrtbased.dll");
-            ++found;
+            copy_crt(ucrt_src, "ucrtbased.dll");
         } else {
             std::cerr << "[grycegc] warning: ucrtbased.dll not found (Debug UCRT missing)\n";
         }
@@ -570,16 +776,48 @@ std::string json_escape(const std::string& s) {
     return out;
 }
 
-// Writes the package metadata file "gdata": records every source file that
-// was packaged (path + SHA-256 + size), a 64-byte SHA-512 key derived from
-// the source records, and author/project metadata.
-bool write_gdata(const fs::path& out_dir, const std::string& name,
-                 const std::string& author,
-                 const std::vector<FileEntry>& files) {
-    std::string records;   // sorted "path:size:sha256" lines -> key input
-    std::ostringstream sources;
-    sources << "\"sources\": [";
-    bool first = true;
+// Write the game root's single config + metadata file "project.data" (JSON).
+// It merges the source project's manifest + runtime settings (project.data,
+// backward-compatible with the old project.gproj / project_settings.json) with
+// the build metadata that used to live in a separate gdata file: every packaged
+// source file (path + SHA-256 + size) -> source records, a 64-byte SHA-512 key
+// derived from those records, and the ChaCha20 .gpkg decryption key
+// (enc_key_hex). project.data is the ONLY state file in the game root; the
+// runtime reads both settings and the decryption key from it.
+bool write_project_data(const fs::path& project, const fs::path& out_dir,
+                        const std::string& name, const std::string& author,
+                        const std::vector<FileEntry>& files,
+                        const std::string& enc_key_hex) {
+    std::error_code ec;
+
+    // 1) 源项目配置：项目清单 + 运行时设置。优先 project.data；兼容旧
+    //    project.gproj（清单）与 project_settings.json（运行时设置），后者并入顶层
+    //    （键冲突时按读取顺序后者覆盖前者）。
+    nlohmann::json merged = nlohmann::json::object();
+    for (const char* cfg : {"project.data", "project.gproj", "project_settings.json"}) {
+        const fs::path p = project / cfg;
+        if (!fs::is_regular_file(p, ec)) continue;
+        try {
+            std::ifstream in(p);
+            nlohmann::json j = nlohmann::json::parse(in, nullptr, false);  // no throw
+            if (j.is_discarded()) {
+                std::cerr << "[grycegc] warning: failed to parse " << p << ", skipping\n";
+                continue;
+            }
+            if (j.is_object()) {
+                for (auto it = j.begin(); it != j.end(); ++it) merged[it.key()] = it.value();
+            }
+        } catch (...) {
+            std::cerr << "[grycegc] warning: failed to parse " << p << ", skipping\n";
+        }
+    }
+    if (merged.empty()) {
+        merged["name"] = name;
+    }
+
+    // 2) Source records + 64-byte SHA-512 key（对源文件记录做摘要）。
+    std::string records;
+    nlohmann::json sources = nlohmann::json::array();
     for (const FileEntry& file : files) {
         const std::string bytes = read_file_bytes(file.source_path);
         const std::string digest = sha256_hex(bytes.data(), bytes.size());
@@ -590,18 +828,15 @@ bool write_gdata(const fs::path& out_dir, const std::string& name,
         records += file.internal_path + ":" +
                    std::to_string(fs::file_size(file.source_path)) + ":" +
                    digest + "\n";
-        if (!first) sources << ", ";
-        first = false;
-        sources << "{\"path\": \"" << json_escape(file.internal_path)
-                << "\", \"sha256\": \"" << digest
-                << "\", \"size\": " << fs::file_size(file.source_path) << "}";
+        nlohmann::json rec;
+        rec["path"] = file.internal_path;
+        rec["sha256"] = digest;
+        rec["size"] = fs::file_size(file.source_path);
+        sources.push_back(rec);
     }
-    sources << "]";
-
-    // 64-byte key: SHA-512 over the source-file records.
     const std::string key = sha512_hex(records.data(), records.size());
     if (key.empty()) {
-        std::cerr << "[grycegc] ERROR: failed to derive gdata key\n";
+        std::cerr << "[grycegc] ERROR: failed to derive project.data key\n";
         return false;
     }
 
@@ -615,27 +850,30 @@ bool write_gdata(const fs::path& out_dir, const std::string& name,
 #endif
     std::strftime(created, sizeof(created), "%Y-%m-%dT%H:%M:%S", &local);
 
-    std::ostringstream gdata;
-    gdata << "{\n"
-          << "  \"format\": \"gryce_gdata\",\n"
-          << "  \"version\": 1,\n"
-          << "  \"project\": \"" << json_escape(name) << "\",\n"
-          << "  \"author\": \"" << json_escape(author) << "\",\n"
-          << "  \"created\": \"" << created << "\",\n"
-          << "  \"tool\": \"grycegc\",\n"
-          << "  \"key_sha512_hex\": \"" << key << "\",\n"   // 64 bytes, hex-encoded
-          << "  " << sources.str() << "\n"
-          << "}\n";
+    // 3) 合并打包元数据（原 gdata 字段）写入同一份 project.data。
+    merged["format"] = "gryce_project_data";
+    merged["version"] = 1;
+    merged["project"] = name;
+    merged["author"] = author;
+    merged["created"] = created;
+    merged["tool"] = "grycegc";
+    merged["key_sha512_hex"] = key;                                   // 64 bytes, hex-encoded
+    merged["enc_key_hex"] = enc_key_hex;  // ChaCha20 32B 密钥（hex），运行时据此解密 .gpkg
+    merged["sources"] = sources;
 
-    std::ofstream out(out_dir / "gdata", std::ios::binary);
-    if (!out) {
-        std::cerr << "[grycegc] ERROR: failed to write " << (out_dir / "gdata") << "\n";
+    const fs::path out = out_dir / "project.data";
+    std::ofstream out_fs(out);
+    if (!out_fs) {
+        std::cerr << "[grycegc] ERROR: failed to write " << out << "\n";
         return false;
     }
-    out << gdata.str();
-    std::printf("[grycegc] gdata: 64-byte SHA-512 key + %zu source records, author '%s'\n",
-                files.size(), author.c_str());
-    return out.good();
+    out_fs << merged.dump(2) << "\n";
+    if (out_fs.good()) {
+        std::printf("[grycegc] project.data: %zu source records + 64-byte SHA-512 key + author '%s'"
+                    " (manifest, settings & metadata merged at output root)\n",
+                    files.size(), author.c_str());
+    }
+    return out_fs.good();
 }
 
 bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug,
@@ -645,40 +883,59 @@ bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug
     std::error_code ec;
     fs::create_directories(runtime_dir, ec);
 
-    const std::string suffix = debug ? "d" : "";
+    // Detect MinGW by its own runtime DLLs (g++-specific, never produced by
+    // MSVC). A MinGW build may still carry plain-named engine DLLs, so the
+    // lib-prefix fallback below is not sufficient on its own.
     bool mingw = false;
-    const std::vector<std::string> cores = {
-        "GryceCore" + suffix + ".dll",
-        "GryceRenderer" + suffix + ".dll",
-        "GrycePlatform" + suffix + ".dll",
-        "GrycePhysics" + suffix + ".dll",
+    for (const char* rt : {"libgcc_s_seh-1.dll", "libstdc++-6.dll"}) {
+        if (fs::is_regular_file(bin_dir / rt)) { mingw = true; break; }
+    }
+    // Engine core DLLs are discovered by prefix in bin_dir (同级扫描), not by a
+    // hard-coded full name, so debug/release `d` suffix and `lib` prefix are
+    // both picked up automatically.
+    const std::vector<std::string> core_prefixes = {
+        "grycecore", "grycerenderer", "gryceplatform", "grycephysics",
     };
-    for (const std::string& dll : cores) {
-        std::error_code ec;
-        fs::path src = bin_dir / dll;
-        if (!fs::is_regular_file(src, ec)) {
-            // MinGW builds name the DLL libGryceCore(d).dll
-            src = bin_dir / ("lib" + dll);
-            if (!fs::is_regular_file(src, ec)) {
-                std::cerr << "[grycegc] warning: " << dll << " not found in " << bin_dir << "\n";
-                continue;
-            }
-            mingw = true;
+    for (const std::string& prefix : core_prefixes) {
+        std::error_code ec2;
+        fs::path src = find_sibling_dll(bin_dir, prefix);
+        if (src.empty()) {
+            std::cerr << "[grycegc] warning: " << prefix << "*.dll not found in " << bin_dir << "\n";
+            continue;
         }
+        if (src.filename().string().rfind("lib", 0) == 0) mingw = true;
         const std::string dst_name = src.filename().string();
-        fs::copy_file(src, runtime_dir / dst_name, fs::copy_options::overwrite_existing, ec);
-        if (ec) {
-            std::cerr << "[grycegc] ERROR: failed to copy " << src << ": " << ec.message() << "\n";
+        fs::copy_file(src, runtime_dir / dst_name, fs::copy_options::overwrite_existing, ec2);
+        if (ec2) {
+            std::cerr << "[grycegc] ERROR: failed to copy " << src << ": " << ec2.message() << "\n";
             return false;
         }
         copied.push_back(dst_name);
     }
-    // GLFW: MSVC Debug builds use glfw3d.dll; MinGW uses plain glfw3.dll.
+    // GLFW: Debug builds (MSVC *and* MinGW) link glfw3d.dll; Release links
+    // glfw3.dll. Prefer the variant matching the build's debug flag so the
+    // load-time closure resolves the exact DLL the engine was linked against,
+    // falling back to the other variant / a bare "glfw" prefix if unavailable.
     bool glfw_ok = false;
-    for (const char* glfw : {"glfw3d.dll", "glfw3.dll"}) {
-        if (copy_file_if_exists(bin_dir, glfw, runtime_dir, copied)) {
-            glfw_ok = true;
-            break;
+    {
+        const char* want = debug ? "glfw3d" : "glfw3";
+        std::error_code ge;
+        fs::path glfw;
+        if (!(fs::is_regular_file(bin_dir / (std::string(want) + ".dll"), ge)))
+            glfw = find_sibling_dll(bin_dir, want);
+        else
+            glfw = bin_dir / (std::string(want) + ".dll");
+        if (glfw.empty()) {
+            for (const char* prefix : {"glfw3", "glfw"})
+                if (!(glfw = find_sibling_dll(bin_dir, prefix)).empty()) break;
+        }
+        if (!glfw.empty()) {
+            const std::string dst = glfw.filename().string();
+            std::error_code g2;
+            if (fs::copy_file(glfw, runtime_dir / dst, fs::copy_options::overwrite_existing, g2)) {
+                copied.push_back(dst);
+                glfw_ok = true;
+            }
         }
     }
     if (!glfw_ok) {
@@ -691,36 +948,43 @@ bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug
     for (const char* rt : {"libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"}) {
         copy_file_if_exists(bin_dir, rt, runtime_dir, copied);
     }
+    // Vulkan shader compiler (shaderc_shared.dll): loaded at runtime, so it is
+    // optional for GL-only runtimes. Stage it when the host has a Vulkan SDK so
+    // packages that use the Vulkan backend self-compile shaders on first run
+    // instead of failing open to (possibly absent) precompiled SPIR-V.
+    const fs::path shaderc = find_shaderc_dll();
+    if (!shaderc.empty()) {
+        std::error_code se;
+        fs::copy_file(shaderc, runtime_dir / "shaderc_shared.dll",
+                      fs::copy_options::overwrite_existing, se);
+        if (se) {
+            std::cerr << "[grycegc] warning: failed to copy shaderc_shared.dll: "
+                      << se.message() << "\n";
+        } else {
+            copied.push_back("shaderc_shared.dll");
+        }
+    }
     // MSVC CRT runtime (release/debug per config). MinGW packages already
     // carry their GCC runtime above; System32 is the fallback source.
     if (!mingw) {
-        if (!copy_msvc_runtime(build_dir, debug, runtime_dir, copied)) {
+        if (!copy_msvc_runtime(build_dir, debug, runtime_dir, out_dir, copied)) {
             return false;
         }
     }
 
     // MinGW builds do not support /DELAYLOAD, so the exe imports the engine
     // DLLs at process start BEFORE SetDllDirectoryW("runtime") can run. Their
-    // DLLs must therefore sit next to the exe, not only in runtime/. Copy the
-    // full import set to the output root so packaged MinGW games actually boot.
+    // DLLs — and every transitive dependency the engine DLLs import (GLFW
+    // variant, GLEW, GCC runtime) — must sit next to the exe, not only in
+    // runtime/. Mirror the entire staged runtime folder to the output root so
+    // the load-time closure always resolves. The delay-load hook in the
+    // template still resolves the redundant runtime/ copies later (harmless).
     if (mingw) {
-        const std::array<std::string, 9> root_dlls{
-            "libGryceCore" + suffix + ".dll",
-            "libGryceRenderer" + suffix + ".dll",
-            "libGrycePlatform" + suffix + ".dll",
-            "libGrycePhysics" + suffix + ".dll",
-            "glfw3.dll",
-            "glew32.dll",
-            "libgcc_s_seh-1.dll",
-            "libstdc++-6.dll",
-            "libwinpthread-1.dll"};
-        for (const std::string& root_dll : root_dlls) {
-            std::error_code sec;
-            const fs::path root_src = bin_dir / root_dll;
-            if (fs::is_regular_file(root_src, sec)) {
-                fs::copy_file(root_src, out_dir / root_dll,
-                              fs::copy_options::overwrite_existing, ec);
-            }
+        std::error_code ec2;
+        for (const auto& entry : fs::directory_iterator(runtime_dir, ec2)) {
+            if (!entry.is_regular_file(ec2)) continue;
+            fs::copy_file(entry.path(), out_dir / entry.path().filename(),
+                          fs::copy_options::overwrite_existing, ec2);
         }
     }
 
@@ -732,28 +996,10 @@ bool copy_runtime(const fs::path& build_dir, const fs::path& bin_dir, bool debug
     return true;
 }
 
-// Copy the project's runtime settings / manifest next to the packaged exe.
-// The game entry reads project_settings.json from the project root (exe dir)
-// as a real file; it is also packed into config.gpkg, but the raw copy keeps
-// the packaged game booting with the correct main scene / settings even when
-// bundle extraction is unavailable. project.gproj is copied as documentation.
-void copy_project_metadata(const fs::path& project, const fs::path& out_dir) {
-    for (const char* name : {"project_settings.json", "project.gproj"}) {
-        std::error_code ec;
-        const fs::path src = project / name;
-        if (!fs::is_regular_file(src, ec)) continue;
-        fs::copy_file(src, out_dir / name, fs::copy_options::overwrite_existing, ec);
-        if (ec) {
-            std::cerr << "[grycegc] ERROR: failed to copy " << src << ": " << ec.message() << "\n";
-        } else {
-            std::printf("[grycegc] copied %s to output root\n", name);
-        }
-    }
-}
-
 bool write_bundle(const std::vector<FileEntry>& files, const fs::path& output_path,
                   size_t& entry_count) {
-    // 使用 PakWriter（GPAK v3）：随机 Base64 存储名 + manifest 映射逻辑路径。
+    // 使用 PakWriter（GPAK v4）：随机 Base64 存储名 + manifest 映射逻辑路径；
+    // 设置了 32 字节全局密钥时对 data 区做 ChaCha20 加密。
     gryce_engine::resources::PakWriter writer;
     bool ok = true;
     for (const FileEntry& file : files) {
@@ -769,7 +1015,9 @@ bool write_bundle(const std::vector<FileEntry>& files, const fs::path& output_pa
     }
     if (!ok) return false;
 
-    // 读回验证
+    // 读回验证：打开 + manifest 数量一致 + 每个文件解密环回比对（加密写/解密读必须一致）。
+    // 加密包（v4）在验证时用工具的全局 ChaCha20 密钥解密，直接比对恢复内容与源文件字节，
+    // 从打包侧即可确认运行时解密（PakReader::read 同一套函数）能还原原始数据。
     gryce_engine::resources::PakReader reader;
     if (!reader.open(output_path.string())) {
         std::cerr << "[grycegc] ERROR: .gpkg verification failed to open " << output_path << "\n";
@@ -779,40 +1027,171 @@ bool write_bundle(const std::vector<FileEntry>& files, const fs::path& output_pa
         std::cerr << "[grycegc] ERROR: .gpkg verification mismatch in " << output_path << "\n";
         return false;
     }
-    entry_count += reader.manifest().size();
+    for (const FileEntry& file : files) {
+        const std::vector<uint8_t> restored = reader.read(file.internal_path);
+        std::ifstream ifs(file.source_path, std::ios::binary);
+        const std::vector<uint8_t> orig((std::istreambuf_iterator<char>(ifs)),
+                                        std::istreambuf_iterator<char>());
+        bool content_ok = false;
+        if (restored.size() == orig.size()) {
+            content_ok = std::equal(restored.begin(), restored.end(), orig.begin());
+        }
+        if (!content_ok) {
+            std::cerr << "[grycegc] ERROR: decrypt mismatch for " << file.internal_path
+                      << " in " << output_path << "\n";
+            return false;
+        }
+    }
+    entry_count += files.size();
     const uintmax_t size = fs::file_size(output_path);
     std::printf("[grycegc] %s: %zu files, %.2f MiB (random Base64 names, manifest)\n",
-                output_path.filename().string().c_str(), entry_count,
+                output_path.filename().string().c_str(), reader.manifest().size(),
                 static_cast<double>(size) / (1024.0 * 1024.0));
+    return true;
+}
+
+// 创建标准 GryceGC-A 项目骨架。目录结构见 docs/GryceGC-A.md §2：
+//   <dir>/project.data            唯一配置文件（项目清单 + 运行时设置合并于一处，JSON）
+//   <dir>/scenes/                 场景 .gesc
+//   <dir>/scripts/                 JS 脚本 .js（ES Module，QuickJS 运行时）
+//   <dir>/shaders/                 着色器
+//   <dir>/models/                  模型
+//   <dir>/textures/                贴图
+//   <dir>/audio/                   音频
+//   <dir>/fonts/                   字体
+//   <dir>/tilesets/                Tilemap 瓦片集
+// 其中会自动生成一个最小的空主场景 scenes/main.gesc（v2 格式，含一个空根）。
+bool create_project_skeleton(const fs::path& dir, const std::string& name,
+                             const std::string& window_title) {
+    std::error_code ec;
+    // 目录必须不存在或为空，避免覆盖已有项目。
+    if (fs::exists(dir, ec)) {
+        if (fs::is_directory(dir, ec) && !fs::is_empty(dir, ec)) {
+            std::cerr << "[grycegc] ERROR: " << dir
+                      << " 已存在且非空，拒绝覆盖现有项目\n";
+            return false;
+        }
+        fs::remove_all(dir, ec);
+        if (ec) {
+            std::cerr << "[grycegc] ERROR: failed to clear " << dir
+                      << ": " << ec.message() << "\n";
+            return false;
+        }
+    }
+
+    const std::vector<std::string> subdirs = {
+        "scenes", "scripts", "shaders", "models",
+        "textures", "audio", "fonts", "tilesets",
+    };
+    for (const std::string& sub : subdirs) {
+        if (!fs::create_directories(dir / sub, ec) && ec) {
+            std::cerr << "[grycegc] ERROR: failed to create " << (dir / sub)
+                      << ": " << ec.message() << "\n";
+            return false;
+        }
+    }
+
+    // project.data —— 唯一配置文件：项目清单 + 运行时设置合并于一处
+    //（原 project_settings.json 的内容并入此文件顶层，作为运行时设置；打包时还会
+    // 附加原 gdata 的打包元数据字段。）
+    {
+        std::string title = window_title.empty() ? name : window_title;
+        std::string j = "{\n"
+            "  \"name\": \"" + json_escape(name) + "\",\n"
+            "  \"version\": \"0.1.0\",\n"
+            "  \"engine_version\": \">=0.1.0\",\n"
+            "  \"entry_scene\": \"res:/scenes/main.gesc\",\n"
+            "  \"physics\": { \"backend_2d\": \"box2d\", \"backend_3d\": \"jolt\" },\n"
+            "  \"window\": { \"width\": 1280, \"height\": 720, \"title\": \""
+            + json_escape(title) + "\" },\n"
+            "  \"render_api\": \"opengl\",\n"
+            "  \"hdr\": true,\n"
+            "  \"tone_map_mode\": 1,\n"
+            "  \"exposure\": 1.0,\n"
+            "  \"shadow_enabled\": true,\n"
+            "  \"shadow_map_size\": 2048,\n"
+            "  \"ambient_r\": 0.2,\n"
+            "  \"ambient_g\": 0.22,\n"
+            "  \"ambient_b\": 0.26,\n"
+            "  \"ibl_intensity\": 1.0,\n"
+            "  \"main_scene\": \"res:/scenes/main.gesc\"\n"
+            "}\n";
+        std::ofstream out(dir / "project.data");
+        if (!out) {
+            std::cerr << "[grycegc] ERROR: failed to write project.data\n";
+            return false;
+        }
+        out << j;
+        if (!out.good()) return false;
+    }
+
+    // scenes/main.gesc —— 最小空主场景（v2：单合成根，无落盘实体）
+    {
+        const char* scene =
+            "{\n"
+            "  \"version\": 2,\n"
+            "  \"name\": \"Main\",\n"
+            "  \"entities\": []\n"
+            "}\n";
+        std::ofstream out(dir / "scenes" / "main.gesc");
+        if (!out) {
+            std::cerr << "[grycegc] ERROR: failed to write scenes/main.gesc\n";
+            return false;
+        }
+        out << scene;
+        if (!out.good()) return false;
+    }
+
+    // 各资源目录占位说明（可选，保持空目录在 VCS 中可见）
+    for (const std::string& sub : subdirs) {
+        if (sub == "scenes") continue;
+        const fs::path keep = dir / sub / ".gitkeep";
+        std::ofstream out(keep);
+        out << "# " << sub << " 资源目录（GryceGC-A）\n";
+    }
+
+    std::printf("[grycegc] created GryceGC-A project '%s' at %s\n",
+                name.c_str(), dir.string().c_str());
+    std::printf("[grycegc]   scenes/main.gesc  -> 主场景（入口）\n");
+    std::printf("[grycegc]   project.data     -> 唯一配置文件（清单 + 运行时设置）\n");
+    std::printf("[grycegc] 下一步: 将场景/脚本/资源放入对应分类目录，然后\n");
+    std::printf("[grycegc]   GryceGC --project %s --name %s --build-dir build --config Release --out build/game\n",
+                dir.string().c_str(), name.c_str());
     return true;
 }
 
 void print_usage(const char* argv0) {
     std::printf(
         "GryceGC - GryceEngine Global Compiler (GryceSPC packaging tool)\n"
-        "Usage: %s --project <dir> [options]\n"
+        "项目创建:\n"
+        "  %s --init <dir> [--name <name>]  创建标准 GryceGC-A 项目骨架\n"
+        "\n"
+        "打包:\n"
+        "  %s --project <dir> [options]\n"
         "  --project <dir>   game project directory (res:// root) [required]\n"
         "  --name <name>     output game name (default: MyGame)\n"
         "  --build-dir <dir> CMake build directory (default: build)\n"
         "  --config <cfg>    Debug or Release (default: Release)\n"
         "  --out <dir>       output parent directory (default: build/game)\n"
-        "  --author <name>   author stored in gdata (default: %%USERNAME%%)\n"
-        "  --single          pack everything into one <name>.gpkg\n"
+        "  --game <exe>      GryceGame template exe (default: compiled-in path)\n"
+        "  --author <name>   author stored in project.data (default: %%USERNAME%%)\n"
         "\n"
         "Pak mode（UI 资源发布包）:\n"
         "  --pak             enable pak mode (no project/runtime assembly)\n"
         "  --assets <dir>    assets directory to pack [required with --pak]\n"
         "  --output <file>   output .pak path (default: game.pak)\n"
         "  --dev             dev mode: pack raw files, no bytecode/encryption\n",
-        argv0);
+        argv0, argv0);
 }
 
 } // namespace
 
 int main(int argc, char* argv[]) {
+    init_utf8_console();
     std::string project, name = "MyGame", build_dir = "build", config = "Release",
                 out = "build/game", author;
-    bool single = false;
+    std::string init_dir, window_title;
+    std::string game_exe;
     bool pak_mode = false;
     bool dev_mode = false;
     std::string assets, output_pak = "game.pak";
@@ -827,6 +1206,10 @@ int main(int argc, char* argv[]) {
         };
         if (arg == "--project") {
             if (const char* v = need("--project")) project = v;
+        } else if (arg == "--init" || arg == "--new") {
+            if (const char* v = need("--init")) init_dir = v;
+        } else if (arg == "--window-title") {
+            if (const char* v = need("--window-title")) window_title = v;
         } else if (arg == "--name") {
             if (const char* v = need("--name")) name = v;
         } else if (arg == "--build-dir") {
@@ -837,8 +1220,8 @@ int main(int argc, char* argv[]) {
             if (const char* v = need("--out")) out = v;
         } else if (arg == "--author") {
             if (const char* v = need("--author")) author = v;
-        } else if (arg == "--single") {
-            single = true;
+        } else if (arg == "--game") {
+            if (const char* v = need("--game")) game_exe = v;
         } else if (arg == "--pak") {
             pak_mode = true;
         } else if (arg == "--assets") {
@@ -855,6 +1238,24 @@ int main(int argc, char* argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    // ==========================================================================
+    // Init 模式：创建标准 GryceGC-A 项目骨架
+    // ==========================================================================
+    if (!init_dir.empty()) {
+        if (pak_mode || !project.empty()) {
+            std::cerr << "[grycegc] ERROR: --init cannot be combined with --project/--pak\n";
+            return 1;
+        }
+        // 项目名默认取目录名（转 PascalCase）；显式 --name 保持原样。
+        std::string dir_name = fs::path(init_dir).empty()
+            ? init_dir : fs::path(init_dir).filename().generic_string();
+        if (name == "MyGame" && !dir_name.empty() && !init_dir.ends_with("\\") &&
+            !init_dir.ends_with("/")) {
+            name = to_pascal_case(dir_name);  // 目录名缺省即项目名（GryceGC-A 约定）
+        }
+        return create_project_skeleton(fs::path(init_dir), name, window_title) ? 0 : 1;
     }
 
     // ==========================================================================
@@ -940,17 +1341,54 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-    const bool debug = config == "Debug";
+    bool debug = config == "Debug";
     if (!debug && config != "Release") {
         std::cerr << "[grycegc] ERROR: --config must be Debug or Release\n";
         return 1;
     }
 
-    const fs::path bin_dir = fs::path(build_dir) / "bin" / config;
-    const fs::path exe = bin_dir / "GryceGame.exe";
+    const fs::path staging = fs::path(build_dir) / "bin" / config;
+    // 优先从 dist 布局读取（GryceEngineUtils/lib 为运行库来源，GryceGame/ 为 exe），
+    // build.py / CMake 构建默认会生成 dist；未生成时回退到 flat 输出目录。
+    const fs::path dist_dir = staging / "dist";
+    const fs::path sdk_lib = dist_dir / "GryceEngineUtils" / "lib";
+    const bool has_dist = fs::is_directory(sdk_lib);
+
+    // 运行库 DLL 源码：优先按 --build-dir/--config 推导的路径（dist 或 flat）；
+    // 若那里没有引擎 DLL（例如跑的是 dist/GryceGC 里的 exe，却忘带 --config），
+    // 则回退按 GryceGC 自身位置做多级同级回溯（本级、上溯若干层的
+    // GryceEngineUtils/lib），从而无论从哪个构建布局启动都能发现同级运行库。
+    const fs::path exe_src_dir(get_exe_dir());
+    fs::path bin_dir = has_dist ? sdk_lib : staging;
+    if (find_sibling_dll(bin_dir, "grycecore").empty()) {
+        const fs::path auto_dir = find_runtime_dir_near_exe(exe_src_dir);
+        if (!auto_dir.empty()) bin_dir = auto_dir;
+    }
+    // 按实际 DLL（GryceCored.dll 等）推断 Debug/Release，供 MSVC CRT 拷贝使用，
+    // 避免与 --config 默认值（Release）错配。
+    if (sibling_is_debug(bin_dir)) debug = true;
+
+    // GryceGC 依赖 GryceGame：CMake 在构建时把模板 exe 的精确路径编译进工具
+    // （GRYCE_GC_GAME_TEMPLATE），--game 可显式覆盖；仅当两者都缺（独立分发的
+    // GryceGC）才回退到目录猜测，正常情况下无需再运行时分多位置查找。
+    auto file_exists = [](const fs::path& p) {
+        std::error_code e;
+        return fs::is_regular_file(p, e);
+    };
+    fs::path exe = game_exe.empty() ? fs::path() : fs::path(game_exe);
+    if (!file_exists(exe)) {
+#ifdef GRYCE_GC_GAME_TEMPLATE
+        exe = fs::path(GRYCE_GC_GAME_TEMPLATE);
+#endif
+    }
+    if (!file_exists(exe)) {
+        const fs::path dist_game = dist_dir / "GryceGame" / "GryceGame.exe";
+        exe = file_exists(dist_game) ? dist_game : (staging / "GryceGame.exe");
+    }
     std::error_code ec;
     if (!fs::is_regular_file(exe, ec)) {
-        std::cerr << "[grycegc] ERROR: " << exe << " not found; build the GryceGame target first\n";
+        std::cerr << "[grycegc] ERROR: " << exe
+                  << " not found; pass --game, or build the GryceGame target first\n";
         return 1;
     }
     if (!fs::is_directory(project, ec)) {
@@ -980,44 +1418,75 @@ int main(int argc, char* argv[]) {
     if (!copy_runtime(build_dir, bin_dir, debug, out_dir, exe, name, copied)) {
         return 1;
     }
-    copy_project_metadata(project, out_dir);
 
-    // 2) Content: group project files into .gpkg archives.
+    // 2) Content: 每个文件单独打包成一个 .gpkg，包文件名随机 Base64（无逻辑含义），
+    //    且 data 区以随机生成的 32 字节密钥做 ChaCha20 加密（密钥最终写入 project.data）。
     const std::vector<FileEntry> files = collect_project_files(project);
     if (files.empty()) {
         std::cerr << "[grycegc] ERROR: no packable resources found in project\n";
         return 1;
     }
 
-    std::map<std::string, std::vector<FileEntry>> bundles;
-    for (const FileEntry& file : files) {
-        const std::string ext = to_lower(fs::path(file.internal_path).extension().string());
-        const std::string key = single ? "all" : classify(ext);
-        bundles[key].push_back(file);
+    uint8_t key_raw[32] = {};
+    if (!random_bytes(key_raw, sizeof(key_raw))) {
+        std::cerr << "[grycegc] ERROR: failed to generate encryption key\n";
+        return 1;
     }
+    const std::string enc_key_hex = bytes_to_hex(key_raw, sizeof(key_raw));
+    gryce_engine::resources::set_pak_crypto_key(
+        std::string(reinterpret_cast<const char*>(key_raw), sizeof(key_raw)));
 
     size_t total_entries = 0;
-    constexpr const char* kBundleExt = ".gpkg";
-    for (const auto& [key, members] : bundles) {
-        const std::string suffix = single ? "" : "." + key;
-        const fs::path bundle_path = assets_dir / (name + suffix + kBundleExt);
-        if (!write_bundle(members, bundle_path, total_entries)) {
+    for (const FileEntry& file : files) {
+        const fs::path bundle_path = assets_dir / (random_base64_name() + ".gpkg");
+        std::vector<FileEntry> one;
+        one.push_back(file);
+        if (!write_bundle(one, bundle_path, total_entries)) {
             return 1;
         }
     }
 
-    // 3) gdata: source-file records + 64-byte SHA-512 key + author metadata.
+    // 2.5) Core 默认 shader 兜底：把引擎默认 shader 集（项目未覆盖的）一并打成
+    //      独立的 .gpkg 打进 assets/，令空项目/缺失 shader 也能开箱渲染。
+    //      —— 打的是源文件，首次运行才由 GL/Vulkan 后端运行时编译。
+    size_t core_entry_count = 0;
+    const fs::path core_shaders_dir = find_core_shaders_dir(get_exe_dir());
+    if (core_shaders_dir.empty()) {
+        std::cerr << "[grycegc] WARNING: engine default shaders not found; "
+                     "games lacking project shaders won't render.\n";
+    } else {
+        std::unordered_set<std::string> project_paths;
+        for (const FileEntry& f : files) project_paths.insert(to_lower(f.internal_path));
+        const auto core_files = collect_core_shader_files(core_shaders_dir, project_paths);
+        if (!core_files.empty()) {
+            std::printf("[grycegc] packaging %zu core default shaders (unoverridden)\n",
+                        core_files.size());
+        }
+        for (const FileEntry& file : core_files) {
+            const fs::path bundle_path = assets_dir / (random_base64_name() + ".gpkg");
+            std::vector<FileEntry> one;
+            one.push_back(file);
+            if (!write_bundle(one, bundle_path, total_entries)) {
+                return 1;
+            }
+            ++core_entry_count;
+        }
+    }
+
+    const size_t assets_count = files.size() + core_entry_count;
+    // 3) project.data：合并源项目清单/运行时设置 + 打包元数据（source records、
+    //    64-byte SHA-512 key + author），并写入 .gpkg 解密密钥 enc_key_hex。
     if (author.empty()) {
         const char* user = std::getenv("USERNAME");
         author = (user && user[0]) ? user : "Unknown";
     }
-    if (!write_gdata(out_dir, name, author, files)) {
+    if (!write_project_data(project, out_dir, name, author, files, enc_key_hex)) {
         return 1;
     }
 
     std::printf("[grycegc] packaged %s -> %s\n", name.c_str(), out_dir.string().c_str());
-    std::printf("[grycegc] %s.exe + runtime/%zu DLLs + assets/%zu .%s (%zu resources) + gdata\n",
-                name.c_str(), copied.size(), bundles.size(), "gpkg", total_entries);
+    std::printf("[grycegc] %s.exe + runtime/%zu DLLs + assets/%zu %s + project.data\n",
+                name.c_str(), copied.size(), assets_count, ".gpkg (project resources + core default shaders)");
     std::printf("[grycegc] run with: %s (project root defaults to exe dir)\n",
                 (out_dir / (name + ".exe")).string().c_str());
     return 0;

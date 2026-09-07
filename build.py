@@ -16,7 +16,9 @@
     python build.py --clean-all              # 完全清理（含 deps）
 
 本项目不依赖 Visual Studio 解决方案（无 .slnx / .vcxproj 生成）：
-build.py 与 CMake 统一走单配置目录（build/<Config>），优先使用 Ninja
+build.py 与直接 `cmake -B build` 共享同一个规范构建目录（默认 build/），
+产物统一在 build/bin/<Config>/（flat 输出）与 build/bin/<Config>/dist/
+（per-target 目录 + GryceEngineUtils/{lib,include}）；优先使用 Ninja
 generator；CLion 可直接打开项目根目录，用任意工具链（MinGW / MSVC /
 Clang）自行配置构建。
 
@@ -169,8 +171,8 @@ def find_msys2_toolchain(compiler_name, compiler_cxx_name):
 def clean_build_artifacts(build_dir, keep_deps=True):
     """Remove build artifacts.
 
-    注意：依赖实际存放在 {args.build_dir}/deps/（源码根下，独立于各 config 子目录），
-    删除某个 config 目录不会影响它，因此这里的 keep_deps 参数已不再需要挪移依赖目录。
+    注意：依赖实际存放在 {args.build_dir}/deps/（规范构建目录下），与 bin/lib 产物
+    分离，因此这里的 keep_deps 参数已不再需要挪移依赖目录。
     """
     bd = Path(build_dir)
     if not bd.exists():
@@ -307,8 +309,15 @@ def pick_generator(compiler_family, requested):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Gryce Engine build script -- wrapper around cmake + ninja "
-                    "(pure CMake, no Visual Studio solution)"
+        description=(
+            "Gryce Engine build script -- wrapper around cmake + ninja "
+            "(pure CMake, no Visual Studio solution). "
+            "Uses a single canonical build directory (default build/):\n"
+            "   build/bin/<Config>/          flat 输出（staging）\n"
+            "   build/bin/<Config>/dist/     per-target 目录 + GryceEngineUtils/{lib,include}\n"
+            "It matches a direct `cmake -B build -DCMAKE_BUILD_TYPE=<Config>`, so "
+            "build.py, direct CMake and GryceGC all share one directory layout."
+        )
     )
     parser.add_argument(
         "config", nargs="?", default="Debug",
@@ -355,7 +364,7 @@ def main():
     )
     parser.add_argument(
         "--build-dir", default="build",
-        help="Build directory prefix (default: build; each config uses build/<Config>)"
+        help="Canonical build directory (default: build; output goes to build/bin/<Config>)"
     )
     parser.add_argument(
         "--no-lock", action="store_true",
@@ -383,7 +392,7 @@ def main():
     )
     parser.add_argument(
         "--no-script", action="store_true",
-        help="Disable the optional Lua scripting module (GRYCE_ENABLE_SCRIPT=OFF)"
+        help="Disable the optional QuickJS scripting module (GRYCE_ENABLE_SCRIPT=OFF)"
     )
     parser.add_argument(
         "--no-ui", action="store_true",
@@ -392,8 +401,8 @@ def main():
     args = parser.parse_args()
 
     config = args.config
-    # 纯 CMake 流程统一单配置目录 build/<Config>（Ninja/Make 均为单配置 generator）。
-    build_dir = Path(args.build_dir) / config
+    # 单一规范构建目录：与直接 `cmake -B build` 一致，产物统一在 build/bin/<Config>/。
+    build_dir = Path(args.build_dir)
     project_root = Path(__file__).parent.resolve()
 
     if args.msvc:
@@ -460,6 +469,15 @@ def main():
             return True
         # 归一化（小写 + 正斜杠），避免 Windows 盘符/大小写差异导致每次都重配。
         content = cache.read_text(encoding='utf-8', errors='ignore').lower().replace('\\', '/')
+        # 单一构建目录被多个 config 共用：切 config 时缓存里的构建类型必须匹配，
+        # 否则直接使用旧类型会产生与请求不一致的产物。
+        marker = "cmake_build_type:string="
+        idx = content.find(marker)
+        cached_bt = content[idx + len(marker):].splitlines()[0].strip() if idx >= 0 else ""
+        if not cached_bt or cached_bt != config.lower():
+            print(f"{C_INFO}[Gryce Engine]{C_RESET} Build type cached differs "
+                  f"(requested {config}), reconfiguring ...")
+            return True
         if generator:
             if f"cmake_generator:internal={generator.lower()}" not in content:
                 return True
@@ -542,9 +560,11 @@ def main():
         sys.exit(1)
 
     print(f"{C_OK}[Gryce Engine]{C_RESET} Build complete.")
-    print(f"  Binaries: {build_dir}/bin/{config}/")
-    print(f"  Editor:   GryceEditor (C++/ImGui, built by default)")
-    print(f"  Demos:    (examples/ directory cleared, no active demos)")
+    print(f"  Staging: {build_dir}/bin/{config}/")
+    print(f"  Dist:    {build_dir}/bin/{config}/dist/  "
+          "(per-target folders + GryceEngineUtils/{lib, include}, copy a folder to publish)")
+    if Path(build_dir).joinpath("bin", config, "dist", "GryceGame", "GryceGame.exe").exists():
+        print(f"  Game:    {build_dir}/bin/{config}/dist/GryceGame/")
 
 
 if __name__ == "__main__":

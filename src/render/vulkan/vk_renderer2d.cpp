@@ -16,11 +16,14 @@
 
 #include "assets/texture_data.h"
 #include "render/render_context.h"
+#include "render/render.h"
+#include "render/shader_source_resolver.h"
 #include "render/vulkan/vk_backend.h"
 #include "render/vulkan/vk_device.h"
 #include "render/vulkan/vk_swapchain.h"
 #include "render/vulkan/vk_texture.h"
 #include "render/vulkan/vk_framebuffer.h"
+#include "render/vulkan/vk_glsl_compiler.h"
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
@@ -73,6 +76,34 @@ VkShaderModule create_shader_module(VkDevice dev, const std::vector<uint32_t>& c
     VkShaderModule module = VK_NULL_HANDLE;
     vkCreateShaderModule(dev, &info, nullptr, &module);
     return module;
+}
+
+// 单阶段着色器加载：优先源码 → shaderc 首编（走两级解析，支持项目覆盖 + core
+// 兜底）；shaderc 不可用或源码缺失时回退 `spirv/vulkan_{base}.{vert|frag}.spv`。
+// from_source 置真表示本次走首编路径。
+VkShaderModule load_2d_stage(VkDevice dev, const std::string& base, GlslStage stage,
+                             const std::string& spirv_dir, bool& from_source) {
+    from_source = false;
+    if (shaderc_available()) {
+        const char* ext = stage == GlslStage::Vertex ? ".vert" : ".frag";
+        ShaderStageSource src = resolve_shader_stage_source(base, "res:/shaders", ext,
+                                                            RenderAPI::Vulkan);
+        std::string err;
+        std::vector<uint32_t> code;
+        if (src.ok() && compile_glsl_to_spirv(src.code, src.path, stage, code, err)) {
+            from_source = true;
+            return create_shader_module(dev, code);
+        }
+        GLOG_WARN("VulkanRenderer2D: first-run compile of '{}' failed ({}); "
+                  "falling back to pre-compiled SPIR-V", base, err);
+    }
+    std::vector<uint32_t> code;
+    const char* short_ext = stage == GlslStage::Vertex ? "vert" : "frag";
+    std::string spv = spirv_dir + "vulkan_" + base + "." + short_ext + ".spv";
+    if (!load_spirv_file(spv, code)) {
+        return VK_NULL_HANDLE;
+    }
+    return create_shader_module(dev, code);
 }
 
 // 受光照 sprite UBO 中单个光源数据，与 vulkan_2d_lit.frag 的 std140 布局一致。
@@ -310,58 +341,40 @@ bool VulkanRenderer2D::create_shader_modules() {
         resolved += '/';
     }
 
-    std::vector<uint32_t> vert_code, vert_lit_code, frag_rect_code, frag_text_code,
-        frag_sprite_code, frag_lit_code, vert_shadow_code, frag_shadow_code,
-        vert_bloom_code, frag_bloom_threshold_code, frag_bloom_blur_code, frag_bloom_compose_code;
+    auto load_stage = [&](const std::string& base, GlslStage stage) {
+        bool from_source = false;
+        VkShaderModule m = load_2d_stage(vk_device_->device(), base, stage, resolved, from_source);
+        return m;
+    };
 
-    if (!load_spirv_file(resolved + "vulkan_2d.vert.spv", vert_code) ||
-        !load_spirv_file(resolved + "vulkan_2d_rect.frag.spv", frag_rect_code) ||
-        !load_spirv_file(resolved + "vulkan_2d_text.frag.spv", frag_text_code) ||
-        !load_spirv_file(resolved + "vulkan_2d_sprite.frag.spv", frag_sprite_code)) {
-        return false;
-    }
+    // 核心 2D 四件套（矩形/文字/精灵 + 顶点）必须成功
+    vert_module_ = load_stage("2d", GlslStage::Vertex);
+    frag_rect_module_ = load_stage("2d_rect", GlslStage::Fragment);
+    frag_text_module_ = load_stage("2d_text", GlslStage::Fragment);
+    frag_sprite_module_ = load_stage("2d_sprite", GlslStage::Fragment);
 
-    bool has_lit = load_spirv_file(resolved + "vulkan_2d_lit.vert.spv", vert_lit_code) &&
-                   load_spirv_file(resolved + "vulkan_2d_lit.frag.spv", frag_lit_code);
-    bool has_shadow = load_spirv_file(resolved + "vulkan_2d_shadow.vert.spv", vert_shadow_code) &&
-                      load_spirv_file(resolved + "vulkan_2d_shadow.frag.spv", frag_shadow_code);
-    bool has_bloom = load_spirv_file(resolved + "vulkan_2d_bloom.vert.spv", vert_bloom_code) &&
-                     load_spirv_file(resolved + "vulkan_2d_bloom_threshold.frag.spv", frag_bloom_threshold_code) &&
-                     load_spirv_file(resolved + "vulkan_2d_bloom_blur.frag.spv", frag_bloom_blur_code) &&
-                     load_spirv_file(resolved + "vulkan_2d_bloom_compose.frag.spv", frag_bloom_compose_code);
+    // 可选功能：2D 光照 / 硬阴影 / Bloom（任一段失败则整feature禁用）
+    bool has_lit = (vert_lit_module_ = load_stage("2d_lit", GlslStage::Vertex)) != VK_NULL_HANDLE &&
+                   (frag_lit_sprite_module_ = load_stage("2d_lit", GlslStage::Fragment)) != VK_NULL_HANDLE;
+    bool has_shadow = (vert_shadow_module_ = load_stage("2d_shadow", GlslStage::Vertex)) != VK_NULL_HANDLE &&
+                      (frag_shadow_module_ = load_stage("2d_shadow", GlslStage::Fragment)) != VK_NULL_HANDLE;
+    bool has_bloom = (vert_bloom_module_ = load_stage("2d_bloom", GlslStage::Vertex)) != VK_NULL_HANDLE &&
+                     (frag_bloom_threshold_module_ = load_stage("2d_bloom_threshold", GlslStage::Fragment)) != VK_NULL_HANDLE &&
+                     (frag_bloom_blur_module_ = load_stage("2d_bloom_blur", GlslStage::Fragment)) != VK_NULL_HANDLE &&
+                     (frag_bloom_compose_module_ = load_stage("2d_bloom_compose", GlslStage::Fragment)) != VK_NULL_HANDLE;
 
     if (!has_lit) {
-        GLOG_WARN("VulkanRenderer2D: lit sprite SPIR-V not found, 2D lighting disabled in Vulkan");
+        GLOG_WARN("VulkanRenderer2D: lit sprite shaders missing, 2D lighting disabled in Vulkan");
     }
     if (!has_shadow) {
-        GLOG_WARN("VulkanRenderer2D: shadow SPIR-V not found, 2D shadows disabled in Vulkan");
+        GLOG_WARN("VulkanRenderer2D: shadow shaders missing, 2D shadows disabled in Vulkan");
     }
     if (!has_bloom) {
-        GLOG_WARN("VulkanRenderer2D: bloom SPIR-V not found, Bloom disabled in Vulkan");
-    }
-
-    VkDevice dev = vk_device_->device();
-    vert_module_ = create_shader_module(dev, vert_code);
-    frag_rect_module_ = create_shader_module(dev, frag_rect_code);
-    frag_text_module_ = create_shader_module(dev, frag_text_code);
-    frag_sprite_module_ = create_shader_module(dev, frag_sprite_code);
-    if (has_lit) {
-        vert_lit_module_ = create_shader_module(dev, vert_lit_code);
-        frag_lit_sprite_module_ = create_shader_module(dev, frag_lit_code);
-    }
-    if (has_shadow) {
-        vert_shadow_module_ = create_shader_module(dev, vert_shadow_code);
-        frag_shadow_module_ = create_shader_module(dev, frag_shadow_code);
-    }
-    if (has_bloom) {
-        vert_bloom_module_ = create_shader_module(dev, vert_bloom_code);
-        frag_bloom_threshold_module_ = create_shader_module(dev, frag_bloom_threshold_code);
-        frag_bloom_blur_module_ = create_shader_module(dev, frag_bloom_blur_code);
-        frag_bloom_compose_module_ = create_shader_module(dev, frag_bloom_compose_code);
+        GLOG_WARN("VulkanRenderer2D: bloom shaders missing, Bloom disabled in Vulkan");
     }
 
     if (!vert_module_ || !frag_rect_module_ || !frag_text_module_ || !frag_sprite_module_) {
-        GLOG_ERROR("VulkanRenderer2D: failed to create shader modules");
+        GLOG_ERROR("VulkanRenderer2D: failed to create core 2D shader modules");
         return false;
     }
     return true;

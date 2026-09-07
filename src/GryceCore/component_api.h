@@ -50,6 +50,24 @@ GRYCE_CORE_API int GComponent_TilemapSetTiles(GEntityHandle entity, uint64_t com
 GRYCE_CORE_API int GComponent_AddComponent(GEntityHandle entity, uint64_t comp_type_hash);
 GRYCE_CORE_API int GComponent_RemoveComponent(GEntityHandle entity, uint64_t comp_type_hash);
 
+// 给实体（无则加）MeshRenderer 组件并设置网格路径与材质颜色。
+// mesh_path 可为空（仅改颜色，要求已存在 MeshRenderer）。
+// 直接操作内部 MeshRenderer::material（嵌套对象，反射标量无法触达）。
+// 返回 0 成功，-1 失败（实体不存在 / 场景未初始化）。
+GRYCE_CORE_API int GComponent_MeshSetMaterial(GEntityHandle entity, const char* mesh_path,
+                                              float r, float g, float b,
+                                              float roughness, float metallic);
+
+// 读取实体 MeshRenderer 组件的网格路径到 out_buf（可空终止）。返回 0 成功，-1 失败
+//（实体不存在 / 无 MeshRenderer / 路径为空）。
+GRYCE_CORE_API int GComponent_MeshGetPath(GEntityHandle entity, char* out_buf, int buf_size);
+
+// 读取实体 MeshRenderer 嵌套材质的 PBR 参数（alb/rough/metal）。返回 0 成功，-1 失败
+//（实体不存在 / 无 MeshRenderer / 材质未初始化）。
+GRYCE_CORE_API int GComponent_MeshGetMaterial(GEntityHandle entity,
+                                              float* r, float* g, float* b,
+                                              float* roughness, float* metallic);
+
 GRYCE_CORE_API int GComponent_GetRegisteredTypeCount(void);
 GRYCE_CORE_API int GComponent_GetRegisteredTypeInfo(int index, uint64_t* out_hash, char* out_name, int name_buf_size);
 GRYCE_CORE_API int GComponent_GetRegisteredTypeCategory(int index, char* out_category, int category_buf_size);

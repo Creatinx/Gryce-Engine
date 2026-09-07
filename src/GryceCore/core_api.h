@@ -35,7 +35,7 @@ GRYCE_CORE_API void GCore_Shutdown(void);
 GRYCE_CORE_API bool GCore_IsInitialized(void);
 
 // Game entry: when enabled, GCore_Init loads the project's main scene
-// (project_settings.json "main_scene", default res:/scenes/main.gesc) right
+// (project.data "main_scene", default res:/scenes/main.gesc) right
 // after startup. The editor leaves it disabled. Must be called before
 // GCore_Init. Stored via a setter so GCoreInitDesc stays ABI-stable.
 GRYCE_CORE_API void GCore_SetAutoLoadMainScene(bool enable);

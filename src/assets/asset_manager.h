@@ -91,6 +91,10 @@ public:
     // 调用方必须持有 mutex_（内部会访问 bundles_）。
     std::string resolve_for_reading(const std::string& path);
 
+    // 线程安全的封装：内部加锁后调用 resolve_for_reading。渲染线程等在未持有
+    // mutex_ 的场景解析资源（如 shader 源码两级解析）使用本接口。
+    std::string resolve_any(const std::string& path);
+
 private:
     AssetManager() = default;
 

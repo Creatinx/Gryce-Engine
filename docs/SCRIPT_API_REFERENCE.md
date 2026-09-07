@@ -218,7 +218,7 @@ UI 事件绑定（`engine.showDialog` / `bind` 等）由 `src/ui/engine_bridge.c
 
 ## 7. 字节码编译与加密加载（发布模式）
 
-- 打包器：`grycegc --pak --assets ./assets --output game.pak`（release 加密）。
+- 打包器：`GryceGC --pak --assets ./assets --output game.pak`（release 加密）。
   `.js` 先经 `ScriptVM::compile_script` 编译为平台无关字节码，再用 AES-256-GCM 加密；
   `.uif` DSL 文本直接加密；其它资源原样打包。
 - 运行时：`ResourceLoader`（`src/resources/resource_loader.cpp`）挂载 `.pak`，

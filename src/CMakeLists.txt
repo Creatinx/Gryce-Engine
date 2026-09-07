@@ -283,6 +283,9 @@ target_sources(GryceRenderer
         api/render_api.cpp
         render/render.cpp
         render/renderer2d_impl.cpp
+        # Core 默认 shader：目录定位 + 两级解析（项目覆盖 → core 兜底）
+        render/core_shaders.cpp
+        render/shader_source_resolver.cpp
         # Godot 式渲染器实现
         render/render_forward_basic.cpp
         render/renderer_canvas_render_rd.cpp
@@ -355,6 +358,9 @@ target_sources(GryceRenderer
             render/font_atlas.h
             render/renderer2d_impl.h
             render/imgui_backend.h
+            # Core 默认 shader 头文件
+            render/core_shaders.h
+            render/shader_source_resolver.h
             # Godot 式渲染器实现头文件
             render/renderer_canvas_render.h
             render/render_forward_basic.h
@@ -546,6 +552,7 @@ if(GRYCE_HAS_VULKAN)
             render/vulkan/vk_framebuffer.cpp
             render/vulkan/vk_imgui_backend.cpp
             render/vulkan/vk_renderer2d.cpp
+            render/vulkan/vk_glsl_compiler.cpp
             render/vulkan/vk_vma.cpp
             $<$<BOOL:${GRYCE_HAS_IMGUI}>:${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp>
     )

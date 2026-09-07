@@ -49,16 +49,14 @@ if(GRYCE_BUILD_TESTS AND GRYCE_HAS_GTEST)
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:js_math_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:js_big_bridge_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:script_system_test.cpp>
-            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:lua2js_test.cpp>
             $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:crypto_pack_test.cpp>
     )
     target_link_libraries(gryce_tests
         PRIVATE
             GryceCore GryceRenderer GrycePlatform GrycePhysics
-            $<$<BOOL:${GRYCE_ENABLE_ECS}>:gryce_ecs_static>
-            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:gryce_script_static>
-            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:lua2js>
-            $<$<BOOL:${GRYCE_ENABLE_UI}>:gryce_ui_static>
+            $<$<BOOL:${GRYCE_ENABLE_ECS}>:GryceEcsStatic>
+            $<$<BOOL:${GRYCE_ENABLE_SCRIPT}>:GryceScriptStatic>
+            $<$<BOOL:${GRYCE_ENABLE_UI}>:GryceUiStatic>
             GTest::gtest_main
     )
     target_compile_definitions(gryce_tests PRIVATE

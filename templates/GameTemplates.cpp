@@ -1,14 +1,35 @@
-// GryceEngine game entry (GryceSPC template).
-// A minimal standalone executable produced by GryceGC: it links the core
-// libraries and drives the whole game loop through the C API only:
-//   Core init -> physics attach -> Platform window -> Renderer -> play loop.
+// GryceEngine embedded game entry (GryceSPC template).
+//
+// Runs a standalone game on the embedded GryceEngineUtils::Renderer facade,
+// which owns Window + RenderContext + RenderPipeline + UIManager, so the
+// classic .uif + JS HUD system works out of the box. The ECS world is updated
+// by the core (GCore_BeginFrame drives physics + the gameplay script VM), and
+// rendered by a generic entity-submission loop that reads mesh/material data
+// through the read-only C API.
+//
+//   Core init -> physics attach -> Renderer(+UIManager) -> HUD load -> play loop
 #include "GryceCore/core_api.h"
 #include "GryceCore/scene_api.h"
 #include "GryceCore/script_api.h"
-#include "GrycePlatform/window_api.h"
+#include "GryceCore/entity_api.h"
+#include "GryceCore/component_api.h"
+#include "GryceCore/material_api.h"
 #include "GrycePlatform/input_api.h"
-#include "GryceRenderer/render_api.h"
 #include "GrycePhysics/physics_api.h"
+
+// GryceEngineUtils：嵌入式 Renderer / UIManager / .uif HUD 系统
+#include "GryceEngineUtils/types.h"
+#include "GryceEngineUtils/renderer.h"
+#include "GryceEngineUtils/ui/ui.h"
+#include "GryceEngineUtils/ui/uif_parser.h"
+#include "GryceEngineUtils/ui/uif_builder.h"
+// 渲染内存抽象：LightData（Renderer::set_lights 用）
+#include "render/storage_rd/light_storage.h"
+#include "render/rendering_server.h"
+// 数学（Matrix4f / Camera / 向量）
+#include "math/math.h"
+// 资源解析：打包产物（资源仅存 .gpkg）统一经 AssetManager 从磁盘/挂载包解析。
+#include "assets/asset_manager.h"
 
 #include <chrono>
 #include <cstdio>
@@ -16,8 +37,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <nlohmann/json.hpp>
+#include <sstream>
+#include <string>
 #include <thread>
+#include <unordered_map>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -26,16 +49,27 @@
 
 namespace {
 
+typedef GryceEngineUtils::Renderer        GRenderer;
+typedef GryceEngineUtils::ui::UIManager   GUIManager;
+typedef GryceEngineUtils::ui::ScriptVM    GScriptVM;
+typedef GryceEngineUtils::ui::EngineBridge GEngineBridge;
+typedef gryce_engine::math::Vector3f      GVec;
+typedef gryce_engine::math::Quaternionf   GQuat4;
+typedef gryce_engine::math::Matrix4f      GMat;
+typedef gryce_engine::math::Camera        GCamera;
+typedef gryce_engine::render::LightType   GLightType;
+typedef gryce_engine::render::LightData   GLight;
+
+// ---------------------------------------------------------------------------
+// 平台引导（DLL 搜索路径 / delay-load 兜底 / CRT 固定）。
+// 与旧 GWindow 路径共用，保证打包后的独立 exe 能先定位 runtime/ 再启动。
+// ---------------------------------------------------------------------------
 #if defined(_WIN32)
-// Appends a diagnostic line to <exe dir>/gryce_boot.log so a failing machine
-// reports what went wrong instead of dying silently.
 void write_boot_log(const std::wstring& exe_dir, const std::string& line) {
     std::ofstream log(std::filesystem::path(exe_dir) / "gryce_boot.log", std::ios::app);
     if (log) log << line << "\n";
 }
 
-// Delay-load failure hook: logs the missing DLL, tries <exe dir>/runtime as a
-// last resort, then shows the reason before the process terminates.
 extern "C" FARPROC WINAPI GryceDelayLoadHook(unsigned event, PDelayLoadInfo info) {
     if (event != dliFailLoadLib || !info || !info->szDll) return nullptr;
 
@@ -47,8 +81,6 @@ extern "C" FARPROC WINAPI GryceDelayLoadHook(unsigned event, PDelayLoadInfo info
     const std::string msg = std::string("delay-load failed: ") + info->szDll;
     write_boot_log(exe_dir, msg);
 
-    // Last resort: resolve from <exe dir>/runtime even if the search path
-    // was not set up (e.g. the CRT preload failed on a bare machine).
     if (!exe_dir.empty()) {
         const int wide_len = MultiByteToWideChar(CP_ACP, 0, info->szDll, -1, nullptr, 0);
         std::wstring wide(static_cast<size_t>(wide_len > 0 ? wide_len : 1), L'\0');
@@ -79,13 +111,9 @@ extern "C" FARPROC WINAPI GryceDelayLoadHook(unsigned event, PDelayLoadInfo info
 PfnDliHook __pfnDliFailureHook2 = GryceDelayLoadHook;
 #endif
 
-// Set from argv[0] in main(); used as fallback when the platform API cannot
-// resolve the executable path.
 std::string argv0_override;
 
-// Default project root: the directory of the executable. With GryceGC output
-// the .gpkg archives live next to the .exe, so res:/ resolves from there even
-// when the game is launched by double-click (CWD may be anywhere).
+// 默认项目根：exe 所在目录。GryceGC 打包后 .gpkg 位于 exe 旁，res:/ 由此解析。
 std::string default_project_root() {
 #if defined(_WIN32)
     wchar_t buf[MAX_PATH + 1] = {};
@@ -99,20 +127,7 @@ std::string default_project_root() {
     return std::filesystem::absolute(p).parent_path().string();
 }
 
-// 2D 项目在 project_settings.json 里声明 "scene_2d": true，
-// 让渲染器走纯 2D 画布路径（跳过 3D 管线，与编辑器 2D 模式一致）。
-bool project_is_2d(const std::string& root) {
-    try {
-        std::ifstream in(root + "/project_settings.json");
-        if (!in) return false;
-        nlohmann::json j;
-        in >> j;
-        return j.value("scene_2d", false);
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
+// 让核心进入 Play 模式（驱动 ScriptSystem 运行 game.js）。
 void enter_play_mode() {
     GCommand cmd{};
     cmd.type = ECMD_PLAY_MODE;
@@ -120,50 +135,245 @@ void enter_play_mode() {
     GCore_PushCommand(&cmd);
 }
 
+// 读取文本资源（.uif / .js）。经 AssetManager 解析（磁盘优先，gpkg 内提取兜底），
+// 使打包产物（无散文件）与开发模式（源目录散文件）都能正确定位。
+std::string read_res_text(const std::string& res_path) {
+    const std::string abs = gryce_engine::assets::AssetManager::instance().resolve_any(res_path);
+    if (abs.empty()) return {};
+    std::ifstream f(abs, std::ios::binary);
+    if (!f) return {};
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+// 读本地坐标属性（float 标量/数组）。entity 上 comp 名为 name 时会给出其 type hash。
+// best-effort：读取失败回退默认值。
+float read_comp_float(GEntityHandle e, uint64_t hash, const char* name, float def) {
+    float v = def;
+    if (GComponent_GetProperty(e, hash, name, &v, (int)sizeof(float)) == 0) return v;
+    return def;
+}
+
+// ---------------------------------------------------------------------------
+// 通用世界提交：遍历 ECS 场景实体，读相机/灯光/网格，逐个 draw 到 Renderer。
+// 纯粹通过只读 C API 完成，不依赖 Editor UI / 具体场景结构。
+// ---------------------------------------------------------------------------
+struct SceneResources {
+    std::unordered_map<GEntityHandle, GryceEngineUtils::IMaterial*> entity_materials;
+    std::unordered_map<std::string, GryceEngineUtils::IMesh*>       mesh_cache;
+};
+
+void render_world(GRenderer* r, SceneResources& rr, int viewport_w, int viewport_h) {
+    int count = GEntity_GetCount();
+    if (count < 0) count = 0;
+
+    // 第一遍：收集相机与灯光。
+    GEntityHandle cam_entity = 0;
+    float cam_fov = 60.0f, cam_near = 0.1f, cam_far = 100.0f;
+    std::vector<GLight> lights;
+
+    for (int i = 0; i < count; ++i) {
+        const GEntityHandle e = GEntity_GetAt(i);
+        if (e <= 0) continue;
+
+        const int cc = GComponent_GetCount(e);
+        for (int c = 0; c < cc; ++c) {
+            char cname[64] = {};
+            uint64_t chash = 0;
+            if (GComponent_GetTypeHashAt(e, c, &chash) != 0) continue;
+            if (GComponent_GetTypeNameAt(e, c, cname, (int)sizeof(cname)) != 0) continue;
+
+            if (std::strcmp(cname, "Camera") == 0 && cam_entity == 0) {
+                cam_entity = e;
+                cam_fov   = read_comp_float(e, chash, "fov", 60.0f);
+                cam_near  = read_comp_float(e, chash, "near_plane", 0.1f);
+                cam_far   = read_comp_float(e, chash, "far_plane", 400.0f);
+            } else if (std::strcmp(cname, "Light") == 0) {
+                GLight l;
+                l.type = GLightType::Directional;
+                l.color = GVec::one();
+                l.intensity = 1.0f;
+                l.direction = GVec(0.0f, -1.0f, 0.0f);
+                l.range = 10.0f;
+                l.position = GVec::zero();
+
+                int itype = (int)GLightType::Directional;
+                if (GComponent_GetProperty(e, chash, "light_type", &itype, (int)sizeof(int)) == 0)
+                    l.type = (GLightType)itype;
+                float col[3] = {1, 1, 1};
+                if (GComponent_GetProperty(e, chash, "color", col, (int)sizeof(col)) == 0)
+                    l.color = GVec(col[0], col[1], col[2]);
+                l.intensity = read_comp_float(e, chash, "intensity", 1.0f);
+                float dir[3] = {0, -1, 0};
+                if (GComponent_GetProperty(e, chash, "direction", dir, (int)sizeof(dir)) == 0)
+                    l.direction = GVec(dir[0], dir[1], dir[2]);
+                l.range = read_comp_float(e, chash, "range", 10.0f);
+                lights.push_back(l);
+            }
+        }
+    }
+
+    // 无主相机 → 用一个朝下的默认相机；无灯 → 补一个方向光。
+    if (cam_entity == 0) {
+        // 使用第一个实体作为近似相机位（或全零兜底）。
+        cam_entity = count > 0 ? GEntity_GetAt(0) : 0;
+    }
+    // 相机位姿：世界坐标 + 朝向 → 看向前方目标点。
+    {
+        GVec3 pos; GQuat rot;
+        GVec eye(0.0f, 3.6f, -7.5f);   // 兜底：跑酷场景相机
+        if (cam_entity != 0 &&
+            GEntity_GetWorldPosition(cam_entity, &pos) == 0) {
+            eye = GVec(pos.x, pos.y, pos.z);
+        }
+        GVec forward(0.0f, 0.0f, -1.0f); // 引擎默认前方向
+        if (cam_entity != 0 &&
+            GEntity_GetWorldRotation(cam_entity, &rot) == 0) {
+            forward = GQuat4(rot.x, rot.y, rot.z, rot.w)
+                          .rotate_vector(GVec(0.0f, 0.0f, -1.0f)).normalized();
+        }
+
+        GMat view = GMat::look_at(eye, eye + forward, GVec(0.0f, 1.0f, 0.0f));
+        const float aspect = (viewport_h > 0) ? (float)viewport_w / (float)viewport_h : 16.0f / 9.0f;
+        GMat proj  = GMat::perspective(gryce_engine::math::to_radians(cam_fov), aspect, cam_near, cam_far);
+        r->set_camera(eye, proj * view);
+    }
+
+    if (lights.empty()) {
+        GLight sun;
+        sun.type = GLightType::Directional;
+        sun.color = GVec(1.0f, 1.0f, 1.0f);
+        sun.intensity = 1.5f;
+        sun.direction = GVec(-0.4f, -1.0f, -0.3f);
+        lights.push_back(sun);
+    }
+    r->set_lights(lights.empty() ? nullptr : lights.data(), (int)lights.size());
+    r->set_ambient(GVec(0.22f, 0.22f, 0.24f));
+
+    // 第二遍：提交所有带 MeshRenderer 的实体。
+    for (int i = 0; i < count; ++i) {
+        const GEntityHandle e = GEntity_GetAt(i);
+        if (e <= 0) continue;
+
+        const int cc = GComponent_GetCount(e);
+        for (int c = 0; c < cc; ++c) {
+            char cname[64] = {};
+            uint64_t chash = 0;
+            uint64_t mhash = 0;
+            if (GComponent_GetTypeHashAt(e, c, &chash) != 0) continue;
+            if (GComponent_GetTypeNameAt(e, c, cname, (int)sizeof(cname)) != 0) continue;
+            if (std::strcmp(cname, "MeshRenderer") != 0) { mhash = 0; continue; }
+            (void)mhash;
+
+            // 网格路径
+            char path[512] = {};
+            if (GComponent_MeshGetPath(e, path, (int)sizeof(path)) != 0) continue;
+
+            auto mit = rr.mesh_cache.find(path);
+            if (mit == rr.mesh_cache.end()) {
+                GryceEngineUtils::IMesh* m = r->load_mesh(path);
+                rr.mesh_cache[path] = m;
+                mit = rr.mesh_cache.find(path);
+            }
+            GryceEngineUtils::IMesh* mesh = mit->second;
+            if (!mesh) continue;
+
+            // 材质（按实体缓存一个，避免每帧重建）
+            auto& mat = rr.entity_materials[e];
+            if (!mat) {
+                mat = r->create_material();
+                if (mat) {
+                    float cr, cg, cb, rough, metal;
+                    if (GComponent_MeshGetMaterial(e, &cr, &cg, &cb, &rough, &metal) != 0) {
+                        cr = cg = cb = 1.0f; rough = 0.5f; metal = 0.0f;
+                    }
+                    mat->set_albedo(GVec(cr, cg, cb));
+                    mat->set_roughness(rough);
+                    mat->set_metallic(metal);
+                }
+            }
+
+            // 位姿 TRS
+            GVec3 pos; GQuat rot; GVec3 scl;
+            GVec p(0, 0, 0), s(1, 1, 1);
+            if (GEntity_GetWorldPosition(e, &pos) == 0) p = GVec(pos.x, pos.y, pos.z);
+            if (GEntity_GetWorldScale(e, &scl) == 0)   s = GVec(scl.x, scl.y, scl.z);
+            GMat q = GMat::identity();
+            if (GEntity_GetWorldRotation(e, &rot) == 0)
+                q = GMat::from_quaternion(GQuat4(rot.x, rot.y, rot.z, rot.w));
+            const GMat model = GMat::translate(p) * q * GMat::scale(s);
+
+            r->draw(mesh, mat, model);
+        }
+    }
+}
+
+// 把 Renderer 窗口的键盘状态镜像到 Core 输入，差分后推命令，使 engine.input 可用。
+// 应在 begin_frame() 之后、GCore_BeginFrame 之前调用。
+void mirror_input_to_core(GRenderer* r) {
+    // 覆盖 GLFW 键区间（Space=32 到 F25≈348）
+    for (int k = 32; k < 349; ++k) {
+        GInput_InjectKey(k, r->key_held(k) ? GINPUT_ACTION_PRESS : GINPUT_ACTION_RELEASE);
+    }
+    GInput_SyncToCore();
+}
+
+// 读取 res:/ui/hud.uif 并构建控件树；成功则设为 UIManager 根。
+void load_hud(GRenderer* r, GUIManager* ui) {
+    const std::string text = read_res_text("res:/ui/hud.uif");
+    if (text.empty()) {
+        std::fprintf(stderr, "[game] HUD .uif not found / empty\n");
+        return;
+    }
+    GryceEngineUtils::ui::UIParser parser;
+    GryceEngineUtils::ui::UIFParseResult res = parser.parse_string(text, "res:/ui/hud.uif");
+    if (!res.success) {
+        std::fprintf(stderr, "[game] HUD parse failed: %s\n", res.error_message.c_str());
+        return;
+    }
+    GryceEngineUtils::ui::UIWidgetBuilder builder;
+    GryceEngineUtils::ui::UIBuildResult build = builder.build(res.doc);
+    if (!build.success || !build.root) {
+        std::fprintf(stderr, "[game] HUD build failed: %s\n", build.error_message.c_str());
+        return;
+    }
+    ui->set_root(build.root);
+    std::printf("[game] HUD loaded: %d widgets\n", build.widget_count);
+}
+
+// 把 res:/ui/hud.js 求值进 UI ScriptVM，定义每帧驱动的 hudUpdate()。
+void load_hud_script() {
+    std::string code = read_res_text("res:/ui/hud.js");
+    if (code.empty()) {
+        std::fprintf(stderr, "[game] hud.js not found / empty\n");
+        return;
+    }
+    GScriptVM* vm = GEngineBridge::vm();
+    if (!vm) {
+        std::fprintf(stderr, "[game] UI ScriptVM unavailable\n");
+        return;
+    }
+    GryceEngineUtils::ui::ScriptResult sr = vm->eval(code, "hud.js");
+    if (!sr.success) {
+        std::fprintf(stderr, "[game] hud.js eval failed: %s\n", sr.error_msg.c_str());
+    } else {
+        std::printf("[game] hud.js loaded\n");
+    }
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
 #if defined(_WIN32)
-    // GryceGC output layout puts the runtime DLLs in the "runtime" subfolder
-    // next to the exe; the core DLLs are delay-loaded so the search path can
-    // be extended here before the first engine call.
+    // 与旧模板一致：让 delay-load 的 runtime DLL 可从 runtime/ 解析。
     wchar_t exe_buf[MAX_PATH + 1] = {};
     const DWORD exe_len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
     if (exe_len > 0 && exe_len < MAX_PATH) {
         const std::filesystem::path exe_dir = std::filesystem::path(exe_buf).parent_path();
         const std::filesystem::path runtime_dir = exe_dir / "runtime";
         write_boot_log(exe_dir.wstring(), "gryce_boot: exe_dir=" + exe_dir.string());
-        write_boot_log(exe_dir.wstring(),
-                       "gryce_boot: runtime dir exists=" +
-                       std::to_string(std::filesystem::is_directory(runtime_dir)));
 
-        // Prefer the SYSTEM VC++ runtime: pin it by loading it from System32
-        // explicitly. Once loaded, the delay-loaded engine DLLs bind to the
-        // system version instead of the bundled copy in runtime/ (an
-        // already-loaded module wins over the search path). If the system
-        // lacks the runtime these loads just fail, and the engine DLLs then
-        // resolve their CRT from runtime/ (the fallback below).
-        wchar_t sys_dir[MAX_PATH + 1] = {};
-        const UINT sys_len = GetSystemDirectoryW(sys_dir, MAX_PATH);
-        if (sys_len > 0 && sys_len < MAX_PATH) {
-            static const wchar_t* kCrtNames[] = {
-                L"vcruntime140.dll", L"vcruntime140_1.dll", L"vcruntime140_threads.dll",
-                L"msvcp140.dll", L"msvcp140_1.dll", L"msvcp140_2.dll",
-                L"concrt140.dll", L"vccorlib140.dll", L"vcomp140.dll",
-                L"vcruntime140d.dll", L"vcruntime140_1d.dll", L"vcruntime140_threadsd.dll",
-                L"msvcp140d.dll", L"msvcp140_1d.dll", L"msvcp140_2d.dll",
-                L"concrt140d.dll", L"vccorlib140d.dll", L"vcomp140d.dll",
-            };
-            int crt_loaded = 0;
-            for (const wchar_t* name : kCrtNames) {
-                const std::filesystem::path sys_crt = std::filesystem::path(sys_dir) / name;
-                if (LoadLibraryExW(sys_crt.c_str(), nullptr, 0)) ++crt_loaded;  // ignore failures
-            }
-            write_boot_log(exe_dir.wstring(),
-                           "gryce_boot: system CRT DLLs loaded=" + std::to_string(crt_loaded));
-        }
-
-        // Engine DLLs and (as a fallback) the CRT resolve from runtime/.
         SetDllDirectoryW(runtime_dir.c_str());
     }
 #endif
@@ -195,60 +405,82 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // 1. 核心初始化（载入项目主场景）。
     GCoreInitDesc core_desc{};
     core_desc.version = sizeof(GCoreInitDesc);
     core_desc.project_root = project.c_str();
     core_desc.enable_reflection = true;
-    // The core enters the project's main scene (project_settings.json
-    // "main_scene", default res:/scenes/main.gesc) right after startup unless
-    // an explicit --scene override is given.
     GCore_SetAutoLoadMainScene(!scene_override);
     if (GCore_Init(&core_desc) != 0) {
         std::fprintf(stderr, "[game] GCore_Init failed\n");
         return 1;
     }
 
-    if (void* world = GCore_GetInternalWorldPtr()) {
-        if (GPhysics_Init(GPHYSICS_BACKEND_JOLT) == 0) {
-            GPhysics_AttachSystems(world);
-        }
+    // 2. 物理。
+    void* world = GCore_GetInternalWorldPtr();
+    if (world && GPhysics_Init(GPHYSICS_BACKEND_JOLT) == 0) {
+        GPhysics_AttachSystems(world);
     }
 
-    if (GWindow_Create("Gryce Game", width, height, GWINDOW_MODE_WINDOWED) != 0) {
-        std::fprintf(stderr, "[game] GWindow_Create failed\n");
+    // 3. 嵌入式 Renderer（自持窗口 + 渲染管线 + 渲染线程）。
+    GryceEngineUtils::RendererConfig cfg;
+    cfg.title = "Gryce Parkour";
+    cfg.width = width;
+    cfg.height = height;
+    cfg.api = GryceEngineUtils::RenderAPI::OpenGL;
+    cfg.hdr = true;
+    GRenderer* r = GRenderer::create(cfg);
+    if (!r) {
+        std::fprintf(stderr, "[game] Renderer::create failed\n");
+        GPhysics_Shutdown();
         GCore_Shutdown();
         return 1;
     }
 
-    GRenderInitDesc render_desc{};
-    render_desc.version = sizeof(GRenderInitDesc);
-    render_desc.native_window = GWindow_GetRenderHandle();
-    render_desc.api = GRYCE_RENDER_API_OPENGL;
-    render_desc.viewport_w = width;
-    render_desc.viewport_h = height;
-    render_desc.sync_mode = true;
-    if (GRender_Init(&render_desc) != 0) {
-        std::fprintf(stderr, "[game] GRender_Init failed\n");
-        GWindow_Destroy();
-        GCore_Shutdown();
-        return 1;
+    // 4. UIManager + HUD。
+    GUIManager* ui = GUIManager::create(r);
+    if (ui) {
+        r->set_ui_manager(ui);
+        load_hud(r, ui);        // .uif 控件树
+        load_hud_script();      // hud.js → hudUpdate()
+    } else {
+        std::fprintf(stderr, "[game] UIManager::create failed; running without HUD\n");
     }
-    GRender_SetScene2D(project_is_2d(project));
 
+    // 5. 玩法桥接运行时（可选，engine.game.* 依赖注入）。
+    if (world && ui) {
+        GryceEngineUtils::GameRuntime rt;
+        rt.world = reinterpret_cast<GryceEngineUtils::ecs::World*>(world);
+        rt.renderer = r;
+        GEngineBridge::set_game_runtime(rt);
+    }
+
+    // 6. 场景加载 + 进入 Play。
     if (scene_override && GScene_Load(scene) != 0) {
         std::fprintf(stderr, "[game] failed to load scene %s\n", scene);
     }
     enter_play_mode();
 
-    auto last = std::chrono::steady_clock::now();
+    // 7. 主循环。
+    SceneResources rr;
     float auto_close_timer = 0.0f;
-    while (!GWindow_ShouldClose()) {
-        GWindow_PollEvents();
-        GInput_SyncToCore();
-        const auto now = std::chrono::steady_clock::now();
-        float dt = std::chrono::duration<float>(now - last).count();
-        last = now;
+    while (r->is_running()) {
+        r->begin_frame();               // poll 事件 + 转发输入给 UIManager
+
+        float dt = static_cast<float>(r->delta_time());
         if (dt < 0.0f || dt > 0.05f) dt = 0.016f;
+
+        mirror_input_to_core(r);        // Renderer 键盘 → Core（engine.input）
+
+        GCore_BeginFrame(dt);           // physics + ScriptSystem（运行 game.js）
+
+        render_world(r, rr, width, height); // 提交 3D 场景
+
+        if (ui) {
+            ui->update(dt);
+            GScriptVM* vm = GEngineBridge::vm();
+            if (vm) vm->call_function("hudUpdate"); // HUD 读取 engine.state 刷新控件
+        }
 
         if (auto_close_seconds > 0.0f) {
             auto_close_timer += dt;
@@ -258,16 +490,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        GCore_BeginFrame(dt);
-        GRender_BeginFrame();
-        GRender_RenderWorld();
-        GRender_EndFrame();
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        r->end_frame();                 // clear -> 3D -> ui->render() -> present
     }
 
-    GRender_Shutdown();
-    GWindow_Destroy();
+    // 8. 清理（顺序与 Renderer::destroy 一致）。
+    if (r) r->destroy();
     GPhysics_Shutdown();
     GCore_Shutdown();
     return 0;

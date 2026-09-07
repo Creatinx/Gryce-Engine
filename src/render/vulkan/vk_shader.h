@@ -114,9 +114,14 @@ private:
     VulkanDevice* device_ = nullptr;
     VulkanSwapchain* swapchain_ = nullptr;
 
-    // Shader 热重载：load_program 记录的 SPIR-V 文件信息（resolved 目录 + mtime）
+    // Shader 热重载：load_program 记录实际命中的源码文件（磁盘/bundle 解出的
+    // 可读路径）与 mtime。优先源码（首编路径）；shaderc 不可用回退到 `.spv` 时
+    // 记录 SPIR-V 文件路径。
     std::string source_name_;
-    std::string spirv_dir_;
+    std::string shader_dir_;             // 原始 res: 着色器目录（reload 重解析用）
+    std::string spirv_dir_;              // 回退路径：shader_dir/spirv/
+    std::string vertex_source_path_;     // 命中顶点源的可读路径
+    std::string fragment_source_path_;   // 命中片段源的可读路径
     std::filesystem::file_time_type vert_mtime_{};
     std::filesystem::file_time_type frag_mtime_{};
 

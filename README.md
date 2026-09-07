@@ -18,7 +18,7 @@
 | [.uif DSL 规范](./docs/UI_DSL_SPEC.md) | 界面标记语言：EBNF 语法、15 控件属性清单、完整示例、常见错误 |
 | [脚本 API 参考](./docs/SCRIPT_API_REFERENCE.md) | `engine.*` / `math.*` / `big.*` 全部签名、类型映射、字节码与加密加载 |
 | [ECS 脚本指南](./docs/ECS_SCRIPT_GUIDE.md) | ES Module 结构、生命周期、props 双向同步、热重载、错误处理 |
-| [迁移指南](./docs/MIGRATION_GUIDE.md) | XML→DSL 转换对照、lua2js 存量脚本导入、Lua→JS 语法对照 |
+| [迁移指南](./docs/MIGRATION_GUIDE.md) | XML→DSL 转换对照、Lua→JS 语法对照 |
 
 ---
 
@@ -31,7 +31,7 @@
   - PBR 材质工作流：albedo / normal / roughness / metallic / ao / emissive 六张贴图槽 + 颜色参数。
   - IBL 环境光照、天空盒、HDR/EXR 环境贴图、tonemapping（Reinhard / ACES）。
   - 阴影：光空间正交盒贴合相机视锥（纹素对齐、深度延伸覆盖屏外投射体）、着色器边缘淡出、自适应 bias + 硬件 slope-scaled depth bias。
-  - 渲染质量可配置（阴影、环境光、HDR、tonemap、exposure、IBL 强度），持久化到 `project_settings.json`。
+  - 渲染质量可配置（阴影、环境光、HDR、tonemap、exposure、IBL 强度），持久化到 `project.gproj`。
 - **ECS + 场景系统**
   - Entity-Component-System 架构，类 Godot/Unity 的节点层级；每个场景有且仅有一个合成根节点。
   - `.gesc` JSON 场景格式（版本 2，兼容 v1），支持 `res:/` 虚拟路径、场景热重载与差异保存。
@@ -67,7 +67,7 @@
 - **日志与性能**
   - 异步日志 `AsyncLogger`（内存 Sink 转发到编辑器 Console），帧率限制、VSync、NVIDIA `WGL_NV_delay_before_swap`、GPU Busy Spin、截图。
   - 热路径优化：每帧日志降级、Release 剔除 GL 错误检查、DrawItem 跨帧复用、重复材质绑定跳过、同步渲染模式下每帧网格上传预算（30/帧）。
-- **脚本系统**：QuickJS 唯一脚本运行时（GryceSRT），ES Module 驱动实体生命周期（on_start/on_update/on_destroy）、props 双向同步、JS/UI 热重载、Lua→JS 迁移工具（lua2js）；支持 AES 加密字节码与 GPAK 发布打包。
+- **脚本系统**：QuickJS 唯一脚本运行时（GryceSRT），ES Module 驱动实体生命周期（on_start/on_update/on_destroy）、props 双向同步、JS/UI 热重载、Lua→JS 语法对照迁移（见 MIGRATION_GUIDE）；支持 AES 加密字节码与 GPAK 发布打包。
 
 ---
 
@@ -234,22 +234,23 @@ editor/bin/<Config>/net48/
 ### 发布（GryceGC）
 
 ```powershell
-# 构建打包工具（随主构建一起生成 build/bin/<Config>/grycegc.exe）
+# 构建打包工具（随主构建一起生成 build/bin/<Config>/GryceGC.exe）
 cmake --build build --target GryceGC --config Release
 
 # 打包（Debug/Release 均可）：将 GryceGC-A 项目打包为独立游戏
-	build/bin/Release/grycegc.exe --project <your-project-dir> --name MyGame --build-dir build --config Release --out build/game --author "Your Name"
+	build/bin/Release/GryceGC.exe --project <your-project-dir> --name MyGame --build-dir build --config Release --out build/game --author "Your Name"
 
 # 运行产物（无 res/ 目录）：
 #   <out>/<name>/MyGame.exe        游戏入口
 #   <out>/<name>/runtime/          核心运行时 DLL + MSVC/MinGW/GCC 运行时（兜底）
 #   <out>/<name>/assets/*.gpkg     资源包（GPAK）
-#   <out>/<name>/gdata             包元数据（源文件记录 + 64 字节 SHA-512 密钥 + 作者）
+#   <out>/<name>/project.data      唯一配置（JSON）：清单 + 运行时设置 + 打包元数据
+#                                （源文件记录 + SHA-512 密钥 + 作者 + .gpkg 解密密钥）
 build/game/MyGame/MyGame.exe                                          # 项目根默认取 exe 所在目录
 build/game/MyGame/MyGame.exe --project build/game/MyGame --scene res:/scenes/main.gesc
 ```
 
-GryceGC 是 C++ 工具（`tools/grycegc/`），通过 GryceCore 的 GPack C API（`GCore_PackCreate/AddFile/Write`）生成 GPAK 格式的 `.gpkg` 资源包，并生成 `gdata` 包元数据（每个源文件的 SHA-256、由源记录派生的 64 字节 SHA-512 密钥、作者/项目/时间等）。Core 启动时自动挂载 `assets/` 与项目根下的 `.gpkg/.gpack`；游戏入口对核心 DLL 延迟加载，从 `runtime/` 子目录解析。着色器、场景、脚本、网格、纹理等加载管线统一走 `AssetManager::resolve_for_reading`：真实文件优先，包内提取兜底；shader 每次加载都会重新编译（无预编译缓存依赖）。
+GryceGC 是 C++ 工具（`tools/GryceGC`），通过 GryceCore 的 GPack C API（`GCore_PackCreate/AddFile/Write`）生成 GPAK 格式的 `.gpkg` 资源包，并把打包元数据（每个源文件的 SHA-256、由源记录派生的 64 字节 SHA-512 密钥、作者/项目/时间、`.gpkg` 解密密钥 `enc_key_hex` 等）合并进项目根的唯一配置 `project.gproj`（内容为 JSON）。Core 启动时自动挂载 `assets/` 与项目根下的 `.gpkg/.gpack`，并从 `project.gproj` 读取解密密钥与运行时设置；游戏入口对核心 DLL 延迟加载，从 `runtime/` 子目录解析。着色器、场景、脚本、网格、纹理等加载管线统一走 `AssetManager::resolve_for_reading`：真实文件优先，包内提取兜底；shader 每次加载都会重新编译（无预编译缓存依赖）。
 
 运行时加载策略：游戏启动时优先使用**系统的 VC++ 运行时**（从 System32 显式预加载，引擎 DLL 会绑定到系统版本），只有当系统缺少该运行时，才回退使用 `runtime/` 里打包的 MSVC/MinGW/GCC 运行时。
 

@@ -117,9 +117,6 @@ add_subdirectory(templates)
 # GryceGC: C++ resource packager (GryceSPC packaging tool)
 add_subdirectory(tools/grycegc)
 
-# GryceLua2JS: Lua -> JS migration helper
-add_subdirectory(tools/lua2js)
-
 if(GRYCE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -138,78 +135,78 @@ set(GRYCE_UTILS_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/include)
 set(GRYCE_UTILS_SRC_DIR ${CMAKE_SOURCE_DIR}/src)
 
 # ---- 数学库（必选，header-only re-export）-------------------------------
-add_library(gryce_math_static INTERFACE)
-target_include_directories(gryce_math_static INTERFACE
+add_library(GryceMathStatic INTERFACE)
+target_include_directories(GryceMathStatic INTERFACE
     ${GRYCE_UTILS_INCLUDE_DIR}
     ${GRYCE_UTILS_SRC_DIR}
 )
-target_link_libraries(gryce_math_static INTERFACE GryceCore gryce::compile_options)
-set_target_properties(gryce_math_static PROPERTIES FOLDER "GryceEngineUtils")
+target_link_libraries(GryceMathStatic INTERFACE GryceCore gryce::compile_options)
+set_target_properties(GryceMathStatic PROPERTIES FOLDER "GryceEngineUtils")
 
 # ---- 平台库（必选，window/input）----------------------------------------
-add_library(gryce_platform_static INTERFACE)
-target_include_directories(gryce_platform_static INTERFACE
+add_library(GrycePlatformStatic INTERFACE)
+target_include_directories(GrycePlatformStatic INTERFACE
     ${GRYCE_UTILS_INCLUDE_DIR}
     ${GRYCE_UTILS_SRC_DIR}
 )
-target_link_libraries(gryce_platform_static INTERFACE GrycePlatform gryce_math_static)
-set_target_properties(gryce_platform_static PROPERTIES FOLDER "GryceEngineUtils")
+target_link_libraries(GrycePlatformStatic INTERFACE GrycePlatform GryceMathStatic)
+set_target_properties(GrycePlatformStatic PROPERTIES FOLDER "GryceEngineUtils")
 
 # ---- 核心渲染器库（必选）------------------------------------------------
-add_library(gryce_renderer_static STATIC
+add_library(GryceRendererStatic STATIC
     ${GRYCE_UTILS_SRC_DIR}/renderer/renderer.cpp
 )
-target_include_directories(gryce_renderer_static PUBLIC
+target_include_directories(GryceRendererStatic PUBLIC
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
         ${CMAKE_SOURCE_DIR}/third_party
     )
-target_link_libraries(gryce_renderer_static PUBLIC
-    GryceRenderer GrycePlatform GryceCore gryce_math_static
+target_link_libraries(GryceRendererStatic PUBLIC
+    GryceRenderer GrycePlatform GryceCore GryceMathStatic
 )
 # renderer.cpp 中 UI 集成代码按模块开关编译（关闭时提供空实现）
 if(GRYCE_ENABLE_UI)
-    target_compile_definitions(gryce_renderer_static PRIVATE GRYCE_ENABLE_UI)
+    target_compile_definitions(GryceRendererStatic PRIVATE GRYCE_ENABLE_UI)
 endif()
-set_target_properties(gryce_renderer_static PROPERTIES FOLDER "GryceEngineUtils")
+set_target_properties(GryceRendererStatic PROPERTIES FOLDER "GryceEngineUtils")
 
 # ---- ECS 库（可选）------------------------------------------------------
 if(GRYCE_ENABLE_ECS)
-    add_library(gryce_ecs_static STATIC
+    add_library(GryceEcsStatic STATIC
         ${GRYCE_UTILS_SRC_DIR}/ecs/gryce_world.cpp
     )
-    target_include_directories(gryce_ecs_static PUBLIC
+    target_include_directories(GryceEcsStatic PUBLIC
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
     )
-    target_link_libraries(gryce_ecs_static PUBLIC gryce_renderer_static GryceCore)
-    set_target_properties(gryce_ecs_static PROPERTIES FOLDER "GryceEngineUtils")
+    target_link_libraries(GryceEcsStatic PUBLIC GryceRendererStatic GryceCore)
+    set_target_properties(GryceEcsStatic PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 
 # ---- 物理库（可选，独立于 ECS）------------------------------------------
 if(GRYCE_ENABLE_PHYSICS)
-    add_library(gryce_physics_static STATIC
+    add_library(GrycePhysicsStatic STATIC
         ${GRYCE_UTILS_SRC_DIR}/physics/gryce_physics_world.cpp
     )
-    target_include_directories(gryce_physics_static PUBLIC
+    target_include_directories(GrycePhysicsStatic PUBLIC
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
     )
-    target_link_libraries(gryce_physics_static PUBLIC GrycePhysics gryce_math_static)
-    set_target_properties(gryce_physics_static PROPERTIES FOLDER "GryceEngineUtils")
+    target_link_libraries(GrycePhysicsStatic PUBLIC GrycePhysics GryceMathStatic)
+    set_target_properties(GrycePhysicsStatic PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 
 # ---- 音频库（可选，独立于 ECS）------------------------------------------
 if(GRYCE_ENABLE_AUDIO)
-    add_library(gryce_audio_static STATIC
+    add_library(GryceAudioStatic STATIC
         ${GRYCE_UTILS_SRC_DIR}/audio/gryce_audio_engine.cpp
     )
-    target_include_directories(gryce_audio_static PUBLIC
+    target_include_directories(GryceAudioStatic PUBLIC
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
     )
-    target_link_libraries(gryce_audio_static PUBLIC GryceCore gryce_math_static)
-    set_target_properties(gryce_audio_static PROPERTIES FOLDER "GryceEngineUtils")
+    target_link_libraries(GryceAudioStatic PUBLIC GryceCore GryceMathStatic)
+    set_target_properties(GryceAudioStatic PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 
 # ---- QuickJS 脚本引擎 -------------------------------------------------
@@ -218,22 +215,22 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/quickjs ${CMAKE_BINARY_DIR}/thi
 # ---- 脚本库（QuickJS 运行时 + 绑定，可选）--------------------------------
 # 源文件已编译到 GryceCore；本 target 仅传播头文件和链接依赖。
 if(GRYCE_ENABLE_SCRIPT)
-    add_library(gryce_script_static INTERFACE)
-    target_include_directories(gryce_script_static INTERFACE
+    add_library(GryceScriptStatic INTERFACE)
+    target_include_directories(GryceScriptStatic INTERFACE
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
         ${CMAKE_SOURCE_DIR}/third_party
     )
-    target_link_libraries(gryce_script_static INTERFACE
+    target_link_libraries(GryceScriptStatic INTERFACE
         GryceCore
         GryceQuickJS
     )
-    set_target_properties(gryce_script_static PROPERTIES FOLDER "GryceEngineUtils")
+    set_target_properties(GryceScriptStatic PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 
 # ---- UI 库（可选，独立于 ECS）--------------------------------------------
 if(GRYCE_ENABLE_UI)
-    add_library(gryce_ui_static STATIC
+    add_library(GryceUiStatic STATIC
         ${GRYCE_UTILS_SRC_DIR}/ui/ui.cpp
         ${GRYCE_UTILS_SRC_DIR}/ui/widget.cpp
         ${GRYCE_UTILS_SRC_DIR}/ui/stylesheet.cpp
@@ -266,42 +263,42 @@ if(GRYCE_ENABLE_UI)
         ${GRYCE_UTILS_SRC_DIR}/ui/dsl/semantic_analyzer.cpp
         ${GRYCE_UTILS_SRC_DIR}/ui/dsl/ast_optimizer.cpp
     )
-    target_include_directories(gryce_ui_static PUBLIC
+    target_include_directories(GryceUiStatic PUBLIC
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
         ${CMAKE_SOURCE_DIR}/third_party
     )
-    target_link_libraries(gryce_ui_static PUBLIC
-        gryce_renderer_static
+    target_link_libraries(GryceUiStatic PUBLIC
+        GryceRendererStatic
         GryceQuickJS
     )
     # 双轨解析开关：DSL 为现行默认路径；原 pugixml XML 路径仍保留供回退
-    target_compile_definitions(gryce_ui_static PUBLIC GRYCE_UIF_DSL=1)
-    set_target_properties(gryce_ui_static PROPERTIES FOLDER "GryceEngineUtils")
+    target_compile_definitions(GryceUiStatic PUBLIC GRYCE_UIF_DSL=1)
+    set_target_properties(GryceUiStatic PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 
 # ---- 统一入口 target：按选项聚合所有启用的模块 ---------------------------
 add_library(GryceEngineUtils INTERFACE)
 target_include_directories(GryceEngineUtils INTERFACE ${GRYCE_UTILS_INCLUDE_DIR})
 target_link_libraries(GryceEngineUtils INTERFACE
-    gryce_renderer_static
-    gryce_platform_static
-    gryce_math_static
+    GryceRendererStatic
+    GrycePlatformStatic
+    GryceMathStatic
 )
 if(GRYCE_ENABLE_ECS)
-    target_link_libraries(GryceEngineUtils INTERFACE gryce_ecs_static)
+    target_link_libraries(GryceEngineUtils INTERFACE GryceEcsStatic)
 endif()
 if(GRYCE_ENABLE_PHYSICS)
-    target_link_libraries(GryceEngineUtils INTERFACE gryce_physics_static)
+    target_link_libraries(GryceEngineUtils INTERFACE GrycePhysicsStatic)
 endif()
 if(GRYCE_ENABLE_AUDIO)
-    target_link_libraries(GryceEngineUtils INTERFACE gryce_audio_static)
+    target_link_libraries(GryceEngineUtils INTERFACE GryceAudioStatic)
 endif()
 if(GRYCE_ENABLE_SCRIPT)
-    target_link_libraries(GryceEngineUtils INTERFACE gryce_script_static)
+    target_link_libraries(GryceEngineUtils INTERFACE GryceScriptStatic)
 endif()
 if(GRYCE_ENABLE_UI)
-    target_link_libraries(GryceEngineUtils INTERFACE gryce_ui_static)
+    target_link_libraries(GryceEngineUtils INTERFACE GryceUiStatic)
 endif()
 set_target_properties(GryceEngineUtils PROPERTIES FOLDER "GryceEngineUtils")
 
@@ -329,3 +326,29 @@ endif()
 # ---------------------------------------------------------------------------
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT editor)
+
+# ---------------------------------------------------------------------------
+# gryce_dist — 把 flat 输出整理成自包含的 dist 布局（CMake 直接构建与 build.py 共走）
+#   build/<Config>/bin/<Config>/dist/
+#       GryceGC/ / GryceGame/ / GryceEditor/ / GryceTests/   每目标自包含（exe + 依赖 DLL）
+#       GryceEngineUtils/{lib, include}                       库目录（Core + GryceEngineUtils）
+# 挂在 ALL 下，`cmake --build .`（无 --target）即会执行；也可单独 --target gryce_dist。
+# ---------------------------------------------------------------------------
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_target(gryce_dist ALL
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_SOURCE_DIR}/tools/assemble_dist.py"
+            --build-dir "${CMAKE_BINARY_DIR}"
+            --config "$<CONFIG>"
+            --source-dir "${CMAKE_SOURCE_DIR}"
+        COMMENT "Assembling GryceEngine dist layout (per-target folders + lib/include)"
+        VERBATIM
+    )
+    set_target_properties(gryce_dist PROPERTIES FOLDER "GryceEngineUtils")
+    foreach(_dist_dep GryceGC GryceGame gryce_tests GryceEditor)
+        if(TARGET ${_dist_dep})
+            add_dependencies(gryce_dist ${_dist_dep})
+        endif()
+    endforeach()
+endif()

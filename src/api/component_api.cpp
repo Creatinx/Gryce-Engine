@@ -12,6 +12,9 @@
 
 #include "components/component_factory.h"
 #include "components/2d/tilemap.h"
+#include "components/mesh_renderer.h"
+#include "render/material.h"
+#include "math/math.h"
 
 #include "reflection/reflection.h"
 
@@ -625,6 +628,86 @@ int GComponent_RemoveComponent(GEntityHandle entity, uint64_t comp_type_hash) {
 
     return GCore_PushCommand(&cmd);
 
+}
+
+int GComponent_MeshSetMaterial(GEntityHandle entity, const char* mesh_path,
+                               float r, float g, float b,
+                               float roughness, float metallic) {
+    GRYCE_API_GUARD();
+    Entity* e = resolve_entity(entity);
+    if (!e) return -1;
+
+    using gryce_engine::components::MeshRenderer;
+    MeshRenderer* mr = nullptr;
+    for (const auto& comp : e->components()) {
+        auto* c = dynamic_cast<MeshRenderer*>(comp.get());
+        if (c) { mr = c; break; }
+    }
+
+    // 无 MeshRenderer：同步创建并挂到实体（复用 ComponentFactory + 实体所有权接管）。
+    if (!mr) {
+        auto created = ComponentFactory::instance().create("MeshRenderer");
+        if (!created) return -1;
+        auto* raw = created.get();
+        e->add_component(std::move(created));
+        mr = static_cast<MeshRenderer*>(raw);
+        e->mark_dirty();
+    }
+
+    if (mesh_path && mesh_path[0]) {
+        mr->mesh_path = mesh_path;
+        e->mark_dirty();
+    }
+
+    gryce_engine::render::Material* mat = mr->ensure_material();
+    mat->set_albedo(gryce_engine::math::Vector3f(r, g, b));
+    mat->set_roughness(roughness);
+    mat->set_metallic(metallic);
+    return 0;
+}
+
+int GComponent_MeshGetPath(GEntityHandle entity, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
+    if (!out_buf || buf_size <= 0) return -1;
+    out_buf[0] = '\0';
+    Entity* e = resolve_entity(entity);
+    if (!e) return -1;
+
+    using gryce_engine::components::MeshRenderer;
+    MeshRenderer* mr = nullptr;
+    for (const auto& comp : e->components()) {
+        auto* c = dynamic_cast<MeshRenderer*>(comp.get());
+        if (c) { mr = c; break; }
+    }
+    if (!mr || mr->mesh_path.empty()) return -1;
+
+    std::strncpy(out_buf, mr->mesh_path.c_str(), buf_size - 1);
+    out_buf[buf_size - 1] = '\0';
+    return 0;
+}
+
+int GComponent_MeshGetMaterial(GEntityHandle entity,
+                               float* r, float* g, float* b,
+                               float* roughness, float* metallic) {
+    GRYCE_API_GUARD();
+    if (!r || !g || !b || !roughness || !metallic) return -1;
+    *r = 1.0f; *g = 1.0f; *b = 1.0f; *roughness = 0.6f; *metallic = 0.0f;
+    Entity* e = resolve_entity(entity);
+    if (!e) return -1;
+
+    using gryce_engine::components::MeshRenderer;
+    MeshRenderer* mr = nullptr;
+    for (const auto& comp : e->components()) {
+        auto* c = dynamic_cast<MeshRenderer*>(comp.get());
+        if (c) { mr = c; break; }
+    }
+    if (!mr || !mr->material) return -1;
+
+    const auto& col = mr->material->albedo_color;
+    *r = col.x; *g = col.y; *b = col.z;
+    *roughness = mr->material->roughness;
+    *metallic = mr->material->metallic;
+    return 0;
 }
 
 } // extern "C"

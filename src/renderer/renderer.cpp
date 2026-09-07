@@ -87,7 +87,7 @@ std::string find_project_root() {
                 std::filesystem::is_directory(dir / "src")) {
                 std::string exe_name = exe_path.stem().string();
                 std::filesystem::path candidate = dir / "examples" / exe_name;
-                if (std::filesystem::exists(candidate / "project.gproj")) {
+                if (std::filesystem::exists(candidate / "project.data")) {
                     return candidate.string();
                 }
                 return dir.string();
@@ -105,7 +105,7 @@ std::string find_project_root() {
                 std::filesystem::is_directory(dir / "src")) {
                 std::string exe_name = exe_path.stem().string();
                 std::filesystem::path candidate = dir / "examples" / exe_name;
-                if (std::filesystem::exists(candidate / "project.gproj")) {
+                if (std::filesystem::exists(candidate / "project.data")) {
                     return candidate.string();
                 }
                 return dir.string();

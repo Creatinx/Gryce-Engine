@@ -718,6 +718,11 @@ std::string AssetManager::resolve_for_reading(const std::string& path) {
     return extract_from_bundle_unlocked(path);
 }
 
+std::string AssetManager::resolve_any(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return resolve_for_reading(path);
+}
+
 bool AssetManager::has_mesh(const std::string& path) const {
     return has(path);
 }

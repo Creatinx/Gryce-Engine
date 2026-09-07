@@ -2,7 +2,7 @@
 
 > 本文档包含两套迁移对照：
 > 1. `.uif` 从 XML（pugixml）迁移到自定义 DSL。
-> 2. 存量 Lua 脚本导入到 QuickJS（`lua2js` 工具 + 手工重写清单）。
+> 2. 存量 Lua 脚本重写为 QuickJS（语法对照见第 2 节）。
 >
 > 背景：Lua 运行时已完全移除（无 `.lua` 遗留、`third_party` 无 Lua、CMake 无
 > `lua` 引用），QuickJS 是唯一脚本运行时。
@@ -71,22 +71,13 @@ Widnow(id="Main")    // Hint: Did you mean 'Window'?
 Window(id="Main" {
 ```
 
-## 2. Lua → JS 迁移（`lua2js`）
+## 2. Lua → JS 迁移（手工重写）
 
-### 2.1 工具用法
+### 2.1 迁移方式
 
-`lua2js`（`tools/lua2js/`）是历史/存量 Lua 脚本的导入辅助，非主路径：
-
-```cpp
-#include "lua2js.h"
-
-lua2js::ConvertResult r = lua2js::convert(luaSource);
-// r.ok       是否成功
-// r.output   ES Module 风格 JS 源码
-// r.warnings 需要人工确认的位置（含 TODO 标记）
-```
-
-测试位于 `tests/lua2js_test.cpp`（转换并在 QuickJS 模块中执行验证语义一致）。
+存量 Lua 脚本已无自动转换工具，需要按下方语法对照手工重写为 ES Module 风格的
+QuickJS 脚本；`export function` / `export const` 从模块导出 `on_start` / `on_update`
+等生命周期方法（非 Lua 时代的全局函数）。
 
 ### 2.2 语法对照表
 

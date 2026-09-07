@@ -12,6 +12,8 @@
 
 #include "assets/asset_manager.h"
 #include "resources/resource_path.h"
+#include "render/render.h"
+#include "render/shader_source_resolver.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render {
@@ -346,55 +348,48 @@ bool GLShader::load_program(const std::string& name,
                             bool /*post_process*/,
                             bool /*skybox*/,
                             bool /*skinned*/) {
-    std::string dir = resources::ResourcePath::resolve(shader_dir);
-    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') {
-        dir += '/';
-    }
-
-    // Prefer the res:/ form so shader sources can be read from mounted
-    // .gpack/.gpkg bundles; fall back to the resolved path for plain dirs.
-    auto load_shader_source = [&](const char* ext) {
-        std::string res_path = shader_dir;
-        if (!res_path.empty() && res_path.back() != '/') res_path += '/';
-        res_path += name;
-        res_path += ext;
-        std::string p = assets::AssetManager::instance().resolve_for_reading(res_path);
-        if (!p.empty()) return load_file_text(p);
-        return load_file_text(dir + name + ext);
-    };
-
-    std::string vertex_src = load_shader_source(".vert");
-    std::string fragment_src = load_shader_source(".frag");
-    if (vertex_src.empty() || fragment_src.empty()) {
-        GLOG_ERROR("GLShader::load_program: failed to load '{}.vert' or '{}.frag' from '{}'", name, name, dir);
+    // 两级解析 + core 兜底：项目磁盘文件 → 已挂载 bundle → 引擎默认 shader 目录。
+    // 这样空项目（无任何自定义 shader）也能拿到 core 全套默认 shader 开箱渲染。
+    ShaderSourceSet src = resolve_shader_source(name, shader_dir, RenderAPI::OpenGL);
+    if (!src.valid()) {
+        GLOG_ERROR("GLShader::load_program: failed to resolve '{}' in '{}' "
+                   "(project disk/bundle/core engine dir)\n vert: '{}' frag: '{}'",
+                   name, shader_dir, src.vertex_path, src.fragment_path);
         return false;
     }
 
-    // 记录源文件信息供热重载使用
+    // 记录实际命中的源文件信息供 hot-reload 使用
     source_name_ = name;
-    source_dir_ = dir;
-    std::error_code ec;
-    vert_mtime_ = std::filesystem::last_write_time(dir + name + ".vert", ec);
-    frag_mtime_ = std::filesystem::last_write_time(dir + name + ".frag", ec);
+    source_dir_ = src.vertex_path;
+    source_vert_path_ = src.vertex_path;
+    source_frag_path_ = src.fragment_path;
 
-    return compile(vertex_src, fragment_src);
+    std::error_code ec;
+    vert_mtime_ = std::filesystem::last_write_time(src.vertex_path, ec);
+    frag_mtime_ = std::filesystem::last_write_time(src.fragment_path, ec);
+
+    return compile(src.vertex, src.fragment);
 }
 
 bool GLShader::shader_files_changed() const {
-    if (source_name_.empty() || source_dir_.empty()) return false;
+    if (source_name_.empty() || source_vert_path_.empty() || source_frag_path_.empty()) {
+        return false;
+    }
     std::error_code ec;
-    auto vert_mtime = std::filesystem::last_write_time(source_dir_ + source_name_ + ".vert", ec);
+    auto vert_mtime = std::filesystem::last_write_time(source_vert_path_, ec);
     if (ec) return false;
-    auto frag_mtime = std::filesystem::last_write_time(source_dir_ + source_name_ + ".frag", ec);
+    auto frag_mtime = std::filesystem::last_write_time(source_frag_path_, ec);
     if (ec) return false;
     return vert_mtime != vert_mtime_ || frag_mtime != frag_mtime_;
 }
 
 bool GLShader::reload() {
-    if (source_name_.empty() || source_dir_.empty()) return false;
+    if (source_name_.empty() || source_vert_path_.empty() || source_frag_path_.empty()) {
+        return false;
+    }
 
-    std::string vertex_src = load_file_text(source_dir_ + source_name_ + ".vert");
-    std::string fragment_src = load_file_text(source_dir_ + source_name_ + ".frag");
+    std::string vertex_src = load_file_text(source_vert_path_);
+    std::string fragment_src = load_file_text(source_frag_path_);
     if (vertex_src.empty() || fragment_src.empty()) {
         GLOG_ERROR("GLShader::reload: failed to re-read '{}'", source_name_);
         return false;
@@ -418,8 +413,8 @@ bool GLShader::reload() {
     pp_dirty_ = true; // 重编译后需重新应用 post-process 参数
 
     std::error_code ec;
-    vert_mtime_ = std::filesystem::last_write_time(source_dir_ + source_name_ + ".vert", ec);
-    frag_mtime_ = std::filesystem::last_write_time(source_dir_ + source_name_ + ".frag", ec);
+    vert_mtime_ = std::filesystem::last_write_time(source_vert_path_, ec);
+    frag_mtime_ = std::filesystem::last_write_time(source_frag_path_, ec);
 
     GLOG_INFO("GLShader: hot-reloaded '{}' (program={})", source_name_, program_id_);
     return true;

@@ -1,26 +1,35 @@
 # cmake/shaders.cmake
 # Gryce Engine Vulkan 着色器 SPIR-V 自动编译
 #
-# 调用 gryce_compile_vulkan_shaders(<shader_dir>) 会为目录下所有
-# vulkan_*.vert / vulkan_*.frag 生成 spirv/<name>.<stage>.spv，
-# 并创建一个名为 gryce_shaders_<dir_basename> 的 custom target。
+# 默认策略：**着色器在首次运行时才编译**（GL 运行时编译；Vulkan 集成 shaderc
+# 运行时 GLSL→SPIR-V），构建期不预编译 `.spv`。仅当显式开启
+#   -DGRYCE_AOT_VULKAN_SHADERS=ON
+# 时，gryce_compile_vulkan_shaders(<shader_dir>) 才会在构建期预生成 SPIR-V。
+# 该开关主要用于离线烘焙/无 shaderc 运行环境的发布场景。
 # ---------------------------------------------------------------------------
+
+# AOT 预编译开关：默认 OFF（首编），兼容旧构建脚本的显式 ON。
+option(GRYCE_AOT_VULKAN_SHADERS
+    "Pre-compile Vulkan shaders to SPIR-V at build time (default OFF: compile on first run)"
+    OFF)
 
 find_program(GRYCE_GLSLANG_VALIDATOR glslangValidator
     PATHS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
 )
 
-# 注意：此处只提示；实际在 gryce_compile_vulkan_shaders 内，当确有
-# vulkan_*.vert/.frag 需要编译而 glslangValidator 缺失时才会 FATAL_ERROR。
-if(NOT GRYCE_GLSLANG_VALIDATOR)
+if(NOT GRYCE_AOT_VULKAN_SHADERS)
     message(STATUS
-        "[Gryce Engine] glslangValidator not found. "
-        "Vulkan SPIR-V shaders will not be auto-compiled. "
-        "Install the Vulkan SDK or add glslangValidator to PATH."
+        "[Gryce Engine] GRYCE_AOT_VULKAN_SHADERS=OFF (default). "
+        "Vulkan shaders compile at first run via shaderc."
     )
 endif()
 
 function(gryce_compile_vulkan_shaders shader_dir)
+    # AOT 关闭时直接跳过：着色器在运行时首编，避免构建期多余产物。
+    if(NOT GRYCE_AOT_VULKAN_SHADERS)
+        return()
+    endif()
+
     if(NOT IS_DIRECTORY "${shader_dir}")
         message(WARNING "[Gryce Engine] Shader directory does not exist: ${shader_dir}")
         return()
