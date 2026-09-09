@@ -26,6 +26,9 @@ UIManager::UIManager(Renderer* renderer)
     current_ = this;
 
     // 初始化 UIRenderer
+    // 注意：不能通过 pause_render_thread()/resume_render_thread() 临时把 GL context
+    // 切回主线程来编译 UI 着色器——那会重建 command buffer + 渲染线程，导致整帧黑屏。
+    // 保持直接在此 init：若当前无主线程 context，编译失败即回退 2D 渲染器（HUD 照常绘制）。
     if (renderer_ && renderer_->context()) {
         ui_renderer_ = new UIRenderer();
         if (!ui_renderer_->init(renderer_->context())) {

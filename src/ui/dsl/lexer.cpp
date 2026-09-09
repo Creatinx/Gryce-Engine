@@ -12,7 +12,10 @@ bool isIdentStart(char c) {
     return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
 }
 bool isIdentChar(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    // 允许连字符：`font-size`、`scroll-x` 等 CSS 风格属性名是 DSL 规范（UI_DSL_SPEC）
+    // 声明的合法 token（如 Text 的 font-size）。数字的负号由数字扫描分支先处理
+    // （'-' 后紧跟数字），因此此处 '-' 始终属于标识符的一部分。
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
 }
 bool isDigit(char c) {
     return c >= '0' && c <= '9';

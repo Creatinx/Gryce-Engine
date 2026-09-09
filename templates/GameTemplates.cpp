@@ -21,8 +21,9 @@
 #include "GryceEngineUtils/types.h"
 #include "GryceEngineUtils/renderer.h"
 #include "GryceEngineUtils/ui/ui.h"
-#include "GryceEngineUtils/ui/uif_parser.h"
+// .uif 自定义 DSL：build_from_dsl_source 全流程入口（Lexer→Parser→Semantic→Optimizer→Builder）
 #include "GryceEngineUtils/ui/uif_builder.h"
+#include "GryceEngineUtils/ui/dsl/semantic_analyzer.h"
 // 渲染内存抽象：LightData（Renderer::set_lights 用）
 #include "render/storage_rd/light_storage.h"
 #include "render/rendering_server.h"
@@ -155,6 +156,17 @@ float read_comp_float(GEntityHandle e, uint64_t hash, const char* name, float de
     return def;
 }
 
+// GComponent_GetTypeNameAt 返回的是 demangle 后的 C++ RTTI 全限定名
+//（如 "gryce_engine::components::MeshRenderer"）。这里提取最后的短名做匹配。
+std::string short_type_name(const char* full) {
+    std::string n = full ? full : "";
+    // 注意：必须用 rfind 查找子串 "::"，不能用 find_last_of（后者把双冒号当
+    // 字符集合，只会定位到最后一个 ':'，导致下面 p+2 多跳一个字符、砍掉短名
+    // 的首字母，使 "MeshRenderer" 变成 "eshRenderer" 而匹配失败）。
+    const auto p = n.rfind("::");
+    return (p == std::string::npos) ? n : n.substr(p + 2);
+}
+
 // ---------------------------------------------------------------------------
 // 通用世界提交：遍历 ECS 场景实体，读相机/灯光/网格，逐个 draw 到 Renderer。
 // 纯粹通过只读 C API 完成，不依赖 Editor UI / 具体场景结构。
@@ -182,14 +194,16 @@ void render_world(GRenderer* r, SceneResources& rr, int viewport_w, int viewport
             char cname[64] = {};
             uint64_t chash = 0;
             if (GComponent_GetTypeHashAt(e, c, &chash) != 0) continue;
-            if (GComponent_GetTypeNameAt(e, c, cname, (int)sizeof(cname)) != 0) continue;
+            // 成功时返回类型名长度（>0），仅负值表示失败——不可用 != 0 判失败。
+            if (GComponent_GetTypeNameAt(e, c, cname, (int)sizeof(cname)) < 0) continue;
+            const std::string cshort = short_type_name(cname);
 
-            if (std::strcmp(cname, "Camera") == 0 && cam_entity == 0) {
+            if (cshort == "Camera" && cam_entity == 0) {
                 cam_entity = e;
                 cam_fov   = read_comp_float(e, chash, "fov", 60.0f);
                 cam_near  = read_comp_float(e, chash, "near_plane", 0.1f);
                 cam_far   = read_comp_float(e, chash, "far_plane", 400.0f);
-            } else if (std::strcmp(cname, "Light") == 0) {
+            } else if (cshort == "Light") {
                 GLight l;
                 l.type = GLightType::Directional;
                 l.color = GVec::one();
@@ -219,17 +233,19 @@ void render_world(GRenderer* r, SceneResources& rr, int viewport_w, int viewport
         // 使用第一个实体作为近似相机位（或全零兜底）。
         cam_entity = count > 0 ? GEntity_GetAt(0) : 0;
     }
-    // 相机位姿：世界坐标 + 朝向 → 看向前方目标点。
+    // 相机位姿：本地坐标 + 朝向 → 看向前方目标点。
+    // 注意：场景实体均为根级实体（parent==null），因此本地变换即世界变换。
+    // 不可用 GEntity_GetWorld* —— 它们当前是未实现的桩（返回 -1）。
     {
         GVec3 pos; GQuat rot;
         GVec eye(0.0f, 3.6f, -7.5f);   // 兜底：跑酷场景相机
         if (cam_entity != 0 &&
-            GEntity_GetWorldPosition(cam_entity, &pos) == 0) {
+            GEntity_GetLocalPosition(cam_entity, &pos) == 0) {
             eye = GVec(pos.x, pos.y, pos.z);
         }
         GVec forward(0.0f, 0.0f, -1.0f); // 引擎默认前方向
         if (cam_entity != 0 &&
-            GEntity_GetWorldRotation(cam_entity, &rot) == 0) {
+            GEntity_GetLocalRotation(cam_entity, &rot) == 0) {
             forward = GQuat4(rot.x, rot.y, rot.z, rot.w)
                           .rotate_vector(GVec(0.0f, 0.0f, -1.0f)).normalized();
         }
@@ -252,6 +268,11 @@ void render_world(GRenderer* r, SceneResources& rr, int viewport_w, int viewport
     r->set_ambient(GVec(0.22f, 0.22f, 0.24f));
 
     // 第二遍：提交所有带 MeshRenderer 的实体。
+    static int dbg_last = -1;
+    if (count != dbg_last) {
+        dbg_last = count;
+        std::printf("[game] DBG render_world entity-count=%d\n", count);
+    }
     for (int i = 0; i < count; ++i) {
         const GEntityHandle e = GEntity_GetAt(i);
         if (e <= 0) continue;
@@ -260,11 +281,10 @@ void render_world(GRenderer* r, SceneResources& rr, int viewport_w, int viewport
         for (int c = 0; c < cc; ++c) {
             char cname[64] = {};
             uint64_t chash = 0;
-            uint64_t mhash = 0;
             if (GComponent_GetTypeHashAt(e, c, &chash) != 0) continue;
-            if (GComponent_GetTypeNameAt(e, c, cname, (int)sizeof(cname)) != 0) continue;
-            if (std::strcmp(cname, "MeshRenderer") != 0) { mhash = 0; continue; }
-            (void)mhash;
+            if (GComponent_GetTypeNameAt(e, c, cname, (int)sizeof(cname)) < 0) continue;
+            const std::string cshort2 = short_type_name(cname);
+            if (cshort2 != "MeshRenderer") continue;
 
             // 网格路径
             char path[512] = {};
@@ -294,13 +314,13 @@ void render_world(GRenderer* r, SceneResources& rr, int viewport_w, int viewport
                 }
             }
 
-            // 位姿 TRS
+            // 位姿 TRS（本地变换；根级实体本地==世界）
             GVec3 pos; GQuat rot; GVec3 scl;
             GVec p(0, 0, 0), s(1, 1, 1);
-            if (GEntity_GetWorldPosition(e, &pos) == 0) p = GVec(pos.x, pos.y, pos.z);
-            if (GEntity_GetWorldScale(e, &scl) == 0)   s = GVec(scl.x, scl.y, scl.z);
+            if (GEntity_GetLocalPosition(e, &pos) == 0) p = GVec(pos.x, pos.y, pos.z);
+            if (GEntity_GetLocalScale(e, &scl) == 0)   s = GVec(scl.x, scl.y, scl.z);
             GMat q = GMat::identity();
-            if (GEntity_GetWorldRotation(e, &rot) == 0)
+            if (GEntity_GetLocalRotation(e, &rot) == 0)
                 q = GMat::from_quaternion(GQuat4(rot.x, rot.y, rot.z, rot.w));
             const GMat model = GMat::translate(p) * q * GMat::scale(s);
 
@@ -319,23 +339,22 @@ void mirror_input_to_core(GRenderer* r) {
     GInput_SyncToCore();
 }
 
-// 读取 res:/ui/hud.uif 并构建控件树；成功则设为 UIManager 根。
+// 读取 res:/ui/hud.uif（自定义 DSL 声明）并构建控件树；成功则设为 UIManager 根。
 void load_hud(GRenderer* r, GUIManager* ui) {
     const std::string text = read_res_text("res:/ui/hud.uif");
     if (text.empty()) {
         std::fprintf(stderr, "[game] HUD .uif not found / empty\n");
         return;
     }
-    GryceEngineUtils::ui::UIParser parser;
-    GryceEngineUtils::ui::UIFParseResult res = parser.parse_string(text, "res:/ui/hud.uif");
-    if (!res.success) {
-        std::fprintf(stderr, "[game] HUD parse failed: %s\n", res.error_message.c_str());
-        return;
-    }
-    GryceEngineUtils::ui::UIWidgetBuilder builder;
-    GryceEngineUtils::ui::UIBuildResult build = builder.build(res.doc);
+    // 全流程入口：DSL 源码 -> Lexer -> Parser -> SemanticAnalyzer -> ASTOptimizer -> UIBuilder
+    std::vector<GryceEngineUtils::ui::dsl::SemanticError> sem_errors;
+    GryceEngineUtils::ui::UIBuildResult build =
+        GryceEngineUtils::ui::UIWidgetBuilder::build_from_dsl_source(text, &sem_errors);
     if (!build.success || !build.root) {
-        std::fprintf(stderr, "[game] HUD build failed: %s\n", build.error_message.c_str());
+        std::fprintf(stderr, "[game] HUD DSL build failed: %s\n", build.error_message.c_str());
+        for (const auto& e : sem_errors) {
+            std::fprintf(stderr, "[game]   DSL: %s\n", e.toString().c_str());
+        }
         return;
     }
     ui->set_root(build.root);

@@ -182,7 +182,12 @@ Renderer* Renderer::create(const RendererConfig& config) {
     Impl& d = *r->impl_;
     d.config = config;
 
-    gryce_engine::resources::Project::instance().set_root(find_project_root());
+    // 仅当上层尚未配置项目根时才推导（例如独立 exe 调用 Renderer 但未走 GCore）。
+    // 否则会覆盖 GCore_Init 已按 --project/游戏目录设置的正确 res:/ 根，
+    // 导致 res:/shaders、res:/models 等渲染层资源解析到错误的仓库根。
+    if (gryce_engine::resources::Project::instance().root().empty()) {
+        gryce_engine::resources::Project::instance().set_root(find_project_root());
+    }
 
     if (!gryce_engine::platform::Window::init_sdk()) {
         GLOG_ERROR("Renderer::create: GLFW 初始化失败");
