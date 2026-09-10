@@ -205,7 +205,8 @@ if(GRYCE_ENABLE_AUDIO)
         ${GRYCE_UTILS_INCLUDE_DIR}
         ${GRYCE_UTILS_SRC_DIR}
     )
-    target_link_libraries(GryceAudioStatic PUBLIC GryceCore GryceMathStatic)
+    # 包装层底层实现复用音频引擎模块（GryceAudio，见 src/CMakeLists.txt）
+    target_link_libraries(GryceAudioStatic PUBLIC GryceAudio GryceCore GryceMathStatic)
     set_target_properties(GryceAudioStatic PROPERTIES FOLDER "GryceEngineUtils")
 endif()
 

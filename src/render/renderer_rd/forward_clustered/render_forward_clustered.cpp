@@ -60,7 +60,7 @@ bool RenderForwardClustered::init(RenderContext* ctx, const std::string& shader_
 
     // 初始化后处理效果
     ssr_ = std::make_unique<SSR_RD>();
-    if (!ssr_->init(ctx)) {
+    if (!ssr_->init(ctx, shader_dir)) {
         GLOG_ERROR("RenderForwardClustered: failed to init SSR");
         return false;
     }
@@ -848,7 +848,12 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
 
     // 2. SSR（屏幕空间反射，使用 HiZ 加速）
     if (pp_params_.ssr_enabled) {
-        ssr_->render(ctx, fb_.color_tex, fb_.depth_tex, fb_.depth_normal_tex,
+        pp_params_.ssr_near = current_camera_.near_plane();
+        pp_params_.ssr_far = current_camera_.far_plane();
+        pp_params_.ssr_tan_half = std::tan(math::to_radians(current_camera_.fov()) * 0.5f);
+        pp_params_.ssr_aspect = current_camera_.aspect();
+        ssr_->render(ctx, fb_.color_tex, fb_.depth_tex, fb_.depth_normal_tex, fb_.color_fbo,
+                     current_camera_.get_view_matrix(), current_camera_.position(),
                      pp_params_, viewport_width_, viewport_height_);
     }
 
@@ -1211,7 +1216,7 @@ bool RenderForwardClustered::_create_internal_framebuffers(int width, int height
     _create_sss_targets();
 
     // 重建 SSR/SSIL/Bokeh DOF/FSR2 目标
-    ssr_->create_hiz(width, height);
+    ssr_->create_targets(width, height);
     ssil_->create_targets(width, height);
     bokeh_dof_->create_targets(width, height);
     if (pp_params_.fsr2_enabled) {

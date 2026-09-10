@@ -16,28 +16,24 @@ bool MotionBlur_RD::init(RenderContext* ctx, const std::string& shader_dir) {
     if (initialized_) return true;
     ctx_ = ctx;
 
-    // 加载 shader - 使用 fog.vert 作为全屏顶点着色器
-    std::string vs = shader_dir + "/fog.vert";
-
-    // 运动向量 shader：从深度重建世界位置，计算屏幕空间运动
-    std::string mv_fs = shader_dir + "/motion_vectors.frag";
+    // 命名式加载：由 resolver 按当前 API 解析 GL/vulkan 变体，Vulkan 下优先
+    // "vulkan_motion_vectors" / "vulkan_motion_blur"（描述符 binding / push constant 语义）。
     motion_vectors_shader_ = ctx->create_shader();
     if (motion_vectors_shader_.is_valid()) {
         IShader* s = ctx->shader(motion_vectors_shader_);
         if (s) {
-            if (!s->load_program(vs.c_str(), mv_fs.c_str())) {
+            if (!s->load_program("motion_vectors", shader_dir, nullptr, true, true)) {
                 GLOG_WARN("MotionBlur: failed to load motion_vectors shader");
             }
         }
     }
 
     // 运动模糊 shader：沿运动向量方向做径向模糊
-    std::string mb_fs = shader_dir + "/motion_blur.frag";
     motion_blur_shader_ = ctx->create_shader();
     if (motion_blur_shader_.is_valid()) {
         IShader* s = ctx->shader(motion_blur_shader_);
         if (s) {
-            if (!s->load_program(vs.c_str(), mb_fs.c_str())) {
+            if (!s->load_program("motion_blur", shader_dir, nullptr, true, true)) {
                 GLOG_WARN("MotionBlur: failed to load motion_blur shader");
             }
         }

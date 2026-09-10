@@ -78,14 +78,24 @@ int slot_to_binding(int slot) {
     }
 }
 
-// 后处理/天空盒共用固定描述符集：
-// 0 = 主输入（HDR/天空盒/当前帧），1 = bloom，2 = LUT，3 = 曝光值，4 = TAA 历史
+// 后处理/天空盒共用固定描述符集（扩容到 14 个 sampler，承载 SSR/motion 的多贴图）：
+// 0 = 主输入(HDR/当前帧), 1 = bloom, 2 = LUT, 3 = 曝光值, 4 = TAA 历史, 5 = 接触阴影,
+// 6-9 = SSR HiZ[0..3], 10 = SSR 反射, 11 = 深度, 12 = 法线/粗糙度, 13 = 运动向量。
 int post_process_binding(int slot) {
     if (slot == TextureSlots::kTonemapBloom) return 1;
     if (slot == TextureSlots::kTonemapLUT) return 2;
     if (slot == TextureSlots::kTonemapExposure) return 3;
     if (slot == TextureSlots::kTAAHistory) return 4;
     if (slot == TextureSlots::kTonemapContactShadow) return 5;
+    if (slot >= TextureSlots::kSSRHiZ && slot < TextureSlots::kSSRHiZ + 4)
+        return 6 + (slot - TextureSlots::kSSRHiZ);          // HiZ0..3 -> 6..9
+    if (slot == TextureSlots::kSSRTexture) return 10;        // SSRTex -> 10
+    if (slot == TextureSlots::kPBRShadowDepth) return 11;    // 深度 -> 11
+    if (slot == TextureSlots::kPBRShadowDepth1) return 12;   // 法线/粗糙度 -> 12
+    if (slot == TextureSlots::kMotionVectors) return 13;     // 运动向量 -> 13
+    if (slot == TextureSlots::kSSILTexture) return 7;        // SSIL -> 7（与 HiZ1 共用，pass 不同时）
+    if (slot == TextureSlots::kDOFHalf) return 8;            // DOF 半分辨率 -> 8
+    if (slot == TextureSlots::kDOFBlur) return 9;            // DOF 模糊 -> 9
     return 0;
 }
 } // namespace
@@ -244,6 +254,18 @@ bool VulkanShader::load_program(const std::string& name,
     set_post_process(post_process);
     set_skybox(skybox);
     contact_shadow_ = post_process && name == "contact_shadow";
+    // 推导特效 push 块与水性材质标志（决定 create_pipeline 的 vertex input /
+    // push range / set_uniform_* 路由）。
+    water_ = (name == "water");
+    if (post_process) {
+        if (name == "contact_shadow") push_kind_ = PostProcessPushKind::ContactShadow;
+        else if (name.rfind("ssr_", 0) == 0) push_kind_ = PostProcessPushKind::SSR;
+        else if (name.rfind("motion_", 0) == 0) push_kind_ = PostProcessPushKind::Motion;
+        else if (name == "fog" || name == "fog_apply") push_kind_ = PostProcessPushKind::Fog;
+        else push_kind_ = PostProcessPushKind::General;
+    } else {
+        push_kind_ = PostProcessPushKind::General;
+    }
     skinned_ = skinned;
     if (compiled_from_source) {
         GLOG_INFO("VulkanShader: first-run compiled '{}'", name);
@@ -392,51 +414,60 @@ bool VulkanShader::create_pipeline() {
     GLOG_INFO("VulkanShader::create_pipeline render_pass={} color_output={} post_process={}",
               reinterpret_cast<void*>(render_pass), color_output_enabled_, post_process_);
 
-    if (post_process_ || skybox_) {
-        // Post-process / skybox descriptor layout: 6 combined image samplers
-        // （binding 5 = 接触阴影贴图，tonemap 用；其余 pass 不使用）
-        VkDescriptorSetLayoutBinding bindings[6]{};
-        for (int i = 0; i < 6; ++i) {
+    // 后处理 / 天空盒 / 水体共用每帧固定描述符集。扩容到 14 个 combined image
+    // sampler，以承载 SSR（HiZ0..3 / 深度 / 法线粗糙度）等后处理多贴图。
+    constexpr int kPostProcBindings = 14;
+    if (post_process_ || skybox_ || water_) {
+        VkDescriptorSetLayoutBinding bindings[kPostProcBindings]{};
+        VkDescriptorBindingFlags binding_flags[kPostProcBindings]{};
+        for (int i = 0; i < kPostProcBindings; ++i) {
             bindings[i].binding = i;
             bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[i].descriptorCount = 1;
             bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            binding_flags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
         }
 
-        VkDescriptorBindingFlags binding_flags[6] = {
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-        };
         VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info{};
         binding_flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        binding_flags_info.bindingCount = 6;
+        binding_flags_info.bindingCount = kPostProcBindings;
         binding_flags_info.pBindingFlags = binding_flags;
 
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        layout_info.bindingCount = 6;
+        layout_info.bindingCount = kPostProcBindings;
         layout_info.pBindings = bindings;
         layout_info.pNext = &binding_flags_info;
         vkCreateDescriptorSetLayout(device_->device(), &layout_info, nullptr, &descriptor_set_layout_);
 
-        // Push constants: post-process 为 exposure+mode（fragment）；
-        // 接触阴影用独立小块（48 字节），避免共享块超过设备 maxPushConstantsSize；
-        // skybox 为 view+projection 两个 mat4（vertex）。
+        // Push constants 按 shader 类型选择块：
+        //  skybox -> view+projection（vertex）
+        //  water  -> WaterPushData（vertex+片元）
+        //  contact_shadow -> 48 字节独立块
+        //  SSR/Motion/Fog -> 各自专用块（避免共用块超 maxPushConstantsSize 256）
+        //  其余  -> 共享 PostProcessPushData（240 字节）
         VkPushConstantRange push_range{};
         if (skybox_) {
             push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             push_range.offset = 0;
             push_range.size = sizeof(math::Matrix4f) * 2;
+        } else if (water_) {
+            push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            push_range.offset = 0;
+            push_range.size = sizeof(WaterPushData);
         } else {
             push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             push_range.offset = 0;
-            push_range.size = contact_shadow_ ? sizeof(ContactShadowPushData)
-                                              : sizeof(PostProcessPushData);
+            push_range.size = sizeof(PostProcessPushData);
+            if (push_kind_ == PostProcessPushKind::ContactShadow)
+                push_range.size = sizeof(ContactShadowPushData);
+            else if (push_kind_ == PostProcessPushKind::SSR)
+                push_range.size = sizeof(SSRPushData);
+            else if (push_kind_ == PostProcessPushKind::Motion)
+                push_range.size = sizeof(MotionPushData);
+            else if (push_kind_ == PostProcessPushKind::Fog)
+                push_range.size = sizeof(FogPushData);
         }
 
         VkPipelineLayoutCreateInfo pl_info{};
@@ -455,7 +486,7 @@ bool VulkanShader::create_pipeline() {
 
         VkDescriptorPoolSize pool_size{};
         pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_size.descriptorCount = static_cast<uint32_t>(frames) * 6;
+        pool_size.descriptorCount = static_cast<uint32_t>(frames) * kPostProcBindings;
 
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -492,7 +523,8 @@ bool VulkanShader::create_pipeline() {
         ubo_binding.binding = 0;
         ubo_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         ubo_binding.descriptorCount = 1;
-        ubo_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // 顶点+片元双阶段：贴花/点光源/阴影顶点着色器需读取材质 UBO 字段。
+        ubo_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         bindings.push_back(ubo_binding);
 
         for (int i = 1; i <= 7; ++i) {
@@ -548,6 +580,15 @@ bool VulkanShader::create_pipeline() {
             palette_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             bindings.push_back(palette_binding);
         }
+
+        // 特效 pass 共享参数 UBO（binding 20，顶点+片元）：阴影/贴花/点光源/水体等
+        // 传入每 draw 的 per-pass 标量、向量与矩阵（PBR 材质主 UBO 保持不变）。
+        VkDescriptorSetLayoutBinding pass_binding{};
+        pass_binding.binding = 20;
+        pass_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pass_binding.descriptorCount = 1;
+        pass_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings.push_back(pass_binding);
 
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -620,7 +661,20 @@ bool VulkanShader::create_pipeline() {
     vertex_binding.binding = 0;
     vertex_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    if (post_process_) {
+    if (water_) {
+        // WaterVertex: pos(vec3)+normal(vec3)+uv(vec2)，与 C++ water.cpp 一致
+        vertex_binding.stride = 32;
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});  // normal
+        attrs.push_back({2, 0, VK_FORMAT_R32G32_SFLOAT, 24});     // uv
+    } else if (post_process_ &&
+               (push_kind_ == PostProcessPushKind::Fog ||
+                push_kind_ == PostProcessPushKind::Motion)) {
+        // fog / motion 使用 vec3 全屏四边形（无 uv，由顶点坐标推导），
+        // 对应 forward_clustered/fog.vert 与 motion 的 fullscreen_mesh_。
+        vertex_binding.stride = 12;
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
+    } else if (post_process_) {
         vertex_binding.stride = 16; // vec2 pos + vec2 uv
         attrs.push_back({0, 0, VK_FORMAT_R32G32_SFLOAT, 0});   // position
         attrs.push_back({1, 0, VK_FORMAT_R32G32_SFLOAT, 8});   // uv
@@ -775,6 +829,12 @@ bool VulkanShader::parse_light_index(const std::string& name, const char* field,
 }
 
 void VulkanShader::set_int(const std::string& name, int value) {
+    // ---- 特效 push 块 ----
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uFogSliceCount") fog_push_.slice_count = value;
+        else if (name == "uFogSliceIndex") fog_push_.slice_index = value;
+        return;
+    }
     int light_index = -1;
     if (name == "uUseAlbedoMap") ubo_data_.use_albedo_map = value;
     else if (name == "uUseNormalMap") ubo_data_.use_normal_map = value;
@@ -792,6 +852,7 @@ void VulkanShader::set_int(const std::string& name, int value) {
     else if (name == "uPCSSEnabled") ubo_data_.pcss_enabled = value;
     else if (name == "uDebugMode") ubo_data_.debug_mode = value;
     else if (name == "uUseSSAO") ubo_data_.use_ssao = value;
+    else if (name == "uParaboloidFace") pass_params_.point_params.y = static_cast<float>(value);
     else if (parse_light_index(name, "uLightType", light_index)) {
         ubo_data_.lights[light_index].pos_type.w = static_cast<float>(value);
     }
@@ -803,6 +864,27 @@ void VulkanShader::set_int(const char* name, int value) {
 }
 
 void VulkanShader::set_float(const std::string& name, float value) {
+    // ---- 水性材质参数 ----
+    if (water_) {
+        if (name == "uWaterHeight") water_push_.water_height = value;
+        else if (name == "uFoamAmount") water_push_.foam_amount = value;
+        else if (name == "uTime") water_push_.time = value;
+        else if (name == "uWaveAmplitude") water_push_.wave_amplitude = value;
+        else if (name == "uWaveFrequency") water_push_.wave_frequency = value;
+        else if (name == "uWaveSpeed") water_push_.wave_speed = value;
+        else if (name == "uWaveSteepness") water_push_.wave_steepness = value;
+        return;
+    }
+    // ---- 特效 push 块 ----
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uFogDensity") fog_push_.density = value;
+        else if (name == "uFogHeight") fog_push_.height = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Motion) {
+        if (name == "uMotionBlurAmount") motion_push_.amount = value;
+        return;
+    }
     int light_index = -1;
     if (name == "uRoughness") ubo_data_.roughness = value;
     else if (name == "uMetallic") ubo_data_.metallic = value;
@@ -823,6 +905,12 @@ void VulkanShader::set_float(const std::string& name, float value) {
     else if (parse_light_index(name, "uLightIntensity", light_index)) {
         ubo_data_.lights[light_index].color_intensity.w = value;
     }
+    // ---- 特效 pass 共享参数（shadow/decal/point）----
+    else if (name == "uESMExponent") pass_params_.esm_param.x = value;
+    else if (name == "uPointLightRange") pass_params_.point_params.x = value;
+    else if (name == "uScreenWidth") pass_params_.screen_size.x = value;
+    else if (name == "uScreenHeight") pass_params_.screen_size.y = value;
+    else if (name == "uDecalOpacity") pass_params_.decal_albedo.w = value;
     ubo_dirty_ = true;
 }
 void VulkanShader::set_float(const char* name, float value) {
@@ -830,11 +918,45 @@ void VulkanShader::set_float(const char* name, float value) {
     set_float(std::string(name), value);
 }
 
-void VulkanShader::set_vec2(const std::string& /*name*/, const math::Vector2f& /*value*/) {}
-void VulkanShader::set_vec2(const char* /*name*/, const math::Vector2f& /*value*/) {}
+void VulkanShader::set_vec2(const std::string& name, const math::Vector2f& value) {
+    // ---- 特效 push 块 ----
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uScreenSize") {
+        ssr_push_.screen_size = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uScreenSize") fog_push_.screen_size = value;
+        else if (name == "uFogRange") fog_push_.fog_range = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Motion && name == "uScreenSize") {
+        motion_push_.screen_size = value;
+        return;
+    }
+    if (name == "uBlurDirection") {
+        pp_blur_direction_ = value;
+    }
+}
+void VulkanShader::set_vec2(const char* name, const math::Vector2f& value) {
+    if (!name) return;
+    set_vec2(std::string(name), value);
+}
 
 void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value) {
     auto to_vec4 = [](const math::Vector3f& v) { return math::Vector4f(v.x, v.y, v.z, 0.0f); };
+    // ---- 特效 push 块 / 水性材质 ----
+    if (water_) {
+        if (name == "uCameraPos") { water_push_.camera_pos = value; return; }
+        if (name == "uWaterColor") { water_push_.water_color = to_vec4(value); return; }
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uCameraPos") {
+        ssr_push_.camera_pos = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uCameraPos") { fog_push_.camera_pos = value; return; }
+        if (name == "uFogColor") { fog_push_.fog_color = value; return; }
+    }
     int light_index = -1;
     if (name == "uAlbedoColor") ubo_data_.albedo_color = to_vec4(value);
     else if (name == "uSheenTint") ubo_data_.sheen_tint = to_vec4(value);
@@ -862,6 +984,17 @@ void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value
         ubo_data_.lights[light_index].color_intensity.y = value.y;
         ubo_data_.lights[light_index].color_intensity.z = value.z;
     }
+    // ---- 特效 pass 共享参数 ----
+    else if (name == "uPointLightPos") {
+        pass_params_.point_light_pos.x = value.x;
+        pass_params_.point_light_pos.y = value.y;
+        pass_params_.point_light_pos.z = value.z;
+    }
+    else if (name == "uDecalAlbedo") {
+        pass_params_.decal_albedo.x = value.x;
+        pass_params_.decal_albedo.y = value.y;
+        pass_params_.decal_albedo.z = value.z;
+    }
     ubo_dirty_ = true;
 }
 void VulkanShader::set_vec3(const char* name, const math::Vector3f& value) {
@@ -879,6 +1012,8 @@ void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value
         ubo_data_.cascade_bias = value;
     } else if (name == "uCascadeFarBlend") {
         ubo_data_.cascade_far_blend = value;
+    } else if (name == "uAtlasOffset") {
+        pass_params_.atlas_offset = value;
     } else if (parse_light_index(name, "uLightParams", light_index)) {
         // x=range, y=cos(outer), z=cos(inner)
         ubo_data_.lights[light_index].dir_range.w = value.x;
@@ -892,6 +1027,21 @@ void VulkanShader::set_vec4(const char* name, const math::Vector4f& value) {
 }
 
 void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value) {
+    // ---- 特效 push 块 / 水性材质 ----
+    if (water_) {
+        if (name == "uModel") water_push_.model = value;
+        else if (name == "uViewProj") water_push_.view_proj = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uView") {
+        ssr_push_.view = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uInvViewProj") fog_push_.inv_view_proj = value;
+        else if (name == "uViewMatrix") fog_push_.view_matrix = value;
+        return;
+    }
     if (name == "uModel") model_ = value;
     else if (name == "uView") {
         view_ = value;
@@ -915,6 +1065,9 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
         vk_light(2, 3) = value(2, 3) * 0.5f + value(3, 3) * 0.5f;
         light_space_matrix_ = vk_light;
     }
+    // ---- 特效 pass 共享矩阵（decal）----
+    else if (name == "uInvViewProj") pass_params_.decal_inv_view_proj = value;
+    else if (name == "uWorldToDecal") pass_params_.decal_world_to_decal = value;
 }
 void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) {
     if (!name) return;
@@ -998,8 +1151,8 @@ bool VulkanShader::create_descriptor_pool() {
     for (int i = 0; i < frames; ++i) {
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        // skinned 管线每 draw 多消耗一个 palette UBO 描述符
-        pool_sizes[0].descriptorCount = max_draws_per_frame_ * (skinned_ ? 2 : 1);
+        // 每 draw：主 UBO(0) + pass 参数 UBO(20)，skinned 追加 palette UBO(8)
+        pool_sizes[0].descriptorCount = max_draws_per_frame_ * (2 + (skinned_ ? 1 : 0));
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         // 每 draw 最多 10 张采样器：PBR(1-7) + IBL(9-11)
         pool_sizes[1].descriptorCount = max_draws_per_frame_ * 19;
@@ -1021,8 +1174,10 @@ bool VulkanShader::create_descriptor_pool() {
 void VulkanShader::set_texture(int slot, ITexture* texture) {
     // post-process / skybox: 只有一个 combined image sampler，固定 binding 0。
     // PBR/IBL: 经 slot_to_binding 映射到与 GLSL layout(binding=...) 一致的 binding。
-    int binding = uses_fixed_descriptor_sets() ? post_process_binding(slot)
-                                               : slot_to_binding(slot);
+    // water: slot 0/1/2 <-> binding 0/1/2（reflection/refraction/depth）
+    int binding = water_ ? slot
+                 : (uses_fixed_descriptor_sets() ? post_process_binding(slot)
+                                                 : slot_to_binding(slot));
     if (binding < 0 || binding >= k_max_texture_bindings || !texture) return;
     auto* vk_tex = dynamic_cast<VulkanTexture*>(texture);
     if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) return;
@@ -1108,6 +1263,9 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
 
     // 1. 写入本 draw 的 UBO 数据
     ubo_buffers_[frame]->upload(&ubo_data_, sizeof(UBOData), ubo_offset);
+    // 1b. 特效 pass 参数（阴影/贴花/点光源）写入同槽位的 pass 块区域
+    ubo_buffers_[frame]->upload(&pass_params_, sizeof(PassParamsUBO),
+                                ubo_offset + k_pass_block_offset);
 
     // 2. 从该帧池中分配全新描述符集
     VkDescriptorSetAllocateInfo alloc{};
@@ -1124,7 +1282,7 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
     // 3. 写入 UBO + 贴图。每个贴图 binding 都必须写入：未绑定的用 1x1
     // 回退贴图占位，否则新分配的描述符集对应 binding 是未定义内容，
     // shader 一旦采样（编译器可能提升条件分支外的采样）GPU 读垃圾挂死。
-    VkWriteDescriptorSet writes[k_max_texture_bindings + 1]{};
+    VkWriteDescriptorSet writes[k_max_texture_bindings + 8]{};
     VkDescriptorBufferInfo buffer_info{};
     buffer_info.buffer = ubo_buffers_[frame]->buffer();
     buffer_info.offset = ubo_offset;
@@ -1138,6 +1296,22 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
     writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[write_count].descriptorCount = 1;
     writes[write_count].pBufferInfo = &buffer_info;
+    ++write_count;
+
+    // 特效 pass 参数 UBO（binding 20）：指向同 UBO 槽位的 pass 块区域。
+    // 单独绑定，供阴影（ESM 指数）、贴花、点光源双抛物面等 pass 的
+    // 顶点/片元阶段读取 PassParamsUBO。
+    VkDescriptorBufferInfo pass_buffer_info{};
+    pass_buffer_info.buffer = ubo_buffers_[frame]->buffer();
+    pass_buffer_info.offset = ubo_offset + k_pass_block_offset;
+    pass_buffer_info.range = sizeof(PassParamsUBO);
+    writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[write_count].dstSet = set;
+    writes[write_count].dstBinding = 20;
+    writes[write_count].dstArrayElement = 0;
+    writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[write_count].descriptorCount = 1;
+    writes[write_count].pBufferInfo = &pass_buffer_info;
     ++write_count;
 
     // 蒙皮 palette：与主 UBO 共用 cursor，上传当前 palette 缓存并绑到 binding 8。
@@ -1225,7 +1399,39 @@ void VulkanShader::push_constants(VkCommandBuffer cmd) const {
     // push constant 是命令缓冲状态：每帧重录 CB 后必须无条件重新写入，
     // 不能用脏标记跨帧跳过（否则验证层报 VUID-vkCmdDraw-None-08601，
     // 且着色器读到的是未定义数据）。
-    if (contact_shadow_) {
+    // 每帧无条件重写（见注释）——否则验证层 VUID + shader 读到未定义数据。
+    if (water_) {
+        vkCmdPushConstants(cmd, pipeline_layout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(WaterPushData), &water_push_);
+    } else if (post_process_) {
+        if (push_kind_ == PostProcessPushKind::ContactShadow) {
+            ContactShadowPushData data{};
+            data.enabled = pp_params_.cs_enabled;
+            data.near_plane = pp_params_.cs_near;
+            data.far_plane = pp_params_.cs_far;
+            data.tan_half_fov = pp_params_.cs_tan_half;
+            data.aspect = pp_params_.cs_aspect;
+            data.radius = pp_params_.cs_radius;
+            data.steps = pp_params_.cs_steps;
+            data.strength = pp_params_.cs_strength;
+            data.light_dir_view = pp_params_.cs_light_dir_view;
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(data), &data);
+        } else if (push_kind_ == PostProcessPushKind::SSR) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(SSRPushData), &ssr_push_);
+        } else if (push_kind_ == PostProcessPushKind::Motion) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(MotionPushData), &motion_push_);
+        } else if (push_kind_ == PostProcessPushKind::Fog) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(FogPushData), &fog_push_);
+        } else {
+            push_post_process_constants(cmd, pp_params_);
+        }
+    } else if (contact_shadow_) {
+        // 兼容旧的分支（contact_shadow 同时也是 post_process，不会走到这里）
         ContactShadowPushData data{};
         data.enabled = pp_params_.cs_enabled;
         data.near_plane = pp_params_.cs_near;
@@ -1317,6 +1523,7 @@ void VulkanShader::push_post_process_constants(VkCommandBuffer cmd,
     data.ssao_aspect = params.ssao_aspect;
     data.cs_enabled = params.cs_enabled;
     data.cs_strength = params.cs_strength;
+    data.blur_direction = pp_blur_direction_;
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(data), &data);
 }

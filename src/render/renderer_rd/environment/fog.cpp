@@ -13,26 +13,25 @@ bool VolumetricFog_RD::init(RenderContext* ctx, const std::string& shader_dir) {
     if (initialized_) return true;
     ctx_ = ctx;
 
-    // 加载 fog shader
-    std::string fog_vs = shader_dir + "/fog.vert";
-    std::string fog_fs = shader_dir + "/fog.frag";
+    // 加载 fog shader（命名式加载：由 resolver 按当前 API 解析 GL/vulkan 变体）。
+    // fog 的 GL/vulkan 变体都位于 shader_dir 的 forward_clustered 子目录，故拼接子目录。
+    const std::string fog_dir = shader_dir + "/forward_clustered";
     fog_shader_ = ctx->create_shader();
     if (fog_shader_.is_valid()) {
         IShader* s = ctx->shader(fog_shader_);
         if (s) {
-            if (!s->load_program(fog_vs.c_str(), fog_fs.c_str())) {
+            if (!s->load_program("fog", fog_dir, nullptr, true, true)) {
                 GLOG_WARN("VolumetricFog: failed to load fog shader");
             }
         }
     }
 
     // 加载 fog apply shader
-    std::string fog_apply_fs = shader_dir + "/fog_apply.frag";
     fog_apply_shader_ = ctx->create_shader();
     if (fog_apply_shader_.is_valid()) {
         IShader* s = ctx->shader(fog_apply_shader_);
         if (s) {
-            if (!s->load_program(fog_vs.c_str(), fog_apply_fs.c_str())) {
+            if (!s->load_program("fog_apply", fog_dir, nullptr, true, true)) {
                 GLOG_WARN("VolumetricFog: failed to load fog_apply shader");
             }
         }

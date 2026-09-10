@@ -67,6 +67,8 @@ public:
     void center_on_primary_monitor();
     // 置前并请求焦点
     void focus_window();
+    // 显隐窗口（启动画面阶段隐藏主窗口，初始化完成后显示）
+    void set_visible(bool visible);
     void set_vsync(bool enabled);
     void set_cursor_visible(bool visible);
     void set_cursor_disabled(bool disabled);

@@ -408,7 +408,10 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
     }
 
     // SSR 屏幕空间反射
-    ssr_.init(ctx);
+    ssr_.init(ctx, shader_dir_);
+    if (hdr_enabled_ && ssr_.valid()) {
+        ssr_.create_targets(viewport_width_, viewport_height_);
+    }
 
     // 体积雾
     fog_.init(ctx, shader_dir_);
@@ -1458,8 +1461,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         }
 
         // SSR 屏幕空间反射（HDR 渲染后、SSIL/SSAO 前）
-        if (ssr_enabled_ && ssr_.valid()) {
-            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_,
+        if (ssr_enabled_ && ssr_.valid() && camera_) {
+            pp_params_.ssr_near = camera_->near_plane();
+            pp_params_.ssr_far = camera_->far_plane();
+            pp_params_.ssr_tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+            pp_params_.ssr_aspect = camera_->aspect();
+            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_, hdr_fbo_,
+                        camera_->get_view_matrix(), camera_->position(),
                         pp_params_, viewport_width_, viewport_height_);
         }
 
@@ -1653,8 +1661,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         }
 
         // SSR 屏幕空间反射（HDR 渲染后、SSIL/SSAO 前）
-        if (ssr_enabled_ && ssr_.valid()) {
-            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_,
+        if (ssr_enabled_ && ssr_.valid() && camera_) {
+            pp_params_.ssr_near = camera_->near_plane();
+            pp_params_.ssr_far = camera_->far_plane();
+            pp_params_.ssr_tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+            pp_params_.ssr_aspect = camera_->aspect();
+            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_, hdr_fbo_,
+                        camera_->get_view_matrix(), camera_->position(),
                         pp_params_, viewport_width_, viewport_height_);
         }
 
@@ -2059,8 +2072,13 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
         end_hdr_forward_pass(ctx);
 
         // 后处理（与 render_scene 相同；水面反射/贴花需要 Scene，submit 路径跳过）
-        if (ssr_enabled_ && ssr_.valid()) {
-            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_,
+        if (ssr_enabled_ && ssr_.valid() && camera_) {
+            pp_params_.ssr_near = camera_->near_plane();
+            pp_params_.ssr_far = camera_->far_plane();
+            pp_params_.ssr_tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+            pp_params_.ssr_aspect = camera_->aspect();
+            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_, hdr_fbo_,
+                        camera_->get_view_matrix(), camera_->position(),
                         pp_params_, viewport_width_, viewport_height_);
         }
         if (ssil_enabled_ && ssil_.valid()) {
@@ -2699,9 +2717,9 @@ bool RenderPipeline::resize_render_targets(int width, int height) {
             }
         }
 
-        // SSR HiZ
+        // SSR 目标（HiZ + 输出/模糊）
         if (ssr_.valid()) {
-            ssr_.create_hiz(width, height);
+            ssr_.create_targets(width, height);
         }
 
         // 体积雾 target

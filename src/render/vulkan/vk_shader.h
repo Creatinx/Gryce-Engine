@@ -57,9 +57,9 @@ public:
 
     bool is_post_process() const { return post_process_; }
     bool is_skybox() const { return skybox_; }
-    // post-process 与 skybox 共用每帧固定描述符集（单 sampler），
+    // post-process 与 skybox（及水性材质）共用每帧固定描述符集，
     // 标准 PBR 路径则每 draw 分配独立描述符集。
-    bool uses_fixed_descriptor_sets() const { return post_process_ || skybox_; }
+    bool uses_fixed_descriptor_sets() const { return post_process_ || skybox_ || water_; }
 
     bool load_program(const std::string& name,
                       const std::string& shader_dir,
@@ -71,6 +71,18 @@ public:
 
     void set_post_process_params(const PostProcessParams& params) override {
         pp_params_ = params;
+        // SSR 的相机近远/半视角/宽高比等字段由管线每帧写入 params，
+        // 在此同步进 SSR 专用 push 块。
+        if (push_kind_ == PostProcessPushKind::SSR) {
+            ssr_push_.near_plane = params.ssr_near;
+            ssr_push_.far_plane = params.ssr_far;
+            ssr_push_.tan_half_fov = params.ssr_tan_half;
+            ssr_push_.aspect = params.ssr_aspect;
+            ssr_push_.max_roughness = params.ssr_max_roughness;
+            ssr_push_.max_steps = params.ssr_max_steps;
+            ssr_push_.thickness = params.ssr_thickness;
+            ssr_push_.bilateral_filter = params.ssr_bilateral_filter;
+        }
     }
 
     bool shader_files_changed() const override;
@@ -139,6 +151,12 @@ private:
     // 接触阴影：独立小 push constant 块（48 字节），不占用共享后处理块。
     // 共享块已 224 字节，追加接触阴影字段会超过设备 maxPushConstantsSize(256)。
     bool contact_shadow_ = false;
+    // 水性材质（非后处理 mesh pass）：独立固定描述符集 + WaterPushData
+    bool water_ = false;
+    // 特效后处理 push constant 块的选择（决定 create_pipeline 的 push range 与
+    // set_uniform_* 路由）：每个特效独立块避免共享块超 maxPushConstantsSize(256)。
+    enum class PostProcessPushKind { General = 0, ContactShadow, SSR, Motion, Fog };
+    PostProcessPushKind push_kind_ = PostProcessPushKind::General;
     // 骨骼蒙皮管线：顶点布局追加 bone ids/weights（stride 88），
     // 描述符布局追加 palette UBO（binding 8，vertex stage）
     bool skinned_ = false;
@@ -213,6 +231,8 @@ private:
         float ssao_strength;
         float _pad_ssao[2];
     };
+    // layout 必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 的 MaterialLightUBO 一致
+    // （追加字段会破坏偏移，故不再扩展本结构；特效 pass 参数统一走 PassParamsUBO）
     // 布局必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 的 MaterialLightUBO 一致
     static_assert(offsetof(UBOData, lights) == 160, "std140: lights must start at offset 160");
     static_assert(sizeof(LightUBO) == 64, "std140: LightUBO must be 64 bytes");
@@ -222,11 +242,29 @@ private:
                   "std140: sheen_tint must start at offset 1104");
     static_assert(sizeof(UBOData) == 1136, "std140: UBOData size mismatch (ssao)");
 
+    // ---- 特效 pass 共享参数（阴影/贴花/点光源等）。绑定 binding=20，顶点+片元双阶段。
+    // C++ 与各 vulkan_* 着色器的 PassParams 块 std140 逐字段一致。所有偏移 16 对齐。
+    struct alignas(16) PassParamsUBO {
+        math::Vector4f esm_param;          // +0   x=esm_exponent
+        math::Vector4f point_params;       // +16  x=point_light_range, y=paraboloid_face
+        math::Vector4f point_light_pos;    // +32  xyz=点光源位置
+        math::Vector4f atlas_offset;       // +48  xy=atlas slot offset, zw=slot size
+        math::Vector4f screen_size;        // +64  xy=decal 屏幕宽度/高度
+        math::Vector4f decal_albedo;       // +80  xyz=贴花反照率, w=不透明度
+        math::Matrix4f decal_inv_view_proj;   // +96
+        math::Matrix4f decal_world_to_decal;  // +160
+    };
+    static_assert(sizeof(PassParamsUBO) == 224, "PassParamsUBO must be 224 bytes");
+
     // 非 post-process 路径：每 draw 独立描述符 + UBO 偏移。
     // 每帧一个描述符池（on_begin_frame 整池 reset）和一个大 UBO
     // （HOST_VISIBLE|COHERENT），按 draw 游标以 ubo_stride_ 对齐切分。
+    static constexpr size_t k_pass_params_align = (sizeof(PassParamsUBO) + 255) / 256 * 256;
     // stride 按 256 对齐（>= minUniformBufferOffsetAlignment 常见最大值）。
-    static constexpr size_t ubo_stride_ = (sizeof(UBOData) + 255) / 256 * 256;
+    static constexpr size_t ubo_stride_ =
+        (sizeof(UBOData) + 255) / 256 * 256 + k_pass_params_align;
+    static constexpr size_t k_material_block_size = (sizeof(UBOData) + 255) / 256 * 256;
+    static constexpr size_t k_pass_block_offset = k_material_block_size; // 与 256 对齐
     static constexpr uint32_t max_draws_per_frame_ = 2048;
     static constexpr int k_max_texture_bindings = 20;
 
@@ -260,6 +298,8 @@ private:
     mutable std::vector<std::array<VulkanTexture*, k_max_texture_bindings>> cached_textures_;
 
     mutable UBOData ubo_data_{};
+    // 特效 pass 参数（阴影/贴花/点光源）：每 draw 上传到 binding 20。
+    mutable PassParamsUBO pass_params_{};
     mutable math::Matrix4f model_;
     mutable math::Matrix4f view_;
     mutable math::Matrix4f projection_;
@@ -269,6 +309,7 @@ private:
 
     // Post-process parameters (GL uniforms; Vulkan push constants)
     PostProcessParams pp_params_;
+    mutable math::Vector2f pp_blur_direction_{}; // vsm_blur 分离高斯方向
 
     // Must match vulkan_tonemap.frag PushConstants (std430, 128 bytes)
     struct alignas(16) PostProcessPushData {
@@ -311,8 +352,10 @@ private:
         // 复用原 8 字节 padding：tonemap 用 push constants 判断是否应用接触阴影
         int cs_enabled;      // offset 216
         float cs_strength;   // offset 220
+        math::Vector2f blur_direction; // offset 224（vsm_blur 分离式高斯方向）
+        float _pad_pp[2];
     };
-    static_assert(sizeof(PostProcessPushData) == 224, "PostProcessPushData must be 224 bytes");
+    static_assert(sizeof(PostProcessPushData) == 240, "PostProcessPushData must be 240 bytes");
 
     // 接触阴影专用 push constant（std430，48 字节，< 设备 maxPushConstantsSize）
     struct ContactShadowPushData {
@@ -328,6 +371,74 @@ private:
     };
     static_assert(sizeof(ContactShadowPushData) == 48,
                   "ContactShadowPushData must be 48 bytes");
+
+    // SSR 专用 push constant（std430，128 字节，< 256）。对应 vulkan_ssr_trace.frag
+    // 的 PushConstants 块。uView 与光照参数由 set_uniform_* / set_post_process_params 路由。
+    struct alignas(16) SSRPushData {
+        math::Matrix4f view;        // +0   world -> view
+        math::Vector3f camera_pos;  // +64
+        math::Vector2f screen_size; // +80
+        float near_plane;           // +88
+        float far_plane;            // +92
+        float tan_half_fov;         // +96
+        float aspect;               // +100
+        float max_roughness;        // +104
+        int max_steps;              // +108
+        float thickness;            // +112
+        float bilateral_filter;     // +116（blur pass 用它；HIZ/trace 忽略）
+        math::Vector2f texel_size;  // +120（HIZ pass 用它；其余忽略）
+    };
+    static_assert(sizeof(SSRPushData) == 128, "SSRPushData must be 128 bytes");
+
+    // Motion Blur 专用 push constant（std430，16 字节）。对应当前 C++ 提供的参数
+    // （screen_size + amount）；矩阵重建的旧 GL 路径未在 C++ 侧喂矩阵，保持同等能力。
+    struct alignas(16) MotionPushData {
+        math::Vector2f screen_size; // +0
+        float amount;               // +8
+        float _pad[1];              // +12
+    };
+    static_assert(sizeof(MotionPushData) == 16, "MotionPushData must be 16 bytes");
+
+    // 体积雾专用 push constant（std430，192 字节，< 256）。对应 vulkan_fog.frag /
+    // vulkan_fog_apply.frag 的 PushConstants 块。
+    struct alignas(16) FogPushData {
+        math::Matrix4f inv_view_proj; // +0
+        math::Matrix4f view_matrix;   // +64
+        math::Vector3f camera_pos;    // +128
+        math::Vector3f fog_color;     // +140
+        float density;                // +152
+        float height;                 // +156
+        math::Vector2f fog_range;     // +160（x=near, y=far）
+        math::Vector2f screen_size;   // +168
+        int slice_count;              // +176
+        int slice_index;              // +180
+        float _pad[1];                // +184
+    };
+    static_assert(sizeof(FogPushData) == 192, "FogPushData must be 192 bytes");
+
+    // 水体材质专用 push constant（std430，192 字节，< 256）。对应 vulkan_water 的
+    // PushConstants 块。顶点阶段用 view_proj/model，片元阶段用其余参数。
+    struct alignas(16) WaterPushData {
+        math::Matrix4f view_proj;     // +0
+        math::Matrix4f model;         // +64
+        math::Vector3f camera_pos;    // +128
+        float water_height;           // +140
+        float foam_amount;            // +144
+        float time;                   // +148
+        float wave_amplitude;         // +152
+        float wave_frequency;         // +156
+        float wave_speed;             // +160
+        float wave_steepness;         // +164
+        math::Vector4f water_color;   // +176
+    };
+    static_assert(sizeof(WaterPushData) == 192, "WaterPushData must be 192 bytes");
+
+    // 各特效 push 块实例（由 set_uniform_* / set_post_process_params 填充，
+    // push_constants() 按其 push_kind_ 推送）。
+    mutable SSRPushData ssr_push_{};
+    mutable MotionPushData motion_push_{};
+    mutable FogPushData fog_push_{};
+    mutable WaterPushData water_push_{};
 };
 
 } // namespace gryce_engine::render

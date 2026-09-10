@@ -454,6 +454,13 @@ void GLShader::apply_post_process_params() const {
         {"uSSAOFar", p.ssao_far},
         {"uSSAOTanHalfFov", p.ssao_tan_half},
         {"uSSAOAspect", p.ssao_aspect},
+        {"uSSRMaxRoughness", p.ssr_max_roughness},
+        {"uSSRThickness", p.ssr_thickness},
+        {"uSSRBilateralFilter", p.ssr_bilateral_filter},
+        {"uSSRNear", p.ssr_near},
+        {"uSSRFar", p.ssr_far},
+        {"uSSRTanHalfFov", p.ssr_tan_half},
+        {"uSSRAspect", p.ssr_aspect},
     };
     for (const auto& u : floats) {
         int loc = get_uniform_location(u.name);
@@ -468,6 +475,8 @@ void GLShader::apply_post_process_params() const {
         {"uAutoExposure", p.auto_exposure},
         {"uTAAEnabled", p.taa_enabled},
         {"uSSAOEnabled", p.ssao_enabled},
+        {"uSSREnabled", p.ssr_enabled},
+        {"uSSRMaxSteps", p.ssr_max_steps},
         {"uMotionBlurEnabled", p.motion_blur_enabled},
     };
     for (const auto& u : ints) {

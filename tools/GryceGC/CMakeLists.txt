@@ -9,7 +9,27 @@
 # Target name is "GryceGC", and the produced executable is also GryceGC.exe
 # (PascalCase, matching the documented CLI name). It is a separate CMake target
 # from GryceCore: it links the core DLL and uses the exported PakWriter API.
-add_executable(GryceGC main.cpp)
+# Entries are split across small per-concern modules; main.cpp only does the
+# CLI parsing and dispatch. See comments at the top of main.cpp.
+add_executable(GryceGC
+    main.cpp
+    string_util.cpp
+    string_util.h
+    random_util.cpp
+    random_util.h
+    crypto.cpp
+    crypto.h
+    file_collect.cpp
+    file_collect.h
+    runtime_util.cpp
+    runtime_util.h
+    runtime_copy.cpp
+    runtime_copy.h
+    pack.cpp
+    pack.h
+    project_skeleton.cpp
+    project_skeleton.h
+)
 set_target_properties(GryceGC PROPERTIES
     RUNTIME_OUTPUT_NAME GryceGC
     FOLDER "Tools"

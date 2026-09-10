@@ -4,6 +4,13 @@
 # ============================================================================
 # GryceCore.dll — ECS、Scene、Entity、Component、Math、UUID、Reflection、Assets
 # ============================================================================
+# 有意识地保留在 Core 中的领域（本阶段不拆分，避免为拆而拆引入风险/循环）：
+#   - 脚本（script/ + ecs/systems/script_system）：被 Core 内 ECS 系统强依赖，
+#     且 src/ui 存在并行的脚本运行时，拆分收益低、风险高。
+#   - 渲染抽象层（render/rendering_device.h、storage_rd/*、render 管线）：GryceRenderer
+#     后端已依赖 Core，把抽象移出便会形成 DLL 循环。
+#   - 资源加密格式（gpack/pak/aes_gcm）：与 resource_loader / asset_manager 交织，拆开收益低。
+# 音频引擎已独立为 GryceAudio 模块（见下方定义）。
 add_library(GryceCore SHARED)
 
 set_target_properties(GryceCore PROPERTIES
@@ -62,10 +69,6 @@ target_sources(GryceCore
         components/2d/particle_emitter.cpp
         components/2d/skybox_2d.cpp
         components/audio_source.cpp
-        audio/audio_engine.cpp
-        audio/time_stretcher.cpp
-        audio/miniaudio_impl.cpp
-        audio/stb_vorbis_impl.cpp
         components/mesh_renderer.cpp
         components/skinned_mesh_renderer.cpp
         components/terrain.cpp
@@ -160,7 +163,6 @@ target_sources(GryceCore
             components/2d/misc_components.h
             components/common/system_components.h
             components/audio_source.h
-            audio/audio_engine.h
             resources/tileset.h
             components/mesh_renderer.h
             components/skinned_mesh_renderer.h
@@ -171,13 +173,6 @@ target_sources(GryceCore
             resources/pak_bundle.h
             resources/aes_gcm.h
             resources/resource_loader.h
-            physics/physics_point.h
-            physics/physics_types.h
-            physics/physics_world_2d.h
-            physics/physics_world_3d.h
-            physics/physics_factory.h
-            physics/box2d_world_2d.h
-            physics/jolt_physics_world_3d.h
             assets/mesh_data.h
             assets/asset.h
             assets/asset_handle.h
@@ -200,8 +195,6 @@ target_sources(GryceCore
             ecs/world.h
             scene/query.h
             ecs/component_store.h
-            ecs/systems/physics_system_3d.h
-            ecs/systems/physics_system_2d.h
             ecs/systems/fracture_system.h
             ecs/systems/animator_system.h
             ecs/systems/hierarchy_system.h
@@ -262,6 +255,11 @@ endif()
 if(GRYCE_HAS_ASSIMP)
     target_link_libraries(GryceCore PUBLIC assimp::assimp)
 endif()
+
+# 链接音频引擎模块（GryceAudio 见下方定义）。
+# GryceCore 单向依赖 GryceAudio：音频引擎只依赖 header-only 的 math，
+# 不反向引用 Core 符号，故无 DLL 循环。
+target_link_libraries(GryceCore PRIVATE GryceAudio)
 
 # ============================================================================
 # GryceRenderer.dll — RenderContext、Pipeline、GL/Vulkan Backend、Mesh、Texture
@@ -417,6 +415,9 @@ target_sources(GryceRenderer
             $<$<BOOL:${GRYCE_HAS_VULKAN}>:render/vulkan/vk_framebuffer.h>
             $<$<BOOL:${GRYCE_HAS_VULKAN}>:render/vulkan/vk_imgui_backend.h>
             $<$<BOOL:${GRYCE_HAS_VULKAN}>:render/vulkan/vk_renderer2d.h>
+            # 渲染系统头（供编辑器与上层消费）
+            ecs/systems/render_system_2d.h
+            ecs/systems/render_system_3d.h
 )
 
 target_include_directories(GryceRenderer
@@ -664,6 +665,9 @@ target_sources(GrycePhysics
             physics/physics_factory.h
             physics/box2d_world_2d.h
             physics/jolt_physics_world_3d.h
+            # 物理系统头随实现（physics_system_*.cpp）归位到 GrycePhysics
+            ecs/systems/physics_system_3d.h
+            ecs/systems/physics_system_2d.h
 )
 
 target_include_directories(GrycePhysics
@@ -685,51 +689,49 @@ if(GRYCE_HAS_JOLT)
 endif()
 
 # ============================================================================
-# GryceAudio.dll — miniaudio（optional）
+# GryceAudio — miniaudio 音频引擎模块（独立 target）
 # ============================================================================
-# TODO: 音频模块拆分（Phase 2+）
-# add_library(GryceAudio SHARED ...)
+# 说明：音频引擎（audio_engine / miniaudio / stb_vorbis / time_stretcher）从
+# GryceCore 的扁平源码列表中独立成自己的编译单元，作为静态模块被 GryceCore 依赖。
+#
+# 为何是静态模块而非独立 DLL？
+# 1) render_pipeline.cpp 与 audio_source 组件（均编译在 GryceCore 内）直接调用
+#    AudioEngine；若拆成独立 DLL，Core → GryceAudio 与 GryceAudio → Core(math)
+#    会形成互导 DLL 循环。
+# 2) 彻底解耦需把 audio_source 组件与源码间的多次调用改成服务门面（C API +
+#    运行期注册或延迟加载），属于后续优先事项。
+# 采用静态模块：音频源码独立成 target、头归 GryceAudio，最终链接进 Core.dll。
+# 音频引擎只依赖 header-only 的 math，不反向引用 Core，链路单向、无循环。
+add_library(GryceAudio STATIC
+    audio/audio_engine.cpp
+    audio/time_stretcher.cpp
+    audio/miniaudio_impl.cpp
+    audio/stb_vorbis_impl.cpp
+)
 
-# ============================================================================
-# WPF editor: auto-copy runtime DLLs into the editor output folder
-# ----------------------------------------------------------------------------
-# Rule: whenever a native library is manually copied for the editor, the copy
-# must also be expressed here so a fresh CMake build deploys everything.
-# Output layout matches the csproj (fixed OutputPath): editor/bin/<Config>/net48.
-# Only meaningful on Windows (WPF Editor is Windows-only); skipped on Linux.
-# ============================================================================
-if(WIN32)
-set(GRYCE_EDITOR_BIN "${CMAKE_SOURCE_DIR}/editor/bin/$<CONFIG>/net48")
+# GryceAudio 编译进 GryceCore.dll，故必须带 GRYCE_CORE_BUILDING 使其 GRYCE_API
+# 符号 dllexport 导出，否则 GryceRenderer（render_pipeline.cpp）跨 DLL 调用
+# AudioEngine::instance()/set_listener_position() 会链接失败。
+target_compile_definitions(GryceAudio PRIVATE GRYCE_CORE_BUILDING)
 
-function(gryce_copy_dll_to_editor TARGET_NAME)
-    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND}
-            -DGRYCE_EDITOR_BIN="${GRYCE_EDITOR_BIN}"
-            -DGRYCE_SRC="$<TARGET_FILE:${TARGET_NAME}>"
-            -DGRYCE_NAME="$<TARGET_FILE_NAME:${TARGET_NAME}>"
-            -P "${CMAKE_SOURCE_DIR}/cmake/editor_deploy.cmake"
-        COMMENT "Deploying $<TARGET_FILE_NAME:${TARGET_NAME}> to editor output"
-    )
-endfunction()
+set_target_properties(GryceAudio PROPERTIES
+    FOLDER "Core"
+)
 
-gryce_copy_dll_to_editor(GryceCore)
-gryce_copy_dll_to_editor(GryceRenderer)
-gryce_copy_dll_to_editor(GrycePlatform)
-gryce_copy_dll_to_editor(GrycePhysics)
+target_sources(GryceAudio PUBLIC
+    FILE_SET HEADERS
+    BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+    FILES
+        audio/audio_engine.h
+)
 
-if(TARGET glfw)
-    # glfw is created in the deps subdirectory, so a TARGET rule here would
-    # fail ("TARGET 'glfw' was not created in this directory"). Attach the
-    # copy to GrycePlatform, which links glfw; the $<TARGET_FILE:glfw> genex
-    # resolves the DLL path globally.
-    add_custom_command(TARGET GrycePlatform POST_BUILD
-        COMMAND ${CMAKE_COMMAND}
-            -DGRYCE_EDITOR_BIN="${GRYCE_EDITOR_BIN}"
-            -DGRYCE_SRC="$<TARGET_FILE:glfw>"
-            -DGRYCE_NAME="$<TARGET_FILE_NAME:glfw>"
-            -P "${CMAKE_SOURCE_DIR}/cmake/editor_deploy.cmake"
-        COMMENT "Deploying $<TARGET_FILE_NAME:glfw> to editor output"
-    )
-endif()
-endif()
+target_include_directories(GryceAudio
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party>
+)
+
+target_link_libraries(GryceAudio PUBLIC gryce::compile_options)
+
+
 

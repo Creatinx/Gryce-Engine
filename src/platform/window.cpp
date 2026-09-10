@@ -347,6 +347,16 @@ void Window::set_position(int x, int y) {
     }
 }
 
+void Window::set_visible(bool visible) {
+    if (!handle_) return;
+    if (visible) {
+        glfwShowWindow(handle_);
+        glfwFocusWindow(handle_);
+    } else {
+        glfwHideWindow(handle_);
+    }
+}
+
 void Window::center_on_primary_monitor() {
     if (!handle_) return;
     GLFWmonitor* monitor = glfwGetPrimaryMonitor();

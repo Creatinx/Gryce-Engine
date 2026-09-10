@@ -102,6 +102,11 @@ struct PostProcessParams {
     int ssr_max_steps = 64;
     float ssr_thickness = 0.1f;
     float ssr_bilateral_filter = 0.5f;
+    // 每帧由管线从相机更新（Vulkan push constants 需要）
+    float ssr_near = 0.1f;
+    float ssr_far = 100.0f;
+    float ssr_tan_half = 0.577f;
+    float ssr_aspect = 1.777f;
 
     // SSIL（屏幕空间间接光照，默认关闭）
     int ssil_enabled = 0;
