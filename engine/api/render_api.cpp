@@ -1,0 +1,1035 @@
+#include "api/render_api.h"
+#include "api/api_guard.h"
+#include "api/viewport_api.h"
+#include "api/core_api.h"
+#include "api/window_api.h"
+#include "runtime/engine_context.h"
+
+#include "render/render_context.h"
+#include "render/render_pipeline.h"
+#include "render/render.h"
+#include "render/render2d.h"
+#include "assets/asset_manager.h"
+#include "components/camera.h"
+#include "components/light.h"
+#include "components/mesh_renderer.h"
+#include "components/skinned_mesh_renderer.h"
+#include "ecs/world.h"
+#include "scene/query.h"
+#include "ecs/systems/render_system_2d.h"
+#include "math/camera.h"
+#include "math/math.h"
+#include "scene/scene.h"
+#include "utils/glog/glog_lib.h"
+
+#include <cmath>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+using gryce_engine::render::RenderContext;
+using gryce_engine::render::RenderPipeline;
+using gryce_engine::render::IRenderBackend;
+using gryce_engine::render::create_render_backend;
+using gryce_engine::render::RenderAPI;
+using gryce_engine::ecs::World;
+// 让 scene/components/math 等嵌套命名空间名在本文档中可见；
+// Camera 存在 math::Camera 与 components::Camera 两个类型，调用处显式限定。
+using namespace gryce_engine;
+
+namespace {
+
+constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
+
+struct RendererState {
+    bool initialized = false;
+    bool sync_mode = false;
+
+    std::unique_ptr<RenderContext> ctx;
+    std::unique_ptr<RenderPipeline> pipeline;
+    std::unique_ptr<render::IRenderer2D> renderer2d;
+
+    int viewport_w = 1280;
+    int viewport_h = 720;
+    int gameview_w = 1280;
+    int gameview_h = 720;
+    GEntityHandle viewport_camera = 0;
+    GEntityHandle gameview_camera = 0;
+    // 编辑器相机：非 Game 模式直接使用这些参数，不依赖场景实体
+    math::Camera editor_camera;
+    bool editor_camera_valid = false;
+    std::string display_mode = "Shaded";
+    bool scene_2d_only = false;
+
+    // Project Settings（渲染质量）—— 持久化值，GRender_Init 时应用到管线
+    bool  hdr_enabled = true;
+    int   tone_map_mode = 1;   // 0=None, 1=Reinhard, 2=ACES
+    float exposure = 1.0f;
+    bool  shadow_enabled = true;
+    int   shadow_map_size = 2048;
+    bool  shadow_map_size_dirty = false;
+    bool  backend_pending = false;
+    bool  pipeline_reload_pending = false;
+    GRenderAPI pending_backend_api = GRYCE_RENDER_API_OPENGL;
+    GRenderAPI current_backend = GRYCE_RENDER_API_OPENGL;
+    math::Vector3f ambient = math::Vector3f(0.15f, 0.15f, 0.15f);
+    float ibl_intensity = 1.0f;
+    bool  default_environment = false;
+
+    // 屏幕空间效果（默认关闭；SSR/SSIL 需要管线自动跑 depth+normal 预通道）
+    bool  ssao_enabled = false;
+    bool  ssr_enabled = false;
+    bool  ssil_enabled = false;
+    float ssr_max_steps = 64.0f;
+    float ssr_max_roughness = 0.6f;
+    float ssr_thickness = 0.1f;
+    float ssr_bilateral = 0.5f;
+
+    std::mutex mutex;
+};
+
+static RendererState g_renderer;
+
+static RenderAPI to_internal_api(GRenderAPI api) {
+    switch (api) {
+        case GRYCE_RENDER_API_VULKAN: return RenderAPI::Vulkan;
+        case GRYCE_RENDER_API_DX11:
+        case GRYCE_RENDER_API_DX12:
+        default: return RenderAPI::OpenGL;
+    }
+}
+
+static World* get_world() {
+    void* ptr = GCore_GetInternalWorldPtr();
+    return static_cast<World*>(ptr);
+}
+
+// 2D 覆盖层 pass：begin_frame -> RenderSystem2D -> end_frame
+static void render_2d_overlay() {
+    if (!g_renderer.renderer2d || !g_renderer.ctx) return;
+    g_renderer.renderer2d->begin_frame(g_renderer.viewport_w, g_renderer.viewport_h);
+    World* world = get_world();
+    if (world && world->scene()) {
+        ecs::RenderSystem2D sys(g_renderer.renderer2d.get());
+        sys.on_render(*world->scene(), *g_renderer.ctx);
+    }
+    g_renderer.renderer2d->end_frame();
+}
+
+// 在场景中查找主摄像机：优先 is_main，其次名字为 MainCamera，最后任意启用的摄像机。
+static scene::Entity* find_main_camera_entity(scene::Scene& scn) {
+    scene::Entity* result = nullptr;
+    scene::Entity* fallback_by_name = nullptr;
+    scene::Entity* any_enabled = nullptr;
+    scn.foreach([&](scene::Entity* entity) {
+        if (!entity) return;
+        auto* cam = entity->get_component<components::Camera>();
+        if (!cam || !cam->enabled) return;
+        if (!any_enabled) any_enabled = entity;
+        if (!fallback_by_name && entity->name() == "MainCamera") fallback_by_name = entity;
+        if (cam->is_main && !result) result = entity;
+    });
+    if (result) return result;
+    if (fallback_by_name) return fallback_by_name;
+    return any_enabled;
+}
+
+// 用实体 Transform + Camera 组件构造渲染管线所需的 math::Camera。
+static bool build_scene_camera(scene::Entity* entity, int viewport_w, int viewport_h,
+                               math::Camera& out) {
+    if (!entity) return false;
+    auto* cam = entity->get_component<components::Camera>();
+    if (!cam || !cam->enabled) return false;
+    auto* t = entity->transform();
+    if (!t) return false;
+
+    // 摄像机默认看向 -Z；用实体旋转把该方向变换到世界空间，再反解 yaw/pitch。
+    math::Vector3f fwd = t->rotation.rotate_vector(math::Vector3f(0.0f, 0.0f, -1.0f));
+    if (fwd.length_sq() < 1e-6f) fwd = math::Vector3f(0.0f, 0.0f, -1.0f);
+    fwd = fwd.normalized();
+
+    const float pitch = std::asin(math::clamp(fwd.y, -1.0f, 1.0f));
+    const float yaw = std::atan2(fwd.z, fwd.x);
+
+    out.set_position(t->position);
+    out.set_yaw(yaw * kRadToDeg);
+    out.set_pitch(pitch * kRadToDeg);
+    out.set_fov(cam->fov);
+    out.set_near_far(cam->near_plane, cam->far_plane);
+    out.set_aspect(viewport_h > 0
+                       ? static_cast<float>(viewport_w) / static_cast<float>(viewport_h)
+                       : 16.0f / 9.0f);
+    return true;
+}
+
+// 收集场景中的全部光源（最多 8 盏），供 PBR 多光源渲染使用。
+static void collect_scene_lights(scene::Scene& scn,
+                                 std::vector<RenderPipeline::Light>& out) {
+    out.clear();
+    scn.foreach([&](scene::Entity* entity) {
+        if (!entity || out.size() >= RenderPipeline::k_max_lights) return;
+        auto* light = entity->get_component<components::Light>();
+        if (!light || !light->enabled) return;
+        RenderPipeline::Light l;
+        l.type = static_cast<RenderPipeline::LightType>(light->light_type);
+        l.direction = light->direction;
+        l.color = light->color;
+        l.intensity = light->intensity;
+        l.range = light->range;
+        l.spot_angle = light->spot_angle;
+        l.spot_softness = light->spot_softness;
+        auto* t = entity->transform();
+        l.position = t ? t->position : math::Vector3f::zero();
+        out.push_back(l);
+    });
+    // 兜底：场景没有任何灯时保证至少一个方向光，避免 uLightCount=0 只剩环境光
+    // （每个面渲染成纯色）。与 3dtest 的 collect_lights 行为保持一致。
+    if (out.empty()) {
+        RenderPipeline::Light fallback;
+        fallback.direction = math::Vector3f(0.0f, -1.0f, 0.0f);
+        out.push_back(fallback);
+    }
+}
+
+// 同步模式下渲染线程未运行，RenderSystem3D 的上传路径不会执行；
+// 这里在绘制前把尚未上传 GPU 的 MeshRenderer / SkinnedMeshRenderer 补传上去。
+static void upload_pending_meshes(scene::Scene& scn, RenderContext& ctx) {
+    // Per-frame budget: uploading dozens of meshes/materials at once (e.g.
+    // after an import) would stall the render frame; cap it and let the rest
+    // stay pending so they upload over the next frames.
+    constexpr int k_max_uploads_per_frame = 30;
+    int uploaded = 0;
+
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
+            if (uploaded >= k_max_uploads_per_frame) return;
+            if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
+            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            if (data && !data->empty()) {
+                mr->upload_to_gpu(&ctx, data.get(), /*allow_while_running=*/false);
+                ++uploaded;
+            }
+        });
+
+    ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::SkinnedMeshRenderer* mr, components::Transform*) {
+            if (uploaded >= k_max_uploads_per_frame) return;
+            if (!mr || !mr->enabled || mr->model_path.empty() || mr->gpu_mesh()) return;
+            mr->upload_to_gpu(&ctx, /*allow_while_running=*/false);
+            ++uploaded;
+        });
+
+    // 编辑器修改材质贴图路径/use 标志后，material 被标记 textures_dirty；
+    // 在这里统一重新 upload，让改动下一帧生效。
+    auto refresh_dirty_material = [&](render::Material* mat) {
+        if (mat && mat->textures_dirty) {
+            mat->upload_to_gpu(&ctx);
+            mat->textures_dirty = false;
+        }
+    };
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
+            if (mr) refresh_dirty_material(mr->material.get());
+        });
+    ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::SkinnedMeshRenderer* mr, components::Transform*) {
+            if (mr) refresh_dirty_material(mr->material.get());
+        });
+}
+
+// 异步模式（渲染线程运行中）：主线程不能直接做 GL 上传，把尚未上传的网格
+// 作为命令推给渲染线程执行 —— 与 RenderSystem3D::on_render 同一条路径
+//（MeshRenderer::upload_to_gpu 的 allow_while_running=true 分支）。
+//
+// 参考工程里这一步由编辑器注册的 RenderSystem3D 完成；独立宿主（GryceGame /
+// 本 C API）没有注册该系统的入口，若不在这里补齐，异步模式下场景永远不会
+// 上传网格——表现为"管线初始化成功、相机与灯光都提交了，但画面只有清屏色"。
+static void queue_pending_mesh_uploads(scene::Scene& scn, RenderContext& ctx) {
+    struct PendingMesh {
+        components::MeshRenderer* mr = nullptr;
+        // 持有 shared_ptr 防止 LRU 驱逐/热重载在命令执行前释放 MeshData
+        std::shared_ptr<const assets::MeshData> data;
+        // 命令可能延迟 1~3 帧才在渲染线程执行，期间组件可能析构；
+        // token 在入队时取好，回调据此跳过，避免悬垂指针。
+        std::shared_ptr<std::atomic<bool>> token;
+    };
+    struct PendingSkinned {
+        components::SkinnedMeshRenderer* mr = nullptr;
+        std::shared_ptr<std::atomic<bool>> token;
+    };
+
+    std::vector<PendingMesh> meshes;
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
+            if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
+            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            if (data && !data->empty()) {
+                meshes.push_back({mr, data, mr->alive_token()});
+            }
+        });
+
+    std::vector<PendingSkinned> skinned;
+    ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+        scn, [&](scene::Entity*, components::SkinnedMeshRenderer* mr, components::Transform*) {
+            if (!mr || !mr->enabled || mr->model_path.empty() || mr->gpu_mesh()) return;
+            if (!mr->model()) return;   // AnimatorSystem 尚未加载模型，本帧跳过
+            skinned.push_back({mr, mr->alive_token()});
+        });
+
+    if (meshes.empty() && skinned.empty()) return;
+
+    RenderContext* ctx_ptr = &ctx;
+    ctx.push_command([meshes, skinned, ctx_ptr](IRenderBackend*) {
+        for (const auto& p : meshes) {
+            if (!p.token || !p.token->load(std::memory_order_acquire)) continue;
+            p.mr->upload_to_gpu(ctx_ptr, p.data.get(), /*allow_while_running=*/true);
+        }
+        for (const auto& p : skinned) {
+            if (!p.token || !p.token->load(std::memory_order_acquire)) continue;
+            p.mr->upload_to_gpu(ctx_ptr, /*allow_while_running=*/true);
+        }
+    });
+}
+} // namespace
+
+// 把屏幕空间效果（SSAO / SSR / SSIL）的当前设置应用到管线。
+// GRender_Init 与后端热切换都会重建管线，两处都必须调用，
+// 否则切换后端之后效果开关就丢了。
+static void apply_screen_space_settings(RenderPipeline* pipeline) {
+    if (!pipeline) return;
+    pipeline->set_ssao_enabled(g_renderer.ssao_enabled);
+    pipeline->set_ssr_enabled(g_renderer.ssr_enabled);
+    pipeline->set_ssil_enabled(g_renderer.ssil_enabled);
+    pipeline->set_ssr_quality(g_renderer.ssr_max_steps, g_renderer.ssr_max_roughness,
+                              g_renderer.ssr_thickness, g_renderer.ssr_bilateral);
+    // 默认程序化环境（天空 + IBL）：金属材质需要它才有反射内容
+    if (g_renderer.default_environment && !pipeline->has_environment()) {
+        pipeline->set_default_environment();
+    }
+}
+
+// Applies a pending backend switch on the render thread: recreates the
+// embedded window with the right client API (Vulkan needs GLFW_NO_API) and
+// rebuilds the RenderContext/pipeline/renderer2d with the new backend.
+static void apply_backend_switch() {
+    const GRenderAPI api = g_renderer.pending_backend_api;
+    const bool sync = g_renderer.sync_mode;
+    const int w = g_renderer.viewport_w;
+    const int h = g_renderer.viewport_h;
+
+    if (GWindow_IsValid()) {
+        GWindow_RecreateClientApi(api);
+    }
+
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->shutdown();
+        g_renderer.pipeline.reset();
+    }
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->shutdown();
+        g_renderer.renderer2d.reset();
+    }
+    if (g_renderer.ctx) {
+        g_renderer.ctx->shutdown();
+        g_renderer.ctx.reset();
+    }
+    g_renderer.initialized = false;
+
+    auto backend = create_render_backend(to_internal_api(api));
+    if (!backend) {
+        GLOG_ERROR("GRender: backend switch failed to create backend");
+        g_renderer.backend_pending = false;
+        return;
+    }
+    GWindowHandle handle = GWindow_IsValid() ? GWindow_GetRenderHandle() : nullptr;
+    g_renderer.ctx = std::make_unique<RenderContext>();
+    if (!g_renderer.ctx->init(handle, std::move(backend))) {
+        GLOG_ERROR("GRender: backend switch RenderContext::init failed");
+        g_renderer.ctx.reset();
+        g_renderer.backend_pending = false;
+        return;
+    }
+
+    g_renderer.sync_mode = sync;
+    g_renderer.viewport_w = w;
+    g_renderer.viewport_h = h;
+    g_renderer.gameview_w = w;
+    g_renderer.gameview_h = h;
+
+    g_renderer.pipeline = std::make_unique<RenderPipeline>();
+    g_renderer.pipeline->set_viewport_output_enabled(false);
+    g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
+    if (!g_renderer.pipeline->init(g_renderer.ctx.get(), "res:/shaders")) {
+        GLOG_WARN("GRender: backend switch pipeline init failed, clear-only");
+        g_renderer.pipeline.reset();
+    }
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_hdr_enabled(g_renderer.hdr_enabled);
+        g_renderer.pipeline->set_tone_map_mode(g_renderer.tone_map_mode);
+        g_renderer.pipeline->set_exposure(g_renderer.exposure);
+        g_renderer.pipeline->set_shadow_enabled(g_renderer.shadow_enabled);
+        g_renderer.pipeline->set_ambient(g_renderer.ambient);
+        g_renderer.pipeline->set_ibl_intensity(g_renderer.ibl_intensity);
+        apply_screen_space_settings(g_renderer.pipeline.get());
+    }
+
+    g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->init(g_renderer.ctx.get());
+    }
+    if (!sync) {
+        g_renderer.ctx->start();
+    }
+
+    g_renderer.initialized = true;
+    g_renderer.backend_pending = false;
+    g_renderer.current_backend = api;
+    GLOG_INFO("GRender: backend switched to {}",
+              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+}
+
+extern "C" {
+
+int GRender_Init(const GRenderInitDesc* desc) {
+    GRYCE_API_GUARD();
+    if (!desc || desc->version != sizeof(GRenderInitDesc)) return -1;
+
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.initialized) return 0;
+
+    g_renderer.sync_mode = desc->sync_mode;
+
+    auto backend = create_render_backend(to_internal_api(desc->api));
+    if (!backend) {
+        GLOG_ERROR("GRender_Init: failed to create render backend");
+        return -1;
+    }
+
+    // 优先使用平台层提供的渲染句柄（External HWND 模式下为嵌入的 GLFW 窗口）
+    GWindowHandle render_handle = desc->native_window;
+    if (GWindow_IsValid()) {
+        GWindowHandle platform_render = GWindow_GetRenderHandle();
+        if (platform_render) render_handle = platform_render;
+    }
+
+    g_renderer.ctx = std::make_unique<RenderContext>();
+    if (!g_renderer.ctx->init(render_handle, std::move(backend))) {
+        GLOG_ERROR("GRender_Init: RenderContext::init failed");
+        g_renderer.ctx.reset();
+        return -1;
+    }
+
+    g_renderer.viewport_w = desc->viewport_w > 0 ? desc->viewport_w : 1280;
+    g_renderer.viewport_h = desc->viewport_h > 0 ? desc->viewport_h : 720;
+    g_renderer.gameview_w = g_renderer.viewport_w;
+    g_renderer.gameview_h = g_renderer.viewport_h;
+
+    // Init render pipeline for 3D scene rendering
+    g_renderer.pipeline = std::make_unique<RenderPipeline>();
+    // WPF 编辑器通过嵌入的 GLFW HWND 直接显示场景（ViewportHwndHost），
+    // 因此 tonemap 必须写入默认帧缓冲（交换链），而不是离屏 viewport FBO。
+    // 离屏输出留给需要采样纹理的宿主（如旧 ImGui 编辑器）使用。
+    g_renderer.pipeline->set_viewport_output_enabled(false);
+    // 应用 Project Settings（阴影贴图尺寸必须在 init 之前）
+    g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
+    if (!g_renderer.pipeline->init(g_renderer.ctx.get(), "res:/shaders")) {
+        GLOG_WARN("GRender_Init: RenderPipeline init failed (shaders may be missing), falling back to clear-only");
+        g_renderer.pipeline.reset();
+    }
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_hdr_enabled(g_renderer.hdr_enabled);
+        g_renderer.pipeline->set_tone_map_mode(g_renderer.tone_map_mode);
+        g_renderer.pipeline->set_exposure(g_renderer.exposure);
+        g_renderer.pipeline->set_shadow_enabled(g_renderer.shadow_enabled);
+        g_renderer.pipeline->set_ambient(g_renderer.ambient);
+        g_renderer.pipeline->set_ibl_intensity(g_renderer.ibl_intensity);
+        apply_screen_space_settings(g_renderer.pipeline.get());
+    }
+
+    // 2D 覆盖层渲染器：编辑器视口在 3D 场景之上绘制 2D（Sprite2D/UI 等）。
+    // init 必须在 RenderContext::start()（渲染线程）之前调用。
+    g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->init(g_renderer.ctx.get());
+        GLOG_INFO("GRender_Init: 2D overlay renderer initialized");
+    } else {
+        GLOG_WARN("GRender_Init: create_renderer2d returned nullptr");
+    }
+
+    // Async mode: start render thread
+    if (!g_renderer.sync_mode) {
+        g_renderer.ctx->start();
+    }
+
+    g_renderer.current_backend = desc->api;
+    g_renderer.backend_pending = false;
+    g_renderer.initialized = true;
+    GLOG_INFO("GRender_Init: {} mode, {}x{}",
+              g_renderer.sync_mode ? "sync" : "async",
+              g_renderer.viewport_w, g_renderer.viewport_h);
+    return 0;
+}
+
+void GRender_Shutdown(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.initialized) return;
+
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->shutdown();
+        g_renderer.pipeline.reset();
+    }
+
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->shutdown();
+        g_renderer.renderer2d.reset();
+    }
+
+    if (g_renderer.ctx) {
+        g_renderer.ctx->shutdown();
+        g_renderer.ctx.reset();
+    }
+
+    g_renderer.initialized = false;
+    g_renderer.sync_mode = false;
+    GLOG_INFO("GRender_Shutdown: renderer destroyed");
+}
+
+bool GRender_IsInitialized(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.initialized;
+}
+
+void GRender_BeginFrame(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.backend_pending) {
+        apply_backend_switch();
+        if (!g_renderer.initialized || !g_renderer.ctx ||
+            !g_renderer.ctx->is_initialized()) {
+            return;
+        }
+    }
+    if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
+
+    if (g_renderer.sync_mode) {
+        auto* backend = g_renderer.ctx->backend();
+        if (backend) backend->begin_frame();
+    }
+    // Runtime shadow map resize: applied on the render thread (owns the GL
+    // context), requested by GRender_SetShadowMapSize from the UI thread.
+    if (g_renderer.shadow_map_size_dirty && g_renderer.pipeline) {
+        g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
+        if (!g_renderer.pipeline->resize_shadow_map(g_renderer.ctx.get())) {
+            GLOG_ERROR("GRender: failed to resize shadow map to {}",
+                       g_renderer.shadow_map_size);
+        }
+        g_renderer.shadow_map_size_dirty = false;
+    }
+    // Hot reload of the render pipeline: rebuild shaders/FBOs/post-process
+    // targets in place while preserving the current configuration.
+    if (g_renderer.pipeline_reload_pending && g_renderer.pipeline) {
+        g_renderer.pipeline_reload_pending = false;
+        if (!g_renderer.pipeline->hot_reload()) {
+            GLOG_ERROR("GRender: pipeline hot reload failed");
+        }
+    }
+    // Async mode: render thread handles begin_frame
+}
+
+// Renders the current world through the pipeline (shared by SceneView / GameView).
+static void render_world_internal(GEntityHandle camera_override = 0) {
+    if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
+
+    auto* world = get_world();
+    if (!world || !world->scene()) {
+        // No world yet — just clear to dark gray
+        if (g_renderer.sync_mode) {
+            auto* backend = g_renderer.ctx->backend();
+            if (backend) backend->clear(0.15f, 0.15f, 0.15f, 1.0f);
+        } else {
+            g_renderer.ctx->clear(0.15f, 0.15f, 0.15f, 1.0f);
+        }
+        return;
+    }
+
+    // Set viewport
+    if (g_renderer.sync_mode) {
+        auto* backend = g_renderer.ctx->backend();
+        if (backend) backend->set_viewport(0, 0, g_renderer.viewport_w, g_renderer.viewport_h);
+    } else {
+        g_renderer.ctx->set_viewport(0, 0, g_renderer.viewport_w, g_renderer.viewport_h);
+    }
+
+    // 2D 场景编辑器：只渲染 2D 画布（不混 3D）
+    if (g_renderer.scene_2d_only) {
+        if (g_renderer.sync_mode) {
+            auto* backend = g_renderer.ctx->backend();
+            if (backend) backend->clear(0.12f, 0.14f, 0.18f, 1.0f);
+        } else {
+            g_renderer.ctx->clear(0.12f, 0.14f, 0.18f, 1.0f);
+        }
+        render_2d_overlay();
+        return;
+    }
+
+    // Render via pipeline if available
+    if (g_renderer.pipeline && g_renderer.pipeline->is_valid()) {
+        // 先补传网格，再解析摄像机/光源，最后渲染。
+        // 同步模式：主线程直接上传；异步模式：作为命令推给渲染线程上传。
+        if (g_renderer.sync_mode) {
+            upload_pending_meshes(*world->scene(), *g_renderer.ctx);
+        } else {
+            queue_pending_mesh_uploads(*world->scene(), *g_renderer.ctx);
+        }
+        g_renderer.pipeline->set_viewport(g_renderer.viewport_w, g_renderer.viewport_h);
+        // 编辑器场景（非 Game 模式）：直接使用编辑器提供的相机，不依赖场景实体。
+        // Game 模式：通过 GGameView_SetCamera 指定的实体读取相机。
+        math::Camera camera;
+        if (camera_override != 0) {
+            // GameView：从场景实体读取相机
+            scene::Entity* camera_entity = gryce_core::EntityResolver::resolve(camera_override);
+            if (!camera_entity) {
+                camera_entity = find_main_camera_entity(*world->scene());
+            }
+            if (!build_scene_camera(camera_entity,
+                    g_renderer.viewport_w, g_renderer.viewport_h, camera)) {
+                // 兜底用编辑器相机
+                camera = g_renderer.editor_camera;
+            }
+        } else {
+            // SceneView：直接使用编辑器相机
+            if (g_renderer.editor_camera_valid) {
+                camera = g_renderer.editor_camera;
+            } else if (scene::Entity* main_cam = find_main_camera_entity(*world->scene())) {
+                // 独立 exe / 无编辑器相机时回退到场景主相机（Lua 驱动的 FPS
+                // 相机等），避免 GRender_RenderWorld 永远用固定机位渲染。
+                if (!build_scene_camera(main_cam,
+                        g_renderer.viewport_w, g_renderer.viewport_h, camera)) {
+                    camera.set_position(math::Vector3f(0.0f, 2.0f, 5.0f));
+                    camera.set_yaw(0.0f);
+                    camera.set_pitch(-30.0f);
+                    camera.set_fov(60.0f);
+                    camera.set_near_far(0.1f, 1000.0f);
+                }
+            } else {
+                camera.set_position(math::Vector3f(0.0f, 2.0f, 5.0f));
+                camera.set_yaw(0.0f);
+                camera.set_pitch(-30.0f);
+                camera.set_fov(60.0f);
+                camera.set_near_far(0.1f, 1000.0f);
+            }
+        }
+        camera.set_aspect(g_renderer.viewport_h > 0
+            ? static_cast<float>(g_renderer.viewport_w) / static_cast<float>(g_renderer.viewport_h)
+            : 16.0f / 9.0f);
+        g_renderer.pipeline->set_camera(camera);
+        std::vector<RenderPipeline::Light> lights;
+        collect_scene_lights(*world->scene(), lights);
+        g_renderer.pipeline->set_lights(lights);
+        g_renderer.pipeline->render_scene(*world->scene(), *g_renderer.ctx);
+
+        // 2D 覆盖层：在 3D 场景（tonemap 到默认帧缓冲）之上绘制 2D 组件
+        //（Sprite2D / Label / ColorRect / TileMap 等，按 CanvasLayer 分层）。
+        render_2d_overlay();
+    } else {
+        // No pipeline — fallback: let world render systems push commands
+        world->render(*g_renderer.ctx);
+    }
+
+}
+
+void GRender_RenderWorld(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    render_world_internal();
+}
+
+void GRender_RenderGizmo(void) {
+    GRYCE_API_GUARD();
+    // TODO(Phase 4): ImGuizmo + Viewport Toolbar
+}
+
+void GRender_RenderGameView(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    // 相机已独立（gameview_camera 优先）；FBO/纹理仍与 SceneView 共用，
+    // GRender_GetGameViewTexture() 返回视口纹理。独立 FBO 留待双管线改造。
+    render_world_internal(g_renderer.gameview_camera);
+}
+
+void GRender_SetDisplayMode(const char* mode) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!mode || mode[0] == '\0') return;
+    g_renderer.display_mode = mode;
+    GLOG_INFO("GRender_SetDisplayMode: {}", g_renderer.display_mode);
+    // TODO(Phase): 在下层后端/管线应用线框模式（当前仅记录，UI 已正确接线）。
+}
+
+void GRender_EndFrame(void) {
+    render::RenderContext* ctx = nullptr;
+    bool sync_mode = false;
+    {
+        std::lock_guard api(gryce_core::api_mutex());
+        std::lock_guard lock(g_renderer.mutex);
+        if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
+        ctx = g_renderer.ctx.get();
+        sync_mode = g_renderer.sync_mode;
+        if (g_renderer.sync_mode) {
+            // Execute queued render commands under both locks, but defer the
+            // swap to present_swap() below so a vsync stall inside
+            // glfwSwapBuffers can never block the editor UI thread, which
+            // needs the API lock for its 60Hz tick.
+            ctx->execute_pending_sync();
+        } else {
+            g_renderer.ctx->present();
+        }
+    }
+    // Swap outside the API/renderer locks: glfwSwapBuffers can block on vsync
+    // indefinitely (e.g. window occluded / display mode change) and must not
+    // starve the UI thread.
+    if (ctx && sync_mode) {
+        ctx->present_swap();
+    }
+}
+
+void GRender_SetScene2D(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.scene_2d_only = enabled;
+    GLOG_INFO("GRender_SetScene2D: {}", enabled);
+}
+
+// --- Project Settings ---
+
+void GRender_SetHDR(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.hdr_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_hdr_enabled(enabled);
+}
+bool GRender_IsHDR(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.hdr_enabled;
+}
+void GRender_SetToneMapMode(int mode) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.tone_map_mode = mode;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_tone_map_mode(mode);
+}
+int GRender_GetToneMapMode(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.tone_map_mode;
+}
+void GRender_SetExposure(float exposure) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.exposure = exposure;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_exposure(exposure);
+}
+float GRender_GetExposure(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.exposure;
+}
+void GRender_SetShadowEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.shadow_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_shadow_enabled(enabled);
+}
+bool GRender_IsShadowEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.shadow_enabled;
+}
+void GRender_SetShadowMapSize(int size) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (size < 64) size = 64;
+    if (size > 8192) size = 8192;
+    g_renderer.shadow_map_size = size;
+    // 只有管线已存在时才是"运行时改尺寸"，需要下一帧重建。
+    // init 之前调用只是写入配置：GRender_Init 会按该值创建阴影贴图；若这里
+    // 无条件置 dirty，init 完成后第一帧会再跑一次 resize_shadow_map，而
+    // 异步模式下（渲染线程持有 GL 上下文）该重建会先销毁旧级联 FBO 再创建
+    // 失败，结果是阴影彻底消失 —— 表现为"配置了阴影却看不到阴影"。
+    g_renderer.shadow_map_size_dirty = (g_renderer.pipeline != nullptr);
+}
+int GRender_GetShadowMapSize(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.shadow_map_size;
+}
+int GRender_RebuildPipeline(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.initialized || !g_renderer.pipeline) return -1;
+    // 请求在下一个 GRender_BeginFrame 由渲染线程应用
+    g_renderer.pipeline_reload_pending = true;
+    return 0;
+}
+void GRender_SetAmbient(float r, float g, float b) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ambient = math::Vector3f(r, g, b);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ambient(g_renderer.ambient);
+}
+void GRender_GetAmbient(float* r, float* g, float* b) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (r) *r = g_renderer.ambient.x;
+    if (g) *g = g_renderer.ambient.y;
+    if (b) *b = g_renderer.ambient.z;
+}
+void GRender_SetIBLIntensity(float intensity) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ibl_intensity = intensity;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ibl_intensity(intensity);
+}
+float GRender_GetIBLIntensity(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.ibl_intensity;
+}
+
+void GRender_SetDefaultEnvironment(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.default_environment = enabled;
+    if (!g_renderer.pipeline) return;
+    if (enabled) {
+        // 已有环境（HDR/天空盒派生）时不覆盖
+        if (!g_renderer.pipeline->has_environment()) {
+            g_renderer.pipeline->set_default_environment();
+        }
+    } else if (g_renderer.pipeline->default_environment_enabled()) {
+        g_renderer.pipeline->clear_environment();
+    }
+}
+
+bool GRender_IsDefaultEnvironmentEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.default_environment;
+}
+
+// --- 屏幕空间效果（SSAO / SSR / SSIL）---
+
+void GRender_SetSSAO(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ssao_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ssao_enabled(enabled);
+}
+bool GRender_IsSSAOEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.ssao_enabled;
+}
+void GRender_SetSSR(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ssr_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ssr_enabled(enabled);
+}
+bool GRender_IsSSREnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.ssr_enabled;
+}
+void GRender_SetSSIL(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ssil_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ssil_enabled(enabled);
+}
+bool GRender_IsSSILEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.ssil_enabled;
+}
+void GRender_SetSSRParams(float max_steps, float max_roughness, float thickness,
+                          float bilateral) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ssr_max_steps = max_steps;
+    g_renderer.ssr_max_roughness = max_roughness;
+    g_renderer.ssr_thickness = thickness;
+    g_renderer.ssr_bilateral = bilateral;
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_ssr_quality(max_steps, max_roughness, thickness, bilateral);
+    }
+}
+
+// --- 材质预设枚举 ---
+
+int GRender_GetMaterialPresetCount(void) {
+    GRYCE_API_GUARD();
+    return render::Material::preset_count();
+}
+
+namespace {
+
+int copy_preset_string(const char* src, char* out_buf, int buf_size) {
+    if (!out_buf || buf_size <= 0) return -1;
+    if (!src) src = "";
+    int i = 0;
+    for (; src[i] != '\0' && i < buf_size - 1; ++i) out_buf[i] = src[i];
+    out_buf[i] = '\0';
+    return i;
+}
+
+} // namespace
+
+int GRender_GetMaterialPresetName(int index, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
+    if (index < 0 || index >= render::Material::preset_count()) return -1;
+    return copy_preset_string(render::Material::preset_name_at(index), out_buf, buf_size);
+}
+
+int GRender_GetMaterialPresetLabel(int index, char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
+    if (index < 0 || index >= render::Material::preset_count()) return -1;
+    return copy_preset_string(render::Material::preset_label_at(index), out_buf, buf_size);
+}
+
+GTextureHandle GRender_GetViewportTexture(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.pipeline || !g_renderer.pipeline->is_valid()) return nullptr;
+    auto* tex = g_renderer.pipeline->viewport_color_texture();
+    return static_cast<GTextureHandle>(tex);
+}
+
+GTextureHandle GRender_GetGameViewTexture(void) {
+    GRYCE_API_GUARD();
+    // TODO: separate GameView FBO when PlayMode is active
+    return GRender_GetViewportTexture();
+}
+
+int GRender_GetViewportSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
+    if (!out_w || !out_h) return -1;
+    std::lock_guard lock(g_renderer.mutex);
+    *out_w = g_renderer.viewport_w;
+    *out_h = g_renderer.viewport_h;
+    return 0;
+}
+
+int GRender_GetGameViewSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
+    if (!out_w || !out_h) return -1;
+    std::lock_guard lock(g_renderer.mutex);
+    *out_w = g_renderer.gameview_w;
+    *out_h = g_renderer.gameview_h;
+    return 0;
+}
+
+void GRender_SetVSync(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.ctx) return;
+    g_renderer.ctx->set_swap_interval(enabled ? 1 : 0);
+}
+
+int GRender_SaveScreenshot(const char* path) {
+    GRYCE_API_GUARD();
+    if (!path || !g_renderer.ctx) return -1;
+    std::lock_guard lock(g_renderer.mutex);
+    // async 模式：请求渲染线程下一帧截图并写盘；sync 模式同请求（后端在
+    // end_frame 的同步截图分支处理）。
+    g_renderer.ctx->request_screenshot(path);
+    return 0;
+}
+
+// ========== Viewport API ==========
+
+void GViewport_SetSize(int w, int h) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.viewport_w = w > 0 ? w : 1;
+    g_renderer.viewport_h = h > 0 ? h : 1;
+    if (g_renderer.pipeline && g_renderer.pipeline->is_valid()) {
+        g_renderer.pipeline->resize_render_targets(g_renderer.viewport_w, g_renderer.viewport_h);
+    }
+}
+
+void GViewport_GetSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
+    if (out_w) *out_w = g_renderer.viewport_w;
+    if (out_h) *out_h = g_renderer.viewport_h;
+}
+
+void GViewport_SetCamera(GEntityHandle camera_entity) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.viewport_camera = camera_entity;
+}
+
+GEntityHandle GViewport_GetCamera(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.viewport_camera;
+}
+
+void GViewport_SetEditorCamera(float pos_x, float pos_y, float pos_z,
+                                float yaw, float pitch,
+                                float fov, float near_plane, float far_plane) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.editor_camera.set_position(math::Vector3f(pos_x, pos_y, pos_z));
+    g_renderer.editor_camera.set_yaw(yaw);
+    g_renderer.editor_camera.set_pitch(pitch);
+    g_renderer.editor_camera.set_fov(fov);
+    g_renderer.editor_camera.set_near_far(near_plane, far_plane);
+    g_renderer.editor_camera_valid = true;
+}
+
+void GGameView_SetSize(int w, int h) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.gameview_w = w > 0 ? w : 1;
+    g_renderer.gameview_h = h > 0 ? h : 1;
+}
+
+void GGameView_GetSize(int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
+    if (out_w) *out_w = g_renderer.gameview_w;
+    if (out_h) *out_h = g_renderer.gameview_h;
+}
+
+void GGameView_SetCamera(GEntityHandle camera_entity) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.gameview_camera = camera_entity;
+}
+
+void GRender_RequestBackend(GRenderAPI api) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (api != GRYCE_RENDER_API_OPENGL && api != GRYCE_RENDER_API_VULKAN) return;
+    if (api == g_renderer.current_backend && !g_renderer.backend_pending) return;
+    g_renderer.pending_backend_api = api;
+    g_renderer.backend_pending = true;
+    GLOG_INFO("GRender_RequestBackend: {} requested",
+              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+}
+
+void GRender_RequestSurfaceRecreate(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.initialized) return;
+    g_renderer.pending_backend_api = g_renderer.current_backend;
+    g_renderer.backend_pending = true;
+    GLOG_INFO("GRender_RequestSurfaceRecreate: surface recreate requested");
+}
+
+} // extern "C"

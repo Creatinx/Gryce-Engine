@@ -1,0 +1,64 @@
+name: CI
+
+# 触发：任意 push/PR（main 之外的特性分支也一样，便于开发期快速反馈）。
+# 目标是"构建 + 跑 CTest 冒烟渲染测试"，尽量贴近本机 MSYS2/UCRT64 环境。
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build + CTest (Windows / MSYS2 UCRT64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        # 必须用 MSYS2 shell：引擎依赖 ucrt64 的 GCC、GLFW、GLEW。
+        shell: msys2 {0}
+    env:
+      # Release 避开根 CMakeLists 里 GCC16+MinGW Debug(-O1 -g1) 特定 flag，
+      # 让 CI 不绑定特定工具链版本，也更接近发行配置。
+      BUILD_TYPE: Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-gcc-libs
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-glfw
+            mingw-w64-ucrt-x86_64-glew
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja
+             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+             -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # 冒烟测试：OpenGL 后端渲染几帧+截图+像素统计，画面非纯清屏色即通过。
+      # （CI 无 GPU 时为软件渲染；若后端因无头环境报初始化失败，测试会返回非 0，
+      #   可在此把该测试单独标记 enabled:false 或按需跳过。）
+      - name: Test (CTest)
+        run: ctest --test-dir build --output-on-failure -C ${{ env.BUILD_TYPE }}
+
+      - name: Upload smoke screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-render
+          path: build/smoke_*.png
+        continue-on-error: true

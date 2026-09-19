@@ -1,0 +1,477 @@
+// 组件反射集中注册（M1-E1）
+//
+// 与 component_factory.cpp 的集中注册风格一致：组件头/实现零改动。
+// 只注册编辑器有意义的公有值字段；跳过 GPU 句柄、unique_ptr、alive_token、
+// 容器/嵌套结构等暂不支持字段。
+//
+// 仅保留渲染相关组件反射（声音/物理/脚本/断裂/导航子系统已裁剪）。
+
+#include "reflection/reflection.h"
+
+#include "components/component.h"
+#include "components/transform.h"
+#include "components/node2d.h"
+#include "components/node3d.h"
+#include "components/mesh_renderer.h"
+#include "components/skinned_mesh_renderer.h"
+#include "components/terrain.h"
+#include "components/camera.h"
+#include "components/light.h"
+#include "components/prefab_instance.h"
+#include "components/2d/component_2d.h"
+#include "components/2d/basic_rect.h"
+#include "components/2d/label.h"
+#include "components/2d/sprite_2d.h"
+#include "components/2d/shape.h"
+#include "components/2d/camera_2d.h"
+#include "components/2d/light_2d.h"
+#include "components/2d/ambient_light_2d.h"
+#include "components/2d/particle_emitter.h"
+#include "components/2d/parallax_background.h"
+#include "components/2d/skybox_2d.h"
+#include "components/2d/tilemap.h"
+#include "components/3d/visual_components.h"
+#include "components/3d/system_components.h"
+#include "components/2d/anim_components.h"
+#include "components/2d/visual_components.h"
+#include "components/2d/misc_components.h"
+#include "components/common/system_components.h"
+
+using namespace gryce_engine::components;
+
+// 嵌套命名空间组件引入短名，便于宏注册（宏会把 Class token 字符串化）
+using Component2D = gryce_engine::components::d2::Component2D;
+using BasicRect = gryce_engine::components::d2::basic_rect::BasicRect;
+using ColorRect = gryce_engine::components::d2::basic_rect::ColorRect;
+using Label = gryce_engine::components::d2::text::Label;
+using Sprite2D = gryce_engine::components::d2::sprite::Sprite2D;
+using Circle = gryce_engine::components::d2::shape::Circle;
+using Polygon = gryce_engine::components::d2::shape::Polygon;
+using Camera2D = gryce_engine::components::d2::camera::Camera2D;
+using Light2D = gryce_engine::components::d2::light::Light2D;
+using AmbientLight2D = gryce_engine::components::d2::light::AmbientLight2D;
+using ParticleEmitter2D = gryce_engine::components::d2::ParticleEmitter2D;
+using ParallaxBackground = gryce_engine::components::d2::parallax::ParallaxBackground;
+using Skybox2D = gryce_engine::components::d2::skybox::Skybox2D;
+using Tilemap = gryce_engine::components::d2::tilemap::Tilemap;
+using Animator = gryce_engine::components::Animator;
+using ParticleSystem3D = gryce_engine::components::ParticleSystem3D;
+using TrailRenderer = gryce_engine::components::TrailRenderer;
+using LineRenderer3D = gryce_engine::components::LineRenderer3D;
+using Decal = gryce_engine::components::Decal;
+using Billboard = gryce_engine::components::Billboard;
+using TextMesh3D = gryce_engine::components::TextMesh3D;
+using Skybox3D = gryce_engine::components::Skybox3D;
+using ReflectionProbe = gryce_engine::components::ReflectionProbe;
+using LightProbeGroup = gryce_engine::components::LightProbeGroup;
+using FogVolume = gryce_engine::components::FogVolume;
+using VolumetricLight = gryce_engine::components::VolumetricLight;
+using LODGroup = gryce_engine::components::LODGroup;
+using InstancedMeshRenderer = gryce_engine::components::InstancedMeshRenderer;
+using VisibilityNotifier3D = gryce_engine::components::VisibilityNotifier3D;
+using Timer = gryce_engine::components::Timer;
+using TweenPlayer = gryce_engine::components::TweenPlayer;
+using AnimatedSprite2D = gryce_engine::components::d2::AnimatedSprite2D;
+using Skeleton2D = gryce_engine::components::d2::Skeleton2D;
+using Path2D = gryce_engine::components::d2::Path2D;
+using PathFollow2D = gryce_engine::components::d2::PathFollow2D;
+using NinePatchRect = gryce_engine::components::d2::NinePatchRect;
+using LightOccluder2D = gryce_engine::components::d2::LightOccluder2D;
+using Marker2D = gryce_engine::components::d2::Marker2D;
+using VisibilityNotifier2D = gryce_engine::components::d2::VisibilityNotifier2D;
+
+// 基类：enabled 对所有组件经继承链可见
+GRYCE_REFLECT_CLASS(Component, )
+    GRYCE_REFLECT_FIELD(enabled)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Transform, Component)
+    GRYCE_REFLECT_FIELD(position)
+    GRYCE_REFLECT_FIELD(rotation)
+    GRYCE_REFLECT_FIELD(scale)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Node2D, Component)
+    GRYCE_REFLECT_FIELD(z_index)
+    GRYCE_REFLECT_FIELD(top_level)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Node3D, Component)
+    GRYCE_REFLECT_FIELD(visible)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 2D 渲染/UI 组件基类与派生类
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(Component2D, Component)
+    GRYCE_REFLECT_FIELD(render_order)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(BasicRect, Component2D)
+    GRYCE_REFLECT_FIELD_RANGE(width, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(height, 0.0f, 10000.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(ColorRect, BasicRect)
+    GRYCE_REFLECT_FIELD(color)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Label, Component2D)
+    GRYCE_REFLECT_FIELD(text)
+    GRYCE_REFLECT_FIELD_RANGE(font_size, 1.0f, 512.0f)
+    GRYCE_REFLECT_FIELD(color)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Sprite2D, Component2D)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(normal_map_path)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD_RANGE(width, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(height, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(lit)
+    GRYCE_REFLECT_FIELD(cast_shadow)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Circle, Component2D)
+    GRYCE_REFLECT_FIELD_RANGE(radius, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(segments)
+    GRYCE_REFLECT_FIELD(color)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Polygon, Component2D)
+    GRYCE_REFLECT_FIELD(color)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Camera2D, Component2D)
+    GRYCE_REFLECT_FIELD(is_active)
+    GRYCE_REFLECT_FIELD_RANGE(zoom, 0.01f, 100.0f)
+    GRYCE_REFLECT_FIELD(offset)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Light2D, Component2D)
+    GRYCE_REFLECT_FIELD_ENUM(light_type)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD_RANGE(intensity, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(radius, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(range, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(direction)
+    GRYCE_REFLECT_FIELD_RANGE(spot_angle, 1.0f, 179.0f)
+    GRYCE_REFLECT_FIELD_RANGE(spot_softness, 0.0f, 1.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(AmbientLight2D, Component2D)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD_RANGE(intensity, 0.0f, 100.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(ParticleEmitter2D, Component2D)
+    GRYCE_REFLECT_FIELD_RANGE(emission_rate, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(max_particles)
+    GRYCE_REFLECT_FIELD(burst_min)
+    GRYCE_REFLECT_FIELD(burst_max)
+    GRYCE_REFLECT_FIELD_RANGE(lifetime_min, 0.0f, 60.0f)
+    GRYCE_REFLECT_FIELD_RANGE(lifetime_max, 0.0f, 60.0f)
+    GRYCE_REFLECT_FIELD_RANGE(velocity_min, -10000.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(velocity_max, -10000.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(direction_min, -3.14159f, 3.14159f)
+    GRYCE_REFLECT_FIELD_RANGE(direction_max, -3.14159f, 3.14159f)
+    GRYCE_REFLECT_FIELD(acceleration)
+    GRYCE_REFLECT_FIELD(start_color)
+    GRYCE_REFLECT_FIELD(end_color)
+    GRYCE_REFLECT_FIELD_RANGE(start_size, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(end_size, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(rotation_min, -360.0f, 360.0f)
+    GRYCE_REFLECT_FIELD_RANGE(rotation_max, -360.0f, 360.0f)
+    GRYCE_REFLECT_FIELD_RANGE(angular_velocity_min, -3600.0f, 3600.0f)
+    GRYCE_REFLECT_FIELD_RANGE(angular_velocity_max, -3600.0f, 3600.0f)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(additive)
+    GRYCE_REFLECT_FIELD(emission_offset)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(ParallaxBackground, Component2D)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Skybox2D, Component2D)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD_RANGE(scroll_factor, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(tile)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Tilemap, Component2D)
+    GRYCE_REFLECT_FIELD(tileset_path)
+    GRYCE_REFLECT_FIELD(map_width)
+    GRYCE_REFLECT_FIELD(map_height)
+    GRYCE_REFLECT_FIELD_RANGE(cell_width, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(cell_height, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(generate_colliders)
+    GRYCE_REFLECT_FIELD(debug_draw_colliders)
+    GRYCE_REFLECT_FIELD(use_tileset_texture)
+    GRYCE_REFLECT_FIELD(lit)
+    GRYCE_REFLECT_FIELD(cast_shadow)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 3D 渲染与Gameplay组件
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(MeshRenderer, Component)
+    GRYCE_REFLECT_FIELD(mesh_path)
+    GRYCE_REFLECT_FIELD(billboard)
+    GRYCE_REFLECT_FIELD(depth_test)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(SkinnedMeshRenderer, Component)
+    GRYCE_REFLECT_FIELD(model_path)
+    GRYCE_REFLECT_FIELD(clip_name)
+    GRYCE_REFLECT_FIELD(playing)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD_RANGE(speed, 0.0f, 4.0f)
+    GRYCE_REFLECT_FIELD(time)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Terrain, Component)
+    GRYCE_REFLECT_FIELD_RANGE(width, 1.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(depth, 1.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(resolution, 2, 512)
+    GRYCE_REFLECT_FIELD_RANGE(height_scale, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD(base_texture_path)
+    GRYCE_REFLECT_FIELD_RANGE(seed, 0, 1000000)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Camera, Component)
+    GRYCE_REFLECT_FIELD_RANGE(fov, 1.0f, 179.0f)
+    GRYCE_REFLECT_FIELD_RANGE(near_plane, 0.001f, 100.0f)
+    GRYCE_REFLECT_FIELD(far_plane)
+    GRYCE_REFLECT_FIELD(is_main)
+    GRYCE_REFLECT_FIELD(background_color)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Light, Component)
+    GRYCE_REFLECT_FIELD_ENUM(light_type)
+    GRYCE_REFLECT_FIELD_COLOR(color)
+    GRYCE_REFLECT_FIELD_RANGE(intensity, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD(direction)
+    GRYCE_REFLECT_FIELD_RANGE(range, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(spot_angle, 1.0f, 179.0f)
+    GRYCE_REFLECT_FIELD_RANGE(spot_softness, 0.0f, 1.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(PrefabInstance, Component)
+    GRYCE_REFLECT_FIELD(prefab_path)
+    GRYCE_REFLECT_FIELD(root_template_uuid)
+    GRYCE_REFLECT_FIELD_RO(variant_of)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 新增 3D 视觉组件
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(Animator, Component)
+    GRYCE_REFLECT_FIELD(clip_name)
+    GRYCE_REFLECT_FIELD(playing)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD_RANGE(speed, 0.0f, 4.0f)
+    GRYCE_REFLECT_FIELD(time)
+    GRYCE_REFLECT_FIELD_RANGE(blend_duration, 0.0f, 10.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(ParticleSystem3D, Component)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD(play_on_awake)
+    GRYCE_REFLECT_FIELD_RANGE(max_particles, 1, 100000)
+    GRYCE_REFLECT_FIELD_RANGE(emission_rate, 0.0f, 100000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(lifetime_min, 0.0f, 60.0f)
+    GRYCE_REFLECT_FIELD_RANGE(lifetime_max, 0.0f, 60.0f)
+    GRYCE_REFLECT_FIELD_RANGE(speed_min, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(speed_max, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(start_size, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(end_size, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD(start_color)
+    GRYCE_REFLECT_FIELD(end_color)
+    GRYCE_REFLECT_FIELD(additive)
+    GRYCE_REFLECT_FIELD(emission_offset)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(TrailRenderer, Component)
+    GRYCE_REFLECT_FIELD_RANGE(lifetime, 0.0f, 60.0f)
+    GRYCE_REFLECT_FIELD_RANGE(min_vertex_distance, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(width, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD(autodestruct)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(LineRenderer3D, Component)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD_RANGE(width, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD(color)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Decal, Component)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD_RANGE(opacity, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(fade_edges)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Billboard, Component)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(lock_x_axis)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD_RANGE(opacity, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(shaded)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(TextMesh3D, Component)
+    GRYCE_REFLECT_FIELD(text)
+    GRYCE_REFLECT_FIELD(font_path)
+    GRYCE_REFLECT_FIELD_RANGE(font_size, 0.0f, 512.0f)
+    GRYCE_REFLECT_FIELD_RANGE(pixel_height, 0.001f, 100.0f)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD(double_sided)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Skybox3D, Component)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(environment_path)
+    GRYCE_REFLECT_FIELD_RANGE(exposure, 0.0f, 8.0f)
+    GRYCE_REFLECT_FIELD(visible)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(ReflectionProbe, Component)
+    GRYCE_REFLECT_FIELD_RANGE(resolution, 16, 2048)
+    GRYCE_REFLECT_FIELD(box_extents)
+    GRYCE_REFLECT_FIELD_RANGE(intensity, 0.0f, 8.0f)
+    GRYCE_REFLECT_FIELD(realtime)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(LightProbeGroup, Component)
+    GRYCE_REFLECT_FIELD_RANGE(grid_x, 1, 16)
+    GRYCE_REFLECT_FIELD_RANGE(grid_y, 1, 16)
+    GRYCE_REFLECT_FIELD_RANGE(grid_z, 1, 16)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD_RANGE(intensity, 0.0f, 8.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(FogVolume, Component)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD_RANGE(density, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD_RANGE(height_falloff, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD(volumetric)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(VolumetricLight, Component)
+    GRYCE_REFLECT_FIELD_RANGE(intensity, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD_RANGE(range, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(color)
+    GRYCE_REFLECT_FIELD_RANGE(steps, 1, 128)
+    GRYCE_REFLECT_FIELD_RANGE(jitter, 0.0f, 1.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(LODGroup, Component)
+    GRYCE_REFLECT_FIELD_RANGE(transition_duration, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(active_lod, 0, 16)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(InstancedMeshRenderer, Component)
+    GRYCE_REFLECT_FIELD(mesh_path)
+    GRYCE_REFLECT_FIELD(material_path)
+    GRYCE_REFLECT_FIELD_RANGE(instance_count, 1, 1000000)
+    GRYCE_REFLECT_FIELD_RANGE(spacing, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(seed, 0, 1000000)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 3D 系统级组件
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(VisibilityNotifier3D, Component)
+    GRYCE_REFLECT_FIELD(size)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Timer, Component)
+    GRYCE_REFLECT_FIELD_RANGE(wait_time, 0.0f, 100000.0f)
+    GRYCE_REFLECT_FIELD(one_shot)
+    GRYCE_REFLECT_FIELD(auto_start)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(TweenPlayer, Component)
+    GRYCE_REFLECT_FIELD(from)
+    GRYCE_REFLECT_FIELD(to)
+    GRYCE_REFLECT_FIELD_RANGE(duration, 0.0f, 100000.0f)
+    GRYCE_REFLECT_FIELD(playing)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD(tween_scale)
+    GRYCE_REFLECT_FIELD_RANGE(easing, 0, 1)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 新增 2D 组件（渲染相关）
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(AnimatedSprite2D, Component2D)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD(playing)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD_RANGE(fps, 0.0f, 240.0f)
+    GRYCE_REFLECT_FIELD_RANGE(frame_count, 1, 100000)
+    GRYCE_REFLECT_FIELD_RANGE(frame_width, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(frame_height, 0.0f, 10000.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Skeleton2D, Component2D)
+    GRYCE_REFLECT_FIELD(skeleton_path)
+    GRYCE_REFLECT_FIELD(animation_name)
+    GRYCE_REFLECT_FIELD(playing)
+    GRYCE_REFLECT_FIELD_RANGE(speed, 0.0f, 10.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Path2D, Component)
+    GRYCE_REFLECT_FIELD(closed)
+    GRYCE_REFLECT_FIELD(curve_smooth)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(PathFollow2D, Component)
+    GRYCE_REFLECT_FIELD_RANGE(progress, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD_RANGE(speed, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD(rotate)
+    GRYCE_REFLECT_FIELD_RANGE(offset, -1.0f, 1.0f)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(NinePatchRect, Component2D)
+    GRYCE_REFLECT_FIELD(texture_path)
+    GRYCE_REFLECT_FIELD_RANGE(left_margin, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(right_margin, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(top_margin, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(bottom_margin, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD(modulate)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(LightOccluder2D, Component2D)
+    GRYCE_REFLECT_FIELD(visible)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(Marker2D, Component2D)
+    GRYCE_REFLECT_FIELD(marker_name)
+    GRYCE_REFLECT_FIELD(show_in_editor)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(VisibilityNotifier2D, Component2D)
+    GRYCE_REFLECT_FIELD(size)
+GRYCE_REFLECT_END()
+
+namespace gryce_engine::reflection {
+
+// 锚点：本 TU 被链接后，上述静态注册对象才会执行。
+// 由 components::register_builtin_components() 调用。
+void register_builtin_reflections() {
+    // 触碰单例，语义上标记注册入口；真正的注册由本 TU 静态初始化完成
+    const size_t count = Registry::instance().type_count();
+    // 调试：检查注册是否生效
+    if (count == 0) {
+        std::fprintf(stderr, "[reflection] WARNING: 0 types registered (builtin_reflections TU may not be linked)\n");
+    }
+}
+
+} // namespace gryce_engine::reflection

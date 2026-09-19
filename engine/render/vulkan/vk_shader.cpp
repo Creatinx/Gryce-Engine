@@ -1,0 +1,1770 @@
+#include "vk_shader.h"
+
+#include "vk_glsl_compiler.h"
+#include "render/mesh.h"
+#include "render/texture.h"
+#include "render/render.h"
+#include "render/shader_source_resolver.h"
+#include "vk_buffer.h"
+#include "vk_device.h"
+#include "vk_swapchain.h"
+#include "vk_texture.h"
+#include "vk_framebuffer.h"
+#include "resources/resource_path.h"
+#include "utils/glog/glog_lib.h"
+
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <unordered_map>
+#include <vector>
+#include <filesystem>
+#include <system_error>
+
+namespace gryce_engine::render {
+
+namespace {
+
+// SPIR-V 编译缓存：按源码内容作键，二次加载同名同内容 shader 时直接复用已编译
+// 产物，避免每帧/每对象重复编译。shader 变体由各管线的 name 区分（如 pbr /
+// skinned_pbr / gtao ...），故以 (stage + 完整源码) 为键是安全的。
+using SpirvCache = std::unordered_map<std::string, std::vector<uint32_t>>;
+SpirvCache& spirv_cache() {
+    static SpirvCache cache;
+    return cache;
+}
+
+// 编译单个阶段，命中缓存则直接返回，避免重复编译。
+bool compile_or_cached(const std::string& key, const std::string& source,
+                       const std::string& file, GlslStage stage,
+                       std::vector<uint32_t>& out, std::string& err) {
+    auto& cache = spirv_cache();
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+        out = it->second;
+        return true;
+    }
+    if (!compile_glsl_to_spirv(source, file, stage, out, err)) {
+        return false;
+    }
+    if (!out.empty()) {
+        cache.emplace(key, out);
+    }
+    return true;
+}
+
+// 磁盘 SPIR-V 缓存：shaderc 首编结果落盘，二次启动直接加载跳过编译。
+// 新鲜度 = spv 文件 mtime 不早于对应源码文件 mtime；文件缺失/损坏视为未命中。
+bool load_spirv_cache(const std::string& source_path, const std::string& spv_path,
+                      std::vector<uint32_t>& out) {
+    std::error_code ec;
+    auto src_mtime = std::filesystem::last_write_time(source_path, ec);
+    std::error_code ec2;
+    auto spv_mtime = std::filesystem::last_write_time(spv_path, ec2);
+    if (ec || ec2 || spv_mtime < src_mtime) return false;
+    std::ifstream file(spv_path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) return false;
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (size <= 0 || size % 4 != 0) return false;
+    out.resize(static_cast<size_t>(size) / 4);
+    return static_cast<bool>(file.read(reinterpret_cast<char*>(out.data()), size));
+}
+
+void save_spirv_cache(const std::string& spv_path, const std::vector<uint32_t>& code) {
+    if (code.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(spv_path).parent_path(), ec);
+    if (ec) return;
+    std::ofstream file(spv_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) return;
+    file.write(reinterpret_cast<const char*>(code.data()),
+               static_cast<std::streamsize>(code.size()) * 4);
+}
+
+// 将全局 texture slot 映射到 Vulkan PBR shader 的 descriptor binding。
+// 必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 中的 layout(binding=...) 一致。
+int slot_to_binding(int slot) {
+    switch (slot) {
+        case TextureSlots::kPBRAlbedo:    return 1;
+        case TextureSlots::kPBRNormal:    return 2;
+        case TextureSlots::kPBRRoughness: return 3;
+        case TextureSlots::kPBRMetallic:  return 4;
+        case TextureSlots::kPBRAO:        return 5;
+        case TextureSlots::kPBRShadow:    return 6;
+        case TextureSlots::kPBREmissive:  return 7;
+        case TextureSlots::kPBRShadowC1:  return 12;
+        case TextureSlots::kPBRShadowC2:  return 13;
+        case TextureSlots::kPBRShadowC3:  return 14;
+        case TextureSlots::kPBRShadowDepth:  return 15;
+        case TextureSlots::kPBRShadowDepth1: return 16;
+        case TextureSlots::kPBRShadowDepth2: return 17;
+        case TextureSlots::kPBRShadowDepth3: return 18;
+        case TextureSlots::kPBRSSAO:     return 19;
+        case TextureSlots::kIBLIrradiance: return 9;
+        case TextureSlots::kIBLPrefilter:  return 10;
+        case TextureSlots::kIBLBRDF:       return 11;
+        default: return slot + 1;
+    }
+}
+
+// 后处理/天空盒共用固定描述符集（扩容到 14 个 sampler，承载 SSR/motion 的多贴图）：
+// 0 = 主输入(HDR/当前帧), 1 = bloom, 2 = LUT, 3 = 曝光值, 4 = TAA 历史, 5 = 接触阴影,
+// 6-9 = SSR HiZ[0..3], 10 = SSR 反射, 11 = 深度, 12 = 法线/粗糙度, 13 = 运动向量。
+int post_process_binding(int slot) {
+    if (slot == TextureSlots::kTonemapBloom) return 1;
+    if (slot == TextureSlots::kTonemapLUT) return 2;
+    if (slot == TextureSlots::kTonemapExposure) return 3;
+    if (slot == TextureSlots::kTAAHistory) return 4;
+    if (slot == TextureSlots::kTonemapContactShadow) return 5;
+    if (slot >= TextureSlots::kSSRHiZ && slot < TextureSlots::kSSRHiZ + 4)
+        return 6 + (slot - TextureSlots::kSSRHiZ);          // HiZ0..3 -> 6..9
+    if (slot == TextureSlots::kSSRTexture) return 10;        // SSRTex -> 10
+    if (slot == TextureSlots::kPBRShadowDepth) return 11;    // 深度 -> 11
+    if (slot == TextureSlots::kPBRShadowDepth1) return 12;   // 法线/粗糙度 -> 12
+    if (slot == TextureSlots::kMotionVectors) return 13;     // 运动向量 -> 13
+    if (slot == TextureSlots::kSSILTexture) return 7;        // SSIL -> 7（与 HiZ1 共用，pass 不同时）
+    if (slot == TextureSlots::kDOFHalf) return 8;            // DOF 半分辨率 -> 8
+    if (slot == TextureSlots::kDOFBlur) return 9;            // DOF 模糊 -> 9
+    return 0;
+}
+} // namespace
+
+VulkanShader::VulkanShader(VulkanDevice* device, VulkanSwapchain* swapchain)
+    : device_(device), swapchain_(swapchain) {}
+
+VulkanShader::~VulkanShader() {
+    if (!device_ || !device_->is_valid()) return;
+    VkDevice dev = device_->device();
+    for (auto& entry : pipeline_cache_) {
+        if (entry.second) vkDestroyPipeline(dev, entry.second, nullptr);
+    }
+    pipeline_cache_.clear();
+    pipeline_ = VK_NULL_HANDLE;
+    if (pipeline_layout_) vkDestroyPipelineLayout(dev, pipeline_layout_, nullptr);
+    if (descriptor_pool_) vkDestroyDescriptorPool(dev, descriptor_pool_, nullptr);
+    for (auto pool : descriptor_pools_) {
+        if (pool) vkDestroyDescriptorPool(dev, pool, nullptr);
+    }
+    descriptor_pools_.clear();
+    if (descriptor_set_layout_) vkDestroyDescriptorSetLayout(dev, descriptor_set_layout_, nullptr);
+    if (vert_module_) vkDestroyShaderModule(dev, vert_module_, nullptr);
+    if (frag_module_) vkDestroyShaderModule(dev, frag_module_, nullptr);
+}
+
+bool VulkanShader::load_spirv_from_file(const std::string& path, std::vector<uint32_t>& out) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        GLOG_ERROR("VulkanShader: failed to open SPIR-V file '{}'", path);
+        return false;
+    }
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (size % 4 != 0) {
+        GLOG_ERROR("VulkanShader: SPIR-V file size not aligned to 4 bytes");
+        return false;
+    }
+    out.resize(static_cast<size_t>(size) / 4);
+    if (!file.read(reinterpret_cast<char*>(out.data()), size)) {
+        GLOG_ERROR("VulkanShader: failed to read SPIR-V file");
+        return false;
+    }
+    return true;
+}
+
+VkShaderModule VulkanShader::create_shader_module(const std::vector<uint32_t>& code) {
+    VkShaderModuleCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    info.codeSize = code.size() * 4;
+    info.pCode = code.data();
+    VkShaderModule module = VK_NULL_HANDLE;
+    vkCreateShaderModule(device_->device(), &info, nullptr, &module);
+    return module;
+}
+
+bool VulkanShader::load_spirv_files(const std::string& vert_path,
+                                    const std::string& frag_path) {
+    std::vector<uint32_t> vert_code, frag_code;
+    if (!load_spirv_from_file(vert_path, vert_code) ||
+        !load_spirv_from_file(frag_path, frag_code)) {
+        return false;
+    }
+    vert_module_ = create_shader_module(vert_code);
+    frag_module_ = create_shader_module(frag_code);
+    if (!vert_module_ || !frag_module_) {
+        GLOG_ERROR("VulkanShader: failed to create shader modules");
+        return false;
+    }
+    return true;
+}
+
+bool VulkanShader::compile(const std::string& vertex_src, const std::string& fragment_src) {
+    // Vulkan 不编译 GLSL 源码；由 RenderPipeline 显式调用 load_spirv_files + create_pipeline
+    (void)vertex_src;
+    (void)fragment_src;
+    return true;
+}
+
+bool VulkanShader::compile(const std::vector<ShaderStageDesc>& stages) {
+    for (const auto& stage : stages) {
+        if (stage.stage == ShaderStage::Vertex) {
+            return compile(stage.source, "");
+        }
+    }
+    return false;
+}
+
+bool VulkanShader::load_program(const std::string& name,
+                                const std::string& shader_dir,
+                                IFramebuffer* target,
+                                bool color_output,
+                                bool post_process,
+                                bool skybox,
+                                bool skinned) {
+    std::string dir = resources::ResourcePath::resolve(shader_dir);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') {
+        dir += '/';
+    }
+    shader_dir_ = shader_dir;
+
+    // 1) 源码 → SPIR-V。优先命中磁盘持久化缓存（spirv/vulkan_<name>.<stage>.spv，
+    //    源码未改则直接加载，跳过 shaderc 编译）；未命中走 shaderc 首编并写盘。
+    //    源码路径仍记录，供热重载 mtime 追踪。
+    bool compiled_from_source = false;
+    bool cache_hit = false;
+    ShaderSourceSet src = resolve_shader_source(name, shader_dir, RenderAPI::Vulkan);
+    if (src.valid()) {
+        const std::string spirv_dir = dir + "spirv/";
+        const std::string vert_path = spirv_dir + "vulkan_" + name + ".vert.spv";
+        const std::string frag_path = spirv_dir + "vulkan_" + name + ".frag.spv";
+        std::vector<uint32_t> vert_code, frag_code;
+        const bool from_cache = load_spirv_cache(src.vertex_path, vert_path, vert_code) &&
+                                load_spirv_cache(src.fragment_path, frag_path, frag_code);
+        cache_hit = from_cache;
+        if (!from_cache) {
+            const std::string vert_key = "vk_vert|" + src.vertex;
+            const std::string frag_key = "vk_frag|" + src.fragment;
+            std::string err;
+            if (compile_or_cached(vert_key, src.vertex, src.vertex_path, GlslStage::Vertex, vert_code, err) &&
+                compile_or_cached(frag_key, src.fragment, src.fragment_path, GlslStage::Fragment, frag_code, err)) {
+                save_spirv_cache(vert_path, vert_code);
+                save_spirv_cache(frag_path, frag_code);
+            } else {
+                GLOG_WARN("VulkanShader: first-run compile of '{}' failed ({}); falling back to pre-compiled SPIR-V", name, err);
+            }
+        }
+        if (!vert_code.empty() && !frag_code.empty()) {
+            vert_module_ = create_shader_module(vert_code);
+            frag_module_ = create_shader_module(frag_code);
+            if (vert_module_ && frag_module_) {
+                compiled_from_source = true;
+                vertex_source_path_ = src.vertex_path;
+                fragment_source_path_ = src.fragment_path;
+                spirv_dir_.clear();
+            } else {
+                GLOG_ERROR("VulkanShader: failed to create shader modules for '{}' (first-run compile)", name);
+                return false;
+            }
+        }
+    }
+
+    // 2) 源码不可用或编译失败 → 回退预编译 `.spv` 产物。
+    if (!compiled_from_source) {
+        std::string spirv_dir = dir + "spirv/";
+        std::string vert_path = spirv_dir + "vulkan_" + name + ".vert.spv";
+        std::string frag_path = spirv_dir + "vulkan_" + name + ".frag.spv";
+        if (!load_spirv_files(vert_path, frag_path)) {
+            GLOG_ERROR("VulkanShader::load_program: failed to load SPIR-V for '{}'", name);
+            return false;
+        }
+        spirv_dir_ = spirv_dir;
+        vertex_source_path_.clear();
+        fragment_source_path_.clear();
+        std::error_code ec;
+        vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
+        frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
+    } else {
+        std::error_code ec;
+        vert_mtime_ = std::filesystem::last_write_time(src.vertex_path, ec);
+        frag_mtime_ = std::filesystem::last_write_time(src.fragment_path, ec);
+    }
+
+    source_name_ = name;
+
+    if (target) {
+        auto* vk_target = dynamic_cast<VulkanFramebuffer*>(target);
+        if (vk_target) {
+            set_render_pass(vk_target->render_pass());
+        }
+    }
+
+    set_color_output_enabled(color_output);
+    set_post_process(post_process);
+    set_skybox(skybox);
+    contact_shadow_ = post_process && name == "contact_shadow";
+    // 推导特效 push 块与水性材质标志（决定 create_pipeline 的 vertex input /
+    // push range / set_uniform_* 路由）。
+    water_ = (name == "water");
+    if (post_process) {
+        if (name == "contact_shadow") push_kind_ = PostProcessPushKind::ContactShadow;
+        else if (name.rfind("ssr_", 0) == 0) push_kind_ = PostProcessPushKind::SSR;
+        else if (name.rfind("ssil_", 0) == 0) push_kind_ = PostProcessPushKind::SSIL;
+        else if (name.rfind("motion_", 0) == 0) push_kind_ = PostProcessPushKind::Motion;
+        else if (name == "fog" || name == "fog_apply") push_kind_ = PostProcessPushKind::Fog;
+        else push_kind_ = PostProcessPushKind::General;
+    } else {
+        push_kind_ = PostProcessPushKind::General;
+    }
+    skinned_ = skinned;
+    if (compiled_from_source && !cache_hit) {
+        GLOG_INFO("VulkanShader: first-run compiled '{}'", name);
+    }
+    return create_pipeline();
+}
+
+bool VulkanShader::shader_files_changed() const {
+    if (source_name_.empty()) return false;
+    std::error_code ec;
+    // 首编路径：比较命中的源码文件 mtime（项目覆盖/core 兜底都可能变化）。
+    if (!vertex_source_path_.empty() && !fragment_source_path_.empty()) {
+        auto vert_mtime = std::filesystem::last_write_time(vertex_source_path_, ec);
+        if (ec) return false;
+        auto frag_mtime = std::filesystem::last_write_time(fragment_source_path_, ec);
+        if (ec) return false;
+        return vert_mtime != vert_mtime_ || frag_mtime != frag_mtime_;
+    }
+    // 回退路径：比较预编译 SPIR-V 文件 mtime。
+    if (spirv_dir_.empty()) return false;
+    auto v = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv", ec);
+    if (ec) return false;
+    auto f = std::filesystem::last_write_time(spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv", ec);
+    if (ec) return false;
+    return v != vert_mtime_ || f != frag_mtime_;
+}
+
+bool VulkanShader::reload() {
+    if (source_name_.empty() || shader_dir_.empty() || !device_ || !device_->is_valid()) {
+        return false;
+    }
+    VkDevice dev = device_->device();
+
+    // 先备份旧资源；重建成功后统一销毁，失败则回退，保证加载过程不出问题。
+    VkPipeline old_pipeline = pipeline_;
+    VkPipelineLayout old_layout = pipeline_layout_;
+    VkDescriptorPool old_pool = descriptor_pool_;
+    VkDescriptorSetLayout old_set_layout = descriptor_set_layout_;
+    VkShaderModule old_vert = vert_module_;
+    VkShaderModule old_frag = frag_module_;
+    auto old_fallback_texture = std::move(fallback_texture_);
+    auto old_fallback_cube = std::move(fallback_cube_);
+    // 其它 render pass 的缓存管线依赖旧的 pipeline_layout，重建后必须一并作废。
+    auto old_pipelines = std::move(pipeline_cache_);
+    pipeline_cache_.clear();
+    if (old_pipeline) old_pipelines.erase(render_pass_);
+
+    pipeline_ = VK_NULL_HANDLE;
+    pipeline_layout_ = VK_NULL_HANDLE;
+    descriptor_pool_ = VK_NULL_HANDLE;
+    descriptor_set_layout_ = VK_NULL_HANDLE;
+    vert_module_ = VK_NULL_HANDLE;
+    frag_module_ = VK_NULL_HANDLE;
+    descriptor_sets_.clear();
+    cached_textures_.clear();
+    resources_created_ = false;
+    // create_ubo / create_descriptor_pool 内部会清空并重建这些容器，
+    // 旧句柄在成功路径统一销毁。
+    std::vector<VkDescriptorPool> old_per_frame_pools = descriptor_pools_;
+    descriptor_pools_.clear();
+    ubo_buffers_.clear();
+    palette_buffers_.clear();
+
+    // 重建 shader module：有源码路径 → 重解析 + 首编；否则回退 `.spv`。
+    bool rebuilt = false;
+    bool use_source = !vertex_source_path_.empty() || !fragment_source_path_.empty();
+    if (use_source) {
+        ShaderSourceSet src = resolve_shader_source(source_name_, shader_dir_, RenderAPI::Vulkan);
+        if (src.valid()) {
+            const std::string vert_key = "vk_vert|" + src.vertex;
+            const std::string frag_key = "vk_frag|" + src.fragment;
+            std::string err;
+            std::vector<uint32_t> vert_code, frag_code;
+            if (compile_or_cached(vert_key, src.vertex, src.vertex_path, GlslStage::Vertex, vert_code, err) &&
+                compile_or_cached(frag_key, src.fragment, src.fragment_path, GlslStage::Fragment, frag_code, err)) {
+                vert_module_ = create_shader_module(vert_code);
+                frag_module_ = create_shader_module(frag_code);
+                rebuilt = vert_module_ && frag_module_;
+            }
+            // 解析可能命中不同位置（项目覆盖后落到别处），无论成败都刷新路径记录
+            vertex_source_path_ = src.vertex_path;
+            fragment_source_path_ = src.fragment_path;
+        }
+    }
+    if (!rebuilt && !spirv_dir_.empty()) {
+        std::string vert_path = spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv";
+        std::string frag_path = spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv";
+        rebuilt = load_spirv_files(vert_path, frag_path);
+    }
+
+    if (!rebuilt || !create_pipeline()) {
+        // 回退：销毁刚创建的部分资源，恢复旧资源
+        if (vert_module_) vkDestroyShaderModule(dev, vert_module_, nullptr);
+        if (frag_module_) vkDestroyShaderModule(dev, frag_module_, nullptr);
+        if (descriptor_set_layout_) vkDestroyDescriptorSetLayout(dev, descriptor_set_layout_, nullptr);
+        if (pipeline_layout_) vkDestroyPipelineLayout(dev, pipeline_layout_, nullptr);
+        if (descriptor_pool_) vkDestroyDescriptorPool(dev, descriptor_pool_, nullptr);
+        for (auto pool : descriptor_pools_) {
+            if (pool) vkDestroyDescriptorPool(dev, pool, nullptr);
+        }
+        for (auto pool : old_per_frame_pools) {
+            if (pool) vkDestroyDescriptorPool(dev, pool, nullptr);
+        }
+        ubo_buffers_.clear();
+        palette_buffers_.clear();
+
+        pipeline_ = old_pipeline;
+        pipeline_layout_ = old_layout;
+        descriptor_pool_ = old_pool;
+        descriptor_set_layout_ = old_set_layout;
+        vert_module_ = old_vert;
+        frag_module_ = old_frag;
+        fallback_texture_ = std::move(old_fallback_texture);
+        fallback_cube_ = std::move(old_fallback_cube);
+        // 回退到旧资源：旧缓存管线仍然有效，恢复映射。
+        pipeline_cache_ = std::move(old_pipelines);
+        resources_created_ = true;
+
+        GLOG_ERROR("VulkanShader::reload: rebuild failed for '{}', keeping old pipeline", source_name_);
+        return false;
+    }
+
+    // 成功：销毁旧资源
+    for (auto& entry : old_pipelines) {
+        if (entry.second) vkDestroyPipeline(dev, entry.second, nullptr);
+    }
+    old_pipelines.clear();
+    if (old_layout) vkDestroyPipelineLayout(dev, old_layout, nullptr);
+    if (old_pool) vkDestroyDescriptorPool(dev, old_pool, nullptr);
+    if (old_set_layout) vkDestroyDescriptorSetLayout(dev, old_set_layout, nullptr);
+    if (old_vert) vkDestroyShaderModule(dev, old_vert, nullptr);
+    if (old_frag) vkDestroyShaderModule(dev, old_frag, nullptr);
+    for (auto pool : old_per_frame_pools) {
+        if (pool) vkDestroyDescriptorPool(dev, pool, nullptr);
+    }
+    // fallback 贴图在 create_pipeline 中被重建，旧的自动释放
+    old_fallback_texture.reset();
+    old_fallback_cube.reset();
+
+    std::error_code ec;
+    if (!vertex_source_path_.empty() && !fragment_source_path_.empty()) {
+        vert_mtime_ = std::filesystem::last_write_time(vertex_source_path_, ec);
+        frag_mtime_ = std::filesystem::last_write_time(fragment_source_path_, ec);
+    } else if (!spirv_dir_.empty()) {
+        std::string vert_path = spirv_dir_ + "vulkan_" + source_name_ + ".vert.spv";
+        std::string frag_path = spirv_dir_ + "vulkan_" + source_name_ + ".frag.spv";
+        vert_mtime_ = std::filesystem::last_write_time(vert_path, ec);
+        frag_mtime_ = std::filesystem::last_write_time(frag_path, ec);
+    }
+
+    GLOG_INFO("VulkanShader: hot-reloaded '{}'", source_name_);
+    return true;
+}
+
+bool VulkanShader::create_pipeline() {
+    VkRenderPass render_pass = render_pass_ ? render_pass_ : swapchain_->render_pass();
+    GLOG_INFO("VulkanShader::create_pipeline render_pass={} color_output={} post_process={}",
+              reinterpret_cast<void*>(render_pass), color_output_enabled_, post_process_);
+
+    // 描述符布局 / 管线布局 / 描述符池 / UBO / 回退贴图只建一次：
+    // 同一 shader 可能被画进多个 render pass（例如 SSR 的 HiZ 是 R32F、
+    // trace/blur 是 RGBA16F、bloom 各级 FBO 各自持有不同的 VkRenderPass
+    // 对象），而 Vulkan 的图形管线把 render pass 烘死在创建时 —— 每次用到
+    // 新目标都要再建一条管线，但资源不能重复创建。
+    if (!resources_created_) {
+    // 后处理 / 天空盒 / 水体共用每帧固定描述符集。扩容到 14 个 combined image
+    // sampler，以承载 SSR（HiZ0..3 / 深度 / 法线粗糙度）等后处理多贴图。
+    constexpr int kPostProcBindings = 14;
+    if (post_process_ || skybox_ || water_) {
+        VkDescriptorSetLayoutBinding bindings[kPostProcBindings]{};
+        VkDescriptorBindingFlags binding_flags[kPostProcBindings]{};
+        for (int i = 0; i < kPostProcBindings; ++i) {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            binding_flags[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+        }
+
+        VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info{};
+        binding_flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+        binding_flags_info.bindingCount = kPostProcBindings;
+        binding_flags_info.pBindingFlags = binding_flags;
+
+        VkDescriptorSetLayoutCreateInfo layout_info{};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+        layout_info.bindingCount = kPostProcBindings;
+        layout_info.pBindings = bindings;
+        layout_info.pNext = &binding_flags_info;
+        vkCreateDescriptorSetLayout(device_->device(), &layout_info, nullptr, &descriptor_set_layout_);
+
+        // Push constants 按 shader 类型选择块：
+        //  skybox -> view+projection（vertex）
+        //  water  -> WaterPushData（vertex+片元）
+        //  contact_shadow -> 48 字节独立块
+        //  SSR/Motion/Fog -> 各自专用块（避免共用块超 maxPushConstantsSize 256）
+        //  其余  -> 共享 PostProcessPushData（240 字节）
+        VkPushConstantRange push_range{};
+        if (skybox_) {
+            push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            push_range.offset = 0;
+            push_range.size = sizeof(math::Matrix4f) * 2;
+        } else if (water_) {
+            push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            push_range.offset = 0;
+            push_range.size = sizeof(WaterPushData);
+        } else {
+            push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            push_range.offset = 0;
+            push_range.size = sizeof(PostProcessPushData);
+            if (push_kind_ == PostProcessPushKind::ContactShadow)
+                push_range.size = sizeof(ContactShadowPushData);
+            else if (push_kind_ == PostProcessPushKind::SSR)
+                push_range.size = sizeof(SSRPushData);
+            else if (push_kind_ == PostProcessPushKind::SSIL)
+                push_range.size = sizeof(SSILPushData);
+            else if (push_kind_ == PostProcessPushKind::Motion)
+                push_range.size = sizeof(MotionPushData);
+            else if (push_kind_ == PostProcessPushKind::Fog)
+                push_range.size = sizeof(FogPushData);
+        }
+
+        VkPipelineLayoutCreateInfo pl_info{};
+        pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pl_info.setLayoutCount = 1;
+        pl_info.pSetLayouts = &descriptor_set_layout_;
+        pl_info.pushConstantRangeCount = 1;
+        pl_info.pPushConstantRanges = &push_range;
+
+        if (vkCreatePipelineLayout(device_->device(), &pl_info, nullptr, &pipeline_layout_) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanShader: failed to create post-process pipeline layout");
+            return false;
+        }
+
+        int frames = swapchain_ ? swapchain_->frames_in_flight() : 1;
+
+        VkDescriptorPoolSize pool_size{};
+        pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pool_size.descriptorCount = static_cast<uint32_t>(frames) * kPostProcBindings;
+
+        VkDescriptorPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        pool_info.maxSets = frames;
+
+        if (vkCreateDescriptorPool(device_->device(), &pool_info, nullptr, &descriptor_pool_) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanShader: failed to create post-process descriptor pool");
+            return false;
+        }
+
+        descriptor_sets_.resize(frames, VK_NULL_HANDLE);
+        cached_textures_.resize(frames);
+        for (auto& arr : cached_textures_) arr.fill(nullptr);
+
+        // 后处理（tonemap/bloom/SSAO/SSR...）改为每 draw 独立描述符集：
+        // 同一个 shader 一帧内可能被画进多个贴图不同的 pass（bloom 多级、
+        // SSR HiZ 多级），共用一套描述符集会让所有 draw 读到最后一组绑定。
+        if (post_process_) {
+            if (!create_post_process_pools()) return false;
+        } else {
+            std::vector<VkDescriptorSetLayout> layouts(frames, descriptor_set_layout_);
+            VkDescriptorSetAllocateInfo alloc{};
+            alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            alloc.descriptorPool = descriptor_pool_;
+            alloc.descriptorSetCount = static_cast<uint32_t>(frames);
+            alloc.pSetLayouts = layouts.data();
+            if (vkAllocateDescriptorSets(device_->device(), &alloc, descriptor_sets_.data()) != VK_SUCCESS) {
+                GLOG_ERROR("VulkanShader: failed to allocate post-process descriptor sets");
+                return false;
+            }
+        }
+    } else {
+        // 描述符布局：UBO(0) + PBR 贴图(1-7) + IBL 贴图(9-11) + palette UBO(8, skinned)
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
+        bindings.reserve(skinned_ ? 20 : 19);
+
+        VkDescriptorSetLayoutBinding ubo_binding{};
+        ubo_binding.binding = 0;
+        ubo_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        ubo_binding.descriptorCount = 1;
+        // 顶点+片元双阶段：贴花/点光源/阴影顶点着色器需读取材质 UBO 字段。
+        ubo_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings.push_back(ubo_binding);
+
+        for (int i = 1; i <= 7; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
+        }
+
+        for (int i = 9; i <= 11; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
+        }
+
+        for (int i = 12; i <= 14; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
+        }
+
+        // PCSS 深度采样（非比较 sampler）
+        for (int i = 15; i <= 18; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
+        }
+
+        // 屏幕空间 AO（半分辨率）
+        VkDescriptorSetLayoutBinding ssao_binding{};
+        ssao_binding.binding = 19;
+        ssao_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ssao_binding.descriptorCount = 1;
+        ssao_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings.push_back(ssao_binding);
+
+        if (skinned_) {
+            VkDescriptorSetLayoutBinding palette_binding{};
+            palette_binding.binding = 8;
+            palette_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            palette_binding.descriptorCount = 1;
+            palette_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            bindings.push_back(palette_binding);
+        }
+
+        // 特效 pass 共享参数 UBO（binding 20，顶点+片元）：阴影/贴花/点光源/水体等
+        // 传入每 draw 的 per-pass 标量、向量与矩阵（PBR 材质主 UBO 保持不变）。
+        VkDescriptorSetLayoutBinding pass_binding{};
+        pass_binding.binding = 20;
+        pass_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pass_binding.descriptorCount = 1;
+        pass_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings.push_back(pass_binding);
+
+        VkDescriptorSetLayoutCreateInfo layout_info{};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        vkCreateDescriptorSetLayout(device_->device(), &layout_info, nullptr, &descriptor_set_layout_);
+
+        VkPipelineLayoutCreateInfo pl_info{};
+        pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pl_info.setLayoutCount = 1;
+        pl_info.pSetLayouts = &descriptor_set_layout_;
+
+        // Push constants：4 个 mat4（model / view / projection / light_space）
+        VkPushConstantRange push_range{};
+        push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push_range.offset = 0;
+        push_range.size = sizeof(math::Matrix4f) * 4;
+        pl_info.pushConstantRangeCount = 1;
+        pl_info.pPushConstantRanges = &push_range;
+
+        if (vkCreatePipelineLayout(device_->device(), &pl_info, nullptr, &pipeline_layout_) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanShader: failed to create pipeline layout");
+            return false;
+        }
+
+        if (!create_ubo() || !create_descriptor_pool()) {
+            return false;
+        }
+
+        // 1x1 白色回退贴图，保证 prepare_draw 里每个贴图 binding 都写入
+        // 合法描述符（新分配的描述符集内容未定义，留空可能被 shader 采样
+        // 导致 GPU 读垃圾描述符挂死）。IBL 的 irradiance/prefilter 是
+        // samplerCube，必须另备 1x1 立方体回退，否则 2D view 配 cube
+        // 采样器是 UB（验证层报错，部分驱动 device lost）。
+        fallback_texture_ = std::make_unique<VulkanTexture>(device_);
+        const uint32_t white_pixel = 0xFFFFFFFF;
+        if (!fallback_texture_->upload_data(&white_pixel, 1, 1, 4)) {
+            GLOG_ERROR("VulkanShader: failed to create fallback texture");
+            fallback_texture_.reset();
+            return false;
+        }
+        fallback_cube_ = std::make_unique<VulkanTexture>(device_);
+        const void* white_faces[6] = {&white_pixel, &white_pixel, &white_pixel,
+                                      &white_pixel, &white_pixel, &white_pixel};
+        if (!fallback_cube_->upload_cubemap(white_faces, 1, 1, 4)) {
+            GLOG_ERROR("VulkanShader: failed to create fallback cube texture");
+            fallback_cube_.reset();
+            return false;
+        }
+    }
+    resources_created_ = true;
+    } // if (!resources_created_)
+
+    // shader stages
+    VkPipelineShaderStageCreateInfo vert_stage{};
+    vert_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vert_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vert_stage.module = vert_module_;
+    vert_stage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo frag_stage{};
+    frag_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    frag_stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    frag_stage.module = frag_module_;
+    frag_stage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo stages[] = {vert_stage, frag_stage};
+
+    // vertex input
+    std::vector<VkVertexInputAttributeDescription> attrs;
+    VkVertexInputBindingDescription vertex_binding{};
+    vertex_binding.binding = 0;
+    vertex_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    if (water_) {
+        // WaterVertex: pos(vec3)+normal(vec3)+uv(vec2)，与 C++ water.cpp 一致
+        vertex_binding.stride = 32;
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});  // normal
+        attrs.push_back({2, 0, VK_FORMAT_R32G32_SFLOAT, 24});     // uv
+    } else if (post_process_ &&
+               (push_kind_ == PostProcessPushKind::Fog ||
+                push_kind_ == PostProcessPushKind::Motion)) {
+        // fog / motion 使用 vec3 全屏四边形（无 uv，由顶点坐标推导），
+        // 对应 forward_clustered/fog.vert 与 motion 的 fullscreen_mesh_。
+        vertex_binding.stride = 12;
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
+    } else if (post_process_) {
+        vertex_binding.stride = 16; // vec2 pos + vec2 uv
+        attrs.push_back({0, 0, VK_FORMAT_R32G32_SFLOAT, 0});   // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32_SFLOAT, 8});   // uv
+    } else if (skinned_) {
+        vertex_binding.stride = 88; // SkinnedVertexGPU（MeshVertex + bone ids + weights）
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});    // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});   // normal
+        attrs.push_back({2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24});   // tangent
+        attrs.push_back({3, 0, VK_FORMAT_R32G32_SFLOAT, 36});      // uv
+        attrs.push_back({4, 0, VK_FORMAT_R32G32B32_SFLOAT, 44});   // color
+        attrs.push_back({5, 0, VK_FORMAT_R32G32B32A32_UINT, 56});  // bone ids
+        attrs.push_back({6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 72});// weights
+    } else {
+        vertex_binding.stride = 56; // MeshVertex
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});  // normal
+        attrs.push_back({2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24});  // tangent
+        attrs.push_back({3, 0, VK_FORMAT_R32G32_SFLOAT, 36});     // uv
+        attrs.push_back({4, 0, VK_FORMAT_R32G32B32_SFLOAT, 44});  // color
+    }
+
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &vertex_binding;
+    vertex_input.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
+    vertex_input.pVertexAttributeDescriptions = attrs.data();
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    // 动态 viewport / scissor，由 backend 每帧设置
+    const bool dynamic_cdb = device_->supports_extended_dynamic_state();
+
+    VkPipelineDynamicStateCreateInfo dynamic_state{};
+    dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    VkDynamicState dynamics[6] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+    uint32_t dynamic_count = 2;
+    if (dynamic_cdb && !post_process_) {
+        dynamics[dynamic_count++] = VK_DYNAMIC_STATE_CULL_MODE_EXT;
+        dynamics[dynamic_count++] = VK_DYNAMIC_STATE_FRONT_FACE_EXT;
+        dynamics[dynamic_count++] = VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT;
+        dynamics[dynamic_count++] = VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT;
+    }
+    dynamic_state.dynamicStateCount = dynamic_count;
+    dynamic_state.pDynamicStates = dynamics;
+
+    VkPipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo raster{};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    // 天空盒从立方体内部观察，禁用剔除
+    raster.cullMode = (post_process_ || skybox_) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+    // Negative viewport height restores OpenGL's Y convention, so keep the same
+    // winding convention as OpenGL: counter-clockwise front face with back culling.
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.0f;
+
+    // Shadow map 输出深度：启用硬件斜率缩放 depth bias。
+    // 掠射角（地面、大平面）下 shader 内基于法线的 bias 不足以覆盖整个
+    // 视锥尺寸阴影盒的 texel 深度差，会产生随镜头移动的 shadow acne 条纹；
+    // 硬件 slope-scaled bias 按表面坡度自动加权，两者叠加后条纹消除且
+    // constant 很小，不会明显 Peter-panning。
+    if (!color_output_enabled_ && !post_process_ && !skybox_) {
+        raster.depthBiasEnable = VK_TRUE;
+        raster.depthBiasConstantFactor = 1.25f;
+        raster.depthBiasSlopeFactor = 2.5f;
+        raster.depthBiasClamp = 0.0f;
+    }
+
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil.depthTestEnable = post_process_ ? VK_FALSE : VK_TRUE;
+    // 天空盒深度恒为远平面：不写深度，LESS_OR_EQUAL 保证无动态状态扩展时也能通过
+    depth_stencil.depthWriteEnable = (post_process_ || skybox_) ? VK_FALSE : VK_TRUE;
+    depth_stencil.depthCompareOp = skybox_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
+
+    VkPipelineColorBlendAttachmentState blend_attach{};
+    // 混合不是动态状态；Vulkan 必须在管线创建时定死。
+    // 对 PBR / 网格统一启用 alpha 混合：
+    //   - 不透明材质 alpha=1，混合结果等于不混合（安全）；
+    //   - 半透明材质（TriggerZone、Glass 等）alpha<1，GL 端走 forward
+    //     透明排序 + blend，VK 之前硬编码关闭混合导致它们渲染错误。
+    // Shadow / post-process / skybox 仍保持不混合。
+    blend_attach.blendEnable =
+        (!post_process_ && !skybox_ && color_output_enabled_) ? VK_TRUE : VK_FALSE;
+    blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend_attach.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_attach.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_attach.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_attach.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend_attach.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blend_attach;
+
+    VkGraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = stages;
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &raster;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pDepthStencilState = &depth_stencil;
+    pipeline_info.pColorBlendState = &blend;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = pipeline_layout_;
+    pipeline_info.renderPass = render_pass;
+    pipeline_info.subpass = 0;
+
+    // Shadow pass 无 color attachment，关闭 color blend
+    if (!color_output_enabled_) {
+        pipeline_info.pColorBlendState = nullptr;
+    }
+
+    VkPipeline new_pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device_->device(), VK_NULL_HANDLE, 1, &pipeline_info, nullptr,
+                                  &new_pipeline) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanShader: failed to create graphics pipeline");
+        return false;
+    }
+    pipeline_ = new_pipeline;
+    pipeline_cache_[render_pass] = new_pipeline;
+    return true;
+}
+
+// 切换到指定 render pass：命中缓存直接换管线，否则按同一套资源与状态
+// 再建一条管线（见 create_pipeline 顶部的说明）。
+void VulkanShader::ensure_render_pass(VkRenderPass render_pass) {
+    if (render_pass == VK_NULL_HANDLE) return;
+    if (render_pass == render_pass_ && pipeline_ != VK_NULL_HANDLE) return;
+    auto it = pipeline_cache_.find(render_pass);
+    if (it != pipeline_cache_.end()) {
+        render_pass_ = render_pass;
+        pipeline_ = it->second;
+        return;
+    }
+    render_pass_ = render_pass;
+    if (!create_pipeline()) {
+        GLOG_WARN("VulkanShader '{}': failed to build pipeline for render_pass={}",
+                  source_name_, reinterpret_cast<void*>(render_pass));
+    }
+}
+
+void VulkanShader::bind() const {}
+void VulkanShader::unbind() const {}
+
+// name 必须以 field 开头、以 [i] 结尾（如 "uLightPos[3]"）。
+bool VulkanShader::parse_light_index(const std::string& name, const char* field, int& index) {
+    const size_t flen = std::strlen(field);
+    if (name.compare(0, flen, field) != 0) return false;
+    if (name.size() <= flen + 2 || name[flen] != '[' || name.back() != ']') return false;
+    index = std::atoi(name.c_str() + flen + 1);
+    return index >= 0 && index < k_max_lights;
+}
+
+void VulkanShader::set_int(const std::string& name, int value) {
+    // ---- 特效 push 块 ----
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uFogSliceCount") fog_push_.slice_count = value;
+        else if (name == "uFogSliceIndex") fog_push_.slice_index = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL) {
+        if (name == "uSSILSteps") ssil_push_.steps = value;
+        return;
+    }
+    int light_index = -1;
+    if (name == "uUseAlbedoMap") ubo_data_.use_albedo_map = value;
+    else if (name == "uUseNormalMap") ubo_data_.use_normal_map = value;
+    else if (name == "uUseRoughnessMap") ubo_data_.use_roughness_map = value;
+    else if (name == "uUseMetallicMap") ubo_data_.use_metallic_map = value;
+    else if (name == "uUseAOMap") ubo_data_.use_ao_map = value;
+    else if (name == "uUseEmissiveMap") ubo_data_.use_emissive_map = value;
+    else if (name == "uUseShadowMap") ubo_data_.use_shadow_map = value;
+    else if (name == "uHDREnabled") ubo_data_.hdr_enabled = value;
+    else if (name == "uLightCount") ubo_data_.light_count = value;
+    else if (name == "uShadowLightIndex") ubo_data_.shadow_light_index = value;
+    else if (name == "uUseIBL") ubo_data_.use_ibl = value;
+    else if (name == "uTwoSided") ubo_data_.two_sided = value;
+    else if (name == "uCascadeCount") ubo_data_.cascade_count = value;
+    else if (name == "uPCSSEnabled") ubo_data_.pcss_enabled = value;
+    else if (name == "uDebugMode") ubo_data_.debug_mode = value;
+    else if (name == "uUseSSAO") ubo_data_.use_ssao = value;
+    else if (name == "uParaboloidFace") pass_params_.point_params.y = static_cast<float>(value);
+    else if (parse_light_index(name, "uLightType", light_index)) {
+        ubo_data_.lights[light_index].pos_type.w = static_cast<float>(value);
+    }
+    ubo_dirty_ = true;
+}
+void VulkanShader::set_int(const char* name, int value) {
+    if (!name) return;
+    set_int(std::string(name), value);
+}
+
+void VulkanShader::set_float(const std::string& name, float value) {
+    // ---- 水性材质参数 ----
+    if (water_) {
+        if (name == "uWaterHeight") water_push_.water_height = value;
+        else if (name == "uFoamAmount") water_push_.foam_amount = value;
+        else if (name == "uTime") water_push_.time = value;
+        else if (name == "uWaveAmplitude") water_push_.wave_amplitude = value;
+        else if (name == "uWaveFrequency") water_push_.wave_frequency = value;
+        else if (name == "uWaveSpeed") water_push_.wave_speed = value;
+        else if (name == "uWaveSteepness") water_push_.wave_steepness = value;
+        return;
+    }
+    // ---- 特效 push 块 ----
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uFogDensity") fog_push_.density = value;
+        else if (name == "uFogHeight") fog_push_.height = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Motion) {
+        if (name == "uMotionBlurAmount") motion_push_.amount = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL) {
+        if (name == "uSSILNear") ssil_push_.near_plane = value;
+        else if (name == "uSSILFar") ssil_push_.far_plane = value;
+        else if (name == "uSSILTanHalfFov") ssil_push_.tan_half_fov = value;
+        else if (name == "uSSILAspect") ssil_push_.aspect = value;
+        else if (name == "uSSILRadius") ssil_push_.radius = value;
+        else if (name == "uSSILIntensity") ssil_push_.intensity = value;
+        return;
+    }
+    int light_index = -1;
+    if (name == "uRoughness") ubo_data_.roughness = value;
+    else if (name == "uMetallic") ubo_data_.metallic = value;
+    else if (name == "uAO") ubo_data_.ao = value;
+    else if (name == "uOpacity") ubo_data_.emissive_opacity.w = value;
+    else if (name == "uIBLIntensity") ubo_data_.ibl_intensity = value;
+    else if (name == "uPCSSLightSize") ubo_data_.pcss_light_size = value;
+    else if (name == "uPCSSMaxRadius") ubo_data_.pcss_max_radius = value;
+    else if (name == "uPCSSBlockerScale") ubo_data_.pcss_tap_scale = value;
+    else if (name == "uNormalOffset") shadow_normal_offset_ = value;
+    else if (name == "uClearcoat") ubo_data_.clearcoat = value;
+    else if (name == "uClearcoatRoughness") ubo_data_.clearcoat_roughness = value;
+    else if (name == "uSheen") ubo_data_.sheen = value;
+    else if (name == "uAnisotropy") ubo_data_.anisotropy = value;
+    else if (name == "uAnisotropyRotation") ubo_data_.anisotropy_rotation = value;
+    else if (name == "uSSAOStrength") ubo_data_.ssao_strength = value;
+    else if (name == "uLightIntensity") ubo_data_.lights[0].color_intensity.w = value; // 旧版单光 API
+    else if (parse_light_index(name, "uLightIntensity", light_index)) {
+        ubo_data_.lights[light_index].color_intensity.w = value;
+    }
+    // ---- 特效 pass 共享参数（shadow/decal/point）----
+    else if (name == "uESMExponent") pass_params_.esm_param.x = value;
+    else if (name == "uPointLightRange") pass_params_.point_params.x = value;
+    else if (name == "uScreenWidth") pass_params_.screen_size.x = value;
+    else if (name == "uScreenHeight") pass_params_.screen_size.y = value;
+    else if (name == "uDecalOpacity") pass_params_.decal_albedo.w = value;
+    ubo_dirty_ = true;
+}
+void VulkanShader::set_float(const char* name, float value) {
+    if (!name) return;
+    set_float(std::string(name), value);
+}
+
+void VulkanShader::set_vec2(const std::string& name, const math::Vector2f& value) {
+    // ---- 特效 push 块 ----
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uScreenSize") {
+        ssr_push_.screen_size = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uScreenSize") fog_push_.screen_size = value;
+        else if (name == "uFogRange") fog_push_.fog_range = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Motion && name == "uScreenSize") {
+        motion_push_.screen_size = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && name == "uScreenSize") {
+        ssil_push_.screen_size = value;
+        return;
+    }
+    if (name == "uBlurDirection") {
+        pp_blur_direction_ = value;
+    }
+}
+void VulkanShader::set_vec2(const char* name, const math::Vector2f& value) {
+    if (!name) return;
+    set_vec2(std::string(name), value);
+}
+
+void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value) {
+    auto to_vec4 = [](const math::Vector3f& v) { return math::Vector4f(v.x, v.y, v.z, 0.0f); };
+    // ---- 特效 push 块 / 水性材质 ----
+    if (water_) {
+        if (name == "uCameraPos") { water_push_.camera_pos = value; return; }
+        if (name == "uWaterColor") { water_push_.water_color = to_vec4(value); return; }
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uCameraPos") {
+        ssr_push_.camera_pos = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && name == "uCameraPos") {
+        ssil_push_.camera_pos = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uCameraPos") { fog_push_.camera_pos = value; return; }
+        if (name == "uFogColor") { fog_push_.fog_color = value; return; }
+    }
+    int light_index = -1;
+    if (name == "uAlbedoColor") ubo_data_.albedo_color = to_vec4(value);
+    else if (name == "uSheenTint") ubo_data_.sheen_tint = to_vec4(value);
+    else if (name == "uCameraPos") ubo_data_.camera_pos = to_vec4(value);
+    else if (name == "uAmbient") ubo_data_.ambient = to_vec4(value);
+    else if (name == "uEmissiveColor") {
+        ubo_data_.emissive_opacity.x = value.x;
+        ubo_data_.emissive_opacity.y = value.y;
+        ubo_data_.emissive_opacity.z = value.z;
+    }
+    else if (name == "uLightDir") ubo_data_.lights[0].dir_range = to_vec4(value);      // 旧版单光 API
+    else if (name == "uLightColor") ubo_data_.lights[0].color_intensity = to_vec4(value); // 旧版单光 API
+    else if (parse_light_index(name, "uLightPos", light_index)) {
+        ubo_data_.lights[light_index].pos_type.x = value.x;
+        ubo_data_.lights[light_index].pos_type.y = value.y;
+        ubo_data_.lights[light_index].pos_type.z = value.z;
+    }
+    else if (parse_light_index(name, "uLightDir", light_index)) {
+        ubo_data_.lights[light_index].dir_range.x = value.x;
+        ubo_data_.lights[light_index].dir_range.y = value.y;
+        ubo_data_.lights[light_index].dir_range.z = value.z;
+    }
+    else if (parse_light_index(name, "uLightColor", light_index)) {
+        ubo_data_.lights[light_index].color_intensity.x = value.x;
+        ubo_data_.lights[light_index].color_intensity.y = value.y;
+        ubo_data_.lights[light_index].color_intensity.z = value.z;
+    }
+    // ---- 特效 pass 共享参数 ----
+    else if (name == "uPointLightPos") {
+        pass_params_.point_light_pos.x = value.x;
+        pass_params_.point_light_pos.y = value.y;
+        pass_params_.point_light_pos.z = value.z;
+    }
+    else if (name == "uDecalAlbedo") {
+        pass_params_.decal_albedo.x = value.x;
+        pass_params_.decal_albedo.y = value.y;
+        pass_params_.decal_albedo.z = value.z;
+    }
+    ubo_dirty_ = true;
+}
+void VulkanShader::set_vec3(const char* name, const math::Vector3f& value) {
+    if (!name) return;
+    set_vec3(std::string(name), value);
+}
+
+void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value) {
+    int light_index = -1;
+    if (name == "uUVTransform") {
+        ubo_data_.uv_transform = value;
+    } else if (name == "uCascadeSplits") {
+        ubo_data_.cascade_splits = value;
+    } else if (name == "uCascadeBias") {
+        ubo_data_.cascade_bias = value;
+    } else if (name == "uCascadeFarBlend") {
+        ubo_data_.cascade_far_blend = value;
+    } else if (name == "uAtlasOffset") {
+        pass_params_.atlas_offset = value;
+    } else if (parse_light_index(name, "uLightParams", light_index)) {
+        // x=range, y=cos(outer), z=cos(inner)
+        ubo_data_.lights[light_index].dir_range.w = value.x;
+        ubo_data_.lights[light_index].spot = math::Vector4f(value.y, value.z, 0.0f, 0.0f);
+    }
+    ubo_dirty_ = true;
+}
+void VulkanShader::set_vec4(const char* name, const math::Vector4f& value) {
+    if (!name) return;
+    set_vec4(std::string(name), value);
+}
+
+void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value) {
+    // ---- 特效 push 块 / 水性材质 ----
+    if (water_) {
+        if (name == "uModel") water_push_.model = value;
+        else if (name == "uViewProj") water_push_.view_proj = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uView") {
+        ssr_push_.view = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && name == "uView") {
+        ssil_push_.view = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
+        if (name == "uInvViewProj") fog_push_.inv_view_proj = value;
+        else if (name == "uViewMatrix") fog_push_.view_matrix = value;
+        return;
+    }
+    if (name == "uModel") model_ = value;
+    else if (name == "uView") {
+        view_ = value;
+        ubo_data_.view_matrix = value;
+        ubo_dirty_ = true;
+    }
+    else if (name == "uProjection") {
+        // OpenGL projection matrices use Z in [-1, 1]; Vulkan NDC uses [0, 1].
+        // Remap the Z row while keeping Y unchanged; Y is flipped via negative viewport.
+        math::Matrix4f vk_proj = value;
+        vk_proj(2, 2) = value(2, 2) * 0.5f + value(3, 2) * 0.5f;
+        vk_proj(2, 3) = value(2, 3) * 0.5f + value(3, 3) * 0.5f;
+        projection_ = vk_proj;
+    }
+    else if (name == "uLightSpaceMatrix") {
+        // Shadow map 的投影矩阵同样使用 OpenGL 风格 [-1,1] Z，
+        // 在 Vulkan NDC [0,1] 下会导致深度范围与采样值不一致，
+        // 因此需要做与 uProjection 相同的 Z 行重映射。
+        math::Matrix4f vk_light = value;
+        vk_light(2, 2) = value(2, 2) * 0.5f + value(3, 2) * 0.5f;
+        vk_light(2, 3) = value(2, 3) * 0.5f + value(3, 3) * 0.5f;
+        light_space_matrix_ = vk_light;
+    }
+    // ---- 特效 pass 共享矩阵（decal）----
+    else if (name == "uInvViewProj") pass_params_.decal_inv_view_proj = value;
+    else if (name == "uWorldToDecal") pass_params_.decal_world_to_decal = value;
+}
+void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) {
+    if (!name) return;
+    set_mat4(std::string(name), value);
+}
+
+void VulkanShader::set_mat4_array(const char* name, const math::Matrix4f* data, uint32_t count) {
+    if (!name) return;
+    if (std::strcmp(name, "uCascadeLightSpace") == 0) {
+        const uint32_t n = std::min<uint32_t>(count, k_max_cascades);
+        for (uint32_t i = 0; i < n; ++i) {
+            // 与单矩阵 uLightSpaceMatrix 相同的 OpenGL→Vulkan NDC z 重映射
+            const math::Matrix4f& v = data[i];
+            math::Matrix4f vk_m = v;
+            vk_m(2, 2) = v(2, 2) * 0.5f + v(3, 2) * 0.5f;
+            vk_m(2, 3) = v(2, 3) * 0.5f + v(3, 3) * 0.5f;
+            ubo_data_.cascade_light_space[i] = vk_m;
+        }
+        ubo_data_.cascade_count = std::max(ubo_data_.cascade_count, static_cast<int>(n));
+        ubo_dirty_ = true;
+        return;
+    }
+    if (std::strcmp(name, "uBonePalette") != 0) return;
+    if (!data || count == 0) {
+        palette_count_ = 0;
+        return;
+    }
+    if (count > k_max_skinning_bones) {
+        GLOG_WARN("VulkanShader::set_mat4_array: bone count {} exceeds limit {}, truncated",
+                  count, k_max_skinning_bones);
+        count = k_max_skinning_bones;
+    }
+    std::memcpy(palette_.data(), data, count * sizeof(math::Matrix4f));
+    palette_count_ = count;
+}
+
+bool VulkanShader::create_ubo() {
+    int frames = swapchain_ ? swapchain_->frames_in_flight() : 1;
+    ubo_buffers_.clear();
+    ubo_buffers_.reserve(frames);
+    draw_counts_.assign(frames, 0);
+    // 每帧一个大 UBO，按 draw 游标以 ubo_stride_ 切分，保证同帧不同
+    // draw 的材质参数互不覆盖。
+    const VkDeviceSize per_frame_size = static_cast<VkDeviceSize>(ubo_stride_) * max_draws_per_frame_;
+    for (int i = 0; i < frames; ++i) {
+        auto buffer = std::make_unique<VulkanBuffer>();
+        if (!buffer->init(device_, per_frame_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            GLOG_ERROR("VulkanShader: failed to create UBO for frame {}", i);
+            return false;
+        }
+        ubo_buffers_.push_back(std::move(buffer));
+    }
+
+    // 蒙皮 palette UBO：每帧一个，按 draw 游标以 palette_stride_ 切分（与主 UBO 同 cursor）。
+    // skinned draw 上限独立于普通 draw（256/帧），避免 8KB stride 放大主 UBO。
+    palette_buffers_.clear();
+    if (skinned_) {
+        palette_buffers_.reserve(frames);
+        const VkDeviceSize palette_size =
+            static_cast<VkDeviceSize>(palette_stride_) * max_skinned_draws_per_frame_;
+        for (int i = 0; i < frames; ++i) {
+            auto buffer = std::make_unique<VulkanBuffer>();
+            if (!buffer->init(device_, palette_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                GLOG_ERROR("VulkanShader: failed to create palette UBO for frame {}", i);
+                return false;
+            }
+            palette_buffers_.push_back(std::move(buffer));
+        }
+    }
+    return true;
+}
+
+bool VulkanShader::create_descriptor_pool() {
+    int frames = swapchain_ ? swapchain_->frames_in_flight() : 1;
+
+    // 每帧一个描述符池；每 draw 从池中分配一套全新描述符集，
+    // on_begin_frame 时整池 reset（比逐个 free 快，且无需 FREE bit）。
+    descriptor_pools_.assign(frames, VK_NULL_HANDLE);
+    for (int i = 0; i < frames; ++i) {
+        VkDescriptorPoolSize pool_sizes[2]{};
+        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        // 每 draw：主 UBO(0) + pass 参数 UBO(20)，skinned 追加 palette UBO(8)
+        pool_sizes[0].descriptorCount = max_draws_per_frame_ * (2 + (skinned_ ? 1 : 0));
+        pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        // 每 draw 最多 10 张采样器：PBR(1-7) + IBL(9-11)
+        pool_sizes[1].descriptorCount = max_draws_per_frame_ * 19;
+
+        VkDescriptorPoolCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        info.poolSizeCount = 2;
+        info.pPoolSizes = pool_sizes;
+        info.maxSets = max_draws_per_frame_;
+
+        if (vkCreateDescriptorPool(device_->device(), &info, nullptr, &descriptor_pools_[i]) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanShader: failed to create descriptor pool for frame {}", i);
+            return false;
+        }
+    }
+    return true;
+}
+
+// 后处理专用描述符池：池内只有 combined image sampler，每 draw 分配一套
+// （见 k_max_post_process_draws 说明），on_begin_frame 整池 reset。
+bool VulkanShader::create_post_process_pools() {
+    int frames = swapchain_ ? swapchain_->frames_in_flight() : 1;
+    constexpr uint32_t kBindings = 14; // 与 create_pipeline 里的后处理布局一致
+
+    descriptor_pools_.assign(frames, VK_NULL_HANDLE);
+    for (int i = 0; i < frames; ++i) {
+        VkDescriptorPoolSize pool_size{};
+        pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pool_size.descriptorCount = k_max_post_process_draws * kBindings;
+
+        VkDescriptorPoolCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        info.poolSizeCount = 1;
+        info.pPoolSizes = &pool_size;
+        info.maxSets = k_max_post_process_draws;
+
+        if (vkCreateDescriptorPool(device_->device(), &info, nullptr, &descriptor_pools_[i]) != VK_SUCCESS) {
+            GLOG_ERROR("VulkanShader: failed to create post-process descriptor pool {}", i);
+            return false;
+        }
+    }
+    draw_counts_.assign(frames, 0);
+    return true;
+}
+
+void VulkanShader::set_texture(int slot, ITexture* texture) {
+    // post-process / skybox: 只有一个 combined image sampler，固定 binding 0。
+    // PBR/IBL: 经 slot_to_binding 映射到与 GLSL layout(binding=...) 一致的 binding。
+    // water: slot 0/1/2 <-> binding 0/1/2（reflection/refraction/depth）
+    int binding = water_ ? slot
+                 : (uses_fixed_descriptor_sets() ? post_process_binding(slot)
+                                                 : slot_to_binding(slot));
+    if (binding < 0 || binding >= k_max_texture_bindings || !texture) return;
+    auto* vk_tex = dynamic_cast<VulkanTexture*>(texture);
+    if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) return;
+
+    if (post_process_) {
+        // 后处理：只记录，prepare_draw 每 draw 分配独立描述符集（见
+        // k_max_post_process_draws 的说明 —— 同一个 shader 一帧内会被画进
+        // 多个不同贴图的 pass，共用一套描述符集会让所有 draw 都读到最后一组绑定）。
+        current_textures_[binding] = vk_tex;
+        return;
+    }
+    if (!uses_fixed_descriptor_sets()) {
+        // 非 post-process：只记录当前绑定，prepare_draw 时为每个 draw
+        // 分配全新描述符集并写入，避免同帧不同材质互相覆盖。
+        current_textures_[binding] = vk_tex;
+        return;
+    }
+
+    int frame = current_frame();
+    if (frame < 0 || frame >= static_cast<int>(cached_textures_.size())) return;
+
+    auto& cached = cached_textures_[frame][binding];
+    if (cached == vk_tex) return;
+    cached = vk_tex;
+
+    VkDescriptorImageInfo image_info{};
+    image_info.imageLayout = vk_tex->is_depth()
+                                 ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                 : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    image_info.imageView = vk_tex->image_view();
+    // 深度纹理在 post-process（GTAO / SSAO blur）里用于重建视图位置，
+    // 必须用非比较 sampler 读原始深度；比较 sampler 会返回 0/1 比较结果。
+    image_info.sampler = (vk_tex->is_depth() && vk_tex->depth_sampler())
+                             ? vk_tex->depth_sampler()
+                             : vk_tex->sampler();
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descriptor_sets_[frame];
+    write.dstBinding = static_cast<uint32_t>(binding);
+    write.dstArrayElement = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &image_info;
+
+    vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
+}
+
+void VulkanShader::invalidate_texture_cache(const VulkanTexture* tex) {
+    if (!tex) return;
+    for (auto& t : current_textures_) {
+        if (t == tex) t = nullptr;
+    }
+    for (auto& per_frame : cached_textures_) {
+        for (auto& t : per_frame) {
+            if (t == tex) t = nullptr;
+        }
+    }
+}
+
+bool VulkanShader::is_valid() const {
+    return pipeline_ != VK_NULL_HANDLE;
+}
+
+void VulkanShader::on_begin_frame(int frame_index) {
+    // skybox / water 用每帧固定集（每帧写入一次即可），不需要 reset；
+    // 后处理走每 draw 一套，和 PBR 一样整帧 reset。
+    if (uses_fixed_descriptor_sets() && !post_process_) return;
+    if (frame_index < 0 || frame_index >= static_cast<int>(descriptor_pools_.size())) return;
+    // 该帧上一周期的命令缓冲已被 frame fence 保证执行完毕，整池 reset 安全。
+    vkResetDescriptorPool(device_->device(), descriptor_pools_[frame_index], 0);
+    draw_counts_[frame_index] = 0;
+}
+
+void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
+    if (cmd == VK_NULL_HANDLE) return;
+    // 后处理：每 draw 从该帧池分配独立描述符集（布局只有 combined image sampler）。
+    if (post_process_) {
+        int frame = current_frame();
+        if (frame < 0 || frame >= static_cast<int>(descriptor_pools_.size()) ||
+            descriptor_pools_[frame] == VK_NULL_HANDLE) {
+            return;
+        }
+        uint32_t cursor = draw_counts_[frame];
+        if (cursor >= k_max_post_process_draws) cursor = k_max_post_process_draws - 1;
+        else draw_counts_[frame] = cursor + 1;
+        (void)cursor;
+
+        VkDescriptorSetAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc.descriptorPool = descriptor_pools_[frame];
+        alloc.descriptorSetCount = 1;
+        alloc.pSetLayouts = &descriptor_set_layout_;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        if (vkAllocateDescriptorSets(device_->device(), &alloc, &set) != VK_SUCCESS ||
+            set == VK_NULL_HANDLE) {
+            GLOG_ERROR("VulkanShader::prepare_draw: failed to allocate post-process descriptor set");
+            return;
+        }
+
+        constexpr int kBindings = 14;
+        VkWriteDescriptorSet writes[kBindings]{};
+        VkDescriptorImageInfo image_infos[kBindings]{};
+        uint32_t write_count = 0;
+        for (int binding = 0; binding < kBindings; ++binding) {
+            VulkanTexture* vk_tex = current_textures_[binding];
+            if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) {
+                vk_tex = fallback_texture_.get();
+            }
+            if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) continue;
+            auto& info = image_infos[binding];
+            info.imageLayout = vk_tex->is_depth()
+                                   ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                   : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            info.imageView = vk_tex->image_view();
+            // 深度纹理（SSAO/GTAO/blur 重建视图位置）必须用非比较 sampler。
+            info.sampler = (vk_tex->is_depth() && vk_tex->depth_sampler())
+                               ? vk_tex->depth_sampler()
+                               : vk_tex->sampler();
+
+            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[write_count].dstSet = set;
+            writes[write_count].dstBinding = static_cast<uint32_t>(binding);
+            writes[write_count].dstArrayElement = 0;
+            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[write_count].descriptorCount = 1;
+            writes[write_count].pImageInfo = &info;
+            ++write_count;
+        }
+        vkUpdateDescriptorSets(device_->device(), write_count, writes, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_,
+                                0, 1, &set, 0, nullptr);
+        return;
+    }
+    if (uses_fixed_descriptor_sets()) return;
+    int frame = current_frame();
+    if (frame < 0 || frame >= static_cast<int>(descriptor_pools_.size()) ||
+        frame >= static_cast<int>(ubo_buffers_.size())) {
+        return;
+    }
+
+    uint32_t cursor = draw_counts_[frame];
+    if (cursor >= max_draws_per_frame_) {
+        // 超出单帧 draw 上限：复用最后一格（该 draw 与上一个 overflow
+        // draw 会共享描述符，仅影响超上限部分）。
+        cursor = max_draws_per_frame_ - 1;
+    } else {
+        draw_counts_[frame] = cursor + 1;
+    }
+    const VkDeviceSize ubo_offset = static_cast<VkDeviceSize>(cursor) * ubo_stride_;
+
+    // 1. 写入本 draw 的 UBO 数据
+    ubo_buffers_[frame]->upload(&ubo_data_, sizeof(UBOData), ubo_offset);
+    // 1b. 特效 pass 参数（阴影/贴花/点光源）写入同槽位的 pass 块区域
+    ubo_buffers_[frame]->upload(&pass_params_, sizeof(PassParamsUBO),
+                                ubo_offset + k_pass_block_offset);
+
+    // 2. 从该帧池中分配全新描述符集
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = descriptor_pools_[frame];
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &descriptor_set_layout_;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(device_->device(), &alloc, &set) != VK_SUCCESS || set == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanShader::prepare_draw: failed to allocate descriptor set");
+        return;
+    }
+
+    // 3. 写入 UBO + 贴图。每个贴图 binding 都必须写入：未绑定的用 1x1
+    // 回退贴图占位，否则新分配的描述符集对应 binding 是未定义内容，
+    // shader 一旦采样（编译器可能提升条件分支外的采样）GPU 读垃圾挂死。
+    VkWriteDescriptorSet writes[k_max_texture_bindings + 8]{};
+    VkDescriptorBufferInfo buffer_info{};
+    buffer_info.buffer = ubo_buffers_[frame]->buffer();
+    buffer_info.offset = ubo_offset;
+    buffer_info.range = ubo_stride_;
+
+    uint32_t write_count = 0;
+    writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[write_count].dstSet = set;
+    writes[write_count].dstBinding = 0;
+    writes[write_count].dstArrayElement = 0;
+    writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[write_count].descriptorCount = 1;
+    writes[write_count].pBufferInfo = &buffer_info;
+    ++write_count;
+
+    // 特效 pass 参数 UBO（binding 20）：指向同 UBO 槽位的 pass 块区域。
+    // 单独绑定，供阴影（ESM 指数）、贴花、点光源双抛物面等 pass 的
+    // 顶点/片元阶段读取 PassParamsUBO。
+    VkDescriptorBufferInfo pass_buffer_info{};
+    pass_buffer_info.buffer = ubo_buffers_[frame]->buffer();
+    pass_buffer_info.offset = ubo_offset + k_pass_block_offset;
+    pass_buffer_info.range = sizeof(PassParamsUBO);
+    writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[write_count].dstSet = set;
+    writes[write_count].dstBinding = 20;
+    writes[write_count].dstArrayElement = 0;
+    writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[write_count].descriptorCount = 1;
+    writes[write_count].pBufferInfo = &pass_buffer_info;
+    ++write_count;
+
+    // 蒙皮 palette：与主 UBO 共用 cursor，上传当前 palette 缓存并绑到 binding 8。
+    // palette_count_ == 0（首帧未设置）时上传单位阵，避免顶点被零矩阵压扁。
+    // 超出 skinned draw 上限时 clamp 到最后一格（与主 UBO overflow 策略一致，
+    // 保证 binding 8 永远写入合法描述符）。
+    VkDescriptorBufferInfo palette_info{};
+    if (skinned_ && frame < static_cast<int>(palette_buffers_.size())) {
+        const uint32_t palette_cursor =
+            cursor < max_skinned_draws_per_frame_ ? cursor : max_skinned_draws_per_frame_ - 1;
+        const VkDeviceSize palette_offset = static_cast<VkDeviceSize>(palette_cursor) * palette_stride_;
+        if (palette_count_ > 0) {
+            palette_buffers_[frame]->upload(palette_.data(),
+                                            palette_count_ * sizeof(math::Matrix4f),
+                                            palette_offset);
+        } else {
+            // 全量 128 个单位阵：shader 可能索引任意 bone id，必须全部合法
+            std::array<math::Matrix4f, k_max_skinning_bones> identity;
+            for (auto& m : identity) m = math::Matrix4f::identity();
+            palette_buffers_[frame]->upload(identity.data(),
+                                            k_max_skinning_bones * sizeof(math::Matrix4f),
+                                            palette_offset);
+        }
+        palette_info.buffer = palette_buffers_[frame]->buffer();
+        palette_info.offset = palette_offset;
+        palette_info.range = palette_stride_;
+
+        writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[write_count].dstSet = set;
+        writes[write_count].dstBinding = 8;
+        writes[write_count].dstArrayElement = 0;
+        writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[write_count].descriptorCount = 1;
+        writes[write_count].pBufferInfo = &palette_info;
+        ++write_count;
+    }
+
+    VkDescriptorImageInfo image_infos[k_max_texture_bindings]{};
+    for (int binding = 1; binding < k_max_texture_bindings; ++binding) {
+        // binding 8 是 skinned palette UBO，不是采样器；跳过避免误写成 image。
+        if (binding == 8) continue;
+        VulkanTexture* vk_tex = current_textures_[binding];
+        if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) {
+            // IBL binding 9/10 在 shader 中是 samplerCube：回退必须用立方体贴图，
+            // 绑 2D view 到 cube 采样器是 UB（验证层报错，部分驱动 device lost）。
+            const bool cube_binding = (binding == 9 || binding == 10);
+            vk_tex = (cube_binding && fallback_cube_) ? fallback_cube_.get()
+                                                      : fallback_texture_.get();
+        }
+        if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) continue;
+        // PCSS 深度采样 binding（15-18）用非比较 sampler 读原始深度
+        const bool pcss_depth_binding = (binding >= 15 && binding <= 18);
+        VkSampler use_sampler = vk_tex->sampler();
+        if (pcss_depth_binding && vk_tex->depth_sampler()) {
+            use_sampler = vk_tex->depth_sampler();
+        }
+        auto& image_info = image_infos[binding];
+        image_info.imageLayout = vk_tex->is_depth()
+                                     ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        image_info.imageView = vk_tex->image_view();
+        image_info.sampler = use_sampler;
+
+        writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[write_count].dstSet = set;
+        writes[write_count].dstBinding = static_cast<uint32_t>(binding);
+        writes[write_count].dstArrayElement = 0;
+        writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[write_count].descriptorCount = 1;
+        writes[write_count].pImageInfo = &image_info;
+        ++write_count;
+    }
+    vkUpdateDescriptorSets(device_->device(), write_count, writes, 0, nullptr);
+
+    // 4. 绑定本 draw 独享的描述符集
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_,
+                            0, 1, &set, 0, nullptr);
+}
+
+void VulkanShader::update_ubo(VkCommandBuffer /*cmd*/) const {
+    // 保留空实现：UBO 上传已并入 prepare_draw（每 draw 独立偏移）。
+}
+
+void VulkanShader::push_constants(VkCommandBuffer cmd) const {
+    // push constant 是命令缓冲状态：每帧重录 CB 后必须无条件重新写入，
+    // 不能用脏标记跨帧跳过（否则验证层报 VUID-vkCmdDraw-None-08601，
+    // 且着色器读到的是未定义数据）。
+    // 每帧无条件重写（见注释）——否则验证层 VUID + shader 读到未定义数据。
+    if (water_) {
+        vkCmdPushConstants(cmd, pipeline_layout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(WaterPushData), &water_push_);
+    } else if (post_process_) {
+        if (push_kind_ == PostProcessPushKind::ContactShadow) {
+            ContactShadowPushData data{};
+            data.enabled = pp_params_.cs_enabled;
+            data.near_plane = pp_params_.cs_near;
+            data.far_plane = pp_params_.cs_far;
+            data.tan_half_fov = pp_params_.cs_tan_half;
+            data.aspect = pp_params_.cs_aspect;
+            data.radius = pp_params_.cs_radius;
+            data.steps = pp_params_.cs_steps;
+            data.strength = pp_params_.cs_strength;
+            data.light_dir_view = pp_params_.cs_light_dir_view;
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(data), &data);
+        } else if (push_kind_ == PostProcessPushKind::SSR) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(SSRPushData), &ssr_push_);
+        } else if (push_kind_ == PostProcessPushKind::SSIL) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(SSILPushData), &ssil_push_);
+        } else if (push_kind_ == PostProcessPushKind::Motion) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(MotionPushData), &motion_push_);
+        } else if (push_kind_ == PostProcessPushKind::Fog) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(FogPushData), &fog_push_);
+        } else {
+            push_post_process_constants(cmd, pp_params_);
+        }
+    } else if (contact_shadow_) {
+        // 兼容旧的分支（contact_shadow 同时也是 post_process，不会走到这里）
+        ContactShadowPushData data{};
+        data.enabled = pp_params_.cs_enabled;
+        data.near_plane = pp_params_.cs_near;
+        data.far_plane = pp_params_.cs_far;
+        data.tan_half_fov = pp_params_.cs_tan_half;
+        data.aspect = pp_params_.cs_aspect;
+        data.radius = pp_params_.cs_radius;
+        data.steps = pp_params_.cs_steps;
+        data.strength = pp_params_.cs_strength;
+        data.light_dir_view = pp_params_.cs_light_dir_view;
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(data), &data);
+    } else if (post_process_) {
+        push_post_process_constants(cmd, pp_params_);
+    } else if (skybox_) {
+        float matrices[2 * 16];
+        for (int i = 0; i < 16; ++i) {
+            matrices[i] = view_.m[i];
+            matrices[16 + i] = projection_.m[i];
+        }
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(matrices), matrices);
+    } else if (!color_output_enabled_) {
+        // 阴影深度 pass：{ lightSpace, model, normalOffset }
+        // （无颜色输出 = shadow map 管线；normal offset 在顶点阶段沿法线推几何）
+        struct ShadowPushData {
+            math::Matrix4f light_space;
+            math::Matrix4f model;
+            float normal_offset;
+            float pad[3];
+        } data{};
+        data.light_space = light_space_matrix_;
+        data.model = model_;
+        data.normal_offset = shadow_normal_offset_;
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(data), &data);
+    } else {
+        float matrices[4 * 16];
+        for (int i = 0; i < 16; ++i) {
+            matrices[i] = model_.m[i];
+            matrices[16 + i] = view_.m[i];
+            matrices[32 + i] = projection_.m[i];
+            matrices[48 + i] = light_space_matrix_.m[i];
+        }
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(matrices), matrices);
+    }
+}
+
+void VulkanShader::push_post_process_constants(VkCommandBuffer cmd,
+                                               const PostProcessParams& params) const {
+    if (!pipeline_layout_) return;
+    PostProcessPushData data{};
+    data.exposure = params.exposure;
+    data.ev100 = params.ev100;
+    data.mode = params.tone_map_mode;
+    data.dithering = params.dithering;
+    data.white_point = params.white_point;
+    data.black_point = params.black_point;
+    data.contrast = params.contrast;
+    data.saturation = params.saturation;
+    data.lift = params.lift;
+    data.gamma = params.gamma;
+    data.gain = params.gain;
+    data.shadows = params.shadows;
+    data.midtones = params.midtones;
+    data.highlights = params.highlights;
+    data.bloom_enabled = params.bloom_enabled;
+    data.bloom_threshold = params.bloom_threshold;
+    data.bloom_intensity = params.bloom_intensity;
+    data.film_grain = params.film_grain;
+    data.vignette = params.vignette;
+    data.chromatic_aberration = params.chromatic_aberration;
+    data.use_lut = params.use_lut;
+    data.lut_strength = params.lut_strength;
+    data.auto_exposure = params.auto_exposure;
+    data.ae_target_luminance = params.ae_target_luminance;
+    data.ae_min_exposure = params.ae_min_exposure;
+    data.ae_max_exposure = params.ae_max_exposure;
+    data.ae_speed = params.ae_speed;
+    data.taa_enabled = params.taa_enabled;
+    data.taa_weight = params.taa_weight;
+    data.ssao_enabled = params.ssao_enabled;
+    data.ssao_strength = params.ssao_strength;
+    data.ssao_radius = params.ssao_radius;
+    data.ssao_near = params.ssao_near;
+    data.ssao_far = params.ssao_far;
+    data.ssao_tan_half = params.ssao_tan_half;
+    data.ssao_aspect = params.ssao_aspect;
+    data.cs_enabled = params.cs_enabled;
+    data.cs_strength = params.cs_strength;
+    data.blur_direction = pp_blur_direction_;
+    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(data), &data);
+}
+
+int VulkanShader::current_frame() const {
+    return swapchain_ ? swapchain_->current_frame_index() : 0;
+}
+
+VkDescriptorSet VulkanShader::descriptor_set() const {
+    int frame = current_frame();
+    if (frame < 0 || frame >= static_cast<int>(descriptor_sets_.size())) return VK_NULL_HANDLE;
+    return descriptor_sets_[frame];
+}
+
+void VulkanShader::bind_descriptor_set(VkCommandBuffer cmd) const {
+    VkDescriptorSet set = descriptor_set();
+    if (set != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_,
+                                0, 1, &set, 0, nullptr);
+    }
+}
+
+} // namespace gryce_engine::render

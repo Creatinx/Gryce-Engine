@@ -1,0 +1,196 @@
+#include "components/2d/tilemap.h"
+
+#include <fstream>
+
+#include "render/render2d.h"
+#include "assets/asset_manager.h"
+#include "resources/resource_path.h"
+#include "scene/entity.h"
+#include "utils/glog/glog_lib.h"
+
+namespace gryce_engine::components::d2::tilemap {
+
+namespace {
+
+// 简单的哈希彩色生成器
+float frac(float x) { return x - std::floor(x); }
+
+} // namespace
+
+render::Color Tilemap::tile_color(int index) {
+    if (index < 0) return render::Color::white();
+    // 使用黄金角分布的色相，保证相邻索引颜色差异明显
+    float hue = frac(static_cast<float>(index) * 0.61803398875f);
+    float r = frac(hue * 6.0f);
+    float g = frac(hue * 6.0f + 2.0f);
+    float b = frac(hue * 6.0f + 4.0f);
+    // 增强对比度
+    r = r > 0.5f ? 0.7f + 0.3f * (r - 0.5f) * 2.0f : 0.3f + 0.4f * r * 2.0f;
+    g = g > 0.5f ? 0.7f + 0.3f * (g - 0.5f) * 2.0f : 0.3f + 0.4f * g * 2.0f;
+    b = b > 0.5f ? 0.7f + 0.3f * (b - 0.5f) * 2.0f : 0.3f + 0.4f * b * 2.0f;
+    return render::Color(r, g, b, 1.0f);
+}
+
+void Tilemap::ensure_tileset_loaded(render::IRenderer2D* renderer) const {
+    // 1) 按需解析 JSON（物理属性等）。
+    // 注意：flags 只在加载/解析成功后才置位，失败会保留在未加载状态以便重试
+    // （临时性文件错误不应变成永久失败）。
+    if (!tileset_json_loaded_ && !tileset_path.empty()) {
+        // 与其它资源一致：优先真实文件，缺失时从挂载的 .gpkg/.gpack 提取
+        // （GryceGC-A 打包产物没有 res/ 目录，tileset JSON 位于 config 包内）。
+        std::string resolved = assets::AssetManager::instance().resolve_for_reading(tileset_path);
+        if (resolved.empty()) {
+            GLOG_WARN("Tilemap: failed to resolve tileset '{}'", tileset_path);
+            return;
+        }
+        std::ifstream file(resolved);
+        if (file.is_open()) {
+            try {
+                nlohmann::json j;
+                file >> j;
+                tileset.deserialize(j);
+                tileset_json_loaded_ = true;
+            } catch (const std::exception& e) {
+                GLOG_WARN("Tilemap: failed to parse tileset '{}': {}", tileset_path, e.what());
+            }
+        } else {
+            GLOG_WARN("Tilemap: failed to open tileset '{}'", tileset_path);
+        }
+    }
+
+    // 2) 按需上传 GPU 纹理
+    if (tileset_texture_loaded_ || tileset.texture_path.empty()) return;
+
+    auto tex_data = assets::AssetManager::instance().load<assets::TextureData>(tileset.texture_path);
+    if (!tex_data || tex_data->empty()) {
+        GLOG_WARN("Tilemap: failed to load texture data '{}'", tileset.texture_path);
+        return;
+    }
+
+    tileset_texture_width_ = tex_data->width;
+    tileset_texture_height_ = tex_data->height;
+
+    // 如果 JSON 没有给出 tile_count，根据纹理尺寸和瓦片尺寸推算
+    if (tileset.tile_count <= 0 && tileset.tile_width > 0 && tileset.tile_height > 0) {
+        int usable_w = tileset_texture_width_ - 2 * tileset.margin;
+        int usable_h = tileset_texture_height_ - 2 * tileset.margin;
+        int cols = (usable_w + tileset.spacing) / (tileset.tile_width + tileset.spacing);
+        int rows = (usable_h + tileset.spacing) / (tileset.tile_height + tileset.spacing);
+        if (cols > 0 && rows > 0) {
+            tileset.tile_count = cols * rows;
+        }
+        GLOG_INFO("Tilemap: computed tile_count={} cols={} rows={} from {}x{} tile={}",
+                  tileset.tile_count, cols, rows, tileset_texture_width_, tileset_texture_height_, tileset.tile_width);
+    }
+
+    if (use_tileset_texture && renderer) {
+        tileset.texture = renderer->create_texture_from_data(tex_data.get());
+        if (tileset.texture.is_valid()) {
+            tileset_texture_loaded_ = true;
+            GLOG_INFO("Tilemap: loaded tileset texture '{}' ({}x{}, {} channels)",
+                      tileset.texture_path, tex_data->width, tex_data->height,
+                      tex_data->channels);
+        }
+    }
+}
+
+void Tilemap::draw(render::IRenderer2D* renderer) {
+    if (!enabled || !renderer || map_width <= 0 || map_height <= 0) return;
+
+    ensure_tileset_loaded(renderer);
+    bool use_texture = use_tileset_texture && tileset.texture.is_valid() &&
+                       tileset_texture_width_ > 0 && tileset_texture_height_ > 0;
+
+    math::Vector2f pos = position();
+    math::Vector2f s = scale();
+    float cw = cell_width * s.x;
+    float ch = cell_height * s.y;
+
+    for (int y = 0; y < map_height; ++y) {
+        for (int x = 0; x < map_width; ++x) {
+            int tile = get_tile(x, y);
+            if (tile < 0) continue;
+
+            float wx = pos.x + static_cast<float>(x) * cw;
+            float wy = pos.y + static_cast<float>(y) * ch;
+
+            if (use_texture) {
+                math::Vector4f uv = tileset.tile_uv(tile, tileset_texture_width_, tileset_texture_height_);
+                // 绘制只传纹理句柄（执行时经 generation 校验解析）；
+                // resolve_texture 仅用于主线程判空回退彩色方块
+                render::ITexture* tex_ptr = renderer->resolve_texture(tileset.texture);
+                if (!tex_ptr) {
+                    renderer->draw_rect(wx, wy, cw, ch, tile_color(tile));
+                    continue;
+                }
+                if (lit) {
+                    renderer->draw_lit_sprite_region(wx, wy, cw, ch,
+                                                     uv.x, uv.y, uv.z, uv.w,
+                                                     tileset.texture, render::RHITextureHandle{},
+                                                     render::Color::white());
+                } else {
+                    renderer->draw_sprite_region(wx, wy, cw, ch,
+                                                  uv.x, uv.y, uv.z, uv.w,
+                                                  tileset.texture, render::Color::white());
+                }
+            } else {
+                renderer->draw_rect(wx, wy, cw, ch, tile_color(tile));
+            }
+
+            if (cast_shadow) {
+                renderer->draw_shadow_caster(wx, wy, cw, ch);
+            }
+
+            if (debug_draw_colliders && generate_colliders) {
+                renderer->draw_rect(wx + cw * 0.45f, wy + ch * 0.45f,
+                                    cw * 0.1f, ch * 0.1f, render::Color::red());
+            }
+        }
+    }
+}
+
+namespace {
+
+bool load_tileset_json(const std::string& path, resources::Tileset& out) {
+    if (path.empty()) return false;
+    std::string resolved = resources::ResourcePath::resolve(path);
+    if (resolved.empty()) return false;
+    std::ifstream file(resolved);
+    if (!file.is_open()) return false;
+    try {
+        nlohmann::json j;
+        file >> j;
+        out.deserialize(j);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+} // namespace
+
+bool Tilemap::is_solid_tile(int x, int y) const {
+    int tile = get_tile(x, y);
+    if (tile < 0) return false;
+    if (!tileset_json_loaded_ && !tileset_path.empty()) {
+        tileset_json_loaded_ = load_tileset_json(tileset_path, tileset);
+    }
+    // 如果图集没有定义属性，兼容旧行为：所有非空瓦片都视为 solid
+    if (tileset.tile_properties.empty()) return true;
+    return tileset.is_solid(tile);
+}
+
+bool Tilemap::is_outer_ring_tile(int x, int y) const {
+    if (!is_solid_tile(x, y)) return false;
+    // 地图边缘即外圈
+    if (x == 0 || x == map_width - 1 || y == 0 || y == map_height - 1) return true;
+    // 任一四邻域非 solid 即为外圈
+    return !is_solid_tile(x - 1, y) || !is_solid_tile(x + 1, y) ||
+           !is_solid_tile(x, y - 1) || !is_solid_tile(x, y + 1);
+}
+
+void Tilemap::on_init() {
+    // 碰撞体生成已移除（物理子系统已裁剪）；仅保留渲染占位绘制逻辑。
+}
+
+} // namespace gryce_engine::components::d2::tilemap

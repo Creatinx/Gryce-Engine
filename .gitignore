@@ -1,0 +1,28 @@
+# ---- 构建产物 ----
+/build/
+build_*/
+
+# ---- 编译器 / 系统文件 ----
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.lib
+*.so
+*.dylib
+*.pdb
+*.idb
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.code-workspace
+
+# ---- 运行截图与分析日志 ----
+shot_*.png
+*.log
+
+# ---- 系统 ----
+Thumbs.db
+.DS_Store
