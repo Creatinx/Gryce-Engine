@@ -21,10 +21,12 @@ GLMesh::GLMesh() {
         glCreateVertexArrays(1, &vao_);
         glCreateBuffers(1, &vbo_);
         glCreateBuffers(1, &ebo_);
+        glCreateBuffers(1, &instance_vbo_);
     } else {
         glGenVertexArrays(1, &vao_);
         glGenBuffers(1, &vbo_);
         glGenBuffers(1, &ebo_);
+        glGenBuffers(1, &instance_vbo_);
     }
 }
 
@@ -37,6 +39,7 @@ GLMesh::~GLMesh() {
     glDeleteVertexArrays(1, &vao_);
     glDeleteBuffers(1, &vbo_);
     glDeleteBuffers(1, &ebo_);
+    glDeleteBuffers(1, &instance_vbo_);
 }
 
 void GLMesh::upload_vertices(const void* data, uint32_t size, uint32_t count) {
@@ -174,6 +177,91 @@ void GLMesh::set_layout(const VertexLayout& layout) {
     GL_CHECK_ERROR();
 }
 
+void GLMesh::set_instance_layout(const VertexLayout& layout) {
+    if (instance_layout_ == layout) {
+        return;
+    }
+    instance_layout_ = layout;
+
+    // 实例流绑定到 VAO 的 binding index 1，并把 divisor 设为 1，
+    // 使属性按实例（而非按顶点）推进。
+    if (gl_dsa_available()) {
+        glVertexArrayVertexBuffer(vao_, 1, instance_vbo_, 0,
+                                  static_cast<GLsizei>(instance_layout_.stride));
+        for (const auto& attr : instance_layout_.attributes) {
+            glEnableVertexArrayAttrib(vao_, attr.location);
+            if (is_integer_vertex_type(attr.type)) {
+                glVertexArrayAttribIFormat(vao_, attr.location,
+                                           get_component_count(attr.type),
+                                           get_gl_type(attr.type),
+                                           static_cast<GLuint>(attr.offset));
+            } else {
+                glVertexArrayAttribFormat(vao_, attr.location,
+                                          get_component_count(attr.type),
+                                          get_gl_type(attr.type),
+                                          attr.normalized ? GL_TRUE : GL_FALSE,
+                                          static_cast<GLuint>(attr.offset));
+            }
+            glVertexArrayAttribBinding(vao_, attr.location, 1);
+        }
+        glVertexArrayBindingDivisor(vao_, 1, 1);
+    } else {
+        glBindVertexArray(vao_);
+        glBindBuffer(GL_ARRAY_BUFFER, instance_vbo_);
+        for (const auto& attr : instance_layout_.attributes) {
+            glEnableVertexAttribArray(attr.location);
+            if (is_integer_vertex_type(attr.type)) {
+                glVertexAttribIPointer(attr.location,
+                                       get_component_count(attr.type),
+                                       get_gl_type(attr.type),
+                                       static_cast<GLsizei>(instance_layout_.stride),
+                                       reinterpret_cast<const void*>(static_cast<uintptr_t>(attr.offset)));
+            } else {
+                glVertexAttribPointer(attr.location,
+                                      get_component_count(attr.type),
+                                      get_gl_type(attr.type),
+                                      attr.normalized ? GL_TRUE : GL_FALSE,
+                                      static_cast<GLsizei>(instance_layout_.stride),
+                                      reinterpret_cast<const void*>(static_cast<uintptr_t>(attr.offset)));
+            }
+            glVertexAttribDivisor(attr.location, 1);
+        }
+        glBindVertexArray(0);
+        g_current_bound_vao = 0;
+    }
+    GL_CHECK_ERROR();
+}
+
+void GLMesh::upload_instances(const void* data, uint32_t size, uint32_t count) {
+    instance_count_ = count;
+    if (size == 0) return;
+    if (!data) {
+        GLOG_ERROR("GLMesh::upload_instances: null data with size={}", size);
+        return;
+    }
+
+    if (gl_dsa_available()) {
+        if (size <= instance_buffer_size_) {
+            glNamedBufferSubData(instance_vbo_, 0, static_cast<GLsizeiptr>(size), data);
+        } else {
+            glNamedBufferData(instance_vbo_, static_cast<GLsizeiptr>(size), data, GL_DYNAMIC_DRAW);
+            instance_buffer_size_ = size;
+        }
+    } else {
+        glBindVertexArray(vao_);
+        glBindBuffer(GL_ARRAY_BUFFER, instance_vbo_);
+        if (size <= instance_buffer_size_) {
+            glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(size), data);
+        } else {
+            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(size), data, GL_DYNAMIC_DRAW);
+            instance_buffer_size_ = size;
+        }
+        glBindVertexArray(0);
+        g_current_bound_vao = 0;
+    }
+    GL_CHECK_ERROR();
+}
+
 void GLMesh::bind() const {
     if (vao_ != g_current_bound_vao) {
         glBindVertexArray(vao_);
@@ -185,6 +273,9 @@ void GLMesh::draw() const {
     bind();
     if (has_index_ && index_count_ > 0) {
         glDrawElements(GL_TRIANGLES, static_cast<int>(index_count_), GL_UNSIGNED_INT, nullptr);
+    } else if (instance_count_ > 0) {
+        glDrawArraysInstanced(GL_TRIANGLES, 0, static_cast<int>(vertex_count_),
+                              static_cast<int>(instance_count_));
     } else {
         glDrawArrays(GL_TRIANGLES, 0, static_cast<int>(vertex_count_));
     }

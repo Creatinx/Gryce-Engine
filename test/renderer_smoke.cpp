@@ -18,7 +18,7 @@
 //         WASD 前后左右移动、空格/左Ctrl 升降、Shift 加速、Esc 退出。
 //         交互模式下 --frames 表示"第 N 帧截一次图"，不退出。
 //
-// 退出码: 0 = 正常；1 = 初始化失败；2 = 渲染结果为空（着色器/管线未生效）。
+// 退出码: 0 = 正常；1 = 初始化失败；2 = 渲染结果为空（着色器/管线未生效）。 
 #include "api/render_api.h"
 #include "api/core_api.h"
 #include "api/scene_api.h"
@@ -255,6 +255,11 @@ struct ProjectSettings {
     float ssr_max_roughness = 0.6f;
     float ssr_thickness = 0.1f;
     float ssr_bilateral = 0.5f;
+    float ssr_env_fallback = 1.0f;      // 未命中回退到 IBL/探针的强度（1=替换）
+    float ssr_resolution_scale = 1.0f;  // SSR 内部渲染分辨率缩放
+    bool pcss_enabled = false;          // 接触硬化软阴影
+    float pcss_light_size = 0.06f;
+    float pcss_max_radius = 12.0f;
     bool loaded = false;
 };
 
@@ -294,6 +299,11 @@ ProjectSettings load_project_settings(const std::string& project_root) {
         s.ssr_max_roughness = j.value("ssr_max_roughness", s.ssr_max_roughness);
         s.ssr_thickness = j.value("ssr_thickness", s.ssr_thickness);
         s.ssr_bilateral = j.value("ssr_bilateral_filter", s.ssr_bilateral);
+        s.ssr_env_fallback = j.value("ssr_env_fallback", s.ssr_env_fallback);
+        s.ssr_resolution_scale = j.value("ssr_resolution_scale", s.ssr_resolution_scale);
+        s.pcss_enabled = j.value("pcss_enabled", s.pcss_enabled);
+        s.pcss_light_size = j.value("pcss_light_size", s.pcss_light_size);
+        s.pcss_max_radius = j.value("pcss_max_radius", s.pcss_max_radius);
         s.loaded = true;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[smoke] project.data parse failed: %s\n", e.what());
@@ -395,11 +405,20 @@ void print_usage() {
         "  --shot <png>           截图输出路径（默认 shot_<api>.png）\n"
         "  --w / --h <px>         窗口与视口尺寸（默认取 project.data）\n"
         "  --sync                 同步渲染模式（不启动渲染线程）\n"
+        "  --no-vsync             关闭垂直同步（性能测量用，默认打开）\n"
+        "  --resolution WxH       设置渲染分辨率（等价 --w W --h H）\n"
+        "  --ssr-scale <0.25..1>  SSR 内部渲染分辨率缩放（0.5 约省 3/4 SSR 开销）\n"
+        "  --ssr-env-fallback <0..1>  SSR 未命中回退 IBL/探针的强度（默认 1=替换）\n"
+        "  --pcss / --no-pcss     接触硬化软阴影开关（默认取 project.data）\n"
+        "  --debug-view <0..8>    调试视图：5=阴影因子 6=直接光 7=环境光 8=级联着色\n"
+        "  --fps / --no-fps       左上角白色 FPS 叠加（默认开）\n"
+        "  --bench [N]            开启 GPU 分段计时，跑 N 帧（默认 240）后打印每 pass 平均 GPU 时间\n"
         "  --ssr / --no-ssr       覆盖屏幕空间反射开关（A/B 对照用）\n"
         "  --ssao / --no-ssao     覆盖屏幕空间环境光遮蔽开关\n"
         "  --ssil / --no-ssil     覆盖屏幕空间间接光开关\n"
         "  --no-analyze           跳过截图统计\n"
         "  --list                 打印场景清单后退出\n"
+        "  --simulate             进入 Play 模式驱动组件 on_update（粒子/动画），但不接管相机、不锁鼠标\n"
         "  --play                 交互模式：鼠标锁定转视角，WASD 移动，Esc 退出\n"
         "  --speed <m/s>          交互模式移动速度（默认 3.0）\n"
         "  --sensitivity <度/像素> 交互模式鼠标灵敏度（默认 0.12）\n"
@@ -425,10 +444,22 @@ int main(int argc, char** argv) {
     int ssil_override = -1;
     int env_override = -1;
     bool play_mode = false;
+    // --simulate：只把引擎切进 Play 模式（World::update 生效，组件 on_update 跑起来），
+    // 但不把相机交给 FpsCamera，也不锁鼠标。用于脚本/CI 验证粒子、动画这类依赖
+    // on_update 的效果：不切 Play 模式它们全程静止，截出来的图里根本没有粒子。
+    bool simulate_mode = false;
+    int bench_frames = 0;   // >0：开启 GPU 分段计时，跑满 N 帧后打印每 pass 平均 GPU 时间
     float play_speed = 3.0f;
     float play_sensitivity = 0.12f;
     int play_frames = 0;   // >0：交互模式跑满 N 帧自动退出（脚本/自检用）
     bool frames_explicit = false;
+    bool vsync = true;   // 默认开垂直同步；--no-vsync 用于性能测量
+    float ssr_env_fallback_override = -1.0f;
+    float ssr_scale_override = -1.0f;
+    int debug_view_override = -1;
+    int pcss_override = -1;
+    bool fps_overlay = true;   // 左上角白色 FPS，默认开
+    int ssr_debug_override = 0;  // --ssr-debug：SSR 调试视图
 
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -450,6 +481,35 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--w") == 0) width_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--h") == 0) height_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--sync") == 0) sync_mode = true;
+        else if (std::strcmp(a, "--vsync") == 0) vsync = true;
+        else if (std::strcmp(a, "--no-vsync") == 0) vsync = false;
+        // SSR：未命中回退强度 / 内部分辨率缩放
+        else if (std::strcmp(a, "--ssr-env-fallback") == 0 ||
+                 std::strcmp(a, "--ssr-fallback") == 0) {
+            ssr_env_fallback_override = static_cast<float>(std::atof(need_value(a)));
+        }
+        else if (std::strcmp(a, "--ssr-scale") == 0) {
+            ssr_scale_override = static_cast<float>(std::atof(need_value(a)));
+        }
+        else if (std::strcmp(a, "--debug-view") == 0 || std::strcmp(a, "--debug") == 0) {
+            debug_view_override = std::atoi(need_value(a));
+        }
+        else if (std::strcmp(a, "--pcss") == 0) pcss_override = 1;
+        else if (std::strcmp(a, "--no-pcss") == 0) pcss_override = 0;
+        else if (std::strcmp(a, "--fps") == 0) fps_overlay = true;
+        else if (std::strcmp(a, "--no-fps") == 0) fps_overlay = false;
+        else if (std::strcmp(a, "--ssr-debug") == 0) ssr_debug_override = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--resolution") == 0) {
+            // --resolution 1920x1080 等价于 --w 1920 --h 1080
+            const char* v = need_value(a);
+            int rw = 0, rh = 0;
+            if (std::sscanf(v, "%dx%d", &rw, &rh) == 2 && rw > 0 && rh > 0) {
+                width_override = rw;
+                height_override = rh;
+            } else {
+                std::fprintf(stderr, "[smoke] --resolution 需要 WxH 格式（如 1920x1080）\n");
+            }
+        }
         // 屏幕空间效果覆盖（A/B 对照测试用）
         else if (std::strcmp(a, "--ssr") == 0) ssr_override = 1;
         else if (std::strcmp(a, "--no-ssr") == 0) ssr_override = 0;
@@ -459,6 +519,7 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--no-ssil") == 0) ssil_override = 0;
         else if (std::strcmp(a, "--env") == 0) env_override = 1;
         else if (std::strcmp(a, "--no-env") == 0) env_override = 0;
+        else if (std::strcmp(a, "--simulate") == 0) simulate_mode = true;
         else if (std::strcmp(a, "--play") == 0 || std::strcmp(a, "--interactive") == 0 ||
                  std::strcmp(a, "-i") == 0) play_mode = true;
         else if (std::strcmp(a, "--speed") == 0) play_speed = static_cast<float>(std::atof(need_value(a)));
@@ -466,6 +527,11 @@ int main(int argc, char** argv) {
             play_sensitivity = static_cast<float>(std::atof(need_value(a)));
         }
         else if (std::strcmp(a, "--play-frames") == 0) play_frames = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--bench") == 0) {
+            // 可选帧数：--bench 200；不跟数字时用默认 240 帧
+            if (i + 1 < argc && argv[i + 1][0] != '-') bench_frames = std::atoi(argv[++i]);
+            else bench_frames = 240;
+        }
         else if (std::strcmp(a, "--no-analyze") == 0) analyze = false;
         else if (std::strcmp(a, "--list") == 0) list_only = true;
         else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
@@ -541,7 +607,7 @@ int main(int argc, char** argv) {
 
     // 3) 渲染器（Project Settings 里"重启生效"的项必须在 init 之前应用）
     GRender_SetShadowMapSize(cfg.shadow_map_size);
-    GRender_SetVSync(true);
+    GRender_SetVSync(vsync);
 
     GRenderInitDesc desc{};
     desc.version = sizeof(GRenderInitDesc);
@@ -574,6 +640,23 @@ int main(int argc, char** argv) {
     if (ssil_override >= 0) cfg.ssil_enabled = ssil_override != 0;
     GRender_SetSSRParams(cfg.ssr_max_steps, cfg.ssr_max_roughness, cfg.ssr_thickness,
                          cfg.ssr_bilateral);
+    GRender_SetSSREnvFallback(cfg.ssr_env_fallback);
+    GRender_SetSSRResolutionScale(cfg.ssr_resolution_scale);
+    if (ssr_env_fallback_override >= 0.0f) {
+        cfg.ssr_env_fallback = ssr_env_fallback_override;
+        GRender_SetSSREnvFallback(ssr_env_fallback_override);
+    }
+    if (ssr_scale_override > 0.0f) {
+        cfg.ssr_resolution_scale = ssr_scale_override;
+        GRender_SetSSRResolutionScale(ssr_scale_override);
+    }
+    if (debug_view_override >= 0) GRender_SetDebugView(debug_view_override);
+    if (pcss_override >= 0) cfg.pcss_enabled = pcss_override != 0;
+    GRender_SetPCSSEnabled(cfg.pcss_enabled);
+    GRender_SetPCSSParams(cfg.pcss_light_size, cfg.pcss_max_radius, 1.0f);
+    // 左上角白色 FPS（默认开；--no-fps 关闭）
+    GRender_SetFPSOverlay(fps_overlay);
+    if (ssr_debug_override > 0) GRender_SetSSRDebugView(ssr_debug_override);
     GRender_SetSSAO(cfg.ssao_enabled);
     GRender_SetSSR(cfg.ssr_enabled);
     GRender_SetSSIL(cfg.ssil_enabled);
@@ -615,8 +698,28 @@ int main(int argc, char** argv) {
             play_mode = false;
         }
     }
+    // 进入引擎 Play 模式：--play 只负责相机控制，不会自动切换播放态；
+    // 不切换的话 World::update 不跑，组件的 on_update（动画/物理/粒子）全程静止。
+    if (play_mode || simulate_mode) {
+        GCommand play_cmd{};
+        play_cmd.type = ECMD_PLAY_MODE;
+        if (GCore_PushCommand(&play_cmd) != 0) {
+            std::fprintf(stderr, "[smoke] 进入 Play 模式失败\n");
+        } else {
+            std::printf("[smoke] 已进入 Play 模式（组件 on_update 生效）\n");
+        }
+    }
+
     // 交互模式默认一直跑到用户退出；只有显式给了 --frames N 才在第 N 帧截图。
     const bool shot_wanted = play_mode ? (frames_explicit && frames > 0) : true;
+
+    // --bench：开启 GPU 分段计时，跑满指定帧数后打印每 pass 的 GPU 时间。
+    if (bench_frames > 0) {
+        frames = bench_frames;
+        GRender_SetGPUProfiling(1);
+        std::printf("[smoke] --bench: GPU 分段计时已开启（%d 帧后打印；"
+                    "建议同时加 --no-vsync 让帧循环不被垂直同步拖慢）\n", bench_frames);
+    }
 
     // 5) 帧循环：渲染 -> 请求截图 -> 再驱动若干帧让渲染线程写盘
     int rendered = 0;
@@ -657,6 +760,11 @@ int main(int argc, char** argv) {
     }
 
     if (play_mode) window.set_cursor_disabled(false);
+    if (bench_frames > 0) {
+        // 统计在帧槽复用时结算（有 2 帧延迟），这里已跑满 bench_frames，直接打印。
+        GRender_DumpGPUProfiling();
+        GRender_SetGPUProfiling(0);
+    }
     GRender_Shutdown();
     GCore_Shutdown();
     Window::shutdown_sdk();

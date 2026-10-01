@@ -46,6 +46,26 @@ void VulkanMesh::set_layout(const VertexLayout& layout) {
     layout_ = layout;
 }
 
+void VulkanMesh::set_instance_layout(const VertexLayout& layout) {
+    instance_layout_ = layout;
+}
+
+void VulkanMesh::upload_instances(const void* data, uint32_t size, uint32_t count) {
+    instance_count_ = count;
+    if (size == 0) return;
+    if (!instance_buffer_.buffer() || instance_buffer_.size() < size) {
+        instance_buffer_.shutdown();
+        if (!instance_buffer_.init(device_, size,
+                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            GLOG_ERROR("VulkanMesh: failed to create instance buffer");
+            return;
+        }
+    }
+    instance_buffer_.upload(data, size);
+}
+
 void VulkanMesh::bind() const {
     // Vulkan 绑定在 command buffer 记录时进行
 }

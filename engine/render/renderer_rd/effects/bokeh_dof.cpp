@@ -1,6 +1,7 @@
 #include "render/renderer_rd/effects/bokeh_dof.h"
 #include "render/render_context.h"
 #include "render/mesh.h"
+#include "render/gpu_scope.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render {
@@ -104,6 +105,7 @@ void BokehDOF_RD::render(RenderContext* ctx,
                          int viewport_w, int viewport_h)
 {
     if (!initialized_ || params.dof_enabled == 0) return;
+    GpuScope _gpu(*ctx, "dof");
 
     // 1. 半分辨率降采样 + CoC 计算
     // 从全分辨率 HDR 颜色 + 深度计算弥散圆（CoC）并降采样

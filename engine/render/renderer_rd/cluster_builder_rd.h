@@ -88,6 +88,10 @@ private:
     int cluster_z_layers_ = k_max_cluster_z_layers;
     int total_clusters_ = 0;
 
+    // 当前帧集群近/远平面（由 build 传入，跟随相机，避免硬编码 1000 与相机 far 错位）
+    float z_near_ = 0.1f;
+    float z_far_ = 1000.0f;
+
     // 光源索引缓冲区（全局，所有集群的光源索引连续排列）
     std::vector<uint32_t> light_index_buffer_;
     std::vector<uint32_t> light_index_scratch_;
@@ -97,6 +101,17 @@ private:
 
     // 已剔除的光源
     std::vector<LightData> culled_lights_;
+
+    // 逐帧复用的临时缓冲：跨帧保留容量，避免每帧重新堆分配
+    std::vector<size_t> directional_indices_;
+    std::vector<size_t> non_directional_indices_;
+    std::vector<uint32_t> cluster_light_counts_;
+    std::vector<uint32_t> cluster_write_positions_;
+    // 相交测试结果：light_hit_clusters_ 按光源分段存放命中集群索引，
+    // light_hit_offsets_ 记录每个光源在其中的起止（长度 = 非方向光数 + 1）。
+    // 有了它，填表阶段无需重做一遍相交测试。
+    std::vector<uint32_t> light_hit_offsets_;
+    std::vector<uint32_t> light_hit_clusters_;
 };
 
 } // namespace gryce_engine::render

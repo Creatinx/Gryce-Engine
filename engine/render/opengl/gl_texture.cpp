@@ -619,10 +619,14 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
                 glTextureParameteri(texture_id_, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
                 glTextureParameteri(texture_id_, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
             }
-            // 原始深度 sampler：关闭比较模式，供 PCSS / SSAO 读取真实深度。
+            // 原始深度 sampler：关闭比较模式，供 PCSS / SSAO / SSR 读取真实深度。
+            // 过滤必须是 NEAREST：SSR 的段测试与 HiZ 金字塔都要求读到纹素里的
+            // 原始深度，线性过滤会在物体边缘把前后两个深度平均成"中间深度"，
+            // 造出并不存在的几何（反射出现沿边缘的虚假条带），而且 GL 与
+            // Vulkan 采样器状态不同会让两个后端给出不同结果。
             glGenSamplers(1, &raw_sampler_);
-            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
             glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
             glSamplerParameterfv(raw_sampler_, GL_TEXTURE_BORDER_COLOR, border_color);
@@ -648,10 +652,17 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
             }
-            // 原始深度 sampler：关闭比较模式，供 PCSS / SSAO 读取真实深度。
+            // 原始深度 sampler：关闭比较模式，供 PCSS / SSAO / SSR 读取真实深度。
+            // 过滤必须是 NEAREST：SSR 的段测试与 HiZ 金字塔都要求读到纹素里的
+            // 原始深度，线性过滤会在物体边缘把前后两个深度平均成"中间深度"，
+            // 造出并不存在的几何（反射出现沿边缘的虚假条带），而且 GL 与
+            // Vulkan 采样器状态不同会让两个后端给出不同结果。
+            // 半分辨率 SSAO/GTAO 采全分辨率 depth 时，Linear filter 会在 UV
+            // 正好落在两个 depth 纹素中点时产生 50/50 权重，破坏深度值连续性
+            // → GTAO horizon 跳变 → banding。
             glGenSamplers(1, &raw_sampler_);
-            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glSamplerParameteri(raw_sampler_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
             glSamplerParameteri(raw_sampler_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
             glSamplerParameterfv(raw_sampler_, GL_TEXTURE_BORDER_COLOR, border_color);

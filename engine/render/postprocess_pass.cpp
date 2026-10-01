@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "render/render_context.h"
+#include "render/gpu_scope.h"
 #include "render/shader.h"
 #include "render/texture.h"
 #include "render/framebuffer.h"
@@ -40,6 +41,9 @@ void RenderPipeline::set_contact_shadow_params(float strength, float radius_worl
 
 bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
     hdr_color_ = ctx->create_texture();
+    // 记住"真正的" HDR 颜色附件。SSR/DOF/MotionBlur 等 pass 会把 hdr_color_
+    // 指向自己的输出，每帧开头必须复位，否则下一帧的效果会拿上一帧的输出当输入。
+    hdr_original_color_ = hdr_color_;
     ITexture* hdr_color_ptr = ctx->texture(hdr_color_);
     if (!hdr_color_.is_valid() || !hdr_color_ptr || !hdr_color_ptr->create(TextureFormat::RGBA16F, viewport_width_, viewport_height_, nullptr)) {
         return false;
@@ -357,6 +361,7 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
     if (!gtao_shader_.is_valid() || !ssao_blur_shader_.is_valid() || !fullscreen_mesh_.is_valid()) {
         return;
     }
+    GpuScope _gpu(ctx, "ssao");
 
     // 每帧从相机更新 GTAO 参数（Vulkan push constants / GL bind 时应用）
     if (camera_) {
@@ -374,16 +379,28 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
     ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
 
-    // Pass 1：GTAO（从深度重建视图位置，地平线搜索）
+    // Pass 1：GTAO（从深度重建视图位置 + 法线约束 horizon 搜索）
     ctx.set_framebuffer(ssao_fbo_[0]);
+    ctx.clear(1.0f, 1.0f, 1.0f, 1.0f);  // clear 成 "无遮蔽"
     ctx.set_viewport(0, 0, ssao_w_, ssao_h_);
     ctx.set_shader(gtao_shader_);
     ctx.set_texture_raw_depth(gtao_shader_, hdr_depth_, TextureSlots::kTonemapHDR, "uDepthTexture");
     ctx.set_uniform_int(gtao_shader_, "uDepthTexture", TextureSlots::kTonemapHDR);
+    // 法线纹理：deferred 路径来自 G-buffer RT1，forward 路径来自 prepass（与 RT1 同一纹理）
+    // 若两者都不可用（SSR/SSIL 都关），shader 内部退化为无法线 horizon 检测
+    if (gbuffer_normal_roughness_.is_valid()) {
+        ctx.set_texture(gtao_shader_, gbuffer_normal_roughness_, TextureSlots::kPBRNormal, "uNormalRoughTex");
+        ctx.set_uniform_int(gtao_shader_, "uNormalRoughTex", TextureSlots::kPBRNormal);
+    }
+    // view matrix：把世界法线转到视图空间（Vulkan push block 里也需要）
+    if (camera_) {
+        ctx.set_uniform_mat4(gtao_shader_, "uView", camera_->get_view_matrix());
+    }
     ctx.draw_mesh(fullscreen_mesh_, gtao_shader_);
 
     // Pass 2：深度感知双边上模糊
     ctx.set_framebuffer(ssao_fbo_[1]);
+    ctx.clear(1.0f, 1.0f, 1.0f, 1.0f);
     ctx.set_viewport(0, 0, ssao_w_, ssao_h_);
     ctx.set_shader(ssao_blur_shader_);
     ITexture* ao = ctx_->texture(ssao_tex_[0]);
@@ -403,6 +420,7 @@ void RenderPipeline::render_contact_shadow(RenderContext& ctx) {
     if (!contact_shadow_enabled_ || !contact_shadow_targets_valid_) return;
     if (!contact_shadow_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
     if (!camera_) return;
+    GpuScope _gpu(ctx, "contact_shadow");
 
     const float near_p = camera_->near_plane();
     const float far_p = camera_->far_plane();
@@ -492,6 +510,7 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
                   tonemap_shader_.is_valid(), hdr_color_.is_valid(), fullscreen_mesh_.is_valid());
         return;
     }
+    GpuScope _gpu(ctx, "tonemap");
 
     // TAA 开启时读取 TAA 解析后的 HDR，否则读原始 HDR
     const bool use_taa = pp_params_.taa_enabled != 0 && taa_targets_valid_;
@@ -563,11 +582,15 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
 // ---------------------------------------------------------------------------
 
 void RenderPipeline::render_bloom(RenderContext& ctx) {
+    // Bloom 关闭时整条链路（阈值 + 多级降采样 + 上采样）都不产生可见结果：
+    // render_tonemap 只在 bloom_enabled 为真时采样 bloom 输出，故可直接跳过。
+    if (pp_params_.bloom_enabled == 0) return;
     if (!bloom_targets_valid_ || !fullscreen_mesh_.is_valid()) return;
     if (!bloom_threshold_shader_.is_valid() || !bloom_downsample_shader_.is_valid() ||
         !bloom_upsample_shader_.is_valid()) {
         return;
     }
+    GpuScope _gpu(ctx, "bloom");
 
     ctx.set_depth_test(false);
     ctx.set_cull_face(CullMode::None);
@@ -636,6 +659,7 @@ void RenderPipeline::render_auto_exposure(RenderContext& ctx) {
         !fullscreen_mesh_.is_valid()) {
         return;
     }
+    GpuScope _gpu(ctx, "auto_exposure");
 
     ctx.set_depth_test(false);
     ctx.set_cull_face(CullMode::None);
@@ -687,6 +711,7 @@ void RenderPipeline::render_auto_exposure(RenderContext& ctx) {
 void RenderPipeline::render_taa(RenderContext& ctx) {
     if (pp_params_.taa_enabled == 0 || !taa_targets_valid_) return;
     if (!taa_resolve_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
+    GpuScope _gpu(ctx, "taa");
 
     const int read = 1 - taa_ping_;
     const int write = taa_ping_;
@@ -939,6 +964,7 @@ void RenderPipeline::destroy_normal_prepass() {
 void RenderPipeline::render_normal_prepass(scene::Scene& scene, RenderContext& ctx,
                                            const Frustum& frustum) {
     if (!prepass_normal_fbo_.is_valid() || !depth_normal_shader_.is_valid()) return;
+    GpuScope _gpu(ctx, "prepass_normal");
 
     ctx.set_framebuffer(prepass_normal_fbo_);
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
@@ -1010,6 +1036,8 @@ void RenderPipeline::render_normal_prepass(scene::Scene& scene, RenderContext& c
 }
 
 void RenderPipeline::begin_gbuffer_pass(RenderContext& ctx) {
+    // 同 begin_hdr_forward_pass：复位"当前 HDR 颜色"，避免上一帧 SSR/DOF 的输出残留。
+    if (hdr_original_color_.is_valid()) hdr_color_ = hdr_original_color_;
     if (!gbuffer_fbo_.is_valid() || !gbuffer_shader_.is_valid()) return;
     ctx.set_shader(gbuffer_shader_);
     ctx.set_framebuffer(gbuffer_fbo_);
@@ -1149,10 +1177,11 @@ void RenderPipeline::render_deferred_lighting_to_hdr(RenderContext& ctx) {
         "uVSMTexture0", "uVSMTexture1", "uVSMTexture2", "uVSMTexture3",
     };
     for (int i = 0; i < 4; ++i) {
-        if (!vsm_color_tex_[i].is_valid()) continue;
-        ITexture* tex = ctx_->texture(vsm_color_tex_[i]);
+        const RHITextureHandle vsm_tex = vsm_shadow_texture(i);
+        if (!vsm_tex.is_valid()) continue;
+        ITexture* tex = ctx_->texture(vsm_tex);
         if (tex) tex->bind(vsm_slots[i]);
-        ctx.set_texture(deferred_lighting_shader_, vsm_color_tex_[i], vsm_slots[i], "");
+        ctx.set_texture(deferred_lighting_shader_, vsm_tex, vsm_slots[i], "");
         ctx.set_uniform_int(deferred_lighting_shader_, vsm_names[i], vsm_slots[i]);
     }
 

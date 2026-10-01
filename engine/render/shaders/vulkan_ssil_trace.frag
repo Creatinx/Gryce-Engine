@@ -35,8 +35,9 @@ layout(push_constant) uniform PushConstants {
 const int kMaxRays = 8;        // 每像素光线数（半球方向）
 
 float linearize_depth(float d) {
-    return (2.0 * pc.near_plane * pc.far_plane) /
-           (pc.far_plane + pc.near_plane - d * (pc.far_plane - pc.near_plane));
+    // 深度纹理存的是 w = far*(z-near)/((far-near)*z)（与 ssr_trace 一致）
+    return (pc.near_plane * pc.far_plane) /
+           max(pc.far_plane - d * (pc.far_plane - pc.near_plane), 1e-6);
 }
 
 // 世界坐标 → 屏幕 uv；相机后方返回 false
@@ -46,7 +47,8 @@ bool project_world(vec3 world_pos, out vec2 uv, out float view_depth) {
     float neg_z = -v.z;
     vec2 ndc = vec2(v.x / neg_z / pc.tan_half_fov / pc.aspect,
                     v.y / neg_z / pc.tan_half_fov);
-    uv = ndc * 0.5 + 0.5;
+    // VK 后处理 vUV 上下与 GL 相反 → 投影回 uv 时翻转 y
+    uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     view_depth = neg_z;
     return uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
 }
@@ -70,7 +72,8 @@ void main() {
     vec3 N = normalize(nr.rgb * 2.0 - 1.0);
 
     // 重建世界坐标（视图空间反投影）
-    vec2 ndc = vUV * 2.0 - 1.0;
+    // uv ↔ NDC：VK 的 vUV 上下与 GL 相反，反推视图坐标时翻转 y
+    vec2 ndc = vec2(vUV.x * 2.0 - 1.0, 1.0 - vUV.y * 2.0);
     vec3 view_pos = vec3(ndc.x * pc.tan_half_fov * pc.aspect * lin,
                          ndc.y * pc.tan_half_fov * lin,
                          -lin);
@@ -107,7 +110,9 @@ void main() {
             float sample_lin = linearize_depth(texture(uDepthTex, uv).r);
             // 射线穿到几何后方（且没跑出采样半径）→ 这里存在遮挡物，
             // 取它的颜色作为该方向的间接光来源。
-            if (ray_depth > sample_lin + 0.02 && ray_depth < sample_lin + pc.radius) {
+            // 下限阈值用 max(lin * 0.02, 0.005) 做相对深度阈值：
+            float eps = max(lin * 0.02, 0.005);
+            if (ray_depth > sample_lin + eps && ray_depth < sample_lin + pc.radius) {
                 vec3 c = texture(uColorTex, uv).rgb;
                 // cos 权重（能量）+ 距离衰减（越远贡献越弱）
                 float w = ct / (1.0 + t * t * 4.0);

@@ -188,16 +188,13 @@ void main() {
         ldr += (n - 0.5) * pc.film_grain;
     }
 
+    // IGN dithering 打散 8-bit quantization banding。
+    // 用 Interleaved Gradient Noise 代替 Bayer 4x4——Bayer 在屏幕上有 4x4 周期性
+    // pattern（iy=mod(y,4)），产生可见 4 像素 banding；IGN 是 Golden 比率网格采样，
+    // 屏幕上完全无周期性，现代引擎（UE5/Cyberpunk）都用它。
     if (pc.dithering != 0) {
-        const float bayer[16] = float[](
-             0.0,  8.0,  2.0, 10.0,
-            12.0,  4.0, 14.0,  6.0,
-             3.0, 11.0,  1.0,  9.0,
-            15.0,  7.0, 13.0,  5.0);
-        int ix = int(mod(gl_FragCoord.x, 4.0));
-        int iy = int(mod(gl_FragCoord.y, 4.0));
-        float b = bayer[ix + iy * 4] / 16.0;
-        ldr += (b - 0.5) / 255.0;
+        float n = interleaved_gradient_noise(gl_FragCoord.xy);
+        ldr += (n - 0.5) * 2.0 / 255.0;
     }
 
     FragColor = vec4(ldr, 1.0);

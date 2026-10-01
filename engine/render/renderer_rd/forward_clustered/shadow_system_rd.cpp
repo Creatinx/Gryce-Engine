@@ -198,17 +198,22 @@ math::Matrix4f ShadowSystemRD::_compute_cascade_light_matrix(
     const float texel_size_y = (light_space_max.y - light_space_min.y) / cascade_sizes_[cascade];
     const float texel_size_z = (light_space_max.z - light_space_min.z) / cascade_sizes_[cascade];
 
+    // 先记录原始跨度，再按 texel 对齐 min；max 用对齐后的 min + 原始跨度，
+    // 保证包围盒尺寸不被写坏（原实现 max 项在右侧又读回已被覆盖的 min，互相抵消、宽度失真）。
     // 将包围盒对齐到 texel 网格
     auto snap_to_texel = [](float val, float texel_size) -> float {
         return std::floor(val / texel_size) * texel_size;
     };
 
+    const float span_x = light_space_max.x - light_space_min.x;
+    const float span_y = light_space_max.y - light_space_min.y;
+    const float span_z = light_space_max.z - light_space_min.z;
     light_space_min.x = snap_to_texel(light_space_min.x, texel_size_x);
     light_space_min.y = snap_to_texel(light_space_min.y, texel_size_y);
     light_space_min.z = snap_to_texel(light_space_min.z, texel_size_z);
-    light_space_max.x = light_space_min.x + (light_space_max.x - light_space_min.x);
-    light_space_max.y = light_space_min.y + (light_space_max.y - light_space_min.y);
-    light_space_max.z = light_space_min.z + (light_space_max.z - light_space_min.z);
+    light_space_max.x = light_space_min.x + span_x;
+    light_space_max.y = light_space_min.y + span_y;
+    light_space_max.z = light_space_min.z + span_z;
 
     // 构建正交投影矩阵
     math::Matrix4f light_proj = math::Matrix4f::ortho(
@@ -307,10 +312,20 @@ void ShadowSystemRD::update(const math::Camera& camera,
         // 计算级联分割
         _compute_cascade_splits(camera);
 
+        GLOG_INFO("CSM cascade splits: near={:.3f}, [0]={:.3f}, [1]={:.3f}, [2]={:.3f}, [3]={:.3f}, far={:.3f}",
+                  camera.near_plane(),
+                  cascade_splits_[0], cascade_splits_[1], cascade_splits_[2], cascade_splits_[3],
+                  camera.far_plane());
+
         // 计算每级级联的光照矩阵
         for (int i = 0; i < cascade_count_; ++i) {
             cascade_light_matrices_[i] = _compute_cascade_light_matrix(camera, i, current_light_dir_);
             light_matrices_.push_back(cascade_light_matrices_[i]);
+
+            // 打印级联光照矩阵的平移行（row 3 = 位移分量）用于调试
+            const auto& m = cascade_light_matrices_[i];
+            GLOG_INFO("CSM cascade {} light matrix translation: ({:.3f}, {:.3f}, {:.3f})",
+                      i, m(3, 0), m(3, 1), m(3, 2));
         }
     }
 

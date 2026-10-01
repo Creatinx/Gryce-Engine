@@ -76,6 +76,10 @@ public:
         uint32_t sort_key = 0;           // 排序键
         uint32_t variant_key = 0;        // shader 变体键
         bool skinned = false;
+        // 世界空间包围球（视锥剔除用）；bounds_valid=false 时保守保留、不剔除
+        math::Vector3f bounds_center = math::Vector3f::zero();
+        float bounds_radius = 0.0f;
+        bool bounds_valid = false;
     };
 
     RenderForwardClustered();

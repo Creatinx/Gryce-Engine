@@ -1,5 +1,6 @@
 #include "render/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "render/render_context.h"
+#include "render/render_pipeline.h"
 #include "render/render.h"
 #include "render/texture.h"
 #include "render/framebuffer.h"
@@ -373,10 +374,10 @@ void RenderForwardClustered::_setup_cluster(const RenderData& data) {
         scene_lights_.push_back(ld);
     });
 
-    // 构建集群
+    // 构建集群，近/远平面跟随相机（原为硬编码 1000，远于相机 far 时 slice/AABB 错位）
     cluster_builder_->build(current_camera_, scene_lights_,
                             viewport_width_, viewport_height_,
-                            0.1f, 1000.0f);
+                            current_camera_.near_plane(), current_camera_.far_plane());
 }
 
 void RenderForwardClustered::_render_shadows(RenderContext* ctx) {
@@ -400,6 +401,8 @@ void RenderForwardClustered::_render_shadows(RenderContext* ctx) {
         ctx->set_cull_face(CullMode::Front);
 
         const math::Matrix4f light_mvp = shadow_system_->cascade_light_matrix(cascade);
+        // 该级联的光源空间视锥：只绘制落入本级联的物体（N 物体 × 4 级联 → 大幅减少深度绘制）
+        const CullFrustum light_frustum = extract_cull_frustum(light_mvp);
 
         // 获取阴影渲染用的 shader
         // 使用基础变体 + 深度 prepass 的 shader 来渲染深度
@@ -409,6 +412,10 @@ void RenderForwardClustered::_render_shadows(RenderContext* ctx) {
         if (!shadow_shader.is_valid()) continue;
 
         for (const auto& elem : render_lists_[RENDER_LIST_OPAQUE]) {
+            if (elem.bounds_valid &&
+                !light_frustum.contains_sphere(elem.bounds_center, elem.bounds_radius)) {
+                continue;
+            }
             math::Matrix4f mvp = light_mvp * elem.transform;
             ctx->set_uniform_mat4(shadow_shader, "uModelMatrix", elem.transform);
             ctx->set_uniform_mat4(shadow_shader, "uMVP", mvp);
@@ -440,8 +447,13 @@ void RenderForwardClustered::_render_shadows(RenderContext* ctx) {
         // 获取聚光灯矩阵
         // 索引：CSM 级联之后
         const math::Matrix4f& spot_mvp = shadow_system_->spot_light_matrix(si);
+        const CullFrustum spot_frustum = extract_cull_frustum(spot_mvp);
 
         for (const auto& elem : render_lists_[RENDER_LIST_OPAQUE]) {
+            if (elem.bounds_valid &&
+                !spot_frustum.contains_sphere(elem.bounds_center, elem.bounds_radius)) {
+                continue;
+            }
             math::Matrix4f mvp = spot_mvp * elem.transform;
             ctx->set_uniform_mat4(shadow_shader, "uModelMatrix", elem.transform);
             ctx->set_uniform_mat4(shadow_shader, "uMVP", mvp);
@@ -476,8 +488,13 @@ void RenderForwardClustered::_render_shadows(RenderContext* ctx) {
             float half_w = 20.0f; // 默认范围，从场景光源获取
             math::Matrix4f light_proj = math::Matrix4f::ortho(-half_w, half_w, -half_w, half_w, 0.01f, 40.0f);
             math::Matrix4f light_mvp = light_proj * light_view;
+            const CullFrustum face_frustum = extract_cull_frustum(light_mvp);
 
             for (const auto& elem : render_lists_[RENDER_LIST_OPAQUE]) {
+                if (elem.bounds_valid &&
+                    !face_frustum.contains_sphere(elem.bounds_center, elem.bounds_radius)) {
+                    continue;
+                }
                 math::Matrix4f mvp = light_mvp * elem.transform;
                 ctx->set_uniform_mat4(shadow_shader, "uModelMatrix", elem.transform);
                 ctx->set_uniform_mat4(shadow_shader, "uMVP", mvp);
@@ -502,13 +519,26 @@ void RenderForwardClustered::_render_depth_prepass(RenderContext* ctx) {
     ctx->set_blend(false);
     ctx->set_cull_face(CullMode::Back);
 
+    // 注意：本 shader 程序（scene_depth_prepass）同时被阴影 pass 复用，而
+    // variant 后缀只用于日志、不参与 load_program —— 阴影 pass 会把 uMVP 写成
+    // 光照矩阵。因此这里必须显式重设 uMVP / uNormalMatrix，否则：
+    //   1) uNormalMatrix 从未被设置（=0），法线全无效，GTAO 拿到的世界法线是垃圾；
+    //   2) uMVP 残留为上一次阴影 pass 的光照矩阵，prepass 会用错误矩阵写 fb_.depth_tex。
+    const math::Matrix4f view = current_camera_.get_view_matrix();
+    const math::Matrix4f view_proj = current_camera_.get_projection_matrix() * view;
+
     for (const auto& elem : render_lists_[RENDER_LIST_OPAQUE]) {
         uint32_t variant = elem.variant_key | SHADER_VARIANT_DEPTH_NORMAL;
         RHIShaderHandle shader = shader_system_->get_shader(
             variant, SceneShaderForwardClustered::SHADER_GROUP_DEPTH_PREPASS);
         if (!shader.is_valid()) continue;
 
+        math::Matrix4f mvp = view_proj * elem.transform;
+        math::Matrix4f normal_matrix = elem.transform.inverse().transpose();
+
         ctx->set_uniform_mat4(shader, "uModelMatrix", elem.transform);
+        ctx->set_uniform_mat4(shader, "uMVP", mvp);
+        ctx->set_uniform_mat4(shader, "uNormalMatrix", normal_matrix);
         ctx->draw_mesh(elem.mesh, shader);
     }
 }
@@ -575,13 +605,38 @@ void RenderForwardClustered::_render_opaque_pass(RenderContext* ctx) {
     // SSAO slot
     static constexpr int kSSAOSlot = TextureSlots::kPBRSSAO; // 33
 
+    // 阴影 uniform 名：静态常量表，避免在逐物体循环里用 std::string + std::to_string 拼名（每帧堆分配）
+    static constexpr const char* kCascadeLightSpaceNames[4] = {
+        "uCascadeLightSpace[0]", "uCascadeLightSpace[1]",
+        "uCascadeLightSpace[2]", "uCascadeLightSpace[3]",
+    };
+    static constexpr const char* kSpotLightSpaceNames[4] = {
+        "uSpotLightSpace[0]", "uSpotLightSpace[1]",
+        "uSpotLightSpace[2]", "uSpotLightSpace[3]",
+    };
+    static constexpr const char* kCSMShadowMapNames[4] = {
+        "uShadowMap", "uShadowMap1", "uShadowMap2", "uShadowMap3",
+    };
+    static constexpr const char* kCSMShadowDepthNames[4] = {
+        "uShadowMapDepth", "uShadowMapDepth1", "uShadowMapDepth2", "uShadowMapDepth3",
+    };
+    static constexpr const char* kSpotShadowMapNames[4] = {
+        "uSpotShadowMap0", "uSpotShadowMap1", "uSpotShadowMap2", "uSpotShadowMap3",
+    };
+
     // 绑定 CSM 阴影贴图
     int cascade_count = std::min(shadow_system_->cascade_count(), 4);
     for (int c = 0; c < cascade_count; ++c) {
         RHITextureHandle shadow_tex = shadow_system_->cascade_shadow_tex(c);
         if (shadow_tex.is_valid()) {
-            ctx->set_texture_raw_depth({}, shadow_tex, kCSMSlots[c], nullptr);
-            // 也绑定原始深度 sampler（PCSS 需要）
+            // kCSMSlots 对应 shader 中的 sampler2DShadow（uShadowMap*），
+            // 必须在 GL_COMPARE_REF_TO_TEXTURE 模式下采样才能返回深度比较结果（0/1）。
+            // 用 set_texture（bind()）而非 set_texture_raw_depth（bind_raw_depth()），
+            // 后者会把 GL_TEXTURE_COMPARE_MODE 设为 GL_NONE，导致 texture() 直接返回
+            // 原始深度值而非比较结果，阴影因子变成 0.x 的灰色条纹而非 0/1 二值。
+            ctx->set_texture({}, shadow_tex, kCSMSlots[c], nullptr);
+            // kCSMDepthSlots 对应 sampler2D（uShadowMapDepth*），PCSS blocker search
+            // 需要读取真实深度值，保持 raw_depth 模式。
             ctx->set_texture_raw_depth({}, shadow_tex, kCSMDepthSlots[c], nullptr);
         }
     }
@@ -591,7 +646,8 @@ void RenderForwardClustered::_render_opaque_pass(RenderContext* ctx) {
     for (int s = 0; s < spot_count; ++s) {
         RHITextureHandle spot_tex = shadow_system_->spot_shadow_tex(s);
         if (spot_tex.is_valid()) {
-            ctx->set_texture_raw_depth({}, spot_tex, kSpotSlots[s], nullptr);
+            // 聚光灯阴影贴图同样声明为 sampler2DShadow，必须用比较模式。
+            ctx->set_texture({}, spot_tex, kSpotSlots[s], nullptr);
         }
     }
 
@@ -629,10 +685,13 @@ void RenderForwardClustered::_render_opaque_pass(RenderContext* ctx) {
 
         // ---- 阴影 uniform ----
         ctx->set_uniform_int(shader, "uCascadeCount", cascade_count);
-        ctx->set_uniform_int(shader, "uPCSSEnabled", 0);
-        ctx->set_uniform_float(shader, "uPCSSLightSize", 0.005f);
-        ctx->set_uniform_float(shader, "uPCSSMaxRadius", 20.0f);
-        ctx->set_uniform_float(shader, "uPCSSBlockerScale", 1.0f);
+        // PCSS / 级联 bias 一律取管线同步下来的参数。旧代码在这里写死
+        // uPCSSEnabled=0 与一组常量 bias，导致 API 里开的 PCSS 在前向路径
+        //（demo 走的就是它）完全不生效、阴影永远是硬边。
+        ctx->set_uniform_int(shader, "uPCSSEnabled", pp_params_.pcss_enabled);
+        ctx->set_uniform_float(shader, "uPCSSLightSize", pp_params_.pcss_light_size);
+        ctx->set_uniform_float(shader, "uPCSSMaxRadius", pp_params_.pcss_max_radius);
+        ctx->set_uniform_float(shader, "uPCSSBlockerScale", pp_params_.pcss_blocker_scale);
 
         if (cascade_count > 0) {
             ctx->set_uniform_vec4(shader, "uCascadeSplits",
@@ -644,35 +703,28 @@ void RenderForwardClustered::_render_opaque_pass(RenderContext* ctx) {
             ctx->set_uniform_vec4(shader, "uCascadeFarBlend",
                 math::Vector4f(shadow_system_->cascade_split(4), 0.15f, 0.0f, 0.0f));
             ctx->set_uniform_vec4(shader, "uCascadeBias",
-                math::Vector4f(0.0005f, 0.001f, 0.002f, 0.004f));
+                pp_params_.cascade_bias);
 
             for (int c = 0; c < cascade_count; ++c) {
-                std::string mat_name = "uCascadeLightSpace[" + std::to_string(c) + "]";
-                ctx->set_uniform_mat4(shader, mat_name.c_str(), shadow_system_->cascade_light_matrix(c));
+                ctx->set_uniform_mat4(shader, kCascadeLightSpaceNames[c],
+                                      shadow_system_->cascade_light_matrix(c));
             }
         }
 
         // 聚光灯阴影
         for (int s = 0; s < spot_count; ++s) {
-            std::string mat_name = "uSpotLightSpace[" + std::to_string(s) + "]";
-            ctx->set_uniform_mat4(shader, mat_name.c_str(), shadow_system_->spot_light_matrix(s));
+            ctx->set_uniform_mat4(shader, kSpotLightSpaceNames[s],
+                                  shadow_system_->spot_light_matrix(s));
         }
 
         // 阴影 sampler 绑定到 slot
         for (int c = 0; c < cascade_count; ++c) {
-            const char* tex_name = (c == 0) ? "uShadowMap" :
-                (c == 1) ? "uShadowMap1" :
-                (c == 2) ? "uShadowMap2" : "uShadowMap3";
-            ctx->set_uniform_int(shader, tex_name, kCSMSlots[c]);
+            ctx->set_uniform_int(shader, kCSMShadowMapNames[c], kCSMSlots[c]);
             // 原始深度 sampler
-            const char* depth_name = (c == 0) ? "uShadowMapDepth" :
-                (c == 1) ? "uShadowMapDepth1" :
-                (c == 2) ? "uShadowMapDepth2" : "uShadowMapDepth3";
-            ctx->set_uniform_int(shader, depth_name, kCSMDepthSlots[c]);
+            ctx->set_uniform_int(shader, kCSMShadowDepthNames[c], kCSMDepthSlots[c]);
         }
         for (int s = 0; s < spot_count; ++s) {
-            std::string tex_name = "uSpotShadowMap" + std::to_string(s);
-            ctx->set_uniform_int(shader, tex_name.c_str(), kSpotSlots[s]);
+            ctx->set_uniform_int(shader, kSpotShadowMapNames[s], kSpotSlots[s]);
         }
         // 聚光灯阴影贴图尺寸（16-tap PCF 需要 texel 大小）
         ctx->set_uniform_float(shader, "uSpotShadowSize",
@@ -940,6 +992,13 @@ const std::vector<RenderForwardClustered::RenderElement>& RenderForwardClustered
 void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
     clear_render_lists();
 
+    // 相机视锥体：剔除视锥外物体，避免其白耗 depth prepass / 主 pass / 阴影 pass。
+    // 与不透明 pass 使用同一投影矩阵（current_camera_.get_projection_matrix()），
+    // 保证剔除依据与实际渲染一致，不会剔掉可见物体。
+    const math::Matrix4f camera_vp =
+        current_camera_.get_projection_matrix() * current_camera_.get_view_matrix();
+    const CullFrustum camera_frustum = extract_cull_frustum(camera_vp);
+
     data.scene->foreach([&](scene::Entity* entity) {
         auto* t = entity->get_component<components::Transform>();
         if (!t) return;
@@ -958,6 +1017,8 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
             elem.prev_transform = prev_world;
             elem.variant_key = _compute_variant_key(entity, false);
             elem.skinned = false;
+            elem.bounds_valid = compute_world_mesh_bounds(
+                mesh_renderer->mesh_path, world, elem.bounds_center, elem.bounds_radius);
 
             // 到相机的距离
             math::Vector3f cam_pos = current_camera_.position();
@@ -967,11 +1028,15 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
             bool transparent = mesh_renderer->material &&
                 mesh_renderer->material->blend_mode == render::Material::BlendMode::Blend;
 
-            if (transparent) {
-                add_to_render_list(RENDER_LIST_ALPHA, elem);
-            } else {
-                add_to_render_list(RENDER_LIST_OPAQUE, elem);
-                add_to_render_list(RENDER_LIST_MOTION, elem);
+            const bool visible = !elem.bounds_valid ||
+                camera_frustum.contains_sphere(elem.bounds_center, elem.bounds_radius);
+            if (visible) {
+                if (transparent) {
+                    add_to_render_list(RENDER_LIST_ALPHA, elem);
+                } else {
+                    add_to_render_list(RENDER_LIST_OPAQUE, elem);
+                    add_to_render_list(RENDER_LIST_MOTION, elem);
+                }
             }
         }
 
@@ -984,6 +1049,8 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
             elem.prev_transform = prev_world;
             elem.variant_key = _compute_variant_key(entity, false) | SHADER_VARIANT_SKINNED;
             elem.skinned = true;
+            elem.bounds_valid = compute_world_skinned_mesh_bounds(
+                skinned_renderer->model_path, world, elem.bounds_center, elem.bounds_radius);
 
             math::Vector3f cam_pos = current_camera_.position();
             elem.distance_sq = (world_pos - cam_pos).length_sq();
@@ -991,11 +1058,15 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
             bool transparent = skinned_renderer->material &&
                 skinned_renderer->material->blend_mode == render::Material::BlendMode::Blend;
 
-            if (transparent) {
-                add_to_render_list(RENDER_LIST_ALPHA, elem);
-            } else {
-                add_to_render_list(RENDER_LIST_OPAQUE, elem);
-                add_to_render_list(RENDER_LIST_MOTION, elem);
+            const bool visible = !elem.bounds_valid ||
+                camera_frustum.contains_sphere(elem.bounds_center, elem.bounds_radius);
+            if (visible) {
+                if (transparent) {
+                    add_to_render_list(RENDER_LIST_ALPHA, elem);
+                } else {
+                    add_to_render_list(RENDER_LIST_OPAQUE, elem);
+                    add_to_render_list(RENDER_LIST_MOTION, elem);
+                }
             }
         }
     });
@@ -1511,11 +1582,17 @@ void RenderForwardClustered::_render_ssao(RenderContext* ctx) {
     ctx->set_cull_face(CullMode::None);
     ctx->set_blend(false);
 
-    // Pass 1：GTAO（从深度重建视图位置，地平线搜索）
+    // Pass 1：GTAO（从深度重建视图位置 + 法线约束 horizon 搜索）
     ctx->set_framebuffer(ssao_fbo_[0]);
     ctx->set_viewport(0, 0, ssao_w_, ssao_h_);
+    ctx->set_shader(gtao_shader_);
     ctx->set_texture_raw_depth(gtao_shader_, fb_.depth_tex, TextureSlots::kTonemapHDR, "uDepthTexture");
     ctx->set_uniform_int(gtao_shader_, "uDepthTexture", TextureSlots::kTonemapHDR);
+    if (fb_.depth_normal_tex.is_valid()) {
+        ctx->set_texture(gtao_shader_, fb_.depth_normal_tex, TextureSlots::kPBRNormal, "uNormalRoughTex");
+        ctx->set_uniform_int(gtao_shader_, "uNormalRoughTex", TextureSlots::kPBRNormal);
+    }
+    ctx->set_uniform_mat4(gtao_shader_, "uView", current_camera_.get_view_matrix());
     ctx->draw_mesh(fullscreen_mesh_, gtao_shader_);
 
     // Pass 2：深度感知双边上模糊

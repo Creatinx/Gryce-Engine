@@ -96,6 +96,103 @@ void GLBackend::begin_frame() {
     // 否则保留上一帧内容（标准 OpenGL 行为）。
     // 每帧重置状态缓存，防止外部或驱动状态变化导致缓存失效。
     state_cache_valid_ = false;
+    // GPU 计时：结算两帧前的槽（此时 GPU 已完成，且仍用 AVAILABLE 查询兜底），
+    // 再切到本帧的槽。放在这里不引入任何同步等待。
+    gpu_profile_frame_boundary();
+}
+
+// ---------------------------------------------------------------------------
+// GPU 分段计时（GL_TIME_ELAPSED）
+// ---------------------------------------------------------------------------
+bool GLBackend::gpu_profile_supported() const {
+    return GLEW_VERSION_3_3 != 0;
+}
+
+void GLBackend::set_gpu_profiling(bool enabled) {
+    if (enabled == gpu_profiling_enabled_) return;
+    gpu_profiling_enabled_ = enabled;
+    gpu_pending_scope_ = -1;
+    gpu_stats_.reset();
+    for (auto& c : gpu_scope_count_) c = 0;
+    if (!enabled) return;
+    if (!gpu_profiling_ready_ && gpu_profile_supported()) {
+        for (auto& slot : gpu_queries_) {
+            slot.resize(k_gpu_max_scopes);
+            for (auto& q : slot) {
+                if (q.id == 0) glGenQueries(1, &q.id);
+            }
+        }
+        gpu_profiling_ready_ = true;
+    }
+    gpu_slot_ = 0;
+    GLOG_INFO("GLBackend: GPU profiling {}{}", enabled ? "enabled" : "disabled",
+              gpu_profiling_ready_ ? "" : " (unavailable)");
+}
+
+void GLBackend::gpu_profile_begin(const char* name) {
+    if (!gpu_profiling_enabled_ || !gpu_profiling_ready_) return;
+    // 以 GL 实际状态为准判断"是否已有未闭合区间"，避免帧边界复位后
+    // glBeginQuery 撞上仍在生效的 query（GL_INVALID_OPERATION）。
+    GLint active = 0;
+    glGetQueryiv(GL_TIME_ELAPSED, GL_CURRENT_QUERY, &active);
+    if (active != 0) {
+        if (!gpu_nested_warned_) {
+            gpu_nested_warned_ = true;
+            GLOG_WARN("GLBackend: gpu_profile_begin('{}') 嵌套调用被忽略（计时区间必须平铺）",
+                      name ? name : "?");
+        }
+        return;
+    }
+    const int count = gpu_scope_count_[gpu_slot_];
+    if (count >= k_gpu_max_scopes) return;
+    auto& q = gpu_queries_[gpu_slot_][count];
+    q.name = name ? name : "?";
+    glBeginQuery(GL_TIME_ELAPSED, q.id);
+    gpu_scope_count_[gpu_slot_] = count + 1;
+    gpu_pending_scope_ = count;
+}
+
+void GLBackend::gpu_profile_end() {
+    if (!gpu_profiling_enabled_ || !gpu_profiling_ready_) return;
+    GLint active = 0;
+    glGetQueryiv(GL_TIME_ELAPSED, GL_CURRENT_QUERY, &active);
+    if (active != 0) glEndQuery(GL_TIME_ELAPSED);
+    gpu_pending_scope_ = -1;
+}
+
+void GLBackend::gpu_profile_frame_boundary() {
+    if (!gpu_profiling_enabled_ || !gpu_profiling_ready_) return;
+    // 上一帧若有区间没闭合（提前 return 等），这里丢弃挂起状态，保证后续配对不错位。
+    gpu_pending_scope_ = -1;
+    // 结算"两帧前的槽"：那时提交的命令必然执行完毕（仍以 AVAILABLE 兜底，
+    // 避免任何形式的阻塞等待）。
+    const int done = (gpu_slot_ + 1) % k_gpu_slots;
+    const int count = gpu_scope_count_[done];
+    for (int i = 0; i < count; ++i) {
+        const auto& q = gpu_queries_[done][i];
+        GLuint available = 0;
+        glGetQueryObjectuiv(q.id, GL_QUERY_RESULT_AVAILABLE, &available);
+        if (!available) continue;
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(q.id, GL_QUERY_RESULT, &ns);
+        gpu_stats_.add(q.name, static_cast<double>(ns) / 1e6);
+    }
+    gpu_scope_count_[done] = 0;
+    gpu_slot_ = done;
+    gpu_stats_.set_frames(gpu_stats_.frames() + 1);
+}
+
+void GLBackend::gpu_profile_dump() {
+    if (!gpu_profiling_enabled_) {
+        std::fprintf(stdout, "[gpu] 未开启 GPU 计时（GRender_SetGPUProfiling(1) / --bench）\n");
+        return;
+    }
+    gpu_stats_.print("OpenGL");
+}
+
+void GLBackend::gpu_profile_reset() {
+    gpu_stats_.reset();
+    for (auto& c : gpu_scope_count_) c = 0;
 }
 
 void GLBackend::flush_gpu() {

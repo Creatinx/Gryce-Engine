@@ -23,7 +23,7 @@
 #include "render/vulkan/vk_swapchain.h"
 #include "render/vulkan/vk_texture.h"
 #include "render/vulkan/vk_framebuffer.h"
-#include "render/vulkan/vk_glsl_compiler.h"
+#include "render/vulkan/vk_spirv_cache.h"
 #include "resources/project.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
@@ -78,28 +78,35 @@ VkShaderModule create_shader_module(VkDevice dev, const std::vector<uint32_t>& c
     return module;
 }
 
-// 单阶段着色器加载：优先源码 → shaderc 首编（走两级解析，支持项目覆盖 + core
-// 兜底）；shaderc 不可用或源码缺失时回退 `spirv/vulkan_{base}.{vert|frag}.spv`。
-// from_source 置真表示本次走首编路径。
+// 单阶段着色器加载：共享的 SPIR-V 缓存（内存 → 磁盘 → shaderc 首编并落盘），
+// 源码走两级解析以支持项目覆盖 + core 兜底；源码缺失/编译失败才回退
+// `spirv/vulkan_{base}.{vert|frag}.spv` 预编译产物。
+// from_source 置真表示本次由源码得到 SPIR-V（可能来自缓存）。
 VkShaderModule load_2d_stage(VkDevice dev, const std::string& base, GlslStage stage,
                              const std::string& spirv_dir, bool& from_source) {
     from_source = false;
-    if (shaderc_available()) {
-        const char* ext = stage == GlslStage::Vertex ? ".vert" : ".frag";
-        ShaderStageSource src = resolve_shader_stage_source(base, "res:/shaders", ext,
-                                                            RenderAPI::Vulkan);
+    const char* ext = stage == GlslStage::Vertex ? ".vert" : ".frag";
+    const char* short_ext = stage == GlslStage::Vertex ? "vert" : "frag";
+    const std::string spv = spirv_dir + "vulkan_" + base + "." + short_ext + ".spv";
+
+    ShaderStageSource src = resolve_shader_stage_source(base, "res:/shaders", ext,
+                                                        RenderAPI::Vulkan);
+    if (src.ok()) {
         std::string err;
         std::vector<uint32_t> code;
-        if (src.ok() && compile_glsl_to_spirv(src.code, src.path, stage, code, err)) {
+        SpirvCacheSource from = SpirvCacheSource::None;
+        if (load_or_compile_spirv(src.code, src.path, spv, stage, code, err, &from)) {
             from_source = true;
+            if (from == SpirvCacheSource::None) {
+                GLOG_INFO("VulkanRenderer2D: 2D shader '{}' first-run compiled and cached", base);
+            }
             return create_shader_module(dev, code);
         }
-        GLOG_WARN("VulkanRenderer2D: first-run compile of '{}' failed ({}); "
+        GLOG_WARN("VulkanRenderer2D: compile of '{}' failed ({}); "
                   "falling back to pre-compiled SPIR-V", base, err);
     }
+
     std::vector<uint32_t> code;
-    const char* short_ext = stage == GlslStage::Vertex ? "vert" : "frag";
-    std::string spv = spirv_dir + "vulkan_" + base + "." + short_ext + ".spv";
     if (!load_spirv_file(spv, code)) {
         return VK_NULL_HANDLE;
     }
@@ -678,8 +685,10 @@ VkPipeline VulkanRenderer2D::create_pipeline(VkShaderModule vert_module, VkShade
     info.renderPass = render_pass;
     info.subpass = 0;
 
+    // 复用设备全局管线缓存，让驱动跳过重复的 SPIR-V → ISA 编译。
+    const VkPipelineCache cache = vk_device_ ? vk_device_->pipeline_cache() : VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(dev, cache, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
         GLOG_ERROR("VulkanRenderer2D: failed to create graphics pipeline");
         return VK_NULL_HANDLE;
     }

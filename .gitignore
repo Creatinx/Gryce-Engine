@@ -23,6 +23,11 @@ build_*/
 shot_*.png
 *.log
 
+# ---- Vulkan SPIR-V 磁盘缓存的内容指纹边车 ----
+# .spv 本体随项目提交（作为 shader 源码不可用时的兜底产物），
+# .hash 只是"源码内容是否变化"的校验信息，属于本地缓存，不入库。
+*.spv.hash
+
 # ---- 系统 ----
 Thumbs.db
 .DS_Store

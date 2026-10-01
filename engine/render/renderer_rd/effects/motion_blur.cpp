@@ -4,6 +4,7 @@
 #include "render/framebuffer.h"
 #include "render/mesh.h"
 #include "render/shader.h"
+#include "render/gpu_scope.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render {
@@ -142,6 +143,7 @@ void MotionBlur_RD::render(RenderContext* ctx,
 {
     if (!initialized_ || !targets_valid_) return;
     if (!motion_blur_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
+    GpuScope _gpu(*ctx, "motion_blur");
 
     // 确保目标大小匹配
     if (blur_w_ != viewport_w || blur_h_ != viewport_h) {

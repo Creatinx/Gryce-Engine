@@ -13,8 +13,8 @@ uniform float uSSILNear;
 uniform float uSSILFar;
 
 float linearize_depth(float d) {
-    return (2.0 * uSSILNear * uSSILFar) /
-           (uSSILFar + uSSILNear - d * (uSSILFar - uSSILNear));
+    // 深度纹理存的是 w = far*(z-near)/((far-near)*z)（见 SSR 的同名函数）
+    return (uSSILNear * uSSILFar) / max(uSSILFar - d * (uSSILFar - uSSILNear), 1e-6);
 }
 
 void main() {

@@ -21,6 +21,8 @@ public:
     void upload_vertices(const void* data, uint32_t size, uint32_t count) override;
     void upload_indices(const void* data, uint32_t size, uint32_t count) override;
     void set_layout(const VertexLayout& layout) override;
+    void set_instance_layout(const VertexLayout& layout) override;
+    void upload_instances(const void* data, uint32_t size, uint32_t count) override;
 
     void bind() const override;
     void draw() const override;
@@ -28,16 +30,21 @@ public:
 
     uint32_t vertex_count() const override { return vertex_count_; }
     uint32_t index_count() const override { return index_count_; }
+    uint32_t instance_count() const override { return instance_count_; }
 
 private:
     uint32_t vao_ = 0;
     uint32_t vbo_ = 0;
     uint32_t ebo_ = 0;
+    uint32_t instance_vbo_ = 0;
     uint32_t vertex_count_ = 0;
     uint32_t index_count_ = 0;
+    uint32_t instance_count_ = 0;
     uint32_t vertex_buffer_size_ = 0;
     uint32_t index_buffer_size_ = 0;
+    uint32_t instance_buffer_size_ = 0;
     VertexLayout layout_;
+    VertexLayout instance_layout_;
     bool has_index_ = false;
 
     uint32_t get_gl_type(VertexType type) const;

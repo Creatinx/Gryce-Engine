@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -24,6 +25,7 @@
 #include "components/transform.h"
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
+#include "components/3d/particle_system_3d.h"
 #include "scene/query.h"
 #include "math/camera.h"
 #include "resources/resource_path.h"
@@ -46,8 +48,9 @@ struct MeshBoundsCache {
     float radius = 0.0f;
 };
 
-static std::unordered_map<std::string, MeshBoundsCache> g_mesh_bounds_cache;
-static std::mutex g_mesh_bounds_mutex;
+std::unordered_map<std::string, MeshBoundsCache> g_mesh_bounds_cache;
+std::mutex g_mesh_bounds_mutex;
+} // namespace
 
 bool compute_world_mesh_bounds(const std::string& mesh_path, const math::Matrix4f& world,
                                math::Vector3f& out_center, float& out_radius) {
@@ -88,13 +91,16 @@ bool compute_world_mesh_bounds(const std::string& mesh_path, const math::Matrix4
 // ---------------------------------------------------------------------------
 // 蒙皮模型本地包围球缓存：按 model_path 缓存所有 submesh 合并后的中心与半径。
 // ---------------------------------------------------------------------------
+namespace {
+
 struct SkinnedMeshBoundsCache {
     math::Vector3f center;
     float radius = 0.0f;
 };
 
-static std::unordered_map<std::string, SkinnedMeshBoundsCache> g_skinned_bounds_cache;
-static std::mutex g_skinned_bounds_mutex;
+std::unordered_map<std::string, SkinnedMeshBoundsCache> g_skinned_bounds_cache;
+std::mutex g_skinned_bounds_mutex;
+} // namespace
 
 bool compute_world_skinned_mesh_bounds(const std::string& model_path, const math::Matrix4f& world,
                                        math::Vector3f& out_center, float& out_radius) {
@@ -131,8 +137,6 @@ bool compute_world_skinned_mesh_bounds(const std::string& model_path, const math
     out_radius = local.radius * std::max({scale_x, scale_y, scale_z});
     return true;
 }
-
-} // namespace
 
 RenderPipeline::RenderPipeline() = default;
 
@@ -191,6 +195,17 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
     } else if (!create_grid_mesh(ctx)) {
         GLOG_WARN("RenderPipeline: grid mesh creation failed, viewport grid disabled");
         grid_shader_ = RHIShaderHandle{};
+    }
+
+    // 3D 粒子 shader：可选，加载失败仅禁用粒子绘制。
+    // 目标与不透明几何一致（HDR 或后缓冲），使粒子参与 tonemap/bloom。
+    particle_shader_ = load_shader("particle", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!particle_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: particle shader unavailable, 3D particles disabled");
+    }
+    particle_depth_shader_ = load_shader("particle_depth", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!particle_depth_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: particle_depth shader unavailable, falling back to particle shader for SSR depth");
     }
 
     shadow_shader_ = load_shader("shadow_map", shadow_fbos_[0], false, false);
@@ -371,6 +386,10 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         }
         if (deferred_enabled_) {
             gbuffer_shader_ = load_shader("g_buffer", gbuffer_fbo_, true, false);
+            // 同 depth_normal：G-buffer 是数据通道，不能参与 alpha 混合。
+            if (IShader* s = ctx_->shader(gbuffer_shader_)) {
+                s->set_pipeline_blending(false);
+            }
             if (!gbuffer_shader_.is_valid()) {
                 GLOG_WARN("RenderPipeline: g_buffer shader unavailable, fallback to forward");
                 deferred_enabled_ = false;
@@ -396,6 +415,11 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         if (create_normal_prepass(ctx)) {
             depth_normal_shader_ =
                 load_shader("depth_normal", prepass_normal_fbo_, true, false);
+            // 数据通道：写的是法线/粗糙度，绝不能被 alpha 混合（Vulkan 的混合状态
+            // 烘在管线里，engine 侧的 set_blend(false) 对它无效）。
+            if (IShader* s = ctx_->shader(depth_normal_shader_)) {
+                s->set_pipeline_blending(false);
+            }
             if (!depth_normal_shader_.is_valid()) {
                 GLOG_WARN("RenderPipeline: depth_normal shader unavailable, "
                           "SSR/SSIL disabled on forward path");
@@ -430,6 +454,13 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
     if (hdr_enabled_ && ssr_.valid()) {
         ssr_.create_targets(viewport_width_, viewport_height_);
     }
+
+    // SSR 出屏兜底：反射探针（相机锚定的 3x2 面图集）。
+    // 创建失败时句柄无效，ssr_ 自动退回旧行为（未命中交给 IBL）。
+    if (hdr_enabled_ && !create_probe_targets(ctx)) {
+        GLOG_WARN("RenderPipeline: reflection probe targets failed, SSR probe fallback disabled");
+    }
+    ssr_.set_reflection_probe(probe_atlas_tex_, false);
 
     // 体积雾
     fog_.init(ctx, shader_dir_);
@@ -596,6 +627,15 @@ void RenderPipeline::shutdown() {
         ctx_->destroy_shader(grid_shader_);
         grid_shader_ = RHIShaderHandle{};
     }
+    if (owns_shaders_ && particle_shader_.is_valid()) {
+        ctx_->destroy_shader(particle_shader_);
+        particle_shader_ = RHIShaderHandle{};
+    }
+    if (owns_shaders_ && particle_depth_shader_.is_valid()) {
+        ctx_->destroy_shader(particle_depth_shader_);
+        particle_depth_shader_ = RHIShaderHandle{};
+    }
+    particle_items_.clear();
 
     for (auto& fb : shadow_fbos_) {
         if (fb.is_valid()) {
@@ -622,6 +662,7 @@ void RenderPipeline::shutdown() {
 
     shadow_atlas_.destroy();
 
+    destroy_probe_targets();
     ssr_.destroy();
     fog_.destroy();
     dof_.destroy();
@@ -678,6 +719,8 @@ int RenderPipeline::poll_shader_hot_reload(RenderContext& ctx) {
     check(shadow_shader_);
     check(skinned_pbr_shader_);
     check(grid_shader_);
+    check(particle_shader_);
+    check(particle_depth_shader_);
     check(skybox_shader_);
     check(tonemap_shader_);
     check(bloom_threshold_shader_);
@@ -747,8 +790,21 @@ void RenderPipeline::set_lights(const std::vector<Light>& lights) {
 }
 
 void RenderPipeline::set_viewport(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    const bool changed = (width != viewport_width_ || height != viewport_height_);
     viewport_width_ = width;
     viewport_height_ = height;
+    // 尺寸变化时所有离屏目标（HDR / G-buffer / 预通道 / 各效果）都必须重建。
+    // 以前只有 GViewport_SetSize 会走 resize_render_targets，独立程序直接
+    // set_viewport 改分辨率时目标仍是旧尺寸 —— 表现为主 pass 正常但
+    // SSR / SSAO 等屏幕空间效果整片失效（读取的深度/法线是旧尺寸）。
+    // 重建是 GPU 资源操作，必须排到渲染线程执行。
+    if (changed && initialized_ && ctx_) {
+        RenderContext* ctx = ctx_;
+        ctx->run_on_render_thread([this, width, height]() {
+            resize_render_targets_impl(width, height);
+        });
+    }
 }
 
 void RenderPipeline::set_ssr_params(float max_steps, float fade_range) {
@@ -780,7 +836,7 @@ void RenderPipeline::set_fog_params(const math::Vector3f& color, float density, 
     fog_height_ = height;
 }
 
-bool RenderPipeline::Frustum::contains_sphere(const math::Vector3f& center, float radius) const {
+bool CullFrustum::contains_sphere(const math::Vector3f& center, float radius) const {
     for (int i = 0; i < 6; ++i) {
         const math::Vector3f normal(planes[i].x, planes[i].y, planes[i].z);
         float distance = normal.dot(center) + planes[i].w;
@@ -791,8 +847,8 @@ bool RenderPipeline::Frustum::contains_sphere(const math::Vector3f& center, floa
     return true;
 }
 
-RenderPipeline::Frustum RenderPipeline::extract_frustum(const math::Matrix4f& vp) const {
-    Frustum frustum;
+CullFrustum extract_cull_frustum(const math::Matrix4f& vp) {
+    CullFrustum frustum;
     // 提取第 i 行（列主序：row i = m[i], m[i+4], m[i+8], m[i+12]）
     auto row = [&](int i) {
         return math::Vector4f(vp.m[i], vp.m[i + 4], vp.m[i + 8], vp.m[i + 12]);
@@ -813,6 +869,10 @@ RenderPipeline::Frustum RenderPipeline::extract_frustum(const math::Matrix4f& vp
         }
     }
     return frustum;
+}
+
+RenderPipeline::Frustum RenderPipeline::extract_frustum(const math::Matrix4f& vp) const {
+    return extract_cull_frustum(vp);
 }
 
 bool RenderPipeline::is_inside_frustum(const Frustum& frustum, const math::Matrix4f& world_transform,
@@ -990,8 +1050,11 @@ bool RenderPipeline::set_default_environment() {
     // 并在太阳方向放一个高亮斑（HDR 值远大于 1，金属才有像样的高光）。
     // 方向约定与 IBLGenerator::sample_equirectangular 一致：
     //   u = atan2(z, x)/2π + 0.5，v = acos(y)/π（v=0 在天顶）
-    constexpr int k_w = 256;
-    constexpr int k_h = 128;
+    // 程序化天空是"屏幕外方向反射"的唯一来源（铬面绝大部分方向都射向屏幕外），
+    // 分辨率直接决定这些反射的锐度。原来 256x128 + 128² 预过滤会让金属反射
+    // 糊成一片色块，看起来"分辨率很低"。
+    constexpr int k_w = 1024;
+    constexpr int k_h = 512;
     constexpr float k_pi = 3.14159265f;
 
     assets::TextureData data;
@@ -1001,8 +1064,12 @@ bool RenderPipeline::set_default_environment() {
     data.is_float = true;
     data.float_pixels.assign(static_cast<size_t>(k_w) * k_h * 4, 0.0f);
 
-    // 与 demo 场景方向光一致：光来自上方偏 +X/+Z
-    const math::Vector3f sun_dir = math::Vector3f(0.45f, 1.0f, 0.35f).normalized();
+    // 与场景方向光对齐：sun_dir 是"太阳所在方向"，场景里方向光的 direction 是
+    // "光的传播方向" = -sun_dir。demo 里方向光 direction = (-0.7,-1,0.55)，
+    // 也就是太阳在 (+X, -Z) 上方（相机对面偏右），这里必须同号 ——
+    // 否则天空最亮的一侧与投影方向相反，看到的阴影会像"投错了方向"。
+    // 场景 Sun 实体的位置也已改成 (4,6,-3)，三处（方向/位置/环境）互相对齐。
+    const math::Vector3f sun_dir = math::Vector3f(0.7f, 1.0f, -0.5f).normalized();
     const math::Vector3f sky_horizon(0.86f, 0.80f, 0.71f);
     const math::Vector3f sky_zenith(0.20f, 0.32f, 0.62f);
     const math::Vector3f ground_near(0.30f, 0.29f, 0.27f);
@@ -1044,7 +1111,12 @@ bool RenderPipeline::set_default_environment() {
         }
     }
 
-    auto ibl = IBLGenerator::generate(&data, 512, 32, 128, 256);
+    // (data, cubemap_size, irradiance_size, prefilter_size, brdf_size)
+    // prefilter 从 128 提到 512：镜面反射（roughness≈0 取 base mip）的清晰度
+    // 直接由它决定。
+    // 注意 prefilter 是 CPU 逐纹素卷积（每级 samples = 16+48*level），512 会让
+    // 启动多花约 5 秒；256 是"清晰度 vs 启动时间"的折中（原值 128）。
+    auto ibl = IBLGenerator::generate(&data, 512, 64, 256, 256);
     if (!ibl || !ibl->valid()) {
         GLOG_ERROR("RenderPipeline: failed to generate default environment IBL");
         return false;
@@ -1305,6 +1377,179 @@ void RenderPipeline::render_skybox(RenderContext& ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// SSR 出屏兜底：反射探针（相机锚定的 3x2 面图集）
+// ---------------------------------------------------------------------------
+bool RenderPipeline::create_probe_targets(RenderContext* ctx) {
+    probe_atlas_tex_ = ctx->create_texture();
+    ITexture* atlas = ctx->texture(probe_atlas_tex_);
+    if (!probe_atlas_tex_.is_valid() || !atlas ||
+        !atlas->create(TextureFormat::RGBA16F, k_probe_atlas_w, k_probe_atlas_h, nullptr)) {
+        return false;
+    }
+    atlas->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    atlas->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    probe_depth_tex_ = ctx->create_texture();
+    ITexture* depth = ctx->texture(probe_depth_tex_);
+    if (!probe_depth_tex_.is_valid() || !depth ||
+        !depth->create_depth(k_probe_atlas_w, k_probe_atlas_h)) {
+        return false;
+    }
+
+    probe_fbo_ = ctx->create_framebuffer();
+    IFramebuffer* fbo = ctx->framebuffer(probe_fbo_);
+    if (!probe_fbo_.is_valid() || !fbo || !fbo->create(k_probe_atlas_w, k_probe_atlas_h)) return false;
+    fbo->attach_color_texture(atlas);
+    fbo->attach_depth_texture(depth);
+    if (!fbo->is_complete()) return false;
+
+    probe_targets_valid_ = true;
+    probe_ready_ = false;
+    return true;
+}
+
+void RenderPipeline::destroy_probe_targets() {
+    if (!ctx_) return;
+    if (probe_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(probe_fbo_);
+        probe_fbo_ = RHIFramebufferHandle{};
+    }
+    if (probe_depth_tex_.is_valid()) {
+        ctx_->destroy_texture(probe_depth_tex_);
+        probe_depth_tex_ = RHITextureHandle{};
+    }
+    if (probe_atlas_tex_.is_valid()) {
+        ctx_->destroy_texture(probe_atlas_tex_);
+        probe_atlas_tex_ = RHITextureHandle{};
+    }
+    probe_targets_valid_ = false;
+    probe_ready_ = false;
+}
+
+void RenderPipeline::capture_reflection_probe(RenderContext& ctx, scene::Scene& scene) {
+    if (!probe_targets_valid_ || !pbr_shader_.is_valid() || !camera_) return;
+
+    const math::Vector3f pos = camera_->position();
+    const float near_plane = camera_->near_plane();
+    const float far_plane = camera_->far_plane();
+    // 探针近平面独立于相机：相机贴到物体表面时，若沿用相机近平面，探针中心
+    // （相机位置）附近的几何会被裁掉，反射里就看不到紧贴的物体。压到 2cm
+    // 保证极近距离的几何也进图集，这是"贴近物体仍能反射周围环境"的关键。
+    // 探针深度只用于遮挡测试（不做阴影/后处理），near=0.02 的精度损失可接受。
+    const float probe_near = std::min(near_plane, 0.02f);
+    // 90 度 FOV + 1:1 宽高比：六个面正好覆盖整个方向球。
+    math::Matrix4f proj = math::Matrix4f::perspective(math::to_radians(90.0f), 1.0f,
+                                                      probe_near, far_plane);
+    if (ctx.backend() && std::strcmp(ctx.backend()->api_name(), "Vulkan") == 0) {
+        // 与 get_projection_matrix() 相同的 z 行重映射（VK NDC z ∈ [0,1]）。
+        proj(2, 2) = far_plane / (probe_near - far_plane);
+        proj(2, 3) = (far_plane * probe_near) / (probe_near - far_plane);
+    }
+
+    // 六个面的朝向：顺序与 ssr_trace.frag / vulkan_ssr_trace.frag 的
+    // probe_sample 严格对应（标准立方体贴图约定）。
+    static const math::Vector3f k_forward[6] = {
+        { 1.0f,  0.0f,  0.0f}, {-1.0f,  0.0f,  0.0f},
+        { 0.0f,  1.0f,  0.0f}, { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  0.0f,  1.0f}, { 0.0f,  0.0f, -1.0f},
+    };
+    static const math::Vector3f k_up[6] = {
+        { 0.0f, -1.0f,  0.0f}, { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  0.0f,  1.0f}, { 0.0f,  0.0f, -1.0f},
+        { 0.0f, -1.0f,  0.0f}, { 0.0f, -1.0f,  0.0f},
+    };
+
+    ctx.set_framebuffer(probe_fbo_);
+    ctx.set_viewport(0, 0, k_probe_atlas_w, k_probe_atlas_h);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.clear(0.15f, 0.15f, 0.18f, 1.0f);
+    ctx.clear_depth();
+
+    const RHITextureHandle skybox_tex = skybox_texture_.is_valid() ? skybox_texture_ : ibl_radiance_texture_;
+
+    for (int face = 0; face < 6; ++face) {
+        const int col = face % 3;
+        const int row = face / 3;
+        ctx.set_viewport(col * k_probe_face_size, row * k_probe_face_size,
+                         k_probe_face_size, k_probe_face_size);
+
+        const math::Vector3f fwd = k_forward[face];
+        const math::Vector3f up = k_up[face];
+        const math::Matrix4f view = math::Matrix4f::look_at(pos, pos + fwd, up);
+
+        // 1) 天空盒作为背景（去掉 view 平移，始终以探针位置为中心）
+        if (skybox_tex.is_valid() && skybox_shader_.is_valid() && skybox_mesh_.is_valid()) {
+            ctx.set_depth_test(false);
+            ctx.set_depth_write(false);
+            ctx.set_cull_face(CullMode::None);
+            ctx.set_blend(false);
+            math::Matrix4f sky_view = view;
+            sky_view(0, 3) = 0.0f;
+            sky_view(1, 3) = 0.0f;
+            sky_view(2, 3) = 0.0f;
+            ctx.set_shader(skybox_shader_);
+            ctx.set_uniform_mat4(skybox_shader_, "uView", sky_view);
+            ctx.set_uniform_mat4(skybox_shader_, "uProjection", proj);
+            ITexture* sky_ptr = ctx_->texture(skybox_tex);
+            if (sky_ptr) sky_ptr->bind(TextureSlots::kSkyboxCube);
+            ctx.set_texture(skybox_shader_, skybox_tex, TextureSlots::kSkyboxCube, "");
+            ctx.set_uniform_int(skybox_shader_, "uSkybox", TextureSlots::kSkyboxCube);
+            ctx.draw_mesh(skybox_mesh_, skybox_shader_);
+            ctx.set_depth_test(true);
+            ctx.set_depth_write(true);
+            ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+        }
+
+        // 2) 场景不透明物体：复用主 PBR 管线，仅覆盖相机相关 uniform
+        bind_per_frame_uniforms(ctx, pbr_shader_);
+        ctx.set_uniform_mat4(pbr_shader_, "uView", view);
+        ctx.set_uniform_mat4(pbr_shader_, "uProjection", proj);
+        ctx.set_uniform_vec3(pbr_shader_, "uCameraPos", pos);
+        // 探针的 6 个面用 90° FOV 的临时相机，而级联阴影的分级是按主相机视深度
+        // 选的（片段阶段从 UBO 读 uCascadeLightSpace/uCascadeSplits）。除 -Z 面
+        // 与主相机朝向一致外，其余 5 面的视深度与主相机不符，会对物体取到错误的
+        // 阴影分级。探针只做环境近似，这里直接关掉阴影，只保留直接光与 IBL。
+        ctx.set_uniform_int(pbr_shader_, "uUseShadowMap", 0);
+        ctx.set_uniform_int(pbr_shader_, "uShadowLightIndex", -1);
+        ctx.set_uniform_int(pbr_shader_, "uCascadeCount", 0);
+        ctx.set_uniform_int(pbr_shader_, "uPointShadowCount", 0);
+        // 屏幕空间 AO / SSIL / GI 的结果都是"主相机视口"下的（UV 由主相机投影
+        // 得到），而探针的 6 个面用 90° FOV 的另一套投影。若照常采样，会按探针
+        // 自己的屏幕 UV 去读主相机的 AO 图，得到完全错误的遮蔽，并把上一帧的
+        // AO/GI 烘进反射里。探针只做环境近似，这里一并关闭。
+        ctx.set_uniform_int(pbr_shader_, "uUseSSAO", 0);
+        ctx.set_uniform_int(pbr_shader_, "uUseSSIL", 0);
+        ctx.set_uniform_int(pbr_shader_, "uGIEnabled", 0);
+        ctx.set_uniform_int(pbr_shader_, "uUseSDFGI", 0);
+        last_bound_material_pbr_ = nullptr;
+
+        ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+            scene,
+            [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
+                if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
+                const Material* mat = mr->material.get();
+                if (mat && mat->blend_mode == Material::BlendMode::Blend) return;
+                render_mesh_internal(mr->gpu_mesh_handle(), mat, entity->world_transform(), ctx);
+            });
+
+        // 3) 粒子：发光特效（火焰/魔法）是环境的一部分，不烘进图集的话金属面上
+        // 完全反射不到它。用探针本面的 view/proj 绘制，广告牌朝向该面相机；
+        // 探针近平面 2cm，贴近物体时粒子同样进图。混入方式与主 pass 一致。
+        draw_particles(ctx, view, proj);
+    }
+    // 恢复状态（调用方随后会重新绑定自己的目标/视口）
+    ctx.set_framebuffer(RHIFramebufferHandle{});
+    ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.set_blend(false);
+    last_bound_material_pbr_ = nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Frame
 // ---------------------------------------------------------------------------
 void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
@@ -1312,16 +1557,16 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
     // ---- SDFGI 更新（每帧，在场景渲染之前） ----
     if (sdfgi_enabled_ && sdfgi_.valid()) {
-        // 收集方向光方向与颜色
-        std::vector<math::Vector3f> light_dirs;
-        std::vector<math::Vector3f> light_colors;
+        // 收集方向光方向与颜色（复用成员缓冲，避免每帧堆分配）
+        sdfgi_light_dirs_.clear();
+        sdfgi_light_colors_.clear();
         for (const auto& light : lights_) {
             if (light.type == LightType::Directional) {
-                light_dirs.push_back(light.direction.normalized());
-                light_colors.push_back(light.color * light.intensity);
+                sdfgi_light_dirs_.push_back(light.direction.normalized());
+                sdfgi_light_colors_.push_back(light.color * light.intensity);
             }
         }
-        sdfgi_.update(camera_->position(), light_dirs, light_colors);
+        sdfgi_.update(camera_->position(), sdfgi_light_dirs_, sdfgi_light_colors_);
     }
 
     // TAA 抖动序列推进（投影矩阵每帧取不同子像素偏移）
@@ -1344,8 +1589,115 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     const math::Matrix4f camera_vp = camera_->get_projection_matrix() * camera_->get_view_matrix();
     const Frustum camera_frustum = extract_frustum(camera_vp);
 
+    // ---- 粒子收集（每帧一次，必须先于任何用到粒子的 pass）----
+    // 反射探针捕获在本帧更早发生，且它需要把粒子一起烘进图集（否则反射里
+    // 看不到火焰这类发光特效）。所以收集点提前到探针捕获之前，绘制点仍留在
+    // 前向 pass 里（主相机）与探针的面循环里（探针相机）。
+    collect_particles(scene, ctx);
+
+    // ---- 反射探针捕获（SSR 出屏兜底）----
+    // 相机锚定：首帧、相机位移超过阈值（瞬时 0.02m 或累积 0.08m）、或场景内容变化
+    // 时，从相机位置把场景重绘进 3x2 面图集。SSR 未命中射线随后按反射方向采样它，
+    // 避免"贴近反射物"时反射不到周围物体（退化成一整片天空色）。必须发生在 HDR
+    // 前向 pass 之前（此处尚未绘制场景）。
+    if (probe_targets_valid_ && ssr_enabled_ && hdr_enabled_) {
+        // 网格上传是排队到渲染线程的命令，首帧通常尚未执行完；此时抓取得到
+        // 的图集只有天空与清屏色，而相机静止时不会再抓 → 探针永久为空。
+        // 这里要求"场景里所有待上传网格都已就绪"才抓：上传命令按实体顺序
+        // 依次执行，只判"存在任一已上传网格"会让排在后面的网格（例如后建的
+        // 物体）漏进图集，它们在反射里就整片消失。最多让 8 帧（个别网格加载
+        // 失败时不至于让探针永久失效）。
+        int mesh_total = 0;
+        int mesh_uploaded = 0;
+        // 场景内容指纹（FNV-1a）：网格路径/句柄、材质关键参数、世界变换。
+        // 数值量化到 1/128 以抑制浮点抖动与亚像素动画噪声带来的无谓重抓。
+        std::size_t scene_hash = 1469598103934665603ull;
+        auto mix = [&scene_hash](std::size_t v) {
+            scene_hash ^= v;
+            scene_hash *= 1099511628211ull;
+        };
+        auto mixf = [&mix](float f) {
+            mix(static_cast<std::size_t>(static_cast<int>(f * 128.0f)));
+        };
+        ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+            scene,
+            [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform*) {
+                if (!mr || !mr->enabled || mr->mesh_path.empty()) return;
+                ++mesh_total;
+                if (mr->gpu_mesh_handle().is_valid()) ++mesh_uploaded;
+                mix(std::hash<std::string>{}(mr->mesh_path));
+                mix(static_cast<std::size_t>(mr->gpu_mesh_handle().index));
+                const Material* mat = mr->material.get();
+                mix(reinterpret_cast<std::size_t>(mat));
+                if (mat) {
+                    mixf(mat->albedo_color.x); mixf(mat->albedo_color.y); mixf(mat->albedo_color.z);
+                    mixf(mat->roughness); mixf(mat->metallic);
+                    mixf(mat->emissive_color.x); mixf(mat->emissive_color.y); mixf(mat->emissive_color.z);
+                    mixf(mat->opacity);
+                    mix(static_cast<std::size_t>(static_cast<int>(mat->blend_mode)));
+                }
+                const math::Matrix4f world = entity->world_transform();
+                for (int c = 0; c < 4; ++c) {
+                    for (int r = 0; r < 4; ++r) mixf(world(r, c));
+                }
+            });
+        // 光源也是探针内容的一部分：增删/调整灯光（相机静止）同样要刷新图集。
+        for (const Light& l : lights_) {
+            mix(static_cast<std::size_t>(static_cast<int>(l.type)));
+            mixf(l.position.x); mixf(l.position.y); mixf(l.position.z);
+            mixf(l.direction.x); mixf(l.direction.y); mixf(l.direction.z);
+            mixf(l.color.x); mixf(l.color.y); mixf(l.color.z);
+            mixf(l.intensity); mixf(l.range);
+            mixf(l.spot_angle); mixf(l.spot_softness);
+        }
+        const bool mesh_ready = mesh_total > 0 && mesh_uploaded == mesh_total;
+        // 粒子也要一起进图集（发光特效是环境的一部分）。首次捕获若早于粒子
+        // 资源就绪，图集里就没有火焰，而相机静止时不会重抓 → 反射永远看不到它。
+        // 与 mesh_ready 同一套"最多等 8 帧"的兜底，避免粒子一直为空时探针失效。
+        const bool probe_content_ready = mesh_ready && particle_pending_count_ == 0;
+        const math::Vector3f probe_pos = camera_->position();
+        // 位移阈值收紧到约 0.02m：探针捕获点越贴近相机，按方向查找的视差越小，
+        // 贴近反射物时反射里"周围环境"的方位才准确。阈值过大（如 0.25m）时，
+        // 相机走到镜面前停下，探针仍停留在上一次触发点，近距离反射会出现方位偏移。
+        ++probe_content_tick_;
+        const float probe_drift = (probe_pos - probe_captured_pos_).length();
+        probe_drift_accum_ += probe_drift;
+        // 大位移（瞬移/快速移动）不受节流限制，立即重抓，避免近距离反射明显滞后；
+        // 缓慢靠近时单帧位移可能只有几毫米，靠累积位移超过 0.08m 触发，否则探针
+        // 会一直停在旧位置，"慢慢贴近物体"时反射方位逐渐跑偏。
+        const bool probe_jump = probe_drift > 0.25f;
+        const bool probe_drifted = probe_drift > 0.02f || probe_drift_accum_ > 0.08f;
+        const bool moved = probe_jump || (probe_drifted && (probe_content_tick_ % 2u == 0u));
+        // 内容变化触发的重抓做更重节流（每 4 帧最多一次），避免逐帧动画导致每帧
+        // 6 次全场景捕获；移动触发同样做了 2 帧节流以抵消高分辨率捕获开销。
+        const bool scene_changed = probe_ready_ && scene_hash != probe_scene_hash_ &&
+                                   (probe_content_tick_ % 4u == 0u);
+        // 粒子逐帧都在变，不能并入 scene_hash（那等于每 4 帧一次全场景重抓）。这里
+        // 单独走一条更慢的节流：只要场景里有活粒子，就每 16 帧重抓一次，让反射里
+        // 的火焰/魔法大致跟得上；否则相机静止时图集永远停在首次捕获那一瞬
+        // （那时粒子才刚开始发射，反射里基本看不到东西）。
+        const bool particles_active = probe_ready_ && !particle_items_.empty();
+        const bool particles_changed = particles_active && (probe_content_tick_ % 16u == 0u);
+        if ((!probe_ready_ || moved || scene_changed || particles_changed) &&
+            (probe_content_ready || probe_defer_frames_ >= 8)) {
+            capture_reflection_probe(ctx, scene);
+            probe_captured_pos_ = probe_pos;
+            probe_scene_hash_ = scene_hash;
+            probe_ready_ = true;
+            probe_defer_frames_ = 0;
+            probe_drift_accum_ = 0.0f;
+        } else if (!probe_ready_) {
+            ++probe_defer_frames_;
+        }
+        // 每帧把"图集是否已就绪"同步给 SSR：未就绪时着色器不做退化射线兜底，
+        // 避免采到清屏色把贴近物体的反射压灰。
+        ssr_.set_reflection_probe(probe_atlas_tex_, probe_ready_);
+    }
+
     // 1. Shadow pass（仅第一个方向光；逐级联渲染，每级独立剔除/分辨率/bias）
     if (render_shadow) {
+        // GPU 计时：整段 CSM（含 atlas / VSM blur）算一个 pass 区间。
+        ctx.gpu_profile_begin("shadow");
         if (shadow_atlas_enabled_ && shadow_atlas_.valid() && shadow_atlas_shader_.is_valid()) {
             // ---- Shadow Atlas 模式：所有级联渲染到同一张图集纹理 ----
             shadow_atlas_.free_all();
@@ -1450,6 +1802,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                 render_vsm_blur(ctx);
             }
         }
+        ctx.gpu_profile_end();   // shadow
     }
 
     // 1b. 点光源双抛物面阴影（在 CSM 之后、GBuffer/Forward pass 之前）
@@ -1566,6 +1919,17 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             ctx.set_blend(false);
             ctx.set_depth_write(true);
         }
+
+        // 2c'. 3D 粒子（透明之后、viewmodel 之前，进入 HDR 参与后处理）
+        draw_particles(ctx, camera_->get_view_matrix(), get_projection_matrix());
+
+        // 2c''. 粒子深度补充（仅 SSR 需要）：主粒子绘制关深度写，SSR 屏幕空间步进
+        // 读的 hdr_depth_ 里没有粒子，反射射线会直接穿过去。这里只写深度、丢弃颜色
+        // 再画一遍，把粒子放进深度缓冲；必须在 SSR 之前。
+        if (ssr_enabled_ && std::getenv("GRYCE_NO_PARTICLE_DEPTH") == nullptr) {
+            draw_particles_depth(ctx, camera_->get_view_matrix(), get_projection_matrix());
+        }
+
         // 2d. Viewmodel（FPS 武器）
         if (!viewmodel_items.empty()) {
             ctx.set_framebuffer(hdr_fbo_);
@@ -1618,6 +1982,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_, hdr_fbo_,
                         camera_->get_view_matrix(), camera_->position(),
                         pp_params_, viewport_width_, viewport_height_);
+            // SSR 的结果（场景色 + 反射）取代当前 HDR 颜色输入，后续 pass 采样它。
+            if (ssr_.output_texture().is_valid()) hdr_color_ = ssr_.output_texture();
         }
 
         // SSIL 屏幕空间间接光照（SSR 后、SSAO 前）
@@ -1657,8 +2023,12 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         render_tonemap(ctx);
     } else if (hdr_enabled_) {
         begin_hdr_forward_pass(ctx);
+        // GPU 计时：主 pass（skybox + 网格线 + 不透明/透明物体）整段。
+        // 与其它区间保持平铺：结束点必须落在下一个 pass 切换处（见下方 end）。
+        ctx.gpu_profile_begin("scene");
     } else {
         begin_forward_pass(ctx);
+        ctx.gpu_profile_begin("scene");
     }
 
     // 2a. Skybox（最先绘制，作为背景）
@@ -1763,6 +2133,16 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         ctx.set_depth_write(true);
     }
 
+    // 2d'. 3D 粒子（透明之后、viewmodel 之前，进入 HDR 参与后处理）
+    draw_particles(ctx, camera_->get_view_matrix(), get_projection_matrix());
+
+    // 2d''. 粒子深度补充（仅 SSR 需要）：主粒子绘制关深度写，SSR 屏幕空间步进
+    // 读的 hdr_depth_ 里没有粒子，反射射线会直接穿过去。这里只写深度、丢弃颜色
+    // 再画一遍，把粒子放进深度缓冲；必须在 SSR 之前、且仍在 HDR pass 内。
+    if (ssr_enabled_ && std::getenv("GRYCE_NO_PARTICLE_DEPTH") == nullptr) {
+        draw_particles_depth(ctx, camera_->get_view_matrix(), get_projection_matrix());
+    }
+
     // 2e. Viewmodel（FPS 武器）：关闭深度测试/深度写，保证枪械不被墙壁遮挡。
     if (!viewmodel_items.empty()) {
         ctx.set_blend(false);
@@ -1777,6 +2157,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
     if (hdr_enabled_) {
         end_hdr_forward_pass(ctx);
+        ctx.gpu_profile_end();   // scene
 
         // ---- 水面渲染（透明物体后，SSR 前） ----
         if (water_enabled_ && water_.valid() && camera_ && hdr_fbo_.is_valid()) {
@@ -1811,7 +2192,11 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         // SSR 屏幕空间反射（HDR 渲染后、SSIL/SSAO 前）
         // 前向路径没有 G-buffer：先把法线+粗糙度预通道跑出来，
         // 否则 SSR_RD 会因为法线缓冲无效直接跳过（反射永远不出现）。
-        if (!deferred_enabled_ && screen_space_effects_supported() && (ssr_enabled_ || ssil_enabled_)) {
+        // GTAO 也依赖 gbuffer_normal_roughness_（无法线则 horizon 检测退化），
+        // 所以 SSAO 开启时同样必须跑预通道 —— 否则此纹理从未被渲染过，
+        // GTAO 读到的是清空值/上一帧残留，AO 会出现在错误的侧面甚至没有效果。
+        if (!deferred_enabled_ && screen_space_effects_supported() &&
+            (ssr_enabled_ || ssil_enabled_ || pp_params_.ssao_enabled != 0)) {
             render_normal_prepass(scene, ctx, camera_frustum);
         }
         if (ssr_enabled_ && ssr_.valid() && camera_ && screen_space_effects_supported()) {
@@ -1819,12 +2204,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             pp_params_.ssr_far = camera_->far_plane();
             pp_params_.ssr_tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
             pp_params_.ssr_aspect = camera_->aspect();
-            ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_, hdr_fbo_,
-                        camera_->get_view_matrix(), camera_->position(),
-                        pp_params_, viewport_width_, viewport_height_);
-        }
+        ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_, hdr_fbo_,
+                    camera_->get_view_matrix(), camera_->position(),
+                    pp_params_, viewport_width_, viewport_height_);
+        if (ssr_.output_texture().is_valid()) hdr_color_ = ssr_.output_texture();
+    }
 
-        // 3. SSIL 屏幕空间间接光照（SSR 后、SSAO 前）
+    // 3. SSIL 屏幕空间间接光照（SSR 后、SSAO 前）
         if (ssil_enabled_ && ssil_.valid()) {
             // 前向路径由上面的预通道填入，deferred 由 GBuffer 填入，语义一致。
             render_ssil(ctx);
@@ -2131,15 +2517,15 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
 
     // 与 render_scene 相同的前缀
     if (sdfgi_enabled_ && sdfgi_.valid()) {
-        std::vector<math::Vector3f> light_dirs;
-        std::vector<math::Vector3f> light_colors;
+        sdfgi_light_dirs_.clear();
+        sdfgi_light_colors_.clear();
         for (const auto& light : lights_) {
             if (light.type == LightType::Directional) {
-                light_dirs.push_back(light.direction.normalized());
-                light_colors.push_back(light.color * light.intensity);
+                sdfgi_light_dirs_.push_back(light.direction.normalized());
+                sdfgi_light_colors_.push_back(light.color * light.intensity);
             }
         }
-        sdfgi_.update(camera_->position(), light_dirs, light_colors);
+        sdfgi_.update(camera_->position(), sdfgi_light_dirs_, sdfgi_light_colors_);
     }
     if (pp_params_.taa_enabled != 0) {
         ++taa_frame_;
@@ -2161,8 +2547,10 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
     }
     if (hdr_enabled_) {
         begin_hdr_forward_pass(ctx);
+        ctx.gpu_profile_begin("scene");
     } else {
         begin_forward_pass(ctx);
+        ctx.gpu_profile_begin("scene");
     }
 
     render_skybox(ctx);
@@ -2222,6 +2610,7 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
 
     if (hdr_enabled_) {
         end_hdr_forward_pass(ctx);
+        ctx.gpu_profile_end();   // scene（submit 路径）
 
         // 后处理（与 render_scene 相同；水面反射/贴花需要 Scene，submit 路径跳过）
         if (ssr_enabled_ && ssr_.valid() && camera_ && screen_space_effects_supported()) {
@@ -2232,6 +2621,7 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
             ssr_.render(&ctx, hdr_color_, hdr_depth_, gbuffer_normal_roughness_, hdr_fbo_,
                         camera_->get_view_matrix(), camera_->position(),
                         pp_params_, viewport_width_, viewport_height_);
+            if (ssr_.output_texture().is_valid()) hdr_color_ = ssr_.output_texture();
         }
         if (ssil_enabled_ && ssil_.valid()) {
             render_ssil(ctx);
@@ -2543,6 +2933,18 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
     ctx.set_uniform_float(shader, "uPCSSMaxRadius", pcss_max_radius_);
     ctx.set_uniform_float(shader, "uPCSSBlockerScale", pcss_tap_scale_);
 
+    // 阴影滤波宽度（屏幕空间一致）：把"目标滤波宽度（像素）"换算成
+    // "每单位视图深度对应的世界长度"。shader 里再乘该级联 texel 的世界尺寸，
+    // 得到 texel 单位的滤波半径 —— 这样近/远、不同级联的边缘柔度都一致。
+    {
+        const float viewport_h = static_cast<float>(std::max(1, viewport_height_));
+        const float tan_half = camera_
+            ? std::tan(math::to_radians(camera_->fov()) * 0.5f) : 0.577f;
+        constexpr float kShadowFilterPixels = 2.0f;   // 目标：约 2 像素过渡
+        ctx.set_uniform_float(shader, "uShadowFilterScale",
+                              2.0f * tan_half / viewport_h * kShadowFilterPixels);
+    }
+
     // ---- VSM/ESM 阴影绑定 ----
     ctx.set_uniform_int(shader, "uShadowMode", static_cast<int>(shadow_mode_));
     ctx.set_uniform_float(shader, "uESMExponent", esm_exponent_);
@@ -2552,10 +2954,13 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
         "uVSMTexture0", "uVSMTexture1", "uVSMTexture2", "uVSMTexture3",
     };
     for (int i = 0; i < k_max_cascades; ++i) {
-        if (!vsm_color_tex_[i].is_valid()) continue;
-        ITexture* tex = ctx_->texture(vsm_color_tex_[i]);
+        // VSM 模式下取模糊后的图（vsm_shadow_texture 内部按 shadow_mode_ 选择），
+        // 其余模式返回原始 vsm_color_tex_，行为不变。
+        const RHITextureHandle vsm_tex = vsm_shadow_texture(i);
+        if (!vsm_tex.is_valid()) continue;
+        ITexture* tex = ctx_->texture(vsm_tex);
         if (tex) tex->bind(vsm_slots[i]);
-        ctx.set_texture(shader, vsm_color_tex_[i], vsm_slots[i], "");
+        ctx.set_texture(shader, vsm_tex, vsm_slots[i], "");
         ctx.set_uniform_int(shader, vsm_names[i], vsm_slots[i]);
     }
 
@@ -2798,7 +3203,10 @@ bool RenderPipeline::hot_reload() {
 
 bool RenderPipeline::resize_render_targets(int width, int height) {
     if (width == viewport_width_ && height == viewport_height_) return true;
+    return resize_render_targets_impl(width, height);
+}
 
+bool RenderPipeline::resize_render_targets_impl(int width, int height) {
     viewport_width_ = width;
     viewport_height_ = height;
 
@@ -2898,6 +3306,9 @@ bool RenderPipeline::resize_render_targets(int width, int height) {
                     depth_normal_shader_ = RHIShaderHandle{};
                 }
                 depth_normal_shader_ = load_shader("depth_normal", prepass_normal_fbo_, true, false);
+                if (IShader* s = ctx_->shader(depth_normal_shader_)) {
+                    s->set_pipeline_blending(false);
+                }
             }
         }
 
@@ -2959,6 +3370,8 @@ bool RenderPipeline::create_fullscreen_mesh(RenderContext* ctx) {
 void RenderPipeline::begin_hdr_forward_pass(RenderContext& ctx) {
     GLOG_DEBUG("RenderPipeline::begin_hdr_forward_pass: hdr_fbo_={} viewport={}x{}",
               hdr_fbo_.index, viewport_width_, viewport_height_);
+    // 复位"当前 HDR 颜色"：上一帧 SSR/DOF/MotionBlur 可能把它指向了自己的输出。
+    if (hdr_original_color_.is_valid()) hdr_color_ = hdr_original_color_;
     ctx.set_shader(pbr_shader_);
     ctx.set_framebuffer(hdr_fbo_);
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
@@ -3042,6 +3455,111 @@ void RenderPipeline::render_grid(RenderContext& ctx) {
     ctx.set_depth_write(true);
     ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
     ctx.set_blend(false);
+}
+
+// ===========================================================================
+// 3D 粒子 pass
+//
+// 组件负责 CPU 模拟与实例流展开，这里只做收集、状态设置与绘制。
+// 拆成 collect / draw 两步，是因为粒子有两个消费方且时序不同：
+//   - 反射探针捕获：本帧最早，需要把粒子烘进图集，否则反射里看不到发光特效
+//   - 前向 pass：不透明/透明几何之后、viewmodel 之前，使粒子进入 HDR 参与
+//     tonemap/bloom
+// 收集必须早于探针捕获，绘制则各自用所在 pass 的 view/proj。
+// 粒子之间不排序（深度写关闭），additive 与 alpha 混合按系统分别设置。
+// ===========================================================================
+void RenderPipeline::collect_particles(scene::Scene& scene, RenderContext& ctx) {
+    particle_items_.clear();
+    particle_pending_count_ = 0;
+    if (!particle_shader_.is_valid()) return;
+
+    ecs::foreach_with_components<components::ParticleSystem3D, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::ParticleSystem3D* ps, components::Transform* /*transform*/) {
+            if (!entity || !ps || !ps->enabled) return;
+            // 写实例流 + 投递上传命令（渲染线程下一帧起持有有效句柄）
+            ps->prepare_gpu(&ctx, entity->world_transform());
+            if (ps->gpu_mesh_handle().is_valid() && ps->instance_count() > 0) {
+                particle_items_.push_back(ps);
+            } else {
+                // GPU 句柄尚未在渲染线程建好，或本帧还没有存活粒子（instance_count==0）。
+                // 反射探针据此推迟首次捕获，避免把"没有粒子的场景"烘进图集后
+                // 相机静止就再也不更新。
+                ++particle_pending_count_;
+            }
+        });
+}
+
+void RenderPipeline::draw_particles(RenderContext& ctx, const math::Matrix4f& view,
+                                    const math::Matrix4f& proj) {
+    if (particle_items_.empty() || !particle_shader_.is_valid()) return;
+
+    // 不在这里 set_framebuffer：调用点（前向 HDR pass 内部 / 反射探针图集）都已
+    // 绑定自己的目标与视口。重复绑定在 Vulkan 下会 end+begin render pass，且新
+    // pass 带 CLEAR，会把刚画好的几何整片清掉（只有粒子留下）。
+
+    // 半透明叠加：深度测试按系统开关，深度写关闭（粒子间不互相遮挡），不剔除。
+    ctx.set_blend(true);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(CullMode::None);
+    ctx.set_shader(particle_shader_);
+    ctx.set_uniform_mat4(particle_shader_, "uView", view);
+    ctx.set_uniform_mat4(particle_shader_, "uProjection", proj);
+
+    for (auto* ps : particle_items_) {
+        // additive：源 alpha 加到目标（火焰/魔法）；否则常规 alpha 混合
+        ctx.set_blend_func(BlendFactor::SrcAlpha,
+                           ps->additive ? BlendFactor::One : BlendFactor::OneMinusSrcAlpha);
+        ctx.set_depth_test(ps->depth_test);
+        if (ps->texture_handle().is_valid()) {
+            ctx.set_texture(particle_shader_, ps->texture_handle(),
+                            TextureSlots::kParticleTexture, "uTexture");
+        }
+        ctx.draw_mesh(ps->gpu_mesh_handle(), particle_shader_);
+    }
+
+    // 恢复默认状态（viewmodel、探针后续面与后处理依赖）
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.set_blend(false);
+}
+
+void RenderPipeline::draw_particles_depth(RenderContext& ctx, const math::Matrix4f& view,
+                                          const math::Matrix4f& proj) {
+    if (particle_items_.empty() || !particle_shader_.is_valid()) return;
+
+    // 深度补写用独立片元着色器：广告牌四边形的边缘在径向贴图下近乎全透明，
+    // 用颜色 pass 的低阈值写深度会把"看不见的墙"塞进深度缓冲，SSR 射线撞上去
+    // 就在反射里采到背景色，金属面上出现一圈比粒子大得多的暗斑。
+    const RHIShaderHandle depth_shader = particle_depth_shader_.is_valid() ? particle_depth_shader_
+                                                                          : particle_shader_;
+
+    // blend 用 (ZERO, ONE)：dst 保持不变、src 完全不参与，等于"颜色只读不写"，
+    // 但深度写入照常发生（Vulkan 没有动态颜色写掩码，这样两个后端行为一致）。
+    // 与 draw_particles 相同，不在这里 set_framebuffer：调用点已绑定 HDR 目标，
+    // 重复绑定会在 Vulkan 下重启带 CLEAR 的 render pass，清掉整帧。
+    ctx.set_blend(true);
+    ctx.set_blend_func(BlendFactor::Zero, BlendFactor::One);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(CullMode::None);
+    ctx.set_shader(depth_shader);
+    ctx.set_uniform_mat4(depth_shader, "uView", view);
+    ctx.set_uniform_mat4(depth_shader, "uProjection", proj);
+
+    for (auto* ps : particle_items_) {
+        if (ps->texture_handle().is_valid()) {
+            ctx.set_texture(depth_shader, ps->texture_handle(),
+                            TextureSlots::kParticleTexture, "uTexture");
+        }
+        ctx.draw_mesh(ps->gpu_mesh_handle(), depth_shader);
+    }
+
+    ctx.set_blend(false);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
 }
 
 // ===========================================================================
@@ -3326,11 +3844,24 @@ void RenderPipeline::render_point_shadows(RenderContext& ctx, scene::Scene& scen
             ctx.set_uniform_vec3(point_shadow_shader_, "uPointLightPos", light_pos);
 
             // 遍历场景中所有 mesh
+            // 按光源 range 做球-球剔除：超出 range 的物体对该光源的贡献恒为 0
+            //（衰减已截断，抛物面图上写入的也是"最远"值），跳过可省下 6 面 × N 物体的白跑深度绘制。
+            // range <= 0 时不做剔除，保持原行为。
+            const float cull_range_sq = (range > 0.0f) ? (range * range) : -1.0f;
             ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
                 scene,
                 [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
                     if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
                     const math::Matrix4f& model = entity->world_transform();
+
+                    if (cull_range_sq > 0.0f) {
+                        math::Vector3f bounds_center;
+                        float bounds_radius = 0.0f;
+                        if (compute_world_mesh_bounds(mr->mesh_path, model, bounds_center, bounds_radius)) {
+                            const float reach = range + bounds_radius;
+                            if ((bounds_center - light_pos).length_sq() > reach * reach) return;
+                        }
+                    }
 
                     ctx.set_uniform_mat4(point_shadow_shader_, "uModel", model);
 

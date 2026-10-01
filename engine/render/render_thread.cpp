@@ -68,9 +68,8 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
             break;
         }
         case RenderCommandType::SetTexture: {
-            IShader* s = backend->shader(cmd.shader);
             ITexture* t = backend->texture(cmd.texture);
-            if (!s || !t) return;
+            if (!t) return;
             // 槽位可能超过后端纹理单元上限（GL 片段单元常见 32），统一换算
             const int unit = backend->texture_unit_for_slot(cmd.uniform_int);
             if (cmd.texture_raw_depth) {
@@ -78,10 +77,15 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
             } else {
                 t->bind(unit);
             }
-            if (!cmd.uniform_name.empty()) {
-                s->set_int(cmd.uniform_name, unit);
+            // shader 可能为空（级联阴影/SSAO 等仅绑定纹理单元，采样器由 set_uniform_int 单独指定），
+            // 此时仍须完成纹理绑定，不能因空句柄跳过。
+            IShader* s = backend->shader(cmd.shader);
+            if (s) {
+                if (!cmd.uniform_name.empty()) {
+                    s->set_int(cmd.uniform_name, unit);
+                }
+                s->set_texture(unit, t);
             }
-            s->set_texture(unit, t);
             break;
         }
         case RenderCommandType::SetUniformInt: {
@@ -139,11 +143,16 @@ struct CommandStateCache {
     int scissor_x = -1, scissor_y = -1, scissor_w = -1, scissor_h = -1;
     RHIFramebufferHandle framebuffer;
     bool has_framebuffer = false;
+    // 当前绑定的 shader：主 pass 里同一 shader 会连续用于多个物体，跳过重复
+    // 的 SetShader（避免逐物体的 glUseProgram 与后端句柄查找）。
+    RHIShaderHandle bound_shader;
+    bool has_shader = false;
     bool initialized = false;
 
     static constexpr int kMaxTextureSlots = 32;
     std::array<RHITextureHandle, kMaxTextureSlots> bound_textures;
     std::array<RHIShaderHandle, kMaxTextureSlots> bound_texture_shaders;
+    std::array<bool, kMaxTextureSlots> bound_texture_raws;
     bool texture_slots_initialized = false;
     bool should_dispatch(const RenderCommandTyped& cmd) {
         switch (cmd.type) {
@@ -153,16 +162,29 @@ struct CommandStateCache {
                 break;
             }
             case RenderCommandType::SetBlend: {
-                if (initialized && blend == cmd.blend.enabled) return false;
+                // 后端 set_blend(enabled) 带副作用：启用/关闭混合的同时会把混合
+                // 因子重置为 SrcAlpha/OneMinusSrcAlpha、方程重置为 Add（GL 语义）。
+                // 缓存必须镜像这一副作用，否则后续 SetBlendFunc 会误判"已匹配"
+                // 而跳过，使加法混合退化成 alpha 混合（SSR 合成会整帧变黑）。
+                const bool same = initialized && blend == cmd.blend.enabled &&
+                                  blend_src == BlendFactor::SrcAlpha &&
+                                  blend_dst == BlendFactor::OneMinusSrcAlpha &&
+                                  blend_eq == BlendEquation::Add;
+                if (same) return false;
                 blend = cmd.blend.enabled;
+                blend_src = BlendFactor::SrcAlpha;
+                blend_dst = BlendFactor::OneMinusSrcAlpha;
+                blend_eq = BlendEquation::Add;
                 break;
             }
             case RenderCommandType::SetBlendFunc: {
-                // 不做跳过判断：后端 set_blend(true) 会强制把混合因子重置为
-                // SrcAlpha/OneMinusSrcAlpha，缓存里记录的因子与后端实际状态可能
-                // 不一致；一旦把"想要的 (One,One)"误判为已匹配而跳过，
-                // 加法混合就退化成 alpha 混合（SSR 合成会把 HDR 写成反射色，整帧变黑）。
-                return true;
+                if (initialized && blend_src == cmd.blend_func.src &&
+                    blend_dst == cmd.blend_func.dst) {
+                    return false;
+                }
+                blend_src = cmd.blend_func.src;
+                blend_dst = cmd.blend_func.dst;
+                break;
             }
             case RenderCommandType::SetBlendEquation: {
                 if (initialized && blend_eq == cmd.blend_equation) return false;
@@ -199,16 +221,24 @@ struct CommandStateCache {
                 if (slot >= 0 && slot < kMaxTextureSlots) {
                     if (texture_slots_initialized &&
                         bound_textures[slot] == cmd.texture &&
-                        bound_texture_shaders[slot] == cmd.shader) {
+                        bound_texture_shaders[slot] == cmd.shader &&
+                        bound_texture_raws[slot] == cmd.texture_raw_depth) {
                         return false;
                     }
                     bound_textures[slot] = cmd.texture;
                     bound_texture_shaders[slot] = cmd.shader;
+                    bound_texture_raws[slot] = cmd.texture_raw_depth;
                     texture_slots_initialized = true;
                 }
                 break;
             }
-            // 其他命令（draw, clear, uniform, shader, swap）不做缓存，总是执行
+            case RenderCommandType::SetShader: {
+                if (initialized && has_shader && bound_shader == cmd.shader) return false;
+                bound_shader = cmd.shader;
+                has_shader = true;
+                break;
+            }
+            // 其他命令（draw, clear, uniform, swap）不做缓存，总是执行
             default:
                 return true;
         }
@@ -328,6 +358,11 @@ void RenderThread::thread_loop() {
                 }
             } else {
                 item.lambda()(backend_);
+                // 非类型化 lambda 可任意调用后端状态接口（如 Renderer2D 直接调
+                // set_blend_func），缓存无法跟踪其副作用；执行后整体失效，
+                // 保证后续类型化状态命令至少重新下发一次，避免误跳过导致
+                // 实际后端状态与缓存不一致。
+                state_cache.reset();
             }
         }
 

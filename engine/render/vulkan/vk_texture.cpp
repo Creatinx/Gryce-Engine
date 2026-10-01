@@ -854,11 +854,15 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
         return false;
     }
 
-    // PCSS：深度贴图额外创建一个非比较 sampler，供 sampler2D 读取原始深度
+    // 深度贴图额外创建一个非比较 sampler，供 sampler2D 读取"原始深度"
+    //（PCSS / SSAO / SSR）。过滤必须是 NEAREST：SSR 的段测试和 HiZ 金字塔
+    // 要求拿到纹素内的原始深度，线性过滤会在边缘插值出不存在的"中间深度"。
     if (is_depth) {
         VkSamplerCreateInfo depth_sampler_info = sampler_info;
         depth_sampler_info.compareEnable = VK_FALSE;
         depth_sampler_info.compareOp = VK_COMPARE_OP_NEVER;
+        depth_sampler_info.magFilter = VK_FILTER_NEAREST;
+        depth_sampler_info.minFilter = VK_FILTER_NEAREST;
         if (vkCreateSampler(dev, &depth_sampler_info, nullptr, &depth_sampler_) != VK_SUCCESS) {
             GLOG_WARN("VulkanTexture: failed to create non-compare depth sampler (PCSS disabled)");
             depth_sampler_ = VK_NULL_HANDLE;
@@ -1167,6 +1171,8 @@ void VulkanTexture::set_filter(TextureFilter min, TextureFilter mag) {
             VkSamplerCreateInfo depth_info = info;
             depth_info.compareEnable = VK_FALSE;
             depth_info.compareOp = VK_COMPARE_OP_NEVER;
+            depth_info.magFilter = VK_FILTER_NEAREST;
+            depth_info.minFilter = VK_FILTER_NEAREST;
             vkCreateSampler(dev, &depth_info, nullptr, &depth_sampler_);
         }
     }

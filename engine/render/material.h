@@ -14,6 +14,11 @@ class IShader;
 class ITexture;
 class RenderContext;
 
+// 从资源路径加载一张贴图并上传 GPU（含压缩/浮点分支与 1x1 白色回退）。
+// 供材质之外的消费方复用（如 3D 粒子贴图）。必须在持有 GPU context 的线程调用。
+GRYCE_RENDERER_API RHITextureHandle load_texture_from_path(RenderContext* ctx,
+                                                           const std::string& path);
+
 // ---------------------------------------------------------------------------
 // Material — 渲染材质
 // 支持 PBR 工作流：albedo、normal、roughness、metallic、ao、emissive 贴图 + 标量参数，

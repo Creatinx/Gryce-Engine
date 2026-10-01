@@ -51,7 +51,7 @@ layout(set = 0, binding = 0) uniform MaterialLightUBO {
     float uPCSSLightSize;
     float uPCSSMaxRadius;
     float uPCSSBlockerScale;
-    float _pad2;
+    float uShadowFilterScale;   // 复用原 _pad2：布局不变（见 pbr.frag 的说明）
     mat4 uCascadeLightSpace[4];
     mat4 uView;
     float uClearcoat;
@@ -200,7 +200,20 @@ float pcf_cascade(int cascade, vec3 proj_coords, float radius, float bias) {
     return lit / 16.0;
 }
 
-float pcss_cascade(int cascade, vec3 proj_coords, float bias) {
+// 与 pbr.frag 的 shadow_filter_radius 等价：把"目标滤波宽度（世界单位）"
+// 换算成该级联的 texel 数。固定 2 texel 在级联收窄后小于一个屏幕像素，
+// 阴影边缘会退化成硬边锯齿；这里按屏幕空间恒定的宽度取半径。
+float shadow_filter_radius(int cascade, vec3 frag_pos) {
+    float col0 = length(ubo.uCascadeLightSpace[cascade][0].xyz);
+    // 用该级联自己的贴图边长（set_cascade_sizes 允许各级联尺寸不同），见 pbr.frag 同处注释。
+    float map_size = 1.0 / shadow_texel_size(cascade).x;
+    float texel_world = 2.0 / max(map_size * col0, 1e-6);
+    float view_depth = -(ubo.uView * vec4(frag_pos, 1.0)).z;
+    float want_world = max(view_depth, 0.0) * max(ubo.uShadowFilterScale, 0.0);
+    return clamp(want_world / texel_world, 1.0, 24.0);
+}
+
+float pcss_cascade(int cascade, vec3 proj_coords, float bias, float min_radius) {
     vec2 texel = shadow_texel_size(cascade);
     float receiver = proj_coords.z;
     float angle = interleaved_gradient_noise(gl_FragCoord.xy) * 6.2831853;
@@ -222,7 +235,9 @@ float pcss_cascade(int cascade, vec3 proj_coords, float bias) {
     if (blocker_count < 1.0) return 1.0;
     float avg_blocker = blocker_sum / blocker_count;
     float penumbra = ubo.uPCSSLightSize * (receiver - avg_blocker) / max(avg_blocker, 1e-4);
-    penumbra = clamp(penumbra * ubo.uPCSSBlockerScale, 1.0, ubo.uPCSSMaxRadius);
+    // 下限取屏幕空间一致的滤波半径：太阳这类极小光源的半影不会塌回硬边
+    penumbra = clamp(penumbra * ubo.uPCSSBlockerScale, min_radius,
+                     max(ubo.uPCSSMaxRadius, min_radius));
 
     float lit = 0.0;
     vec3 coords = vec3(proj_coords.xy, receiver - bias);
@@ -255,9 +270,10 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
 
     float bias = slope_bias(cascade, normal, light_dir);
+    float filter_r = shadow_filter_radius(cascade, frag_pos);
     float lit = (ubo.uPCSSEnabled != 0)
-                    ? pcss_cascade(cascade, proj, bias)
-                    : pcf_cascade(cascade, proj, 2.0, bias);
+                    ? pcss_cascade(cascade, proj, bias, filter_r)
+                    : pcf_cascade(cascade, proj, filter_r, bias);
 
     float edge = min(min(proj.x, 1.0 - proj.x), min(proj.y, 1.0 - proj.y));
     float fade = smoothstep(0.0, 0.05, edge);
@@ -275,8 +291,8 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
             if (p2.z <= 1.0 && p2.x >= 0.0 && p2.x <= 1.0 && p2.y >= 0.0 && p2.y <= 1.0) {
                 float bias2 = slope_bias(c2, normal, light_dir);
                 lit2 = (ubo.uPCSSEnabled != 0)
-                           ? pcss_cascade(c2, p2, bias2)
-                           : pcf_cascade(c2, p2, 2.0, bias2);
+                           ? pcss_cascade(c2, p2, bias2, shadow_filter_radius(c2, frag_pos))
+                           : pcf_cascade(c2, p2, shadow_filter_radius(c2, frag_pos), bias2);
             }
             lit = mix(lit, lit2, t);
         }
@@ -390,12 +406,15 @@ void main() {
     }
 
     vec3 ambient = ubo.uAmbient.rgb * albedo * ao;
-    // SSAO 因子：同时作用于平坦环境光与 IBL 环境光。
-    // 注意 IBL 分支会整体重写 ambient，因子必须先算好再在两边都乘上，
-    // 否则 IBL 开启后 AO 完全不生效。
+    // IBL 镜面项（供 SSR 合成做"反射替换"，与 GL 版一致）
+    vec3 ibl_specular = vec3(0.0);
+    // SSAO 因子：只作用于间接漫反射（平坦环境光 + IBL 漫反射）。
+    // 屏幕空间 AO 是漫反射遮蔽的近似，不能乘到镜面项上，否则金属面
+    // 会在面/地面交界处出现局部黑斑（与 GL 版一致）。
     float ssao_factor = 1.0;
     if (ubo.uUseSSAO != 0) {
-        float ssao = texture(uSSAOTexture, vScreenUV).r;
+        vec2 ssao_uv = vScreenUV + 0.5 / vec2(textureSize(uSSAOTexture, 0));
+        float ssao = texture(uSSAOTexture, ssao_uv).r;
         ssao_factor = mix(1.0, ssao, ubo.uSSAOStrength);
         ambient *= ssao_factor;
     }
@@ -411,9 +430,11 @@ void main() {
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
         vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+        ibl_specular = specular * ao * ubo.uIBLIntensity;
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
-        ambient = (kD * diffuse + specular) * ao * ubo.uIBLIntensity * ssao_factor;
+        // 漫反射乘 ssao_factor，镜面不乘：见上方注释。
+        ambient = (kD * diffuse * ssao_factor + specular) * ao * ubo.uIBLIntensity;
     }
     vec3 emissive = ubo.uEmissiveOpacity.xyz * (ubo.uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
@@ -462,5 +483,10 @@ void main() {
         color = pow(color, vec3(1.0 / 2.2));
     }
 
-    FragColor = vec4(color, alpha);
+    // alpha 承载该像素的 IBL 镜面项亮度（SSR 合成要用）；半透明材质保持不透明度。
+    float out_alpha = alpha;
+    if (alpha >= 0.999) {
+        out_alpha = dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722));
+    }
+    FragColor = vec4(color, out_alpha);
 }

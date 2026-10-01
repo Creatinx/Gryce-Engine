@@ -91,6 +91,7 @@ namespace TextureSlots {
     constexpr int kTonemapContactShadow = 34; // 屏幕空间接触阴影（半分辨率）
     constexpr int kSSRTexture         = 35; // SSR 屏幕空间反射
     constexpr int kSSRHiZ             = 36; // SSR HiZ 缓冲
+    constexpr int kSSRProbeAtlas      = 42; // SSR 出屏兜底用的反射探针图集（3x2 面）
     constexpr int kSSILTexture        = 37; // SSIL 屏幕空间间接光照
     constexpr int kDOFHalf            = 38; // DOF 半分辨率缓冲
     constexpr int kDOFBlur            = 39; // DOF 模糊缓冲
@@ -105,6 +106,9 @@ namespace TextureSlots {
     constexpr int kGITexture           = 45; // SDFGI/VoxelGI 共享纹理槽
     constexpr int kSDFGITexture       = 45; // SDFGI 间接光照贴图（兼容旧名）
     constexpr int kVoxelGITexture     = 46; // VoxelGI 体素光照贴图
+
+    // 3D 粒子（单独一个 pass，与其它管线不重叠；避开同槽位格式切换导致的 shader 重编）
+    constexpr int kParticleTexture    = 47;
 
     // 天空盒
     constexpr int kSkyboxCube   = 21;

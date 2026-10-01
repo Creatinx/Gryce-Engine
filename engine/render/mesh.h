@@ -64,6 +64,14 @@ public:
     virtual void upload_indices(const void* data, uint32_t size, uint32_t count) = 0;
     virtual void set_layout(const VertexLayout& layout) = 0;
 
+    // 实例流（可选）：与顶点流并列的第二条输入流，inputRate = instance。
+    // 几何（顶点流）只描述一份原型，每实例的数据由这条流按实例下标推进。
+    // 不使用实例化的 mesh 无需实现——默认空实现，instance_count() 返回 0 时
+    // 绘制按普通（非实例化）路径走。
+    virtual void set_instance_layout(const VertexLayout& /*layout*/) {}
+    virtual void upload_instances(const void* /*data*/, uint32_t /*size*/, uint32_t /*count*/) {}
+    virtual uint32_t instance_count() const { return 0; }
+
     virtual void bind() const = 0;
     virtual void draw() const = 0;
     virtual void draw_indexed() const = 0;

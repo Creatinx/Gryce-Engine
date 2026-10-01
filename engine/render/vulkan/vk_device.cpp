@@ -1,15 +1,58 @@
 #include "vk_device.h"
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 #include <vma/vk_mem_alloc.h>
 
 #include "utils/glog/glog_lib.h"
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace gryce_engine::render {
 
 namespace {
+
+// 磁盘管线缓存格式：自描述头 + 驱动产出的 VkPipelineCache 原始数据。
+// 头里记录设备指纹，避免换显卡/换驱动后把不兼容的缓存喂给 vkCreatePipelineCache。
+constexpr uint32_t k_pipeline_cache_magic = 0x47524350u; // 'GRPC'
+constexpr uint32_t k_pipeline_cache_header_version = 1;
+
+struct PipelineCacheFileHeader {
+    uint32_t magic = k_pipeline_cache_magic;
+    uint32_t header_version = k_pipeline_cache_header_version;
+    uint32_t vendor_id = 0;
+    uint32_t device_id = 0;
+    uint32_t driver_version = 0;
+    uint8_t cache_uuid[VK_UUID_SIZE] = {};
+};
+
+// 当前可执行文件所在目录；取不到则返回空（调用方退化为不落盘）。
+std::filesystem::path exe_directory() {
+#if defined(_WIN32)
+    wchar_t buffer[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) > 0) {
+        return std::filesystem::path(buffer).parent_path();
+    }
+#else
+    std::error_code ec;
+    const std::filesystem::path p = std::filesystem::canonical("/proc/self/exe", ec);
+    if (!ec) return p.parent_path();
+#endif
+    return {};
+}
+
+// 管线缓存文件放在可执行文件同目录（每个发布目录 / 每个构建产物各自独立）。
+std::filesystem::path pipeline_cache_file() {
+    const std::filesystem::path dir = exe_directory();
+    if (dir.empty()) return {};
+    return dir / "vulkan_pipeline_cache.bin";
+}
 
 bool find_queue_families(VkPhysicalDevice device, VkSurfaceKHR surface,
                          uint32_t& graphics_family, uint32_t& present_family) {
@@ -88,11 +131,112 @@ bool VulkanDevice::init(VkInstance instance, VkSurfaceKHR surface) {
         return false;
     }
 
+    create_pipeline_cache();
+
     GLOG_INFO("VulkanDevice created");
     return true;
 }
 
+// 读取磁盘缓存并交给驱动；文件缺失/设备指纹不匹配则退化为空缓存。
+void VulkanDevice::create_pipeline_cache() {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physical_device_, &props);
+
+    std::vector<char> initial_data;
+    const std::filesystem::path path = pipeline_cache_file();
+    if (!path.empty()) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (file.is_open()) {
+            const std::streamsize size = file.tellg();
+            file.seekg(0, std::ios::beg);
+            PipelineCacheFileHeader header{};
+            const std::streamsize header_size = static_cast<std::streamsize>(sizeof(header));
+            if (size >= header_size &&
+                file.read(reinterpret_cast<char*>(&header), header_size)) {
+                const bool compatible =
+                    header.magic == k_pipeline_cache_magic &&
+                    header.header_version == k_pipeline_cache_header_version &&
+                    header.vendor_id == props.vendorID &&
+                    header.device_id == props.deviceID &&
+                    header.driver_version == props.driverVersion &&
+                    std::memcmp(header.cache_uuid, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+                if (compatible) {
+                    const std::streamsize data_size = size - header_size;
+                    if (data_size > 0) {
+                        initial_data.resize(static_cast<size_t>(data_size));
+                        if (!file.read(initial_data.data(), data_size)) {
+                            initial_data.clear();
+                        }
+                    }
+                } else {
+                    GLOG_INFO("VulkanDevice: pipeline cache file targets another device/driver, ignored");
+                }
+            }
+        }
+    }
+
+    VkPipelineCacheCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    info.initialDataSize = initial_data.size();
+    info.pInitialData = initial_data.empty() ? nullptr : initial_data.data();
+    if (vkCreatePipelineCache(device_, &info, nullptr, &pipeline_cache_) != VK_SUCCESS) {
+        pipeline_cache_ = VK_NULL_HANDLE;
+        GLOG_WARN("VulkanDevice: failed to create pipeline cache; pipelines will be compiled every run");
+        return;
+    }
+
+    if (initial_data.empty()) {
+        GLOG_INFO("VulkanDevice: pipeline cache created (cold start)");
+    } else {
+        GLOG_INFO("VulkanDevice: pipeline cache loaded ({} bytes)", initial_data.size());
+    }
+}
+
+// 关闭前把驱动编译产物写回磁盘，下次启动即命中，省掉全部 SPIR-V → ISA 编译。
+void VulkanDevice::save_pipeline_cache() {
+    if (!device_ || pipeline_cache_ == VK_NULL_HANDLE) return;
+
+    size_t size = 0;
+    if (vkGetPipelineCacheData(device_, pipeline_cache_, &size, nullptr) != VK_SUCCESS || size == 0) {
+        return;
+    }
+    std::vector<char> blob(size);
+    if (vkGetPipelineCacheData(device_, pipeline_cache_, &size, blob.data()) != VK_SUCCESS || size == 0) {
+        return;
+    }
+    blob.resize(size);
+
+    const std::filesystem::path path = pipeline_cache_file();
+    if (path.empty()) return;
+
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physical_device_, &props);
+    PipelineCacheFileHeader header{};
+    header.vendor_id = props.vendorID;
+    header.device_id = props.deviceID;
+    header.driver_version = props.driverVersion;
+    std::memcpy(header.cache_uuid, props.pipelineCacheUUID, VK_UUID_SIZE);
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        GLOG_WARN("VulkanDevice: failed to open pipeline cache for writing ('{}')", path.string());
+        return;
+    }
+    file.write(reinterpret_cast<const char*>(&header), static_cast<std::streamsize>(sizeof(header)));
+    file.write(blob.data(), static_cast<std::streamsize>(blob.size()));
+    if (!file) {
+        GLOG_WARN("VulkanDevice: failed to write pipeline cache ('{}')", path.string());
+        return;
+    }
+    GLOG_INFO("VulkanDevice: pipeline cache saved ({} bytes)", blob.size());
+}
+
 void VulkanDevice::shutdown() {
+    if (device_ && pipeline_cache_ != VK_NULL_HANDLE) {
+        save_pipeline_cache();
+        vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+        pipeline_cache_ = VK_NULL_HANDLE;
+    }
     if (allocator_) {
         vmaDestroyAllocator(allocator_);
         allocator_ = nullptr;

@@ -28,6 +28,7 @@ namespace gryce_engine {
 namespace math { class Camera; }
 namespace scene { class Scene; }
 namespace assets { struct TextureData; }
+namespace components { class ParticleSystem3D; }
 namespace render { struct IBLData; }
 } // namespace gryce_engine
 
@@ -40,6 +41,27 @@ class IFramebuffer;
 class IMesh;
 class Material;
 class IImGuiBackend;
+
+// ---------------------------------------------------------------------------
+// 视锥剔除工具（RenderPipeline 与 RenderForwardClustered 共用）
+// ---------------------------------------------------------------------------
+// 视锥体：6 个平面 ax+by+cz+d=0，Vector4f 存储 (a,b,c,d)
+struct GRYCE_RENDERER_API CullFrustum {
+    math::Vector4f planes[6];
+    bool contains_sphere(const math::Vector3f& center, float radius) const;
+};
+
+// 从 view-projection 矩阵提取视锥（要求 GL 风格 NDC：z∈[-1,1]）
+GRYCE_RENDERER_API CullFrustum extract_cull_frustum(const math::Matrix4f& vp);
+
+// 世界空间网格包围球：按资源路径缓存本地包围球，避免每帧遍历顶点。
+// 返回 false 表示无法计算（资源缺失等），调用方应保守保留物体。
+GRYCE_RENDERER_API bool compute_world_mesh_bounds(const std::string& mesh_path,
+                                                  const math::Matrix4f& world,
+                                                  math::Vector3f& out_center, float& out_radius);
+GRYCE_RENDERER_API bool compute_world_skinned_mesh_bounds(const std::string& model_path,
+                                                          const math::Matrix4f& world,
+                                                          math::Vector3f& out_center, float& out_radius);
 
 // ---------------------------------------------------------------------------
 // GI 全局光照模式
@@ -224,6 +246,16 @@ public:
         pp_params_.ssr_thickness = thickness < 0.001f ? 0.001f : thickness;
         pp_params_.ssr_bilateral_filter = math::clamp(bilateral, 0.0f, 1.0f);
     }
+    // SSR 无命中时回退到 IBL 环境反射的强度（0~1）。
+    void set_ssr_env_fallback(float strength) {
+        pp_params_.ssr_env_fallback = math::clamp(strength, 0.0f, 1.0f);
+    }
+    // SSR 内部步进/模糊分辨率缩放（0.25~1.0，合成始终全分辨率）。
+    void set_ssr_resolution_scale(float scale) {
+        pp_params_.ssr_resolution_scale = math::clamp(scale, 0.25f, 1.0f);
+    }
+    // SSR 调试视图模式（shader uniform uSSRDebugMode）。
+    void set_ssr_debug_view(int mode) { pp_params_.ssr_debug_view = mode; }
 
     // -----------------------------------------------------------------------
     // 体积雾（Volumetric Fog，默认关闭）
@@ -481,9 +513,13 @@ private:
     RHIShaderHandle load_shader(const std::string& name, RHIFramebufferHandle target, bool color_output, bool post_process,
                                 bool skinned = false);
     bool create_cascade_shadow_maps(RenderContext* ctx);
+    // resize_render_targets 的实际实现（重建 HDR / G-Buffer / SSS / SSR / SSIL / SSAO 等目标）。
+    bool resize_render_targets_impl(int width, int height);
 
     void begin_shadow_pass(RenderContext& ctx, int cascade);
     void end_shadow_pass(RenderContext& ctx);
+    // 把 shadow bias / 级联 bias / PCSS 参数同步进 PostProcessParams（shader uniform 来源）。
+    void sync_shadow_params_to_post_process();
 
     void begin_forward_pass(RenderContext& ctx);
     void end_forward_pass(RenderContext& ctx);
@@ -507,10 +543,7 @@ private:
                                         RenderContext& ctx);
 
     // 视锥体：6 个平面 ax+by+cz+d=0，Vector4f 存储 (a,b,c,d)
-    struct Frustum {
-        math::Vector4f planes[6];
-        bool contains_sphere(const math::Vector3f& center, float radius) const;
-    };
+    using Frustum = CullFrustum;
     Frustum extract_frustum(const math::Matrix4f& vp) const;
     bool is_inside_frustum(const Frustum& frustum, const math::Matrix4f& world_transform,
                            const std::string& mesh_path) const;
@@ -578,6 +611,10 @@ private:
     RHIShaderHandle vsm_blur_shader_;      // VSM 模糊
     RHIShaderHandle skinned_pbr_shader_;   // 可选：加载失败则蒙皮渲染禁用
     RHIShaderHandle grid_shader_;          // 可选：加载失败则 Scene View 网格线禁用
+    RHIShaderHandle particle_shader_;      // 可选：加载失败则 3D 粒子不绘制
+    // 深度补写 pass 专用（高 alpha 阈值，只写可见部分的深度供 SSR 命中）。
+    // 加载失败时回退用 particle_shader_，退化为旧的"整块广告牌写深度"行为。
+    RHIShaderHandle particle_depth_shader_;
 
     // CSM 级联阴影：每级一张 depth texture + FBO（级联 0 兼容旧 shadow_map() 访问）
     std::array<RHITextureHandle, k_max_cascades> shadow_maps_;
@@ -617,9 +654,10 @@ private:
     bool initialized_ = false;
     bool owns_shaders_ = false;
     bool cull_disabled_ = false;
-    bool grid_enabled_ = true;
+    // Scene View 网格线：默认关闭。它是编辑器辅助显示（地面尺度参照），
+    // 若默认开启会随打包游戏一起渲染出去，因此改由编辑器显式打开。
+    bool grid_enabled_ = false;
 
-    // Scene View 网格线
     RHIMeshHandle grid_mesh_;
     bool create_grid_mesh(RenderContext* ctx);
     void render_grid(RenderContext& ctx);
@@ -627,6 +665,23 @@ private:
     static constexpr float k_grid_major_every = 10.0f;
     static constexpr float k_grid_fade_start = 30.0f;
     static constexpr float k_grid_fade_end = 100.0f;
+
+    // -----------------------------------------------------------------------
+    // 3D 粒子 pass：组件负责 CPU 模拟与顶点流，这里只做收集、状态设置与绘制。
+    // collect 必须每帧调用一次、且早于反射探针捕获（探针要把粒子烘进图集）；
+    // draw 用调用方所在 pass 的 view/proj，前向 pass 与探针面循环各调一次。
+    // -----------------------------------------------------------------------
+    void collect_particles(scene::Scene& scene, RenderContext& ctx);
+    void draw_particles(RenderContext& ctx, const math::Matrix4f& view, const math::Matrix4f& proj);
+    // 只写深度、不改颜色的粒子 pass（blend 用 (ZERO, ONE) 丢弃颜色输出）。
+    // SSR 的屏幕空间步进读的是主 HDR 深度，粒子不写深度就永远反射不到；
+    // 主粒子绘制必须保持深度写关闭（否则广告牌之间会互相遮挡、破坏加法叠加），
+    // 因此单独补这一遍把粒子放进深度缓冲。必须在主粒子绘制之后、SSR 之前调用。
+    void draw_particles_depth(RenderContext& ctx, const math::Matrix4f& view, const math::Matrix4f& proj);
+    std::vector<components::ParticleSystem3D*> particle_items_;
+    // 本帧已启用但还画不出来的粒子系统数（GPU 句柄未就绪 / 尚未攒够发射量）。
+    // 反射探针首次捕获要等它归零，否则图集里会缺火焰。
+    int particle_pending_count_ = 0;
 
     // Skybox
     RHITextureHandle skybox_texture_;
@@ -660,6 +715,9 @@ private:
     float exposure_ = 1.0f;
     int tone_map_mode_ = 1; // 0: none, 1: reinhard, 2: aces
     RHITextureHandle hdr_color_;
+    // G-buffer / deferred pass 期间 hdr_color_ 会被临时指向别的目标；这里保存原本的
+    // HDR 颜色目标句柄，pass 结束后恢复（见 postprocess_pass.cpp 的 begin_gbuffer_pass）。
+    RHITextureHandle hdr_original_color_;
     RHITextureHandle hdr_depth_;
     RHIFramebufferHandle hdr_fbo_;
     RHIShaderHandle tonemap_shader_;
@@ -751,7 +809,11 @@ private:
     RHIShaderHandle contact_shadow_shader_;
     int cs_w_ = 0;
     int cs_h_ = 0;
-    bool contact_shadow_enabled_ = true;
+    // 临时置为 false：接触阴影在 tonemap 里对所有画面统一做一次乘积，
+    // 物体会在接地面周围压出一圈软暗渐变，形态与 SSAO 无关（开关 SSAO 都在），
+    // 需要用 A/B 对比确认它是否就是那个"阴影问题"。
+    // 确认完记得改回 true（或改成从 project.data 读，别长期写死）。
+    bool contact_shadow_enabled_ = false;
     float contact_shadow_strength_ = 0.6f;
     float contact_shadow_radius_ = 0.5f;   // 世界单位
     int contact_shadow_steps_ = 4;
@@ -796,6 +858,9 @@ private:
     GIMode gi_mode_ = GIMode::None;
     float gi_indirect_intensity_ = 1.0f;
     bool sdfgi_enabled_ = false;
+    // SDFGI 每帧方向光收集缓冲：跨帧保留容量，避免每帧堆分配。
+    std::vector<math::Vector3f> sdfgi_light_dirs_;
+    std::vector<math::Vector3f> sdfgi_light_colors_;
     bool voxel_gi_enabled_ = false;
     bool ssil_enabled_ = false;
     // SSIL 参数：采样半径（世界单位）/ 每根光线步进数 / 强度
@@ -818,9 +883,21 @@ private:
     // VSM/ESM 彩色阴影目标（RGBA16F / R16F）
     std::array<RHITextureHandle, k_max_cascades> vsm_color_tex_;
     std::array<RHIFramebufferHandle, k_max_cascades> vsm_color_fbo_;
+    // VSM 模糊输出（与 vsm_color_tex_ 同尺寸）。模糊必须"读原图 → 写这张"，
+    // 原地读写同一张纹理在 GL 里是未定义行为。
+    std::array<RHITextureHandle, k_max_cascades> vsm_blur_tex_;
+    std::array<RHIFramebufferHandle, k_max_cascades> vsm_blur_fbo_;
     bool create_vsm_color_targets(RenderContext* ctx);
     void destroy_vsm_color_targets();
     void render_vsm_blur(RenderContext& ctx);
+    // 供采样方取用：VSM 模式下取模糊后的图，否则取原始图。
+    RHITextureHandle vsm_shadow_texture(int cascade) const {
+        if (shadow_mode_ == ShadowMode::VSM && cascade >= 0 && cascade < k_max_cascades &&
+            vsm_blur_tex_[cascade].is_valid()) {
+            return vsm_blur_tex_[cascade];
+        }
+        return vsm_color_tex_[cascade];
+    }
 
     int ssao_w_ = 0;
     int ssao_h_ = 0;
@@ -880,6 +957,38 @@ private:
     void render_decal_forward(RenderContext& ctx);
     void render_decal_deferred(RenderContext& ctx);
     void bind_probe_ibl(RenderContext& ctx, RHIShaderHandle shader, const math::Vector3f& position);
+
+    // -----------------------------------------------------------------------
+    // SSR 出屏兜底用的反射探针（相机锚定的 3x2 面图集）
+    // 6 个面（+X,-X,+Y,-Y,+Z,-Z）排在一张 3x2 的 2D 纹理里，规避 RHI 不能
+    // 渲染到 cubemap 面的限制。首帧或相机移动超过阈值时从相机位置重绘一次，
+    // 结果供 SSR 未命中射线按反射方向采样，解决"贴近反射物时反射不到周围
+    // 物体（退化成天空色）"。面的朝向与 ssr_trace.frag 的 probe_sample 对应。
+    // -----------------------------------------------------------------------
+    static constexpr int k_probe_face_size = 1024;
+    static constexpr int k_probe_atlas_w = k_probe_face_size * 3;
+    static constexpr int k_probe_atlas_h = k_probe_face_size * 2;
+    bool create_probe_targets(RenderContext* ctx);
+    void destroy_probe_targets();
+    void capture_reflection_probe(RenderContext& ctx, scene::Scene& scene);
+    RHITextureHandle probe_atlas_tex_;
+    RHITextureHandle probe_depth_tex_;
+    RHIFramebufferHandle probe_fbo_;
+    bool probe_targets_valid_ = false;
+    bool probe_ready_ = false;
+    // 首次抓取前等待网格上传完成的帧数（上传是排队命令，首帧通常尚未完成）
+    int probe_defer_frames_ = 0;
+    math::Vector3f probe_captured_pos_;
+    // 场景内容指纹（网格/材质/世界变换的量化摘要）。相机静止时内容变化
+    // （增删实体、换网格、改材质、移动物体）也要重抓，否则反射里会一直
+    // 保留旧场景。量化到 1/128 以抑制浮点抖动造成的无谓重抓。
+    std::size_t probe_scene_hash_ = 0;
+    // 内容变化触发的重抓节流计数（避免逐帧动画导致每帧 6 次全场景捕获）
+    unsigned probe_content_tick_ = 0;
+    // 累积位移：缓慢靠近镜面时单帧位移可能远小于重抓阈值（如 0.02m/帧），若只看
+    // 瞬时阈值，探针会一直停在上一次触发点，近距离反射的方位随视差逐渐失真。
+    // 累积到阈值即重抓，保证"慢慢贴近物体"时探针仍跟随相机。
+    float probe_drift_accum_ = 0.0f;
 };
 
 } // namespace gryce_engine::render

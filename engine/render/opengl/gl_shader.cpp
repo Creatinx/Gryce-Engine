@@ -544,10 +544,15 @@ void GLShader::apply_post_process_params() const {
         {"uSSRMaxRoughness", p.ssr_max_roughness},
         {"uSSRThickness", p.ssr_thickness},
         {"uSSRBilateralFilter", p.ssr_bilateral_filter},
+        {"uSSREnvFallback", p.ssr_env_fallback},
+        {"uSSRDebugMode", static_cast<float>(p.ssr_debug_view)},
         {"uSSRNear", p.ssr_near},
         {"uSSRFar", p.ssr_far},
         {"uSSRTanHalfFov", p.ssr_tan_half},
         {"uSSRAspect", p.ssr_aspect},
+        // 接触阴影：pass 早就算好了，但这两个 uniform 一直没人写，
+        // tonemap 里 uContactShadowEnabled 恒为 0 → 整条接触阴影等于没接上。
+        {"uContactShadowStrength", p.cs_strength},
     };
     for (const auto& u : floats) {
         int loc = get_uniform_location(u.name);
@@ -565,6 +570,7 @@ void GLShader::apply_post_process_params() const {
         {"uSSREnabled", p.ssr_enabled},
         {"uSSRMaxSteps", p.ssr_max_steps},
         {"uMotionBlurEnabled", p.motion_blur_enabled},
+        {"uContactShadowEnabled", p.cs_enabled},
     };
     for (const auto& u : ints) {
         int loc = get_uniform_location(u.name);

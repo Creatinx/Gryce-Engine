@@ -67,9 +67,8 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
             break;
         }
         case RenderCommandType::SetTexture: {
-            IShader* s = backend->shader(cmd.shader);
             ITexture* t = backend->texture(cmd.texture);
-            if (!s || !t) break;
+            if (!t) break;
             // 引擎槽位可能超过后端纹理单元上限（GL 片段单元常见 32），
             // 统一经后端换算后再绑定 + 写采样器 uniform，否则绑定静默失败。
             const int unit = backend->texture_unit_for_slot(cmd.uniform_int);
@@ -78,10 +77,14 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
             } else {
                 t->bind(unit);
             }
-            if (!cmd.uniform_name.empty()) {
-                s->set_int(cmd.uniform_name, unit);
+            // shader 可能为空（级联阴影/SSAO 等仅绑定纹理单元），此时仍须完成纹理绑定。
+            IShader* s = backend->shader(cmd.shader);
+            if (s) {
+                if (!cmd.uniform_name.empty()) {
+                    s->set_int(cmd.uniform_name, unit);
+                }
+                s->set_texture(unit, t);
             }
-            s->set_texture(unit, t);
             break;
         }
         case RenderCommandType::SetUniformInt: {
@@ -620,6 +623,11 @@ void RenderContext::set_texture_raw_depth(RHIShaderHandle shader, RHITextureHand
 void RenderContext::set_texture_raw_depth(RHIShaderHandle shader, RHITextureHandle texture, int slot,
                                           const char* uniform_name) {
     if (!cmd_buffer_) return;
+    // 与 set_texture 一致：登记通过 raw-depth 绑定写过的采样器 uniform，
+    // 防止后续 set_uniform_int 再改写同名采样器槽位。
+    if (uniform_name && uniform_name[0]) {
+        texture_uniform_writes_.emplace_back(shader, std::string(uniform_name));
+    }
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_texture_raw_depth(
         shader, texture, slot, uniform_name ? uniform_name : ""));
 }
@@ -693,8 +701,9 @@ void RenderContext::present() {
     if (!cmd_buffer_) return;
     texture_uniform_writes_.clear();
     cmd_buffer_->submit();
-    // 等待渲染线程完成本帧所有已提交命令，避免 CPU 侧在 GPU 仍在引用资源时释放实体/材质。
-    wait_for_idle();
+    // 三缓冲异步：渲染线程消费时推进 completed_seq，enqueue_destroy 以
+    // safe_destroy_seq(=写入帧+1) 延迟到 GPU 完成后再释放，天然防竞态。
+    // 原 unconditional wait_for_idle() 每帧把主线程阻塞成串行，破坏多缓冲并行，故移除。
     process_pending_destroys();
 }
 
@@ -753,6 +762,59 @@ void RenderContext::set_swap_interval(int interval) {
         cmd_buffer_->push_typed(RenderCommandTyped::make_set_swap_interval(interval));
     } else {
         backend_->set_swap_interval(interval);
+    }
+}
+
+void RenderContext::set_gpu_profiling(bool enabled) {
+    if (!backend_) return;
+    gpu_profiling_enabled_.store(enabled);
+    // 命令统一在渲染线程执行；这里直接在建帧命令流里排队，避免跨线程调用
+    // 后端（GL 的 query 创建/GL 调用必须在持上下文的线程上）。
+    if (running_) {
+        cmd_buffer_->push([enabled](IRenderBackend* b) {
+            if (b) b->set_gpu_profiling(enabled);
+        });
+    } else {
+        backend_->set_gpu_profiling(enabled);
+    }
+}
+
+bool RenderContext::gpu_profiling_supported() const {
+    return backend_ && backend_->gpu_profile_supported();
+}
+
+void RenderContext::gpu_profile_begin(const char* name) {
+    if (!backend_ || !gpu_profiling_enabled_.load()) return;
+    if (!cmd_buffer_) return;
+    std::string n = name ? name : "?";
+    if (running_) {
+        cmd_buffer_->push([n](IRenderBackend* b) {
+            if (b) b->gpu_profile_begin(n.c_str());
+        });
+    } else {
+        backend_->gpu_profile_begin(n.c_str());
+    }
+}
+
+void RenderContext::gpu_profile_end() {
+    if (!backend_ || !gpu_profiling_enabled_.load()) return;
+    if (!cmd_buffer_) return;
+    if (running_) {
+        cmd_buffer_->push([](IRenderBackend* b) {
+            if (b) b->gpu_profile_end();
+        });
+    } else {
+        backend_->gpu_profile_end();
+    }
+}
+
+void RenderContext::run_on_render_thread(std::function<void()> fn) {
+    if (!fn) return;
+    if (running_ && cmd_buffer_) {
+        // 命令里不碰 backend：这段代码本身就是 GPU 资源操作，按序执行即可。
+        cmd_buffer_->push([fn = std::move(fn)](IRenderBackend*) { fn(); });
+    } else {
+        fn();
     }
 }
 

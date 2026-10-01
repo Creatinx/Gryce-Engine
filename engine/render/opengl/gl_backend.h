@@ -2,10 +2,12 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <array>
 #include <string>
 #include <vector>
 
 #include "render/render.h"
+#include "render/gpu_profiler.h"
 #include "render/rhi_resource_pool.h"
 #include "gl_frame_pacing.h"
 #include "gl_buffer.h"
@@ -96,8 +98,16 @@ public:
     std::unique_ptr<IRenderer2D> create_renderer2d() override;
     std::unique_ptr<IImGuiBackend> create_imgui_backend() override;
     void set_validation_enabled(bool enabled) override;
+    // ---- GPU 分段计时（GL_TIME_ELAPSED query，异步读回，不等 GPU）----
+    bool gpu_profile_supported() const override;
+    void set_gpu_profiling(bool enabled) override;
+    void gpu_profile_begin(const char* name) override;
+    void gpu_profile_end() override;
+    void gpu_profile_frame_boundary() override;
+    void gpu_profile_dump() override;
+    void gpu_profile_reset() override;
 
-private:
+ private:
     GLFWwindow* window_ = nullptr;
     GLFramePacing frame_pacing_;
     std::string screenshot_path_;
@@ -125,6 +135,26 @@ private:
     int scissor_x_ = 0, scissor_y_ = 0, scissor_w_ = 0, scissor_h_ = 0;
 
     void save_screenshot(const std::string& path);
+
+    // GPU 计时：每帧一个槽（环形），每槽预留 k_gpu_max_scopes 对 query。
+    // 结果在槽被复用时才读（且先查 GL_QUERY_RESULT_AVAILABLE），所以不会
+    // 让 CPU 等 GPU。
+    static constexpr int k_gpu_slots = 3;
+    static constexpr int k_gpu_max_scopes = 24;
+    struct GpuScopeQuery {
+        // GL_TIME_ELAPSED：glBeginQuery 绑定 query，glEndQuery 结束后结果就写在
+        // **这个**对象上，所以一段只需要一个 query。
+        unsigned int id = 0;
+        std::string name;
+    };
+    std::array<std::vector<GpuScopeQuery>, k_gpu_slots> gpu_queries_;
+    std::array<int, k_gpu_slots> gpu_scope_count_{};
+    int gpu_slot_ = 0;
+    int gpu_pending_scope_ = -1;
+    bool gpu_profiling_enabled_ = false;
+    bool gpu_profiling_ready_ = false;
+    bool gpu_nested_warned_ = false;
+    GpuProfilerStats gpu_stats_;
 };
 
 } // namespace gryce_engine::render

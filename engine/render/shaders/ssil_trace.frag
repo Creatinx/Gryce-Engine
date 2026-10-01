@@ -34,8 +34,8 @@ uniform int   uSSILSteps;      // 每条光线的步进次数
 const int kMaxRays = 8;        // 每像素光线数（半球方向）
 
 float linearize_depth(float d) {
-    return (2.0 * uSSILNear * uSSILFar) /
-           (uSSILFar + uSSILNear - d * (uSSILFar - uSSILNear));
+    // 深度纹理存的是 w = far*(z-near)/((far-near)*z)（见 SSR 的同名函数）
+    return (uSSILNear * uSSILFar) / max(uSSILFar - d * (uSSILFar - uSSILNear), 1e-6);
 }
 
 // 世界坐标 → 屏幕 uv；相机后方返回 false
@@ -106,7 +106,12 @@ void main() {
             float sample_lin = linearize_depth(texture(uDepthTex, uv).r);
             // 射线穿到几何后方（且没跑出采样半径）→ 这里存在遮挡物，
             // 取它的颜色作为该方向的间接光来源。
-            if (ray_depth > sample_lin + 0.02 && ray_depth < sample_lin + uSSILRadius) {
+            // 下限阈值用 max(lin * 0.02, 0.005) 做相对深度阈值：
+            //   近景 lin=0.5 → 下限 0.01m；远景 lin=100 → 下限 2m
+            // 避免硬编码 0.02m 在远景下太小导致每步都被误判为命中，
+            // 同时避免在近景下太大导致真正的遮挡被漏掉。
+            float eps = max(lin * 0.02, 0.005);
+            if (ray_depth > sample_lin + eps && ray_depth < sample_lin + uSSILRadius) {
                 vec3 c = texture(uColorTex, uv).rgb;
                 // cos 权重（能量）+ 距离衰减（越远贡献越弱）
                 float w = ct / (1.0 + t * t * 4.0);

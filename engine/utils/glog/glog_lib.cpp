@@ -19,6 +19,9 @@ ConsoleLogger::ConsoleLogger() {
             ansi_enabled_ = true;
         }
     }
+    // 日志消息以 UTF-8 编码（std::string）传递，将控制台输出代码页切为 UTF-8，
+    // 否则中文在默认 GBK 代码页下会解码成乱码
+    SetConsoleOutputCP(CP_UTF8);
 #else
     ansi_enabled_ = isatty(STDERR_FILENO) != 0;
 #endif

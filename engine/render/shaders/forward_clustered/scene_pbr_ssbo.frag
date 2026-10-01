@@ -209,8 +209,8 @@ float cascade_boundary(int i) {
     if (i <= 0) return uCascadeSplits.x;
     if (i == 1) return uCascadeSplits.y;
     if (i == 2) return uCascadeSplits.z;
-    if (i == 3) return uCascadeSplits.w;
-    return uCascadeFarBlend.x;
+    // 越界（i>=4）返回最后一级联的 far 边界，避免 blend 带宽被 far_plane 撑大
+    return uCascadeSplits.w;
 }
 
 int cascade_from_depth(float depth) {
@@ -223,7 +223,9 @@ int cascade_from_depth(float depth) {
 
 float slope_bias(int cascade, vec3 normal, vec3 light_dir) {
     float base = (cascade < 3) ? uCascadeBias[cascade] : uCascadeBias.w;
-    return max(base * (1.0 - dot(normal, light_dir)), base * 0.1);
+    // 下限 base*0.05：根部正面受光面只用小偏移，避免"彼得潘"亮缝；陡面靠
+    // slope 项(base*(1-N·L))提供足够偏移抗 Acne。
+    return max(base * (1.0 - dot(normal, light_dir)), base * 0.05);
 }
 
 float pcf_cascade(int cascade, vec3 proj_coords, float radius, float bias) {
@@ -264,7 +266,7 @@ float pcss_cascade(int cascade, vec3 proj_coords, float bias, float normal_dot_l
     float avg_blocker = blocker_sum / blocker_count;
 
     float penumbra = uPCSSLightSize * (receiver - avg_blocker) / max(avg_blocker, 1e-4);
-    penumbra = clamp(penumbra * uPCSSBlockerScale, 1.0, uPCSSMaxRadius);
+    penumbra = clamp(penumbra * uPCSSBlockerScale, 0.5, uPCSSMaxRadius);
 
     float lit = 0.0;
     vec3 coords = vec3(proj_coords.xy, receiver - bias);
@@ -294,7 +296,7 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
     float bias = slope_bias(cascade, normal, light_dir);
     float lit = (uPCSSEnabled != 0)
         ? pcss_cascade(cascade, proj, bias, dot(normal, light_dir))
-        : pcf_cascade(cascade, proj, 2.0, bias);
+        : pcf_cascade(cascade, proj, 8.0, bias);
 
     float edge = min(min(proj.x, 1.0 - proj.x), min(proj.y, 1.0 - proj.y));
     float fade = smoothstep(0.0, 0.05, edge);
@@ -302,8 +304,8 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
 
     if (cascade < uCascadeCount - 1) {
         float far_i = cascade_boundary(cascade + 1);
-        float next_far = cascade_boundary(cascade + 2);
-        float band = max(uCascadeFarBlend.y * (next_far - far_i), 1e-4);
+        // 使用更小的 blend 宽度（0.05 单位），避免近处级联被过渡带覆盖
+        float band = 0.05;
         float t = clamp((depth - (far_i - band)) / band, 0.0, 1.0);
         if (t > 0.0) {
             int c2 = cascade + 1;
@@ -491,9 +493,11 @@ void main() {
     // 环境光 / IBL
     // -----------------------------------------------------------------------
     vec3 ambient = uAmbient * albedo * ao;
+    vec3 ibl_specular = vec3(0.0);  // 记录 IBL 镜面项，给 alpha 通道 / SSR 合成
     float ssao_factor = 1.0;
     if (uUseSSAO != 0) {
-        float ssao = texture(uSSAOTexture, vScreenUV).r;
+        vec2 ssao_uv = vScreenUV + 0.5 / vec2(textureSize(uSSAOTexture, 0));
+        float ssao = texture(uSSAOTexture, ssao_uv).r;
         ssao_factor = mix(1.0, ssao, uSSAOStrength);
         ambient *= ssao_factor;
     }
@@ -506,10 +510,10 @@ void main() {
         vec3 prefiltered = textureLod(uPrefilterMap, R, roughness * 4.0).rgb;
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
-        vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+        ibl_specular = prefiltered * (F_ibl * brdf.x + brdf.y);
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
-        ambient = (kD * diffuse + specular) * ao * uIBLIntensity * ssao_factor;
+        ambient = (kD * diffuse + ibl_specular) * ao * uIBLIntensity * ssao_factor;
     }
     vec3 emissive = uEmissiveColor * (uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
@@ -534,5 +538,9 @@ void main() {
     }
 
     vec3 color = ambient + Lo + emissive;
-    FragColor = vec4(color, alpha);
+    float out_alpha = alpha;
+    if (alpha >= 0.999) {
+        out_alpha = dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722));
+    }
+    FragColor = vec4(color, out_alpha);
 }

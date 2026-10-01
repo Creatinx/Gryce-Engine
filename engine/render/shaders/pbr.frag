@@ -115,6 +115,13 @@ uniform float uPCSSLightSize;     // 光源尺寸（texel 单位）
 uniform float uPCSSMaxRadius;     // 最大 PCF 半径（texel）
 uniform float uPCSSBlockerScale;  // 半影缩放
 
+// ---- 阴影滤波宽度（屏幕空间一致）----
+// uShadowFilterScale：每个"单位视图深度"对应的目标滤波宽度（世界单位），
+// 由 CPU 按 2*tan(fov/2)/viewport_height*filter_px 算出。
+// 阴影贴图边长直接从纹理查询（textureSize），无需再传一个 uniform。
+// 用途说明见 shadow_filter_radius()。
+uniform float uShadowFilterScale;
+
 // ---- VSM/ESM 阴影模式选择 ----
 uniform int uShadowMode;           // 0=PCF, 1=VSM, 2=ESM
 uniform float uESMExponent;        // ESM 指数参数（默认 40.0）
@@ -223,10 +230,35 @@ int cascade_from_depth(float depth) {
 // Slope-Scaled Bias：按光线入射角动态调整，平面用最小值、陡坡用较大值
 float slope_bias(int cascade, vec3 normal, vec3 light_dir) {
     float base = (cascade < 3) ? uCascadeBias[cascade] : uCascadeBias.w;
-    return max(base * (1.0 - dot(normal, light_dir)), base * 0.1);
+    // 下限 base*0.3：正面受光面 N·L≈1 走到最小分支。这个值必须足够大
+    // 才能盖过根部自遮挡（shadow acne / Peter-Panning 亮缝）。
+    // 接收端不做 normal-offset（见 cascade_shadow），自遮挡完全由这里的
+    // 深度 bias 负责，所以下限不能再降——降到 base*0.1 那一档（VK 侧当前
+    // 的值）就会在掠射面上出现自遮挡条纹。
+    float b = max(base * (1.0 - dot(normal, light_dir)), base * 0.3);
+    return b;
 }
 
 // 单个级联的 PCF（旋转 Poisson，radius 为 texel 单位）
+// 阴影滤波半径必须随"一个 texel 在屏幕上占多大"变化。
+// 固定的 radius=2 texel 在级联范围收窄（=texel 世界尺寸变小）之后就形同虚设：
+// 一个 texel 可能只有 0.1 屏幕像素，滤波器完全盖不住边缘 → 阴影边界是硬的、
+// 锯齿状的（用户看到的"阶梯条纹"）。这里把目标滤波宽度定义在屏幕空间
+// （uShadowFilterScale 已含 fov/视口高度），再用该级联的 texel 世界尺寸换算成
+// texel 数，于是近处和远处、不同级联的阴影边缘柔度都一致。
+float shadow_filter_radius(int cascade, vec3 frag_pos) {
+    // 正交光源矩阵第一列映射世界 X 基向量：|col.xyz| = 1 / (半宽)
+    // ⇒ NDC 一个单位 = 1/|col| 世界单位；texel 覆盖 2/mapSize 个 NDC 单位。
+    float col0 = length(uCascadeLightSpace[cascade][0].xyz);
+    // 用该级联自己的贴图边长：set_cascade_sizes 允许各级联尺寸不同，
+    // 统一按级联 0 的尺寸换算会让小尺寸级联的 texel_world 偏小、滤波半径被放大数倍。
+    float map_size = 1.0 / shadow_texel_size(cascade).x;
+    float texel_world = 2.0 / max(map_size * col0, 1e-6);
+    float view_depth = -(uView * vec4(frag_pos, 1.0)).z;
+    float want_world = max(view_depth, 0.0) * max(uShadowFilterScale, 0.0);
+    return clamp(want_world / texel_world, 1.0, 24.0);
+}
+
 float pcf_cascade(int cascade, vec3 proj_coords, float radius, float bias) {
     vec2 texel = shadow_texel_size(cascade);
     float angle = interleaved_gradient_noise(gl_FragCoord.xy) * 6.2831853;
@@ -243,7 +275,8 @@ float pcf_cascade(int cascade, vec3 proj_coords, float radius, float bias) {
 }
 
 // PCSS：blocker search -> penumbra 估计 -> 动态半径 PCF
-float pcss_cascade(int cascade, vec3 proj_coords, float bias, float normal_dot_light) {
+float pcss_cascade(int cascade, vec3 proj_coords, float bias, float normal_dot_light,
+                   float min_radius) {
     vec2 texel = shadow_texel_size(cascade);
     float receiver = proj_coords.z;
     float angle = interleaved_gradient_noise(gl_FragCoord.xy) * 6.2831853;
@@ -266,9 +299,10 @@ float pcss_cascade(int cascade, vec3 proj_coords, float bias, float normal_dot_l
     if (blocker_count < 1.0) return 1.0;
     float avg_blocker = blocker_sum / blocker_count;
 
-    // 2. Penumbra：接触处硬、远处软
+    // 2. Penumbra：接触处硬、远处软；下限取"屏幕空间一致的滤波半径"，
+    //    否则太阳这种极小光源（uPCSSLightSize≈0）会让半影塌回 1 texel → 硬边锯齿。
     float penumbra = uPCSSLightSize * (receiver - avg_blocker) / max(avg_blocker, 1e-4);
-    penumbra = clamp(penumbra * uPCSSBlockerScale, 1.0, uPCSSMaxRadius);
+    penumbra = clamp(penumbra * uPCSSBlockerScale, min_radius, max(uPCSSMaxRadius, min_radius));
 
     // 3. PCF with dynamic radius
     float lit = 0.0;
@@ -291,15 +325,25 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
 
     vec4 light_pos = uCascadeLightSpace[cascade] * vec4(frag_pos, 1.0);
     vec3 proj = light_pos.xyz / light_pos.w;
+
+    // ---- 不做接收端法线偏移（normal-offset）----
+    // 此处曾沿法线把采样点水平推开 16 个阴影 texel 以压制掠射角自遮挡，
+    // 但代价是阴影整体被平移：本级 texel 的世界尺寸越大偏移越大，远级联
+    // 可以偏出数十厘米，表现为"影子与物体对不上"。shadow_pass.cpp 的
+    // begin_shadow_pass 已明确该 pass 不写 normal offset、自遮挡交给
+    // slope_bias 的深度 bias 处理；其余所有接收端 shader（skinned_pbr /
+    // vulkan_pbr / vulkan_skinned_pbr / deferred_lighting）也都没有这一步。
+    // 这里与它们保持一致，避免 GL 前向路径的阴影位置与 Vulkan 后端不一致。
     proj = proj * 0.5 + 0.5;
 
     if (proj.z > 1.0) return 1.0;
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
 
     float bias = slope_bias(cascade, normal, light_dir);
+    float filter_r = shadow_filter_radius(cascade, frag_pos);
     float lit = (uPCSSEnabled != 0)
-                    ? pcss_cascade(cascade, proj, bias, dot(normal, light_dir))
-                    : pcf_cascade(cascade, proj, 2.0, bias);
+                    ? pcss_cascade(cascade, proj, bias, dot(normal, light_dir), filter_r)
+                    : pcf_cascade(cascade, proj, filter_r, bias);
 
     // 阴影贴图覆盖范围边缘淡出为全亮，消除硬边
     float edge = min(min(proj.x, 1.0 - proj.x), min(proj.y, 1.0 - proj.y));
@@ -321,8 +365,9 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
             if (p2.z <= 1.0 && p2.x >= 0.0 && p2.x <= 1.0 && p2.y >= 0.0 && p2.y <= 1.0) {
                 float bias2 = slope_bias(c2, normal, light_dir);
                 lit2 = (uPCSSEnabled != 0)
-                           ? pcss_cascade(c2, p2, bias2, dot(normal, light_dir))
-                           : pcf_cascade(c2, p2, 2.0, bias2);
+                           ? pcss_cascade(c2, p2, bias2, dot(normal, light_dir),
+                                          shadow_filter_radius(c2, frag_pos))
+                           : pcf_cascade(c2, p2, shadow_filter_radius(c2, frag_pos), bias2);
             }
             lit = mix(lit, lit2, t);
         }
@@ -585,12 +630,17 @@ void main() {
     }
 
     vec3 ambient = uAmbient * albedo * ao;
-    // SSAO 因子：同时作用于平坦环境光与 IBL 环境光。
-    // 注意 IBL 分支会整体重写 ambient，因子必须先算好再在两边都乘上，
-    // 否则 IBL 开启后 AO 完全不生效。
+    // IBL 镜面项（供 SSR 合成做"反射替换"）：未命中 SSR 的方向保留它，
+    // 命中处按亮度占比替换成屏幕空间反射，避免双重计能。
+    vec3 ibl_specular = vec3(0.0);
+    // SSAO 因子：只作用于间接漫反射（平坦环境光 + IBL 漫反射）。
+    // 屏幕空间 AO 是漫反射遮蔽的近似，把它乘到镜面项（IBL 反射 / SSR 合成）上
+    // 在物理上不成立：金属 kD≈0，其亮度几乎只剩镜面反射，一旦 AO 在面/地面
+    // 交界处取到异常低值，金属面就会出现局部黑斑。这里只压暗漫反射。
     float ssao_factor = 1.0;
     if (uUseSSAO != 0) {
-        float ssao = texture(uSSAOTexture, vScreenUV).r;
+        vec2 ssao_uv = vScreenUV + 0.5 / vec2(textureSize(uSSAOTexture, 0));
+        float ssao = texture(uSSAOTexture, ssao_uv).r;
         ssao_factor = mix(1.0, ssao, uSSAOStrength);
         ambient *= ssao_factor;
     }
@@ -606,14 +656,17 @@ void main() {
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
         vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+        ibl_specular = specular * ao * uIBLIntensity;
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
-        ambient = (kD * diffuse + specular) * ao * uIBLIntensity * ssao_factor;
+        // 漫反射乘 ssao_factor，镜面不乘：见上方注释。
+        ambient = (kD * diffuse * ssao_factor + specular) * ao * uIBLIntensity;
     }
 
     // GI 全局光照间接采样（叠加到环境光之上）
     if (uGIEnabled != 0) {
-        vec3 gi_indirect = texture(uGITexture, vScreenUV).rgb;
+        vec2 gi_uv = vScreenUV + 0.5 / vec2(textureSize(uGITexture, 0));
+        vec3 gi_indirect = texture(uGITexture, gi_uv).rgb;
         ambient += gi_indirect * albedo * uGIIndirectIntensity;
     }
 
@@ -666,5 +719,13 @@ void main() {
         color = pow(color, vec3(1.0 / 2.2));
     }
 
-    FragColor = vec4(color, alpha);
+    // alpha 通道承载"该像素的 IBL 镜面项亮度"，给 SSR 合成读取；
+    // 半透明材质仍写不透明度（混合需要），这些像素不在 depth+normal 预通道里，
+    // SSR 的粗糙度门控会把它们排除，读到的数值不会参与合成。
+    float out_alpha = alpha;
+    if (alpha >= 0.999) {
+        out_alpha = dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722));
+        // 直接光高光也属于"环境反射之外"的部分，不参与替换。
+    }
+    FragColor = vec4(color, out_alpha);
 }

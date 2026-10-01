@@ -49,6 +49,44 @@ GRYCE_RENDERER_API int            GRender_GetViewportSize(int* out_w, int* out_h
 GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h);
 
 GRYCE_RENDERER_API void  GRender_SetVSync(bool enabled);
+
+// SSR 未命中回退强度（0..1）：
+//   1 = 命中处用屏幕空间反射替换该像素原本的 IBL 镜面项，未命中处保留 IBL /
+//       反射探针 —— 屏幕外方向也有反射，且不会"IBL + SSR"双重计能（推荐）；
+//   0 = 旧行为（SSR 叠加在 IBL 之上）。
+GRYCE_RENDERER_API void  GRender_SetSSREnvFallback(float strength);
+
+// SSR 内部渲染分辨率缩放（0.25~1.0，默认 1.0）。0.5 表示光线步进/模糊按半分辨率
+// 渲染、合成仍全分辨率；SSR 的 GPU 时间大致按 scale² 下降。
+GRYCE_RENDERER_API void  GRender_SetSSRResolutionScale(float scale);
+
+// 调试视图（0=关闭；1=albedo 2=法线 3=粗糙度 4=金属度 5=阴影因子 6=直接光
+// 7=环境光 8=级联着色）。用于排查光照/阴影问题。
+GRYCE_RENDERER_API void  GRender_SetDebugView(int mode);
+
+// PCSS 接触硬化软阴影（默认关闭）。light_size 为光源立体角近似（世界单位），
+// max_radius_texels 是搜索/滤波的最大纹素半径。开启后阴影边缘随遮挡距离变软，
+// 接触处保持硬 —— 比单一 PCF 更接近真实阴影。
+GRYCE_RENDERER_API void  GRender_SetPCSSEnabled(bool enabled);
+GRYCE_RENDERER_API void  GRender_SetPCSSParams(float light_size, float max_radius_texels,
+                                               float tap_scale);
+
+// 左上角白色 FPS 叠加（直接画在 2D overlay 层，不受 HDR/后处理影响）。
+GRYCE_RENDERER_API void  GRender_SetFPSOverlay(bool enabled);
+
+// SSR 调试视图：0 正常合成；1 原始反射颜色；2 命中覆盖度；3 场景 IBL 镜面项。
+GRYCE_RENDERER_API void  GRender_SetSSRDebugView(int mode);
+
+// ---------------------------------------------------------------------------
+// GPU 分段计时（性能分析）
+//   开启后引擎用硬件计时器（GL: GL_TIME_ELAPSED / Vulkan: vkCmdWriteTimestamp）
+//   统计每个 pass 的实际 GPU 耗时，结果在帧槽复用时异步结算，不影响帧时间。
+//   典型用法：GRender_SetGPUProfiling(1) → 渲染若干帧 → GRender_DumpGPUProfiling()。
+//   GRender_DumpGPUProfiling() 只读取累计统计并打印，可在主线程安全调用。
+// ---------------------------------------------------------------------------
+GRYCE_RENDERER_API void  GRender_SetGPUProfiling(int enabled);
+GRYCE_RENDERER_API int   GRender_GPUProfilingSupported(void);
+GRYCE_RENDERER_API void  GRender_DumpGPUProfiling(void);
 GRYCE_RENDERER_API int   GRender_SaveScreenshot(const char* path);
 GRYCE_RENDERER_API void GRender_SetDisplayMode(const char* mode);
 
@@ -89,6 +127,10 @@ GRYCE_RENDERER_API void  GRender_SetSSR(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsSSREnabled(void);
 GRYCE_RENDERER_API void  GRender_SetSSIL(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsSSILEnabled(void);
+// Scene View 网格线：编辑器辅助显示，默认关闭。游戏运行时/打包版本不要打开，
+// 只有编辑器视口需要地面尺度参照时才由编辑器显式开启。
+GRYCE_RENDERER_API void  GRender_SetGrid(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsGridEnabled(void);
 // SSR 质量参数：max_steps 光线步进上限，max_roughness 参与反射的粗糙度上限，
 // thickness 屏幕空间厚度（世界单位），bilateral 反射去噪强度 0~1。
 GRYCE_RENDERER_API void  GRender_SetSSRParams(float max_steps, float max_roughness,

@@ -80,10 +80,14 @@ struct RendererState {
     // 屏幕空间效果（默认关闭；SSR/SSIL 需要管线自动跑 depth+normal 预通道）
     bool  ssao_enabled = false;
     bool  ssr_enabled = false;
+    bool  show_fps = false;      // 左上角白色 FPS 叠加
+    float fps = 0.0f;            // 由 GRender_EndFrame 平滑更新
     bool  ssil_enabled = false;
+    // Scene View 网格线：编辑器辅助显示，默认关闭，由编辑器显式开启。
+    bool  grid_enabled = false;
     float ssr_max_steps = 64.0f;
     float ssr_max_roughness = 0.6f;
-    float ssr_thickness = 0.1f;
+    float ssr_thickness = 0.01f;
     float ssr_bilateral = 0.5f;
 
     std::mutex mutex;
@@ -113,6 +117,18 @@ static void render_2d_overlay() {
     if (world && world->scene()) {
         ecs::RenderSystem2D sys(g_renderer.renderer2d.get());
         sys.on_render(*world->scene(), *g_renderer.ctx);
+    }
+    // ---- 左上角白色 FPS ----
+    // 直接画在 2D overlay 层（tonemap 之后、默认帧缓冲之上），因此不受 HDR/后处理影响。
+    if (g_renderer.show_fps) {
+        // 2D 相机默认以屏幕中心为原点、y 向上；FPS 要贴在左上角，这里临时切到
+        // "左上角为原点、y 向下"的相机。放在场景 2D 之后画，因此不需要恢复。
+        g_renderer.renderer2d->set_camera(math::Vector2f(0.0f, 0.0f), 1.0f, true);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "FPS %.1f", static_cast<double>(g_renderer.fps));
+        // y 取 30：字体图集路径以基线定位，y 太小会把字顶切掉。
+        g_renderer.renderer2d->draw_text(12.0f, 30.0f, buf, 22.0f,
+                                         render::Color(1.0f, 1.0f, 1.0f, 1.0f));
     }
     g_renderer.renderer2d->end_frame();
 }
@@ -301,6 +317,7 @@ static void apply_screen_space_settings(RenderPipeline* pipeline) {
     pipeline->set_ssao_enabled(g_renderer.ssao_enabled);
     pipeline->set_ssr_enabled(g_renderer.ssr_enabled);
     pipeline->set_ssil_enabled(g_renderer.ssil_enabled);
+    pipeline->set_grid_enabled(g_renderer.grid_enabled);
     pipeline->set_ssr_quality(g_renderer.ssr_max_steps, g_renderer.ssr_max_roughness,
                               g_renderer.ssr_thickness, g_renderer.ssr_bilateral);
     // 默认程序化环境（天空 + IBL）：金属材质需要它才有反射内容
@@ -672,6 +689,18 @@ void GRender_SetDisplayMode(const char* mode) {
 void GRender_EndFrame(void) {
     render::RenderContext* ctx = nullptr;
     bool sync_mode = false;
+    // FPS 统计：用真实帧间隔做指数平滑（避免数字剧烈跳动，方便读数）。
+    {
+        static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        const float dt = std::chrono::duration<float>(now - last).count();
+        last = now;
+        if (dt > 1e-5f && dt < 1.0f) {
+            const float inst = 1.0f / dt;
+            std::lock_guard lock(g_renderer.mutex);
+            g_renderer.fps = (g_renderer.fps <= 0.0f) ? inst : (g_renderer.fps * 0.9f + inst * 0.1f);
+        }
+    }
     {
         std::lock_guard api(gryce_core::api_mutex());
         std::lock_guard lock(g_renderer.mutex);
@@ -856,6 +885,20 @@ bool GRender_IsSSILEnabled(void) {
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.ssil_enabled;
 }
+
+// --- Scene View 网格线（编辑器辅助显示，默认关闭）---
+
+void GRender_SetGrid(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.grid_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_grid_enabled(enabled);
+}
+bool GRender_IsGridEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.grid_enabled;
+}
 void GRender_SetSSRParams(float max_steps, float max_roughness, float thickness,
                           float bilateral) {
     GRYCE_API_GUARD();
@@ -867,6 +910,50 @@ void GRender_SetSSRParams(float max_steps, float max_roughness, float thickness,
     if (g_renderer.pipeline) {
         g_renderer.pipeline->set_ssr_quality(max_steps, max_roughness, thickness, bilateral);
     }
+}
+
+void GRender_SetSSREnvFallback(float strength) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ssr_env_fallback(strength);
+}
+
+void GRender_SetSSRResolutionScale(float scale) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ssr_resolution_scale(scale);
+}
+
+void GRender_SetDebugView(int mode) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_debug_view(mode);
+}
+
+void GRender_SetPCSSEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_pcss_enabled(enabled);
+}
+
+void GRender_SetPCSSParams(float light_size, float max_radius_texels, float tap_scale) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_pcss_params(light_size, max_radius_texels, tap_scale);
+    }
+}
+
+void GRender_SetFPSOverlay(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.show_fps = enabled;
+}
+
+void GRender_SetSSRDebugView(int mode) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ssr_debug_view(mode);
 }
 
 // --- 材质预设枚举 ---
@@ -940,6 +1027,31 @@ void GRender_SetVSync(bool enabled) {
     g_renderer.ctx->set_swap_interval(enabled ? 1 : 0);
 }
 
+void GRender_SetGPUProfiling(int enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.ctx) return;
+    g_renderer.ctx->set_gpu_profiling(enabled != 0);
+}
+
+int GRender_GPUProfilingSupported(void) {
+    GRYCE_API_GUARD();
+    if (!g_renderer.ctx) return 0;
+    return g_renderer.ctx->gpu_profiling_supported() ? 1 : 0;
+}
+
+void GRender_DumpGPUProfiling(void) {
+    GRYCE_API_GUARD();
+    IRenderBackend* backend = nullptr;
+    {
+        std::lock_guard lock(g_renderer.mutex);
+        if (!g_renderer.ctx) return;
+        backend = g_renderer.ctx->gpu_profiling_backend();
+    }
+    // 只读取累计统计（内部有锁），不触碰 GPU 资源，可在任意线程调用。
+    if (backend) backend->gpu_profile_dump();
+}
+
 int GRender_SaveScreenshot(const char* path) {
     GRYCE_API_GUARD();
     if (!path || !g_renderer.ctx) return -1;
@@ -958,7 +1070,12 @@ void GViewport_SetSize(int w, int h) {
     g_renderer.viewport_w = w > 0 ? w : 1;
     g_renderer.viewport_h = h > 0 ? h : 1;
     if (g_renderer.pipeline && g_renderer.pipeline->is_valid()) {
-        g_renderer.pipeline->resize_render_targets(g_renderer.viewport_w, g_renderer.viewport_h);
+        // 目标重建是 GPU 资源操作，必须在渲染线程（持有 GL context）执行；
+        // 否则 GL 上 glCreateFramebuffers 返回 0，目标静默创建失败。
+        RenderPipeline* pipeline = g_renderer.pipeline.get();
+        const int w = g_renderer.viewport_w;
+        const int h = g_renderer.viewport_h;
+        g_renderer.ctx->run_on_render_thread([pipeline, w, h]() { pipeline->resize_render_targets(w, h); });
     }
 }
 

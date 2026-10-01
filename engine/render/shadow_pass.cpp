@@ -85,6 +85,7 @@ bool RenderPipeline::resize_shadow_map(RenderContext* ctx) {
 void RenderPipeline::set_shadow_bias(float bias) {
     shadow_bias_ = bias;
     cascade_biases_.fill(bias);
+    sync_shadow_params_to_post_process();
 }
 
 
@@ -116,6 +117,7 @@ void RenderPipeline::set_cascade_biases(const std::array<float, k_max_cascades>&
     for (int i = 0; i < k_max_cascades; ++i) {
         cascade_biases_[i] = std::max(0.0f, biases[i]);
     }
+    sync_shadow_params_to_post_process();
 }
 
 
@@ -123,6 +125,19 @@ void RenderPipeline::set_pcss_params(float light_size, float max_radius_texels, 
     pcss_light_size_ = std::max(0.0f, light_size);
     pcss_max_radius_ = std::max(1.0f, max_radius_texels);
     pcss_tap_scale_ = std::max(0.1f, tap_scale);
+    sync_shadow_params_to_post_process();
+}
+
+
+// 把阴影相关设置同步进 PostProcessParams：前向渲染路径（demo 用的就是它）
+// 从 pp_params_ 里取 PCSS/级联 bias，不同步的话 API 设了也不会生效。
+void RenderPipeline::sync_shadow_params_to_post_process() {
+    pp_params_.pcss_enabled = pcss_enabled_ ? 1 : 0;
+    pp_params_.pcss_light_size = pcss_light_size_;
+    pp_params_.pcss_max_radius = pcss_max_radius_;
+    pp_params_.pcss_blocker_scale = pcss_tap_scale_;
+    pp_params_.cascade_bias = math::Vector4f(cascade_biases_[0], cascade_biases_[1],
+                                             cascade_biases_[2], cascade_biases_[3]);
 }
 
 
@@ -176,12 +191,23 @@ void RenderPipeline::update_light_space_matrix() {
 
     // 级联分割：practical split scheme（线性与对数分布按 lambda 插值）。
     // split[i] 是第 i 级联的远平面（相机空间距离），split[0]=near。
+    //
+    // 关键：级联只覆盖相机附近的一段距离（shadow_area_），而不是一直撑到相机
+    // 远平面。旧代码用 cam_far（demo 里是 100）做分割与视锥切片，后果是三重的：
+    //   1) 每级级联的世界范围巨大 → texel 很粗，阴影边缘出现台阶；
+    //   2) 各级范围差异悬殊 → 近处物体的影子锐、稍远物体的影子糊，
+    //      同一画面里阴影质量不一致；
+    //   3) 分割线（级联切换 + 混合带）正好切在可见地面的阴影上，
+    //      表现为影子被一条直线"截断/分层"。
+    // shadow_area_（默认 15 世界单位，之前是**声明了却从没被使用**的死参数）
+    // 正是为此准备的：限制远距离后，同样的 4096 贴图 texel 密度提高数倍。
+    const float shadow_far = math::clamp(shadow_area_, cam_near * 10.0f, cam_far);
     const int n = cascade_count_;
     cascade_split_distances_[0] = cam_near;
     for (int i = 1; i <= n; ++i) {
-        const float t_log = cam_near * std::pow(cam_far / cam_near,
+        const float t_log = cam_near * std::pow(shadow_far / cam_near,
                                                 static_cast<float>(i) / static_cast<float>(n));
-        const float t_lin = cam_near + (cam_far - cam_near) *
+        const float t_lin = cam_near + (shadow_far - cam_near) *
                                            (static_cast<float>(i) / static_cast<float>(n));
         cascade_split_distances_[i] = math::lerp(t_lin, t_log, cascade_split_lambda_);
     }
@@ -190,14 +216,14 @@ void RenderPipeline::update_light_space_matrix() {
     // 保证级联之间无缝衔接。
     math::Vector3f full_center = math::Vector3f::zero();
     for (int k = 0; k < 8; ++k) {
-        full_center = full_center + corner(cam_far,
+        full_center = full_center + corner(shadow_far,
                                            (k & 1) ? 1.0f : -1.0f,
                                            (k & 2) ? 1.0f : -1.0f);
     }
     full_center = full_center / 8.0f;
     float frustum_radius = 0.0f;
     for (int k = 0; k < 8; ++k) {
-        math::Vector3f c = corner(cam_far, (k & 1) ? 1.0f : -1.0f, (k & 2) ? 1.0f : -1.0f);
+        math::Vector3f c = corner(shadow_far, (k & 1) ? 1.0f : -1.0f, (k & 2) ? 1.0f : -1.0f);
         frustum_radius = std::max(frustum_radius, (c - full_center).length());
     }
     const float eye_dist = frustum_radius + 60.0f;
@@ -223,11 +249,18 @@ void RenderPipeline::update_light_space_matrix() {
             hi.x = std::max(hi.x, lp.x); hi.y = std::max(hi.y, lp.y); hi.z = std::max(hi.z, lp.z);
         }
 
-        // 轻微外扩，避免视锥边缘恰好贴盒边采样出问题
-        const float margin_x = (hi.x - lo.x) * 0.02f + 0.5f;
-        const float margin_y = (hi.y - lo.y) * 0.02f + 0.5f;
-        lo.x -= margin_x; hi.x += margin_x;
-        lo.y -= margin_y; hi.y += margin_y;
+        // 外扩策略：X/Y 方向与 depth 方向保持一致。
+        // depth 方向固定延伸 50（光源远侧）+10（近侧余量），保证视锥外的投影体
+        // （画面上方/侧面的物体仍会向视锥内投射阴影）被纳入包围盒。
+        // X/Y 方向之前只有 2%+0.5f 的微小 margin，shadow_area 收窄后视锥跨度缩小，
+        // 立方体贴地处的影子会被硬截断成正方形轮廓。这里加固定横向延伸量，
+        // 让级联包围盒能覆盖视锥外的横向投影。
+        const float edge_x = (hi.x - lo.x) * 0.02f + 0.5f;
+        const float edge_y = (hi.y - lo.y) * 0.02f + 0.5f;
+        const float proj_x = 3.0f;  // 横向投影余量（世界单位）
+        const float proj_y = 3.0f;
+        lo.x -= edge_x + proj_x; hi.x += edge_x + proj_x;
+        lo.y -= edge_y + proj_y; hi.y += edge_y + proj_y;
 
         // Texel Snapping：盒尺寸保持不变（稳定），起点对齐 texel 网格（消除移动抖动）
         const float texel_x = (hi.x - lo.x) / static_cast<float>(cascade_sizes_[c]);
@@ -298,13 +331,11 @@ void RenderPipeline::begin_shadow_pass(RenderContext& ctx, int cascade) {
         ctx.set_depth_test(true);
         ctx.set_depth_write(true);
         ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
-        // Normal Offset Shadow Mapping（每级按自己的 texel 尺寸）。
-        // 符号为负：把投影者沿法线推离光源，增加写入深度贴图的深度，
-        // 让共面接收者的 slope-scaled bias 不再被跨越，从而消掉地面上的
-        // 自阴影摩尔纹（同心圆条纹）。正值会反向推近光源，等于把整块地面
-        // 判进自己的阴影里（实测地面均匀变暗）。
-        ctx.set_uniform_float(shadow_shader_, "uNormalOffset",
-                              -cascade_texel_sizes_[cascade] * normal_offset_scale_);
+        // 不用 Normal Offset：它通过"平移投影者"来消 acne，代价是阴影整体偏移
+        //（每级偏移量 = 该级 texel 的世界尺寸；远级联 texel 很大，阴影会明显错位）。
+        // 改为纯深度 bias（见 pbr.frag 的 slope_bias / uCascadeBias）——不移动几何，
+        // 阴影位置因此与物体严格对齐。
+        ctx.set_uniform_float(shadow_shader_, "uNormalOffset", 0.0f);
     }
 }
 
@@ -345,6 +376,30 @@ bool RenderPipeline::create_vsm_color_targets(RenderContext* ctx) {
             GLOG_ERROR("RenderPipeline: VSM color FBO cascade {} incomplete", i);
             return false;
         }
+
+        // 模糊输出目标（与 color 同尺寸）：模糊 pass 读 color、写这张，
+        // 避免"读写同一张纹理"的未定义行为。不需要深度附件。
+        vsm_blur_tex_[i] = ctx->create_texture();
+        ITexture* blur_tex = ctx->texture(vsm_blur_tex_[i]);
+        if (!vsm_blur_tex_[i].is_valid() || !blur_tex ||
+            !blur_tex->create(TextureFormat::RGBA16F, size, size, nullptr)) {
+            GLOG_ERROR("RenderPipeline: failed to create VSM blur tex cascade {}", i);
+            return false;
+        }
+        blur_tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+        blur_tex->set_wrap(TextureWrap::ClampToBorder, TextureWrap::ClampToBorder);
+
+        vsm_blur_fbo_[i] = ctx->create_framebuffer();
+        IFramebuffer* blur_fbo = ctx->framebuffer(vsm_blur_fbo_[i]);
+        if (!vsm_blur_fbo_[i].is_valid() || !blur_fbo || !blur_fbo->create(size, size)) {
+            GLOG_ERROR("RenderPipeline: failed to create VSM blur FBO cascade {}", i);
+            return false;
+        }
+        blur_fbo->attach_color_texture(blur_tex);
+        if (!blur_fbo->is_complete()) {
+            GLOG_ERROR("RenderPipeline: VSM blur FBO cascade {} incomplete", i);
+            return false;
+        }
     }
     return true;
 }
@@ -353,6 +408,14 @@ bool RenderPipeline::create_vsm_color_targets(RenderContext* ctx) {
 void RenderPipeline::destroy_vsm_color_targets() {
     if (!ctx_) return;
     for (int i = 0; i < k_max_cascades; ++i) {
+        if (vsm_blur_fbo_[i].is_valid()) {
+            ctx_->destroy_framebuffer(vsm_blur_fbo_[i]);
+            vsm_blur_fbo_[i] = {};
+        }
+        if (vsm_blur_tex_[i].is_valid()) {
+            ctx_->destroy_texture(vsm_blur_tex_[i]);
+            vsm_blur_tex_[i] = {};
+        }
         if (vsm_color_fbo_[i].is_valid()) {
             ctx_->destroy_framebuffer(vsm_color_fbo_[i]);
             vsm_color_fbo_[i] = {};
@@ -371,34 +434,29 @@ void RenderPipeline::render_vsm_blur(RenderContext& ctx) {
     for (int i = 0; i < cascade_count_; ++i) {
         const int size = cascade_sizes_[i];
         if (!vsm_color_fbo_[i].is_valid() || !vsm_color_tex_[i].is_valid()) continue;
+        if (!vsm_blur_fbo_[i].is_valid() || !vsm_blur_tex_[i].is_valid()) continue;
 
-        // 水平 blur pass: 从 vsm_color_tex_[i] 采样，写入临时纹理
-        // 用 vsm_color_fbo_[i] 作为目标（原地 blur，需要双缓冲）
-        // 实际实现中，简单的原地 blur 足以满足 VSM 要求
+        // 单 pass 3x3（双线性合并的 5-tap 高斯）二维模糊：读 vsm_color_tex_[i]，
+        // 写 vsm_blur_tex_[i]。相比原来的"H/V 两 pass 各 5 tap 且原地读写同一张
+        // 纹理"，这里既把 2 个全屏 pass 并为 1 个，又消除了原地读写的未定义行为。
         ctx.set_shader(vsm_blur_shader_);
-        ctx.set_framebuffer(vsm_color_fbo_[i]);
+        ctx.set_framebuffer(vsm_blur_fbo_[i]);
         ctx.set_viewport(0, 0, size, size);
         ctx.set_depth_test(false);
         ctx.set_depth_write(false);
+        ctx.set_cull_face(CullMode::None);
+        ctx.set_blend(false);
 
-        // 绑定 VSM 纹理
         ctx.set_texture(vsm_blur_shader_, vsm_color_tex_[i], 0, "uVSMTexture");
         ctx.set_uniform_int(vsm_blur_shader_, "uVSMTexture", 0);
 
-        // 水平 blur
-        ctx.set_uniform_vec2(vsm_blur_shader_, "uBlurDirection",
-                             math::Vector2f(1.0f, 0.0f));
         ctx.draw_mesh(fullscreen_mesh_, vsm_blur_shader_);
-
-        // 垂直 blur
-        ctx.set_uniform_vec2(vsm_blur_shader_, "uBlurDirection",
-                             math::Vector2f(0.0f, 1.0f));
-        ctx.draw_mesh(fullscreen_mesh_, vsm_blur_shader_);
-
-        // 恢复深度测试
-        ctx.set_depth_test(true);
-        ctx.set_depth_write(true);
     }
+
+    // 恢复状态（调用方随后会重新绑定自己的目标/视口）
+    ctx.set_framebuffer(RHIFramebufferHandle{});
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
 }
 
 

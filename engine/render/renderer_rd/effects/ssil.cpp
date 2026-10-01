@@ -2,6 +2,7 @@
 #include "render/render_context.h"
 #include "render/mesh.h"
 #include "render/texture.h"
+#include "render/gpu_scope.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render {
@@ -132,6 +133,7 @@ void SSIL_RD::render(RenderContext* ctx,
     if (!ssil_shader_.is_valid() || !ssil_blur_shader_.is_valid()) return;
     if (!fullscreen_mesh_.is_valid()) return;
     if (!color_tex.is_valid() || !depth_tex.is_valid() || !normal_roughness_tex.is_valid()) return;
+    GpuScope _gpu(*ctx, "ssil");
 
     // 窗口 resize 后重建目标
     if (ssil_w_ != viewport_w / 2 || ssil_h_ != viewport_h / 2) {

@@ -1,6 +1,7 @@
 #include "vk_shader.h"
 
 #include "vk_glsl_compiler.h"
+#include "vk_spirv_cache.h"
 #include "render/mesh.h"
 #include "render/texture.h"
 #include "render/render.h"
@@ -15,8 +16,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <fstream>
-#include <unordered_map>
 #include <vector>
 #include <filesystem>
 #include <system_error>
@@ -24,63 +25,6 @@
 namespace gryce_engine::render {
 
 namespace {
-
-// SPIR-V 编译缓存：按源码内容作键，二次加载同名同内容 shader 时直接复用已编译
-// 产物，避免每帧/每对象重复编译。shader 变体由各管线的 name 区分（如 pbr /
-// skinned_pbr / gtao ...），故以 (stage + 完整源码) 为键是安全的。
-using SpirvCache = std::unordered_map<std::string, std::vector<uint32_t>>;
-SpirvCache& spirv_cache() {
-    static SpirvCache cache;
-    return cache;
-}
-
-// 编译单个阶段，命中缓存则直接返回，避免重复编译。
-bool compile_or_cached(const std::string& key, const std::string& source,
-                       const std::string& file, GlslStage stage,
-                       std::vector<uint32_t>& out, std::string& err) {
-    auto& cache = spirv_cache();
-    auto it = cache.find(key);
-    if (it != cache.end()) {
-        out = it->second;
-        return true;
-    }
-    if (!compile_glsl_to_spirv(source, file, stage, out, err)) {
-        return false;
-    }
-    if (!out.empty()) {
-        cache.emplace(key, out);
-    }
-    return true;
-}
-
-// 磁盘 SPIR-V 缓存：shaderc 首编结果落盘，二次启动直接加载跳过编译。
-// 新鲜度 = spv 文件 mtime 不早于对应源码文件 mtime；文件缺失/损坏视为未命中。
-bool load_spirv_cache(const std::string& source_path, const std::string& spv_path,
-                      std::vector<uint32_t>& out) {
-    std::error_code ec;
-    auto src_mtime = std::filesystem::last_write_time(source_path, ec);
-    std::error_code ec2;
-    auto spv_mtime = std::filesystem::last_write_time(spv_path, ec2);
-    if (ec || ec2 || spv_mtime < src_mtime) return false;
-    std::ifstream file(spv_path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) return false;
-    std::streamsize size = file.tellg();
-    file.seekg(0, std::ios::beg);
-    if (size <= 0 || size % 4 != 0) return false;
-    out.resize(static_cast<size_t>(size) / 4);
-    return static_cast<bool>(file.read(reinterpret_cast<char*>(out.data()), size));
-}
-
-void save_spirv_cache(const std::string& spv_path, const std::vector<uint32_t>& code) {
-    if (code.empty()) return;
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(spv_path).parent_path(), ec);
-    if (ec) return;
-    std::ofstream file(spv_path, std::ios::binary | std::ios::trunc);
-    if (!file.is_open()) return;
-    file.write(reinterpret_cast<const char*>(code.data()),
-               static_cast<std::streamsize>(code.size()) * 4);
-}
 
 // 将全局 texture slot 映射到 Vulkan PBR shader 的 descriptor binding。
 // 必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 中的 layout(binding=...) 一致。
@@ -101,6 +45,8 @@ int slot_to_binding(int slot) {
         case TextureSlots::kPBRShadowDepth2: return 17;
         case TextureSlots::kPBRShadowDepth3: return 18;
         case TextureSlots::kPBRSSAO:     return 19;
+        // 粒子贴图复用 PBR albedo 的 binding（粒子 pass 与 PBR pass 不同时执行）
+        case TextureSlots::kParticleTexture: return 1;
         case TextureSlots::kIBLIrradiance: return 9;
         case TextureSlots::kIBLPrefilter:  return 10;
         case TextureSlots::kIBLBRDF:       return 11;
@@ -123,6 +69,8 @@ int post_process_binding(int slot) {
     if (slot == TextureSlots::kPBRShadowDepth) return 11;    // 深度 -> 11
     if (slot == TextureSlots::kPBRShadowDepth1) return 12;   // 法线/粗糙度 -> 12
     if (slot == TextureSlots::kMotionVectors) return 13;     // 运动向量 -> 13
+    // SSR 反射探针图集：复用 13（与 Motion Blur 不同 pass，各自持有独立描述符集）
+    if (slot == TextureSlots::kSSRProbeAtlas) return 13;
     if (slot == TextureSlots::kSSILTexture) return 7;        // SSIL -> 7（与 HiZ1 共用，pass 不同时）
     if (slot == TextureSlots::kDOFHalf) return 8;            // DOF 半分辨率 -> 8
     if (slot == TextureSlots::kDOFBlur) return 9;            // DOF 模糊 -> 9
@@ -140,7 +88,12 @@ VulkanShader::~VulkanShader() {
         if (entry.second) vkDestroyPipeline(dev, entry.second, nullptr);
     }
     pipeline_cache_.clear();
-    pipeline_ = VK_NULL_HANDLE;
+    for (auto& entry : pipeline_cache_opaque_) {
+        if (entry.second) vkDestroyPipeline(dev, entry.second, nullptr);
+    }
+    pipeline_cache_opaque_.clear();
+    pipeline_blend_ = VK_NULL_HANDLE;
+    pipeline_opaque_ = VK_NULL_HANDLE;
     if (pipeline_layout_) vkDestroyPipelineLayout(dev, pipeline_layout_, nullptr);
     if (descriptor_pool_) vkDestroyDescriptorPool(dev, descriptor_pool_, nullptr);
     for (auto pool : descriptor_pools_) {
@@ -238,20 +191,24 @@ bool VulkanShader::load_program(const std::string& name,
         const std::string vert_path = spirv_dir + "vulkan_" + name + ".vert.spv";
         const std::string frag_path = spirv_dir + "vulkan_" + name + ".frag.spv";
         std::vector<uint32_t> vert_code, frag_code;
-        const bool from_cache = load_spirv_cache(src.vertex_path, vert_path, vert_code) &&
-                                load_spirv_cache(src.fragment_path, frag_path, frag_code);
-        cache_hit = from_cache;
-        if (!from_cache) {
-            const std::string vert_key = "vk_vert|" + src.vertex;
-            const std::string frag_key = "vk_frag|" + src.fragment;
-            std::string err;
-            if (compile_or_cached(vert_key, src.vertex, src.vertex_path, GlslStage::Vertex, vert_code, err) &&
-                compile_or_cached(frag_key, src.fragment, src.fragment_path, GlslStage::Fragment, frag_code, err)) {
-                save_spirv_cache(vert_path, vert_code);
-                save_spirv_cache(frag_path, frag_code);
-            } else {
-                GLOG_WARN("VulkanShader: first-run compile of '{}' failed ({}); falling back to pre-compiled SPIR-V", name, err);
+        SpirvCacheSource vert_from = SpirvCacheSource::None;
+        SpirvCacheSource frag_from = SpirvCacheSource::None;
+        std::string err;
+        if (load_or_compile_spirv(src.vertex, src.vertex_path, vert_path, GlslStage::Vertex,
+                                  vert_code, err, &vert_from) &&
+            load_or_compile_spirv(src.fragment, src.fragment_path, frag_path, GlslStage::Fragment,
+                                  frag_code, err, &frag_from)) {
+            cache_hit = vert_from != SpirvCacheSource::None && frag_from != SpirvCacheSource::None;
+            if (cache_hit) {
+                // 画面上看不到 shader 改动的常见原因：命中了 SPIR-V 缓存。
+                // 缓存新鲜度按源码内容指纹判定，内容一致才可能命中。
+                GLOG_INFO("VulkanShader '{}': SPIR-V cache hit (source '{}' 内容未变更)", name,
+                          src.fragment_path);
             }
+        } else {
+            GLOG_WARN("VulkanShader: first-run compile of '{}' failed ({}); falling back to pre-compiled SPIR-V", name, err);
+            vert_code.clear();
+            frag_code.clear();
         }
         if (!vert_code.empty() && !frag_code.empty()) {
             vert_module_ = create_shader_module(vert_code);
@@ -291,6 +248,14 @@ bool VulkanShader::load_program(const std::string& name,
 
     source_name_ = name;
 
+    // 数据通道 shader（G-buffer / 法线粗糙度 prepass）写的是数据而非颜色，绝不能
+    // 参与 alpha 混合。Vulkan 的混合状态烘在管线里，必须在 create_pipeline() 之前
+    // 定好，否则调用方事后再 set_pipeline_blending(false) 就得把刚建好的管线销毁
+    // 重建一次（每条 shader 都要多编译 2 条管线）。
+    if (name == "g_buffer" || name == "depth_normal") {
+        pipeline_blending_ = false;
+    }
+
     if (target) {
         auto* vk_target = dynamic_cast<VulkanFramebuffer*>(target);
         if (vk_target) {
@@ -305,11 +270,18 @@ bool VulkanShader::load_program(const std::string& name,
     // 推导特效 push 块与水性材质标志（决定 create_pipeline 的 vertex input /
     // push range / set_uniform_* 路由）。
     water_ = (name == "water");
+    // 3D 粒子广告牌：顶点输入是"静态四边形（binding 0）+ 每实例数据（binding 1）"，
+    // 与 MeshVertex（stride 56）不兼容，必须单独一条 vertex input 分支。
+    // particle_depth 是粒子深度补写 pass（几何与 particle 完全一致），
+    // 名字不相等但顶点流布局相同，必须共用这条分支；否则会退回
+    // MeshVertex 的 stride 56 布局，属性错位、写入的深度整片错乱。
+    particle_ = (name == "particle" || name == "particle_depth");
     if (post_process) {
         if (name == "contact_shadow") push_kind_ = PostProcessPushKind::ContactShadow;
         else if (name.rfind("ssr_", 0) == 0) push_kind_ = PostProcessPushKind::SSR;
         else if (name.rfind("ssil_", 0) == 0) push_kind_ = PostProcessPushKind::SSIL;
         else if (name.rfind("motion_", 0) == 0) push_kind_ = PostProcessPushKind::Motion;
+        else if (name == "gtao") push_kind_ = PostProcessPushKind::GTAO;
         else if (name == "fog" || name == "fog_apply") push_kind_ = PostProcessPushKind::Fog;
         else push_kind_ = PostProcessPushKind::General;
     } else {
@@ -360,9 +332,12 @@ bool VulkanShader::reload() {
     // 其它 render pass 的缓存管线依赖旧的 pipeline_layout，重建后必须一并作废。
     auto old_pipelines = std::move(pipeline_cache_);
     pipeline_cache_.clear();
+    auto old_pipelines_opaque = std::move(pipeline_cache_opaque_);
+    pipeline_cache_opaque_.clear();
     if (old_pipeline) old_pipelines.erase(render_pass_);
 
-    pipeline_ = VK_NULL_HANDLE;
+    pipeline_blend_ = VK_NULL_HANDLE;
+    pipeline_opaque_ = VK_NULL_HANDLE;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     descriptor_set_layout_ = VK_NULL_HANDLE;
@@ -384,12 +359,12 @@ bool VulkanShader::reload() {
     if (use_source) {
         ShaderSourceSet src = resolve_shader_source(source_name_, shader_dir_, RenderAPI::Vulkan);
         if (src.valid()) {
-            const std::string vert_key = "vk_vert|" + src.vertex;
-            const std::string frag_key = "vk_frag|" + src.fragment;
             std::string err;
             std::vector<uint32_t> vert_code, frag_code;
-            if (compile_or_cached(vert_key, src.vertex, src.vertex_path, GlslStage::Vertex, vert_code, err) &&
-                compile_or_cached(frag_key, src.fragment, src.fragment_path, GlslStage::Fragment, frag_code, err)) {
+            // 热重载路径只走内存缓存：源码已变，磁盘缓存必然失效，
+            // 落盘交给下次冷启动的首编完成即可。
+            if (load_or_compile_spirv(src.vertex, src.vertex_path, "", GlslStage::Vertex, vert_code, err) &&
+                load_or_compile_spirv(src.fragment, src.fragment_path, "", GlslStage::Fragment, frag_code, err)) {
                 vert_module_ = create_shader_module(vert_code);
                 frag_module_ = create_shader_module(frag_code);
                 rebuilt = vert_module_ && frag_module_;
@@ -422,6 +397,8 @@ bool VulkanShader::reload() {
         palette_buffers_.clear();
 
         pipeline_ = old_pipeline;
+        pipeline_blend_ = old_pipeline;
+        pipeline_opaque_ = old_pipeline;
         pipeline_layout_ = old_layout;
         descriptor_pool_ = old_pool;
         descriptor_set_layout_ = old_set_layout;
@@ -431,6 +408,7 @@ bool VulkanShader::reload() {
         fallback_cube_ = std::move(old_fallback_cube);
         // 回退到旧资源：旧缓存管线仍然有效，恢复映射。
         pipeline_cache_ = std::move(old_pipelines);
+        pipeline_cache_opaque_ = std::move(old_pipelines_opaque);
         resources_created_ = true;
 
         GLOG_ERROR("VulkanShader::reload: rebuild failed for '{}', keeping old pipeline", source_name_);
@@ -536,6 +514,8 @@ bool VulkanShader::create_pipeline() {
                 push_range.size = sizeof(MotionPushData);
             else if (push_kind_ == PostProcessPushKind::Fog)
                 push_range.size = sizeof(FogPushData);
+            else if (push_kind_ == PostProcessPushKind::GTAO)
+                push_range.size = sizeof(GTAOPushData);
         }
 
         VkPipelineLayoutCreateInfo pl_info{};
@@ -734,13 +714,11 @@ bool VulkanShader::create_pipeline() {
 
     // vertex input
     std::vector<VkVertexInputAttributeDescription> attrs;
-    VkVertexInputBindingDescription vertex_binding{};
-    vertex_binding.binding = 0;
-    vertex_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    std::vector<VkVertexInputBindingDescription> bindings;
 
     if (water_) {
         // WaterVertex: pos(vec3)+normal(vec3)+uv(vec2)，与 C++ water.cpp 一致
-        vertex_binding.stride = 32;
+        bindings.push_back({0, 32, VK_VERTEX_INPUT_RATE_VERTEX});
         attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
         attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});  // normal
         attrs.push_back({2, 0, VK_FORMAT_R32G32_SFLOAT, 24});     // uv
@@ -749,14 +727,14 @@ bool VulkanShader::create_pipeline() {
                 push_kind_ == PostProcessPushKind::Motion)) {
         // fog / motion 使用 vec3 全屏四边形（无 uv，由顶点坐标推导），
         // 对应 forward_clustered/fog.vert 与 motion 的 fullscreen_mesh_。
-        vertex_binding.stride = 12;
+        bindings.push_back({0, 12, VK_VERTEX_INPUT_RATE_VERTEX});
         attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
     } else if (post_process_) {
-        vertex_binding.stride = 16; // vec2 pos + vec2 uv
+        bindings.push_back({0, 16, VK_VERTEX_INPUT_RATE_VERTEX}); // vec2 pos + vec2 uv
         attrs.push_back({0, 0, VK_FORMAT_R32G32_SFLOAT, 0});   // position
         attrs.push_back({1, 0, VK_FORMAT_R32G32_SFLOAT, 8});   // uv
     } else if (skinned_) {
-        vertex_binding.stride = 88; // SkinnedVertexGPU（MeshVertex + bone ids + weights）
+        bindings.push_back({0, 88, VK_VERTEX_INPUT_RATE_VERTEX}); // SkinnedVertexGPU（MeshVertex + bone ids + weights）
         attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});    // position
         attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});   // normal
         attrs.push_back({2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24});   // tangent
@@ -764,8 +742,20 @@ bool VulkanShader::create_pipeline() {
         attrs.push_back({4, 0, VK_FORMAT_R32G32B32_SFLOAT, 44});   // color
         attrs.push_back({5, 0, VK_FORMAT_R32G32B32A32_UINT, 56});  // bone ids
         attrs.push_back({6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 72});// weights
+    } else if (particle_) {
+        // 实例化粒子：binding 0 是四边形角的静态几何（每顶点推进），
+        // binding 1 是每实例的 center(3)+size(1)+rotation(1)+color(4)（每实例推进）。
+        // 着色器里的 location 0..4 与原来一致，只是数据来源从"每顶点重复 6 份"
+        // 变成"每实例一份"。
+        bindings.push_back({0, 8, VK_VERTEX_INPUT_RATE_VERTEX});
+        bindings.push_back({1, 36, VK_VERTEX_INPUT_RATE_INSTANCE});
+        attrs.push_back({0, 0, VK_FORMAT_R32G32_SFLOAT, 0});        // corner
+        attrs.push_back({1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0});     // center
+        attrs.push_back({2, 1, VK_FORMAT_R32_SFLOAT, 12});          // size
+        attrs.push_back({3, 1, VK_FORMAT_R32_SFLOAT, 16});          // rotation
+        attrs.push_back({4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 20}); // color
     } else {
-        vertex_binding.stride = 56; // MeshVertex
+        bindings.push_back({0, 56, VK_VERTEX_INPUT_RATE_VERTEX}); // MeshVertex
         attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
         attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});  // normal
         attrs.push_back({2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24});  // tangent
@@ -775,8 +765,8 @@ bool VulkanShader::create_pipeline() {
 
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input.vertexBindingDescriptionCount = 1;
-    vertex_input.pVertexBindingDescriptions = &vertex_binding;
+    vertex_input.vertexBindingDescriptionCount = static_cast<uint32_t>(bindings.size());
+    vertex_input.pVertexBindingDescriptions = bindings.data();
     vertex_input.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
     vertex_input.pVertexAttributeDescriptions = attrs.data();
 
@@ -811,8 +801,10 @@ bool VulkanShader::create_pipeline() {
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     raster.polygonMode = VK_POLYGON_MODE_FILL;
-    // 天空盒从立方体内部观察，禁用剔除
-    raster.cullMode = (post_process_ || skybox_) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+    // 天空盒从立方体内部观察，禁用剔除；粒子广告牌恒面向相机，同样不需要剔除
+    //（关闭剔除也避开了动态剔除状态不可用时烘焙 BACK_BIT 带来的绕序风险）。
+    raster.cullMode = (post_process_ || skybox_ || particle_) ? VK_CULL_MODE_NONE
+                                                              : VK_CULL_MODE_BACK_BIT;
     // Negative viewport height restores OpenGL's Y convention, so keep the same
     // winding convention as OpenGL: counter-clockwise front face with back culling.
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
@@ -848,8 +840,7 @@ bool VulkanShader::create_pipeline() {
     //   - 半透明材质（TriggerZone、Glass 等）alpha<1，GL 端走 forward
     //     透明排序 + blend，VK 之前硬编码关闭混合导致它们渲染错误。
     // Shadow / post-process / skybox 仍保持不混合。
-    blend_attach.blendEnable =
-        (!post_process_ && !skybox_ && color_output_enabled_) ? VK_TRUE : VK_FALSE;
+    const bool blend_allowed = (!post_process_ && !skybox_ && color_output_enabled_ && pipeline_blending_);
     blend_attach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     blend_attach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend_attach.colorBlendOp = VK_BLEND_OP_ADD;
@@ -885,14 +876,31 @@ bool VulkanShader::create_pipeline() {
         pipeline_info.pColorBlendState = nullptr;
     }
 
-    VkPipeline new_pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(device_->device(), VK_NULL_HANDLE, 1, &pipeline_info, nullptr,
-                                  &new_pipeline) != VK_SUCCESS) {
-        GLOG_ERROR("VulkanShader: failed to create graphics pipeline");
+    // 建两个变体：混合 / 不混合。backend 每次 draw 按 set_blend() 的当前状态选一个
+    //（见 pipeline()）。这样不透明材质写出的 alpha 不会被当成混合系数。
+    // post-process / skybox / 无 color 输出的管线不允许混合，两个变体完全一致。
+    VkPipeline pipe_blend = VK_NULL_HANDLE;
+    VkPipeline pipe_opaque = VK_NULL_HANDLE;
+    blend_attach.blendEnable = blend_allowed ? VK_TRUE : VK_FALSE;
+    // 传入设备的全局管线缓存：驱动可复用上次启动已编译好的 SPIR-V → ISA 产物，
+    // 否则每次启动都要重新编译全部管线（这是 Vulkan 启动慢的主因）。
+    const VkPipelineCache cache = device_->pipeline_cache();
+    if (vkCreateGraphicsPipelines(device_->device(), cache, 1, &pipeline_info, nullptr,
+                                  &pipe_blend) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanShader: failed to create graphics pipeline (blend variant)");
         return false;
     }
-    pipeline_ = new_pipeline;
-    pipeline_cache_[render_pass] = new_pipeline;
+    blend_attach.blendEnable = VK_FALSE;
+    if (vkCreateGraphicsPipelines(device_->device(), cache, 1, &pipeline_info, nullptr,
+                                  &pipe_opaque) != VK_SUCCESS) {
+        GLOG_ERROR("VulkanShader: failed to create graphics pipeline (opaque variant)");
+        vkDestroyPipeline(device_->device(), pipe_blend, nullptr);
+        return false;
+    }
+    pipeline_blend_ = pipe_blend;
+    pipeline_opaque_ = pipe_opaque;
+    pipeline_cache_[render_pass] = pipe_blend;
+    pipeline_cache_opaque_[render_pass] = pipe_opaque;
     return true;
 }
 
@@ -900,17 +908,45 @@ bool VulkanShader::create_pipeline() {
 // 再建一条管线（见 create_pipeline 顶部的说明）。
 void VulkanShader::ensure_render_pass(VkRenderPass render_pass) {
     if (render_pass == VK_NULL_HANDLE) return;
-    if (render_pass == render_pass_ && pipeline_ != VK_NULL_HANDLE) return;
+    if (render_pass == render_pass_ && pipeline_blend_ != VK_NULL_HANDLE &&
+        pipeline_opaque_ != VK_NULL_HANDLE) {
+        return;
+    }
     auto it = pipeline_cache_.find(render_pass);
-    if (it != pipeline_cache_.end()) {
+    auto it_opaque = pipeline_cache_opaque_.find(render_pass);
+    if (it != pipeline_cache_.end() && it_opaque != pipeline_cache_opaque_.end()) {
         render_pass_ = render_pass;
-        pipeline_ = it->second;
+        pipeline_blend_ = it->second;
+        pipeline_opaque_ = it_opaque->second;
         return;
     }
     render_pass_ = render_pass;
     if (!create_pipeline()) {
         GLOG_WARN("VulkanShader '{}': failed to build pipeline for render_pass={}",
                   source_name_, reinterpret_cast<void*>(render_pass));
+    }
+}
+
+// Vulkan 的 alpha 混合状态烘在管线里：改了标志就要作废已有管线重建。
+// 数据通道 shader（g_buffer / depth_normal）已在 load_program() 建管线前预设为
+// false，所以常规的 set_pipeline_blending(false) 会命中下面的早退而不重建。
+void VulkanShader::set_pipeline_blending(bool enabled) {
+    if (pipeline_blending_ == enabled) return;
+    pipeline_blending_ = enabled;
+    if (!device_ || !device_->is_valid()) return;
+    for (auto& entry : pipeline_cache_) {
+        if (entry.second) vkDestroyPipeline(device_->device(), entry.second, nullptr);
+    }
+    pipeline_cache_.clear();
+    for (auto& entry : pipeline_cache_opaque_) {
+        if (entry.second) vkDestroyPipeline(device_->device(), entry.second, nullptr);
+    }
+    pipeline_cache_opaque_.clear();
+    pipeline_blend_ = VK_NULL_HANDLE;
+    pipeline_opaque_ = VK_NULL_HANDLE;
+    if (!create_pipeline()) {
+        GLOG_WARN("VulkanShader '{}': failed to rebuild pipeline after blend change",
+                  source_name_);
     }
 }
 
@@ -935,6 +971,11 @@ void VulkanShader::set_int(const std::string& name, int value) {
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::SSIL) {
         if (name == "uSSILSteps") ssil_push_.steps = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR) {
+        // 退化射线探针兜底开关（trace pass 用；其余 SSR pass 忽略）
+        if (name == "uSSRProbeValid") ssr_push_.probe_valid = value;
         return;
     }
     int light_index = -1;
@@ -1005,6 +1046,7 @@ void VulkanShader::set_float(const std::string& name, float value) {
     else if (name == "uPCSSLightSize") ubo_data_.pcss_light_size = value;
     else if (name == "uPCSSMaxRadius") ubo_data_.pcss_max_radius = value;
     else if (name == "uPCSSBlockerScale") ubo_data_.pcss_tap_scale = value;
+    else if (name == "uShadowFilterScale") ubo_data_.shadow_filter_scale = value;
     else if (name == "uNormalOffset") shadow_normal_offset_ = value;
     else if (name == "uClearcoat") ubo_data_.clearcoat = value;
     else if (name == "uClearcoatRoughness") ubo_data_.clearcoat_roughness = value;
@@ -1160,6 +1202,10 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
         ssil_push_.view = value;
         return;
     }
+    if (post_process_ && push_kind_ == PostProcessPushKind::GTAO && name == "uView") {
+        gtao_push_.view = value;
+        return;
+    }
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
         if (name == "uInvViewProj") fog_push_.inv_view_proj = value;
         else if (name == "uViewMatrix") fog_push_.view_matrix = value;
@@ -1172,12 +1218,14 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
         ubo_dirty_ = true;
     }
     else if (name == "uProjection") {
-        // OpenGL projection matrices use Z in [-1, 1]; Vulkan NDC uses [0, 1].
-        // Remap the Z row while keeping Y unchanged; Y is flipped via negative viewport.
-        math::Matrix4f vk_proj = value;
-        vk_proj(2, 2) = value(2, 2) * 0.5f + value(3, 2) * 0.5f;
-        vk_proj(2, 3) = value(2, 3) * 0.5f + value(3, 3) * 0.5f;
-        projection_ = vk_proj;
+        // Z 行不再在这里重映射：RenderPipeline::get_projection_matrix() 已经针对
+        // Vulkan 把 z 从 [-1,1] 映射到 [0,1]（这是唯一的投影来源，见该函数的注释）。
+        // 之前两处都做，等于把映射做了两遍，深度缓冲里存的值变成
+        //   0.5 + 0.5*w   （w = far*(z-near)/((far-near)*z)）
+        // 深度测试仍然单调所以画面"看起来正常"，但所有从深度反推距离的 pass
+        //（SSR / SSIL / SSAO / 接触阴影 / 雾）都会得到约两倍的深度 —— 反射位置
+        // 被推远、AO 判定失败，这正是 GL 与 Vulkan 效果不一致的根源。
+        projection_ = value;
     }
     else if (name == "uLightSpaceMatrix") {
         // Shadow map 的投影矩阵同样使用 OpenGL 风格 [-1,1] Z，
@@ -1642,6 +1690,9 @@ void VulkanShader::push_constants(VkCommandBuffer cmd) const {
         } else if (push_kind_ == PostProcessPushKind::SSIL) {
             vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(SSILPushData), &ssil_push_);
+        } else if (push_kind_ == PostProcessPushKind::GTAO) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(GTAOPushData), &gtao_push_);
         } else if (push_kind_ == PostProcessPushKind::Motion) {
             vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(MotionPushData), &motion_push_);

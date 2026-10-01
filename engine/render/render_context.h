@@ -138,6 +138,24 @@ public:
     // 帧率 / 呈现控制（通过渲染线程执行）
     // -----------------------------------------------------------------------
     void set_swap_interval(int interval);
+
+    // GPU 分段计时开关（渲染线程会读它，故走命令队列；dump 只在渲染线程空闲时
+    // 由调用方使用，见 render_api.cpp 的实现）。
+    void set_gpu_profiling(bool enabled);
+    bool gpu_profiling_supported() const;
+    IRenderBackend* gpu_profiling_backend() const { return backend_.get(); }
+
+    // 把一段 GPU 计时区间排进命令流。
+    // **必须走命令队列**：pipeline 在主线程跑、真正的 GL/VK 调用在渲染线程按
+    // 命令顺序执行，只有在命令流里插入标记，时间戳才会落在正确的 pass 边界上。
+    void gpu_profile_begin(const char* name);
+    void gpu_profile_end();
+
+    // 在渲染线程执行一段代码；同步模式（无渲染线程）直接执行。
+    // 用途：GPU 资源创建（纹理/FBO）必须在持有上下文的线程上做，而 render_scene
+    // 与 GViewport_SetSize 等入口跑在主线程 —— GL 在无 current context 的线程上
+    // glCreateFramebuffers 会返回 0，表现为"某个分辨率下某个效果整体消失"。
+    void run_on_render_thread(std::function<void()> fn);
     void set_gpu_busy_spin(bool enabled, int iterations);
     void set_nv_delay_before_swap(float seconds);
     bool supports_nv_delay_before_swap() const;
@@ -176,7 +194,7 @@ private:
     std::unique_ptr<RenderThread> render_thread_;
     void* native_window_ = nullptr;
     bool initialized_ = false;
-    bool validation_enabled_ = false;
+    bool validation_enabled_ = true;
     bool running_ = false;
 
     // 同步模式（无渲染线程）下 destroy_* 直接调用 backend；为避免销毁仍被
@@ -201,6 +219,9 @@ private:
     uint64_t safe_destroy_seq() const;
     void enqueue_destroy(std::function<void()>&& deleter);
     void process_pending_destroys(bool force_all = false);
+
+    // GPU 计时是否开启（主线程写、流水线读；关闭时 gpu_profile_* 不再产生命令）。
+    std::atomic<bool> gpu_profiling_enabled_{false};
 };
 
 } // namespace gryce_engine::render

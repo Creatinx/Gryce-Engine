@@ -178,7 +178,7 @@ static RHITextureHandle create_fallback_texture(RenderContext* ctx, TextureForma
     return tex;
 }
 
-RHITextureHandle Material::load_texture(RenderContext* ctx, const std::string& path) {
+RHITextureHandle load_texture_from_path(RenderContext* ctx, const std::string& path) {
     if (path.empty() || !ctx) return RHITextureHandle{};
 
     // 1. 从资源管线获取 CPU 侧 TextureData（带缓存与引用计数）
@@ -225,6 +225,10 @@ RHITextureHandle Material::load_texture(RenderContext* ctx, const std::string& p
         }
     }
     return tex;
+}
+
+RHITextureHandle Material::load_texture(RenderContext* ctx, const std::string& path) {
+    return load_texture_from_path(ctx, path);
 }
 
 void Material::upload_to_gpu(RenderContext* ctx) {

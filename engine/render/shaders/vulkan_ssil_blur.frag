@@ -26,8 +26,8 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 float linearize_depth(float d) {
-    return (2.0 * pc.near_plane * pc.far_plane) /
-           (pc.far_plane + pc.near_plane - d * (pc.far_plane - pc.near_plane));
+    return (pc.near_plane * pc.far_plane) /
+           max(pc.far_plane - d * (pc.far_plane - pc.near_plane), 1e-6);
 }
 
 void main() {

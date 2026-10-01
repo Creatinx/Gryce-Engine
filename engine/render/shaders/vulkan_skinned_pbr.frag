@@ -390,8 +390,10 @@ void main() {
     }
 
     vec3 ambient = ubo.uAmbient.rgb * albedo * ao;
+    vec3 ibl_specular = vec3(0.0);  // 记录 IBL 镜面项，给 alpha 通道 / SSR 合成
     if (ubo.uUseSSAO != 0) {
-        float ssao = texture(uSSAOTexture, vScreenUV).r;
+        vec2 ssao_uv = vScreenUV + 0.5 / vec2(textureSize(uSSAOTexture, 0));
+        float ssao = texture(uSSAOTexture, ssao_uv).r;
         ambient *= mix(1.0, ssao, ubo.uSSAOStrength);
     }
     if (ubo.uUseIBL > 0) {
@@ -403,10 +405,10 @@ void main() {
         vec3 prefiltered = texture(uPrefilterMap, R).rgb;
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
-        vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+        ibl_specular = prefiltered * (F_ibl * brdf.x + brdf.y);
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
-        ambient = (kD * diffuse + specular) * ao * ubo.uIBLIntensity;
+        ambient = (kD * diffuse + ibl_specular) * ao * ubo.uIBLIntensity;
     }
     vec3 emissive = ubo.uEmissiveOpacity.xyz * (ubo.uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
@@ -455,5 +457,11 @@ void main() {
         color = pow(color, vec3(1.0 / 2.2));
     }
 
-    FragColor = vec4(color, alpha);
+    // alpha 通道承载"该像素的 IBL 镜面项亮度"，给 SSR 合成读取；
+    // 半透明材质仍写不透明度（混合需要）。
+    float out_alpha = alpha;
+    if (alpha >= 0.999) {
+        out_alpha = dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722));
+    }
+    FragColor = vec4(color, out_alpha);
 }

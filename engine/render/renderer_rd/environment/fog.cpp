@@ -4,6 +4,7 @@
 #include "render/framebuffer.h"
 #include "render/mesh.h"
 #include "render/shader.h"
+#include "render/gpu_scope.h"
 #include "render/texture.h"
 #include "utils/glog/glog_lib.h"
 
@@ -131,6 +132,7 @@ void VolumetricFog_RD::render(RenderContext* ctx,
                               float fog_density, float fog_height,
                               float fog_near, float fog_far) {
     if (!initialized_ || !fog_shader_.is_valid() || !fog_tex_.is_valid()) return;
+    GpuScope _gpu(*ctx, "fog");
 
     // 1. 降采样深度
     ctx->set_framebuffer(depth_down_fbo_);
@@ -200,6 +202,7 @@ void VolumetricFog_RD::render_apply(RenderContext* ctx,
                                     const math::Matrix4f& inv_view_proj,
                                     const math::Vector3f& camera_pos) {
     if (!initialized_ || !fog_apply_shader_.is_valid() || !fog_tex_.is_valid()) return;
+    GpuScope _gpu(*ctx, "fog_apply");
 
     RHIShaderHandle shader = fog_apply_shader_;
 

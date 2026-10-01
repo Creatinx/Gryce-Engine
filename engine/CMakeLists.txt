@@ -68,6 +68,7 @@ target_sources(GryceCore
         components/2d/parallax_background.cpp
         components/2d/particle_emitter.cpp
         components/2d/skybox_2d.cpp
+        components/3d/particle_system_3d.cpp
         components/mesh_renderer.cpp
         components/skinned_mesh_renderer.cpp
         components/terrain.cpp
@@ -209,6 +210,7 @@ if(Vulkan_FOUND)
             render/vulkan/vk_mesh.cpp
             render/vulkan/vk_renderer2d.cpp
             render/vulkan/vk_shader.cpp
+            render/vulkan/vk_spirv_cache.cpp
             render/vulkan/vk_swapchain.cpp
             render/vulkan/vk_texture.cpp
             render/vulkan/vk_vma.cpp

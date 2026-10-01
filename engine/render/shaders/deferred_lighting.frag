@@ -217,7 +217,7 @@ int cascade_from_depth(float depth) {
 
 float slope_bias(int cascade, vec3 normal, vec3 light_dir) {
     float base = (cascade < 3) ? uCascadeBias[cascade] : uCascadeBias.w;
-    return max(base * (1.0 - dot(normal, light_dir)), base * 0.1);
+    return max(base * (1.0 - dot(normal, light_dir)), base * 0.05);
 }
 
 float pcf_cascade(int cascade, vec3 proj_coords, float radius, float bias) {
@@ -489,8 +489,10 @@ void main() {
 
     // 环境光 + IBL
     vec3 ambient = uAmbient * albedo * ao;
+    vec3 ibl_specular = vec3(0.0);  // 记录 IBL 镜面项，给 alpha 通道 / SSR 合成
     if (uUseSSAO != 0) {
-        float ssao = texture(uSSAOTexture, vUV).r;
+        vec2 ssao_uv = vUV + 0.5 / vec2(textureSize(uSSAOTexture, 0));
+        float ssao = texture(uSSAOTexture, ssao_uv).r;
         ambient *= mix(1.0, ssao, uSSAOStrength);
     }
     if (uUseIBL > 0) {
@@ -500,17 +502,18 @@ void main() {
         vec3 prefiltered = textureLod(uPrefilterMap, R, roughness * 4.0).rgb;
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(N, V), 0.0), F0);
-        vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+        ibl_specular = prefiltered * (F_ibl * brdf.x + brdf.y);
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
-        ambient = (kD * diffuse + specular) * ao * uIBLIntensity;
+        ambient = (kD * diffuse + ibl_specular) * ao * uIBLIntensity;
     }
 
     // GI 全局光照间接采样（叠加到环境光之上）
     if (uGIEnabled != 0) {
-        vec3 gi_indirect = texture(uGITexture, vUV).rgb;
+        vec2 gi_uv = vUV + 0.5 / vec2(textureSize(uGITexture, 0));
+        vec3 gi_indirect = texture(uGITexture, gi_uv).rgb;
         ambient += gi_indirect * albedo * uGIIndirectIntensity;
     }
 
     vec3 color = ambient + Lo + emissive;
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(color, dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722)));
 }

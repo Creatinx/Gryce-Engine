@@ -1,6 +1,7 @@
 #pragma once
 
 #include "components/component.h"
+#include "components/3d/particle_system_3d.h"
 #include "math/math.h"
 #include "render/render2d.h"
 
@@ -44,67 +45,9 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// ParticleSystem3D — GPU 3D 粒子发射器（数据层；渲染器消费）
+// ParticleSystem3D — 见 components/3d/particle_system_3d.h
+// （组件已独立成 .h/.cpp 以便实现 CPU 模拟与 GPU 上传）
 // ---------------------------------------------------------------------------
-class ParticleSystem3D : public Component {
-public:
-    std::string texture_path;
-    bool loop = true;
-    bool play_on_awake = true;
-    int max_particles = 256;
-    float emission_rate = 10.0f;
-    float lifetime_min = 1.0f;
-    float lifetime_max = 2.0f;
-    float speed_min = 1.0f;
-    float speed_max = 3.0f;
-    float start_size = 0.2f;
-    float end_size = 0.05f;
-    render::Color start_color = render::Color::white();
-    render::Color end_color = render::Color(1.0f, 1.0f, 1.0f, 0.0f);
-    bool additive = false;
-    math::Vector3f emission_offset = math::Vector3f::zero();
-
-    ParticleSystem3D() = default;
-    const char* type() const override { return "ParticleSystem3D"; }
-
-    void serialize(nlohmann::json& out) const override {
-        out["texture_path"] = texture_path;
-        out["loop"] = loop;
-        out["play_on_awake"] = play_on_awake;
-        out["max_particles"] = max_particles;
-        out["emission_rate"] = emission_rate;
-        out["lifetime_min"] = lifetime_min;
-        out["lifetime_max"] = lifetime_max;
-        out["speed_min"] = speed_min;
-        out["speed_max"] = speed_max;
-        out["start_size"] = start_size;
-        out["end_size"] = end_size;
-        out["start_color"] = { start_color.r, start_color.g, start_color.b, start_color.a };
-        out["end_color"] = { end_color.r, end_color.g, end_color.b, end_color.a };
-        out["additive"] = additive;
-        out["emission_offset"] = { emission_offset.x, emission_offset.y, emission_offset.z };
-    }
-    void deserialize(const nlohmann::json& in) override {
-        texture_path = in.value("texture_path", "");
-        loop = in.value("loop", true);
-        play_on_awake = in.value("play_on_awake", true);
-        max_particles = in.value("max_particles", 256);
-        emission_rate = in.value("emission_rate", 10.0f);
-        lifetime_min = in.value("lifetime_min", 1.0f);
-        lifetime_max = in.value("lifetime_max", 2.0f);
-        speed_min = in.value("speed_min", 1.0f);
-        speed_max = in.value("speed_max", 3.0f);
-        start_size = in.value("start_size", 0.2f);
-        end_size = in.value("end_size", 0.05f);
-        auto sc = in.value("start_color", std::vector<float>{1, 1, 1, 1});
-        if (sc.size() >= 4) start_color = render::Color(sc[0], sc[1], sc[2], sc[3]);
-        auto ec = in.value("end_color", std::vector<float>{1, 1, 1, 0});
-        if (ec.size() >= 4) end_color = render::Color(ec[0], ec[1], ec[2], ec[3]);
-        additive = in.value("additive", false);
-        auto eo = in.value("emission_offset", std::vector<float>{0, 0, 0});
-        if (eo.size() >= 3) emission_offset = math::Vector3f(eo[0], eo[1], eo[2]);
-    }
-};
 
 // ---------------------------------------------------------------------------
 // TrailRenderer — 3D 拖尾渲染

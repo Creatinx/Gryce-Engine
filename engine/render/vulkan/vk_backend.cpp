@@ -124,6 +124,10 @@ bool VulkanBackend::init(void* native_window) {
                   "set_cull_face/set_depth_test/set_blend will be static pipeline defaults");
     }
 
+    if (!create_gpu_query_pool()) {
+        GLOG_WARN("VulkanBackend: GPU timestamp queries unavailable, --bench 将无输出");
+    }
+
     initialized_ = true;
     GLOG_INFO("VulkanBackend initialized");
     return true;
@@ -169,6 +173,11 @@ void VulkanBackend::shutdown() {
     mesh_pool_.clear();
 
     swapchain_.shutdown();
+    if (gpu_query_pool_ != VK_NULL_HANDLE) {
+        vkDestroyQueryPool(device_.device(), gpu_query_pool_, nullptr);
+        gpu_query_pool_ = VK_NULL_HANDLE;
+        gpu_profiling_ready_ = false;
+    }
     device_.shutdown();
 
     if (surface_ != VK_NULL_HANDLE && instance_.handle()) {
@@ -288,6 +297,9 @@ void VulkanBackend::begin_frame() {
     acquire_fail_streak_ = 0;
 
     reset_state_cache();
+    // GPU 计时：此刻 swapchain 的 frame fence 已等待完毕（acquire 内部），
+    // 因此两帧前的槽可以安全读回；结果仍用 availability 兜底，绝不阻塞。
+    gpu_profile_frame_boundary();
     // 通知所有 shader 新帧开始：重置该帧的描述符池与 draw 游标。
     // 必须在 acquire 成功之后调用，此时 frame fence 已保证该帧上一周期
     // 的命令缓冲执行完毕，整池 reset 不会触碰 GPU 仍在使用的描述符集。
@@ -358,6 +370,141 @@ void VulkanBackend::begin_frame() {
     VkRect2D scissor{};
     scissor.extent = swapchain_.extent();
     set_scissor_cached(current_command_buffer(), scissor);
+}
+
+// ---------------------------------------------------------------------------
+// GPU 分段计时（vkCmdWriteTimestamp）
+// ---------------------------------------------------------------------------
+bool VulkanBackend::gpu_profile_supported() const {
+    return gpu_query_pool_ != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::create_gpu_query_pool() {
+    if (!device_.is_valid()) return false;
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(device_.physical_device(), &props);
+    if (props.limits.timestampPeriod <= 0.0f) {
+        GLOG_WARN("VulkanBackend: device reports timestampPeriod=0, GPU timing disabled");
+        return false;
+    }
+    gpu_timestamp_period_ns_ = props.limits.timestampPeriod;
+
+    VkQueryPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = static_cast<uint32_t>(k_gpu_slots * k_gpu_timestamps_per_slot);
+    if (vkCreateQueryPool(device_.device(), &info, nullptr, &gpu_query_pool_) != VK_SUCCESS) {
+        gpu_query_pool_ = VK_NULL_HANDLE;
+        return false;
+    }
+    gpu_profiling_ready_ = true;
+    GLOG_INFO("VulkanBackend: GPU timestamp queries ready (timestampPeriod={} ns)",
+              gpu_timestamp_period_ns_);
+    return true;
+}
+
+void VulkanBackend::set_gpu_profiling(bool enabled) {
+    if (enabled == gpu_profiling_enabled_) return;
+    gpu_profiling_enabled_ = enabled;
+    gpu_pending_scope_ = -1;
+    gpu_stats_.reset();
+    for (auto& c : gpu_scope_count_) c = 0;
+    GLOG_INFO("VulkanBackend: GPU profiling {}{}", enabled ? "enabled" : "disabled",
+              gpu_profiling_ready_ ? "" : " (unavailable)");
+}
+
+void VulkanBackend::gpu_profile_begin(const char* name) {
+    if (!gpu_profiling_enabled_ || !gpu_profiling_ready_) return;
+    if (gpu_pending_scope_ >= 0) {
+        if (!gpu_nested_warned_) {
+            gpu_nested_warned_ = true;
+            GLOG_WARN("VulkanBackend: gpu_profile_begin('{}') 嵌套调用被忽略（计时区间必须平铺）",
+                      name ? name : "?");
+        }
+        return;
+    }
+    VkCommandBuffer cmd = current_command_buffer();
+    if (cmd == VK_NULL_HANDLE) return;
+    const int count = gpu_scope_count_[gpu_slot_];
+    if (count >= k_gpu_max_scopes) return;
+    // 网格绘制走"几何 secondary CB"，会在下一次内联命令时（或 pass 结束时）才
+    // vkCmdExecuteCommands 到主 CB。若不在边界处先把它落下来，时间戳会插在
+    // 几何命令之前 —— "scene" 段测出来会明显偏小，差值跑到相邻的段里。
+    end_geometry_secondary();
+    const uint32_t base = static_cast<uint32_t>(gpu_slot_ * k_gpu_timestamps_per_slot);
+    if (count == 0) {
+        vkCmdResetQueryPool(cmd, gpu_query_pool_, base,
+                            static_cast<uint32_t>(k_gpu_timestamps_per_slot));
+    }
+    // 时间戳的 stage 必须与"当前是否在 render pass 内"匹配：sync2 未开启时
+    // TOP/BOTTOM_OF_PIPE/ALL_COMMANDS 在 render pass 内是非法的，而
+    // COLOR_ATTACHMENT_OUTPUT 两者皆可。这里不关闭 render pass —— 关闭会让下一次
+    // draw 以 loadOp=CLEAR 重开 pass，把目标内容清掉。
+    vkCmdWriteTimestamp(cmd, gpu_timestamp_stage(), gpu_query_pool_,
+                        base + static_cast<uint32_t>(count) * 2);
+    gpu_scope_names_[gpu_slot_][count] = name ? name : "?";
+    gpu_scope_count_[gpu_slot_] = count + 1;
+    gpu_pending_scope_ = count;
+}
+
+void VulkanBackend::gpu_profile_end() {
+    if (gpu_pending_scope_ < 0 || !gpu_profiling_ready_) return;
+    VkCommandBuffer cmd = current_command_buffer();
+    if (cmd != VK_NULL_HANDLE) {
+        end_geometry_secondary();   // 同上：把本次区间内的几何命令先落下
+        const uint32_t base = static_cast<uint32_t>(gpu_slot_ * k_gpu_timestamps_per_slot);
+        vkCmdWriteTimestamp(cmd, gpu_timestamp_stage(), gpu_query_pool_,
+                            base + static_cast<uint32_t>(gpu_pending_scope_) * 2 + 1);
+    }
+    gpu_pending_scope_ = -1;
+}
+
+void VulkanBackend::gpu_profile_frame_boundary() {
+    if (!gpu_profiling_enabled_ || !gpu_profiling_ready_) return;
+    // 上一帧若有区间没闭合（提前 return 等），丢弃挂起状态，保证配对不错位。
+    gpu_pending_scope_ = -1;
+    const int done = (gpu_slot_ + 1) % k_gpu_slots;
+    const int count = gpu_scope_count_[done];
+    if (count > 0) {
+        const uint32_t base = static_cast<uint32_t>(done * k_gpu_timestamps_per_slot);
+        const uint32_t n = static_cast<uint32_t>(count) * 2;
+        // 读回布局：每个时间戳占 2 个 uint64（值 + 可用标志），
+        // stride 因此是 2*sizeof(uint64_t)。n = 时间戳个数 = 段数×2。
+        std::array<uint64_t, k_gpu_timestamps_per_slot * 2> ticks{};
+        // WITH_AVAILABILITY：每项后面跟一个 1 表示该时间戳是否可用；这里槽已经
+        // 隔了两帧，正常情况下全部可用，不用 WAIT_BIT（避免任何阻塞）。
+        VkResult r = vkGetQueryPoolResults(
+            device_.device(), gpu_query_pool_, base, n,
+            sizeof(uint64_t) * ticks.size(), ticks.data(), sizeof(uint64_t) * 2,
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if (r == VK_SUCCESS || r == VK_NOT_READY) {
+            for (int i = 0; i < count; ++i) {
+                const size_t base_i = static_cast<size_t>(i) * 4;   // 段 i 的 begin 时间戳
+                if (!ticks[base_i + 1] || !ticks[base_i + 3]) continue;  // begin/end 都可用才算
+                const double t0 = static_cast<double>(ticks[base_i]);
+                const double t1 = static_cast<double>(ticks[base_i + 2]);
+                if (t1 < t0) continue;
+                const double ms = (t1 - t0) * static_cast<double>(gpu_timestamp_period_ns_) / 1e6;
+                gpu_stats_.add(gpu_scope_names_[done][i], ms);
+            }
+        }
+    }
+    gpu_scope_count_[done] = 0;
+    gpu_slot_ = done;
+    gpu_stats_.set_frames(gpu_stats_.frames() + 1);
+}
+
+void VulkanBackend::gpu_profile_dump() {
+    if (!gpu_profiling_enabled_) {
+        std::fprintf(stdout, "[gpu] 未开启 GPU 计时（GRender_SetGPUProfiling(1) / --bench）\n");
+        return;
+    }
+    gpu_stats_.print("Vulkan");
+}
+
+void VulkanBackend::gpu_profile_reset() {
+    gpu_stats_.reset();
+    for (auto& c : gpu_scope_count_) c = 0;
 }
 
 void VulkanBackend::end_frame() {
@@ -953,6 +1100,8 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
         }
     }
 
+    // 按本次 draw 的混合状态选管线变体（不透明材质写出的 alpha 不参与混合）。
+    vk_shader->set_draw_blending(blend_enabled_);
     bind_pipeline(cmd, vk_shader->pipeline());
     // Post-process / skybox shader 使用每帧固定描述符集，直接绑定；
     // 标准 PBR 路径每 draw 分配独立描述符集 + UBO 偏移，避免同帧不同材质互相覆盖。
@@ -973,15 +1122,24 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
     }
     vk_shader->push_constants(cmd);
 
-    VkBuffer buffers[] = {vk_mesh->vertex_buffer()};
-    VkDeviceSize offsets[] = {0};
-    vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
+    // 实例化 mesh 有第二条顶点流（binding 1，inputRate = instance）：
+    // binding 0 是几何原型（如粒子四边形角），binding 1 是每实例数据。
+    VkBuffer buffers[2] = {vk_mesh->vertex_buffer(), VK_NULL_HANDLE};
+    VkDeviceSize offsets[2] = {0, 0};
+    uint32_t binding_count = 1;
+    if (vk_mesh->instance_buffer() != VK_NULL_HANDLE) {
+        buffers[1] = vk_mesh->instance_buffer();
+        binding_count = 2;
+    }
+    vkCmdBindVertexBuffers(cmd, 0, binding_count, buffers, offsets);
 
+    // instance_count 为 0 表示非实例化绘制（instanceCount 必须至少为 1）
+    const uint32_t instance_count = vk_mesh->instance_count() > 0 ? vk_mesh->instance_count() : 1;
     if (vk_mesh->has_index() && vk_mesh->index_buffer()) {
         vkCmdBindIndexBuffer(cmd, vk_mesh->index_buffer(), 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, vk_mesh->index_count(), 1, 0, 0, 0);
+        vkCmdDrawIndexed(cmd, vk_mesh->index_count(), instance_count, 0, 0, 0);
     } else {
-        vkCmdDraw(cmd, vk_mesh->vertex_count(), 1, 0, 0);
+        vkCmdDraw(cmd, vk_mesh->vertex_count(), instance_count, 0, 0);
     }
 }
 

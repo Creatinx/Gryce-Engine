@@ -20,7 +20,8 @@ uniform mat4 uCurrViewProj = mat4(1.0);
 
 // 从深度重建 NDC 坐标
 float linearize_depth(float d, float near, float far) {
-    return (2.0 * near) / (far + near - d * (far - near));
+    // 与 SSR/SSAO 一致：深度纹理存的是 w = far*(z-near)/((far-near)*z)
+    return (near * far) / max(far - d * (far - near), 1e-6);
 }
 
 void main() {

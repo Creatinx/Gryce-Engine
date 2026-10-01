@@ -54,7 +54,7 @@ int ClusterBuilderRD::cluster_index(int tile_x, int tile_y, int slice_z) const {
 int ClusterBuilderRD::cluster_index(int screen_x, int screen_y, float depth) const {
     int tx = std::min(screen_x / k_tile_size_x, tile_count_x_ - 1);
     int ty = std::min(screen_y / k_tile_size_y, tile_count_y_ - 1);
-    int tz = _compute_depth_slice(depth, 0.1f, 1000.0f);
+    int tz = _compute_depth_slice(depth, z_near_, z_far_);
     return cluster_index(tx, ty, tz);
 }
 
@@ -226,8 +226,8 @@ bool ClusterBuilderRD::_light_intersects_cluster(
     // 获取逆投影矩阵（从观察空间到 NDC）
     math::Matrix4f inv_proj = camera.get_projection_matrix().inverse();
 
-    float z_near = 0.1f;
-    float z_far = 1000.0f;
+    float z_near = z_near_;
+    float z_far = z_far_;
 
     compute_cluster_aabb(tile_x, tile_y, slice_z,
                          tile_count_x_, tile_count_y_, cluster_z_layers_,
@@ -276,113 +276,107 @@ void ClusterBuilderRD::build(const math::Camera& camera,
     cluster_z_layers_ = k_max_cluster_z_layers;
     total_clusters_ = tile_count_x_ * tile_count_y_ * cluster_z_layers_;
 
+    // 记录近/远平面，供 cluster_index / _light_intersects_cluster 复用
+    z_near_ = z_near;
+    z_far_ = z_far;
+
     // 重置缓冲区
-    cluster_buffer_.assign(total_clusters_, {0, 0});
+    cluster_buffer_.assign(total_clusters_, Cluster{0, 0});
     culled_lights_.clear();
 
     // 分离方向光和非方向光
-    // culled_lights_ 顺序：[所有方向光] + [所有非方向光]
-    std::vector<size_t> directional_indices;
-    std::vector<size_t> non_directional_indices;
+    // culled_lights_ 顺序：[所有方向光] + [所有非方向光]（shader 约定，不可打乱）
+    directional_indices_.clear();
+    non_directional_indices_.clear();
     for (size_t i = 0; i < lights.size(); ++i) {
         if (lights[i].type == LightType::Directional) {
-            directional_indices.push_back(i);
+            directional_indices_.push_back(i);
         } else {
-            non_directional_indices.push_back(i);
+            non_directional_indices_.push_back(i);
         }
     }
 
     // 将方向光添加到 culled_lights_（先）
-    for (size_t idx : directional_indices) {
+    for (size_t idx : directional_indices_) {
         culled_lights_.push_back(lights[idx]);
     }
 
     // 将非方向光添加到 culled_lights_（后）
-    for (size_t idx : non_directional_indices) {
+    for (size_t idx : non_directional_indices_) {
         culled_lights_.push_back(lights[idx]);
     }
 
-    const uint32_t num_directional = static_cast<uint32_t>(directional_indices.size());
-    const uint32_t num_non_directional = static_cast<uint32_t>(non_directional_indices.size());
+    const uint32_t num_directional = static_cast<uint32_t>(directional_indices_.size());
+    const uint32_t num_non_directional = static_cast<uint32_t>(non_directional_indices_.size());
 
     // 如果没有光源，直接返回
     if (lights.empty()) return;
 
-    // 计算每个集群的光源数量（第一遍）
-    std::vector<uint32_t> cluster_light_counts(total_clusters_, 0);
+    // ---- 第一遍：相交测试（每光×每集群只测一次），同时记录命中的集群 ----
+    cluster_light_counts_.assign(total_clusters_, 0);
 
     // 方向光影响所有集群
     if (num_directional > 0) {
         for (int c = 0; c < total_clusters_; ++c) {
-            cluster_light_counts[c] = num_directional;
+            cluster_light_counts_[c] = num_directional;
         }
     }
 
-    // 非方向光：逐个测试与集群的相交
+    light_hit_offsets_.resize(static_cast<size_t>(num_non_directional) + 1);
+    light_hit_clusters_.clear();
     for (uint32_t ni = 0; ni < num_non_directional; ++ni) {
-        const auto& light = lights[non_directional_indices[ni]];
+        const auto& light = lights[non_directional_indices_[ni]];
+        light_hit_offsets_[ni] = static_cast<uint32_t>(light_hit_clusters_.size());
 
         for (int tz = 0; tz < cluster_z_layers_; ++tz) {
             for (int ty = 0; ty < tile_count_y_; ++ty) {
                 for (int tx = 0; tx < tile_count_x_; ++tx) {
                     if (_light_intersects_cluster(light, tx, ty, tz, camera)) {
-                        int ci = cluster_index(tx, ty, tz);
-                        cluster_light_counts[ci]++;
+                        const int ci = cluster_index(tx, ty, tz);
+                        cluster_light_counts_[ci]++;
+                        light_hit_clusters_.push_back(static_cast<uint32_t>(ci));
                     }
                 }
             }
         }
     }
+    light_hit_offsets_[num_non_directional] = static_cast<uint32_t>(light_hit_clusters_.size());
 
-    // 计算偏移并分配空间
+    // ---- 前缀和定 offset ----
     uint32_t total_indices = 0;
     for (int c = 0; c < total_clusters_; ++c) {
         cluster_buffer_[c].offset = total_indices;
-        cluster_buffer_[c].count = 0;
-        total_indices += cluster_light_counts[c];
+        total_indices += cluster_light_counts_[c];
     }
-    light_index_scratch_.resize(total_indices, 0);
+    light_index_scratch_.assign(total_indices, 0);
+    cluster_write_positions_.assign(total_clusters_, 0);
 
-    // 第二遍：填充光源索引
+    // ---- 第二遍：只按已记录的命中结果填索引，不再重复相交测试 ----
     // 方向光索引范围: [0, num_directional)
     // 非方向光索引范围: [num_directional, num_directional + num_non_directional)
-    std::vector<uint32_t> cluster_write_positions(total_clusters_, 0);
-
-    // 方向光：写入所有集群
     for (uint32_t di = 0; di < num_directional; ++di) {
         for (int c = 0; c < total_clusters_; ++c) {
-            uint32_t write_pos = cluster_buffer_[c].offset + cluster_write_positions[c];
-            light_index_scratch_[write_pos] = di;  // 方向光在 culled_lights_ 中的索引
-            cluster_write_positions[c]++;
+            light_index_scratch_[cluster_buffer_[c].offset + cluster_write_positions_[c]] = di;
+            cluster_write_positions_[c]++;
         }
     }
 
-    // 非方向光：写入相交的集群
     for (uint32_t ni = 0; ni < num_non_directional; ++ni) {
-        const auto& light = lights[non_directional_indices[ni]];
-        uint32_t light_idx = num_directional + ni;  // 在 culled_lights_ 中的索引
-
-        for (int tz = 0; tz < cluster_z_layers_; ++tz) {
-            for (int ty = 0; ty < tile_count_y_; ++ty) {
-                for (int tx = 0; tx < tile_count_x_; ++tx) {
-                    if (_light_intersects_cluster(light, tx, ty, tz, camera)) {
-                        int ci = cluster_index(tx, ty, tz);
-                        uint32_t write_pos = cluster_buffer_[ci].offset + cluster_write_positions[ci];
-                        light_index_scratch_[write_pos] = light_idx;
-                        cluster_write_positions[ci]++;
-                    }
-                }
-            }
+        const uint32_t light_idx = num_directional + ni;
+        for (uint32_t k = light_hit_offsets_[ni]; k < light_hit_offsets_[ni + 1]; ++k) {
+            const uint32_t ci = light_hit_clusters_[k];
+            light_index_scratch_[cluster_buffer_[ci].offset + cluster_write_positions_[ci]] = light_idx;
+            cluster_write_positions_[ci]++;
         }
     }
 
     // 更新 count
     for (int c = 0; c < total_clusters_; ++c) {
-        cluster_buffer_[c].count = cluster_write_positions[c];
+        cluster_buffer_[c].count = cluster_write_positions_[c];
     }
 
-    // 移动 scratch 到主缓冲区
-    light_index_buffer_ = std::move(light_index_scratch_);
+    // swap 而非 move：两边容量都保留，下帧 assign 不再触发重新分配
+    light_index_buffer_.swap(light_index_scratch_);
 }
 
 } // namespace gryce_engine::render

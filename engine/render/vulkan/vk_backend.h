@@ -6,6 +6,7 @@
 
 #include "render/render.h"
 #include "render/rhi_resource_pool.h"
+#include "render/gpu_profiler.h"
 #include "vk_instance.h"
 #include "vk_device.h"
 #include "vk_swapchain.h"
@@ -93,6 +94,15 @@ public:
     std::unique_ptr<IImGuiBackend> create_imgui_backend() override;
     void set_validation_enabled(bool enabled) override;
 
+    // ---- GPU 分段计时（vkCmdWriteTimestamp，异步读回，不等 GPU）----
+    bool gpu_profile_supported() const override;
+    void set_gpu_profiling(bool enabled) override;
+    void gpu_profile_begin(const char* name) override;
+    void gpu_profile_end() override;
+    void gpu_profile_frame_boundary() override;
+    void gpu_profile_dump() override;
+    void gpu_profile_reset() override;
+
     VulkanDevice* device() { return &device_; }
     VulkanSwapchain* swapchain() { return &swapchain_; }
     VkInstance instance() const { return instance_.handle(); }
@@ -179,6 +189,30 @@ private:
                                      const VkClearValue* clears, uint32_t clear_count,
                                      const VkExtent2D& extent);
     void end_current_render_pass();
+
+    // GPU 计时：每帧一个槽（环形），每槽 k_gpu_max_scopes 段 = 2×时间戳。
+    // 时间戳只写在 render pass 之外（begin 前先关闭已开启的 pass），
+    // 结果同样在槽复用时读，且用 VK_QUERY_RESULT_WITH_AVAILABILITY 兜底。
+    static constexpr int k_gpu_slots = 3;
+    static constexpr int k_gpu_max_scopes = 24;
+    static constexpr int k_gpu_timestamps_per_slot = k_gpu_max_scopes * 2;
+    VkQueryPool gpu_query_pool_ = VK_NULL_HANDLE;
+    std::array<int, k_gpu_slots> gpu_scope_count_{};
+    std::array<std::array<std::string, k_gpu_max_scopes>, k_gpu_slots> gpu_scope_names_{};
+    int gpu_slot_ = 0;
+    int gpu_pending_scope_ = -1;
+    bool gpu_profiling_enabled_ = false;
+    bool gpu_profiling_ready_ = false;
+    bool gpu_nested_warned_ = false;
+    float gpu_timestamp_period_ns_ = 1.0f;
+    GpuProfilerStats gpu_stats_;
+    bool create_gpu_query_pool();
+    // render pass 内只能用 COLOR_ATTACHMENT_OUTPUT 一类 stage 写时间戳。
+    VkPipelineStageFlagBits gpu_timestamp_stage() const {
+        return current_render_pass_ != VK_NULL_HANDLE
+                   ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                   : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    }
 
     // 当前渲染状态缓存（高层 API 状态）
     bool depth_test_enabled_ = true;

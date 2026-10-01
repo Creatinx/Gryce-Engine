@@ -81,8 +81,6 @@ public:
     // 引擎纹理槽位（TextureSlots）→ 后端纹理单元。
     // 槽位表预留到 46，但 GL 的片段纹理单元上限可能只有 32（Intel 集显实测
     // exactly 32）：glActiveTexture(GL_TEXTURE0 + slot) 越界会返回
-    // GL_INVALID_ENUM 且不绑定，采样随之恒为 0 —— 表现为"效果开关都对了、
-    // 参数都传了，但整类屏幕空间效果完全没有输出"。
     // GL 后端在此把高位槽位压进空闲单元（同一 draw 内保持互不冲突）；
     // Vulkan 走描述符 binding，不受单元数限制，返回原值即可。
     virtual int texture_unit_for_slot(int slot) const { return slot; }
@@ -147,6 +145,22 @@ public:
     // 信息
     virtual const char* api_name() const = 0;
     virtual const char* api_version() const = 0;
+
+    // ---- GPU 分段计时（可选能力，默认关闭且空实现）----
+    // 用于回答"这一帧的 GPU 时间花在哪一段"，而不是靠分辨率/开关推断。
+    //   begin/end 必须成对、按顺序、**不支持嵌套**（GL 的 TIME_ELAPSED query
+    //   虽然允许嵌套，但为了两个后端行为一致，这里按平铺的 pass 段使用）；
+    //   begin 时若上一段未结束，该段会被忽略并只警告一次。
+    //   frame_boundary 由后端在"该帧的 fence 已被等待"之后调用，用于结算上一轮
+    //   结果（不阻塞 GPU），pipeline 不需要关心。
+    virtual bool gpu_profile_supported() const { return false; }
+    virtual void set_gpu_profiling(bool enabled) { (void)enabled; }
+    virtual void gpu_profile_begin(const char* name) { (void)name; }
+    virtual void gpu_profile_end() {}
+    virtual void gpu_profile_frame_boundary() {}
+    // 打印累计结果（按累计帧数求平均），print 后不清空。
+    virtual void gpu_profile_dump() {}
+    virtual void gpu_profile_reset() {}
 
     // 能力查询（将 vendor-specific 特性、格式支持等显式化）
     virtual RenderBackendCapabilities get_capabilities() const = 0;

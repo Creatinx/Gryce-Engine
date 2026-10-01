@@ -18,10 +18,11 @@ uniform float uCSStrength; // 强度
 uniform int uCSEnabled;    // 0 直接输出全亮
 
 float linearize_depth(float d) {
-    // 深度纹理存的是视图变换后的 [0,1] 深度，直接反算线性深度（勿再 *0.5+0.5）
-    float d01 = d;
-    return (2.0 * uCSNear * uCSFar) /
-           (uCSFar + uCSNear - d01 * (uCSFar - uCSNear));
+    // 深度纹理存的是 w = far*(z-near)/((far-near)*z)（投影矩阵把 z 映射到 [0,1]，
+    // GL 侧经 glDepthRange、Vulkan 侧直接是 NDC z，两端数值相同），
+    // 因此反线性化是 z = near*far/(far - w*(far-near))。
+    // 旧写法用的是 NDC z∈[-1,1] 的公式，在这里会算出约两倍的距离。
+    return (uCSNear * uCSFar) / max(uCSFar - d * (uCSFar - uCSNear), 1e-6);
 }
 
 vec3 reconstruct_view_pos(vec2 uv, float lin) {
@@ -39,6 +40,9 @@ void main() {
     vec3 P = reconstruct_view_pos(vTexCoord, lin);
     vec3 L = normalize(uCSLightDirView);
     float step_w = uCSRadius / float(max(uCSteps, 1));
+    // 阈值保持 1e-4（理由见 vulkan_contact_shadow.frag：放大后判定会落在深度
+    // 量化噪声量级上，GL/VK 逐像素翻转）。
+    const float bias = 1e-4;
     float occ = 0.0;
     for (int s = 1; s <= uCSteps; ++s) {
         vec3 Ps = P + L * (step_w * float(s));
@@ -52,7 +56,7 @@ void main() {
         vec3 Q = reconstruct_view_pos(suv, lin2);
 
         // 视图空间 z 为负：Q 比 Ps 更靠近相机（Q.z > Ps.z）说明该方向有几何 → 接触遮挡
-        if (Q.z > Ps.z + 1e-4) {
+        if (Q.z > Ps.z + bias) {
             occ += 1.0;
         }
     }

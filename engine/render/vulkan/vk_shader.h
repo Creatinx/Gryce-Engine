@@ -51,7 +51,14 @@ public:
     bool is_valid() const override;
 
     VkPipelineLayout layout() const { return pipeline_layout_; }
-    VkPipeline pipeline() const { return pipeline_; }
+    VkPipeline pipeline() const {
+        return draw_blending_ ? pipeline_blend_ : pipeline_opaque_;
+    }
+    // 每次 draw 前由 backend 按当前混合状态选择管线变体。
+    // 背景：Vulkan 的混合状态烘在管线里，而引擎是"每个材质 set_blend()"，
+    // 于是不透明/半透明必须走不同的管线；否则不透明材质写出的 alpha（现在
+    // 承载 IBL 镜面项，供 SSR 做反射替换）会被当成混合系数，画面立刻变暗。
+    void set_draw_blending(bool enabled) { draw_blending_ = enabled; }
     VkDescriptorSetLayout descriptor_set_layout() const { return descriptor_set_layout_; }
     VkDescriptorSet descriptor_set() const;
     int current_frame() const;
@@ -83,6 +90,17 @@ public:
             ssr_push_.max_steps = params.ssr_max_steps;
             ssr_push_.thickness = params.ssr_thickness;
             ssr_push_.bilateral_filter = params.ssr_bilateral_filter;
+            ssr_push_.env_fallback = params.ssr_env_fallback;
+            // 复用保留字段做调试视图（不改 push 块布局）
+            ssr_push_._pad_tail[0] = static_cast<float>(params.ssr_debug_view);
+        }
+        if (push_kind_ == PostProcessPushKind::GTAO) {
+            gtao_push_.near_plane = params.ssao_near;
+            gtao_push_.far_plane = params.ssao_far;
+            gtao_push_.tan_half_fov = params.ssao_tan_half;
+            gtao_push_.aspect = params.ssao_aspect;
+            gtao_push_.strength = params.ssao_strength;
+            gtao_push_.radius = params.ssao_radius;
         }
     }
 
@@ -117,6 +135,8 @@ private:
     bool load_spirv_from_file(const std::string& path, std::vector<uint32_t>& out);
     bool load_spirv_files(const std::string& vert_path, const std::string& frag_path);
     void set_render_pass(VkRenderPass render_pass) { render_pass_ = render_pass; }
+    // 见 IShader::set_pipeline_blending：Vulkan 的混合状态只能在创建管线时定死。
+    void set_pipeline_blending(bool enabled) override;
     void set_color_output_enabled(bool enabled) { color_output_enabled_ = enabled; }
     void set_post_process(bool pp) { post_process_ = pp; }
     void set_skybox(bool skybox) { skybox_ = skybox; }
@@ -152,10 +172,16 @@ private:
 
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
     // 每个 VkRenderPass 一条图形管线（Vulkan 把 render pass 烘进管线）
-    std::unordered_map<VkRenderPass, VkPipeline> pipeline_cache_;
+    std::unordered_map<VkRenderPass, VkPipeline> pipeline_cache_;      // 混合变体
+    std::unordered_map<VkRenderPass, VkPipeline> pipeline_cache_opaque_; // 不混合变体
+    VkPipeline pipeline_blend_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_opaque_ = VK_NULL_HANDLE;
+    bool draw_blending_ = true;
     // 描述符布局/UBO/回退贴图等一次性资源是否已创建
     bool resources_created_ = false;
     bool color_output_enabled_ = true;
+    // 默认开（普通材质走 alpha blend）；数据通道由 set_pipeline_blending(false) 关闭。
+    bool pipeline_blending_ = true;
     bool post_process_ = false;
     bool skybox_ = false;
     // 接触阴影：独立小 push constant 块（48 字节），不占用共享后处理块。
@@ -165,11 +191,15 @@ private:
     bool water_ = false;
     // 特效后处理 push constant 块的选择（决定 create_pipeline 的 push range 与
     // set_uniform_* 路由）：每个特效独立块避免共享块超 maxPushConstantsSize(256)。
-    enum class PostProcessPushKind { General = 0, ContactShadow, SSR, SSIL, Motion, Fog };
+    enum class PostProcessPushKind { General = 0, ContactShadow, SSR, SSIL, Motion, Fog, GTAO };
     PostProcessPushKind push_kind_ = PostProcessPushKind::General;
     // 骨骼蒙皮管线：顶点布局追加 bone ids/weights（stride 88），
     // 描述符布局追加 palette UBO（binding 8，vertex stage）
     bool skinned_ = false;
+    // 3D 粒子广告牌管线：顶点输入是"静态四边形 + 每实例数据"两条流
+    // （binding 0 stride 8 / binding 1 stride 36），与 MeshVertex（stride 56）
+    // 不兼容，必须单独一条 vertex input 分支。
+    bool particle_ = false;
 
     // 与 GLSL std140 对齐的单光源结构（64 字节，与 GLSL Light 对应）
     struct LightUBO {
@@ -223,7 +253,7 @@ private:
         float pcss_light_size;                 // PCSS light size (world units)
         float pcss_max_radius;                 // PCSS max sample radius (texels)
         float pcss_tap_scale;                  // PCSS tap density scale
-        float _pad_cascade2;
+        float shadow_filter_scale;  // 阴影滤波宽度（每单位视图深度的世界长度）
         math::Matrix4f cascade_light_space[k_max_cascades];
         math::Matrix4f view_matrix;            // 片段阶段级联深度选择用
 
@@ -408,13 +438,18 @@ private:
         float thickness;            // +112
         float bilateral_filter;     // +116（blur pass 用它；HIZ/trace 忽略）
         math::Vector2f texel_size;  // +120（HIZ pass 用它；其余忽略）
+        float env_fallback;         // +128 SSR 未命中回退强度（composite 用）
+        int probe_valid;            // +132 SSR 退化射线探针兜底开关（trace 用）
+        float _pad_tail[2];         // +136 补齐 16 字节
     };
-    static_assert(sizeof(SSRPushData) == 128, "SSRPushData must be 128 bytes");
+    static_assert(sizeof(SSRPushData) == 144, "SSRPushData must be 144 bytes");
     static_assert(offsetof(SSRPushData, screen_size) == 80, "std430: screen_size at +80");
     static_assert(offsetof(SSRPushData, near_plane) == 88, "std430: near_plane at +88");
     static_assert(offsetof(SSRPushData, max_roughness) == 104, "std430: max_roughness at +104");
     static_assert(offsetof(SSRPushData, max_steps) == 108, "std430: max_steps at +108");
     static_assert(offsetof(SSRPushData, texel_size) == 120, "std430: texel_size at +120");
+    static_assert(offsetof(SSRPushData, env_fallback) == 128, "std430: env_fallback at +128");
+    static_assert(offsetof(SSRPushData, probe_valid) == 132, "std430: probe_valid at +132");
 
     // SSIL 专用 push constant（std430，128 字节，< 256）。对应 vulkan_ssil_trace.frag /
     // vulkan_ssil_blur.frag 的 PushConstants 块。camera_pos 同样需要补 std430 的
@@ -464,6 +499,20 @@ private:
     };
     static_assert(sizeof(FogPushData) == 192, "FogPushData must be 192 bytes");
 
+    // GTAO 专用 push constant（std430，96 字节，< 256）。对 vulkan_gtao.frag。
+    // 包含 view matrix（世界→视图，用于把法线从世界空间转到视图空间做 horizon 判定）。
+    struct alignas(16) GTAOPushData {
+        math::Matrix4f view;         // +0
+        float near_plane;            // +64
+        float far_plane;             // +68
+        float tan_half_fov;          // +72
+        float aspect;                // +76
+        float strength;              // +80
+        float radius;                // +84
+        float _pad_gtao[2];          // +88 对齐到 16 字节
+    };
+    static_assert(sizeof(GTAOPushData) == 96, "GTAOPushData must be 96 bytes");
+
     // 水体材质专用 push constant（std430，192 字节，< 256）。对应 vulkan_water 的
     // PushConstants 块。顶点阶段用 view_proj/model，片元阶段用其余参数。
     struct alignas(16) WaterPushData {
@@ -487,6 +536,7 @@ private:
     mutable SSILPushData ssil_push_{};
     mutable MotionPushData motion_push_{};
     mutable FogPushData fog_push_{};
+    mutable GTAOPushData gtao_push_{};
     mutable WaterPushData water_push_{};
 };
 

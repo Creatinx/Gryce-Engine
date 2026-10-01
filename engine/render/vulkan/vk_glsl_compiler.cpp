@@ -133,6 +133,39 @@ void ensure_loaded() {
     std::call_once(g_load_flag, do_load);
 }
 
+// 常驻 compiler 实例：shaderc_compiler_initialize 会初始化 glslang 的全局状态，
+// 单次成本在数十毫秒量级。若每个 stage 都新建/释放一次，启动耗时就会随 shader
+// 数量线性增长（本项目 3D + 2D 合计 40+ 个 stage）。这里只创建一次并常驻到进程
+// 结束——与 shaderc 库句柄同样不卸载，规避析构顺序问题。
+// 注意：shaderc 的 compiler 实例不是线程安全的，故用互斥锁把整段编译串行化。
+struct ResidentCompiler {
+    void* handle = nullptr;
+    bool created = false;
+    std::mutex mutex;
+};
+
+ResidentCompiler& g_compiler() {
+    static ResidentCompiler c;
+    return c;
+}
+
+// 返回已加锁的 unique_lock（调用方持有到编译结束即自动解锁），并输出常驻实例。
+std::unique_lock<std::mutex> acquire_compiler(void*& compiler) {
+    ResidentCompiler& c = g_compiler();
+    std::unique_lock<std::mutex> lock(c.mutex);
+    if (!c.created) {
+        ShadercApi& a = g_api();
+        c.handle = (a.valid && a.init) ? a.init() : nullptr;
+        c.created = true;
+        if (!c.handle) {
+            GLOG_WARN("shaderc: shaderc_compiler_initialize failed, "
+                      "Vulkan shaders fall back to pre-compiled SPIR-V");
+        }
+    }
+    compiler = c.handle;
+    return lock;
+}
+
 } // namespace
 
 bool shaderc_available() {
@@ -149,7 +182,10 @@ bool compile_glsl_to_spirv(const std::string& source, const std::string& file_na
         return false;
     }
 
-    void* compiler = a.init();
+    // 复用常驻实例（插件持有互斥锁直到本次编译结束），避免每个 stage 重新初始化
+    // glslang 全局状态。
+    void* compiler = nullptr;
+    std::unique_lock<std::mutex> lock = acquire_compiler(compiler);
     if (!compiler) {
         error = "shaderc_compiler_initialize failed";
         return false;
@@ -160,7 +196,6 @@ bool compile_glsl_to_spirv(const std::string& source, const std::string& file_na
     void* result = a.compile_into_spv(compiler, source.data(), source.size(), kind,
                                       name, "main", nullptr);
     if (!result) {
-        a.release(compiler);
         error = "shaderc_compile_into_spv returned null";
         return false;
     }
@@ -173,7 +208,6 @@ bool compile_glsl_to_spirv(const std::string& source, const std::string& file_na
     if (status != kCompilationSuccess || !bytes || len == 0 || len % 4 != 0) {
         std::string diag = err_msg ? err_msg : "(no diagnostics)";
         a.result_release(result);
-        a.release(compiler);
         error = diag;
         return false;
     }
@@ -182,7 +216,6 @@ bool compile_glsl_to_spirv(const std::string& source, const std::string& file_na
                reinterpret_cast<const uint32_t*>(bytes) + len / 4);
 
     a.result_release(result);
-    a.release(compiler);
     return true;
 }
 

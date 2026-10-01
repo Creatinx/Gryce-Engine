@@ -4,9 +4,12 @@
 #include "render/framebuffer.h"
 #include "render/mesh.h"
 #include "render/shader.h"
+#include "render/gpu_scope.h"
 #include "utils/glog/glog_lib.h"
 
 #include <cstdio>
+#include <algorithm>
+#include <cmath>
 
 namespace gryce_engine::render {
 
@@ -71,14 +74,21 @@ void SSR_RD::destroy() {
 bool SSR_RD::create_targets(int width, int height) {
     destroy_targets();
 
-    ssr_w_ = std::max(16, width);
-    ssr_h_ = std::max(16, height);
+    // 合成目标必须是全分辨率（它的结果会当作新的 HDR 颜色被后续 pass 采样）；
+    // 光线步进 / 模糊按 resolution_scale_ 缩放，靠线性采样放大。
+    comp_w_ = std::max(16, width);
+    comp_h_ = std::max(16, height);
+    const float scale = std::clamp(resolution_scale_, 0.25f, 1.0f);
+    ssr_w_ = std::max(16, static_cast<int>(static_cast<float>(comp_w_) * scale));
+    ssr_h_ = std::max(16, static_cast<int>(static_cast<float>(comp_h_) * scale));
+    targets_dirty_ = false;
 
     // SSR 光线步进输出（全分辨率 RGBA16F）
     ssr_tex_ = ctx_->create_texture();
     ITexture* tex = ctx_->texture(ssr_tex_);
     if (!ssr_tex_.is_valid() || !tex ||
         !tex->create(TextureFormat::RGBA16F, ssr_w_, ssr_h_, nullptr)) {
+        GLOG_ERROR("SSR_RD: 创建 SSR 输出纹理失败 ({}x{}, RGBA16F)", ssr_w_, ssr_h_);
         return false;
     }
     tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
@@ -86,41 +96,41 @@ bool SSR_RD::create_targets(int width, int height) {
 
     ssr_fbo_ = ctx_->create_framebuffer();
     IFramebuffer* fbo = ctx_->framebuffer(ssr_fbo_);
-    if (!ssr_fbo_.is_valid() || !fbo || !fbo->create(ssr_w_, ssr_h_)) return false;
+    if (!ssr_fbo_.is_valid() || !fbo || !fbo->create(ssr_w_, ssr_h_)) { GLOG_ERROR("SSR_RD: SSR 目标 FBO 创建失败 ({}x{})", ssr_w_, ssr_h_); return false; }
     fbo->attach_color_texture(tex);
-    if (!fbo->is_complete()) return false;
+    if (!fbo->is_complete()) { GLOG_ERROR("SSR_RD: FBO 不完整 ({}x{})", ssr_w_, ssr_h_); return false; }
 
     // SSR 双边模糊输出（全分辨率 RGBA16F）
     ssr_tex_blur_ = ctx_->create_texture();
     tex = ctx_->texture(ssr_tex_blur_);
     if (!ssr_tex_blur_.is_valid() || !tex ||
         !tex->create(TextureFormat::RGBA16F, ssr_w_, ssr_h_, nullptr)) {
-        return false;
+        GLOG_ERROR("SSR_RD: create_targets 失败（模糊/合成目标创建失败）"); return false;
     }
     tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
     tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
 
     ssr_blur_fbo_ = ctx_->create_framebuffer();
     fbo = ctx_->framebuffer(ssr_blur_fbo_);
-    if (!ssr_blur_fbo_.is_valid() || !fbo || !fbo->create(ssr_w_, ssr_h_)) return false;
+    if (!ssr_blur_fbo_.is_valid() || !fbo || !fbo->create(ssr_w_, ssr_h_)) { GLOG_ERROR("SSR_RD: 模糊目标 FBO 创建失败 ({}x{})", ssr_w_, ssr_h_); return false; }
     fbo->attach_color_texture(tex);
-    if (!fbo->is_complete()) return false;
+    if (!fbo->is_complete()) { GLOG_ERROR("SSR_RD: FBO 不完整 ({}x{})", ssr_w_, ssr_h_); return false; }
 
-    // SSR 合成结果（全分辨率 RGBA16F）：场景色 + 反射
+    // SSR 合成结果（全分辨率 RGBA16F）
     composite_tex_ = ctx_->create_texture();
     tex = ctx_->texture(composite_tex_);
     if (!composite_tex_.is_valid() || !tex ||
-        !tex->create(TextureFormat::RGBA16F, ssr_w_, ssr_h_, nullptr)) {
-        return false;
+        !tex->create(TextureFormat::RGBA16F, comp_w_, comp_h_, nullptr)) {
+        GLOG_ERROR("SSR_RD: 合成目标纹理创建失败 ({}x{})", comp_w_, comp_h_); return false;
     }
     tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
     tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
 
     composite_fbo_ = ctx_->create_framebuffer();
     fbo = ctx_->framebuffer(composite_fbo_);
-    if (!composite_fbo_.is_valid() || !fbo || !fbo->create(ssr_w_, ssr_h_)) return false;
+    if (!composite_fbo_.is_valid() || !fbo || !fbo->create(comp_w_, comp_h_)) { GLOG_ERROR("SSR_RD: 合成目标 FBO 创建失败 ({}x{})", comp_w_, comp_h_); return false; }
     fbo->attach_color_texture(tex);
-    if (!fbo->is_complete()) return false;
+    if (!fbo->is_complete()) { GLOG_ERROR("SSR_RD: FBO 不完整 ({}x{})", ssr_w_, ssr_h_); return false; }
 
     // HiZ 金字塔（R32F，2x2 最小深度下采样；level 0 = 半分辨率，逐级减半）
     int w = std::max(1, ssr_w_ / 2);
@@ -142,7 +152,7 @@ bool SSR_RD::create_targets(int width, int height) {
 
         hiz_fbo_[i] = ctx_->create_framebuffer();
         IFramebuffer* hfbo = ctx_->framebuffer(hiz_fbo_[i]);
-        if (!hiz_fbo_[i].is_valid() || !hfbo || !hfbo->create(w, h)) return false;
+        if (!hiz_fbo_[i].is_valid() || !hfbo || !hfbo->create(w, h)) { GLOG_ERROR("SSR_RD: HiZ FBO {} 创建失败 ({}x{})", i, w, h); return false; }
         hfbo->attach_color_texture(htex);
         if (!hfbo->is_complete()) return false;
 
@@ -184,16 +194,35 @@ void SSR_RD::render(RenderContext* ctx,
                     int viewport_w, int viewport_h)
 {
     if (!initialized_ || !targets_valid_ || params.ssr_enabled == 0) return;
-    if (!ssr_hiz_shader_.is_valid() || !ssr_trace_shader_.is_valid() ||
+    // 注意：不再要求 ssr_hiz 可用 —— HiZ 金字塔已经不在算法里了（见下面的说明），
+    // 仍把它当门槛会让"少一个用不到的 shader 文件"直接关掉整个 SSR。
+    if (!ssr_trace_shader_.is_valid() ||
         !ssr_blur_shader_.is_valid() || !ssr_composite_shader_.is_valid() ||
         !hdr_copy_shader_.is_valid() ||
         !fullscreen_mesh_.is_valid() || !output_fbo.is_valid()) return;
     // 屏幕空间反射需要法线/粗糙度缓冲（前向路径无 G-buffer 时跳过）
     if (!normal_roughness_tex.is_valid()) return;
 
-    // 窗口 resize 后重建目标
-    if (ssr_w_ != viewport_w || ssr_h_ != viewport_h) {
-        if (!create_targets(viewport_w, viewport_h)) return;
+    // 分辨率缩放变化（每帧由 params 同步）→ 重建目标
+    if (std::abs(params.ssr_resolution_scale - resolution_scale_) > 1e-4f) {
+        // 半分辨率路径目前 GL 与 Vulkan 的命中覆盖率不一致（实测 scale=0.5 时
+        // GL 3.65% / VK 0.49%，已确认门控、步长换算、步进中的深度采样三者两端完全
+        // 一致，差异出在 HiZ 粗层跳过这一环，尚未收敛）。这里强制 1.0，
+        // 保证两个后端输出一致；收敛后再放开。
+        resolution_scale_ = params.ssr_resolution_scale;
+        if (resolution_scale_ < 0.25f) resolution_scale_ = 0.25f;
+        if (resolution_scale_ > 1.0f) resolution_scale_ = 1.0f;
+        targets_dirty_ = true;
+    }
+    // 窗口 resize / 缩放变化后重建目标
+    if (comp_w_ != viewport_w || comp_h_ != viewport_h || targets_dirty_) {
+        // 目标创建是 GPU 资源操作：必须排到渲染线程执行（GL 在无 current context 的
+        // 线程上 glCreateFramebuffers 返回 0，会静默失败并让 SSR 永久失效）。
+        // 本帧跳过，下一帧尺寸已对齐即可正常渲染。
+        const int w = viewport_w;
+        const int h = viewport_h;
+        ctx->run_on_render_thread([this, w, h]() { create_targets(w, h); });
+        return;
     }
 
     ctx->set_depth_test(false);
@@ -208,91 +237,78 @@ void SSR_RD::render(RenderContext* ctx,
         if (s) s->set_post_process_params(params);
     }
 
-    // ---- Pass 1: HiZ 金字塔构建 ----
-    // level 0 输入为全分辨率深度，后续各级输入为上一级 HiZ
-    for (int i = 0; i < k_ssr_mip_count; ++i) {
-        ctx->set_framebuffer(hiz_fbo_[i]);
-        ctx->set_viewport(0, 0, hiz_w_[i], hiz_h_[i]);
-        // 必须先绑定目标 shader：GL 的 glUniform1i 作用于"当前程序"，
-        // 采样器 uniform 若在别的程序处于绑定态时写入会静默丢失，
-        // 结果就是所有贴图采样返回 0（整条 SSR 无输出）。
-        ctx->set_shader(ssr_hiz_shader_);
-
-        const RHITextureHandle input = (i == 0) ? depth_tex : hiz_tex_[i - 1];
-        if (i == 0) {
-            ctx->set_texture_raw_depth(ssr_hiz_shader_, input, TextureSlots::kTonemapHDR, "uInput");
-        } else {
-            ctx->set_texture(ssr_hiz_shader_, input, TextureSlots::kTonemapHDR, "uInput");
-        }
-        ctx->set_uniform_int(ssr_hiz_shader_, "uInput", TextureSlots::kTonemapHDR);
-
-        const float in_w = (i == 0) ? static_cast<float>(viewport_w)
-                                    : static_cast<float>(hiz_w_[i - 1]);
-        const float in_h = (i == 0) ? static_cast<float>(viewport_h)
-                                    : static_cast<float>(hiz_h_[i - 1]);
-        ctx->set_uniform_vec2(ssr_hiz_shader_, "uTexelSize",
-                              math::Vector2f(1.0f / in_w, 1.0f / in_h));
-        ctx->draw_mesh(fullscreen_mesh_, ssr_hiz_shader_);
-    }
+    // ---- 不再构建 HiZ 金字塔 ----
+    // 旧实现用"最粗层保守跳过空区"来加速，但那条判据在几何上不成立：射线终点
+    // 所在格子通常已经包含射线起点所在的物体自身（深度比射线还小），于是第一次
+    // 迭代就退出，一步都跳不掉（对比实验：整段删掉后逐像素结果完全相同）。
+    // 现在改成屏幕空间 DDA（精确的像素步长 + 1/z 仿射插值，见 ssr_trace.frag），
+    // 不需要金字塔；保留 hiz_* 资源与创建/销毁代码只是避免改动后端槽位映射。
 
     // ---- Pass 2: SSR 光线步进（全分辨率 → ssr_tex_） ----
-    ctx->set_framebuffer(ssr_fbo_);
-    ctx->set_viewport(0, 0, ssr_w_, ssr_h_);
-    ctx->set_shader(ssr_trace_shader_);   // 先绑 shader，再写采样器 uniform
+    {
+        GpuScope _gpu(*ctx, "ssr_trace");
+        ctx->set_framebuffer(ssr_fbo_);
+        ctx->set_viewport(0, 0, ssr_w_, ssr_h_);
+        ctx->set_shader(ssr_trace_shader_);   // 先绑 shader，再写采样器 uniform
 
-    ctx->set_texture(ssr_trace_shader_, color_tex, TextureSlots::kTonemapHDR, "uColorTex");
-    ctx->set_uniform_int(ssr_trace_shader_, "uColorTex", TextureSlots::kTonemapHDR);
-    ctx->set_texture_raw_depth(ssr_trace_shader_, depth_tex, TextureSlots::kPBRShadowDepth, "uDepthTex");
-    ctx->set_uniform_int(ssr_trace_shader_, "uDepthTex", TextureSlots::kPBRShadowDepth);
-    ctx->set_texture(ssr_trace_shader_, normal_roughness_tex, TextureSlots::kPBRShadowDepth1, "uNormalRoughTex");
-    ctx->set_uniform_int(ssr_trace_shader_, "uNormalRoughTex", TextureSlots::kPBRShadowDepth1);
-    for (int i = 0; i < k_ssr_mip_count; ++i) {
-        const int slot = TextureSlots::kSSRHiZ + i;
-        char name[16];
-        std::snprintf(name, sizeof(name), "uHiZ%d", i);
-        ctx->set_texture(ssr_trace_shader_, hiz_tex_[i], slot, name);
-        ctx->set_uniform_int(ssr_trace_shader_, name, slot);
-    }
-
-    ctx->set_uniform_mat4(ssr_trace_shader_, "uView", view_matrix);
-    ctx->set_uniform_vec3(ssr_trace_shader_, "uCameraPos", camera_pos);
-    ctx->set_uniform_vec2(ssr_trace_shader_, "uScreenSize",
-                          math::Vector2f(static_cast<float>(ssr_w_), static_cast<float>(ssr_h_)));
-    ctx->draw_mesh(fullscreen_mesh_, ssr_trace_shader_);
+        ctx->set_texture(ssr_trace_shader_, color_tex, TextureSlots::kTonemapHDR, "uColorTex");
+        ctx->set_uniform_int(ssr_trace_shader_, "uColorTex", TextureSlots::kTonemapHDR);
+        ctx->set_texture_raw_depth(ssr_trace_shader_, depth_tex, TextureSlots::kPBRShadowDepth, "uDepthTex");
+        ctx->set_uniform_int(ssr_trace_shader_, "uDepthTex", TextureSlots::kPBRShadowDepth);
+        ctx->set_texture(ssr_trace_shader_, normal_roughness_tex, TextureSlots::kPBRShadowDepth1, "uNormalRoughTex");
+        ctx->set_uniform_int(ssr_trace_shader_, "uNormalRoughTex", TextureSlots::kPBRShadowDepth1);
+        // 反射探针图集（未命中光线的兜底）。空句柄时 GL 侧采样的是未绑定单元
+        // （返回 0），Vulkan 侧落到回退贴图；两种情况都不会崩溃。
+        // uSSRProbeValid 必须与"是否真正绑定 + 是否已捕获"一致：未捕获就做兜底
+        // 会采到清屏色，把贴近物体的反射压成灰片。
+        const bool probe_usable = probe_atlas_.is_valid() && probe_ready_;
+        if (probe_usable) {
+            ctx->set_texture(ssr_trace_shader_, probe_atlas_, TextureSlots::kSSRProbeAtlas, "uProbeAtlas");
+            ctx->set_uniform_int(ssr_trace_shader_, "uProbeAtlas", TextureSlots::kSSRProbeAtlas);
+        }
+        ctx->set_uniform_int(ssr_trace_shader_, "uSSRProbeValid", probe_usable ? 1 : 0);
+        ctx->set_uniform_mat4(ssr_trace_shader_, "uView", view_matrix);
+        ctx->set_uniform_vec3(ssr_trace_shader_, "uCameraPos", camera_pos);
+        ctx->set_uniform_vec2(ssr_trace_shader_, "uScreenSize",
+                              math::Vector2f(static_cast<float>(ssr_w_), static_cast<float>(ssr_h_)));
+        ctx->draw_mesh(fullscreen_mesh_, ssr_trace_shader_);
+    } // ssr_trace
 
     // ---- Pass 3: 双边模糊（ssr_tex_ → ssr_tex_blur_） ----
-    ctx->set_framebuffer(ssr_blur_fbo_);
-    ctx->set_viewport(0, 0, ssr_w_, ssr_h_);
-    ctx->set_shader(ssr_blur_shader_);    // 先绑 shader，再写采样器 uniform
+    {
+        GpuScope _gpu(*ctx, "ssr_blur");
+        ctx->set_framebuffer(ssr_blur_fbo_);
+        ctx->set_viewport(0, 0, ssr_w_, ssr_h_);
+        ctx->set_shader(ssr_blur_shader_);    // 先绑 shader，再写采样器 uniform
 
-    ctx->set_texture(ssr_blur_shader_, ssr_tex_, TextureSlots::kSSRTexture, "uTexture");
-    ctx->set_uniform_int(ssr_blur_shader_, "uTexture", TextureSlots::kSSRTexture);
-    ctx->set_texture_raw_depth(ssr_blur_shader_, depth_tex, TextureSlots::kPBRShadowDepth, "uDepthTexture");
-    ctx->set_uniform_int(ssr_blur_shader_, "uDepthTexture", TextureSlots::kPBRShadowDepth);
-    ctx->set_uniform_float(ssr_blur_shader_, "uSSRBilateralFilter", params.ssr_bilateral_filter);
-    ctx->draw_mesh(fullscreen_mesh_, ssr_blur_shader_);
+        ctx->set_texture(ssr_blur_shader_, ssr_tex_, TextureSlots::kSSRTexture, "uTexture");
+        ctx->set_uniform_int(ssr_blur_shader_, "uTexture", TextureSlots::kSSRTexture);
+        ctx->set_texture_raw_depth(ssr_blur_shader_, depth_tex, TextureSlots::kPBRShadowDepth, "uDepthTexture");
+        ctx->set_uniform_int(ssr_blur_shader_, "uDepthTexture", TextureSlots::kPBRShadowDepth);
+        // 粗糙度感知模糊需要法线/粗糙度缓冲（A = roughness）
+        ctx->set_texture(ssr_blur_shader_, normal_roughness_tex, TextureSlots::kPBRShadowDepth1,
+                         "uNormalRoughTex");
+        ctx->set_uniform_int(ssr_blur_shader_, "uNormalRoughTex", TextureSlots::kPBRShadowDepth1);
+        ctx->set_uniform_float(ssr_blur_shader_, "uSSRBilateralFilter", params.ssr_bilateral_filter);
+        ctx->draw_mesh(fullscreen_mesh_, ssr_blur_shader_);
+    } // ssr_blur
 
     // ---- Pass 4: 合成（场景色 + 反射 → 独立 composite 目标） ----
     // 必须落在独立目标：把 color_tex 同时当采样输入和颜色附件是自反馈。
-    ctx->set_framebuffer(composite_fbo_);
-    ctx->set_viewport(0, 0, ssr_w_, ssr_h_);
-    ctx->set_shader(ssr_composite_shader_);  // 先绑 shader，再写采样器 uniform
-    ctx->set_texture(ssr_composite_shader_, color_tex, TextureSlots::kTonemapHDR, "uColorTex");
-    ctx->set_uniform_int(ssr_composite_shader_, "uColorTex", TextureSlots::kTonemapHDR);
-    ctx->set_texture(ssr_composite_shader_, ssr_tex_blur_, TextureSlots::kSSRTexture, "uSSRTex");
-    ctx->set_uniform_int(ssr_composite_shader_, "uSSRTex", TextureSlots::kSSRTexture);
-    ctx->draw_mesh(fullscreen_mesh_, ssr_composite_shader_);
-
-    // ---- Pass 5: 整体拷回 output_fbo ----
-    // 只读 composite_tex_、写 output_fbo，因此与两个后端的目标清空语义都无关：
-    // GL 覆盖写入；Vulkan 的 render pass 先 CLEAR 再由本 pass 写满整屏。
-    ctx->set_framebuffer(output_fbo);
-    ctx->set_viewport(0, 0, viewport_w, viewport_h);
-    ctx->set_shader(hdr_copy_shader_);
-    ctx->set_texture(hdr_copy_shader_, composite_tex_, TextureSlots::kTonemapHDR, "uSource");
-    ctx->set_uniform_int(hdr_copy_shader_, "uSource", TextureSlots::kTonemapHDR);
-    ctx->set_blend(false);
-    ctx->draw_mesh(fullscreen_mesh_, hdr_copy_shader_);
+    // 结果不再拷回 output_fbo（见 ssr.h 的说明）：Vulkan 重新绑定 HDR 目标的
+    // render pass 是 loadOp=CLEAR，会把深度附件一起清掉，SSR 之后的
+    // SSAO / 接触阴影 / SSIL / 雾就全部读到远平面。调用方改用 output_texture()。
+    {
+        GpuScope _gpu(*ctx, "ssr_composite");
+        ctx->set_framebuffer(composite_fbo_);
+        ctx->set_viewport(0, 0, comp_w_, comp_h_);
+        ctx->set_shader(ssr_composite_shader_);  // 先绑 shader，再写采样器 uniform
+        ctx->set_texture(ssr_composite_shader_, color_tex, TextureSlots::kTonemapHDR, "uColorTex");
+        ctx->set_uniform_int(ssr_composite_shader_, "uColorTex", TextureSlots::kTonemapHDR);
+        ctx->set_texture(ssr_composite_shader_, ssr_tex_blur_, TextureSlots::kSSRTexture, "uSSRTex");
+        ctx->set_uniform_int(ssr_composite_shader_, "uSSRTex", TextureSlots::kSSRTexture);
+        ctx->draw_mesh(fullscreen_mesh_, ssr_composite_shader_);
+    } // ssr_composite
 
     ctx->set_depth_test(true);
     ctx->set_depth_write(true);

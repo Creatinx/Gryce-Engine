@@ -133,14 +133,16 @@ private:
     bool initialized_ = false;
 
     // --- CSM ---
-    std::array<int, k_max_cascades> cascade_sizes_ = {k_default_csm_size, 1024, 512, 512};
-    std::array<float, k_max_cascades> cascade_biases_ = {0.0005f, 0.001f, 0.002f, 0.004f};
+    std::array<int, k_max_cascades> cascade_sizes_ = {k_default_csm_size, k_default_csm_size, k_default_csm_size, k_default_csm_size};
+    // 与 RenderPipeline::cascade_biases_ / shader.h 的 PostProcessParams::cascade_bias 统一，
+    // 避免两套 bias 源不同步导致 shader 读到偏小值而出现 Acne。
+    std::array<float, k_max_cascades> cascade_biases_ = {0.001f, 0.002f, 0.004f, 0.008f};
     std::array<RHITextureHandle, k_max_cascades> cascade_shadow_tex_;
     std::array<RHIFramebufferHandle, k_max_cascades> cascade_shadow_fbo_;
     std::array<math::Matrix4f, k_max_cascades> cascade_light_matrices_;
     std::array<float, k_max_cascades + 1> cascade_splits_;  // 分割距离（观察空间）
-    int cascade_count_ = 3;
-    float cascade_split_lambda_ = 0.5f;
+    int cascade_count_ = 4;
+    float cascade_split_lambda_ = 0.6f;
 
     // --- 聚光灯阴影 ---
     int spot_shadow_size_ = k_default_spot_shadow_size;
