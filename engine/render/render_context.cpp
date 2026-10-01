@@ -1,5 +1,6 @@
 #include "render_context.h"
 
+#include <cstdlib>
 #include <future>
 #include <thread>
 
@@ -143,8 +144,14 @@ bool RenderContext::init(void* native_window, std::unique_ptr<IRenderBackend> ba
         return false;
     }
 
-    // 校验层开关必须在 instance 创建之前下发才生效
-    backend_->set_validation_enabled(validation_enabled_);
+    // 校验层开关必须在 instance 创建之前下发才生效。默认关闭（见头文件说明），
+    // 仅当显式设置环境变量时打开，供排查校验层报错使用。
+    bool want_validation = validation_enabled_;
+    if (const char* env = std::getenv("GRYCE_VULKAN_VALIDATION")) {
+        want_validation = (env[0] == '1' || env[0] == 't' || env[0] == 'T' ||
+                           env[0] == 'y' || env[0] == 'Y');
+    }
+    backend_->set_validation_enabled(want_validation);
 
     if (!backend_->init(native_window_)) {
         GLOG_ERROR("RenderContext::init: backend init failed");

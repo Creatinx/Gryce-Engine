@@ -192,8 +192,10 @@ bool FontAtlas::create_fallback_atlas(RenderContext* ctx, float font_size) {
     const int atlas_size = 512;
     const int cell_count_x = 16;
     const int cell_size = atlas_size / cell_count_x;                    // 32
-    const int glyph_size = static_cast<int>(font_size * 0.75f);         // ~24
-    const int pad = (cell_size - glyph_size) / 2;                       // 4
+    // 字形必须能放进单元格：font_size 过大时 glyph_size 会超过 cell_size，
+    // 使 pad 变成负数并产生越界的像素写入（曾导致崩溃），这里钳制到单元格内。
+    const int glyph_size = std::max(1, std::min(static_cast<int>(font_size * 0.75f), cell_size));
+    const int pad = (cell_size - glyph_size) / 2;
 
     // fallback 同样使用 RGBA8 top-down，保持与正常字体一致的采样方式（采样 .a）
     std::vector<unsigned char> bitmap_rgba(static_cast<std::size_t>(atlas_size * atlas_size * 4), 0);

@@ -268,7 +268,9 @@ void SSR_RD::render(RenderContext* ctx,
         }
         ctx->set_uniform_int(ssr_trace_shader_, "uSSRProbeValid", probe_usable ? 1 : 0);
         ctx->set_uniform_mat4(ssr_trace_shader_, "uView", view_matrix);
-        ctx->set_uniform_vec3(ssr_trace_shader_, "uCameraPos", camera_pos);
+        // 不再下发 uCameraPos：反射方向改在视图空间由 normalize(-view_pos) 得到，
+        // 着色器里已无该 uniform；GL 对找不到的 uniform 会每帧打印警告。
+        (void)camera_pos;
         ctx->set_uniform_vec2(ssr_trace_shader_, "uScreenSize",
                               math::Vector2f(static_cast<float>(ssr_w_), static_cast<float>(ssr_h_)));
         ctx->draw_mesh(fullscreen_mesh_, ssr_trace_shader_);

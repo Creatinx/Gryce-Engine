@@ -10,7 +10,6 @@ namespace gryce_engine::render {
 class RendererCanvasRender;
 class RendererSceneRender;
 class RenderContext;
-class RenderingDevice;
 
 // 前向声明 Storage 接口
 class RendererLightStorage;
@@ -19,10 +18,6 @@ class RendererMeshStorage;
 class RendererTextureStorage;
 class RendererParticlesStorage;
 class RendererUtilities;
-
-// 前向声明 Fog/GI
-class RendererFog;
-class RendererGI;
 
 // ---------------------------------------------------------------------------
 // RendererCompositor — 渲染器组合器
@@ -45,8 +40,6 @@ public:
     // 子渲染器访问
     virtual RendererCanvasRender* get_canvas() = 0;
     virtual RendererSceneRender* get_scene() = 0;
-    virtual RendererFog* get_fog() = 0;
-    virtual RendererGI* get_gi() = 0;
 
     // Storage 系统访问
     virtual RendererLightStorage* get_light_storage() = 0;
@@ -55,9 +48,6 @@ public:
     virtual RendererTextureStorage* get_texture_storage() = 0;
     virtual RendererParticlesStorage* get_particles_storage() = 0;
     virtual RendererUtilities* get_utilities() = 0;
-
-    // RenderingDevice 访问
-    virtual RenderingDevice* get_device() = 0;
 
     // 名称
     virtual const char* name() const = 0;

@@ -29,14 +29,18 @@ layout(push_constant) uniform PushConstants {
     int probe_valid;        // +132（=0 时退化射线探针兜底关闭）
 } pc;
 
-// 反射探针图集：6 个面按 3x2 排布（+X,-X,+Y,-Y,+Z,-Z），每面 1024x1024。
+// 反射探针图集：6 个面按 3x2 排布（+X,-X,+Y,-Y,+Z,-Z），每面 256x256。
 // 面的朝向与 RenderPipeline::capture_reflection_probe 的 6 组
 // look_at(eye, eye+forward, up) 一一对应；这里的 (u,v) 组合必须与之一致。
+//
+// 必须与 render_pipeline.h 的 k_probe_face_size 及 ssr_trace.frag 的
+// kProbeFaceSize 保持同一个值：它只用于"内缩半个纹素"的 inset，取值不一致会
+// 让跨面采样越过格子边界（图集从 1024 压到 256 时本文件漏改过，已同步）。
 //
 // Vulkan 差异：VK 用负 viewport height，离屏目标里"屏幕上沿"落在 v=0
 //（GL 落在 v=1）。图集格子（3x2 的行）排布两端一致，但格子内部的 v 相反，
 // 故只在面内翻转 v，不动 cell。
-const float kProbeFaceSize = 1024.0;
+const float kProbeFaceSize = 256.0;
 const vec2  kProbeAtlasGrid = vec2(3.0, 2.0);
 
 vec3 probe_sample(vec3 dir) {
@@ -124,19 +128,26 @@ void main() {
     vec3 view_pos = vec3(ndc.x * pc.tan_half_fov * pc.aspect * lin,
                          ndc.y * pc.tan_half_fov * lin,
                          -lin);
-    mat4 inv_view = inverse(pc.view);
-    vec4 world_pos = inv_view * vec4(view_pos, 1.0);
-    vec3 P = world_pos.xyz / world_pos.w;
-
-    vec3 V = normalize(pc.camera_pos - P);
-    if (dot(N, V) <= 0.02) {
+    // 反射计算整段在视图空间完成（与 GL 版一致）：视图空间里相机恒在原点，
+    // 视线方向就是 normalize(-view_pos)，法线用视图矩阵的旋转部分转进来即可。
+    // 于是每像素的 mat4 inverse(pc.view) 和反投影到世界空间的 mat4*vec4 全部省掉
+    // —— 逆矩阵对整帧是常量，逐像素求逆是 4x4 求解加除法，正压在 SSR 最热的
+    // 光栅化路径上（roughness/深度早退之后、步进之前，每个光泽像素都要算）。
+    mat3 view_rot = mat3(pc.view);
+    vec3 V = normalize(-view_pos);
+    vec3 Nv = normalize(view_rot * N);
+    if (dot(Nv, V) <= 0.02) {
         FragColor = vec4(0.0);
         return;
     }
-    vec3 R = reflect(-V, N);
+    vec3 Rv = reflect(-V, Nv);
 
-    vec3 V0 = (pc.view * vec4(P, 1.0)).xyz;
-    vec3 Dv = (pc.view * vec4(R, 0.0)).xyz;
+    // 探针图集按世界方向查表（立方体面朝向在世界空间定义），把反射方向转回
+    // 世界：视图矩阵是刚体变换，旋转部分正交，转置即逆。
+    vec3 R = transpose(view_rot) * Rv;
+
+    vec3 V0 = view_pos;
+    vec3 Dv = Rv;
     float invz0 = 1.0 / max(lin, 1e-4);
 
     vec2 uv0 = vTexCoord;
@@ -242,10 +253,19 @@ void main() {
                     iz_lo = iz_m;
                 }
             }
-            hit_uv = uv_hi;
-            hit_dist = 1.0 / iz_hi;
-            hit = true;
-            break;
+            // ---- 命中复核（厚度约束）----
+            // 与 GL 版 ssr_trace.frag 完全一致：穿越判据不约束越过幅度，粒子补写
+            // 深度后是一张垂直于视轴的等深薄片，远处地面像素的反射射线扫过其屏幕
+            // 足迹时深度已远在薄片之后却满足穿越条件，会把整条竖列涂成粒子颜色。
+            // 这里复核射线深度与表面深度之差是否落在厚度内，超出则继续步进。
+            float cand_dist = 1.0 / iz_hi;
+            float overshoot = cand_dist - scene_depth(uv_hi);
+            if (overshoot <= max(pc.thickness * 4.0, cand_dist * 0.05)) {
+                hit_uv = uv_hi;
+                hit_dist = cand_dist;
+                hit = true;
+                break;
+            }
         }
 
         uv_prev = uv;

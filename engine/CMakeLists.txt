@@ -69,6 +69,13 @@ target_sources(GryceCore
         components/2d/particle_emitter.cpp
         components/2d/skybox_2d.cpp
         components/3d/particle_system_3d.cpp
+        components/3d/line_renderer_3d.cpp
+        components/3d/trail_renderer.cpp
+        components/3d/instanced_mesh_renderer.cpp
+        components/3d/billboard.cpp
+        components/3d/text_mesh3d.cpp
+        components/3d/lod_group.cpp
+        components/3d/volumetric_light.cpp
         components/mesh_renderer.cpp
         components/skinned_mesh_renderer.cpp
         components/terrain.cpp

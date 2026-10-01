@@ -69,6 +69,9 @@ struct RendererState {
     bool  shadow_enabled = true;
     int   shadow_map_size = 2048;
     bool  shadow_map_size_dirty = false;
+    // 垂直同步是"重启生效"的持久化配置：GRender_SetVSync 可能在 GRender_Init
+    // 之前被调用（此时 ctx 尚不存在），必须先把期望值存下来，init 时再应用。
+    bool  vsync_enabled = true;
     bool  backend_pending = false;
     bool  pipeline_reload_pending = false;
     GRenderAPI pending_backend_api = GRYCE_RENDER_API_OPENGL;
@@ -441,6 +444,13 @@ int GRender_Init(const GRenderInitDesc* desc) {
     g_renderer.viewport_h = desc->viewport_h > 0 ? desc->viewport_h : 720;
     g_renderer.gameview_w = g_renderer.viewport_w;
     g_renderer.gameview_h = g_renderer.viewport_h;
+
+    // 垂直同步：必须在渲染线程启动前下发。异步模式下 set_swap_interval 只是把
+    // 命令排进建帧队列，而首帧由渲染线程的 begin_frame 应用；此处 running_ 仍为
+    // false，会直接落到后端，交换链在第一次呈现时即为期望的 present mode。
+    // 旧实现里 GRender_SetVSync 在 init 之前调用会因 ctx 为空被静默丢弃，
+    // 交换链始终停留在 FIFO（垂直同步），帧率被锁死在显示器刷新率上。
+    g_renderer.ctx->set_swap_interval(g_renderer.vsync_enabled ? 1 : 0);
 
     // Init render pipeline for 3D scene rendering
     g_renderer.pipeline = std::make_unique<RenderPipeline>();
@@ -1023,6 +1033,9 @@ int GRender_GetGameViewSize(int* out_w, int* out_h) {
 void GRender_SetVSync(bool enabled) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
+    g_renderer.vsync_enabled = enabled;
+    // init 之前 ctx 为空：此时只记录期望值，GRender_Init 会按它创建交换链，
+    // 不能直接 return 丢掉设置（那会让 --no-vsync 之类的调用静默失效）。
     if (!g_renderer.ctx) return;
     g_renderer.ctx->set_swap_interval(enabled ? 1 : 0);
 }

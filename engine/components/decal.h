@@ -13,7 +13,7 @@ namespace gryce_engine::components {
 // ---------------------------------------------------------------------------
 class Decal : public Component {
 public:
-    bool enabled = true;
+    // enabled 直接使用 Component 基类字段，避免同名遮蔽导致反射写入与渲染读取不一致
     math::Vector3f position;
     math::Vector3f size = math::Vector3f(1.0f, 1.0f, 1.0f);
     math::Vector3f color = math::Vector3f(1.0f, 1.0f, 1.0f);

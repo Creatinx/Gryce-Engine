@@ -26,6 +26,13 @@
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
 #include "components/3d/particle_system_3d.h"
+#include "components/3d/line_renderer_3d.h"
+#include "components/3d/trail_renderer.h"
+#include "components/3d/instanced_mesh_renderer.h"
+#include "components/3d/billboard.h"
+#include "components/3d/text_mesh3d.h"
+#include "components/3d/visual_components.h"
+#include "components/terrain.h"
 #include "scene/query.h"
 #include "math/camera.h"
 #include "resources/resource_path.h"
@@ -206,6 +213,39 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
     particle_depth_shader_ = load_shader("particle_depth", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
     if (!particle_depth_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: particle_depth shader unavailable, falling back to particle shader for SSR depth");
+    }
+
+    // 3D 线段 shader：可选，加载失败仅禁用线段绘制。
+    // 与粒子目标一致（HDR 或后缓冲），使线段参与 tonemap/bloom。
+    line3d_shader_ = load_shader("line3d", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!line3d_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: line3d shader unavailable, 3D lines disabled");
+    }
+
+    // GPU 实例化网格 shader：可选，加载失败仅禁用实例化网格绘制。
+    instanced_shader_ = load_shader("instanced", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!instanced_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: instanced shader unavailable, instanced meshes disabled");
+    }
+
+    // 广告牌 shader：可选，加载失败仅禁用 Billboard 绘制。
+    // 与线段/粒子目标一致（HDR 或后缓冲），使广告牌参与 tonemap/bloom。
+    billboard_shader_ = load_shader("billboard", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!billboard_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: billboard shader unavailable, billboards disabled");
+    }
+
+    // 3D 文本 shader：可选，加载失败仅禁用 TextMesh3D 绘制。
+    text3d_shader_ = load_shader("text3d", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!text3d_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: text3d shader unavailable, 3D text disabled");
+    }
+
+    // 体积光柱 shader：可选，加载失败仅禁用 VolumetricLight 绘制。
+    // 与线段/粒子/广告牌目标一致（HDR 或后缓冲），使光柱参与 tonemap/bloom。
+    volumelight_shader_ = load_shader("volumelight", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    if (!volumelight_shader_.is_valid()) {
+        GLOG_WARN("RenderPipeline: volumelight shader unavailable, volumetric lights disabled");
     }
 
     shadow_shader_ = load_shader("shadow_map", shadow_fbos_[0], false, false);
@@ -464,6 +504,11 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
 
     // 体积雾
     fog_.init(ctx, shader_dir_);
+    // 必须在这里建一次 target：resize_render_targets 在尺寸未变时会早退，
+    // 若只依赖 resize 路径，fog_tex_ 永远无效、雾 pass 静默跳过。
+    if (hdr_enabled_ && fog_.valid()) {
+        fog_.create_targets(viewport_width_, viewport_height_);
+    }
 
     // Bokeh DOF 景深
     dof_.init(ctx);
@@ -512,6 +557,9 @@ void RenderPipeline::shutdown() {
 
     clear_skybox();
     clear_environment();
+    // Skybox3D 组件驱动的缓存也要复位：下一次 collect_skybox 会重新应用组件配置。
+    // 若不复位，shutdown 后重新 init 时组件那侧的路径未变，会被误判为"已应用"而漏配。
+    skybox_component_applied_ = false;
 
     if (fullscreen_mesh_.is_valid()) {
         ctx_->destroy_mesh(fullscreen_mesh_);
@@ -636,6 +684,32 @@ void RenderPipeline::shutdown() {
         particle_depth_shader_ = RHIShaderHandle{};
     }
     particle_items_.clear();
+    if (owns_shaders_ && line3d_shader_.is_valid()) {
+        ctx_->destroy_shader(line3d_shader_);
+        line3d_shader_ = RHIShaderHandle{};
+    }
+    line_items_.clear();
+    trail_items_.clear();
+    if (owns_shaders_ && instanced_shader_.is_valid()) {
+        ctx_->destroy_shader(instanced_shader_);
+        instanced_shader_ = RHIShaderHandle{};
+    }
+    instanced_items_.clear();
+    if (owns_shaders_ && billboard_shader_.is_valid()) {
+        ctx_->destroy_shader(billboard_shader_);
+        billboard_shader_ = RHIShaderHandle{};
+    }
+    billboard_items_.clear();
+    if (owns_shaders_ && text3d_shader_.is_valid()) {
+        ctx_->destroy_shader(text3d_shader_);
+        text3d_shader_ = RHIShaderHandle{};
+    }
+    text3d_items_.clear();
+    if (owns_shaders_ && volumelight_shader_.is_valid()) {
+        ctx_->destroy_shader(volumelight_shader_);
+        volumelight_shader_ = RHIShaderHandle{};
+    }
+    volumelight_items_.clear();
 
     for (auto& fb : shadow_fbos_) {
         if (fb.is_valid()) {
@@ -721,6 +795,11 @@ int RenderPipeline::poll_shader_hot_reload(RenderContext& ctx) {
     check(grid_shader_);
     check(particle_shader_);
     check(particle_depth_shader_);
+    check(line3d_shader_);
+    check(instanced_shader_);
+    check(billboard_shader_);
+    check(text3d_shader_);
+    check(volumelight_shader_);
     check(skybox_shader_);
     check(tonemap_shader_);
     check(bloom_threshold_shader_);
@@ -1141,7 +1220,12 @@ bool RenderPipeline::upload_ibl_data(const IBLData& ibl) {
     // 主线程直接调 glCreateTextures / glTextureSubImage 不会生效（贴图根本没被创建），
     // 结果就是 uUseIBL=1 但采样恒为 0 —— 金属材质没有任何反射内容，看起来像"材质坏了"。
     // 这里先把渲染线程暂停并把上下文切回主线程，上传完再恢复。
-    const bool was_running = ctx_->is_running();
+    //
+    // 例外：Skybox3D 组件通过 RenderContext::run_on_render_thread 把应用动作排进
+    // 渲染线程命令流（详见 collect_skybox）。此时本函数已经运行在渲染线程上，若还去
+    // pause_render_thread 会自我 join 造成死锁；applying_on_render_thread_ 标记该情形，
+    // 直接跳过 pause/resume（此刻上下文本就归渲染线程所有，上传天然安全）。
+    const bool was_running = ctx_->is_running() && !applying_on_render_thread_;
     if (was_running) ctx_->pause_render_thread();
     struct ResumeGuard {
         RenderContext* ctx;
@@ -1192,6 +1276,12 @@ bool RenderPipeline::upload_ibl_data(const IBLData& ibl) {
             return false;
         }
     }
+
+    // 缓存 irradiance 六面 CPU 数据：LightProbeGroup 组件需要从中采样环境平均
+    // 辐照度以推导间接光颜色（PBR 着色器没有逐位置探针查询接口，只能从管线
+    // 已持有的环境 IBL 推导）。clear_environment 会清空该缓存。
+    env_irradiance_faces_ = ibl.irradiance_faces;
+    env_irradiance_size_ = ibl.irradiance_size;
 
     // 上传 prefilter cubemap（多级 mip，shader 按 roughness 采样）
     {
@@ -1275,6 +1365,9 @@ void RenderPipeline::clear_environment() {
     environment_hdr_path_.clear();
     environment_from_skybox_ = false;
     environment_procedural_ = false;
+    // 环境清除后 LightProbeGroup 无环境 IBL 可采样，回退到 ambient_ 作为颜色来源
+    env_irradiance_size_ = 0;
+    for (auto& face : env_irradiance_faces_) face.clear();
     if (ibl_radiance_texture_.is_valid()) {
         ctx_->destroy_texture(ibl_radiance_texture_);
         ibl_radiance_texture_ = RHITextureHandle{};
@@ -1534,10 +1627,18 @@ void RenderPipeline::capture_reflection_probe(RenderContext& ctx, scene::Scene& 
                 render_mesh_internal(mr->gpu_mesh_handle(), mat, entity->world_transform(), ctx);
             });
 
+        // 地形同属环境内容：探针面循环里一并重绘，否则反射里的地面是天空色
+        for (const auto& item : terrain_items_) {
+            if (!item.terrain || !item.terrain->gpu_mesh_handle().is_valid()) continue;
+            render_mesh_internal(item.terrain->gpu_mesh_handle(), item.terrain->material(),
+                                 item.model, ctx);
+        }
+
         // 3) 粒子：发光特效（火焰/魔法）是环境的一部分，不烘进图集的话金属面上
         // 完全反射不到它。用探针本面的 view/proj 绘制，广告牌朝向该面相机；
         // 探针近平面 2cm，贴近物体时粒子同样进图。混入方式与主 pass 一致。
         draw_particles(ctx, view, proj);
+        draw_lines3d(ctx, view, proj);
     }
     // 恢复状态（调用方随后会重新绑定自己的目标/视口）
     ctx.set_framebuffer(RHIFramebufferHandle{});
@@ -1594,6 +1695,25 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     // 看不到火焰这类发光特效）。所以收集点提前到探针捕获之前，绘制点仍留在
     // 前向 pass 里（主相机）与探针的面循环里（探针相机）。
     collect_particles(scene, ctx);
+    collect_lines3d(scene, ctx);
+    collect_instanced(scene, ctx);
+    collect_terrain(scene, ctx);
+    collect_lod_groups(scene, ctx);
+    collect_billboards(scene, ctx);
+    collect_text3d(scene, ctx);
+    // Skybox3D 组件驱动：把可见性/贴图/环境/曝光映射到已有天空盒 API。
+    // 同样必须在场景绘制之前应用，否则本帧还画的是上一帧的天空盒。
+    collect_skybox(scene, ctx);
+    // 间接光与反射探针组件：LightProbeGroup 在绘制前把辐照度并入 uAmbient；
+    // ReflectionProbe 把配置发布到已有探针系统（捕获为节流/一次性的异步命令，
+    // 因此放在相机主绘制之前即可）。
+    collect_light_probes(scene, ctx);
+    collect_reflection_probes(scene, ctx);
+    // FogVolume 组件驱动：把启用组件的雾参数归并后写入全局体积雾状态
+    // （set_fog_params / set_fog_enabled），雾在本帧稍后的 pass 里消费，因此必须
+    // 在场景绘制之前应用。VolumetricLight：光柱在透明阶段绘制，同样先收集。
+    collect_fog_volumes(scene);
+    collect_volumetric_lights(scene, ctx);
 
     // ---- 反射探针捕获（SSR 出屏兜底）----
     // 相机锚定：首帧、相机位移超过阈值（瞬时 0.02m 或累积 0.08m）、或场景内容变化
@@ -1641,6 +1761,21 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                     for (int r = 0; r < 4; ++r) mixf(world(r, c));
                 }
             });
+        // 地形同属探针内容：高度图/尺寸变化要刷新图集，且首次捕获必须等地形网格
+        // 上传完成，否则静止相机的图集里永远没有地面（SSR 反射只剩天空色）。
+        for (const auto& item : terrain_items_) {
+            if (!item.terrain) continue;
+            ++mesh_total;
+            if (item.terrain->gpu_mesh_handle().is_valid()) ++mesh_uploaded;
+            mixf(item.terrain->width);
+            mixf(item.terrain->depth);
+            mix(static_cast<std::size_t>(item.terrain->resolution));
+            mixf(item.terrain->height_scale);
+            mix(static_cast<std::size_t>(item.terrain->seed));
+            for (int c = 0; c < 4; ++c) {
+                for (int r = 0; r < 4; ++r) mixf(item.model(r, c));
+            }
+        }
         // 光源也是探针内容的一部分：增删/调整灯光（相机静止）同样要刷新图集。
         for (const Light& l : lights_) {
             mix(static_cast<std::size_t>(static_cast<int>(l.type)));
@@ -1680,7 +1815,11 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         const bool particles_changed = particles_active && (probe_content_tick_ % 16u == 0u);
         if ((!probe_ready_ || moved || scene_changed || particles_changed) &&
             (probe_content_ready || probe_defer_frames_ >= 8)) {
+            // 探针捕获是 6 面 × 整场景（含粒子）的重绘，代价不小且此前未纳入
+            // GPU 分段统计，容易被误判成"其它 pass 变慢"。这里单独计一段。
+            ctx.gpu_profile_begin("probe");
             capture_reflection_probe(ctx, scene);
+            ctx.gpu_profile_end();
             probe_captured_pos_ = probe_pos;
             probe_scene_hash_ = scene_hash;
             probe_ready_ = true;
@@ -1875,6 +2014,10 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                     }
                 });
         }
+        // 地形（程序化网格，不透明）
+        append_terrain_items(camera_frustum, cam_pos, opaque_items);
+        // LODGroup（自包含网格，不透明）
+        append_lod_items(camera_frustum, cam_pos, opaque_items);
         // GBuffer 不透明物体（使用 g_buffer shader）
         ctx.set_shader(gbuffer_shader_);
         ctx.set_blend(false);
@@ -1929,6 +2072,16 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         if (ssr_enabled_ && std::getenv("GRYCE_NO_PARTICLE_DEPTH") == nullptr) {
             draw_particles_depth(ctx, camera_->get_view_matrix(), get_projection_matrix());
         }
+
+        // 2c'''. 3D 线段（技能指示线 / 绳子 / 调试绘制）
+        draw_lines3d(ctx, camera_->get_view_matrix(), get_projection_matrix());
+
+        // 2c''''. 广告牌与 3D 文本（同为半透明几何，与线段同处透明阶段）
+        draw_billboards(ctx, camera_->get_view_matrix(), get_projection_matrix());
+        draw_text3d(ctx, camera_->get_view_matrix(), get_projection_matrix());
+
+        // 2c'''''. 体积光柱（加性叠加的透明特效，同样位于透明阶段）
+        draw_volumetric_lights(ctx, camera_->get_view_matrix(), get_projection_matrix());
 
         // 2d. Viewmodel（FPS 武器）
         if (!viewmodel_items.empty()) {
@@ -1997,7 +2150,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             fog_.render(&ctx, hdr_depth_, inv_vp, camera_->get_view_matrix(),
                         camera_->position(), fog_color_, fog_density_, fog_height_,
                         camera_->near_plane(), camera_->far_plane());
-            fog_.render_apply(&ctx, hdr_color_, hdr_depth_, inv_vp, camera_->position());
+            fog_.render_apply(&ctx, fog_.apply_fbo(), viewport_width_, viewport_height_,
+                              hdr_color_, hdr_depth_, inv_vp, camera_->position(),
+                              camera_->near_plane(), camera_->far_plane());
+            // 合成结果在 fog 自己的目标里（不能写回 hdr_color_ 所在 FBO，否则是
+            // 采样与颜色附件同一纹理的 GL 反馈环），这里把它接为当前 HDR 颜色。
+            // 与 SSR/DOF/MotionBlur 同一约定，begin_hdr_forward_pass 每帧复位。
+            if (fog_.apply_tex().is_valid()) hdr_color_ = fog_.apply_tex();
         }
 
         // 后处理：SSAO, Contact Shadow, Bloom, DOF, Motion Blur, Auto Exposure, TAA, Tonemap
@@ -2100,6 +2259,11 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             });
     }
 
+    // 地形（程序化网格，不透明）
+    append_terrain_items(camera_frustum, cam_pos, opaque_items);
+    // LODGroup（自包含网格，不透明）
+    append_lod_items(camera_frustum, cam_pos, opaque_items);
+
     // 2c. 不透明物体：blend 关、深度写开
     ctx.set_blend(false);
     ctx.set_depth_write(true);
@@ -2109,6 +2273,9 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     for (const auto& item : skinned_opaque_items) {
         render_skinned_mesh_internal(item.mesh, item.material, item.model, item.palette, ctx);
     }
+
+    // 2c''. GPU 实例化网格（植被/碎石/人群）：实体几何，与不透明物体同一阶段
+    draw_instanced(ctx);
 
     // 2c'. Decal 贴花（不透明后、透明前，blend 合成到 HDR 颜色）
     if (decal_enabled_ && decal_shader_.is_valid() && decal_box_mesh_.is_valid()) {
@@ -2142,6 +2309,16 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     if (ssr_enabled_ && std::getenv("GRYCE_NO_PARTICLE_DEPTH") == nullptr) {
         draw_particles_depth(ctx, camera_->get_view_matrix(), get_projection_matrix());
     }
+
+    // 2d'''. 3D 线段（技能指示线 / 绳子 / 调试绘制）
+    draw_lines3d(ctx, camera_->get_view_matrix(), get_projection_matrix());
+
+    // 2d''''. 广告牌与 3D 文本（同为半透明几何，与线段同处透明阶段）
+    draw_billboards(ctx, camera_->get_view_matrix(), get_projection_matrix());
+    draw_text3d(ctx, camera_->get_view_matrix(), get_projection_matrix());
+
+    // 2d'''''. 体积光柱（加性叠加的透明特效，同样位于透明阶段）
+    draw_volumetric_lights(ctx, camera_->get_view_matrix(), get_projection_matrix());
 
     // 2e. Viewmodel（FPS 武器）：关闭深度测试/深度写，保证枪械不被墙壁遮挡。
     if (!viewmodel_items.empty()) {
@@ -2222,7 +2399,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             fog_.render(&ctx, hdr_depth_, inv_vp, camera_->get_view_matrix(),
                         camera_->position(), fog_color_, fog_density_, fog_height_,
                         camera_->near_plane(), camera_->far_plane());
-            fog_.render_apply(&ctx, hdr_color_, hdr_depth_, inv_vp, camera_->position());
+            fog_.render_apply(&ctx, fog_.apply_fbo(), viewport_width_, viewport_height_,
+                              hdr_color_, hdr_depth_, inv_vp, camera_->position(),
+                              camera_->near_plane(), camera_->far_plane());
+            // 合成结果在 fog 自己的目标里（不能写回 hdr_color_ 所在 FBO，否则是
+            // 采样与颜色附件同一纹理的 GL 反馈环），这里把它接为当前 HDR 颜色。
+            // 与 SSR/DOF/MotionBlur 同一约定，begin_hdr_forward_pass 每帧复位。
+            if (fog_.apply_tex().is_valid()) hdr_color_ = fog_.apply_tex();
         }
 
         // 3. 屏幕空间环境光遮蔽（深度 → GTAO → 模糊）
@@ -2280,8 +2463,9 @@ void RenderPipeline::render_mesh_internal(RHIMeshHandle mesh, const Material* ma
         last_bound_material_pbr_ = material;
     }
 
-    // 当 probe 系统启用且有可用 probe 时，覆盖全局 IBL
-    if (probe_system_enabled_ && probe_system_.probe_count() > 0) {
+    // 当 probe 系统启用（或存在启用的 ReflectionProbe 组件）且有可用 probe 时，
+    // 覆盖全局 IBL
+    if ((probe_system_enabled_ || probe_components_active_) && probe_system_.probe_count() > 0) {
         math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
         bind_probe_ibl(ctx, pbr_shader_, pos);
     }
@@ -2321,8 +2505,9 @@ void RenderPipeline::render_skinned_mesh_internal(RHIMeshHandle mesh, const Mate
         last_bound_material_skinned_ = material;
     }
 
-    // 当 probe 系统启用且有可用 probe 时，覆盖全局 IBL
-    if (probe_system_enabled_ && probe_system_.probe_count() > 0) {
+    // 当 probe 系统启用（或存在启用的 ReflectionProbe 组件）且有可用 probe 时，
+    // 覆盖全局 IBL
+    if ((probe_system_enabled_ || probe_components_active_) && probe_system_.probe_count() > 0) {
         math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
         bind_probe_ibl(ctx, skinned_pbr_shader_, pos);
     }
@@ -2631,7 +2816,13 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
             fog_.render(&ctx, hdr_depth_, inv_vp, camera_->get_view_matrix(),
                         camera_->position(), fog_color_, fog_density_, fog_height_,
                         camera_->near_plane(), camera_->far_plane());
-            fog_.render_apply(&ctx, hdr_color_, hdr_depth_, inv_vp, camera_->position());
+            fog_.render_apply(&ctx, fog_.apply_fbo(), viewport_width_, viewport_height_,
+                              hdr_color_, hdr_depth_, inv_vp, camera_->position(),
+                              camera_->near_plane(), camera_->far_plane());
+            // 合成结果在 fog 自己的目标里（不能写回 hdr_color_ 所在 FBO，否则是
+            // 采样与颜色附件同一纹理的 GL 反馈环），这里把它接为当前 HDR 颜色。
+            // 与 SSR/DOF/MotionBlur 同一约定，begin_hdr_forward_pass 每帧复位。
+            if (fog_.apply_tex().is_valid()) hdr_color_ = fog_.apply_tex();
         }
         render_ssao(ctx);
         render_contact_shadow(ctx);
@@ -2844,7 +3035,9 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
         ctx.set_uniform_mat4(shader, "uLightSpaceMatrix", light_space_matrix_);
     }
     ctx.set_uniform_vec3(shader, "uCameraPos", camera_->position());
-    ctx.set_uniform_vec3(shader, "uAmbient", ambient_);
+    // 间接漫反射 = 基础 ambient + LightProbeGroup 从环境 IBL 推导的辐照度贡献
+    // （无启用组件时 light_probe_ambient_ 为零向量，行为与原先一致）。
+    ctx.set_uniform_vec3(shader, "uAmbient", ambient_ + light_probe_ambient_);
     ctx.set_uniform_int(shader, "uHDREnabled", hdr_enabled_ ? 1 : 0);
     upload_lights(ctx, shader);
     upload_ibl_textures(ctx, shader);
@@ -3039,6 +3232,9 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
 void RenderPipeline::bind_global_uniforms(RenderContext& ctx) {
     bind_per_frame_uniforms(ctx, pbr_shader_);
     bind_per_frame_uniforms(ctx, skinned_pbr_shader_);
+    // GPU 实例化网格用的是同一套 PBR 片元着色，帧级 uniform（视图/投影/灯光/
+    // 阴影/IBL）与 PBR 一致，在此一并绑定，避免在 draw 循环里重复设置。
+    bind_per_frame_uniforms(ctx, instanced_shader_);
     bind_point_shadow_uniforms(ctx, pbr_shader_);
     bind_point_shadow_uniforms(ctx, skinned_pbr_shader_);
 }
@@ -3087,7 +3283,8 @@ void RenderPipeline::upload_ibl_textures(RenderContext& ctx, RHIShaderHandle sha
     const bool use_ibl = ibl_irradiance_texture_.is_valid() && ibl_prefilter_texture_.is_valid() &&
                          ibl_brdf_lut_texture_.is_valid();
     ctx.set_uniform_int(shader, "uUseIBL", use_ibl ? 1 : 0);
-    ctx.set_uniform_float(shader, "uIBLIntensity", ibl_intensity_);
+    // LightProbeGroup 的贡献亮度折算为 IBL 强度倍增（无探针时 boost=0，行为不变）
+    ctx.set_uniform_float(shader, "uIBLIntensity", ibl_intensity_ * (1.0f + light_probe_ibl_boost_));
 
     if (!use_ibl) return;
 
@@ -3560,6 +3757,839 @@ void RenderPipeline::draw_particles_depth(RenderContext& ctx, const math::Matrix
     ctx.set_depth_test(true);
     ctx.set_depth_write(true);
     ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+}
+
+// ===========================================================================
+// 3D 线段（折线）/ 拖尾 pass
+//
+// 与粒子同样的 collect / draw 拆分：组件负责把折线/拖尾展开成段实例流并投递
+// 上传命令，这里只做收集、状态设置与绘制。两者共用同一份 line3d 着色器与
+// 实例布局（每段一条实例 + 6 顶点静态角标），差别仅在数据来源。
+// ===========================================================================
+void RenderPipeline::collect_lines3d(scene::Scene& scene, RenderContext& ctx) {
+    line_items_.clear();
+    trail_items_.clear();
+    if (!line3d_shader_.is_valid()) return;
+
+    ecs::foreach_with_components<components::LineRenderer3D, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::LineRenderer3D* line, components::Transform* /*transform*/) {
+            if (!entity || !line || !line->enabled) return;
+            // 写段实例流 + 投递上传命令（渲染线程下一帧起持有有效句柄）
+            line->prepare_gpu(&ctx, entity->world_transform());
+            if (line->gpu_mesh_handle().is_valid() && line->segment_count() > 0) {
+                line_items_.push_back(line);
+            }
+        });
+
+    ecs::foreach_with_components<components::TrailRenderer, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::TrailRenderer* trail, components::Transform* /*transform*/) {
+            if (!entity || !trail || !trail->enabled) return;
+            // 采样历史已在 on_update 里维护，这里只做展开与上传
+            trail->prepare_gpu(&ctx);
+            if (trail->gpu_mesh_handle().is_valid() && trail->segment_count() > 0) {
+                trail_items_.push_back(trail);
+            }
+        });
+}
+
+void RenderPipeline::draw_lines3d(RenderContext& ctx, const math::Matrix4f& view,
+                                  const math::Matrix4f& proj) {
+    if ((line_items_.empty() && trail_items_.empty()) || !line3d_shader_.is_valid()) return;
+
+    // 不在这里 set_framebuffer：调用点（前向 HDR pass / 反射探针图集）都已绑定
+    // 自己的目标与视口，重复绑定在 Vulkan 下会重启带 CLEAR 的 render pass。
+
+    // 线段是半透明几何：深度测试开启（被场景遮挡），深度写关闭（段之间不互相
+    // 遮挡），不剔除（四边形纹理是双面的，绕序取决于相机与线段方向的夹角）。
+    ctx.set_blend(true);
+    ctx.set_blend_func(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(CullMode::None);
+    ctx.set_shader(line3d_shader_);
+    ctx.set_uniform_mat4(line3d_shader_, "uView", view);
+    ctx.set_uniform_mat4(line3d_shader_, "uProjection", proj);
+
+    for (auto* line : line_items_) {
+        ctx.draw_mesh(line->gpu_mesh_handle(), line3d_shader_);
+    }
+    for (auto* trail : trail_items_) {
+        ctx.draw_mesh(trail->gpu_mesh_handle(), line3d_shader_);
+    }
+
+    // 恢复默认状态（viewmodel、探针后续面与后处理依赖）
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.set_blend(false);
+}
+
+// ===========================================================================
+// GPU 实例化网格（植被 / 碎石 / 人群）
+// 与粒子/线段同样的 collect / draw 拆分：collect 每帧调用一次（组件按
+// seed + spacing 生成实例变换流并投递上传命令），draw 只在前向 pass 的
+// 不透明阶段调用一次。
+//
+// 已知未接入项（有意保留）：
+//   - 阴影投射：需要额外的 instanced 阴影着色器，本次未做，实例化物体
+//     不投影到 shadow map。
+//   - 延迟渲染路径：deferred_enabled_ 默认关闭，且延迟路径的深度状态与
+//     Vulkan 重复绑定 render pass 的风险未验证，故只在 forward 路径绘制。
+//   - 混合材质：实例化网格统一按不透明绘制（blend 关、深度写开）。
+// 帧级 uniform 由 bind_global_uniforms 一并绑定，这里只设每 draw 的状态。
+// ===========================================================================
+void RenderPipeline::collect_instanced(scene::Scene& scene, RenderContext& ctx) {
+    instanced_items_.clear();
+    if (!instanced_shader_.is_valid()) return;
+
+    ecs::foreach_with_components<components::InstancedMeshRenderer, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::InstancedMeshRenderer* inst, components::Transform* /*transform*/) {
+            if (!entity || !inst || !inst->enabled) return;
+            // 写实例变换流 + 投递上传命令（渲染线程下一帧起持有有效句柄）
+            inst->prepare_gpu(&ctx, entity->world_transform());
+            if (inst->gpu_mesh_handle().is_valid() && inst->instance_count_gpu() > 0) {
+                instanced_items_.push_back(inst);
+            }
+        });
+}
+
+void RenderPipeline::draw_instanced(RenderContext& ctx) {
+    if (instanced_items_.empty() || !instanced_shader_.is_valid() || !camera_) return;
+
+    // 实体几何：深度测试与深度写都开（被场景遮挡、实例之间互相遮挡），
+    // 不参与透明混合。
+    ctx.set_blend(false);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_shader(instanced_shader_);
+    last_bound_material_instanced_ = nullptr;
+
+    for (auto* inst : instanced_items_) {
+        const Material* mat = inst->material();
+        const bool two_sided = mat && mat->two_sided;
+        ctx.set_cull_face((cull_disabled_ || two_sided) ? CullMode::None : CullMode::Back);
+        ctx.set_uniform_int(instanced_shader_, "uTwoSided", two_sided ? 1 : 0);
+        if (mat && mat != last_bound_material_instanced_) {
+            mat->bind(&ctx, instanced_shader_);
+            last_bound_material_instanced_ = mat;
+        }
+        // 一次 draw 画完全部实例（GL: glDrawArraysInstanced / Vulkan: instanceCount）
+        ctx.draw_mesh(inst->gpu_mesh_handle(), instanced_shader_);
+    }
+
+    // 恢复默认状态（后续 decal / 透明阶段 / 后处理依赖）
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+}
+
+// ===========================================================================
+// 地形（程序化高度图网格）
+//
+// 与其它组件一致的 collect / draw 拆分：collect 每帧调用一次，组件在参数或
+// 高度图变化时重建 MeshData 并投递上传命令；地形是不透明实体几何，绘制项
+// 直接并入不透明列表（append_terrain_items），复用 pbr_shader_ 与
+// render_mesh_internal，因此不需要独立的 draw 函数与着色器。
+//
+// 已知未接入项（有意保留）：
+//   - 阴影投射：阴影 pass 只遍历 MeshRenderer，地形不投影到 shadow map
+//     （地形仍正常接收阴影：pbr 片段阶段照常采样阴影图）。
+//   - LOD / 分块剔除：整块地形一次绘制，未做四叉树或 clipmap 细分。
+// ===========================================================================
+void RenderPipeline::collect_terrain(scene::Scene& scene, RenderContext& ctx) {
+    terrain_items_.clear();
+
+    ecs::foreach_with_components<components::Terrain, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::Terrain* terrain, components::Transform* /*transform*/) {
+            if (!entity || !terrain || !terrain->enabled) return;
+            // 参数/高度图变化时重建网格并投递上传命令（渲染线程下一帧持有有效句柄）
+            terrain->prepare_gpu(&ctx);
+            if (terrain->gpu_mesh_handle().is_valid()) {
+                terrain_items_.push_back(TerrainItem{terrain, entity->world_transform()});
+            }
+        });
+}
+
+void RenderPipeline::append_terrain_items(const Frustum& frustum, const math::Vector3f& cam_pos,
+                                          std::vector<DrawItem>& out) const {
+    for (const auto& item : terrain_items_) {
+        if (!item.terrain) continue;
+        // 地形网格是程序化生成的（没有资源路径），包围球由组件按尺寸直接给出
+        math::Vector3f center;
+        float radius = 0.0f;
+        item.terrain->world_bounds(item.model, center, radius);
+        if (!frustum.contains_sphere(center, radius)) continue;
+
+        const math::Vector3f pos(item.model(0, 3), item.model(1, 3), item.model(2, 3));
+        out.push_back(DrawItem{item.terrain->gpu_mesh_handle(), item.terrain->material(),
+                               item.model, (pos - cam_pos).length_sq()});
+    }
+}
+
+// ===========================================================================
+// LODGroup（多级细节网格，与 Terrain 同类的自包含发射网格）
+//
+// collect 每帧调用一次：用管线相机对每个启用组件算屏幕覆盖率并选择 LOD（滞回），
+// 再让组件加载/上传当前 LOD 网格；append 按视锥剔除后并入不透明绘制列表。
+// 屏幕覆盖率 = 包围球半径 / (距离 × tan(半FOV))，以半屏高归一化。
+// ===========================================================================
+void RenderPipeline::collect_lod_groups(scene::Scene& scene, RenderContext& ctx) {
+    lod_group_items_.clear();
+
+    // 覆盖率的参考尺度：垂直半 FOV 的正切
+    float tan_half_fov = 0.5f;
+    if (camera_) {
+        tan_half_fov = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+        if (tan_half_fov < 1e-4f) tan_half_fov = 1e-4f;
+    }
+    const math::Vector3f cam_pos = camera_ ? camera_->position() : math::Vector3f::zero();
+
+    ecs::foreach_with_components<components::LODGroup, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::LODGroup* lod, components::Transform* /*transform*/) {
+            if (!entity || !lod || !lod->enabled) return;
+            const math::Matrix4f world = entity->world_transform();
+
+            // 先确保有一份几何（首帧用当前 active_lod），据此拿到包围球半径
+            lod->prepare_gpu(&ctx);
+            math::Vector3f center;
+            float radius = 0.0f;
+            lod->world_bounds(world, center, radius);
+
+            const float dist = (center - cam_pos).length();
+            const float coverage = radius / (std::max(dist, 1e-3f) * tan_half_fov);
+            const int before = lod->active_lod;
+            lod->update_lod(coverage);
+            // LOD 切换后立即加载新网格，避免一帧延迟
+            if (lod->active_lod != before) lod->prepare_gpu(&ctx);
+
+            if (lod->gpu_mesh_handle().is_valid()) {
+                lod_group_items_.push_back(LodGroupItem{lod, world});
+            }
+        });
+}
+
+void RenderPipeline::append_lod_items(const Frustum& frustum, const math::Vector3f& cam_pos,
+                                      std::vector<DrawItem>& out) const {
+    for (const auto& item : lod_group_items_) {
+        if (!item.lod) continue;
+        math::Vector3f center;
+        float radius = 0.0f;
+        item.lod->world_bounds(item.model, center, radius);
+        if (!frustum.contains_sphere(center, radius)) continue;
+
+        const math::Vector3f pos(item.model(0, 3), item.model(1, 3), item.model(2, 3));
+        out.push_back(DrawItem{item.lod->gpu_mesh_handle(), item.lod->material(),
+                               item.model, (pos - cam_pos).length_sq()});
+    }
+}
+
+// ===========================================================================
+// LightProbeGroup（光照探针组 → 间接光）
+//
+// 引擎着色器没有"按位置查探针音量"的接口，间接漫反射只有 uAmbient 这一项平坦
+// 颜色。这里从管线已缓存的 CPU 侧环境 IBL irradiance 按方向采样出辐照度颜色，
+// 乘 intensity 并按探针体与相机的距离衰减，累加进 light_probe_ambient_，最终在
+// bind_per_frame_uniforms 里并入 uAmbient。这比"ambient 乘 intensity"更忠实
+// （颜色来自真实环境），但仍非逐探针插值。
+//
+// 能力缺口：PBR 着色器在 uUseIBL=1 时用 IBL 结果整体覆盖 ambient，uAmbient 被
+// 丢弃；默认工程项目开启 IBL，故仅并入 uAmbient 会被丢弃。这里额外把贡献亮度
+// 折算成 light_probe_ibl_boost_ 乘进 uIBLIntensity，使组件在 IBL 路径下也真实
+// 影响帧；代价是该路径是全局强度缩放（非逐物体、非彩色），是引擎现阶段能表达
+// 的最接近的间接光贡献。
+// ===========================================================================
+math::Vector3f RenderPipeline::sample_environment_irradiance(int sample_count) const {
+    if (env_irradiance_size_ <= 0) return math::Vector3f::zero();
+
+    const int size = env_irradiance_size_;
+    const int n = std::max(1, sample_count);
+    math::Vector3f sum = math::Vector3f::zero();
+    // Fibonacci 球面均匀采样：方向数由 grid 乘积决定
+    const float golden = 3.14159265358979323846f * (3.0f - std::sqrt(5.0f));
+
+    for (int i = 0; i < n; ++i) {
+        const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(n);
+        const float z = 1.0f - 2.0f * t;
+        const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
+        const float phi = golden * static_cast<float>(i);
+        const math::Vector3f dir(std::cos(phi) * r, z, std::sin(phi) * r);
+
+        // 方向 → cubemap 面 + UV（标准 OpenGL 约定，面顺序与 k_face_targets 一致）
+        const float ax = std::fabs(dir.x), ay = std::fabs(dir.y), az = std::fabs(dir.z);
+        int face;
+        float sc, tc, ma;
+        if (ax >= ay && ax >= az) {
+            ma = ax;
+            if (dir.x > 0.0f) { face = 0; sc = -dir.z; tc = -dir.y; }
+            else              { face = 1; sc =  dir.z; tc = -dir.y; }
+        } else if (ay >= az) {
+            ma = ay;
+            if (dir.y > 0.0f) { face = 2; sc = dir.x; tc =  dir.z; }
+            else              { face = 3; sc = dir.x; tc = -dir.z; }
+        } else {
+            ma = az;
+            if (dir.z > 0.0f) { face = 4; sc =  dir.x; tc = -dir.y; }
+            else              { face = 5; sc = -dir.x; tc = -dir.y; }
+        }
+        if (ma < 1e-6f) continue;
+
+        const float u = (sc / ma + 1.0f) * 0.5f;
+        const float v = (tc / ma + 1.0f) * 0.5f;
+        const int px = std::clamp(static_cast<int>(u * size), 0, size - 1);
+        const int py = std::clamp(static_cast<int>(v * size), 0, size - 1);
+        const auto& data = env_irradiance_faces_[static_cast<size_t>(face)];
+        const size_t idx = (static_cast<size_t>(py) * size + px) * 4;
+        if (idx + 2 < data.size()) {
+            sum = sum + math::Vector3f(data[idx], data[idx + 1], data[idx + 2]);
+        }
+    }
+    return sum / static_cast<float>(n);
+}
+
+void RenderPipeline::collect_light_probes(scene::Scene& scene, RenderContext& ctx) {
+    (void)ctx;
+    light_probe_ambient_ = math::Vector3f::zero();
+
+    const math::Vector3f cam_pos = camera_ ? camera_->position() : math::Vector3f::zero();
+
+    ecs::foreach_with_components<components::LightProbeGroup, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::LightProbeGroup* probe, components::Transform* /*transform*/) {
+            if (!entity || !probe || !probe->enabled) return;
+
+            // grid 乘积决定环境采样方向数（估计辐照度的精度），clamp 到 [1, 64]
+            const int gx = probe->grid_x < 1 ? 1 : probe->grid_x;
+            const int gy = probe->grid_y < 1 ? 1 : probe->grid_y;
+            const int gz = probe->grid_z < 1 ? 1 : probe->grid_z;
+            const int sample_count = std::clamp(gx * gy * gz, 1, 64);
+
+            // 颜色来源：管线已有环境 IBL 的辐照度；无环境时回退到对称 ambient
+            math::Vector3f env = sample_environment_irradiance(sample_count);
+            if (env_irradiance_size_ <= 0) env = ambient_;
+
+            // 探针体衰减：size 决定半尺寸，体内贡献=1，2×体半径处衰减到 0
+            const math::Vector3f center =
+                entity->world_transform().transform_point(math::Vector3f::zero());
+            const math::Vector3f half = probe->size * 0.5f;
+            const float body_radius = std::max(half.length(), 1e-3f);
+            const float d = (center - cam_pos).length();
+            float atten = 1.0f;
+            if (d > body_radius) {
+                atten = std::clamp(1.0f - (d - body_radius) / body_radius, 0.0f, 1.0f);
+            }
+            if (atten <= 0.0f) return;
+
+            light_probe_ambient_ += env * (probe->intensity * atten);
+        });
+
+    // 多处探针叠加可能过曝：整体 clamp 到温和上限，避免间接光盖过直接光
+    light_probe_ambient_ = light_probe_ambient_.clamp(0.0f, 1.0f);
+
+    // 贡献亮度 → IBL 强度倍增。IBL 分支会丢弃 uAmbient（见 .h 说明），这里用
+    // 感知亮度把探针贡献折算成 uIBLIntensity 的乘数（1 表示间接光翻倍），使组件
+    // 在 IBL 开启的默认工程下同样真实影响帧。无探针贡献时 boost=0，不改变原行为。
+    const float lum = 0.2126f * light_probe_ambient_.x +
+                      0.7152f * light_probe_ambient_.y +
+                      0.0722f * light_probe_ambient_.z;
+    light_probe_ibl_boost_ = std::clamp(lum, 0.0f, 1.0f);
+}
+
+// ===========================================================================
+// ReflectionProbe（反射探针 → 已有探针系统）
+//
+// collect 每帧调用一次：把启用组件的世界位置 / 立方体范围 / 强度发布到探针系统
+// 的对应槽位；配置变化或 realtime 节流到期时请求重新捕获。创建/捕获/销毁都经
+// ctx.run_on_render_thread 排进渲染线程（create_probe 内含 GPU 资源创建，必须在
+// 持有上下文的线程执行，与 collect_skybox 同一约定）。探针可用后由 bind_probe_ibl
+// 覆盖全局 IBL（见 render_mesh_internal）。
+//
+// 能力缺口（未另建并行探针系统）：
+//   - resolution 仅参与"配置变化"判定以触发重捕获，无法驱动实际分辨率
+//     （ReflectionProbeRD 固定 k_probe_resolution=256）。
+//   - intensity 会写入探针数据，但渲染侧 bind_probe_ibl 不消费它。
+//   - capture_probe/prefilter_probe 是引擎既有的简化实现（固定灰度预滤波）。
+// ===========================================================================
+void RenderPipeline::collect_reflection_probes(scene::Scene& scene, RenderContext& ctx) {
+    ++probe_reconcile_tick_;
+
+    // 1) 快照当前启用的组件及其世界位置
+    struct Desired {
+        components::ReflectionProbe* comp;
+        math::Vector3f center;
+    };
+    std::vector<Desired> desired;
+    ecs::foreach_with_components<components::ReflectionProbe, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::ReflectionProbe* comp, components::Transform* /*transform*/) {
+            if (!entity || !comp || !comp->enabled) return;
+            const math::Matrix4f w = entity->world_transform();
+            desired.push_back(Desired{comp, math::Vector3f(w(0, 3), w(1, 3), w(2, 3))});
+        });
+
+    probe_components_active_ = !desired.empty();
+
+    // 2) 组件集合（数量或顺序）变化时整体重建：销毁全部探针并按新顺序重新创建。
+    //    槽位与 desired 下标一一对应（探针系统只由本处使用，重建后槽位确定）。
+    bool rebuild = desired.size() != reflection_probe_bindings_.size();
+    if (!rebuild) {
+        for (size_t i = 0; i < desired.size(); ++i) {
+            if (reflection_probe_bindings_[i].comp != desired[i].comp) { rebuild = true; break; }
+        }
+    }
+    if (rebuild) {
+        reflection_probe_bindings_.clear();
+        reflection_probe_bindings_.reserve(desired.size());
+        for (auto& d : desired) {
+            ReflectionProbeBinding b;
+            b.comp = d.comp;
+            reflection_probe_bindings_.push_back(b);
+        }
+        ctx.run_on_render_thread([this]() {
+            while (probe_system_.probe_count() > 0) probe_system_.destroy_probe(0);
+        });
+    }
+
+    if (reflection_probe_bindings_.empty()) return;
+
+    // 3) 逐组件判定是否需要创建/捕获，收集成值语义请求（异步命令按值捕获）
+    struct ProbeRequest {
+        int slot;
+        bool create;
+        bool capture;
+        math::Vector3f center;
+        math::Vector3f box_min;
+        math::Vector3f box_max;
+        float intensity;
+    };
+    std::vector<ProbeRequest> requests;
+
+    // realtime 重捕获节流：约每 30 帧一次，绝不逐帧捕获
+    constexpr unsigned k_realtime_interval = 30;
+
+    for (size_t i = 0; i < reflection_probe_bindings_.size(); ++i) {
+        ReflectionProbeBinding& b = reflection_probe_bindings_[i];
+        const components::ReflectionProbe* c = b.comp;
+        if (!c) continue;
+        const math::Vector3f center = desired[i].center;
+
+        // 配置变化（位置/范围/强度/分辨率/realtime）→ 视为需要重新捕获一次
+        const bool changed =
+            (center - b.last_center).length_sq() > 1e-6f ||
+            c->box_extents != b.last_extents ||
+            c->intensity != b.last_intensity ||
+            c->resolution != b.last_resolution ||
+            c->realtime != b.last_realtime;
+        if (changed) {
+            b.last_center = center;
+            b.last_extents = c->box_extents;
+            b.last_intensity = c->intensity;
+            b.last_resolution = c->resolution;
+            b.last_realtime = c->realtime;
+            b.captured = false;
+        }
+
+        const bool need_create = !b.created;
+        bool need_capture = !b.captured;
+        if (!need_capture && c->realtime &&
+            probe_reconcile_tick_ - b.last_request_tick >= k_realtime_interval) {
+            need_capture = true;
+        }
+        if (!need_create && !need_capture) continue;
+
+        ProbeRequest r;
+        r.slot = static_cast<int>(i);
+        r.create = need_create;
+        r.capture = need_capture;
+        r.center = center;
+        r.box_min = center - c->box_extents;
+        r.box_max = center + c->box_extents;
+        r.intensity = c->intensity;
+        requests.push_back(r);
+
+        b.created = true;
+        if (need_capture) {
+            b.captured = true;
+            b.last_request_tick = probe_reconcile_tick_;
+        }
+    }
+
+    if (requests.empty()) return;
+
+    ctx.run_on_render_thread([this, requests]() {
+        for (const auto& r : requests) {
+            int slot = r.slot;
+            if (r.create) {
+                const int created = probe_system_.create_probe(r.center);
+                if (created < 0) continue;
+                slot = created;
+            }
+            if (slot < 0 || slot >= probe_system_.probe_count()) continue;
+            probe_system_.set_probe_bounds(slot, r.box_min, r.box_max);
+            probe_system_.set_probe_intensity(slot, r.intensity);
+            if (r.capture) {
+                probe_system_.capture_probe(slot, r.center);
+                probe_system_.prefilter_probe(slot);
+            }
+        }
+    });
+}
+
+// ===========================================================================
+// 广告牌（Billboard）
+//
+// 与粒子/线段同样的 collect / draw 拆分：collect 每帧调用一次，组件把每张
+// 广告牌的中心/尺寸/不透明度/朝向标志展开成实例流并投递上传命令（四边形朝向
+// 由顶点着色器按 view 矩阵展开，CPU 侧不取相机朝向，因此上传数据与相机无关）；
+// draw 在前向 pass 的透明阶段调用，与线段同处。
+// ===========================================================================
+void RenderPipeline::collect_billboards(scene::Scene& scene, RenderContext& ctx) {
+    billboard_items_.clear();
+    if (!billboard_shader_.is_valid()) return;
+
+    ecs::foreach_with_components<components::Billboard, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::Billboard* bb, components::Transform* /*transform*/) {
+            if (!entity || !bb || !bb->enabled) return;
+            // 写实例流 + 投递上传命令（渲染线程下一帧起持有有效句柄）
+            bb->prepare_gpu(&ctx, entity->world_transform());
+            if (bb->gpu_mesh_handle().is_valid() && bb->instance_count() > 0) {
+                billboard_items_.push_back(bb);
+            }
+        });
+}
+
+void RenderPipeline::draw_billboards(RenderContext& ctx, const math::Matrix4f& view,
+                                     const math::Matrix4f& proj) {
+    if (billboard_items_.empty() || !billboard_shader_.is_valid()) return;
+
+    // 不在这里 set_framebuffer：调用点（前向 HDR pass）已绑定自己的目标与视口，
+    // 重复绑定在 Vulkan 下会重启带 CLEAR 的 render pass。
+    // 半透明几何：深度测试开（被场景遮挡），深度写关（广告牌之间不互相遮挡），
+    // 不剔除（四边形绕序随相机变化）。
+    ctx.set_blend(true);
+    ctx.set_blend_func(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(CullMode::None);
+    ctx.set_shader(billboard_shader_);
+    ctx.set_uniform_mat4(billboard_shader_, "uView", view);
+    ctx.set_uniform_mat4(billboard_shader_, "uProjection", proj);
+
+    for (auto* bb : billboard_items_) {
+        if (bb->texture_handle().is_valid()) {
+            ctx.set_texture(billboard_shader_, bb->texture_handle(),
+                            TextureSlots::kParticleTexture, "uTexture");
+        }
+        ctx.draw_mesh(bb->gpu_mesh_handle(), billboard_shader_);
+    }
+
+    // 恢复默认状态（viewmodel 与后处理依赖）
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.set_blend(false);
+}
+
+// ===========================================================================
+// 3D 文本（TextMesh3D）
+//
+// collect 每帧调用一次：组件仅在 text/font/颜色/尺寸变化时重建字形网格并投递
+// 上传命令（无每帧上传），这里只收集可绘制项与各自的世界变换；draw 在前向 pass
+// 的透明阶段调用。文字网格带索引（走 draw_mesh 的索引路径），逐顶点携带颜色。
+// ===========================================================================
+void RenderPipeline::collect_text3d(scene::Scene& scene, RenderContext& ctx) {
+    text3d_items_.clear();
+    if (!text3d_shader_.is_valid()) return;
+
+    ecs::foreach_with_components<components::TextMesh3D, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::TextMesh3D* text, components::Transform* /*transform*/) {
+            if (!entity || !text || !text->enabled) return;
+            text->prepare_gpu(&ctx);
+            if (text->gpu_mesh_handle().is_valid() && text->vertex_count() > 0) {
+                text3d_items_.push_back(Text3DItem{text, entity->world_transform()});
+            }
+        });
+}
+
+void RenderPipeline::draw_text3d(RenderContext& ctx, const math::Matrix4f& view,
+                                 const math::Matrix4f& proj) {
+    if (text3d_items_.empty() || !text3d_shader_.is_valid()) return;
+
+    // 文字是带 alpha 的几何：混合开、深度写关（避免半透明边缘互相切割），
+    // 剔除由组件的 double_sided 决定（默认双面，字形四边形绕序对相机可见）。
+    ctx.set_blend(true);
+    ctx.set_blend_func(BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(false);
+    ctx.set_shader(text3d_shader_);
+    ctx.set_uniform_mat4(text3d_shader_, "uView", view);
+    ctx.set_uniform_mat4(text3d_shader_, "uProjection", proj);
+
+    for (const auto& item : text3d_items_) {
+        if (!item.text) continue;
+        ctx.set_cull_face((cull_disabled_ || item.text->double_sided) ? CullMode::None
+                                                                     : CullMode::Back);
+        ctx.set_uniform_mat4(text3d_shader_, "uModel", item.model);
+        const RHITextureHandle tex = item.text->texture_handle();
+        if (tex.is_valid()) {
+            ctx.set_texture(text3d_shader_, tex, TextureSlots::kParticleTexture, "uTexture");
+        }
+        ctx.draw_mesh(item.text->gpu_mesh_handle(), text3d_shader_);
+    }
+
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_blend(false);
+}
+
+// ===========================================================================
+// FogVolume 组件驱动（全局体积雾）
+//
+// 组件是纯数据的：这里把场景中所有启用的 FogVolume 归并成"一组"全局雾参数。
+// 引擎的体积雾（VolumetricFog_RD）只接受单一全局状态 color/density/height，因此
+// 无法表达逐体积的局部雾（能力缺口，见 fog_volume.h）。归并规则：
+//   1) volumetric == false 的组件视为"不参与体积雾"，映射到最省路径——它不会
+//      开启雾 pass，直接跳过（particle 风格的"关闭 = 不产生任何工作"）。
+//   2) 有效密度 = density × cbrt(size.x*size.y*size.z)/5：size 为默认 (5,5,5)
+//      时因子为 1.0，体积越大雾越浓——这样 size 不是死字段，真实参与结果。
+//   3) 取有效密度最大的体积作为"主导体积"，用它的 color / height_falloff 与
+//      有效密度写入全局雾；其余体积不单独生效（已被上面的缺口覆盖）。
+//
+// 生命周期：
+//   - 场景完全没有 FogVolume 组件时不触碰雾状态（避免影响靠 API 手动开雾的场景）。
+//   - 有关键组件时由组件接管：至少一个有效体积 -> 开雾并写参数；全部无效 ->
+//     若上一次是组件接管的（fog_component_applied_），则把雾关掉。
+// set_fog_params / set_fog_enabled 是纯 setter（不碰 GPU 资源），任意线程调用都
+// 安全，因此这里直接同步调用，无需 run_on_render_thread。
+// ===========================================================================
+void RenderPipeline::collect_fog_volumes(scene::Scene& scene) {
+    components::FogVolume* dominant = nullptr;
+    float dominant_density = 0.0f;
+    bool any_component = false;
+
+    // 用实体树遍历而非组件池查询：需要区分"没有 FogVolume 组件"与"有组件但被
+    // 禁用/volumetric=false"——后者必须把先前由组件开启的雾关掉（组件池查询会
+    // 跳过 disabled 组件，导致禁用后雾残留）。FogVolume 数量很少，dynamic_cast
+    // 开销可忽略。
+    ecs::foreach_entity(scene, [&](scene::Entity* entity) {
+        if (!entity) return;
+        components::FogVolume* fog = entity->get_component<components::FogVolume>();
+        if (!fog) return;
+        any_component = true;
+        if (!entity->enabled || !fog->enabled) return;
+        if (!fog->volumetric) return;  // 不参与体积雾 = 最省路径
+
+        // 尺寸因子：把立方体积折算成密度的缩放（默认尺寸 (5,5,5) -> 1.0）
+        const math::Vector3f& s = fog->size;
+        const float vol = std::max(s.x, 0.0f) * std::max(s.y, 0.0f) * std::max(s.z, 0.0f);
+        const float size_factor = std::cbrt(vol) / 5.0f;
+        const float eff_density = std::max(fog->density, 0.0f) * size_factor;
+
+        if (!dominant || eff_density > dominant_density) {
+            dominant = fog;
+            dominant_density = eff_density;
+        }
+    });
+
+    if (!any_component) return;  // 无组件：不触碰雾状态
+
+    if (dominant) {
+        set_fog_params(math::Vector3f(dominant->color.r, dominant->color.g, dominant->color.b),
+                       dominant_density, std::max(dominant->height_falloff, 0.0001f));
+        set_fog_enabled(true);
+        fog_component_applied_ = true;
+    } else if (fog_component_applied_) {
+        // 组件全部关闭或全部 volumetric == false：把先前由组件开启的雾关掉
+        set_fog_enabled(false);
+        fog_component_applied_ = false;
+    }
+}
+
+// ===========================================================================
+// VolumetricLight（自包含发射网格光柱）
+//
+// collect 每帧调用一次：组件仅在 range/steps/jitter 变化时重建沿 -Z 的锥体网格并
+// 投递上传命令（无每帧上传），这里只收集可绘制项与各自世界变换；draw 在前向 pass
+// 的透明阶段调用（与线段/广告牌同处）。
+// ===========================================================================
+void RenderPipeline::collect_volumetric_lights(scene::Scene& scene, RenderContext& ctx) {
+    volumelight_items_.clear();
+    if (!volumelight_shader_.is_valid()) return;
+
+    ecs::foreach_with_components<components::VolumetricLight, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::VolumetricLight* light,
+            components::Transform* /*transform*/) {
+            if (!entity || !light || !light->enabled) return;
+            // 参数变化时重建锥体 + 投递上传命令（渲染线程下一帧起持有有效句柄）
+            light->prepare_gpu(&ctx);
+            if (light->gpu_mesh_handle().is_valid() && light->vertex_count() > 0) {
+                volumelight_items_.push_back(
+                    VolumetricLightItem{light, entity->world_transform()});
+            }
+        });
+}
+
+void RenderPipeline::draw_volumetric_lights(RenderContext& ctx, const math::Matrix4f& view,
+                                            const math::Matrix4f& proj) {
+    if (volumelight_items_.empty() || !volumelight_shader_.is_valid()) return;
+
+    // 不在这里 set_framebuffer：调用点（前向 HDR pass）已绑定自己的目标与视口。
+    // 光柱是加性叠加的透明特效：混合开。GL 用 SrcAlpha/One 得到真加性；Vulkan 的
+    // 混合因子在管线创建时烘焙为 SrcAlpha/OneMinusSrcAlpha，且 set_blend_func 在
+    // Vulkan 是 no-op，因此 Vulkan 上退化为普通 alpha 混合（已知妥协）。
+    // 深度测试开（被场景遮挡）、深度写关（多条光柱互不切割），不剔除（锥体双面）。
+    ctx.set_blend(true);
+    ctx.set_blend_func(BlendFactor::SrcAlpha, BlendFactor::One);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(CullMode::None);
+    ctx.set_shader(volumelight_shader_);
+    ctx.set_uniform_mat4(volumelight_shader_, "uView", view);
+    ctx.set_uniform_mat4(volumelight_shader_, "uProjection", proj);
+
+    for (const auto& item : volumelight_items_) {
+        if (!item.light) continue;
+        // 世界朝向由 uModel 提供：着色器取模型矩阵的前向轴作为光轴
+        ctx.set_uniform_mat4(volumelight_shader_, "uModel", item.model);
+        ctx.draw_mesh(item.light->gpu_mesh_handle(), volumelight_shader_);
+    }
+
+    // 恢复默认状态（viewmodel 与后处理依赖）
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_blend(false);
+}
+
+namespace {
+
+// 把单个天空盒路径模板展开成 6 个面的路径（+X,-X,+Y,-Y,+Z,-Z 顺序）。
+// Skybox3D 只有一个 texture_path 字段，而 set_skybox 需要 6 张面图，这里提供
+// 两种模板写法：
+//   1) 含 {face} 占位符：res:/sky/{face}.png -> res:/sky/px.png ...
+//   2) 普通路径：把 _px/_nx/... 插到扩展名之前，sky.png -> sky_px.png
+std::array<std::string, 6> expand_skybox_faces(const std::string& path) {
+    static const char* const k_faces[6] = {"px", "nx", "py", "ny", "pz", "nz"};
+    std::array<std::string, 6> out{};
+
+    const std::string placeholder = "{face}";
+    if (path.find(placeholder) != std::string::npos) {
+        for (int i = 0; i < 6; ++i) {
+            std::string s = path;
+            std::size_t pos = 0;
+            while ((pos = s.find(placeholder, pos)) != std::string::npos) {
+                s.replace(pos, placeholder.size(), k_faces[i]);
+                pos += std::strlen(k_faces[i]);
+            }
+            out[static_cast<std::size_t>(i)] = std::move(s);
+        }
+        return out;
+    }
+
+    // 无占位符：把 _<face> 插到扩展名之前（目录分隔符之后的最后一个点才算扩展名）
+    const std::size_t dot = path.find_last_of('.');
+    const std::size_t slash = path.find_last_of("/\\");
+    const bool has_ext = dot != std::string::npos &&
+                         (slash == std::string::npos || dot > slash);
+    const std::string stem = has_ext ? path.substr(0, dot) : path;
+    const std::string ext = has_ext ? path.substr(dot) : std::string();
+    for (int i = 0; i < 6; ++i) {
+        out[static_cast<std::size_t>(i)] = stem + "_" + k_faces[i] + ext;
+    }
+    return out;
+}
+
+} // namespace
+
+// ===========================================================================
+// Skybox3D 组件驱动
+//
+// 组件不新增着色器，只把 texture_path / environment_path / visible / exposure
+// 映射到已有的天空盒 + IBL 环境 API。关键约束：set_skybox / set_environment_hdr
+// 明确要求"在 RenderContext::start() 之前调用（主线程持有 GPU context）"，
+// 而 start() 之后 context 归渲染线程，主线程直接调用不会生效（glCreateTextures
+// 等在无 current context 的线程上返回 0）。因此这里不直接调用，而是用
+// run_on_render_thread 把应用动作排进渲染线程命令流——它由渲染线程按序执行，
+// 早于本帧 skybox 绘制与 PBR uniform 绑定，所以本帧即可看到新配置；同步模式
+// （无渲染线程）下它直接执行，等效于原文档语义。exposure 是纯 setter（不碰
+// GPU 资源），任意时刻调用都安全，直接同步。
+// ===========================================================================
+void RenderPipeline::collect_skybox(scene::Scene& scene, RenderContext& ctx) {
+    // 天空盒是全局唯一的渲染状态：多实例时以第一个启用的 Skybox3D 为准
+    components::Skybox3D* skybox = nullptr;
+    ecs::foreach_with_component<components::Skybox3D>(
+        scene, [&](scene::Entity* /*entity*/, components::Skybox3D* comp) {
+            if (!skybox) skybox = comp;
+        });
+
+    // 场景没有任何 Skybox3D 组件时直接返回：不干扰项目级/编辑器手动配置的天空盒。
+    if (!skybox) return;
+
+    // exposure 直接同步（组件驱动曝光；初值 1.0 与管线默认一致时不会触发）
+    if (skybox->exposure != skybox_component_exposure_ || skybox->exposure != exposure_) {
+        set_exposure(skybox->exposure);
+        skybox_component_exposure_ = skybox->exposure;
+    }
+
+    const bool visible = skybox->visible;
+    const std::string tex = skybox->texture_path;
+    const std::string env = skybox->environment_path;
+
+    // 只在配置变化时重配置：set_skybox / set_environment_hdr 会重建 cubemap +
+    // 预滤波 IBL + 天空盒管线，逐帧重复调用会持续产生大量 GPU 开销。
+    const bool changed = !skybox_component_applied_ || visible != skybox_component_visible_ ||
+                         tex != skybox_component_texture_ || env != skybox_component_environment_;
+    if (!changed) return;
+
+    skybox_component_applied_ = true;
+    skybox_component_visible_ = visible;
+    skybox_component_texture_ = tex;
+    skybox_component_environment_ = env;
+
+    ctx.run_on_render_thread([this, visible, tex, env]() {
+        // 标记本段运行在渲染线程：upload_ibl_data 会据此跳过 pause_render_thread，
+        // 否则在渲染线程上自我 pause/join 会死锁。
+        applying_on_render_thread_ = true;
+        struct Guard {
+            bool* flag;
+            ~Guard() { *flag = false; }
+        } guard{&applying_on_render_thread_};
+
+        if (!visible) {
+            // 不可见：清掉天空盒（保留 IBL 环境，物体依旧是受光的）
+            clear_skybox();
+            return;
+        }
+        if (!env.empty()) {
+            // 优先用独立 HDR/EXR 环境：它同时生成 cubemap 与 IBL
+            clear_skybox();
+            if (!set_environment_hdr(env)) {
+                GLOG_WARN("Skybox3D: failed to set environment '{}'", env);
+            }
+            return;
+        }
+        if (!tex.empty()) {
+            const std::array<std::string, 6> faces = expand_skybox_faces(tex);
+            // 先尝试设天空盒，成功后再清掉旧的独立 HDR 环境（避免"贴图加载失败
+            // 却把原有环境一起清掉"，让画面比配置前更差）。
+            if (set_skybox(faces)) {
+                if (environment_set_ && !environment_from_skybox_) clear_environment();
+                // 没有独立环境时从天空盒派生 IBL，否则金属材质没有任何反射内容
+                if (!environment_set_) set_environment_from_skybox();
+            } else {
+                GLOG_WARN("Skybox3D: failed to set skybox '{}'", tex);
+            }
+            return;
+        }
+        // 路径均为空：回到无天空盒状态
+        clear_skybox();
+    });
 }
 
 // ===========================================================================

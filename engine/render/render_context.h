@@ -194,7 +194,10 @@ private:
     std::unique_ptr<RenderThread> render_thread_;
     void* native_window_ = nullptr;
     bool initialized_ = false;
-    bool validation_enabled_ = true;
+    // Vulkan 校验层默认关闭：它会拦截每一条 vkCmd* 调用，把命令录制拖慢数倍，
+    // 帧时间被 CPU 侧吃满（与 vk_instance.h 的"默认关闭以提升性能"一致）。
+    // 排查校验报错时用环境变量 GRYCE_VULKAN_VALIDATION=1 显式打开。
+    bool validation_enabled_ = false;
     bool running_ = false;
 
     // 同步模式（无渲染线程）下 destroy_* 直接调用 backend；为避免销毁仍被

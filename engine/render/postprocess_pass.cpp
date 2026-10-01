@@ -519,8 +519,6 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
     const bool to_viewport = viewport_output_enabled_ && viewport_fbo_.is_valid();
-    GLOG_INFO("RenderPipeline::render_tonemap: to_viewport={} viewport_fbo_={} viewport_output_enabled_={} viewport={}x{} viewport_color_valid={}",
-              to_viewport, viewport_fbo_.is_valid(), viewport_output_enabled_, viewport_width_, viewport_height_, viewport_color_.is_valid());
     ctx.set_framebuffer(to_viewport ? viewport_fbo_ : RHIFramebufferHandle{});
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_depth_test(false);

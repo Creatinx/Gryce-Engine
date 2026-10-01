@@ -91,7 +91,16 @@ void RenderPipeline::set_shadow_bias(float bias) {
 
 void RenderPipeline::set_shadow_map_size(int size) {
     if (initialized_) return;
-    cascade_sizes_.fill(std::max(64, size));
+    // size 是"最近一级级联"的分辨率，后面几级按距离递减，而不是每级都用同一个
+    // 最大值。旧实现是 cascade_sizes_.fill(size)：项目里写 shadow_map_size=4096
+    // 时，3 级级联会各自按 4096x4096 渲染一遍，逐帧阴影填充量是必要量的 3~4 倍，
+    // 而远处的级联本来只需要很低的精度。这与引擎默认值 {2048,1024,512,512}
+    // 遵循的是同一条规律（级联越远、分辨率越低）。
+    const int base = std::max(64, size);
+    cascade_sizes_[0] = base;
+    cascade_sizes_[1] = std::max(64, base / 2);
+    cascade_sizes_[2] = std::max(64, base / 4);
+    cascade_sizes_[3] = std::max(64, base / 4);
 }
 
 

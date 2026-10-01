@@ -29,6 +29,18 @@ namespace math { class Camera; }
 namespace scene { class Scene; }
 namespace assets { struct TextureData; }
 namespace components { class ParticleSystem3D; }
+namespace components { class LineRenderer3D; }
+namespace components { class TrailRenderer; }
+namespace components { class InstancedMeshRenderer; }
+namespace components { class Terrain; }
+namespace components { class Billboard; }
+namespace components { class TextMesh3D; }
+namespace components { class Skybox3D; }
+namespace components { class ReflectionProbe; }
+namespace components { class LightProbeGroup; }
+namespace components { class LODGroup; }
+namespace components { class FogVolume; }
+namespace components { class VolumetricLight; }
 namespace render { struct IBLData; }
 } // namespace gryce_engine
 
@@ -598,6 +610,7 @@ private:
     // 连续相同材质跳过重复 bind（按 shader 分开缓存，每帧/每 pass 重置）
     const Material* last_bound_material_pbr_ = nullptr;
     const Material* last_bound_material_skinned_ = nullptr;
+    const Material* last_bound_material_instanced_ = nullptr;
 
     RenderContext* ctx_ = nullptr;
     std::string shader_dir_;
@@ -615,6 +628,11 @@ private:
     // 深度补写 pass 专用（高 alpha 阈值，只写可见部分的深度供 SSR 命中）。
     // 加载失败时回退用 particle_shader_，退化为旧的"整块广告牌写深度"行为。
     RHIShaderHandle particle_depth_shader_;
+    RHIShaderHandle line3d_shader_;        // 可选：加载失败则 3D 线段/拖尾不绘制
+    RHIShaderHandle instanced_shader_;     // 可选：加载失败则 GPU 实例化网格不绘制
+    RHIShaderHandle billboard_shader_;     // 可选：加载失败则广告牌（Billboard）不绘制
+    RHIShaderHandle text3d_shader_;        // 可选：加载失败则 3D 文本（TextMesh3D）不绘制
+    RHIShaderHandle volumelight_shader_;   // 可选：加载失败则体积光柱（VolumetricLight）不绘制
 
     // CSM 级联阴影：每级一张 depth texture + FBO（级联 0 兼容旧 shadow_map() 访问）
     std::array<RHITextureHandle, k_max_cascades> shadow_maps_;
@@ -682,6 +700,169 @@ private:
     // 本帧已启用但还画不出来的粒子系统数（GPU 句柄未就绪 / 尚未攒够发射量）。
     // 反射探针首次捕获要等它归零，否则图集里会缺火焰。
     int particle_pending_count_ = 0;
+
+    // -----------------------------------------------------------------------
+    // 3D 线段（折线）与拖尾
+    // 与粒子同样拆成 collect / draw：collect 每帧调用一次（组件展开段实例流并
+    // 投递上传命令），draw 在前向 pass 的透明阶段与探针面循环各调一次。
+    // 拖尾与线段共用 line3d_shader_ 与同一套实例布局，只是数据来源不同。
+    // -----------------------------------------------------------------------
+    void collect_lines3d(scene::Scene& scene, RenderContext& ctx);
+    void draw_lines3d(RenderContext& ctx, const math::Matrix4f& view, const math::Matrix4f& proj);
+    std::vector<components::LineRenderer3D*> line_items_;
+    std::vector<components::TrailRenderer*> trail_items_;
+
+    // -----------------------------------------------------------------------
+    // GPU 实例化网格（植被 / 碎石 / 人群）
+    // 同样拆成 collect / draw：collect 每帧调用一次（组件生成实例变换流并投递
+    // 上传命令），draw 只在前向 pass 的不透明阶段调用一次。实例化网格是实体
+    // 几何（深度写开、背面剔除），因此不走透明阶段。
+    // -----------------------------------------------------------------------
+    void collect_instanced(scene::Scene& scene, RenderContext& ctx);
+    void draw_instanced(RenderContext& ctx);
+    std::vector<components::InstancedMeshRenderer*> instanced_items_;
+
+    // -----------------------------------------------------------------------
+    // 广告牌（Billboard）与 3D 文本（TextMesh3D）
+    // 收集点与粒子/线段相同（每帧一次，早于反射探针捕获），绘制点在前向 pass
+    // 的透明阶段（线段之后）。两者都是半透明几何：深度测试开、深度写关。
+    //   - Billboard：每帧展开实例流并投递上传命令（朝向由顶点着色器决定）
+    //   - TextMesh3D：仅在 text/font/颜色/尺寸变化时重建字形网格（无每帧上传）
+    // -----------------------------------------------------------------------
+    void collect_billboards(scene::Scene& scene, RenderContext& ctx);
+    void draw_billboards(RenderContext& ctx, const math::Matrix4f& view, const math::Matrix4f& proj);
+    std::vector<components::Billboard*> billboard_items_;
+
+    void collect_text3d(scene::Scene& scene, RenderContext& ctx);
+    void draw_text3d(RenderContext& ctx, const math::Matrix4f& view, const math::Matrix4f& proj);
+    struct Text3DItem {
+        components::TextMesh3D* text;
+        math::Matrix4f model;
+    };
+    std::vector<Text3DItem> text3d_items_;
+
+    // -----------------------------------------------------------------------
+    // FogVolume 组件驱动（纯数据，接入已有全局体积雾 VolumetricFog_RD）
+    // collect 每帧调用一次：把启用组件的 color/density/height_falloff/size 归并成
+    // 一组全局雾参数（归并规则见 .cpp 注释），至少有一个有效体积时开启体积雾、
+    // 一个都没有时关闭；volumetric==false 视为不参与（最省路径 = 不跑雾 pass）。
+    // 引擎的体积雾只接受单一全局状态，因此无法表达逐体积的局部雾——这是一处
+    // 已记录的能力缺口。场景完全没有 FogVolume 组件时不触碰雾状态。
+    // -----------------------------------------------------------------------
+    void collect_fog_volumes(scene::Scene& scene);
+    // 上次是否已由组件接管雾状态（用于"组件全部关闭后把雾关掉"，不干扰无组件场景）
+    bool fog_component_applied_ = false;
+
+    // -----------------------------------------------------------------------
+    // VolumetricLight（自包含发射网格光柱）
+    // collect 每帧调用一次：组件在参数变化时重建锥体并投递上传命令，这里收集
+    // 可绘制项与各自世界变换；draw 在前向 pass 的透明阶段调用（与线段/广告牌同处），
+    // 加性混合叠加，深度测试开、深度写关。
+    // -----------------------------------------------------------------------
+    void collect_volumetric_lights(scene::Scene& scene, RenderContext& ctx);
+    void draw_volumetric_lights(RenderContext& ctx, const math::Matrix4f& view,
+                                const math::Matrix4f& proj);
+    struct VolumetricLightItem {
+        components::VolumetricLight* light;
+        math::Matrix4f model;
+    };
+    std::vector<VolumetricLightItem> volumelight_items_;
+
+    // -----------------------------------------------------------------------
+    // Skybox3D 组件驱动
+    // 组件不新增着色器，只把 texture_path/environment_path/visible/exposure 映射到
+    // 已有的天空盒 + IBL 环境 API。这些 API 要求"主线程持有 GPU context"，而
+    // start() 之后 context 归渲染线程，因此实际应用动作通过 run_on_render_thread
+    // 排进命令流（见 .cpp 中的详细说明）。缓存上次应用的配置，只在变化时重配置，
+    // 因为 set_skybox / set_environment_hdr 会重建 cubemap + 预滤波 IBL + 管线。
+    // -----------------------------------------------------------------------
+    void collect_skybox(scene::Scene& scene, RenderContext& ctx);
+    bool skybox_component_applied_ = false;
+    bool skybox_component_visible_ = true;
+    std::string skybox_component_texture_;
+    std::string skybox_component_environment_;
+    float skybox_component_exposure_ = 1.0f;
+    // upload_ibl_data 内部会 pause_render_thread；当它本身已经运行在渲染线程上时
+    // 自我 join 会死锁，用该标志跳过 pause/resume（见 collect_skybox 的应用点说明）。
+    bool applying_on_render_thread_ = false;
+
+    // -----------------------------------------------------------------------
+    // 地形（程序化高度图网格）
+    // collect 每帧调用一次：组件在参数/高度图变化时重建 MeshData 并投递上传
+    // 命令。地形是不透明实体几何，复用 pbr_shader_ 与 render_mesh_internal，
+    // 因此这里不单独 draw，而是把绘制项并入 opaque_items_（前向与延迟路径
+    // 的不透明收集循环各追加一次）。
+    // -----------------------------------------------------------------------
+    struct TerrainItem {
+        components::Terrain* terrain;
+        math::Matrix4f model;
+    };
+    void collect_terrain(scene::Scene& scene, RenderContext& ctx);
+    // 把已收集的地形按视锥剔除后追加进不透明绘制列表
+    void append_terrain_items(const Frustum& frustum, const math::Vector3f& cam_pos,
+                              std::vector<DrawItem>& out) const;
+    std::vector<TerrainItem> terrain_items_;
+
+    // -----------------------------------------------------------------------
+    // LODGroup（自包含发射网格，与 Terrain 同类）
+    // collect 每帧调用一次：组件按相机距离/包围球算出的屏幕覆盖率选 LOD，
+    // 加载当前 LOD 网格并投递上传命令；append 把绘制项按视锥剔除后并入
+    // 不透明列表（复用 pbr_shader_ 与 render_mesh_internal）。
+    // -----------------------------------------------------------------------
+    struct LodGroupItem {
+        components::LODGroup* lod;
+        math::Matrix4f model;
+    };
+    void collect_lod_groups(scene::Scene& scene, RenderContext& ctx);
+    void append_lod_items(const Frustum& frustum, const math::Vector3f& cam_pos,
+                          std::vector<DrawItem>& out) const;
+    std::vector<LodGroupItem> lod_group_items_;
+
+    // -----------------------------------------------------------------------
+    // LightProbeGroup（纯数据，接入间接光路径）
+    // collect 每帧调用一次：从管线已缓存的 CPU 侧环境 IBL irradiance 采样出
+    // 低频辐照度颜色，乘 intensity 并按探针体与相机的距离衰减，累加进
+    // light_probe_ambient_；该值在 bind_per_frame_uniforms 里并入 uAmbient。
+    // 无环境（env_irradiance_size_==0）时回退到 ambient_ 作为颜色来源。
+    //
+    // 注：PBR 着色器在 uUseIBL=1 时用 IBL 结果整体覆盖 ambient（丢弃 uAmbient），
+    // 而默认工程项目开启了 IBL，仅写 uAmbient 的贡献会被丢弃。因此这里额外把
+    // 贡献亮度折算成 light_probe_ibl_boost_，在 upload_ibl_textures 里乘进
+    // uIBLIntensity，保证组件在 IBL 路径下也真实影响帧（详见 .cpp 注释与缺口说明）。
+    // -----------------------------------------------------------------------
+    void collect_light_probes(scene::Scene& scene, RenderContext& ctx);
+    // 从缓存的 irradiance 六面数据按方向采样，估计环境平均辐照度颜色
+    math::Vector3f sample_environment_irradiance(int sample_count) const;
+    math::Vector3f light_probe_ambient_ = math::Vector3f::zero();
+    // 探针贡献折算的 IBL 强度倍增（0 = 无探针贡献，1 = 间接光翻倍）
+    float light_probe_ibl_boost_ = 0.0f;
+    // upload_ibl_data 中缓存的 CPU 侧 irradiance 六面数据（+X,-X,+Y,-Y,+Z,-Z）
+    std::array<std::vector<float>, 6> env_irradiance_faces_;
+    int env_irradiance_size_ = 0;
+
+    // -----------------------------------------------------------------------
+    // ReflectionProbe（纯数据，接入已有探针系统 ReflectionProbeRD）
+    // collect 每帧调用一次：把启用组件的世界位置/立方体范围/强度发布到探针系统
+    // 的对应槽位；配置变化或 realtime 节流到期时请求重新捕获。创建/捕获/销毁
+    // 都经 ctx.run_on_render_thread 排进渲染线程（create_probe 内含 GPU 资源创建）。
+    // 探针可用后由 bind_probe_ibl 覆盖全局 IBL（见 render_mesh_internal）。
+    // -----------------------------------------------------------------------
+    struct ReflectionProbeBinding {
+        components::ReflectionProbe* comp = nullptr;
+        bool created = false;   // 主线程侧：是否已请求过 create（槽位按顺序==下标）
+        bool captured = false;  // 是否已请求过捕获
+        unsigned last_request_tick = 0;
+        math::Vector3f last_center;
+        math::Vector3f last_extents;
+        float last_intensity = 1.0f;
+        int last_resolution = 0;
+        bool last_realtime = false;
+    };
+    void collect_reflection_probes(scene::Scene& scene, RenderContext& ctx);
+    std::vector<ReflectionProbeBinding> reflection_probe_bindings_;
+    // 本帧是否存在启用的 ReflectionProbe 组件（决定是否走探针 IBL 覆盖）
+    bool probe_components_active_ = false;
+    unsigned probe_reconcile_tick_ = 0;
 
     // Skybox
     RHITextureHandle skybox_texture_;
@@ -965,7 +1146,14 @@ private:
     // 结果供 SSR 未命中射线按反射方向采样，解决"贴近反射物时反射不到周围
     // 物体（退化成天空色）"。面的朝向与 ssr_trace.frag 的 probe_sample 对应。
     // -----------------------------------------------------------------------
-    static constexpr int k_probe_face_size = 1024;
+    // 反射探针图集：6 个面按 3x2 排布，采样时用方向查表（见 ssr_trace.frag 的
+    // probe_sample）。面尺寸只影响"SSR 未命中时的环境兜底"精度，1024 面时单次
+    // 捕获要重绘 6x1024x1024 像素，实测约 14ms，而它每 16 帧就被活跃粒子触发
+    // 一次，是明显的周期性掉帧源。压到 256 后捕获代价降到约 1ms，兜底反射的
+    // 精度对屏幕空间反射兜底而言完全够用。
+    // 注意：改动此值必须同步 ssr_trace.frag / vulkan_ssr_trace.frag 里的
+    // kProbeFaceSize 常量，否则图集采样坐标会错位。
+    static constexpr int k_probe_face_size = 256;
     static constexpr int k_probe_atlas_w = k_probe_face_size * 3;
     static constexpr int k_probe_atlas_h = k_probe_face_size * 2;
     bool create_probe_targets(RenderContext* ctx);

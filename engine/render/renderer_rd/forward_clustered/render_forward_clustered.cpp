@@ -316,17 +316,11 @@ void RenderForwardClustered::render_scene(RenderData& data) {
                      50.0f,                            // fog 高度
                      10.0f, 200.0f);                   // 近/远距离
 
-        // 合成 fog 到场景颜色（使用 additive blending 避免 read-write 冲突）
-        ctx_->set_framebuffer(fb_.color_fbo);
-        ctx_->set_viewport(0, 0, viewport_width_, viewport_height_);
-        ctx_->set_depth_test(false);
-        ctx_->set_depth_write(false);
-        ctx_->set_blend(true);
-        ctx_->push_command([src = BlendFactor::One, dst = BlendFactor::SrcAlpha](IRenderBackend* backend) {
-            backend->set_blend_func(src, dst);
-        }); // additive blend
-        fog_->render_apply(ctx_, fb_.color_tex, fb_.depth_tex, inv_vp,
-                           current_camera_.position());
+        // 合成 fog。必须落在 fog 自己的目标：fog_apply 要采样场景颜色，把场景
+        // 颜色纹理同时当颜色附件会形成自反馈（与 SSR 合成同一约定）。
+        fog_->render_apply(ctx_, fog_->apply_fbo(), viewport_width_, viewport_height_,
+                           fb_.color_tex, fb_.depth_tex, inv_vp,
+                           current_camera_.position(), 10.0f, 200.0f);
         ctx_->set_blend(false);
         ctx_->set_depth_test(true);
         ctx_->set_depth_write(true);

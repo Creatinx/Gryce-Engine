@@ -201,6 +201,26 @@ private:
     // 不兼容，必须单独一条 vertex input 分支。
     bool particle_ = false;
 
+    // 3D 线段管线：顶点输入是"静态角标 + 每段实例数据"两条流
+    // （binding 0 stride 8 / binding 1 stride 44），同样与 MeshVertex 不兼容。
+    bool line3d_ = false;
+
+    // GPU 实例化网格管线：顶点输入是"MeshVertex 原型 + 每实例 mat4"两条流
+    // （binding 0 stride 56 / binding 1 stride 64，属性 location 5..8）。
+    bool instanced_ = false;
+
+    // 广告牌管线：顶点输入是"静态四边形 + 每实例数据"两条流
+    // （binding 0 stride 8 / binding 1 stride 32），与 MeshVertex 不兼容。
+    bool billboard_ = false;
+
+    // 3D 文本管线：顶点输入是单个"字形四边形"流
+    // （binding 0 stride 36：position+uv+color），没有法线/切线，与 MeshVertex 不同。
+    bool text3d_ = false;
+
+    // 体积光柱管线：顶点输入是单条顶点流
+    // （binding 0 stride 44：position(3)+params(4)+color(4)），与 MeshVertex 不兼容。
+    bool volumelight_ = false;
+
     // 与 GLSL std140 对齐的单光源结构（64 字节，与 GLSL Light 对应）
     struct LightUBO {
         math::Vector4f pos_type;         // xyz=position, w=type (0 方向光/1 点光/2 聚光)
@@ -488,14 +508,15 @@ private:
         math::Matrix4f inv_view_proj; // +0
         math::Matrix4f view_matrix;   // +64
         math::Vector3f camera_pos;    // +128
-        math::Vector3f fog_color;     // +140
-        float density;                // +152
-        float height;                 // +156
-        math::Vector2f fog_range;     // +160（x=near, y=far）
-        math::Vector2f screen_size;   // +168
-        int slice_count;              // +176
-        int slice_index;              // +180
-        float _pad[1];                // +184
+        float _pad0;                  // +140  std430 下后续 vec3 必须从 16 字节对齐处开始
+        math::Vector3f fog_color;     // +144
+        float density;                // +156
+        float height;                 // +160
+        float _pad1;                  // +164  vec2 fog_range 需 8 字节对齐 → +168
+        math::Vector2f fog_range;     // +168（x=near, y=far）
+        math::Vector2f screen_size;   // +176
+        int slice_count;              // +184
+        int slice_index;              // +188
     };
     static_assert(sizeof(FogPushData) == 192, "FogPushData must be 192 bytes");
 

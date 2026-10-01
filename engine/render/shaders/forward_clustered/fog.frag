@@ -77,8 +77,12 @@ void main() {
         vec3 sample_pos = uCameraPos + view_dir * (uFogRange.x + t * (view_dist - uFogRange.x));
         float density = compute_fog_density(sample_pos, step_size * view_dist);
         if (density > 0.0) {
+            // 标准单次散射累积：density 已是该步的光学厚度，入射光只被
+            // 之前累积的透射率衰减。原来的写法还额外乘了 step_size * view_dist
+            //（又是两个距离量），把散射色压到接近 0，浓雾只会让画面变暗、
+            // 不会染上雾色。
             float sample_trans = exp(-density);
-            accum_color += uFogColor * density * transmittance * step_size * view_dist;
+            accum_color += uFogColor * (1.0 - sample_trans) * transmittance;
             transmittance *= sample_trans;
             accum_density += density;
         }

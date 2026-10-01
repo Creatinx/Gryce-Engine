@@ -276,6 +276,22 @@ bool VulkanShader::load_program(const std::string& name,
     // 名字不相等但顶点流布局相同，必须共用这条分支；否则会退回
     // MeshVertex 的 stride 56 布局，属性错位、写入的深度整片错乱。
     particle_ = (name == "particle" || name == "particle_depth");
+    // 3D 线段：顶点输入同样是"静态角标（binding 0）+ 每段实例数据（binding 1）"，
+    // 与 MeshVertex（stride 56）不兼容，需要独立的 vertex input 分支。
+    line3d_ = (name == "line3d");
+    // GPU 实例化网格：顶点输入是"MeshVertex 原型（binding 0，stride 56）+
+    // 每实例 mat4（binding 1，stride 64）"两条流。虽然 binding 0 与默认分支
+    // 相同，但多了 binding 1 与 attribute location 5..8，必须单独一条分支。
+    instanced_ = (name == "instanced");
+    // 广告牌（Billboard）：顶点输入同样是"静态四边形（binding 0）+ 每实例数据
+    // （binding 1）"，与 MeshVertex（stride 56）不兼容，需要独立的 vertex input 分支。
+    billboard_ = (name == "billboard");
+    // 3D 文本（TextMesh3D）：顶点输入是"字形四边形"（position+uv+color，stride 36），
+    // 没有法线/切线，与 MeshVertex 的 stride 56 布局不同。
+    text3d_ = (name == "text3d");
+    // 体积光柱（VolumetricLight）：顶点输入是单条 position(3)+params(4)+color(4)
+    // 流（stride 44），与 MeshVertex（stride 56）不兼容，需要独立的 vertex input 分支。
+    volumelight_ = (name == "volumelight");
     if (post_process) {
         if (name == "contact_shadow") push_kind_ = PostProcessPushKind::ContactShadow;
         else if (name.rfind("ssr_", 0) == 0) push_kind_ = PostProcessPushKind::SSR;
@@ -754,6 +770,57 @@ bool VulkanShader::create_pipeline() {
         attrs.push_back({2, 1, VK_FORMAT_R32_SFLOAT, 12});          // size
         attrs.push_back({3, 1, VK_FORMAT_R32_SFLOAT, 16});          // rotation
         attrs.push_back({4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 20}); // color
+    } else if (line3d_) {
+        // 3D 线段：binding 0 是静态角标（corner.x 选起点/终点、corner.y 选两侧，
+        // 每顶点推进），binding 1 是每段的 start(3)+end(3)+width(1)+color(4)
+        // （每实例推进），与 LineRenderer3D::SegmentInstance 的 stride 44 一致。
+        bindings.push_back({0, 8, VK_VERTEX_INPUT_RATE_VERTEX});
+        bindings.push_back({1, 44, VK_VERTEX_INPUT_RATE_INSTANCE});
+        attrs.push_back({0, 0, VK_FORMAT_R32G32_SFLOAT, 0});        // corner
+        attrs.push_back({1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0});     // start
+        attrs.push_back({2, 1, VK_FORMAT_R32G32B32_SFLOAT, 12});    // end
+        attrs.push_back({3, 1, VK_FORMAT_R32_SFLOAT, 24});          // width
+        attrs.push_back({4, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 28}); // color
+    } else if (billboard_) {
+        // 广告牌：binding 0 是静态单位四边形角标（每顶点推进，stride 8），
+        // binding 1 是每张广告牌的 center(3)+size(2)+opacity(1)+flags(2)
+        // （每实例推进，stride 32），与 Billboard::BillboardInstance 一致。
+        bindings.push_back({0, 8, VK_VERTEX_INPUT_RATE_VERTEX});
+        bindings.push_back({1, 32, VK_VERTEX_INPUT_RATE_INSTANCE});
+        attrs.push_back({0, 0, VK_FORMAT_R32G32_SFLOAT, 0});          // corner
+        attrs.push_back({1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0});       // center
+        attrs.push_back({2, 1, VK_FORMAT_R32G32_SFLOAT, 12});         // size
+        attrs.push_back({3, 1, VK_FORMAT_R32_SFLOAT, 20});            // opacity
+        attrs.push_back({4, 1, VK_FORMAT_R32G32_SFLOAT, 24});         // flags
+    } else if (text3d_) {
+        // 3D 文本：单个顶点流 position(3)+uv(2)+color(4)，stride 36，
+        // 与 TextMesh3D::TextVertex 一致。
+        bindings.push_back({0, 36, VK_VERTEX_INPUT_RATE_VERTEX});
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});       // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32_SFLOAT, 12});         // uv
+        attrs.push_back({2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 20});   // color
+    } else if (volumelight_) {
+        // 体积光柱：单条顶点流 position(3)+params(4)+color(4)，stride 44，
+        // 与 VolumetricLight::ShaftVertex 一致。
+        bindings.push_back({0, 44, VK_VERTEX_INPUT_RATE_VERTEX});
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});     // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 12}); // params
+        attrs.push_back({2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 28}); // color
+    } else if (instanced_) {
+        // GPU 实例化网格：binding 0 是 MeshVertex 原型（每顶点推进），
+        // binding 1 是每实例的 mat4（4 个 vec4，每实例推进），
+        // 与 InstancedMeshRenderer 的实例流 stride 64 一致。
+        bindings.push_back({0, 56, VK_VERTEX_INPUT_RATE_VERTEX});
+        bindings.push_back({1, 64, VK_VERTEX_INPUT_RATE_INSTANCE});
+        attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});     // position
+        attrs.push_back({1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12});    // normal
+        attrs.push_back({2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24});    // tangent
+        attrs.push_back({3, 0, VK_FORMAT_R32G32_SFLOAT, 36});       // uv
+        attrs.push_back({4, 0, VK_FORMAT_R32G32B32_SFLOAT, 44});    // color
+        attrs.push_back({5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0});  // instance matrix col 0
+        attrs.push_back({6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16}); // instance matrix col 1
+        attrs.push_back({7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32}); // instance matrix col 2
+        attrs.push_back({8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 48}); // instance matrix col 3
     } else {
         bindings.push_back({0, 56, VK_VERTEX_INPUT_RATE_VERTEX}); // MeshVertex
         attrs.push_back({0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});   // position
@@ -803,8 +870,12 @@ bool VulkanShader::create_pipeline() {
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     // 天空盒从立方体内部观察，禁用剔除；粒子广告牌恒面向相机，同样不需要剔除
     //（关闭剔除也避开了动态剔除状态不可用时烘焙 BACK_BIT 带来的绕序风险）。
-    raster.cullMode = (post_process_ || skybox_ || particle_) ? VK_CULL_MODE_NONE
-                                                              : VK_CULL_MODE_BACK_BIT;
+    // 线段四边形是双面的（绕序随相机与线段方向的夹角翻转），同样关闭剔除。
+    // 广告牌四边形恒面向相机展开，绕序同样不可靠，也关闭剔除；3D 文本的
+    // double_sided 由 draw 时的动态剔除状态决定，这里保留 BACK_BIT 作为默认。
+    raster.cullMode = (post_process_ || skybox_ || particle_ || line3d_ || billboard_ || volumelight_)
+                          ? VK_CULL_MODE_NONE
+                          : VK_CULL_MODE_BACK_BIT;
     // Negative viewport height restores OpenGL's Y convention, so keep the same
     // winding convention as OpenGL: counter-clockwise front face with back culling.
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;

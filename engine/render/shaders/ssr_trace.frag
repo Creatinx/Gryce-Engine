@@ -19,15 +19,17 @@ uniform sampler2D uColorTex;       // HDR 场景颜色
 uniform sampler2D uDepthTex;       // 原始深度（[0,1]，见上）
 uniform sampler2D uNormalRoughTex; // RGB = N*0.5+0.5, A = roughness
 uniform mat4 uView;       // 世界 → 视图
-uniform vec3 uCameraPos;  // 世界空间相机位置
+// 相机位置不再需要：反射方向在视图空间直接由 normalize(-view_pos) 得到，
+// 不再反投影世界坐标。保留这个 uniform 会被 GL 优化掉，而 C++ 侧每帧仍按名
+// 赋值，GLShader::set_vec3 对找不到的 uniform 会打印警告 —— 故一并删除。
 uniform vec2 uScreenSize; // 视口尺寸（像素）
 
-// 反射探针图集：6 个面按 3x2 排布（+X,-X,+Y,-Y,+Z,-Z），每面 1024x1024。
+// 反射探针图集：6 个面按 3x2 排布（+X,-X,+Y,-Y,+Z,-Z），每面 256x256。
 // 未绑定/未提供时采样返回 0（兜底分支此时输出黑色覆盖度，不影响命中区）。
 uniform sampler2D uProbeAtlas;
 // 1 = 探针图集可用且本帧已完成捕获（否则退化射线兜底不启用，保持旧的"黑色"行为）
 uniform int uSSRProbeValid;
-const float kProbeFaceSize = 1024.0;
+const float kProbeFaceSize = 256.0;
 const vec2  kProbeAtlasGrid = vec2(3.0, 2.0);
 
 // 按方向从图集里取"反射探针"颜色。面的朝向与离线烘焙时用的
@@ -124,19 +126,26 @@ void main() {
     vec3 view_pos = vec3(ndc.x * uSSRTanHalfFov * uSSRAspect * lin,
                          ndc.y * uSSRTanHalfFov * lin,
                          -lin);
-    mat4 inv_view = inverse(uView);
-    vec4 world_pos = inv_view * vec4(view_pos, 1.0);
-    vec3 P = world_pos.xyz / world_pos.w;
-
-    vec3 V = normalize(uCameraPos - P);
-    if (dot(N, V) <= 0.02) {
+    // 反射计算整段在视图空间完成：视图空间里相机恒在原点，视线方向就是
+    // normalize(-view_pos)，法线用视图矩阵的旋转部分转进来即可。于是每像素的
+    // mat4 inverse(uView) 和反投影到世界空间的 mat4*vec4 全部省掉 —— 逆矩阵对
+    // 整帧是常量，逐像素求逆是 4x4 求解加除法，正压在 SSR 最热的光栅化路径上
+    //（roughness/深度早退之后、步进之前，每个光泽像素都要算）。
+    mat3 view_rot = mat3(uView);
+    vec3 V = normalize(-view_pos);
+    vec3 Nv = normalize(view_rot * N);
+    if (dot(Nv, V) <= 0.02) {
         FragColor = vec4(0.0);
         return;
     }
-    vec3 R = reflect(-V, N);
+    vec3 Rv = reflect(-V, Nv);
 
-    vec3 V0 = (uView * vec4(P, 1.0)).xyz;
-    vec3 Dv = (uView * vec4(R, 0.0)).xyz;
+    // 探针图集按世界方向查表（立方体面朝向在世界空间定义），把反射方向转回
+    // 世界：视图矩阵是刚体变换，旋转部分正交，转置即逆。
+    vec3 R = transpose(view_rot) * Rv;
+
+    vec3 V0 = view_pos;
+    vec3 Dv = Rv;
     float invz0 = 1.0 / max(lin, 1e-4);
 
     vec2 uv0 = vTexCoord;
@@ -253,10 +262,21 @@ void main() {
                     iz_lo = iz_m;
                 }
             }
-            hit_uv = uv_hi;
-            hit_dist = 1.0 / iz_hi;
-            hit = true;
-            break;
+            // ---- 命中复核（厚度约束）----
+            // 上面的判据只检查"射线由表面前方越到后方"，没有约束越过的幅度。
+            // 粒子补写深度后在深度图里是一张垂直于视轴的等深薄片：远处地面像素
+            // 的反射射线沿屏幕竖线扫过粒子足迹时，深度早已远在薄片之后，却因为
+            // 前一个样本落在背景（远平面）而满足"由前越到后"，于是整条竖列都被
+            // 判为命中、涂上粒子颜色。二分收敛后复核射线深度与表面深度之差，
+            // 超出厚度即视为"穿过"而非命中，继续步进。
+            float cand_dist = 1.0 / iz_hi;
+            float overshoot = cand_dist - scene_depth(uv_hi);
+            if (overshoot <= max(uSSRThickness * 4.0, cand_dist * 0.05)) {
+                hit_uv = uv_hi;
+                hit_dist = cand_dist;
+                hit = true;
+                break;
+            }
         }
 
         uv_prev = uv;

@@ -451,6 +451,11 @@ int main(int argc, char** argv) {
     // --move：每帧平移主相机（不接管输入），用于复现"相机移动"路径下的开销。
     // 反射探针在相机位移时会高频重烘全场景，静止相机的基准测不到这部分。
     bool move_cam = false;
+    // --cam-pos / --cam-look：覆盖主相机位置与朝向（不接管输入），用于复现
+    // "面向粒子/背向粒子"这类视角相关的开销差异。
+    bool cam_override = false;
+    GVec3 cam_pos_override{};
+    GVec3 cam_look_override{};
     int bench_frames = 0;   // >0：开启 GPU 分段计时，跑满 N 帧后打印每 pass 平均 GPU 时间
     float play_speed = 3.0f;
     float play_sensitivity = 0.12f;
@@ -472,6 +477,15 @@ int main(int argc, char** argv) {
                 std::exit(1);
             }
             return argv[++i];
+        };
+        auto need_vec3 = [&](const char* flag, GVec3& out) {
+            if (i + 3 >= argc) {
+                std::fprintf(stderr, "[smoke] %s 需要 3 个数值\n", flag);
+                std::exit(1);
+            }
+            out.x = static_cast<float>(std::atof(argv[++i]));
+            out.y = static_cast<float>(std::atof(argv[++i]));
+            out.z = static_cast<float>(std::atof(argv[++i]));
         };
         if (std::strcmp(a, "--api") == 0) api_arg = need_value(a);
         else if (std::strcmp(a, "--project") == 0) project_root = need_value(a);
@@ -524,6 +538,14 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--no-env") == 0) env_override = 0;
         else if (std::strcmp(a, "--simulate") == 0) simulate_mode = true;
         else if (std::strcmp(a, "--move") == 0) move_cam = true;
+        else if (std::strcmp(a, "--cam-pos") == 0) {
+            need_vec3(a, cam_pos_override);
+            cam_override = true;
+        }
+        else if (std::strcmp(a, "--cam-look") == 0) {
+            need_vec3(a, cam_look_override);
+            cam_override = true;
+        }
         else if (std::strcmp(a, "--play") == 0 || std::strcmp(a, "--interactive") == 0 ||
                  std::strcmp(a, "-i") == 0) play_mode = true;
         else if (std::strcmp(a, "--speed") == 0) play_speed = static_cast<float>(std::atof(need_value(a)));
@@ -702,11 +724,30 @@ int main(int argc, char** argv) {
             play_mode = false;
         }
     }
-    if (move_cam && !play_mode) {
+    if ((move_cam || cam_override) && !play_mode) {
         if (!play_cam.init_from_entity(play_speed, play_sensitivity)) {
-            std::fprintf(stderr, "[smoke] --move: 场景中没有 Camera 实体，忽略\n");
+            std::fprintf(stderr, "[smoke] --move/--cam-pos: 场景中没有 Camera 实体，忽略\n");
             move_cam = false;
+            cam_override = false;
         }
+    }
+    if (cam_override && play_cam.entity != 0) {
+        GVec3 d{cam_look_override.x - cam_pos_override.x,
+                cam_look_override.y - cam_pos_override.y,
+                cam_look_override.z - cam_pos_override.z};
+        const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (len > 1e-6f) { d.x /= len; d.y /= len; d.z /= len; }
+        constexpr float k_rad2deg = 57.29577951308232f;
+        play_cam.position = cam_pos_override;
+        play_cam.pitch_deg = std::asin(std::max(-1.0f, std::min(1.0f, d.y))) * k_rad2deg;
+        play_cam.yaw_deg = std::atan2(-d.x, -d.z) * k_rad2deg;
+        GEntity_SetLocalPosition(play_cam.entity, &cam_pos_override);
+        GQuat q = play_cam.to_quat();
+        GEntity_SetLocalRotation(play_cam.entity, &q);
+        std::printf("[smoke] 相机已覆盖: pos=(%.2f,%.2f,%.2f) look=(%.2f,%.2f,%.2f)\n",
+                    static_cast<double>(cam_pos_override.x), static_cast<double>(cam_pos_override.y),
+                    static_cast<double>(cam_pos_override.z), static_cast<double>(cam_look_override.x),
+                    static_cast<double>(cam_look_override.y), static_cast<double>(cam_look_override.z));
     }
     // 进入引擎 Play 模式：--play 只负责相机控制，不会自动切换播放态；
     // 不切换的话 World::update 不跑，组件的 on_update（动画/物理/粒子）全程静止。
@@ -741,6 +782,8 @@ int main(int argc, char** argv) {
     // 规律性尖峰时，只看 pass 平均耗时是发现不了的。
     std::vector<float> bench_frame_ms;
     if (bench_frames > 0) bench_frame_ms.reserve(static_cast<size_t>(bench_frames) + 8);
+    // 0=world update 1=render begin 2=RenderWorld 3=RenderGizmo 4=EndFrame 5=Core EndFrame
+    double bench_phase_ms[6] = {};
     while (!window.should_close()) {
         window.poll_events();
 
@@ -761,19 +804,30 @@ int main(int argc, char** argv) {
             p.x += 0.15f * std::sin(move_phase);
             GEntity_SetLocalPosition(play_cam.entity, &p);
         }
+        const auto t0 = std::chrono::steady_clock::now();
         GCore_BeginFrame(dt);
-
-        const auto bench_frame_begin = std::chrono::steady_clock::now();
+        const auto t1 = std::chrono::steady_clock::now();
         GRender_BeginFrame();
+        const auto t2 = std::chrono::steady_clock::now();
         GRender_RenderWorld();
+        const auto t3 = std::chrono::steady_clock::now();
         GRender_RenderGizmo();
+        const auto t4 = std::chrono::steady_clock::now();
         GRender_EndFrame();
-
+        const auto t5 = std::chrono::steady_clock::now();
         GCore_EndFrame();
+        const auto bench_frame_end = std::chrono::steady_clock::now();
         if (bench_frames > 0) {
-            const auto bench_frame_end = std::chrono::steady_clock::now();
-            bench_frame_ms.push_back(
-                std::chrono::duration<float, std::milli>(bench_frame_end - bench_frame_begin).count());
+            auto ms = [](auto a, auto b) {
+                return std::chrono::duration<float, std::milli>(b - a).count();
+            };
+            bench_phase_ms[0] += ms(t0, t1);   // world update（ECS/粒子/动画 on_update）
+            bench_phase_ms[1] += ms(t1, t2);   // render begin
+            bench_phase_ms[2] += ms(t2, t3);   // RenderWorld（构建命令）
+            bench_phase_ms[3] += ms(t3, t4);   // RenderGizmo
+            bench_phase_ms[4] += ms(t4, t5);   // EndFrame（提交 + 等 GPU）
+            bench_phase_ms[5] += ms(t5, bench_frame_end);  // Core EndFrame
+            bench_frame_ms.push_back(ms(t0, bench_frame_end));
         }
         ++rendered;
 
@@ -814,6 +868,16 @@ int main(int argc, char** argv) {
                     p50 > 0.0f ? mx / p50 : 0.0f);
         std::printf("[cpu] 尖峰(>2x中位)=%zu 帧 (%.1f%%)\n", spikes,
                     s.empty() ? 0.0 : 100.0 * static_cast<double>(spikes) / static_cast<double>(s.size()));
+        {
+            const double n = static_cast<double>(bench_frame_ms.size());
+            static const char* k_names[6] = {"world update", "render begin", "RenderWorld",
+                                             "RenderGizmo", "EndFrame(提交+等GPU)", "Core EndFrame"};
+            std::printf("[cpu] 分相平均:");
+            for (int i = 0; i < 6; ++i) {
+                std::printf(" %s=%.2fms", k_names[i], bench_phase_ms[i] / n);
+            }
+            std::printf("\n");
+        }
         // 最慢的 5 帧及其序号：用于区分"周期性尖峰"（序号间隔固定）与
         // "收尾一次性开销"（序号集中在末尾，如截图编码/写盘）。
         std::vector<size_t> order(s.size());

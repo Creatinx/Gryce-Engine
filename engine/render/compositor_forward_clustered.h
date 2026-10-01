@@ -6,9 +6,6 @@
 #include "render/renderer_compositor.h"
 #include "render/renderer_scene_render.h"
 #include "render/renderer_canvas_render.h"
-#include "render/renderer_fog.h"
-#include "render/renderer_gi.h"
-#include "render/rendering_device.h"
 #include "render/storage_rd/light_storage.h"
 #include "render/storage_rd/material_storage.h"
 #include "render/storage_rd/mesh_storage.h"
@@ -38,8 +35,6 @@ public:
 
     RendererCanvasRender* get_canvas() override { return canvas_render_.get(); }
     RendererSceneRender* get_scene() override { return scene_render_.get(); }
-    RendererFog* get_fog() override { return fog_.get(); }
-    RendererGI* get_gi() override { return gi_.get(); }
 
     RendererLightStorage* get_light_storage() override { return light_storage_.get(); }
     RendererMaterialStorage* get_material_storage() override { return material_storage_.get(); }
@@ -48,15 +43,11 @@ public:
     RendererParticlesStorage* get_particles_storage() override { return nullptr; }
     RendererUtilities* get_utilities() override { return nullptr; }
 
-    RenderingDevice* get_device() override { return device_.get(); }
     const char* name() const override { return "CompositorForwardClustered"; }
 
 private:
-    std::unique_ptr<RenderingDevice> device_;
     std::unique_ptr<RendererCanvasRender> canvas_render_;
     std::unique_ptr<RendererSceneRender> scene_render_;
-    std::unique_ptr<RendererFog> fog_;
-    std::unique_ptr<RendererGI> gi_;
 
     // Storage 系统
     std::unique_ptr<RendererLightStorage> light_storage_;

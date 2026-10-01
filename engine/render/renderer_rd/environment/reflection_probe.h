@@ -2,6 +2,7 @@
 #include "render/rhi_handle.h"
 #include "math/math.h"
 
+#include <mutex>
 #include <vector>
 
 namespace gryce_engine::render {
@@ -40,9 +41,15 @@ public:
     // Pre-filter the captured cubemap (irradiance + prefiltered env map)
     void prefilter_probe(int index);
 
+    // 发布探针的立方体范围与强度。
+    // 引擎原先只提供 create_probe 的默认值（±10 / 1.0），组件接线需要按
+    // ReflectionProbe 组件的 box_extents / intensity 覆写，故补这两个 setter。
+    void set_probe_bounds(int index, const math::Vector3f& box_min, const math::Vector3f& box_max);
+    void set_probe_intensity(int index, float intensity);
+
     // Get probe data
     const ProbeData& get_probe(int index) const { return probes_[index]; }
-    int probe_count() const { return (int)probes_.size(); }
+    int probe_count() const;
 
     // IBL textures for the nearest probe
     RHITextureHandle nearest_irradiance(const math::Vector3f& position);
@@ -52,6 +59,10 @@ private:
     RenderContext* ctx_ = nullptr;
     std::vector<ProbeData> probes_;
     bool initialized_ = false;
+    // 组件接线后，探针的创建/捕获在渲染线程执行（create_probe 内含 GPU 资源
+    // 创建），而 probe_count()/nearest_*() 在前向绘制的主线程路径读取；
+    // 用互斥量串行化 probes_ 的读写，避免跨线程访问同一 vector 造成竞态。
+    mutable std::mutex mutex_;
 };
 
 } // namespace gryce_engine::render

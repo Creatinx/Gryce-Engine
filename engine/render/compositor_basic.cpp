@@ -36,10 +36,6 @@ bool CompositorBasic::initialize(RenderContext* ctx) {
         return false;
     }
 
-    // 创建 Fog / GI 桩
-    fog_ = std::make_unique<RendererFog>();
-    gi_ = std::make_unique<RendererGI>();
-
     // 注册工厂函数
     set_create_func(create_compositor_basic);
     set_singleton(this);
@@ -55,9 +51,6 @@ void CompositorBasic::finalize() {
         }
         scene_render_.reset();
         canvas_render_.reset();
-        fog_.reset();
-        gi_.reset();
-        device_.reset();
         initialized_ = false;
     }
 }

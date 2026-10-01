@@ -50,10 +50,6 @@ bool CompositorForwardClustered::initialize(RenderContext* ctx) {
     texture_storage_ = std::make_unique<TextureStorageImpl>(ctx);
     light_storage_ = std::make_unique<LightStorageImpl>(ctx);
 
-    // 创建 Fog / GI 桩
-    fog_ = std::make_unique<RendererFog>();
-    gi_ = std::make_unique<RendererGI>();
-
     // 注册工厂函数
     set_create_func(create_compositor_forward_clustered);
     set_singleton(this);
@@ -74,9 +70,6 @@ void CompositorForwardClustered::finalize() {
         material_storage_.reset();
         mesh_storage_.reset();
         texture_storage_.reset();
-        fog_.reset();
-        gi_.reset();
-        device_.reset();
         initialized_ = false;
     }
 }

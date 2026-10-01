@@ -47,6 +47,7 @@ bool ReflectionProbeRD::init(RenderContext* ctx) {
 
 void ReflectionProbeRD::destroy() {
     if (!ctx_ || !initialized_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& probe : probes_) {
         if (probe.cubemap.is_valid())   ctx_->destroy_texture(probe.cubemap);
         if (probe.irradiance.is_valid()) ctx_->destroy_texture(probe.irradiance);
@@ -64,6 +65,7 @@ void ReflectionProbeRD::destroy() {
 
 int ReflectionProbeRD::create_probe(const math::Vector3f& position) {
     if (!ctx_ || !initialized_) return -1;
+    std::lock_guard<std::mutex> lock(mutex_);
 
     ProbeData probe;
     probe.position = position;
@@ -126,6 +128,7 @@ int ReflectionProbeRD::create_probe(const math::Vector3f& position) {
 }
 
 void ReflectionProbeRD::destroy_probe(int index) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (index < 0 || index >= (int)probes_.size()) return;
     auto& probe = probes_[index];
     if (probe.cubemap.is_valid())   ctx_->destroy_texture(probe.cubemap);
@@ -148,6 +151,7 @@ void ReflectionProbeRD::destroy_probe(int index) {
 // ---------------------------------------------------------------------------
 void ReflectionProbeRD::capture_probe(int index, const math::Vector3f& position) {
     if (!ctx_ || !initialized_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
     if (index < 0 || index >= (int)probes_.size()) return;
 
     ProbeData& probe = probes_[index];
@@ -220,6 +224,7 @@ void ReflectionProbeRD::capture_probe(int index, const math::Vector3f& position)
 // ---------------------------------------------------------------------------
 void ReflectionProbeRD::prefilter_probe(int index) {
     if (!ctx_ || !initialized_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
     if (index < 0 || index >= (int)probes_.size()) return;
 
     ProbeData& probe = probes_[index];
@@ -276,27 +281,40 @@ void ReflectionProbeRD::prefilter_probe(int index) {
         }
 
         // 上传 prefilter cubemap（多级 mip）
+        //
+        // upload_cubemap_hdr_mips 约定 mip_faces[l] 必须是指向"6 个面数据指针"的
+        // 数组；prefilter_mips[l] 是 std::array<std::vector<float>,6>，其 .data()
+        // 指向 6 个 std::vector 对象而非 6 个数据指针，直接 reinterpret_cast 会把
+        // vector 内部字段当作数据指针读取（越界崩溃）。这里按 upload_ibl_data 的
+        // 相同约定逐面取数据指针。
         if (probe.prefilter.is_valid()) {
-            // 构建 mip 数据指针数组
-            std::vector<const void*> mip_ptrs(mip_levels);
-            for (int l = 0; l < mip_levels && l < (int)ibl_data->prefilter_mips.size(); ++l) {
-                mip_ptrs[l] = reinterpret_cast<const void*>(ibl_data->prefilter_mips[l].data());
+            const int levels = std::min(mip_levels, (int)ibl_data->prefilter_mips.size());
+            std::vector<std::array<const void*, 6>> level_faces(static_cast<size_t>(levels));
+            std::vector<const void*> mip_ptrs(static_cast<size_t>(levels));
+            for (int l = 0; l < levels; ++l) {
+                for (int f = 0; f < 6; ++f) {
+                    level_faces[static_cast<size_t>(l)][static_cast<size_t>(f)] =
+                        ibl_data->prefilter_mips[static_cast<size_t>(l)][static_cast<size_t>(f)].data();
+                }
+                mip_ptrs[static_cast<size_t>(l)] = level_faces[static_cast<size_t>(l)].data();
             }
             if (!mip_ptrs.empty()) {
                 ITexture* pre_tex = ctx_->texture(probe.prefilter);
                 if (pre_tex) {
-                    pre_tex->upload_cubemap_hdr_mips(
-                        mip_ptrs.data(),
-                        std::min(mip_levels, (int)ibl_data->prefilter_mips.size()),
-                        res, res);
+                    pre_tex->upload_cubemap_hdr_mips(mip_ptrs.data(), levels, res, res);
                 }
             }
         }
     } else {
-        // 回退：使用默认数据上传
-        std::vector<const void*> mip_ptrs(mip_levels);
+        // 回退：使用默认数据上传（同样需要逐面取数据指针）
+        std::vector<std::array<const void*, 6>> level_faces(static_cast<size_t>(mip_levels));
+        std::vector<const void*> mip_ptrs(static_cast<size_t>(mip_levels));
         for (int l = 0; l < mip_levels; ++l) {
-            mip_ptrs[l] = reinterpret_cast<const void*>(default_prefilter_mips[l].data());
+            for (int f = 0; f < 6; ++f) {
+                level_faces[static_cast<size_t>(l)][static_cast<size_t>(f)] =
+                    default_prefilter_mips[static_cast<size_t>(l)][static_cast<size_t>(f)].data();
+            }
+            mip_ptrs[static_cast<size_t>(l)] = level_faces[static_cast<size_t>(l)].data();
         }
 
         ITexture* pre_tex = ctx_->texture(probe.prefilter);
@@ -319,7 +337,27 @@ void ReflectionProbeRD::prefilter_probe(int index) {
 // 查找最近的 probe
 // ---------------------------------------------------------------------------
 
+int ReflectionProbeRD::probe_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return (int)probes_.size();
+}
+
+void ReflectionProbeRD::set_probe_bounds(int index, const math::Vector3f& box_min,
+                                         const math::Vector3f& box_max) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index < 0 || index >= (int)probes_.size()) return;
+    probes_[index].box_min = box_min;
+    probes_[index].box_max = box_max;
+}
+
+void ReflectionProbeRD::set_probe_intensity(int index, float intensity) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index < 0 || index >= (int)probes_.size()) return;
+    probes_[index].intensity = intensity;
+}
+
 RHITextureHandle ReflectionProbeRD::nearest_irradiance(const math::Vector3f& position) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (probes_.empty()) return {};
     int nearest = 0;
     float min_dist = (probes_[0].position - position).length_sq();
@@ -334,6 +372,7 @@ RHITextureHandle ReflectionProbeRD::nearest_irradiance(const math::Vector3f& pos
 }
 
 RHITextureHandle ReflectionProbeRD::nearest_prefilter(const math::Vector3f& position) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (probes_.empty()) return {};
     int nearest = 0;
     float min_dist = (probes_[0].position - position).length_sq();
