@@ -448,6 +448,9 @@ int main(int argc, char** argv) {
     // 但不把相机交给 FpsCamera，也不锁鼠标。用于脚本/CI 验证粒子、动画这类依赖
     // on_update 的效果：不切 Play 模式它们全程静止，截出来的图里根本没有粒子。
     bool simulate_mode = false;
+    // --move：每帧平移主相机（不接管输入），用于复现"相机移动"路径下的开销。
+    // 反射探针在相机位移时会高频重烘全场景，静止相机的基准测不到这部分。
+    bool move_cam = false;
     int bench_frames = 0;   // >0：开启 GPU 分段计时，跑满 N 帧后打印每 pass 平均 GPU 时间
     float play_speed = 3.0f;
     float play_sensitivity = 0.12f;
@@ -520,6 +523,7 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--env") == 0) env_override = 1;
         else if (std::strcmp(a, "--no-env") == 0) env_override = 0;
         else if (std::strcmp(a, "--simulate") == 0) simulate_mode = true;
+        else if (std::strcmp(a, "--move") == 0) move_cam = true;
         else if (std::strcmp(a, "--play") == 0 || std::strcmp(a, "--interactive") == 0 ||
                  std::strcmp(a, "-i") == 0) play_mode = true;
         else if (std::strcmp(a, "--speed") == 0) play_speed = static_cast<float>(std::atof(need_value(a)));
@@ -698,6 +702,12 @@ int main(int argc, char** argv) {
             play_mode = false;
         }
     }
+    if (move_cam && !play_mode) {
+        if (!play_cam.init_from_entity(play_speed, play_sensitivity)) {
+            std::fprintf(stderr, "[smoke] --move: 场景中没有 Camera 实体，忽略\n");
+            move_cam = false;
+        }
+    }
     // 进入引擎 Play 模式：--play 只负责相机控制，不会自动切换播放态；
     // 不切换的话 World::update 不跑，组件的 on_update（动画/物理/粒子）全程静止。
     if (play_mode || simulate_mode) {
@@ -726,6 +736,11 @@ int main(int argc, char** argv) {
     int frames_after_shot = -1;
     bool shot_requested = false;
     auto play_clock = std::chrono::steady_clock::now();
+    float move_phase = 0.0f;
+    // 逐帧墙钟耗时（含 GPU 等待）：用来暴露周期性卡顿——平均值正常但存在
+    // 规律性尖峰时，只看 pass 平均耗时是发现不了的。
+    std::vector<float> bench_frame_ms;
+    if (bench_frames > 0) bench_frame_ms.reserve(static_cast<size_t>(bench_frames) + 8);
     while (!window.should_close()) {
         window.poll_events();
 
@@ -738,14 +753,28 @@ int main(int argc, char** argv) {
             dt = std::max(0.0005f, std::min(dt, 0.1f));
             if (!play_cam.update(window, dt)) break;   // Esc
         }
+        if (move_cam && play_cam.entity != 0) {
+            // 每帧位移约 0.05m：超过探针 0.02m 的单帧漂移阈值，会稳定触发
+            // "相机移动"分支（每 2 帧一次全场景 6 面重烘）。
+            move_phase += 0.35f;
+            GVec3 p = play_cam.position;
+            p.x += 0.15f * std::sin(move_phase);
+            GEntity_SetLocalPosition(play_cam.entity, &p);
+        }
         GCore_BeginFrame(dt);
 
+        const auto bench_frame_begin = std::chrono::steady_clock::now();
         GRender_BeginFrame();
         GRender_RenderWorld();
         GRender_RenderGizmo();
         GRender_EndFrame();
 
         GCore_EndFrame();
+        if (bench_frames > 0) {
+            const auto bench_frame_end = std::chrono::steady_clock::now();
+            bench_frame_ms.push_back(
+                std::chrono::duration<float, std::milli>(bench_frame_end - bench_frame_begin).count());
+        }
         ++rendered;
 
         if (!shot_requested && shot_wanted && rendered >= frames) {
@@ -764,6 +793,47 @@ int main(int argc, char** argv) {
         // 统计在帧槽复用时结算（有 2 帧延迟），这里已跑满 bench_frames，直接打印。
         GRender_DumpGPUProfiling();
         GRender_SetGPUProfiling(0);
+    }
+    if (bench_frames > 0 && bench_frame_ms.size() > 40) {
+        // 丢弃前 30 帧预热（着色器编译、探针首抓、缓冲首次分配）
+        constexpr size_t k_warmup = 30;
+        std::vector<float> s(bench_frame_ms.begin() + static_cast<ptrdiff_t>(k_warmup),
+                             bench_frame_ms.end());
+        std::sort(s.begin(), s.end());
+        double sum = 0.0;
+        for (float v : s) sum += v;
+        const float avg = static_cast<float>(sum / static_cast<double>(s.size()));
+        const float p50 = s[s.size() / 2];
+        const float p99 = s[static_cast<size_t>(static_cast<double>(s.size() - 1) * 0.99)];
+        const float mx = s.back();
+        size_t spikes = 0;
+        for (float v : s) if (v > p50 * 2.0f) ++spikes;
+        std::printf("[cpu] 帧耗时 样本=%zu  平均=%.2fms(%.1f FPS)  中位=%.2fms  "
+                    "p99=%.2fms  最大=%.2fms  抖动倍数=%.1fx\n",
+                    s.size(), avg, avg > 0.0f ? 1000.0f / avg : 0.0f, p50, p99, mx,
+                    p50 > 0.0f ? mx / p50 : 0.0f);
+        std::printf("[cpu] 尖峰(>2x中位)=%zu 帧 (%.1f%%)\n", spikes,
+                    s.empty() ? 0.0 : 100.0 * static_cast<double>(spikes) / static_cast<double>(s.size()));
+        // 最慢的 5 帧及其序号：用于区分"周期性尖峰"（序号间隔固定）与
+        // "收尾一次性开销"（序号集中在末尾，如截图编码/写盘）。
+        std::vector<size_t> order(s.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::partial_sort(order.begin(), order.begin() + std::min<size_t>(5, order.size()),
+                          order.end(),
+                          [&](size_t a, size_t b) { return bench_frame_ms[k_warmup + a] > bench_frame_ms[k_warmup + b]; });
+        std::printf("[cpu] 最慢 5 帧(帧序号:耗时ms):");
+        for (size_t i = 0; i < std::min<size_t>(5, order.size()); ++i) {
+            std::printf(" #%zu:%.1f", k_warmup + order[i], bench_frame_ms[k_warmup + order[i]]);
+        }
+        std::printf("\n");
+        // 每 16 帧为一组打印组内最大耗时，周期性重抓（探针每 16 帧全场景 6 面）
+        // 会表现为固定的第 16 帧凸起。
+        std::printf("[cpu] 前 64 帧耗时(ms):");
+        const size_t show = std::min<size_t>(s.size(), 64);
+        for (size_t i = 0; i < show; ++i) {
+            std::printf(" %s%.1f", (i % 16 == 15) ? "|" : "", bench_frame_ms[k_warmup + i]);
+        }
+        std::printf("\n");
     }
     GRender_Shutdown();
     GCore_Shutdown();
