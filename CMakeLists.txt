@@ -49,6 +49,65 @@ set_target_properties(glfw PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${GLFW3_INCLUDE_DIR}")
 
 # ===========================================================================
+# 物理依赖：Box2D（2D 刚体）+ Jolt Physics（3D 刚体）
+# 两者均由 MSYS2/ucrt64 提供 CMake 配置包（box2dConfig / JoltConfig），
+# 导入目标为 box2d::box2d 与 Jolt::Jolt（均为共享库）。
+# 配置包只导出 RELEASE 配置，Debug/RelWithDebInfo 构建经 MAP_IMPORTED_CONFIG
+# 回退到 RELEASE 导入库，避免 "configuration not found" 报错。
+# ===========================================================================
+find_package(box2d QUIET CONFIG
+    PATHS D:/msys64/ucrt64/lib/cmake/box2d D:/msys64/ucrt64/lib/cmake)
+find_package(Jolt QUIET CONFIG
+    PATHS D:/msys64/ucrt64/lib/cmake/Jolt D:/msys64/ucrt64/lib/cmake)
+
+if(NOT TARGET box2d::box2d)
+    message(FATAL_ERROR "Box2D not found: install mingw-w64-ucrt-x86_64-box2d")
+endif()
+if(NOT TARGET Jolt::Jolt)
+    message(FATAL_ERROR "Jolt Physics not found: install mingw-w64-ucrt-x86_64-jolt")
+endif()
+foreach(_cfg DEBUG RELWITHDEBINFO MINSIZEREL)
+    set_target_properties(box2d::box2d PROPERTIES MAP_IMPORTED_CONFIG_${_cfg} RELEASE)
+    set_target_properties(Jolt::Jolt PROPERTIES MAP_IMPORTED_CONFIG_${_cfg} RELEASE)
+endforeach()
+unset(_cfg)
+message(STATUS "Box2D: ${box2d_DIR}")
+message(STATUS "Jolt Physics: ${Jolt_DIR}")
+
+# ===========================================================================
+# 音频依赖：Amplitude Audio SDK（SparkyStudios）
+# 以预编译静态库形式随仓库分发（third_party/amplitude）：SDK 源码需 GCC16
+# 补丁且构建耗时，故引擎侧只消费头文件 + libAmplitude.a 及其两个私有依赖
+# （libflatbuffers.a / libsamplerate.a，静态库不会自动带入 PRIVATE 依赖）。
+# ===========================================================================
+set(AMPLITUDE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/amplitude)
+if(NOT EXISTS ${AMPLITUDE_ROOT}/lib/libAmplitude.a)
+    message(FATAL_ERROR "Amplitude SDK not vendored under third_party/amplitude")
+endif()
+
+add_library(amplitude STATIC IMPORTED)
+set_target_properties(amplitude PROPERTIES
+    IMPORTED_LOCATION "${AMPLITUDE_ROOT}/lib/libAmplitude.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${AMPLITUDE_ROOT}/include"
+)
+add_library(flatbuffers STATIC IMPORTED)
+set_target_properties(flatbuffers PROPERTIES
+    IMPORTED_LOCATION "${AMPLITUDE_ROOT}/lib/libflatbuffers.a"
+)
+add_library(samplerate STATIC IMPORTED)
+set_target_properties(samplerate PROPERTIES
+    IMPORTED_LOCATION "${AMPLITUDE_ROOT}/lib/libsamplerate.a"
+)
+
+find_package(Threads REQUIRED)
+target_link_libraries(amplitude INTERFACE
+    flatbuffers samplerate Threads::Threads ${CMAKE_DL_LIBS})
+if(WIN32)
+    # Amplitude 内置 miniaudio 后端在 Windows 上的系统依赖（WASAPI/DSound/MME）。
+    target_link_libraries(amplitude INTERFACE ole32 uuid winmm user32 advapi32)
+endif()
+
+# ===========================================================================
 # 渲染引擎本体：engine/ 下的 GryceCore.dll / GryceRenderer.dll / GrycePlatform.dll
 # ===========================================================================
 add_subdirectory(engine)
@@ -133,6 +192,10 @@ add_custom_target(GryceSyncRuntimeDlls ALL
             "$<TARGET_FILE:GryceCore>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:GrycePlatform>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:box2d::box2d>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:Jolt::Jolt>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
     DEPENDS ${GRYCE_DLL_TARGETS} GryceRenderSmoke
     COMMENT "Syncing engine DLLs next to GryceRenderSmoke.exe"
     VERBATIM

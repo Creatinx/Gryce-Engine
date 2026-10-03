@@ -37,6 +37,11 @@
 #include "components/2d/misc_components.h"
 #include "components/common/system_components.h"
 
+// 物理（Box2D 2D / Jolt 3D）与音频（Amplitude）
+#include "components/physics_2d.h"
+#include "components/physics_3d.h"
+#include "components/audio_3d.h"
+
 using namespace gryce_engine::components;
 
 // 嵌套命名空间组件引入短名，便于宏注册（宏会把 Class token 字符串化）
@@ -477,6 +482,115 @@ GRYCE_REFLECT_END()
 
 GRYCE_REFLECT_CLASS(VisibilityNotifier2D, Component2D)
     GRYCE_REFLECT_FIELD(size)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 物理组件（2D Box2D / 3D Jolt）
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(RigidBody2D, Component)
+    GRYCE_REFLECT_FIELD_ENUM(body_type)
+    GRYCE_REFLECT_FIELD(velocity)
+    GRYCE_REFLECT_FIELD(angular_velocity)
+    GRYCE_REFLECT_FIELD_RANGE(linear_damping, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(angular_damping, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(gravity_scale, -10.0f, 10.0f)
+    GRYCE_REFLECT_FIELD(fixed_rotation)
+    GRYCE_REFLECT_FIELD(continuous)
+    GRYCE_REFLECT_FIELD(awake)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(BoxCollider2D, Component)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD(offset)
+    GRYCE_REFLECT_FIELD(rotation)
+    GRYCE_REFLECT_FIELD_RANGE(density, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(friction, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(restitution, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(is_sensor)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(CircleCollider2D, Component)
+    GRYCE_REFLECT_FIELD_RANGE(radius, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(offset)
+    GRYCE_REFLECT_FIELD_RANGE(density, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(friction, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(restitution, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(is_sensor)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(WindZone2D, Component)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD(offset)
+    GRYCE_REFLECT_FIELD(force)
+    GRYCE_REFLECT_FIELD_RANGE(turbulence, 0.0f, 1000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(turbulence_frequency, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD_RANGE(falloff, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD_RANGE(drag, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD(affect_sleeping)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(BuoyancyArea2D, Component)
+    GRYCE_REFLECT_FIELD(size)
+    GRYCE_REFLECT_FIELD(offset)
+    GRYCE_REFLECT_FIELD(surface_height)
+    GRYCE_REFLECT_FIELD_RANGE(fluid_density, 0.0f, 100000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(linear_drag, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD_RANGE(angular_drag, 0.0f, 100.0f)
+    GRYCE_REFLECT_FIELD(flow_velocity)
+    GRYCE_REFLECT_FIELD(affects_sleeping)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(RigidBody3D, Component)
+    GRYCE_REFLECT_FIELD_ENUM(body_type)
+    GRYCE_REFLECT_FIELD(velocity)
+    GRYCE_REFLECT_FIELD(angular_velocity)
+    GRYCE_REFLECT_FIELD_RANGE(linear_damping, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(angular_damping, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(gravity_scale, -10.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(friction, 0.0f, 10.0f)
+    GRYCE_REFLECT_FIELD_RANGE(restitution, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(allow_sleeping)
+    GRYCE_REFLECT_FIELD(continuous)
+    GRYCE_REFLECT_FIELD(awake)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(BoxCollider3D, Component)
+    GRYCE_REFLECT_FIELD(half_extents)
+    GRYCE_REFLECT_FIELD(offset)
+    GRYCE_REFLECT_FIELD(rotation)
+    GRYCE_REFLECT_FIELD(is_sensor)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(SphereCollider3D, Component)
+    GRYCE_REFLECT_FIELD_RANGE(radius, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(offset)
+    GRYCE_REFLECT_FIELD(is_sensor)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(CapsuleCollider3D, Component)
+    GRYCE_REFLECT_FIELD_RANGE(radius, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(half_height, 0.0f, 10000.0f)
+    GRYCE_REFLECT_FIELD(offset)
+    GRYCE_REFLECT_FIELD(rotation)
+    GRYCE_REFLECT_FIELD(is_sensor)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 音频组件（Amplitude）
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(AudioListener, Component)
+    GRYCE_REFLECT_FIELD_RANGE(gain, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD(is_default)
+GRYCE_REFLECT_END()
+
+GRYCE_REFLECT_CLASS(AudioEmitter, Component)
+    GRYCE_REFLECT_FIELD(event_name)
+    GRYCE_REFLECT_FIELD(play_on_start)
+    GRYCE_REFLECT_FIELD(loop)
+    GRYCE_REFLECT_FIELD_RANGE(gain, 0.0f, 1.0f)
+    GRYCE_REFLECT_FIELD_RANGE(pitch, 0.01f, 4.0f)
+    GRYCE_REFLECT_FIELD_RANGE(min_distance, 0.0f, 100000.0f)
+    GRYCE_REFLECT_FIELD_RANGE(max_distance, 0.0f, 100000.0f)
 GRYCE_REFLECT_END()
 
 namespace gryce_engine::reflection {

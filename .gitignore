@@ -31,3 +31,8 @@ shot_*.png
 # ---- 系统 ----
 Thumbs.db
 .DS_Store
+
+# ---- 例外：随仓库分发的第三方预编译静态库 ----
+# Amplitude Audio SDK 以预编译静态库形式入库（见根 CMakeLists 说明），
+# 需覆盖上面的 *.a 规则。
+!third_party/amplitude/lib/*.a

@@ -23,6 +23,11 @@
 #include "components/2d/parallax_background.h"
 #include "components/2d/particle_emitter.h"
 
+// 物理（Box2D 2D / Jolt 3D）与音频（Amplitude）
+#include "components/physics_2d.h"
+#include "components/physics_3d.h"
+#include "components/audio_3d.h"
+
 // 新增组件（3D / 2D / 系统级）
 #include "components/3d/visual_components.h"
 #include "components/3d/system_components.h"
@@ -168,6 +173,40 @@ void register_builtin_components() {
                           "2D 屏幕可见通知（对象池/剔除）。", k_cat_2d);
     factory.register_type("VisibilityNotifier3D", []() { return std::make_unique<VisibilityNotifier3D>(); },
                           "3D 屏幕可见通知（对象池/剔除）。", k_cat_3d);
+
+    // =====================================================================
+    // 物理：2D（Box2D）
+    // =====================================================================
+    factory.register_type("RigidBody2D", []() { return std::make_unique<RigidBody2D>(); },
+                          "2D 刚体：静态/运动学/动力学，需搭配 2D 碰撞体。", k_cat_2d);
+    factory.register_type("BoxCollider2D", []() { return std::make_unique<BoxCollider2D>(); },
+                          "2D 矩形碰撞体，提供质量、摩擦与弹性。", k_cat_2d);
+    factory.register_type("CircleCollider2D", []() { return std::make_unique<CircleCollider2D>(); },
+                          "2D 圆形碰撞体，提供质量、摩擦与弹性。", k_cat_2d);
+    factory.register_type("WindZone2D", []() { return std::make_unique<WindZone2D>(); },
+                          "2D 风力区域：对区域内刚体施加风加速度，支持湍流与边缘衰减。", k_cat_2d);
+    factory.register_type("BuoyancyArea2D", []() { return std::make_unique<BuoyancyArea2D>(); },
+                          "2D 浮力/流体区域：阿基米德浮力 + 流体阻力，物体可漂浮于水面。", k_cat_2d);
+
+    // =====================================================================
+    // 物理：3D（Jolt Physics）
+    // =====================================================================
+    factory.register_type("RigidBody3D", []() { return std::make_unique<RigidBody3D>(); },
+                          "3D 刚体：静态/运动学/动力学，需搭配 3D 碰撞体。", k_cat_3d);
+    factory.register_type("BoxCollider3D", []() { return std::make_unique<BoxCollider3D>(); },
+                          "3D 长方体碰撞体（半长定义）。", k_cat_3d);
+    factory.register_type("SphereCollider3D", []() { return std::make_unique<SphereCollider3D>(); },
+                          "3D 球体碰撞体。", k_cat_3d);
+    factory.register_type("CapsuleCollider3D", []() { return std::make_unique<CapsuleCollider3D>(); },
+                          "3D 胶囊碰撞体，常用于角色控制器。", k_cat_3d);
+
+    // =====================================================================
+    // 音频（Amplitude Audio SDK）
+    // =====================================================================
+    factory.register_type("AudioListener", []() { return std::make_unique<AudioListener>(); },
+                          "音频监听者，通常挂在相机实体上。", k_cat_3d);
+    factory.register_type("AudioEmitter", []() { return std::make_unique<AudioEmitter>(); },
+                          "3D 音源发射器，按事件名触发 Amplitude 声音。", k_cat_3d);
 }
 
 ComponentFactory& ComponentFactory::instance() {

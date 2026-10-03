@@ -90,6 +90,11 @@ target_sources(GryceCore
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
         ecs/systems/hierarchy_system.cpp
+        # 物理（Box2D 2D / Jolt 3D）
+        ecs/systems/physics_system_2d.cpp
+        ecs/systems/physics_system_3d.cpp
+        # 音频（Amplitude Audio SDK）
+        ecs/systems/audio_system.cpp
         # Render 抽象（核心，与 backend 无关）
         render/render_context.cpp
         render/material.cpp
@@ -116,6 +121,13 @@ target_include_directories(GryceCore PUBLIC
 if(WIN32)
     target_link_libraries(GryceCore PUBLIC imm32 winmm bcrypt)
 endif()
+
+# 物理：Box2D（2D 刚体）+ Jolt Physics（3D 刚体）由 GryceCore 直接使用并对外传递
+target_link_libraries(GryceCore PUBLIC box2d::box2d)
+target_link_libraries(GryceCore PUBLIC Jolt::Jolt)
+
+# 音频：Amplitude Audio SDK（静态库，含 flatbuffers/samplerate 私有依赖，见根 CMake）
+target_link_libraries(GryceCore PUBLIC amplitude)
 
 # ---------------------------------------------------------------------------
 # GryceRenderer.dll

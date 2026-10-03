@@ -8,6 +8,9 @@
 #include "ecs/systems/animator_system.h"
 #include "ecs/systems/subviewport_system.h"
 #include "ecs/systems/hierarchy_system.h"
+#include "ecs/systems/physics_system_2d.h"
+#include "ecs/systems/physics_system_3d.h"
+#include "ecs/systems/audio_system.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "scene/scene_serializer.h"
@@ -581,6 +584,11 @@ int GCore_Init(const GCoreInitDesc* desc) {
     // 编辑器/运行时统一注册核心系统：动画驱动、层级同步。
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::AnimatorSystem>());
     gryce_core::g_core_state.world->register_system(std::make_unique<ecs::HierarchySystem>());
+    // 物理与音频：2D（Box2D，含风/浮力）、3D（Jolt）、音频（Amplitude）。
+    // 均为无资源时的安全空转，项目未使用对应组件时不产生开销。
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::PhysicsSystem2D>());
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::PhysicsSystem3D>());
+    gryce_core::g_core_state.world->register_system(std::make_unique<ecs::AudioSystem>());
     gryce_core::g_core_state.world->init();
 
     gryce_core::g_core_state.entity_map.rebuild(gryce_core::g_core_state.world->scene());
