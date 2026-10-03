@@ -40,6 +40,8 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-glfw
             mingw-w64-ucrt-x86_64-glew
+            mingw-w64-ucrt-x86_64-box2d
+            mingw-w64-ucrt-x86_64-jolt-physics
 
       - name: Configure
         run: cmake -S . -B build -G Ninja

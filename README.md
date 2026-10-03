@@ -4,7 +4,7 @@
 
 Gryce Engine 是一个面向 Windows 的 C++26 游戏引擎，核心为**带反射系统的 ECS 架构**与**双后端（OpenGL / Vulkan）渲染器**。仓库当前以渲染器为主线，已打通场景序列化、资源系统、2D/3D 物理、音频与动画，并提供可直接运行的冒烟/演示程序 `GryceRenderSmoke`。
 
-> 目标平台：Windows + MSYS2 UCRT64。构建脚本中的工具链路径按 `D:/msys64/ucrt64` 硬编码，其他安装位置需自行调整。
+> 目标平台：Windows + MSYS2 UCRT64（也支持 CLion 自带 MinGW / vcpkg / 任意自定义前缀）。构建脚本不含任何机器专属的绝对路径：依赖前缀由 `cmake/GryceDependencyPaths.cmake` 从环境变量与编译器路径自动推断，装好依赖即可直接配置。
 
 ---
 
@@ -45,6 +45,9 @@ Gryce Engine 是一个面向 Windows 的 C++26 游戏引擎，核心为**带反�
 ```
 Gryce-Engine/
 ├── CMakeLists.txt              根构建脚本：依赖发现、测试注册、DLL 同步
+├── cmake/                      构建辅助模块，无硬编码路径
+│   ├── GryceDependencyPaths.cmake   依赖前缀自动推断 + 缺失时的排查提示
+│   └── GryceFetchDeps.cmake         缺失依赖的 FetchContent 源码构建兜底
 ├── engine/                     引擎本体（命名空间 gryce_engine）
 │   ├── api/                    C API 边界（core / entity / scene / component / render ...）
 │   ├── math/                   数学库与相机
@@ -90,7 +93,7 @@ Gryce-Engine/
 | Amplitude Audio SDK | 仓库内置 `third_party/amplitude` | 预编译静态库，随仓库分发 |
 | stb / tinyexr / nlohmann_json / imgui / quickjs | 仓库内置 `third_party` | 图像、EXR、JSON、编辑器 UI、脚本 |
 
-安装 MSYS2 侧依赖（在 MSYS2 UCRT64 终端中执行）：
+这些依赖**不是必须手动安装**的：CMake 优先在系统里找，找不到会自动用 `FetchContent` 拉源码随工程一起编译（见下方"依赖的两种来源"）。想完全离线或统一版本，可在 MSYS2 UCRT64 终端里装系统包：
 
 ```bash
 pacman -S --needed \
@@ -101,8 +104,57 @@ pacman -S --needed \
   mingw-w64-ucrt-x86_64-glfw \
   mingw-w64-ucrt-x86_64-glew \
   mingw-w64-ucrt-x86_64-box2d \
-  mingw-w64-ucrt-x86_64-jolt
+  mingw-w64-ucrt-x86_64-jolt-physics
 ```
+
+### 依赖的两种来源
+
+注意：**CMake 本身不会自动下载依赖**。`find_package` / `find_library` 只在本机磁盘上搜索已安装的东西；要"自动下载"必须显式使用 `FetchContent`（CMake 内置）或 CPM / vcpkg / conan。本工程用 CMake 内置的 `FetchContent` 做兜底，策略由 `GRYCE_DEP_FETCH` 控制：
+
+| 取值 | 行为 |
+| --- | --- |
+| `AUTO`（默认） | 系统包优先；某一项系统里找不到，就只把那一项拉源码编译 |
+| `ON` | 忽略系统包，全部拉源码编译（版本最可控，首次配置要下载） |
+| `OFF` | 只用系统包，完全离线（CI / 受控环境） |
+
+```bash
+cmake -S . -B build -G Ninja -DGRYCE_DEP_FETCH=AUTO
+```
+
+源码按固定版本拉取：GLFW `3.4`、GLEW `glew-2.2.0`（官方 release 包，因为 git 仓库里没有构建期生成的头文件）、Box2D `v3.1.1`、Jolt Physics `v5.3.0`（CMake 入口在其 `Build/` 子目录）。下载物缓存在 `build/_deps`，删掉构建目录才会重新下载。
+
+网络不通时的三种办法（任选其一）：
+
+```bash
+# 1. 换镜像（国内常见做法）
+cmake -S . -B build -DGRYCE_DEP_GIT_BASE="https://ghfast.top/https://github.com/"
+
+# 2. 用本地已有源码，完全离线（CMake 原生变量，跳过下载）
+cmake -S . -B build -DFETCHCONTENT_SOURCE_DIR_JOLT=D:/deps/JoltPhysics
+
+# 3. 装系统包（pacman 见上），构建时会自动优先使用
+```
+
+已知代价：Jolt Physics 源码较大（约 60 MB）、编译最慢；若不想等，装系统包即可让 CMake 跳过它。
+
+依赖前缀（`<prefix>` = 含 `include/` `lib/` `bin/` 的目录）按以下顺序推断，**无需手写路径**：
+
+1. `-DGRYCE_DEP_PREFIX=<prefix>` 或环境变量 `GRYCE_DEP_PREFIX`（多路径用 `;` 分隔）
+2. 环境变量 `CMAKE_PREFIX_PATH`
+3. `MSYS2_ROOT` + `MSYSTEM`（如 `D:/msys64` + `UCRT64`）
+4. MSYS2 自带的 `MSYSTEM_PREFIX` / `MINGW_PREFIX`（POSIX 风格 `/ucrt64`，用 `cygpath` 转原生路径）
+5. C/C++ 编译器路径反推：`<root>/<msystem>/bin/g++.exe` → `<root>/<msystem>`
+
+常见场景：
+
+| 场景 | 做法 |
+| --- | --- |
+| MSYS2 装在非默认盘符 / 非 UCRT64 | 无需操作（在对应的 MSYS2 终端里配置即可）；也可 `-DGRYCE_DEP_PREFIX=D:/msys64/ucrt64` |
+| CLion / JetBrains 自带 MinGW | 无需操作，前缀由编译器路径反推到 `<CLion>/bin/mingw` |
+| vcpkg | `cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake` |
+| 自定义前缀 | `-DGRYCE_DEP_PREFIX=<prefix>` 或 `export GRYCE_DEP_PREFIX=<prefix>` |
+
+Vulkan SDK 为可选项：装好 LunarG SDK 后 `VULKAN_SDK` 环境变量会指向它，未安装时自动关闭 Vulkan 后端与对应测试。
 
 ---
 
@@ -122,7 +174,7 @@ cmake --build build --parallel
 | `GrycePlatform.dll` | 窗口、输入、光标 |
 | `GryceRenderSmoke.exe` | 冒烟 / 演示宿主 |
 
-构建完成后，`GryceSyncRuntimeDlls` 目标会把引擎 DLL 及 Box2D / Jolt 的运行库复制到 `GryceRenderSmoke.exe` 同目录，可直接运行。
+构建完成后，`GryceSyncRuntimeDlls` 目标会把引擎 DLL 及第三方运行库（Box2D / Jolt / GLFW / GLEW）复制到 `GryceRenderSmoke.exe` 同目录，脱离 MSYS2 终端也能直接运行。
 
 可选构建开关：
 

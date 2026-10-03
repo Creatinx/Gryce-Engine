@@ -8,6 +8,18 @@ project(GryceEngineRenderer
 option(GRYCE_ENABLE_IMGUI "Enable ImGui editor overlay in GryceRenderer" ON)
 
 # ===========================================================================
+# 依赖定位（可移植，不含任何机器专属绝对路径）
+# cmake/GryceDependencyPaths.cmake 按 GRYCE_DEP_PREFIX / MSYS2_ROOT+MSYSTEM /
+# MSYSTEM_PREFIX / 编译器路径 逐级推断候选前缀，写入 CMAKE_PREFIX_PATH。
+# 之后的 find_* 全部不再写死路径：把 MSYS2 装在任意盘符、用 CLion 自带
+# MinGW、或用 vcpkg/自定义前缀，都能直接配置。
+# ===========================================================================
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(GryceDependencyPaths)
+# 依赖缺失时的 FetchContent 兜底（CMake 不会自动下载依赖，必须显式声明）
+include(GryceFetchDeps)
+
+# ===========================================================================
 # 全局编译选项
 # ===========================================================================
 set(CMAKE_CXX_STANDARD 26)
@@ -29,50 +41,99 @@ if(LLD_LINKER)
 endif()
 
 # ===========================================================================
-# GLFW：使用系统安装（MSYS2/ucrt64）。共享库语义：引擎 DLL 与可执行文件
-# 各自调用 GLFW，动态库由 OS 加载一次，故使用 glfw3.dll 的导入库 libglfw3.dll.a。
+# GLFW：优先用环境里已安装的 GLFW（MSYS2 / vcpkg / CLion MinGW / 自定义前缀），
+# 找不到时按 GRYCE_DEP_FETCH 策略用 FetchContent 拉源码构建（默认 AUTO）。
+# 共享库语义：引擎 DLL 与可执行文件各自调用 GLFW，动态库由 OS 加载一次，
+# 故优先挑 DLL 的导入库（libglfw3.dll.a、libglfw3dll.a），而不是静态 libglfw3.a。
 # ===========================================================================
-find_path(GLFW3_INCLUDE_DIR GLFW/glfw3.h
-    PATHS D:/msys64/ucrt64/include)
-find_library(GLFW3_LIBRARY NAMES glfw3 glfw
-    PATHS D:/msys64/ucrt64/lib)
-set(GLFW3_DLL "_glfw_dll_NOTFOUND")
-find_file(GLFW3_DLL glfw3.dll
-    PATHS D:/msys64/ucrt64/bin)
-if(NOT GLFW3_INCLUDE_DIR OR NOT GLFW3_LIBRARY OR NOT GLFW3_DLL)
-    message(FATAL_ERROR "GLFW not found: need GLFW/glfw3.h + libglfw3.dll.a + glfw3.dll under MSYS2/ucrt64")
+if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
+    find_path(GLFW3_INCLUDE_DIR GLFW/glfw3.h)
+    set(_gryce_saved_lib_suffixes ${CMAKE_FIND_LIBRARY_SUFFIXES})
+    if(WIN32)
+        # .dll.a 是 MinGW 的导入库，排在 .a 前面可避免误链静态库
+        set(CMAKE_FIND_LIBRARY_SUFFIXES .dll.a .lib .a)
+    endif()
+    find_library(GLFW3_LIBRARY NAMES glfw3dll glfw3 glfw)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ${_gryce_saved_lib_suffixes})
+    unset(_gryce_saved_lib_suffixes)
+    # 运行期 DLL：MSYS2 在 <prefix>/bin，部分 MinGW 发行版放在 <prefix>/lib
+    # 注意：不能先用 set() 预置哨兵值——find_file 见到同名普通变量会直接跳过搜索，
+    # 结果变量永远停在哨兵上且能通过 if(NOT ...) 判空（历史 bug）。要重置请用 unset(CACHE)。
+    unset(GLFW3_DLL CACHE)
+    find_file(GLFW3_DLL glfw3.dll PATH_SUFFIXES bin lib)
 endif()
-add_library(glfw SHARED IMPORTED)
-set_target_properties(glfw PROPERTIES
-    IMPORTED_LOCATION "${GLFW3_DLL}"
-    IMPORTED_IMPLIB   "${GLFW3_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${GLFW3_INCLUDE_DIR}")
+
+if(GLFW3_INCLUDE_DIR AND GLFW3_LIBRARY AND GLFW3_DLL)
+    add_library(glfw SHARED IMPORTED)
+    set_target_properties(glfw PROPERTIES
+        IMPORTED_LOCATION "${GLFW3_DLL}"
+        IMPORTED_IMPLIB   "${GLFW3_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${GLFW3_INCLUDE_DIR}")
+    message(STATUS "GLFW: system package at ${GLFW3_LIBRARY}")
+else()
+    gryce_fetch_enabled(_gryce_may_fetch)
+    if(NOT _gryce_may_fetch)
+        gryce_dependency_hint("GLFW (need GLFW/glfw3.h + glfw3 import library + glfw3.dll)")
+    endif()
+    gryce_fetch_glfw()
+    if(NOT TARGET glfw)
+        message(FATAL_ERROR "GLFW unavailable: neither a system package nor FetchContent succeeded")
+    endif()
+endif()
 
 # ===========================================================================
 # 物理依赖：Box2D（2D 刚体）+ Jolt Physics（3D 刚体）
-# 两者均由 MSYS2/ucrt64 提供 CMake 配置包（box2dConfig / JoltConfig），
+# 两者都以 CMake 配置包形式安装（box2dConfig.cmake / JoltConfig.cmake），
 # 导入目标为 box2d::box2d 与 Jolt::Jolt（均为共享库）。
+# 搜索路径来自 CMAKE_PREFIX_PATH（见 GryceDependencyPaths），无需写死前缀。
 # 配置包只导出 RELEASE 配置，Debug/RelWithDebInfo 构建经 MAP_IMPORTED_CONFIG
 # 回退到 RELEASE 导入库，避免 "configuration not found" 报错。
 # ===========================================================================
-find_package(box2d QUIET CONFIG
-    PATHS D:/msys64/ucrt64/lib/cmake/box2d D:/msys64/ucrt64/lib/cmake)
-find_package(Jolt QUIET CONFIG
-    PATHS D:/msys64/ucrt64/lib/cmake/Jolt D:/msys64/ucrt64/lib/cmake)
+if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
+    find_package(box2d QUIET CONFIG)
+    find_package(Jolt QUIET CONFIG)
+endif()
 
+gryce_fetch_enabled(_gryce_may_fetch)
 if(NOT TARGET box2d::box2d)
-    message(FATAL_ERROR "Box2D not found: install mingw-w64-ucrt-x86_64-box2d")
+    if(NOT _gryce_may_fetch)
+        gryce_dependency_hint("Box2D (MSYS2: mingw-w64-ucrt-x86_64-box2d)")
+    endif()
+    gryce_fetch_box2d()
+    if(NOT TARGET box2d::box2d)
+        message(FATAL_ERROR "Box2D unavailable: neither a system package nor FetchContent succeeded")
+    endif()
 endif()
 if(NOT TARGET Jolt::Jolt)
-    message(FATAL_ERROR "Jolt Physics not found: install mingw-w64-ucrt-x86_64-jolt")
+    if(NOT _gryce_may_fetch)
+        gryce_dependency_hint("Jolt Physics (MSYS2: mingw-w64-ucrt-x86_64-jolt-physics)")
+    endif()
+    gryce_fetch_jolt()
+    if(NOT TARGET Jolt::Jolt)
+        message(FATAL_ERROR "Jolt Physics unavailable: neither a system package nor FetchContent succeeded")
+    endif()
 endif()
-foreach(_cfg DEBUG RELWITHDEBINFO MINSIZEREL)
-    set_target_properties(box2d::box2d PROPERTIES MAP_IMPORTED_CONFIG_${_cfg} RELEASE)
-    set_target_properties(Jolt::Jolt PROPERTIES MAP_IMPORTED_CONFIG_${_cfg} RELEASE)
+
+# 配置包只导出 RELEASE 配置：Debug/RelWithDebInfo 构建需要把导入库回退到
+# RELEASE，否则报 "configuration not found"。该属性只对 IMPORTED 目标有效，
+# FetchContent 构建出来的普通目标不能设（会报错），故先判断。
+foreach(_t box2d::box2d Jolt::Jolt)
+    get_target_property(_is_imported ${_t} IMPORTED)
+    if(_is_imported)
+        foreach(_cfg DEBUG RELWITHDEBINFO MINSIZEREL)
+            set_target_properties(${_t} PROPERTIES MAP_IMPORTED_CONFIG_${_cfg} RELEASE)
+        endforeach()
+    endif()
 endforeach()
+unset(_t)
+unset(_is_imported)
 unset(_cfg)
-message(STATUS "Box2D: ${box2d_DIR}")
-message(STATUS "Jolt Physics: ${Jolt_DIR}")
+if(box2d_DIR)
+    message(STATUS "Box2D: ${box2d_DIR}")
+endif()
+if(Jolt_DIR)
+    message(STATUS "Jolt Physics: ${Jolt_DIR}")
+endif()
 
 # ===========================================================================
 # 音频依赖：Amplitude Audio SDK（SparkyStudios）
@@ -108,17 +169,67 @@ if(WIN32)
 endif()
 
 # ===========================================================================
+# GLEW：OpenGL 扩展加载。优先用系统包，缺失时按 GRYCE_DEP_FETCH 拉源码构建。
+# 两种情况都统一暴露成 GLEW::GLEW 目标，engine/ 只消费这个目标。
+# ===========================================================================
+if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
+    find_path(GLEW_INCLUDE_DIR GL/glew.h)
+    find_library(GLEW_LIBRARY NAMES glew32 GLEW glew)
+    unset(GLEW_DLL CACHE)
+    find_file(GLEW_DLL glew32.dll PATH_SUFFIXES bin lib)
+endif()
+
+if(GLEW_INCLUDE_DIR AND GLEW_LIBRARY)
+    if(GLEW_DLL)
+        add_library(GLEW::GLEW SHARED IMPORTED)
+        set_target_properties(GLEW::GLEW PROPERTIES
+            IMPORTED_LOCATION "${GLEW_DLL}"
+            IMPORTED_IMPLIB   "${GLEW_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${GLEW_INCLUDE_DIR}")
+    else()
+        # 只有导入库、拿不到 DLL：用 UNKNOWN 类型，链接照常，只是不同步运行库
+        add_library(GLEW::GLEW UNKNOWN IMPORTED)
+        set_target_properties(GLEW::GLEW PROPERTIES
+            IMPORTED_LOCATION "${GLEW_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${GLEW_INCLUDE_DIR}")
+    endif()
+    message(STATUS "GLEW: system package at ${GLEW_LIBRARY}")
+else()
+    gryce_fetch_enabled(_gryce_may_fetch)
+    if(NOT _gryce_may_fetch)
+        gryce_dependency_hint("GLEW (MSYS2: mingw-w64-ucrt-x86_64-glew)")
+    endif()
+    gryce_fetch_glew()
+    if(NOT TARGET GLEW::GLEW)
+        message(FATAL_ERROR "GLEW unavailable: neither a system package nor FetchContent succeeded")
+    endif()
+endif()
+
+# ===========================================================================
+# Vulkan SDK：可选依赖，find_package 读取 VULKAN_SDK 环境变量（任何机器装好
+# LunarG SDK 后都会设置）。只取头文件路径，不链接 MSVC 格式的 vulkan-1.lib
+# （MinGW 链接该导入库会导致设备级函数指针错乱）。所有 Vulkan 函数改为运行时
+# 从 vulkan-1.dll 加载（见 vk_loader.cpp）。
+# 必须在 add_subdirectory(engine) 之前探测：engine/CMakeLists.txt 与下面的
+# CTest 注册都要读 GRYCE_HAS_VULKAN，而子目录里的变量不会回传到父作用域。
+# ===========================================================================
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+    set(GRYCE_HAS_VULKAN TRUE)
+else()
+    set(GRYCE_HAS_VULKAN FALSE)
+    message(STATUS "Vulkan SDK not found: Vulkan backend and its smoke test are disabled")
+endif()
+
+# ===========================================================================
 # 渲染引擎本体：engine/ 下的 GryceCore.dll / GryceRenderer.dll / GrycePlatform.dll
 # ===========================================================================
 add_subdirectory(engine)
 
 # ===========================================================================
-# Vulkan SDK：find_package 依赖 VULKAN_SDK 环境变量。只取头文件路径，不链接
-# MSVC 格式的 vulkan-1.lib（MinGW/ucrt64 链接该导入库会导致设备级函数指针错乱）。
-# 所有 Vulkan 函数改为运行时从 vulkan-1.dll 加载（见 vk_loader.cpp）。
+# Vulkan 头文件封装：只暴露 include 路径与 VMA 的"动态加载"开关，不链接
+# vulkan-1.lib（见上方说明）。
 # ===========================================================================
-find_package(Vulkan QUIET)
-
 add_library(VulkanHeaders INTERFACE)
 target_include_directories(VulkanHeaders INTERFACE
     ${Vulkan_INCLUDE_DIRS}
@@ -185,6 +296,10 @@ endif()
 # GryceRenderer 会重新链接而 exe 不会，于是 exe 目录里留下旧 DLL，
 # 运行时加载的是过期二进制（排查"改了代码却看不到变化"的经典陷阱）。
 # 这里用始终执行的 ALL 目标 + copy_if_different，幂等且不会漏拷。
+# 第三方运行库（glfw3.dll / glew32.dll）也一并同步：它们来自依赖前缀，
+# 非 MSYS2 shell 里启动时 PATH 上不一定有，复制到 exe 同目录最稳。
+# 用 $<TARGET_FILE:...> 而不是绝对路径：系统包场景解析为 IMPORTED_LOCATION，
+# FetchContent 场景解析为本地构建产物，两种来源一套代码。
 add_custom_target(GryceSyncRuntimeDlls ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:GryceRenderer>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
@@ -196,7 +311,11 @@ add_custom_target(GryceSyncRuntimeDlls ALL
             "$<TARGET_FILE:box2d::box2d>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:Jolt::Jolt>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:glfw>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:GLEW::GLEW>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
     DEPENDS ${GRYCE_DLL_TARGETS} GryceRenderSmoke
-    COMMENT "Syncing engine DLLs next to GryceRenderSmoke.exe"
+    COMMENT "Syncing engine and third-party DLLs next to GryceRenderSmoke.exe"
     VERBATIM
 )

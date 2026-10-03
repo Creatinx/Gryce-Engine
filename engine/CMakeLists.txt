@@ -8,8 +8,9 @@
 #   GryceRenderer （管线 + 后端 renderer_rd/storage_rd/opengl/vulkan/高层管线）
 #   GrycePlatform （Window/Input/Cursor）
 #   GryceAudio    （静态音频模块，编译进 GryceCore）
-# 第三方由根 CMakeLists 提供：glfw(FetchContent)、VulkanHeaders、MSYS2 glew、
-# third_party/nlohmann_json、third_party/quickjs(GryceQuickJS target)。
+# 第三方由根 CMakeLists 提供：glfw、GLEW::GLEW、box2d::box2d、Jolt::Jolt、
+# amplitude（以上均为系统包优先、缺失时 FetchContent 拉源码构建）、
+# VulkanHeaders、third_party/nlohmann_json、third_party/quickjs(GryceQuickJS target)。
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -269,16 +270,9 @@ if(WIN32)
     target_link_libraries(GryceRenderer PRIVATE opengl32 gdi32)
 endif()
 
-# OpenGL：glew
-find_path(GLEW_INCLUDE_DIR GL/glew.h PATHS ${CMAKE_SOURCE_DIR} D:/msys64/ucrt64/include)
-find_library(GLEW_LIBRARY NAMES glew32 GLEW PATHS D:/msys64/ucrt64/lib)
-if(GLEW_INCLUDE_DIR AND GLEW_LIBRARY)
-    target_include_directories(GryceRenderer PUBLIC ${GLEW_INCLUDE_DIR})
-    target_link_libraries(GryceRenderer PUBLIC ${GLEW_LIBRARY})
-    message(STATUS "GLEW: ${GLEW_INCLUDE_DIR} / ${GLEW_LIBRARY}")
-else()
-    message(FATAL_ERROR "GLEW required: provide GL/glew.h and glew32")
-endif()
+# OpenGL：glew。由根 CMakeLists 统一准备 GLEW::GLEW（系统包或 FetchContent 源码），
+# 这里只消费目标，避免子目录里再写死任何机器专属路径。
+target_link_libraries(GryceRenderer PUBLIC GLEW::GLEW)
 
 # GLFW
 if(TARGET glfw)
