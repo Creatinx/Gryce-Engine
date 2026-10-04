@@ -121,12 +121,24 @@ pacman -S --needed \
 cmake -S . -B build -G Ninja -DGRYCE_DEP_FETCH=AUTO
 ```
 
-源码按固定版本拉取：GLFW `3.4`、GLEW `glew-2.2.0`（官方 release 包，因为 git 仓库里没有构建期生成的头文件）、Box2D `v3.1.1`、Jolt Physics `v5.3.0`（CMake 入口在其 `Build/` 子目录）。下载物缓存在 `build/_deps`，删掉构建目录才会重新下载。
+源码按固定版本拉取：GLFW `3.4`、GLEW `glew-2.2.0`（官方 release 包，因为 git 仓库里没有构建期生成的头文件）、Box2D `v3.1.1`、Jolt Physics `v5.3.0`（CMake 入口在其 `Build/` 子目录）。
 
-网络不通时的三种办法（任选其一）：
+**统一走 tarball，不走 `git clone`**：git 的智能 HTTP 协议一次 clone 要发多轮请求，穿过代理/加速器时极易被掐断（Jolt 全量 clone 约 60 MB，实测反复 `Connection was reset`；改走 tarball 后只有 18 MB，且是一次性 HTTPS GET）。tarball 还能用 SHA256 锁定内容，也不需要本机装 git。
+
+下载物缓存在 `build/_deps/tarballs`，重配置不会重复下载；校验和不匹配会自动重新下载。
+
+**源码地址自动探测**：默认先试直连 GitHub，不通就自动换镜像（`ghfast.top` / `gh-proxy.com` / `gh.llkk.cc`），探测结果写进 CMake 缓存，后续配置不再重试。配置时能看到类似输出：
+
+```
+-- Probing dependency source base: https://github.com/
+-- Probing dependency source base: https://ghfast.top/https://github.com/
+-- Dependency source base: https://ghfast.top/https://github.com/
+```
+
+想自己指定就传 `-DGRYCE_DEP_GIT_BASE=<前缀>`（例如 `https://ghfast.top/https://github.com/`）。若某个包反复下载失败，自动重试 3 次后报错，此时可：
 
 ```bash
-# 1. 换镜像（国内常见做法）
+# 1. 换镜像
 cmake -S . -B build -DGRYCE_DEP_GIT_BASE="https://ghfast.top/https://github.com/"
 
 # 2. 用本地已有源码，完全离线（CMake 原生变量，跳过下载）
@@ -135,7 +147,7 @@ cmake -S . -B build -DFETCHCONTENT_SOURCE_DIR_JOLT=D:/deps/JoltPhysics
 # 3. 装系统包（pacman 见上），构建时会自动优先使用
 ```
 
-已知代价：Jolt Physics 源码较大（约 60 MB）、编译最慢；若不想等，装系统包即可让 CMake 跳过它。
+已知代价：Jolt Physics 编译最慢；若不想等，装系统包即可让 CMake 跳过它。
 
 依赖前缀（`<prefix>` = 含 `include/` `lib/` `bin/` 的目录）按以下顺序推断，**无需手写路径**：
 
@@ -240,4 +252,6 @@ ctest --test-dir build --output-on-failure -C Release
 
 ## 许可
 
-本仓库暂未包含许可证文件。
+本项目主体采用 **MIT License**，详见 [LICENSE](LICENSE)。
+
+`third_party/` 下的第三方库遵循各自原有的许可证（如 `third_party/imgui/LICENSE.txt`、`third_party/quickjs/LICENSE` 等）。
