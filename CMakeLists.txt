@@ -269,21 +269,22 @@ if(WIN32)
 endif()
 
 # 注册 CTest：每个后端一条冒烟测试（小视口 + 少量帧以便 CI 快速跑完）。
-# 用 --no-analyze：renderer_smoke 内置的像素统计阈值针对参考大场景，在
-# 小视口下网格占比不足会误判渲染失效（假阴性）。CI 冒烟聚焦"初始化 +
-# 走帧管线 + 截图生成 + 不崩溃"，退出码 0 即通过；像素内容统计留给
-# 开发者在本地 --frames 大视口下人工对照。
+# 启用像素统计（不加 --no-analyze）：renderer_smoke 的判定是"场景里有
+# MeshRenderer 却不足 20% 非背景像素"即失败。曾经的假阴性来自 demo_project
+# 的 models/ 从未入库（场景 5 个 MeshRenderer、非背景像素 0.04%），
+# 而不是阈值本身不合适 —— 模型补齐后 256x256 也有约 60%，余量充足。
+# 保留统计才能守住"克隆后场景空白"这类回归。
 if(BUILD_TESTING)
     add_test(NAME renderer_smoke_opengl
              COMMAND GryceRenderSmoke --api opengl --frames 8 --w 256 --h 256
-                     --no-analyze --shot "${CMAKE_BINARY_DIR}/smoke_opengl.png"
+                     --shot "${CMAKE_BINARY_DIR}/smoke_opengl.png"
              WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(renderer_smoke_opengl PROPERTIES
         LABELS "render;smoke" TIMEOUT 120)
     if(GRYCE_HAS_VULKAN)
         add_test(NAME renderer_smoke_vulkan
                  COMMAND GryceRenderSmoke --api vulkan --frames 8 --w 256 --h 256
-                         --no-analyze --shot "${CMAKE_BINARY_DIR}/smoke_vulkan.png"
+                         --shot "${CMAKE_BINARY_DIR}/smoke_vulkan.png"
                  WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
         set_tests_properties(renderer_smoke_vulkan PROPERTIES
             LABELS "render;smoke" TIMEOUT 120)
@@ -300,6 +301,31 @@ endif()
 # 非 MSYS2 shell 里启动时 PATH 上不一定有，复制到 exe 同目录最稳。
 # 用 $<TARGET_FILE:...> 而不是绝对路径：系统包场景解析为 IMPORTED_LOCATION，
 # FetchContent 场景解析为本地构建产物，两种来源一套代码。
+#
+# MinGW 运行时 DLL（libstdc++-6 / libgcc_s_* / libwinpthread-1）不在任何依赖
+# 前缀里，只由编译器自己的 bin 目录提供，而该目录通常仅通过 PATH 可见。
+# 不复制就会导致脱离 MinGW/MSYS2 shell 时无法启动：shell 里报
+#   "libstdc++-6.dll: cannot open shared object file"（退出码 127），
+# ctest 里报 0xc0000135（DLL not found，且因 Windows 弹模态框而卡到超时）。
+# 这里用编译器路径反推 bin 目录，兼容 CLion 自带 MinGW 与 MSYS2 任意前缀；
+# libgcc_s 同时试 seh/dw2 两个名字，覆盖 x64 与 32 位线程模型。
+set(_gryce_mingw_rt_cmds "")
+if(MINGW)
+    get_filename_component(_gryce_cxx_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    foreach(_gryce_rt IN ITEMS
+            libstdc++-6.dll libgcc_s_seh-1.dll libgcc_s_dw2-1.dll libwinpthread-1.dll)
+        unset(_gryce_rt_path CACHE)
+        find_file(_gryce_rt_path "${_gryce_rt}"
+            PATHS "${_gryce_cxx_dir}" "${_gryce_cxx_dir}/../bin" NO_DEFAULT_PATH)
+        if(_gryce_rt_path)
+            list(APPEND _gryce_mingw_rt_cmds
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${_gryce_rt_path}" "$<TARGET_FILE_DIR:GryceRenderSmoke>")
+        endif()
+    endforeach()
+    unset(_gryce_rt_path CACHE)
+endif()
+
 add_custom_target(GryceSyncRuntimeDlls ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:GryceRenderer>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
@@ -315,7 +341,9 @@ add_custom_target(GryceSyncRuntimeDlls ALL
             "$<TARGET_FILE:glfw>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:GLEW::GLEW>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
+    ${_gryce_mingw_rt_cmds}
     DEPENDS ${GRYCE_DLL_TARGETS} GryceRenderSmoke
-    COMMENT "Syncing engine and third-party DLLs next to GryceRenderSmoke.exe"
+    COMMENT "Syncing engine, third-party and MinGW runtime DLLs next to GryceRenderSmoke.exe"
     VERBATIM
 )
+unset(_gryce_mingw_rt_cmds)
