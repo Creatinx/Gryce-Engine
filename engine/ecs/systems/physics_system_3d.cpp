@@ -137,7 +137,12 @@ JPH::EMotionType motion_for(components::Body3DType t) {
 } // namespace
 
 struct PhysicsSystem3D::Impl {
-    JPH::PhysicsSystem physics;
+    // 注意：必须是可重建的指针，不能是值成员。JPH::PhysicsSystem 只有 Init()、
+    // 没有 Shutdown()，在同一个对象上二次 Init() 会踩到
+    // BodyManager -> MutexArray::Init 里的 JPH_ASSERT(mMutexStorage == nullptr)，
+    // 直接 __debugbreak() 终止进程。场景切换（attach_scene -> shutdown -> init）
+    // 正好会二次 init，所以每次 init 都要整体销毁再新建。
+    std::unique_ptr<JPH::PhysicsSystem> physics;
     std::unique_ptr<JPH::TempAllocatorImpl> temp_allocator;
     std::unique_ptr<JPH::JobSystemThreadPool> job_system;
     BPLayerInterfaceImpl bp_layer_interface;
@@ -155,8 +160,8 @@ PhysicsSystem3D::~PhysicsSystem3D() = default;
 
 void PhysicsSystem3D::set_gravity(const math::Vector3f& g) {
     impl_->gravity = g;
-    if (impl_->initialized) {
-        impl_->physics.SetGravity(to_jolt(g));
+    if (impl_->initialized && impl_->physics) {
+        impl_->physics->SetGravity(to_jolt(g));
     }
 }
 
@@ -169,6 +174,11 @@ void PhysicsSystem3D::on_init(scene::Scene& scene) {
     impl_->bodies.clear();
     impl_->accumulator = 0.0f;
 
+    // 销毁上一次的 PhysicsSystem（连同 BodyManager / 宽相等的内部状态），
+    // 否则二次 Init() 会触发 Jolt 内部断言。见 Impl 中 physics 的注释。
+    impl_->physics.reset();
+    impl_->physics = std::make_unique<JPH::PhysicsSystem>();
+
     constexpr JPH::uint cMaxPhysicsJobs = 2048;
     constexpr JPH::uint cMaxPhysicsBarriers = 8;
     const size_t temp_size = 16 * 1024 * 1024;
@@ -178,7 +188,7 @@ void PhysicsSystem3D::on_init(scene::Scene& scene) {
     impl_->job_system = std::make_unique<JPH::JobSystemThreadPool>(
         cMaxPhysicsJobs, cMaxPhysicsBarriers, threads);
 
-    impl_->physics.Init(
+    impl_->physics->Init(
         static_cast<JPH::uint>(std::max(1, max_bodies)),
         0,
         static_cast<JPH::uint>(std::max(1, max_body_pairs)),
@@ -187,7 +197,7 @@ void PhysicsSystem3D::on_init(scene::Scene& scene) {
         impl_->object_vs_bp_filter,
         impl_->object_layer_pair_filter);
 
-    impl_->physics.SetGravity(to_jolt(impl_->gravity));
+    impl_->physics->SetGravity(to_jolt(impl_->gravity));
     impl_->initialized = true;
 
     GLOG_INFO("PhysicsSystem3D: Jolt initialized (bodies={}, pairs={}, threads={})",
@@ -198,7 +208,7 @@ void PhysicsSystem3D::on_shutdown(scene::Scene& scene) {
     (void)scene;
     if (!impl_->initialized) return;
 
-    JPH::BodyInterface& bi = impl_->physics.GetBodyInterface();
+    JPH::BodyInterface& bi = impl_->physics->GetBodyInterface();
     for (auto& [entity, id] : impl_->bodies) {
         if (!id.IsInvalid()) bi.DestroyBody(id);
     }
@@ -206,6 +216,8 @@ void PhysicsSystem3D::on_shutdown(scene::Scene& scene) {
 
     impl_->job_system.reset();
     impl_->temp_allocator.reset();
+    // 真正销毁 PhysicsSystem，让下一次 on_init 能干净地重新 Init()
+    impl_->physics.reset();
     impl_->initialized = false;
     impl_->accumulator = 0.0f;
 }
@@ -213,7 +225,7 @@ void PhysicsSystem3D::on_shutdown(scene::Scene& scene) {
 void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
     if (!impl_->initialized) return;
 
-    JPH::BodyInterface& bi = impl_->physics.GetBodyInterface();
+    JPH::BodyInterface& bi = impl_->physics->GetBodyInterface();
 
     // --- 1. 生命周期同步：创建缺失刚体、销毁已失效刚体 -------------------
     std::unordered_set<EntityID> live;
@@ -338,7 +350,7 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
             }
         }
 
-        impl_->physics.Update(kStep, 1, impl_->temp_allocator.get(), impl_->job_system.get());
+        impl_->physics->Update(kStep, 1, impl_->temp_allocator.get(), impl_->job_system.get());
         impl_->accumulator -= kStep;
         ++steps;
     }
