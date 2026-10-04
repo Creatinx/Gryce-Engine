@@ -1,0 +1,9 @@
+# 文本资源统一以 LF 出库。
+# 本机 git config core.autocrlf=true（Windows 默认），检出时会把文本资源改写成
+# CRLF —— 多数场景无碍，但 OBJ/MTL 这类按行解析的资源会把 '\r' 带进最后一个
+# 字段（例如 mtllib 的文件名会变成 "xxx.mtl\r" 而打开失败）。用 eol=lf 锁死，
+# 让任何平台检出都拿到 LF。
+*.obj text eol=lf
+*.mtl text eol=lf
+*.gesc text eol=lf
+*.data text eol=lf

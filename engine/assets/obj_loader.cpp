@@ -148,9 +148,17 @@ std::vector<MeshData> ObjLoader::load(const std::string& path) const {
 
     std::string line;
     while (std::getline(file, line)) {
+        // 去掉行尾残留的 '\r'：仓库层面已用 .gitattributes 锁定 LF 出库，
+        // 但若检出环境把它改写成 CRLF，最后的字段会被污染（典型症状是
+        // "mtllib xxx.mtl\r" 导致贴图库打开失败）。这里做一次兜底。
+        line = trim(line);
+        if (line.empty()) continue;
+
         std::istringstream iss(line);
         std::string prefix;
         iss >> prefix;
+
+        if (prefix.empty() || prefix[0] == '#') continue;
 
         if (prefix == "v") {
             float x, y, z;

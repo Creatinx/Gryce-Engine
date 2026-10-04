@@ -41,3 +41,10 @@ Thumbs.db
 # Amplitude Audio SDK 以预编译静态库形式入库（见根 CMakeLists 说明），
 # 需覆盖上面的 *.a 规则。
 !third_party/amplitude/lib/*.a
+
+# ---- 例外：Wavefront OBJ 模型资源 ----
+# 上面「编译器中间文件」里的 *.obj 本意是忽略 MSVC 编译产物，但它会连带吞掉
+# 同后缀的 3D 模型。test/demo_project/models 因此从未入库，克隆后
+# scenes/main.gesc 引用的 res:/models/cube.obj 与 quad.obj 全部缺失，
+# 场景里一个网格都画不出来。这里对该目录显式放行。
+!test/demo_project/models/*.obj

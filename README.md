@@ -245,8 +245,11 @@ ctest --test-dir build --output-on-failure -C Release
 
 - `project.data`：工程配置，含入口场景、窗口尺寸、HDR / 色调映射 / 曝光、阴影与环境、SSR / SSAO / SSIL / PCSS 等开关
 - `scenes/main.gesc`：主场景，包含地面、若干 PBR 材质立方体（含镜面 `Chrome`）、火焰粒子、相机与光源，以及一个**带镜面材质的自由下坠立方体**（由 Jolt 刚体驱动，落到静态地面碰撞体上）
-- `models/`：单位立方体与四边形网格
-- `shaders/`：着色器源与预编译 SPIR-V 兜底产物
+- `models/`：Wavefront OBJ 基础网格 —— `cube.obj`（1×1×1，原点居中）、`quad.obj`（y=0 平面上的 2×2 地面，场景按 6× 缩放后为 12×12，与 `GroundCollider` 的半长 6 对齐）、`sphere.obj`（r=0.5 的 UV 球，备用）。三者均为右手系、逆时针外翻，与 `glFrontFace(GL_CCW)` / `VK_FRONT_FACE_COUNTER_CLOCKWISE` 一致
+
+  > ⚠️ 注意根 `.gitignore` 里忽略 MSVC 中间产物的 `*.obj` 规则会连带吞掉模型文件，靠文件末尾的 `!test/demo_project/models/*.obj` 例外放行。新增模型目录时记得同步例外规则。
+
+- `shaders/`：预编译 SPIR-V（`shaders/spirv/`、`shaders/forward_clustered/spirv/`），作为 Vulkan 后端源码不可用时的兜底产物。GLSL 源码不在本工程内，统一由 `engine/render/shaders/` 提供（见 `engine/render/core_shaders.cpp` 的运行时查找逻辑）；`*.spv.hash` 只是本地缓存指纹，不入库
 
 ---
 
