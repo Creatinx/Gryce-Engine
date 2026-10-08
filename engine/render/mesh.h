@@ -76,6 +76,15 @@ public:
     virtual void draw() const = 0;
     virtual void draw_indexed() const = 0;
 
+    // 间接绘制（可选能力）：绘制参数（indexCount / instanceCount / firstIndex /
+    // baseVertex / baseInstance）由 GPU 缓冲提供，CPU 不参与逐物体提交。
+    // offset 为该组参数在缓冲中的字节偏移；调用前后端已把参数缓冲绑到
+    // GL_DRAW_INDIRECT_BUFFER（OpenGL）/ indirect buffer（Vulkan）。
+    // 默认空实现，不支持的后端不受影响（意味着该 mesh 在 GPU-driven 路径下不绘制）。
+    virtual void draw_indexed_indirect(uint32_t /*offset*/) const {}
+    // 非索引版（DrawArraysIndirect）：去索引展开的实例化几何走这条。
+    virtual void draw_arrays_indirect(uint32_t /*offset*/) const {}
+
     virtual uint32_t vertex_count() const = 0;
     virtual uint32_t index_count() const = 0;
 };

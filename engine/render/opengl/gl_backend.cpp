@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <cctype>
 #include <fstream>
+#include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "stb/stb_image_write.h"
@@ -77,6 +80,10 @@ bool GLBackend::init(void* native_window) {
 
 void GLBackend::shutdown() {
     GLOG_INFO("OpenGL backend shutdown");
+    if (readback_fbo_ != 0) {
+        glDeleteFramebuffers(1, &readback_fbo_);
+        readback_fbo_ = 0;
+    }
     window_ = nullptr;
 }
 
@@ -495,6 +502,150 @@ void GLBackend::draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) {
     m->draw_indexed();
     GL_CHECK_ERROR();
     // 不要 unbind：后续 uniform 设置需要当前 program 保持绑定。
+}
+
+// ---------------------------------------------------------------------------
+// 计算着色器 / 间接绘制（GPU-driven 基础设施）
+// ---------------------------------------------------------------------------
+// glDispatchCompute / SSBO / glDrawElementsIndirect 都是 OpenGL 4.3 核心功能。
+// 低于 4.3 的上下文一律降级：supports_compute_shaders() 返回 false，下面的方法
+// 全部 no-op，调用方（GPU 剔除 / 间接提交）据此回退到 CPU 路径——不会静默出错。
+
+bool GLBackend::supports_compute_shaders() const {
+    return GLEW_VERSION_4_3 != 0;
+}
+
+RHIShaderHandle GLBackend::create_compute_shader(const char* name, const char* shader_dir) {
+    if (!supports_compute_shaders()) return RHIShaderHandle{};
+    if (!name || !*name || !shader_dir) return RHIShaderHandle{};
+
+    uint32_t index = shader_pool_.allocate();
+    RHIShaderHandle handle{index, shader_pool_.generation(index)};
+    GLShader* s = shader_pool_.get_if_alive(handle.index, handle.generation);
+    if (!s) return RHIShaderHandle{};
+
+    if (!s->load_compute(name, shader_dir)) {
+        GLOG_WARN("GLBackend::create_compute_shader: failed to compile '{}.comp' in '{}'",
+                  name, shader_dir);
+        shader_pool_.deallocate(handle.index, handle.generation);
+        return RHIShaderHandle{};
+    }
+    return handle;
+}
+
+void GLBackend::dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) {
+    if (!supports_compute_shaders()) return;
+    IShader* s = this->shader(shader);
+    if (!s) return;
+
+    // dispatch **之前**必须告诉驱动"SSBO 刚被外部写过"（HiZ 金字塔走
+    // copy_texture_to_buffer → PBO → SSBO 路径）。GL_BUFFER_UPDATE_BARRIER_BIT
+    // 覆盖 TRANSFER / COPY / BUFFER_UPDATE 三类来源；缺了它compute 会读到
+    // 上一次的旧数据，表现为"遮挡测试把该画的都剔掉"（整屏黑）。
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+    s->bind();
+    glDispatchCompute(static_cast<GLuint>(gx), static_cast<GLuint>(gy), static_cast<GLuint>(gz));
+    // GPU-driven 的典型用法是 compute 写 SSBO + 间接绘制参数：
+    //   GL_SHADER_STORAGE_BARRIER_BIT —— 后续顶点/片段着色器能读到 compute 的写入；
+    //   GL_COMMAND_BARRIER_BIT        —— 后续间接绘制能读到参数缓冲的写入。
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+    GL_CHECK_ERROR();
+}
+
+void GLBackend::bind_storage_buffer(RHIShaderHandle shader, const char* name,
+                                    RHIBufferHandle buffer) {
+    if (!supports_compute_shaders()) return;
+    GLShader* s = shader_pool_.get_if_alive(shader.index, shader.generation);
+    GLStorageBuffer* b = buffer_pool_.get_if_alive(buffer.index, buffer.generation);
+    if (!s || !b || !name) return;
+
+    // binding 号取自着色器里声明的 layout(binding = N)，避免 CPU/GPU 约定不一致。
+    int binding = s->storage_block_binding(name);
+    if (binding < 0) {
+        // 这个失败必须显眼：绑定不上→ compute 读未绑定的 SSBO → 剔除**静默失效**
+        // （画面正常、开销看着为零，实则每帧全量绘制）。曾因此误判"剔除零开销"。
+        // 每 program+name 只警告一次，避免每帧刷屏把真正的错误淹掉。
+        static thread_local std::set<std::pair<uint32_t, std::string>> warned;
+        const auto key = std::make_pair(shader.index, std::string(name));
+        if (warned.insert(key).second) {
+            GLOG_ERROR("GLBackend::bind_storage_buffer: compute shader has no SSBO block "
+                       "named '{}' (block names are case-sensitive; check the .comp — using "
+                       "a member name instead of the block name compiles fine but never binds, "
+                       "so the compute pass silently reads an unbound SSBO). Further "
+                       "occurrences of this pair will be silent.",
+                       name);
+        }
+        return;
+    }
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, static_cast<GLuint>(binding), b->buffer_id());
+    GL_CHECK_ERROR();
+}
+
+void GLBackend::draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                      RHIBufferHandle args, uint32_t offset) {
+    if (!supports_compute_shaders()) return;
+    IMesh* m = this->mesh(mesh);
+    IShader* s = this->shader(shader);
+    GLStorageBuffer* b = buffer_pool_.get_if_alive(args.index, args.generation);
+    if (!m || !s || !b) return;
+
+    s->bind();
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, b->buffer_id());
+    m->draw_indexed_indirect(offset);
+    // 立刻解绑：间接缓冲不应残留给后续普通绘制路径。
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    GL_CHECK_ERROR();
+}
+
+void GLBackend::draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                     RHIBufferHandle args, uint32_t offset) {
+    if (!supports_compute_shaders()) return;
+    IMesh* m = this->mesh(mesh);
+    IShader* s = this->shader(shader);
+    GLStorageBuffer* b = buffer_pool_.get_if_alive(args.index, args.generation);
+    if (!m || !s || !b) return;
+
+    s->bind();
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, b->buffer_id());
+    m->draw_arrays_indirect(offset);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    GL_CHECK_ERROR();
+}
+
+// 纹理 → SSBO 的 GPU 端拷贝（glReadPixels 走 PBO 路径，不做 CPU 映射）。
+// 供 compute 着色器读取原本只有"颜色附件/采样"形态的数据（如 HiZ 深度金字塔）。
+void GLBackend::copy_texture_to_buffer(RHITextureHandle tex, RHIBufferHandle buffer,
+                                       uint32_t offset) {
+    GLTexture* t = texture_pool_.get_if_alive(tex.index, tex.generation);
+    GLStorageBuffer* b = buffer_pool_.get_if_alive(buffer.index, buffer.generation);
+    if (!t || !b || t->width() <= 0 || t->height() <= 0) return;
+
+    if (readback_fbo_ == 0) {
+        glGenFramebuffers(1, &readback_fbo_);
+    }
+    // 备份当前读 FBO / 打包缓冲，结束后还原，绝不影响正在进行的渲染状态。
+    GLint prev_read_fbo = 0;
+    GLint prev_pack_buffer = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prev_pack_buffer);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, readback_fbo_);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           t->texture_id(), 0);
+    const bool complete = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    if (complete) {
+        // R32F 颜色附件的读回格式是 GL_RED/GL_FLOAT（OpenGL 规范要求的组合）。
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, b->buffer_id());
+        glReadPixels(0, 0, t->width(), t->height(), GL_RED, GL_FLOAT,
+                     reinterpret_cast<void*>(static_cast<uintptr_t>(offset)));
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(prev_pack_buffer));
+    } else {
+        GLOG_WARN("GLBackend::copy_texture_to_buffer: read FBO incomplete (texture {}x{})",
+                  t->width(), t->height());
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read_fbo));
+    GL_CHECK_ERROR();
 }
 
 RHIMeshHandle GLBackend::create_mesh() {

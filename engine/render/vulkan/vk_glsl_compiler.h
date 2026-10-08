@@ -6,10 +6,12 @@
 
 namespace gryce_engine::render {
 
-// GLSL 着色阶段，映射到 shaderc_vertex_shader / shaderc_fragment_shader。
+// GLSL 着色阶段，映射到 shaderc_vertex_shader / shaderc_fragment_shader /
+// shaderc_compute_shader。
 enum class GlslStage {
     Vertex,
     Fragment,
+    Compute,
 };
 
 // 是否可在当前进程加载 shaderc（懒加载，仅首次调用 compile 时才校验）。

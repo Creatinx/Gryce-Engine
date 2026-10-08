@@ -71,7 +71,10 @@ struct RendererState {
     bool  shadow_map_size_dirty = false;
     // 垂直同步是"重启生效"的持久化配置：GRender_SetVSync 可能在 GRender_Init
     // 之前被调用（此时 ctx 尚不存在），必须先把期望值存下来，init 时再应用。
-    bool  vsync_enabled = true;
+    // 默认关闭垂直同步：FIFO 呈现会把 present 锁在显示器刷新率上，导致 GPU 在
+    // 两次 vblank 之间空转（典型表现就是 "GPU 跑不满 / 帧率被显示器封顶"）。
+    // 目标高帧率（如 240fps）或竞技/基准场景应默认 off；需要防撕裂时再显式开启。
+    bool  vsync_enabled = false;
     bool  backend_pending = false;
     bool  pipeline_reload_pending = false;
     GRenderAPI pending_backend_api = GRYCE_RENDER_API_OPENGL;
@@ -101,8 +104,11 @@ static RendererState g_renderer;
 static RenderAPI to_internal_api(GRenderAPI api) {
     switch (api) {
         case GRYCE_RENDER_API_VULKAN: return RenderAPI::Vulkan;
-        case GRYCE_RENDER_API_DX11:
-        case GRYCE_RENDER_API_DX12:
+        case GRYCE_RENDER_API_DX12:   return RenderAPI::DX12;
+        // DX11 未实现：显式映射让 create_render_backend 走"创建失败"分支报错。
+        // 绝不能 fall-through 到 OpenGL —— 那样请求 DX 会静默跑成 OpenGL，
+        // 用户毫无察觉（2026-10-06 修掉的接线坑）。
+        case GRYCE_RENDER_API_DX11:   return RenderAPI::DX11;
         default: return RenderAPI::OpenGL;
     }
 }
@@ -954,6 +960,84 @@ void GRender_SetPCSSParams(float light_size, float max_radius_texels, float tap_
     }
 }
 
+// 低/中/高配画质预设（仅切换运行时质量开关，不改动场景内容）
+void GRender_SetQualityPreset(int preset) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    const int shadow_size = (preset == 2) ? 1024 : 2048;  // Low=1024，中/高=2048
+    const bool pcss = (preset == 0);
+    const bool ssao = (preset == 0);
+    const bool ssil = (preset == 0);
+    const bool ssr  = false;
+    // 阴影尺寸变更走与 GRender_SetShadowMapSize 相同的延迟重建路径
+    g_renderer.shadow_map_size = shadow_size;
+    g_renderer.shadow_map_size_dirty = (g_renderer.pipeline != nullptr);
+    g_renderer.shadow_enabled = true;
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_shadow_enabled(true);
+        g_renderer.pipeline->set_pcss_enabled(pcss);
+        g_renderer.pipeline->set_ssr_enabled(ssr);
+        g_renderer.pipeline->set_ssao_enabled(ssao);
+        g_renderer.pipeline->set_ssil_enabled(ssil);
+    }
+}
+
+// 动态分辨率（DRS）控制 —— 默认关闭，开启后按实测帧时间自适应缩放内部渲染分辨率
+void GRender_SetAdaptiveResolution(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_adaptive_resolution(enabled);
+}
+void GRender_SetResolutionScale(float scale) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_resolution_scale(scale);
+}
+void GRender_SetDynamicResolutionTargetFPS(float fps) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_dynamic_resolution_target_fps(fps);
+}
+void GRender_SetDynamicResolutionMinScale(float scale) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_dynamic_resolution_min_scale(scale);
+}
+void GRender_SetGPUCullingEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_gpu_culling_enabled(enabled);
+}
+
+void GRender_SetOcclusionCullingEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_occlusion_culling_enabled(enabled);
+}
+
+bool GRender_IsOcclusionCullingActive() {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.pipeline ? g_renderer.pipeline->occlusion_culling_active() : false;
+}
+
+bool GRender_IsGPUCullingAvailable() {
+    GRYCE_API_GUARD();
+    if (g_renderer.pipeline) return g_renderer.pipeline->gpu_culling_available();
+    return false;
+}
+
+void GRender_SetShadowCacheEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_shadow_cache_enabled(enabled);
+}
+void GRender_SetInstancingBatching(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_instancing_batching_enabled(enabled);
+}
+
 void GRender_SetFPSOverlay(bool enabled) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
@@ -1038,6 +1122,30 @@ void GRender_SetVSync(bool enabled) {
     // 不能直接 return 丢掉设置（那会让 --no-vsync 之类的调用静默失效）。
     if (!g_renderer.ctx) return;
     g_renderer.ctx->set_swap_interval(enabled ? 1 : 0);
+}
+
+bool GRender_IsOnBattery() {
+    GRYCE_API_GUARD();
+    if (g_renderer.pipeline) return g_renderer.pipeline->query_on_battery();
+    return false;
+}
+
+void GRender_SetPowerSaverAuto(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_power_saver_auto(enabled);
+}
+
+void GRender_SetPowerSaverForced(bool forced) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_power_saver_forced(forced);
+}
+
+bool GRender_IsPowerSaverActive() {
+    GRYCE_API_GUARD();
+    if (g_renderer.pipeline) return g_renderer.pipeline->power_saver_active();
+    return false;
 }
 
 void GRender_SetGPUProfiling(int enabled) {

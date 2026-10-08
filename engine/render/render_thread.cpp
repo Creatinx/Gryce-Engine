@@ -81,7 +81,7 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
             // 此时仍须完成纹理绑定，不能因空句柄跳过。
             IShader* s = backend->shader(cmd.shader);
             if (s) {
-                if (!cmd.uniform_name.empty()) {
+                if (cmd.uniform_name && cmd.uniform_name[0]) {
                     s->set_int(cmd.uniform_name, unit);
                 }
                 s->set_texture(unit, t);
@@ -150,10 +150,24 @@ struct CommandStateCache {
     bool initialized = false;
 
     static constexpr int kMaxTextureSlots = 32;
+    static constexpr size_t kMaxIntUniformCache = 64;
     std::array<RHITextureHandle, kMaxTextureSlots> bound_textures;
     std::array<RHIShaderHandle, kMaxTextureSlots> bound_texture_shaders;
     std::array<bool, kMaxTextureSlots> bound_texture_raws;
     bool texture_slots_initialized = false;
+
+    // int uniform 值缓存。键 = (shader, uniform 名指针)。名字是字面量，指针
+    // 即身份，无需字符串比较。用 vector 线性查找（同一 shader 的 int uniform
+    // 数量通常 < 32），比哈希表更适合这个规模，也避免每帧分配。
+    struct IntUniformKey {
+        RHIShaderHandle shader;
+        const char* name;
+        bool operator==(const IntUniformKey& o) const {
+            return shader == o.shader && name == o.name;
+        }
+    };
+    std::vector<std::pair<IntUniformKey, int>> int_uniform_cache_;
+
     bool should_dispatch(const RenderCommandTyped& cmd) {
         switch (cmd.type) {
             case RenderCommandType::SetDepthTest: {
@@ -236,9 +250,32 @@ struct CommandStateCache {
                 if (initialized && has_shader && bound_shader == cmd.shader) return false;
                 bound_shader = cmd.shader;
                 has_shader = true;
+                // shader 变了，之前缓存的 uniform 值全部作废（不同 shader 的
+                // 同名 uniform 是独立状态）。
+                int_uniform_cache_.clear();
                 break;
             }
-            // 其他命令（draw, clear, uniform, swap）不做缓存，总是执行
+            // int uniform 缓存：本引擎的 uniform 名全部是编译期字符串字面量，
+            // 生命周期覆盖整条命令，故可安全地按 (shader, name 指针) 做键。
+            // 材质绑定里 6 组 uUseXxxMap/uXxxMap 每实体各写一次，值几乎恒定，
+            // 这一层能直接省掉数千条冗余后端调用。
+            case RenderCommandType::SetUniformInt: {
+                if (!cmd.uniform_name) return true;
+                const IntUniformKey key{cmd.shader, cmd.uniform_name};
+                for (auto& e : int_uniform_cache_) {
+                    if (e.first == key) {
+                        if (e.second == cmd.uniform_int) return false;
+                        e.second = cmd.uniform_int;
+                        break;
+                    }
+                }
+                // 未命中：登记（容量给足，超出后仍正确，只是不再增长缓存）。
+                if (int_uniform_cache_.size() < kMaxIntUniformCache) {
+                    int_uniform_cache_.emplace_back(key, cmd.uniform_int);
+                }
+                break;
+            }
+            // 其他命令（draw, clear, float/vec/mat uniform, swap）不做缓存，总是执行
             default:
                 return true;
         }
@@ -250,6 +287,8 @@ struct CommandStateCache {
         initialized = false;
         has_framebuffer = false;
         texture_slots_initialized = false;
+        has_shader = false;
+        int_uniform_cache_.clear();
     }
 };
 
@@ -319,6 +358,8 @@ void RenderThread::join() {
     if (thread_.joinable()) {
         thread_.join();
         running_.store(false);
+        // 清空线程 id：线程已退出，此后任何线程都不算"渲染线程"。
+        thread_id_ = std::thread::id{};
         GLOG_INFO("RenderThread joined");
     }
 }
@@ -332,6 +373,7 @@ void RenderThread::thread_loop() {
     if (backend_) {
         backend_->make_current(native_window_);
     }
+    thread_id_ = std::this_thread::get_id();
     GLOG_INFO("RenderThread thread_loop entered");
     ready_.store(true);
 

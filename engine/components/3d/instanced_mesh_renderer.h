@@ -34,6 +34,13 @@ class GRYCE_API InstancedMeshRenderer : public Component {
 public:
     std::string mesh_path;
     std::string material_path;
+    // 内联材质（与 MeshRenderer 的 "material" 字段同构，序列化 key 同为
+    // "material"）。material_path 为空时用它。之前只有 material_path，而项目里
+    // 没有 .mat 文件、MeshRenderer 一律用内联材质 —— 等于实例化物体压根没法配
+    // 材质。绘制侧 material_ 为空会**跳过 bind**，沿用上一个物体的 uniform，
+    // 画面上表现为一堆黑块，很难联想到是材质没绑。
+    // 名字带 inline_ 前缀是因为 material() 已被访问器占用。
+    nlohmann::json inline_material;
     int instance_count = 1;
     float spacing = 1.0f;
     int seed = 0;
@@ -60,15 +67,32 @@ public:
 
     const render::Material* material() const { return material_.get(); }
 
+    // ---- GPU 剔除（B1x）----------------------------------------------------
+    // 这两个流由 build_instance_matrices 同步产出，与 cached_instances_ 同一次
+    // 重建、同一份缓存（shared_ptr 保证命令队列执行时仍有效）。
+    // GPU 剔除 compute 需要每实例世界包围球做视锥 + HiZ 测试，缺失就只能走
+    // CPU 兜底或整批直接绘制。
+    const std::shared_ptr<std::vector<math::Matrix4f>>& instance_matrices_gpu() const {
+        return cached_instances_;
+    }
+    const std::shared_ptr<std::vector<math::Vector4f>>& instance_spheres_gpu() const {
+        return cached_spheres_;
+    }
+
 private:
     void build_instance_matrices(const math::Matrix4f& world);
 
     // 三槽环形实例缓冲：主线程写当前槽，渲染线程可能仍在读上一槽。
     static constexpr int k_scratch_slots = 3;
     std::shared_ptr<std::vector<math::Matrix4f>> scratch_[k_scratch_slots];
+    // 包围球流用同样三槽：与矩阵同一次重建、同一个槽位索引切换。
+    std::shared_ptr<std::vector<math::Vector4f>> sphere_scratch_[k_scratch_slots];
     int scratch_index_ = 0;
     // 本帧上传用的实例流（实例参数未变时复用上一次构建的槽位）
     std::shared_ptr<std::vector<math::Matrix4f>> cached_instances_;
+    // 每实例世界包围球（xyz=世界中心, w=半径），供 GPU 剔除 compute 使用。
+    // 与 cached_instances_ 同批产出；原型网格无边界时半径给极大值（必定可见）。
+    std::shared_ptr<std::vector<math::Vector4f>> cached_spheres_;
     uint32_t instance_count_ = 0;
 
     // 主线程加载的资源（渲染线程不碰 AssetManager）

@@ -169,8 +169,11 @@ void VulkanBackend::shutdown() {
 
     framebuffer_pool_.clear();
     texture_pool_.clear();
+    compute_pool_.clear();
     shader_pool_.clear();
     mesh_pool_.clear();
+    buffer_pool_.clear();
+    instance_stream_ = RHIBufferHandle{};
 
     swapchain_.shutdown();
     if (gpu_query_pool_ != VK_NULL_HANDLE) {
@@ -309,6 +312,14 @@ void VulkanBackend::begin_frame() {
             if (auto* s = shader_pool_.get(i)) {
                 s->on_begin_frame(frame_index);
             }
+        }
+        // 计算管线与 SSBO 的槽位轮转：此刻 frame fence 已等过，上一周期的
+        // 描述符集/缓冲区域必定空闲，可以安全重写。
+        for (uint32_t i = 0; i < compute_pool_.size(); ++i) {
+            if (auto* cp = compute_pool_.get(i)) cp->on_begin_frame();
+        }
+        for (uint32_t i = 0; i < buffer_pool_.size(); ++i) {
+            if (auto* b = buffer_pool_.get(i)) b->on_begin_frame();
         }
     }
     // 只 reset 当前帧槽的 secondary command pool：该帧槽上一周期的提交已被
@@ -1057,10 +1068,22 @@ void VulkanBackend::unbind_framebuffer() {
 }
 
 void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
+    draw_mesh_impl(mesh, shader, RHIBufferHandle{}, 0, -1);
+}
+
+// indirect_args 有效时走 vkCmdDraw(Indexed)Indirect：绘制参数（顶点数 /
+// instanceCount）来自 GPU 缓冲，CPU 不参与逐物体提交。
+void VulkanBackend::draw_mesh_impl(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                   RHIBufferHandle indirect_args, uint32_t indirect_offset,
+                                   int force_indexed) {
     if (frame_aborted_) return;
     auto* vk_mesh = static_cast<VulkanMesh*>(this->mesh(mesh));
     auto* vk_shader = static_cast<VulkanShader*>(this->shader(shader));
     if (!vk_mesh || !vk_shader || !vk_mesh->vertex_buffer()) return;
+    VulkanStorageBuffer* vk_args = indirect_args.is_valid()
+        ? buffer_pool_.get_if_alive(indirect_args.index, indirect_args.generation)
+        : nullptr;
+    if (indirect_args.is_valid() && !vk_args) return;
 
     // 使用共享的 geometry secondary CB 连续录制多个 3D draw，减少每 mesh 的
     // allocate/begin/end/execute 开销以及 inline/secondary 切换。
@@ -1124,10 +1147,19 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
 
     // 实例化 mesh 有第二条顶点流（binding 1，inputRate = instance）：
     // binding 0 是几何原型（如粒子四边形角），binding 1 是每实例数据。
+    // GPU 剔除路径下 binding 1 由 instance_stream_ 提供（可见实例矩阵已由
+    // compute 紧凑写入），mesh 自身此时没有实例缓冲。
+    VulkanStorageBuffer* instance_stream = instance_stream_.is_valid()
+        ? buffer_pool_.get_if_alive(instance_stream_.index, instance_stream_.generation)
+        : nullptr;
     VkBuffer buffers[2] = {vk_mesh->vertex_buffer(), VK_NULL_HANDLE};
     VkDeviceSize offsets[2] = {0, 0};
     uint32_t binding_count = 1;
-    if (vk_mesh->instance_buffer() != VK_NULL_HANDLE) {
+    if (instance_stream && instance_stream->vk_buffer() != VK_NULL_HANDLE) {
+        buffers[1] = instance_stream->vk_buffer();
+        offsets[1] = static_cast<VkDeviceSize>(instance_stream->frame_offset());
+        binding_count = 2;
+    } else if (vk_mesh->instance_buffer() != VK_NULL_HANDLE) {
         buffers[1] = vk_mesh->instance_buffer();
         binding_count = 2;
     }
@@ -1135,7 +1167,21 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
 
     // instance_count 为 0 表示非实例化绘制（instanceCount 必须至少为 1）
     const uint32_t instance_count = vk_mesh->instance_count() > 0 ? vk_mesh->instance_count() : 1;
-    if (vk_mesh->has_index() && vk_mesh->index_buffer()) {
+    if (vk_args) {
+        // 间接绘制：间接参数缓冲同样按帧轮转，故偏移要加上 frame_offset()。
+        const VkDeviceSize args_offset =
+            static_cast<VkDeviceSize>(vk_args->frame_offset()) + indirect_offset;
+        const bool indexed = force_indexed > 0 ||
+                             (force_indexed < 0 && vk_mesh->has_index() &&
+                              vk_mesh->index_buffer() != VK_NULL_HANDLE);
+        if (indexed) {
+            vkCmdBindIndexBuffer(cmd, vk_mesh->index_buffer(), 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexedIndirect(cmd, vk_args->vk_buffer(), args_offset, 1,
+                                     sizeof(uint32_t) * 5);
+        } else {
+            vkCmdDrawIndirect(cmd, vk_args->vk_buffer(), args_offset, 1, sizeof(uint32_t) * 4);
+        }
+    } else if (vk_mesh->has_index() && vk_mesh->index_buffer()) {
         vkCmdBindIndexBuffer(cmd, vk_mesh->index_buffer(), 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, vk_mesh->index_count(), instance_count, 0, 0, 0);
     } else {
@@ -1145,6 +1191,117 @@ void VulkanBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
 
 void VulkanBackend::draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) {
     draw_mesh(mesh, shader);
+}
+
+// ---------------------------------------------------------------------------
+// 计算着色器 / 间接绘制（GPU-driven 基础设施）
+// ---------------------------------------------------------------------------
+// Vulkan 1.0 起计算管线就是核心功能，无版本门槛；真正的前置条件是能拿到
+// SPIR-V（shaderc 首编或预编译产物），拿不到则 create_compute_shader 返回
+// 无效句柄，上层自动回退 CPU 路径。
+//
+// 关键约束：vkCmdDispatch 不能在 render pass 内部录制（VUID-vkCmdDispatch-
+// renderpass）。因此调用方（RenderPipeline）必须在绑定主渲染目标之前完成
+// 全部剔除派发；绘制端（间接绘制）则可以留在 pass 内。
+
+bool VulkanBackend::supports_compute_shaders() const {
+    return initialized_ && device_.is_valid();
+}
+
+RHIShaderHandle VulkanBackend::create_compute_shader(const char* name, const char* shader_dir) {
+    if (!supports_compute_shaders()) return RHIShaderHandle{};
+    if (!name || !*name || !shader_dir) return RHIShaderHandle{};
+
+    uint32_t index = compute_pool_.allocate(&device_);
+    RHIShaderHandle handle{index, compute_pool_.generation(index) | kComputeShaderFlag};
+    auto* cp = compute_pool_.get_if_alive(handle.index, pool_generation(handle));
+    if (!cp) return RHIShaderHandle{};
+
+    if (!cp->load(name, shader_dir)) {
+        GLOG_WARN("VulkanBackend::create_compute_shader: failed to load '{}.comp' in '{}'",
+                  name, shader_dir);
+        compute_pool_.deallocate(handle.index, handle.generation);
+        return RHIShaderHandle{};
+    }
+    GLOG_INFO("VulkanBackend: compute pipeline '{}' ready", name);
+    return handle;
+}
+
+void VulkanBackend::dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) {
+    if (!supports_compute_shaders()) return;
+    // 图形着色器句柄不该走到这里（图形 draw 由 draw_mesh_impl 处理）；
+    // 反过来若拿图形句柄去查计算池，靠标志位就能立刻分辨而非碰运气。
+    if (!is_compute_shader(shader)) return;
+    auto* cp = compute_pool_.get_if_alive(shader.index, pool_generation(shader));
+    if (!cp || !cp->valid()) return;
+    if (current_render_pass_ != VK_NULL_HANDLE) {
+        // render pass 内派发是非法用法；直接跳过（画面退化为未剔除，不会崩溃），
+        // 并提示调用方调整派发时机。
+        GLOG_WARN("VulkanBackend::dispatch_compute: skipped (cannot dispatch inside a render pass)");
+        return;
+    }
+    VkCommandBuffer cmd = current_command_buffer();
+    if (cmd == VK_NULL_HANDLE) return;
+    cp->dispatch(cmd, gx, gy, gz);
+}
+
+void VulkanBackend::bind_storage_buffer(RHIShaderHandle shader, const char* name,
+                                        RHIBufferHandle buffer) {
+    if (!supports_compute_shaders()) return;
+    if (!is_compute_shader(shader)) return;
+    auto* cp = compute_pool_.get_if_alive(shader.index, pool_generation(shader));
+    if (!cp) return;  // 图形着色器句柄：Vulkan 侧由 bind_instance_stream 承担
+    auto* b = buffer_pool_.get_if_alive(buffer.index, buffer.generation);
+    if (!b || !name) return;
+    cp->set_storage_buffer(name, b->vk_buffer());
+}
+
+void VulkanBackend::bind_instance_stream(RHIBufferHandle buffer) {
+    instance_stream_ = buffer;
+}
+
+void VulkanBackend::draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                          RHIBufferHandle args, uint32_t offset) {
+    draw_mesh_impl(mesh, shader, args, offset, 1);
+}
+
+void VulkanBackend::draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                         RHIBufferHandle args, uint32_t offset) {
+    draw_mesh_impl(mesh, shader, args, offset, 0);
+}
+
+// 纹理 → SSBO 的 GPU 端拷贝（vkCmdCopyImageToBuffer，不做 CPU 映射）。
+// 与 dispatch 一样必须在 render pass 之外录制。
+void VulkanBackend::copy_texture_to_buffer(RHITextureHandle tex, RHIBufferHandle buffer,
+                                           uint32_t offset) {
+    if (!supports_compute_shaders() || frame_aborted_) return;
+    auto* t = texture_pool_.get_if_alive(tex.index, tex.generation);
+    auto* b = buffer_pool_.get_if_alive(buffer.index, buffer.generation);
+    if (!t || !b || !t->is_valid() || t->width() <= 0 || t->height() <= 0) return;
+    if (current_render_pass_ != VK_NULL_HANDLE) {
+        GLOG_WARN("VulkanBackend::copy_texture_to_buffer: skipped (inside a render pass)");
+        return;
+    }
+    VkCommandBuffer cmd = current_command_buffer();
+    if (cmd == VK_NULL_HANDLE) return;
+
+    const VkImageAspectFlags aspect = t->is_depth() ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                    : VK_IMAGE_ASPECT_COLOR_BIT;
+    // 过渡到 TRANSFER_SRC_OPTIONAL 再拷回可采样布局（HiZ 拷进 SSBO 后仍可能被
+    // 下一轮归约 pass 当输入采样）。
+    t->transition_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = static_cast<VkDeviceSize>(b->frame_offset()) + offset;
+    region.imageSubresource.aspectMask = aspect;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {static_cast<uint32_t>(t->width()), static_cast<uint32_t>(t->height()), 1};
+    vkCmdCopyImageToBuffer(cmd, t->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           b->vk_buffer(), 1, &region);
+
+    t->transition_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 RHIMeshHandle VulkanBackend::create_mesh() {
@@ -1173,6 +1330,12 @@ void VulkanBackend::destroy_mesh(RHIMeshHandle handle) {
 }
 
 void VulkanBackend::destroy_shader(RHIShaderHandle handle) {
+    // 图形与计算管线共用 RHIShaderHandle 但分池存储：按句柄上的类型标记分流，
+    // 否则会误杀另一个池里同 index 的槽位。
+    if (is_compute_shader(handle)) {
+        compute_pool_.deallocate(handle.index, pool_generation(handle));
+        return;
+    }
     shader_pool_.deallocate(handle.index, handle.generation);
 }
 
@@ -1202,6 +1365,10 @@ IMesh* VulkanBackend::mesh(RHIMeshHandle handle) {
 }
 
 IShader* VulkanBackend::shader(RHIShaderHandle handle) {
+    // 计算管线不是 IShader（没有 UBO / 贴图绑定语义），直接返回 nullptr。
+    // 判别靠句柄的类型标记而非"查哪个池活着"—— 两个池的 generation 独立计数，
+    // 首槽必然撞车，详见 vk_backend.h 里 kComputeShaderFlag 的说明。
+    if (is_compute_shader(handle)) return nullptr;
     return shader_pool_.get_if_alive(handle.index, handle.generation);
 }
 
@@ -1217,15 +1384,16 @@ IFramebuffer* VulkanBackend::framebuffer(RHIFramebufferHandle handle) {
 // 缓冲（暂存桩，Vulkan 后端尚未实现完整的 IBuffer 支持）
 // ---------------------------------------------------------------------------
 RHIBufferHandle VulkanBackend::create_buffer() {
-    return RHIBufferHandle{};
+    uint32_t index = buffer_pool_.allocate(&device_);
+    return {index, buffer_pool_.generation(index)};
 }
 
-void VulkanBackend::destroy_buffer(RHIBufferHandle /*handle*/) {
-    // 暂不实现
+void VulkanBackend::destroy_buffer(RHIBufferHandle handle) {
+    buffer_pool_.deallocate(handle.index, handle.generation);
 }
 
-IBuffer* VulkanBackend::buffer(RHIBufferHandle /*handle*/) {
-    return nullptr;
+IBuffer* VulkanBackend::buffer(RHIBufferHandle handle) {
+    return buffer_pool_.get_if_alive(handle.index, handle.generation);
 }
 
 const char* VulkanBackend::api_name() const {

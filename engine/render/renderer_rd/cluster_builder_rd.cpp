@@ -43,8 +43,8 @@ int ClusterBuilderRD::_compute_depth_slice(float depth, float z_near, float z_fa
     if (depth <= z_near) return 0;
     if (depth >= z_far) return cluster_z_layers_ - 1;
     float log_depth = std::log2(depth / z_near);
-    float log_range = std::log2(z_far / z_near);
-    return static_cast<int>(log_depth / log_range * cluster_z_layers_);
+    // inv_log_range_ 由 build() 每帧预计算（= 1/log(z_far/z_near)），省去每次调用的 log2。
+    return static_cast<int>(log_depth * inv_log_range_ * cluster_z_layers_);
 }
 
 int ClusterBuilderRD::cluster_index(int tile_x, int tile_y, int slice_z) const {
@@ -218,13 +218,13 @@ static bool cone_aabb_intersect(
 
 bool ClusterBuilderRD::_light_intersects_cluster(
     const LightData& light, int tile_x, int tile_y, int slice_z,
-    const math::Camera& camera) const
+    const math::Vector3f& light_pos_vs, const math::Vector3f& light_dir_vs) const
 {
     // 计算集群在观察空间的 AABB
     math::Vector3f cluster_min, cluster_max;
 
-    // 获取逆投影矩阵（从观察空间到 NDC）
-    math::Matrix4f inv_proj = camera.get_projection_matrix().inverse();
+    // 逆投影矩阵（观察空间 → NDC）由 build() 每帧预计算并存入 inv_proj_，直接复用。
+    const math::Matrix4f& inv_proj = inv_proj_;
 
     float z_near = z_near_;
     float z_far = z_far_;
@@ -234,27 +234,17 @@ bool ClusterBuilderRD::_light_intersects_cluster(
                          z_near, z_far, inv_proj,
                          cluster_min, cluster_max);
 
-    // 将光源位置变换到观察空间
-    math::Matrix4f view = camera.get_view_matrix();
-    math::Vector4f light_pos_view = view * math::Vector4f(light.position.x, light.position.y, light.position.z, 1.0f);
-    math::Vector3f light_pos_vs(light_pos_view.x / light_pos_view.w,
-                                 light_pos_view.y / light_pos_view.w,
-                                 light_pos_view.z / light_pos_view.w);
+    // 光源位置 / 方向已由 build() 预变换到观察空间并传入（light_pos_vs / light_dir_vs）。
 
     // 点光源：球体与 AABB 相交测试
     if (light.type == LightType::Point) {
         return sphere_aabb_intersect(light_pos_vs, light.range, cluster_min, cluster_max);
     }
 
-    // 聚光灯：圆锥与 AABB 相交测试
+    // 聚光灯：圆锥与 AABB 相交测试（light_dir_vs 已在 build() 归一化）
     if (light.type == LightType::Spot) {
-        // 变换方向到观察空间
-        math::Vector4f light_dir_view = view * math::Vector4f(light.direction.x, light.direction.y, light.direction.z, 0.0f);
-        math::Vector3f dir_vs(light_dir_view.x, light_dir_view.y, light_dir_view.z);
-        dir_vs = dir_vs.normalized();
-
         float half_angle = math::to_radians(light.spot_angle * 0.5f);
-        return cone_aabb_intersect(light_pos_vs, dir_vs, half_angle, light.range, cluster_min, cluster_max);
+        return cone_aabb_intersect(light_pos_vs, light_dir_vs, half_angle, light.range, cluster_min, cluster_max);
     }
 
     // 方向光：影响所有集群
@@ -279,6 +269,13 @@ void ClusterBuilderRD::build(const math::Camera& camera,
     // 记录近/远平面，供 cluster_index / _light_intersects_cluster 复用
     z_near_ = z_near;
     z_far_ = z_far;
+
+    // 帧常量：视图矩阵与逆投影矩阵每帧只算一次，
+    // 供下方 光源×集群 循环内的所有相交测试复用（原实现在每次调用里重复求逆/重建）。
+    view_     = camera.get_view_matrix();
+    inv_proj_ = camera.get_projection_matrix().inverse();
+    const float log_range = std::log2(z_far_ / z_near_);
+    inv_log_range_ = (log_range > 1e-6f) ? (1.0f / log_range) : 0.0f;
 
     // 重置缓冲区
     cluster_buffer_.assign(total_clusters_, Cluster{0, 0});
@@ -328,10 +325,20 @@ void ClusterBuilderRD::build(const math::Camera& camera,
         const auto& light = lights[non_directional_indices_[ni]];
         light_hit_offsets_[ni] = static_cast<uint32_t>(light_hit_clusters_.size());
 
+        // 每盏灯只变换到观察空间一次（点光位置 / 聚光灯方向），供下方所有集群复用，
+        // 避免原实现在「光×集群」循环内对同一个光源重复做矩阵变换与归一化。
+        math::Vector4f lp = view_ * math::Vector4f(light.position.x, light.position.y, light.position.z, 1.0f);
+        math::Vector3f light_pos_vs(lp.x / lp.w, lp.y / lp.w, lp.z / lp.w);
+        math::Vector4f ld = view_ * math::Vector4f(light.direction.x, light.direction.y, light.direction.z, 0.0f);
+        math::Vector3f light_dir_vs(ld.x, ld.y, ld.z);
+        if (light.type == LightType::Spot) {
+            light_dir_vs = light_dir_vs.normalized();
+        }
+
         for (int tz = 0; tz < cluster_z_layers_; ++tz) {
             for (int ty = 0; ty < tile_count_y_; ++ty) {
                 for (int tx = 0; tx < tile_count_x_; ++tx) {
-                    if (_light_intersects_cluster(light, tx, ty, tz, camera)) {
+                    if (_light_intersects_cluster(light, tx, ty, tz, light_pos_vs, light_dir_vs)) {
                         const int ci = cluster_index(tx, ty, tz);
                         cluster_light_counts_[ci]++;
                         light_hit_clusters_.push_back(static_cast<uint32_t>(ci));

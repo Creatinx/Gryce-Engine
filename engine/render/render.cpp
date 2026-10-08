@@ -4,6 +4,9 @@
 #ifdef GRYCE_HAS_VULKAN
 #include "render/vulkan/vk_backend.h"
 #endif
+#ifdef GRYCE_HAS_D3D12
+#include "render/d3d12/d3d12_backend.h"
+#endif
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render {
@@ -20,9 +23,15 @@ std::unique_ptr<IRenderBackend> create_render_backend(RenderAPI api) {
         return nullptr;
 #endif
     case RenderAPI::DX11:
-    case RenderAPI::DX12:
-        GLOG_ERROR("create_render_backend: DirectX backend is reserved (WinNative) and not implemented yet");
+        GLOG_ERROR("create_render_backend: DirectX 11 is not planned (use DX12)");
         return nullptr;
+    case RenderAPI::DX12:
+#ifdef GRYCE_HAS_D3D12
+        return std::make_unique<d3d12::D3D12Backend>();
+#else
+        GLOG_ERROR("create_render_backend: D3D12 support not compiled in (Windows SDK / MinGW DX headers missing?)");
+        return nullptr;
+#endif
     default:
         GLOG_ERROR("create_render_backend: unsupported RenderAPI {}", static_cast<int>(api));
         return nullptr;

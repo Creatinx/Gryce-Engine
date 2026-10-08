@@ -1,0 +1,174 @@
+#version 430 core
+// ===========================================================================
+// cull_instances.comp — GPU 视锥剔除（GPU-driven 渲染的第一步）
+// ===========================================================================
+// 动机：CPU 逐实例判定会随实例数线性增长，且在"提交"这一步形成瓶颈；
+// 把判定搬到 GPU 后，CPU 每帧只上传一次实例数据 + 一次 dispatch，不再
+// 逐实例遍历，也不必把剔除结果读回内存（那会造成 GPU→CPU 同步停顿）。
+//
+// 做法：每个线程处理一个实例，用世界空间包围球对 6 个视锥面做测试
+// （球与半空间：dot(n, c) + d >= -r 则相交）。可见实例通过 atomicAdd
+// 竞争一个输出槽位，紧凑写入目标缓冲；同时 atomicAdd 的返回值就是
+// 最终的 instanceCount，直接作为间接绘制的参数。
+//
+// 视锥面必须指向视锥内侧（内侧为正），与 RenderPipeline 的 CPU 剔除
+// （is_inside_frustum）保持同一约定。
+// ---------------------------------------------------------------------------
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// DrawArraysIndirectCommand（与 OpenGL / Vulkan 规范一致，16 字节）：
+//   count         —— 原型网格顶点数（由 CPU 每帧写入）
+//   instanceCount —— 由本 shader 原子累加得到
+//   first         —— 起始顶点（通常为 0）
+//   baseInstance  —— 实例偏移（通常为 0）
+struct DrawArraysIndirectCommand {
+    uint count;
+    uint instanceCount;
+    uint first;
+    uint baseInstance;
+};
+
+layout(std430, binding = 0) readonly buffer SrcModels {
+    mat4 src_models[];
+};
+
+// 每实例世界空间包围球：xyz = 中心，w = 半径
+layout(std430, binding = 1) readonly buffer SrcSpheres {
+    vec4 src_spheres[];
+};
+
+layout(std430, binding = 2) writeonly buffer DstModels {
+    mat4 dst_models[];
+};
+
+// 注意：这里刻意不写实例名（buffer X { ... } inst;）。glGetProgramResourceIndex
+// 对 GL_SHADER_STORAGE_BLOCK 查询的是"块名"，带实例名时部分驱动的实现不一致；
+// 不带实例名时块名唯一，C++ 侧按 "DrawArgsBuffer" 查询即可稳定命中。
+layout(std430, binding = 3) buffer DrawArgsBuffer {
+    DrawArraysIndirectCommand args;
+};
+
+// 剔除参数（实例数 + 视锥面）走 SSBO 而不是 uniform：
+//   - Vulkan GLSL 不允许块外裸 uniform（glslang 直接报 "non-opaque uniforms
+//     outside a block : not allowed when using GLSL for Vulkan"）；
+//   - GL 侧又没有 push constant。
+// 用同一个 std430 块即可让 GL / Vulkan 共用一套 CPU 侧上传代码
+// （bind_storage_buffer("CullParams") + update_buffer）。
+layout(std430, binding = 4) readonly buffer CullParams {
+    uint uInstanceCount;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+    vec4 uFrustumPlanes[6];
+
+    // --- 遮挡剔除（HiZ）附加参数 ---
+    vec4 uCamPosNear;    // xyz = 相机世界位置, w = 近平面
+    vec4 uCamFwdFar;     // xyz = 相机前向（单位向量，指向观察方向）, w = 远平面
+    // x = 0.5*H/tan(fovY/2)（世界半径 → 屏幕像素的换算系数）
+    // y = 深度 bias（窗口深度单位，抵消金字塔分辨率不足带来的误剔）
+    // z = 有效金字塔层数
+    // w = 0 只做视锥剔除 / 1 开启遮挡剔除 / 2 开启且 NDC uv 的 y 需翻转
+    vec4 uHizCfg;
+    // 每级：(宽, 高, 在 HiZLevels 里的元素起始下标, 0)
+    vec4 uHizLevels[12];
+    mat4 uViewProj;      // 世界 → 裁剪（用于算屏幕位置）
+};
+
+// 深度金字塔（2x2 max 归约，R32F）。level L 的像素 (i,j) 位于
+// (uHizLevels[L].z + j*w + i)。由 CPU 侧逐级 copy_texture_to_buffer 填入。
+layout(std430, binding = 5) readonly buffer HiZLevels {
+    float hiz[];
+};
+
+// 窗口深度 w → 线性距离（z = near*far/(far - w*(far-near))，与全引擎约定一致）
+float linearize(float d) {
+    float n = uCamPosNear.w;
+    float f = uCamFwdFar.w;
+    return (n * f) / max(f - d * (f - n), 1e-6);
+}
+
+bool occluded(vec4 sphere) {
+    if (uHizCfg.w < 0.5) return false;
+
+    vec4 clip = uViewProj * vec4(sphere.xyz, 1.0);
+    if (clip.w <= 1e-4) return false;                  // 相机后方/退化：保守不剔
+
+    vec2 uv = (clip.xy / clip.w) * 0.5 + 0.5;
+    // Vulkan 主 pass 用负高度 viewport，NDC uv 与深度纹素行差一次翻转
+    if (uHizCfg.w > 1.5) uv.y = 1.0 - uv.y;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return false;
+
+    // 屏幕半径（像素）：透视投影下与 w 成反比
+    float radius_px = (sphere.w * uHizCfg.x) / clip.w;
+    if (radius_px < 1.0) return false;                // 太小，金字塔必然不够保守
+    if (radius_px > 0.5 * uHizCfg.x * 1e4) return false;
+
+    int level_count = int(uHizCfg.z);
+    // 选级：挑"纹素尺寸不小于物体屏幕尺寸"的最细一级（保证覆盖范围 ⊇ 物体）
+    int level = 0;
+    for (int i = 1; i < level_count; ++i) {
+        float texel_max = max(uHizLevels[i].x, uHizLevels[i].y);
+        if (texel_max <= radius_px) level = i; else break;
+    }
+    vec4 lv = uHizLevels[level];
+    // 注意：**不能**用 lv.z <= 0 判"该级未构建" —— level 0 在 SSBO 里的元素
+    // 起始下标恰好就是 0（hiz_offset_[0] == 0），那是合法值。
+    // 是否可用改由 CPU 侧保证：只写**已建好**的层级（uHizCfg.z = 已建层数），
+    // 且 hiz_ready 为假时整个遮挡分支直接关闭。
+    if (lv.z < 0.0) return false;
+
+    // 物体在该级上的纹素包围盒（向外各扩 1 纹素，抵消选级取整的误差）
+    vec2 size_px = vec2(lv.x, lv.y);
+    float texel_w = size_px.x / uHizLevels[0].x;       // 该级一个纹素 = 多少 level0 纹素
+    float texel_h = size_px.y / uHizLevels[0].y;
+    vec2 center_texel = uv * size_px;
+    vec2 half_extent = vec2(radius_px / max(texel_w, 1e-4), radius_px / max(texel_h, 1e-4));
+    ivec2 lo = ivec2(floor(center_texel - half_extent)) - ivec2(1);
+    ivec2 hi = ivec2(ceil (center_texel + half_extent)) + ivec2(1);
+
+    // 取覆盖区域的 max（"最远表面"）。多取一圈只会让判定更保守，不会误剔。
+    // 初值必须是 **1.0（远平面）而不是 0.0**：窗口深度 near→0 / far→1，
+    // 而 linearize(0) = near。若某个纹素都没命中（覆盖区整体落在该级范围外，
+    // 例如物体投影跨越金字塔边界），hiz_max 会保持初值 —— 用 0 初始化等于
+    // 宣称"遮挡物就在近平面上"，于是所有稍远的物体都被误判为遮挡（整屏黑）。
+    // 用 1.0 则表示"没找到遮挡物"，保守地不剔。
+    float hiz_max = 1.0;
+    for (int y = lo.y; y <= hi.y; ++y) {
+        if (y < 0 || y >= int(lv.y)) continue;
+        for (int x = lo.x; x <= hi.x; ++x) {
+            if (x < 0 || x >= int(lv.x)) continue;
+            uint idx = uint(lv.z) + uint(y) * uint(lv.x) + uint(x);
+            hiz_max = max(hiz_max, hiz[idx]);
+        }
+    }
+
+    // 比较必须在**线性距离**空间做，不能直接比窗口深度 w：w 对距离的导数
+    // dw/dz = near*far/((far-near)*z²) 随距离急剧衰减（near=0.1/far=1000 时，
+    // 20 米处 0.001 的 w 差相当于 4 米），常数 bias 在远处会粗得离谱、
+    // 近处又几乎无效。这里把两侧都换成米：物体最近距离 vs 遮挡物距离。
+    float z_obj = dot(sphere.xyz - uCamPosNear.xyz, uCamFwdFar.xyz) - sphere.w;
+    z_obj = max(z_obj, uCamPosNear.w);
+    float z_occ = max(linearize(hiz_max), uCamPosNear.w);
+
+    // uHizCfg.y 是**米**为单位的偏置（吸收金字塔分辨率不足与深度量化误差）
+    return z_obj > z_occ + uHizCfg.y;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uInstanceCount) return;
+
+    vec4 sphere = src_spheres[idx];
+    for (int i = 0; i < 6; ++i) {
+        // 小于 -radius 表示球整体在该半空间之外 → 不可见
+        if (dot(uFrustumPlanes[i].xyz, sphere.xyz) + uFrustumPlanes[i].w < -sphere.w) {
+            return;
+        }
+    }
+    // 视锥内、但被不透明几何挡住的：直接不写紧凑输出 → 不进入间接绘制
+    if (occluded(sphere)) return;
+
+    // 可见：紧凑写入输出槽位，原子累加同时得到最终 instanceCount
+    uint slot = atomicAdd(args.instanceCount, 1u);
+    dst_models[slot] = src_models[int(idx)];
+}

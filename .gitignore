@@ -2,7 +2,10 @@
 /build/
 build_*/
 out/
-cmake-build-*/   # CLion 默认构建目录名
+# CLion 默认构建目录名
+cmake-build-*/
+# toolchain/main.py package 生成的离线发布包（由脚本重建，不入库）
+dist/
 
 # ---- 编译器 / 系统文件 ----
 *.o
@@ -48,3 +51,8 @@ Thumbs.db
 # scenes/main.gesc 引用的 res:/models/cube.obj 与 quad.obj 全部缺失，
 # 场景里一个网格都画不出来。这里对该目录显式放行。
 !test/demo_project/models/*.obj
+
+# ---- 临时调试截图（根目录散落，不入库）----
+t_*.png
+cmp_*.png
+dbg*.png

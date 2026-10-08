@@ -60,6 +60,10 @@ bool ImGuiRenderer::init(GLFWwindow* window, std::unique_ptr<IImGuiBackend> back
 
     if (backend_->is_vulkan()) {
         ImGui_ImplGlfw_InitForVulkan(window, true);
+    } else if (backend_->is_d3d12()) {
+        // D3D12 后端没有对应的 ImGui_ImplGlfw_InitForDX12 —— 用 "Other" 变体，
+        // 它只做平台输入（键鼠/光标），渲染由 imgui_impl_dx12 负责。
+        ImGui_ImplGlfw_InitForOther(window, true);
     } else {
         ImGui_ImplGlfw_InitForOpenGL(window, true);
     }

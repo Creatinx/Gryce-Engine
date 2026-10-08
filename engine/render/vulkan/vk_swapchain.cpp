@@ -42,10 +42,16 @@ bool VulkanSwapchain::recreate(uint32_t width, uint32_t height) {
 }
 
 void VulkanSwapchain::set_vsync_enabled(bool enabled) {
-    VkPresentModeKHR desired = enabled ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
-    if (present_mode_ == desired) return;
+    // VSync 开启 -> FIFO（硬同步到 vblank，有防撕裂，但帧率被显示器刷新率封顶）。
+    // VSync 关闭 -> 优先 MAILBOX：帧率不受刷新率封顶且无撕裂，是高刷新率/竞技场景
+    //   让 GPU 持续跑满的最佳选择；不可用再退 IMMEDIATE（无封顶但可能撕裂），
+    //   最后退 FIFO。
+    // 这个选择直接决定 GPU 能否被持续喂饱：FIFO 会让 GPU 在两次 vblank 间空转，
+    // 表现为 "GPU 没跑满"。
+    VkPresentModeKHR desired = enabled ? VK_PRESENT_MODE_FIFO_KHR
+                                       : VK_PRESENT_MODE_MAILBOX_KHR;
 
-    // 查询设备支持的呈现模式，若目标不可用则回退
+    // 查询设备支持的呈现模式，按优先级回退
     uint32_t count = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(device_->physical_device(), surface_, &count, nullptr);
     std::vector<VkPresentModeKHR> modes(count);
@@ -53,24 +59,31 @@ void VulkanSwapchain::set_vsync_enabled(bool enabled) {
         vkGetPhysicalDeviceSurfacePresentModesKHR(device_->physical_device(), surface_, &count, modes.data());
     }
 
-    bool supported = false;
-    for (auto m : modes) {
-        if (m == desired) {
-            supported = true;
-            break;
+    auto supported = [&](VkPresentModeKHR m) {
+        for (auto x : modes) {
+            if (x == m) return true;
+        }
+        return false;
+    };
+
+    VkPresentModeKHR chosen = desired;
+    if (!supported(chosen)) {
+        // 关闭 vsync 时按 MAILBOX -> IMMEDIATE 顺序回退；两者都不支持则退回 FIFO。
+        if (!enabled && supported(VK_PRESENT_MODE_IMMEDIATE_KHR)) {
+            chosen = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        } else {
+            chosen = VK_PRESENT_MODE_FIFO_KHR;
         }
     }
 
-    if (!supported) {
-        GLOG_WARN("VulkanSwapchain: requested present mode {} not supported, fallback to FIFO",
-                  enabled ? "FIFO" : "IMMEDIATE");
-        present_mode_ = VK_PRESENT_MODE_FIFO_KHR;
-    } else {
-        present_mode_ = desired;
-    }
+    if (present_mode_ == chosen) return;
 
+    present_mode_ = chosen;
     recreate(extent_.width, extent_.height);
-    GLOG_INFO("VulkanSwapchain: VSync {}", enabled ? "enabled" : "disabled");
+    GLOG_INFO("VulkanSwapchain: VSync {} (present mode {})",
+              enabled ? "enabled" : "disabled",
+              chosen == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" :
+              chosen == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "FIFO");
 }
 
 void VulkanSwapchain::shutdown() {

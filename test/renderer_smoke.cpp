@@ -1,7 +1,7 @@
 // renderer_smoke.cpp — Gryce 渲染器双后端冒烟 / 演示程序
 //
 // 用法:
-//   GryceRenderSmoke.exe [--api opengl|vulkan] [--project <dir>] [--scene <res:/...>]
+//   GryceRenderSmoke.exe [--api opengl|vulkan|dx12] [--project <dir>] [--scene <res:/...>]
 //                        [--frames N] [--shot <png>] [--w N] [--h N]
 //                        [--sync] [--no-analyze] [--list]
 //                        [--play] [--speed <m/s>] [--sensitivity <deg/px>]
@@ -398,7 +398,7 @@ ImageStats analyze_image(const std::string& path) {
 void print_usage() {
     std::printf(
         "GryceRenderSmoke — Gryce 渲染器双后端冒烟/演示程序\n"
-        "  --api <opengl|vulkan>  渲染后端（默认取 project.data 的 render_api）\n"
+        "  --api <opengl|vulkan|dx12>  渲染后端（默认取 project.data 的 render_api）\n"
         "  --project <dir>        项目根（默认编译期内置的 demo_project）\n"
         "  --scene <res:/...>     覆盖起始场景\n"
         "  --frames <N>           渲染帧数后截图退出（默认 60）\n"
@@ -417,17 +417,126 @@ void print_usage() {
         "  --ssao / --no-ssao     覆盖屏幕空间环境光遮蔽开关\n"
         "  --ssil / --no-ssil     覆盖屏幕空间间接光开关\n"
         "  --no-analyze           跳过截图统计\n"
+        "  --no-gpu-cull          关闭 GPU 视锥剔除（A/B 对照用）\n"
+        "  --no-occlusion         关闭 HiZ 遮挡剔除（A/B 对照用）\n"
+        "  --power-saver          强制开启省电模式（低分辨率 HDR + 跳过后处理）\n"
+        "  --no-power-saver       强制关闭省电模式（A/B 对照用）\n"
         "  --list                 打印场景清单后退出\n"
         "  --simulate             进入 Play 模式驱动组件 on_update（粒子/动画），但不接管相机、不锁鼠标\n"
         "  --play                 交互模式：鼠标锁定转视角，WASD 移动，Esc 退出\n"
         "  --speed <m/s>          交互模式移动速度（默认 3.0）\n"
         "  --sensitivity <度/像素> 交互模式鼠标灵敏度（默认 0.12）\n"
-        "  --play-frames <N>      交互模式运行 N 帧后自动退出（自检用）\n");
+        "  --play-frames <N>      交互模式运行 N 帧后自动退出（自检用）\n"
+        "  --stress <N>           生成 N 个动态立方体的重负载场景（性能基准用）。\n"
+        "                         与 --scene 互斥；生成后替换当前场景内容。\n"
+        "  --stress-shadow        压力场景加载 N 个投影体（默认全开阴影投射）\n");
+}
+
+// ---------------------------------------------------------------------------
+// 压力场景生成器（--stress）
+//
+// 目的：demo 场景只有 9 实体 / 5 mesh，阴影、合批、剔除、CPU 遍历这些开销
+// 全被稀释到噪声里，量不出真实优化空间。这里用 GEntity_ImportJson 批量灌入
+// 实体 —— 它走的是与场景文件完全相同的 SceneSerializer::deserialize 路径，
+// 因此生成的实体与手写 .gesc 在引擎里没有任何区别。
+//
+// 布局：一条沿 -Z 延伸的立方体"走廊"，每个立方体都投阴影（这是关键：
+// 阴影 pass 的绘制次数 = 投影体数量，是 CPU 侧 O(N) 遍历 + GPU 侧几何提交的
+// 双重压力源）。地面用一个大 quad 承接所有阴影，保证接收端像素覆盖满屏。
+//
+// 注意：必须在 GRender_Init 之后调用（材质/网格资源此时才可解析）。
+// ---------------------------------------------------------------------------
+struct StressReport {
+    int entities = 0;   // 成功灌入的实体数
+    int failed = 0;     // 导入失败的批次数
+};
+
+StressReport generate_stress_scene(int count) {
+    StressReport rep;
+    if (count <= 0) return rep;
+
+    // 立方体边长与间距：间距略大于边长，避免互相穿模影响视觉判读，
+    // 同时保证有大量重叠投影（阴影 pass 的 overdraw 压力）。
+    const float kCubeSize = 1.0f;
+    const float kSpacing = 1.6f;
+    // 每行多少个：排成方阵，中心对齐原点
+    const int side = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count))));
+    const float half = (side - 1) * 0.5f * kSpacing;
+
+    // ---- 地面（承接阴影；单个大 quad，保证接收端满屏覆盖）----
+    {
+        const float ground_extent = std::max(40.0f, side * kSpacing + 20.0f);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            R"({"version":2,"name":"StressGround","entities":[{
+              "name":"StressGround","parent":null,"enabled":true,
+              "transform":{"position":[0,0,0],"rotation":[0,0,0,1],
+                           "scale":[%.3f,1.0,%.3f]},
+              "components":[{"type":"MeshRenderer","enabled":true,
+                "mesh_path":"res:/models/quad.obj","billboard":false,
+                "depth_test":true,"material":{"name":"StressGroundMat",
+                "preset_name":"Concrete"}}]}]})",
+            static_cast<double>(ground_extent), static_cast<double>(ground_extent));
+        if (GEntity_ImportJson(buf, 0) == 0) ++rep.failed;
+    }
+
+    // ---- N 个立方体，一次一个 JSON（批量拼字符串会在大 N 下爆内存）----
+    // 交替使用几种材质预设，制造不同 roughness/metalic，避免被合批成一次
+    // instanced draw —— 我们要的是"每个都是独立 draw call"的 CPU 压力。
+    static const char* kPresets[] = {"Concrete", "Gold", "Chrome", "Wood"};
+    int idx = 0;
+    for (int z = 0; z < side; ++z) {
+        for (int x = 0; x < side; ++x) {
+            if (idx >= count) break;
+            const float px = static_cast<float>(x) * kSpacing - half;
+            const float pz = static_cast<float>(z) * kSpacing - half;
+            // 高度错落：让阴影层次可见，也避免完全规整的图案
+            const float py = kCubeSize * 0.5f + 0.12f * static_cast<float>(idx % 5);
+            // 各自的 Y 轴旋转：避免被实例化合批，同时让投影形状多样
+            const float ang = static_cast<float>(idx) * 0.37f;
+            const float half_ang = ang * 0.5f;
+            const float qy = std::sin(half_ang);
+            const float qw = std::cos(half_ang);
+            const char* preset = kPresets[idx % 4];
+
+            char buf[768];
+            std::snprintf(buf, sizeof(buf),
+                R"({"version":2,"name":"StressCube%d","entities":[{
+                  "name":"StressCube%d","parent":null,"enabled":true,
+                  "transform":{"position":[%.4f,%.4f,%.4f],
+                               "rotation":[0,%.6f,0,%.6f],
+                               "scale":[%.3f,%.3f,%.3f]},
+                  "components":[{"type":"MeshRenderer","enabled":true,
+                    "mesh_path":"res:/models/cube.obj","billboard":false,
+                    "depth_test":true,"material":{"name":"StressMat%d",
+                    "preset_name":"%s"}}]}]})",
+                idx, idx,
+                static_cast<double>(px), static_cast<double>(py), static_cast<double>(pz),
+                static_cast<double>(qy), static_cast<double>(qw),
+                static_cast<double>(kCubeSize), static_cast<double>(kCubeSize),
+                static_cast<double>(kCubeSize),
+                idx, preset);
+
+            if (GEntity_ImportJson(buf, 0) != 0) {
+                ++rep.entities;
+            } else {
+                ++rep.failed;
+            }
+            ++idx;
+        }
+        if (idx >= count) break;
+    }
+    return rep;
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
+    // 排障用：stdout 默认是块缓冲，进程崩溃（尤其 D3D12 侧访问违规）时
+    // printf 的路标会整块丢掉，只剩 GLOG 的行 —— 无法定位崩溃发生在哪个阶段。
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+
     std::string project_root = GRYCE_DEMO_PROJECT_ROOT;
     std::string scene_override;
     int frames = 60;
@@ -460,6 +569,10 @@ int main(int argc, char** argv) {
     float play_speed = 3.0f;
     float play_sensitivity = 0.12f;
     int play_frames = 0;   // >0：交互模式跑满 N 帧自动退出（脚本/自检用）
+    // --stress：生成 N 个动态立方体的重负载场景，用于把 demo 轻场景里
+    // 被稀释的阴影/合批/剔除/CPU 遍历开销暴露出来。0 = 不生成。
+    int stress_count = 0;
+    bool stress_shadow = false;   // 保留：投影体默认全开，此项仅用于日志标注
     bool frames_explicit = false;
     bool vsync = true;   // 默认开垂直同步；--no-vsync 用于性能测量
     float ssr_env_fallback_override = -1.0f;
@@ -467,6 +580,10 @@ int main(int argc, char** argv) {
     int debug_view_override = -1;
     int pcss_override = -1;
     bool fps_overlay = true;   // 左上角白色 FPS，默认开
+    // -1 = 不干预（用引擎默认）；0/1 = 强制关/开。用于 A/B 对照优化开销。
+    int gpu_cull_override = -1;
+    int occlusion_override = -1;
+    int power_saver_override = -1;   // -1=跟随 auto 判定；1=强制开；0=强制关
     int ssr_debug_override = 0;  // --ssr-debug：SSR 调试视图
 
     for (int i = 1; i < argc; ++i) {
@@ -513,6 +630,12 @@ int main(int argc, char** argv) {
         }
         else if (std::strcmp(a, "--pcss") == 0) pcss_override = 1;
         else if (std::strcmp(a, "--no-pcss") == 0) pcss_override = 0;
+        else if (std::strcmp(a, "--no-gpu-cull") == 0) gpu_cull_override = 0;
+        else if (std::strcmp(a, "--no-occlusion") == 0) occlusion_override = 0;
+        // 省电模式：forced 语义是"手动覆盖 auto 判定"，因此三态（默认 -1 不干预 /
+        // 1 强制开 / 0 强制关）都映射到同一个 API。
+        else if (std::strcmp(a, "--power-saver") == 0) power_saver_override = 1;
+        else if (std::strcmp(a, "--no-power-saver") == 0) power_saver_override = 0;
         else if (std::strcmp(a, "--fps") == 0) fps_overlay = true;
         else if (std::strcmp(a, "--no-fps") == 0) fps_overlay = false;
         else if (std::strcmp(a, "--ssr-debug") == 0) ssr_debug_override = std::atoi(need_value(a));
@@ -553,6 +676,8 @@ int main(int argc, char** argv) {
             play_sensitivity = static_cast<float>(std::atof(need_value(a)));
         }
         else if (std::strcmp(a, "--play-frames") == 0) play_frames = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--stress") == 0) stress_count = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--stress-shadow") == 0) stress_shadow = true;
         else if (std::strcmp(a, "--bench") == 0) {
             // 可选帧数：--bench 200；不跟数字时用默认 240 帧
             if (i + 1 < argc && argv[i + 1][0] != '-') bench_frames = std::atoi(argv[++i]);
@@ -588,19 +713,26 @@ int main(int argc, char** argv) {
     if (api_arg.empty()) api_arg = cfg.render_api;
     GRenderAPI api = GRYCE_RENDER_API_OPENGL;
     if (api_arg == "vulkan") api = GRYCE_RENDER_API_VULKAN;
+    else if (api_arg == "dx12") api = GRYCE_RENDER_API_DX12;
     else if (api_arg != "opengl" && !api_arg.empty()) {
-        std::fprintf(stderr, "[smoke] 未知后端 '%s'（用 opengl 或 vulkan）\n", api_arg.c_str());
+        std::fprintf(stderr, "[smoke] 未知后端 '%s'（用 opengl、vulkan 或 dx12）\n", api_arg.c_str());
         return 1;
     }
     const bool use_vulkan = (api == GRYCE_RENDER_API_VULKAN);
+    const bool use_dx12   = (api == GRYCE_RENDER_API_DX12);
+    const bool use_opengl = (api == GRYCE_RENDER_API_OPENGL);
+    const char* backend_name =
+        use_vulkan ? "vulkan" : use_dx12 ? "dx12" : "opengl";
     const int width = width_override > 0 ? width_override : cfg.width;
     const int height = height_override > 0 ? height_override : cfg.height;
     if (shot_path.empty()) {
-        shot_path = use_vulkan ? "shot_vulkan.png" : "shot_opengl.png";
+        shot_path = use_vulkan ? "shot_vulkan.png"
+                  : use_dx12   ? "shot_dx12.png"
+                               : "shot_opengl.png";
     }
 
     std::printf("[smoke] backend=%s frames=%d viewport=%dx%d sync=%d\n",
-                use_vulkan ? "vulkan" : "opengl", frames, width, height, sync_mode ? 1 : 0);
+                backend_name, frames, width, height, sync_mode ? 1 : 0);
 
     // 2) 平台 + Core（载入 <project>/project.data 与主场景）
     if (!Window::init_sdk()) {
@@ -609,7 +741,7 @@ int main(int argc, char** argv) {
     }
 
     const WindowContextType ctx =
-        use_vulkan ? WindowContextType::NoApi : WindowContextType::OpenGL;
+        use_opengl ? WindowContextType::OpenGL : WindowContextType::NoApi;
     Window window(cfg.title.c_str(), width, height, WindowMode::Windowed, ctx);
     if (!window.is_valid()) {
         std::fprintf(stderr, "[smoke] failed to create window\n");
@@ -682,6 +814,9 @@ int main(int argc, char** argv) {
     GRender_SetPCSSParams(cfg.pcss_light_size, cfg.pcss_max_radius, 1.0f);
     // 左上角白色 FPS（默认开；--no-fps 关闭）
     GRender_SetFPSOverlay(fps_overlay);
+    if (gpu_cull_override >= 0) GRender_SetGPUCullingEnabled(gpu_cull_override != 0);
+    if (occlusion_override >= 0) GRender_SetOcclusionCullingEnabled(occlusion_override != 0);
+    if (power_saver_override >= 0) GRender_SetPowerSaverForced(power_saver_override != 0);
     if (ssr_debug_override > 0) GRender_SetSSRDebugView(ssr_debug_override);
     GRender_SetSSAO(cfg.ssao_enabled);
     GRender_SetSSR(cfg.ssr_enabled);
@@ -694,10 +829,20 @@ int main(int argc, char** argv) {
                 static_cast<double>(cfg.ssr_thickness),
                 static_cast<double>(cfg.ssr_bilateral));
 
+    // ---- 压力场景注入（在统计与渲染之前）----
+    // 必须在 GRender_Init 之后：ImportJson 内部按材质名解析资源，
+    // 渲染器未初始化时材质/网格拿不到 GPU 句柄。
+    if (stress_count > 0) {
+        const StressReport rep = generate_stress_scene(stress_count);
+        std::printf("[smoke] --stress %d: 注入 %d 个实体（失败 %d）%s\n",
+                    stress_count, rep.entities, rep.failed,
+                    stress_shadow ? " [shadow-casters]" : "");
+    }
+
     const SceneStats scene = scan_scene();
     std::printf("[smoke] scene: entities=%d cameras=%d lights=%d meshes=%d\n",
                 scene.entities, scene.cameras, scene.lights, scene.meshes);
-    std::printf("[smoke] renderer initialized (%s)\n", use_vulkan ? "Vulkan" : "OpenGL");
+    std::printf("[smoke] renderer initialized (%s)\n", backend_name);
 
     if (list_only) {
         GRender_Shutdown();
@@ -899,8 +1044,19 @@ int main(int argc, char** argv) {
         }
         std::printf("\n");
     }
-    GRender_Shutdown();
+    // ★ 退出顺序：**先拆场景（World），再拆渲染器**。
+    //
+    // MeshRenderer::~MeshRenderer 会调 material->destroy_gpu(ctx_) /
+    // ctx_->destroy_mesh()，而 ctx_ 是缓存的裸指针（mesh_renderer.h:68，
+    // 只在首次上传时赋值，渲染器关闭时不会被清空）。若先 GRender_Shutdown
+    // 再 GCore_Shutdown，这些析构就是对已释放 RenderContext 的 use-after-free。
+    //
+    // GL/Vulkan 之所以一直没暴露：那块堆内存被释放后内容恰好还像样，
+    // running_ 读出来仍是 false，走到"同步销毁"分支糊弄过去了。
+    // D3D12 的关闭路径分配更多，堆块被 0xFEEEFEEE 填充，
+    // running_ 读成 true → 走 enqueue_destroy → 对垃圾 mutex 加锁 → SIGSEGV。
     GCore_Shutdown();
+    GRender_Shutdown();
     Window::shutdown_sdk();
 
     std::printf("[smoke] done, rendered=%d frames, shot=%s\n", rendered, shot_path.c_str());

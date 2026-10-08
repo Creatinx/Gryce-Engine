@@ -1,0 +1,140 @@
+#version 450 core
+// ===========================================================================
+// vulkan_cull_instances.comp — GPU 视锥剔除（Vulkan GLSL 方言）
+// ===========================================================================
+// 与 cull_instances.comp（GL 方言）语义完全一致，差别只在方言：
+//   - Vulkan 不允许块外裸 uniform，剔除参数（实例数 + 视锥面）并入
+//     binding 4 的 readonly SSBO，与 GL 版共用同一份 CPU 侧上传代码；
+//   - 版本 450（与其余 vulkan_*.{vert,frag} 一致）。
+//
+// 块名（src_models / src_spheres / dst_models / DrawArgsBuffer / CullParams）
+// 必须与 C++ 侧 bind_storage_buffer 的名字逐字对应：Vulkan 侧通过 SPIR-V
+// 反射 OpName + DecorationBinding 取 binding 号，GL 侧通过
+// glGetProgramResourceIndex(GL_SHADER_STORAGE_BLOCK) 查询。
+// 因此块一律不写实例名（buffer X { ... } inst;），否则块名在两套 API 下
+// 的查询结果不一致。
+// ---------------------------------------------------------------------------
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// DrawArraysIndirectCommand（VkDrawIndirectCommand，16 字节）
+struct DrawArraysIndirectCommand {
+    uint count;
+    uint instanceCount;
+    uint first;
+    uint baseInstance;
+};
+
+layout(std430, binding = 0) readonly buffer SrcModels {
+    mat4 src_models[];
+};
+
+// 每实例世界空间包围球：xyz = 中心，w = 半径
+layout(std430, binding = 1) readonly buffer SrcSpheres {
+    vec4 src_spheres[];
+};
+
+layout(std430, binding = 2) writeonly buffer DstModels {
+    mat4 dst_models[];
+};
+
+layout(std430, binding = 3) buffer DrawArgsBuffer {
+    DrawArraysIndirectCommand args;
+};
+
+layout(std430, binding = 4) readonly buffer CullParams {
+    uint uInstanceCount;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+    vec4 uFrustumPlanes[6];
+
+    vec4 uCamPosNear;    // xyz = 相机世界位置, w = 近平面
+    vec4 uCamFwdFar;     // xyz = 相机前向（单位向量）, w = 远平面
+    vec4 uHizCfg;        // x = 0.5*H/tan(fovY/2), y = bias, z = 层数, w = 开关(0/1/2)
+    vec4 uHizLevels[12]; // 每级 (宽, 高, 元素起始下标, 0)
+    mat4 uViewProj;
+};
+
+// 深度金字塔（2x2 max 归约，R32F），由 CPU 侧逐级 copy_texture_to_buffer 填入
+layout(std430, binding = 5) readonly buffer HiZLevels {
+    float hiz[];
+};
+
+// 窗口深度 w → 线性距离（z = near*far/(far - w*(far-near))，与全引擎约定一致）
+float linearize(float d) {
+    float n = uCamPosNear.w;
+    float f = uCamFwdFar.w;
+    return (n * f) / max(f - d * (f - n), 1e-6);
+}
+
+bool occluded(vec4 sphere) {
+    if (uHizCfg.w < 0.5) return false;
+
+    vec4 clip = uViewProj * vec4(sphere.xyz, 1.0);
+    if (clip.w <= 1e-4) return false;
+
+    vec2 uv = (clip.xy / clip.w) * 0.5 + 0.5;
+    // Vulkan 主 pass 用负高度 viewport，NDC uv 与深度纹素行差一次翻转
+    if (uHizCfg.w > 1.5) uv.y = 1.0 - uv.y;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return false;
+
+    float radius_px = (sphere.w * uHizCfg.x) / clip.w;
+    if (radius_px < 1.0) return false;
+
+    int level_count = int(uHizCfg.z);
+    int level = 0;
+    for (int i = 1; i < level_count; ++i) {
+        float texel_max = max(uHizLevels[i].x, uHizLevels[i].y);
+        if (texel_max <= radius_px) level = i; else break;
+    }
+    vec4 lv = uHizLevels[level];
+    if (lv.z < 0.0) return false;  // level 0 的偏移合法值就是 0
+
+    vec2 size_px = vec2(lv.x, lv.y);
+    float texel_w = size_px.x / uHizLevels[0].x;
+    float texel_h = size_px.y / uHizLevels[0].y;
+    vec2 center_texel = uv * size_px;
+    vec2 half_extent = vec2(radius_px / max(texel_w, 1e-4), radius_px / max(texel_h, 1e-4));
+    ivec2 lo = ivec2(floor(center_texel - half_extent)) - ivec2(1);
+    ivec2 hi = ivec2(ceil (center_texel + half_extent)) + ivec2(1);
+
+    float hiz_max = 1.0;  // 初值必须是远平面，见 GL 版注释
+    for (int y = lo.y; y <= hi.y; ++y) {
+        if (y < 0 || y >= int(lv.y)) continue;
+        for (int x = lo.x; x <= hi.x; ++x) {
+            if (x < 0 || x >= int(lv.x)) continue;
+            uint idx = uint(lv.z) + uint(y) * uint(lv.x) + uint(x);
+            hiz_max = max(hiz_max, hiz[idx]);
+        }
+    }
+
+    // 比较必须在**线性距离**空间做，不能直接比窗口深度 w：w 对距离的导数
+    // dw/dz = near*far/((far-near)*z²) 随距离急剧衰减（near=0.1/far=1000 时，
+    // 20 米处 0.001 的 w 差相当于 4 米），常数 bias 在远处会粗得离谱、
+    // 近处又几乎无效。这里把两侧都换成米：物体最近距离 vs 遮挡物距离。
+    float z_obj = dot(sphere.xyz - uCamPosNear.xyz, uCamFwdFar.xyz) - sphere.w;
+    z_obj = max(z_obj, uCamPosNear.w);
+    float z_occ = max(linearize(hiz_max), uCamPosNear.w);
+
+    // uHizCfg.y 是**米**为单位的偏置（吸收金字塔分辨率不足与深度量化误差）
+    return z_obj > z_occ + uHizCfg.y;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uInstanceCount) return;
+
+    vec4 sphere = src_spheres[idx];
+    for (int i = 0; i < 6; ++i) {
+        // 小于 -radius 表示球整体在该半空间之外 → 不可见
+        // （与 RenderPipeline::is_inside_frustum 的 CPU 剔除同一约定）
+        if (dot(uFrustumPlanes[i].xyz, sphere.xyz) + uFrustumPlanes[i].w < -sphere.w) {
+            return;
+        }
+    }
+    if (occluded(sphere)) return;
+
+    // 可见：紧凑写入输出槽位，原子累加的返回值即最终 instanceCount
+    uint slot = atomicAdd(args.instanceCount, 1u);
+    dst_models[slot] = src_models[idx];
+}

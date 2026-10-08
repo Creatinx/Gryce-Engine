@@ -54,6 +54,10 @@ public:
     bool shader_files_changed() const override;
     bool reload() override;
 
+    // 计算着色器（单阶段 *.comp）：编译失败返回 false。
+    bool load_compute(const std::string& name, const std::string& shader_dir) override;
+    int storage_block_binding(const char* name) const override;
+
     uint32_t program_id() const { return program_id_; }
 
 private:
@@ -67,6 +71,10 @@ private:
     std::string source_frag_path_;
     std::filesystem::file_time_type vert_mtime_{};
     std::filesystem::file_time_type frag_mtime_{};
+
+    // 计算着色器（load_compute）：单阶段，无 vert/frag
+    std::string source_comp_path_;
+    std::filesystem::file_time_type comp_mtime_{};
 
     mutable PostProcessParams pp_params_;
     mutable bool pp_dirty_ = true;

@@ -45,7 +45,6 @@ class Renderer2D : public IRenderer2D {
 public:
     Renderer2D();
     ~Renderer2D() override;
-
     void init(RenderContext* ctx) override;
     void shutdown() override;
 
@@ -98,6 +97,44 @@ public:
 
     RHITextureHandle create_texture_from_data(const assets::TextureData* data) override;
     ITexture* resolve_texture(RHITextureHandle handle) const override;
+
+protected:
+    // ---------------------------------------------------------------------
+    // 后端适配钩子（默认实现 = OpenGL 行为，子类可覆盖）
+    // Renderer2D 的绝大多数逻辑是后端无关的（批处理、矩阵、光照参数、
+    // bloom ping-pong 编排），只有少数几处需要直接触碰后端设备：
+    //   * 深度纹理的比较模式（GL 需要关闭 TEXTURE_COMPARE_MODE）
+    //   * 创建 1x1 默认 albedo/normal 纹理（GL 用 glGenTextures）
+    //   * 仅有深度附件的 FBO 需要禁用颜色读写（GL 的 glDrawBuffer）
+    // 这些点在 GL 后端下由 renderer2d_impl.cpp 直接完成；其它后端
+    // （D3D12）继承本类并覆盖下列钩子即可复用全部逻辑。
+    // ---------------------------------------------------------------------
+
+    // 关闭给定深度纹理的「采样器比较模式」（默认：GL 实现）。
+    virtual void configure_depth_texture_for_sampling(ITexture* shadow_map);
+
+    // 为一个仅有深度附件的离屏目标禁用颜色写入（默认：GL 的 glDrawBuffer）。
+    virtual void disable_color_writes_for_depth_only_target();
+
+    // 创建 1x1 默认纹理（albedo = 白 / normal = 平面法线）。
+    // 返回后端纹理对象 id（GL 为 GLuint）；0 表示创建失败。
+    // 默认实现走 GL。参数是 RGBA 四字节。
+    virtual uint32_t create_default_1x1_texture(const unsigned char rgba[4]);
+
+    // 删除 create_default_1x1_texture 创建的纹理（默认：glDeleteTextures）。
+    virtual void destroy_default_texture(uint32_t id);
+
+    // 把后端纹理 id 绑定到给定纹理槽位（默认：glBindTextureUnit）。
+    virtual void bind_default_texture_slot(int slot, uint32_t id);
+
+    // 2D 的离屏 pass（阴影 / bloom）是否直接由本渲染器切换渲染目标。
+    // GL：是（GL 的 RT 切换是即时状态，无需 barrier）。
+    // D3D12 / Vulkan：否 —— 离屏 RT 由引擎的 pass 负责创建与 barrier，
+    //   2D 渲染器只在引擎已经绑好的目标上绘制（避免与命令缓冲的状态跟踪打架）。
+    virtual bool use_backend_framebuffers() const { return true; }
+
+    // 子类钩子实现里需要访问的上下文（其余成员仍为 private）。
+    RenderContext* ctx() const { return ctx_; }
 
 private:
     bool context_alive() const;
@@ -166,6 +203,8 @@ private:
     float screen_height_ = 0.0f;
     bool initialized_ = false;
     bool using_fallback_font_ = false;
+    // 无可用字体时只告警一次（避免每帧刷日志）；回退图集的实心色块不再绘制。
+    bool warned_no_font_ = false;
     BlendMode blend_mode_ = BlendMode::Alpha;
 
     // 2D 光照

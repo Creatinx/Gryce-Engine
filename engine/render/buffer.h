@@ -28,6 +28,13 @@ public:
     // 更新缓冲数据（子区域）
     virtual void update(const void* data, size_t size, size_t offset = 0) = 0;
 
+    // 同步回读缓冲内容（诊断 / 截图用）。注意会造成 GPU→CPU 停顿，不要放在
+    // 每帧热路径上。默认不支持，需要的后端自行实现。
+    virtual bool readback(void* dst, size_t size, size_t offset = 0) {
+        (void)dst; (void)size; (void)offset;
+        return false;
+    }
+
     // 绑定到指定的 binding point（适用于 SSBO）
     virtual void bind(uint32_t binding_point) const = 0;
 

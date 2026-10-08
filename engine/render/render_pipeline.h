@@ -68,7 +68,14 @@ GRYCE_RENDERER_API CullFrustum extract_cull_frustum(const math::Matrix4f& vp);
 
 // 世界空间网格包围球：按资源路径缓存本地包围球，避免每帧遍历顶点。
 // 返回 false 表示无法计算（资源缺失等），调用方应保守保留物体。
+// 下面这个重载额外接收 RHIMeshHandle：有句柄时走整数键缓存，省掉每实体
+// 一次的字符串哈希与全局锁 —— 这是重场景（数千实体）下最大的一处 CPU 开销。
+// mesh_handle 无效时自动回退到纯路径版本，行为与旧接口一致。
 GRYCE_RENDERER_API bool compute_world_mesh_bounds(const std::string& mesh_path,
+                                                  const math::Matrix4f& world,
+                                                  math::Vector3f& out_center, float& out_radius);
+GRYCE_RENDERER_API bool compute_world_mesh_bounds(render::RHIMeshHandle mesh_handle,
+                                                  const std::string& mesh_path,
                                                   const math::Matrix4f& world,
                                                   math::Vector3f& out_center, float& out_radius);
 GRYCE_RENDERER_API bool compute_world_skinned_mesh_bounds(const std::string& model_path,
@@ -163,6 +170,42 @@ public:
     void set_cascade_biases(const std::array<float, k_max_cascades>& biases);
     // Normal Offset Shadow Mapping：沿法线把几何推向光源，减少悬浮；1.0=按 texel 自动
     void set_normal_offset_scale(float scale) { normal_offset_scale_ = scale; }
+
+    // -----------------------------------------------------------------------
+    // 动态分辨率（DRS，默认关闭）：缩放内部渲染分辨率以稳定帧率
+    // -----------------------------------------------------------------------
+    void set_adaptive_resolution(bool e) { adaptive_resolution_enabled_ = e; }
+    void set_resolution_scale(float s) { resolution_scale_ = math::clamp(s, min_resolution_scale_, 1.0f); }
+    void set_dynamic_resolution_target_fps(float fps) { target_fps_ = std::max(1.0f, fps); }
+    void set_dynamic_resolution_min_scale(float s) { min_resolution_scale_ = math::clamp(s, 0.25f, 1.0f); }
+    // 阴影缓存（默认开启）：相机/光源/投射体静止时跳过每帧阴影重渲
+    void set_shadow_cache_enabled(bool e) { shadow_cache_enabled_ = e; }
+
+    // GPU 视锥剔除 + 间接绘制开关（默认开；backend 不支持 compute 时自动回退）
+    void set_gpu_culling_enabled(bool e) { gpu_culling_enabled_ = e; }
+    // 遮挡剔除（HiZ）开关：叠加在视锥剔除之上，R32F 目标不支持时自动失效
+    void set_occlusion_culling_enabled(bool e) { occlusion_culling_enabled_ = e; }
+    bool occlusion_culling_enabled() const { return occlusion_culling_enabled_; }
+    // 实际生效（金字塔资源就绪且已有可用数据）
+    bool occlusion_culling_active() const { return occlusion_culling_active_; }
+    bool gpu_culling_enabled() const { return gpu_culling_enabled_; }
+    // 运行时探测：backend 具备 compute 且 cull_instances 着色器编译成功
+    bool gpu_culling_available() const { return gpu_culling_available_; }
+
+    // 跨 mesh 实例化合批（默认开启）：把（同 mesh_path + 同 material）的不透明物体
+    // 合并为单次 instanced draw，降低逐 draw 的 CPU 提交（GPU 在 draw 间等待的主因之一）。
+    void set_instancing_batching_enabled(bool e) { instancing_batching_enabled_ = e; }
+    bool instancing_batching_enabled() const { return instancing_batching_enabled_; }
+
+    // 电源 / 省电模式：未插电（电池）时自动进入，极致压缩每帧工作以稳定高帧率。
+    // auto=true 时检测到电池即启用（默认开）；forced=true 可手动强制开/关（覆盖 auto）。
+    // 插电（或强制关闭）时这些开关保持用户显式设置，行为完全不变（零回归）。
+    void set_power_saver_auto(bool e) { power_saver_auto_ = e; }
+    void set_power_saver_forced(bool f) { power_saver_forced_ = f; }
+    bool power_saver_active() const { return power_saver_active_; }
+    bool on_battery() const { return on_battery_; }
+    // 即时探测电源状态（不依赖渲染循环的轮询缓存），供外部 API 查询
+    bool query_on_battery() const { return _detect_on_battery(); }
 
     // -----------------------------------------------------------------------
     // PCSS 软阴影（默认关闭；开启后按遮挡距离动态调整 PCF 半径）
@@ -488,6 +531,13 @@ public:
     // Vulkan 后端重建后需要配合 hot_reload() 让 pipeline 重新绑定 render pass。
     bool resize_render_targets(int width, int height);
 
+    // 请求重建全部离屏渲染目标。会**同步转发到渲染线程**执行 —— GL/Vulkan
+    // 资源只能在持有 context 的线程创建，主线程直接调会静默失败；而重建会
+    // 改写 hdr_color_ / hdr_depth_ / hdr_fbo_ 等跨线程共享句柄，所以必须等
+    // 渲染线程执行完再继续本帧渲染，否则主 pass 会绑到半途的句柄而画不出东西。
+    // force=true 时忽略"尺寸未变"的早退（set_viewport 会先写 viewport_width_）。
+    void request_resize(int width, int height, bool force = false);
+
     // -----------------------------------------------------------------------
     // Hot reload: rebuild the whole render pipeline in place (shaders, FBOs,
     // post-process targets) while preserving the current configuration
@@ -559,6 +609,10 @@ private:
     Frustum extract_frustum(const math::Matrix4f& vp) const;
     bool is_inside_frustum(const Frustum& frustum, const math::Matrix4f& world_transform,
                            const std::string& mesh_path) const;
+    // 带句柄的重载：走整数键包围球缓存（热路径用这个，避免每实体字符串哈希）。
+    bool is_inside_frustum(const Frustum& frustum, const math::Matrix4f& world_transform,
+                           render::RHIMeshHandle mesh_handle,
+                           const std::string& mesh_path) const;
     bool is_inside_frustum_skinned(const Frustum& frustum, const math::Matrix4f& world_transform,
                                    const std::string& model_path) const;
 
@@ -593,6 +647,7 @@ private:
         const Material* material;
         math::Matrix4f model;
         float dist_sq;
+        std::string mesh_path;   // 合批分组用（空 = 不参与合批，如地形/LOD）
     };
     struct SkinnedDrawItem {
         RHIMeshHandle mesh;
@@ -662,6 +717,40 @@ private:
 
     math::Camera* camera_ = nullptr;
     std::vector<Light> lights_;
+
+    // --- 动态分辨率（DRS）与阴影缓存运行时状态 ---
+    bool shadow_cache_enabled_ = true;
+    bool shadow_cache_valid_ = false;
+    math::Vector3f shadow_last_cam_pos_ = math::Vector3f::zero();
+    math::Vector3f shadow_last_cam_fwd_ = math::Vector3f::zero();
+    std::size_t shadow_last_caster_hash_ = 0;
+
+    bool adaptive_resolution_enabled_ = false;
+    float resolution_scale_ = 1.0f;
+    float resolution_scale_target_ = 1.0f;
+    float min_resolution_scale_ = 0.5f;
+    float target_fps_ = 240.0f;
+    float drs_ema_ms_ = 0.0f;
+    int drs_frames_since_change_ = 0;
+    int resize_req_w_ = 0;
+    int resize_req_h_ = 0;
+    double drs_last_time_s_ = 0.0;
+    void _update_dynamic_resolution();
+
+    // 电源 / 省电模式：未插电（电池）时自动进入，极致压缩每帧工作以稳定高帧率。
+    // 插电（或强制关闭）时这些标志保持用户显式设置，行为完全不变（零回归）。
+    bool power_saver_active_ = false;   // 本帧是否处于省电（驱动后处理跳过 + DRS 强开 + 时域阴影）
+    bool power_saver_auto_   = true;    // 检测到电池自动启用省电（默认开）
+    bool power_saver_forced_ = false;   // 手动强制开/关（覆盖 auto）
+    bool on_battery_         = false;   // 最近一次探测到的电源状态
+    int  battery_poll_counter_   = 29;  // 初始化为 29：首帧即探测，之后每 ~30 帧复探
+    int  power_saver_frame_count_ = 0;  // 时间性阴影用的帧计数
+    // 进入省电前保存用户设置，退出时恢复（避免永久改写用户显式配置）
+    bool ps_saved_ssao_ = false, ps_saved_ssil_ = false, ps_saved_bloom_ = false;
+    bool ps_saved_taa_ = false, ps_saved_dof_ = false, ps_saved_mb_ = false, ps_saved_sdfgi_ = false;
+    bool ps_have_saved_ = false;
+    void _update_power_saver_state();
+    bool _detect_on_battery() const;
     math::Vector3f ambient_ = math::Vector3f(0.15f, 0.15f, 0.15f);
     math::Matrix4f light_space_matrix_ = math::Matrix4f::identity(); // 级联 0（兼容/剔除用）
 
@@ -721,6 +810,162 @@ private:
     void collect_instanced(scene::Scene& scene, RenderContext& ctx);
     void draw_instanced(RenderContext& ctx);
     std::vector<components::InstancedMeshRenderer*> instanced_items_;
+
+    // -----------------------------------------------------------------------
+    // 跨 mesh 实例化合批（Phase C）：把（同 mesh_path + 同 material）的不透明物体
+    // 合并为单次 instanced draw，降低逐 draw 的 CPU 提交开销。机制与
+    // InstancedMeshRenderer 完全一致：几何去索引展开 + 每实例 mat4 走第二条
+    // instance-rate 顶点流（属性 5..8），用现有 "instanced" 完整 PBR shader 绘制。
+    // 仅前向不透明路径生效；阴影/蒙皮/透明/探针 IBL 覆盖的物体回退逐物体绘制。
+    // -----------------------------------------------------------------------
+    struct InstancedBatchEntry {
+        RHIMeshHandle mesh = RHIMeshHandle{};   // 异步创建完成后有效
+        const Material* material = nullptr;
+        bool build_started = false;             // 防止同帧重复提交创建命令
+    };
+    // 合批分组键：(mesh_path 的 64 位哈希, material 指针)。
+    // 取代旧的 `mesh_path + "##" + to_string(ptr)` std::string 键 —— 后者每帧
+    // 每实体两次堆分配，4096 实体时是大头。哈希碰撞在分组处用真实路径比对兜底。
+    struct BatchGroupKey {
+        uint64_t path_hash = 0;
+        const Material* material = nullptr;
+        bool operator==(const BatchGroupKey& o) const {
+            return path_hash == o.path_hash && material == o.material;
+        }
+    };
+    struct BatchGroupKeyHash {
+        std::size_t operator()(const BatchGroupKey& k) const {
+            std::size_t h = static_cast<std::size_t>(k.path_hash);
+            h ^= reinterpret_cast<std::uintptr_t>(k.material) * 1099511628211ull;
+            return h;
+        }
+    };
+    struct PendingBatch {
+        RHIMeshHandle mesh;
+        const Material* material;
+        // GPU 剔除需要 CPU 侧再持有一份实例数据（矩阵 + 世界包围球），供每帧
+        // 上传进 SSBO。shared_ptr 按值捕获进命令队列，渲染线程执行时仍有效。
+        std::shared_ptr<std::vector<math::Matrix4f>> matrices;
+        std::shared_ptr<std::vector<math::Vector4f>> spheres; // xyz=世界中心, w=半径
+        // 间接参数缓冲里的槽位（每批一个）。== k_gpu_cull_invalid_slot 表示该批
+        // 未参与 GPU 剔除（槽位用尽 / 缓冲分配失败），绘制阶段回退普通 instanced。
+        uint32_t args_slot = k_gpu_cull_invalid_slot;
+    };
+
+    // 收集后由 render_scene 调用：标记 batch_skip_ 并填充 pending_batches_
+    void build_instanced_batches(RenderContext& ctx, const Frustum& frustum, const math::Vector3f& cam_pos);
+    void draw_instanced_batches(RenderContext& ctx, const Frustum& frustum);
+    void clear_instanced_batch_cache();
+
+    // ---- InstancedMeshRenderer 接入 GPU 剔除（B1x）------------------------
+    // collect_instanced 里，实例数达阈值且 GPU 剔除可用的组件会被转成
+    // PendingBatch（不进 instanced_items_，避免被 draw_instanced 重复绘制）。
+    // 必须在 build_instanced_batches 之后调用 —— 那里会 clear pending_batches_。
+    struct InstancedGpuCullItem {
+        components::InstancedMeshRenderer* owner = nullptr;  // 仅调试/统计用
+        PendingBatch batch;
+    };
+    std::vector<InstancedGpuCullItem> instanced_gpu_cull_items_;
+    void append_instanced_gpu_cull_batches();
+
+    // -----------------------------------------------------------------------
+    // GPU 视锥剔除 → 间接绘制（Phase B1，GPU-driven 第一步）
+    // -----------------------------------------------------------------------
+    // CPU 逐实例判定会随实例数线性增长并在提交阶段形成瓶颈。这里把判定搬到
+    // GPU：每帧只上传一次实例数据 + 一次 dispatch，可见实例由 compute 紧凑写入
+    // 输出 SSBO，并用原子累加得到 instanceCount，直接作为间接绘制参数 ——
+    // CPU 既不逐实例遍历，也不把结果读回内存（避免 GPU→CPU 同步停顿）。
+    //
+    // 依赖 backend->supports_compute_shaders()（OpenGL 4.3+）。不满足时
+    // gpu_culling_available_ 为 false，自动回退到普通 instanced draw。
+    // -----------------------------------------------------------------------
+    void init_gpu_culling(RenderContext& ctx);
+    void release_gpu_culling(RenderContext& ctx);
+    bool ensure_gpu_cull_buffers(RenderContext& ctx, uint32_t instance_count);
+    // 阶段一（render pass 之外）：上传实例数据 + 派发 compute，写下每批的槽位
+    void cull_instanced_batches_gpu(RenderContext& ctx, const Frustum& frustum);
+    // 阶段二（不透明 pass 内）：用阶段一的结果做间接绘制
+    void draw_instanced_batches_indirect(RenderContext& ctx);
+
+    // 间接绘制参数缓冲的槽位数：每批用独立槽位，避免"本批写参数 / 上批仍在读"
+    // 的写后读冲突。超过这个批次数的批次回退普通 instanced draw。
+    static constexpr uint32_t k_gpu_cull_max_slots = 64;
+    static constexpr uint32_t k_gpu_cull_invalid_slot = 0xFFFFFFFFu;
+
+    bool gpu_culling_enabled_ = true;
+    bool gpu_culling_available_ = false;   // 运行时能力探测结果（compute + shader 就绪）
+    RHIShaderHandle cull_shader_;                 // cull_instances.comp
+    RHIBufferHandle gpu_cull_src_models_;         // SSBO：输入实例矩阵
+    RHIBufferHandle gpu_cull_src_spheres_;        // SSBO：输入世界包围球
+    RHIBufferHandle gpu_cull_dst_models_;         // SSBO：可见实例矩阵（紧凑）
+    RHIBufferHandle gpu_cull_args_;               // 间接绘制参数
+    RHIBufferHandle gpu_cull_params_;             // 剔除参数（实例数 + 6 视锥面）
+    RHIBufferHandle gpu_cull_hiz_;                // SSBO：深度金字塔各级（2x2 max 归约）
+    uint32_t gpu_cull_capacity_ = 0;              // 当前 SSBO 能容纳的实例数
+
+    // -----------------------------------------------------------------------
+    // GPU 遮挡剔除（HiZ）
+    // -----------------------------------------------------------------------
+    // 视锥剔除只能剔掉屏幕外的东西；被墙/地形挡住的照样要提交。本项把上一帧
+    // 深度做成 2x2 **max** 归约的金字塔（"该区域最远的表面"），cull compute
+    // 里拿它做保守遮挡测试：物体覆盖区域的 max 深度仍比它自身最近深度更近
+    // → 整片区域都在它前面 → 被遮挡，不进入紧凑输出。
+    //
+    // 之所以能把金字塔喂进 compute：compute 没有 sampled image 绑定能力，
+    // 所以每帧用 copy_texture_to_buffer（GPU 端拷贝，无 CPU 回读）把各级搬进
+    // 一个 SSBO，着色器按 (层起始下标 + y*w + x) 索引。
+    // -----------------------------------------------------------------------
+    static constexpr int k_hiz_max_levels = 12;
+    // 每帧最多构建/拷贝几级：把一次性 10 个全屏 pass + 2.7MB 拷贝摊到多帧，
+    // 消掉重建帧的长帧尖峰（实测一次性建的 p99 70ms vs 中位 16.6ms）。
+    static constexpr int k_hiz_levels_per_frame = 2;
+    // 两次资源重建之间的最小间隔（帧）：视口在省电/缩放时可能抖动，频繁重建
+    // 会连带把其它渲染目标搞坏。
+    static constexpr int k_hiz_resize_min_gap_frames = 30;
+    // 在任意线程调用：纯 CPU 规划金字塔尺寸，资源创建经 run_with_gpu_context
+    // 转发到持有 GPU context 的线程。异步路径下返回值为"本帧是否已可用"。
+    bool ensure_hiz_targets(RenderContext& ctx, int depth_w, int depth_h);
+    // 实际创建金字塔纹理/FBO/SSBO。**必须在渲染线程**（或渲染线程未运行时的
+    // 主线程）执行。
+    bool _create_hiz_targets(RenderContext& ctx, int levels, uint32_t floats,
+                             const int pw[], const int ph[], const uint32_t poff[]);
+    void release_hiz(RenderContext& ctx);
+    // 帧末：分帧渲染金字塔各级，每级渲完立刻拷进 SSBO（拷贝要求 render pass 之外）
+    void build_hiz(RenderContext& ctx);
+
+    bool occlusion_culling_enabled_ = true;
+    bool occlusion_culling_active_ = false;
+    bool hiz_has_data_ = false;      // 金字塔已构建过至少一次（否则关闭遮挡测试）
+    bool hiz_dirty_ = true;          // 需要重建（相机移动 / 兜底周期）
+    int hiz_frame_counter_ = 0;
+    int hiz_last_resize_frame_ = -1;   // 上次重建资源的帧号（尺寸抖动节流）
+    int hiz_last_resize_w_ = 0;         // 上次重建时的 level0 尺寸（节流按尺寸判定）
+    int hiz_last_resize_h_ = 0;
+    int hiz_pending_w_ = 0;             // 创建在途期间收到的新尺寸（下一帧处理）
+    int hiz_pending_h_ = 0;
+    bool hiz_create_in_flight_ = false;   // 资源创建已排队未执行（避免重复排队）
+    RHIShaderHandle hiz_reduce_shader_;
+    // 金字塔数据直接落在 gpu_cull_hiz_（cull 的 binding 5）上：拷贝目标与着色器
+    // 读取目标必须是同一个句柄，否则 GL 侧会往未分配的 buffer 0 写而崩溃。
+    RHITextureHandle hiz_tex_[k_hiz_max_levels];
+    RHIFramebufferHandle hiz_fbo_[k_hiz_max_levels];
+    int hiz_w_[k_hiz_max_levels]{};
+    int hiz_h_[k_hiz_max_levels]{};
+    uint32_t hiz_offset_[k_hiz_max_levels]{};   // 在 gpu_cull_hiz_ 里的元素（float）起点
+    int hiz_levels_ = 0;          // 金字塔总级数（资源创建时确定）
+    int hiz_built_levels_ = 0;    // 本轮已构建的级数（分帧推进）
+    uint32_t hiz_floats_ = 0;
+    math::Vector3f hiz_last_cam_pos_{};
+    bool hiz_have_last_cam_ = false;
+    // Vulkan 主 pass 用负高度 viewport（与 GL 投影对齐），后处理用正高度，
+    // 于是"NDC uv"与"深度纹理纹素行"在两个后端差一次翻转。compute 里按此标志
+    // 修正：GL 侧为 0（本机冒烟实测），Vulkan 侧为 1（未在本机验证）。
+    int hiz_flip_y_ = 0;
+
+    bool instancing_batching_enabled_ = true;
+    std::unordered_map<BatchGroupKey, InstancedBatchEntry, BatchGroupKeyHash> instanced_batch_cache_;
+    std::vector<char> batch_skip_;                  // 与 opaque_items_ 同序，1=已被合批跳过
+    std::vector<PendingBatch> pending_batches_;
 
     // -----------------------------------------------------------------------
     // 广告牌（Billboard）与 3D 文本（TextMesh3D）

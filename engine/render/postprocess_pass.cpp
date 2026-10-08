@@ -46,6 +46,7 @@ bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
     hdr_original_color_ = hdr_color_;
     ITexture* hdr_color_ptr = ctx->texture(hdr_color_);
     if (!hdr_color_.is_valid() || !hdr_color_ptr || !hdr_color_ptr->create(TextureFormat::RGBA16F, viewport_width_, viewport_height_, nullptr)) {
+        GLOG_ERROR("create_hdr_target: color texture failed ({}x{})", viewport_width_, viewport_height_);
         return false;
     }
     hdr_color_ptr->set_filter(TextureFilter::Linear, TextureFilter::Linear);
@@ -54,12 +55,14 @@ bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
     hdr_depth_ = ctx->create_texture();
     ITexture* hdr_depth_ptr = ctx->texture(hdr_depth_);
     if (!hdr_depth_.is_valid() || !hdr_depth_ptr || !hdr_depth_ptr->create(TextureFormat::Depth24, viewport_width_, viewport_height_, nullptr)) {
+        GLOG_ERROR("create_hdr_target: depth texture failed ({}x{})", viewport_width_, viewport_height_);
         return false;
     }
 
     hdr_fbo_ = ctx->create_framebuffer();
     IFramebuffer* hdr_fbo_ptr = ctx->framebuffer(hdr_fbo_);
     if (!hdr_fbo_.is_valid() || !hdr_fbo_ptr || !hdr_fbo_ptr->create(viewport_width_, viewport_height_)) {
+        GLOG_ERROR("create_hdr_target: framebuffer creation failed ({}x{})", viewport_width_, viewport_height_);
         return false;
     }
     hdr_fbo_ptr->attach_color_texture(hdr_color_ptr);
@@ -357,6 +360,7 @@ void RenderPipeline::destroy_contact_shadow_targets() {
 
 
 void RenderPipeline::render_ssao(RenderContext& ctx) {
+    if (power_saver_active_) return;  // 省电模式：跳过 SSAO 以压缩每帧工作
     if (pp_params_.ssao_enabled == 0 || !ssao_targets_valid_) return;
     if (!gtao_shader_.is_valid() || !ssao_blur_shader_.is_valid() || !fullscreen_mesh_.is_valid()) {
         return;
@@ -414,6 +418,7 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
 
 
 void RenderPipeline::render_contact_shadow(RenderContext& ctx) {
+    if (power_saver_active_) return;  // 省电模式：跳过接触阴影以压缩每帧工作
     // 每帧先复位：本 pass 未执行时（禁用/资源失效），tonemap 的
     // Vulkan push constants 里的 cs_enabled 必须为 0，避免采样上一帧残留值。
     pp_params_.cs_enabled = 0;
@@ -580,6 +585,7 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
 // ---------------------------------------------------------------------------
 
 void RenderPipeline::render_bloom(RenderContext& ctx) {
+    if (power_saver_active_) return;  // 省电模式：跳过 Bloom 以压缩每帧工作
     // Bloom 关闭时整条链路（阈值 + 多级降采样 + 上采样）都不产生可见结果：
     // render_tonemap 只在 bloom_enabled 为真时采样 bloom 输出，故可直接跳过。
     if (pp_params_.bloom_enabled == 0) return;
@@ -707,6 +713,7 @@ void RenderPipeline::render_auto_exposure(RenderContext& ctx) {
 // ---------------------------------------------------------------------------
 
 void RenderPipeline::render_taa(RenderContext& ctx) {
+    if (power_saver_active_) return;  // 省电模式：跳过 TAA 以压缩每帧工作
     if (pp_params_.taa_enabled == 0 || !taa_targets_valid_) return;
     if (!taa_resolve_shader_.is_valid() || !fullscreen_mesh_.is_valid()) return;
     GpuScope _gpu(ctx, "taa");

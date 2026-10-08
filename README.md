@@ -2,27 +2,51 @@
 
 [![CI](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml)
 
-Gryce Engine 是一个面向 Windows 的 C++26 游戏引擎，核心为**带反射系统的 ECS 架构**与**双后端（OpenGL / Vulkan）渲染器**。仓库当前以渲染器为主线，已打通场景序列化、资源系统、2D/3D 物理、音频与动画，并提供可直接运行的冒烟/演示程序 `GryceRenderSmoke`。
+面向 Windows 的 **C++26 游戏引擎**，核心为带反射系统的 **ECS 架构** 与 **双后端（OpenGL / Vulkan）渲染器**。当前主线在渲染器：已打通场景序列化、资源系统、2D/3D 物理、音频与动画，并附带可直接运行的演示程序 `GryceRenderSmoke`。
 
-> 目标平台：Windows + MSYS2 UCRT64（也支持 CLion 自带 MinGW / vcpkg / 任意自定义前缀）。构建脚本不含任何机器专属的绝对路径：依赖前缀由 `cmake/GryceDependencyPaths.cmake` 从环境变量与编译器路径自动推断，装好依赖即可直接配置。
+> **平台与工具链**：Windows 为主目标。构建脚本不含任何机器专属绝对路径——依赖前缀由 `cmake/GryceDependencyPaths.cmake` 从环境变量与编译器路径自动推断。已验证可直接用于 **MSYS2 UCRT64**、**CLion / JetBrains 自带 MinGW**、**vcpkg** 及任意自定义前缀；缺依赖时 `FetchContent` 自动拉源码兜底，拉不到还会自动换镜像，因此克隆下来即可构建。
 
 ---
 
-## 特性概览
+## 快速开始
+
+```bash
+# 1. 准备依赖（任选其一，缺了也会自动下载兜底）
+#    MSYS2 UCRT64：
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-gcc-libs \
+                    mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja \
+                    mingw-w64-ucrt-x86_64-glfw mingw-w64-ucrt-x86_64-glew \
+                    mingw-w64-ucrt-x86_64-box2d mingw-w64-ucrt-x86_64-jolt-physics
+#    CLion 自带 MinGW / vcpkg / 自定义前缀：无需额外操作，CMake 自动推断前缀
+
+# 2. 配置 + 构建
+cmake -S . -B build -G Ninja
+cmake --build build --parallel
+
+# 3. 跑测试（纯计算正确性核对，全部通过才算绿）
+ctest --test-dir build --output-on-failure
+
+# 4. 运行（交互模式：WASD 移动，鼠标转视角）
+build/GryceRenderSmoke.exe --api opengl --play
+```
+
+---
+
+## 特性
 
 **架构**
 
-- 反射驱动的 ECS：组件通过反射系统注册，可被场景序列化、编辑器与脚本统一访问
+- 反射驱动的 ECS：组件经反射系统注册，可被序列化、编辑器与脚本统一访问
 - 场景以 JSON 文本格式（`.gesc`）存储，实体由 `name` / `uuid` / `transform` / `components` 组成
 - 运行期热重载：场景、着色器、材质与网格支持重载，无需重启进程
-- Play 模式：进入后世界驱动系统更新（物理、动画），退出后恢复编辑态快照
+- Play 模式：进入后驱动系统更新（物理、动画），退出后恢复编辑态快照
 - 稳定的 C API 边界（`engine/api`），引擎以 DLL 形式对外提供能力
 
 **渲染**
 
-- 双后端：OpenGL 与 Vulkan，共用上层管线与着色器源
+- 双后端：OpenGL 与 Vulkan，共用上层管线与着色器源（Vulkan 函数运行时从 `vulkan-1.dll` 加载，不绑定 MSVC 导入库）
 - Clustered Forward 前向管线、HDR、色调映射、自动曝光
-- PBR 材质与预设（如 `Chrome` 等金属/镜面预设）
+- PBR 材质与预设（如 `Chrome` 等金属 / 镜面预设）
 - 阴影：Shadow Atlas、VSM / ESM、PCSS 软阴影、点光源阴影、接触阴影
 - 屏幕空间效果：SSR（反射）、SSAO、SSIL
 - 全局光照与环境：SDFGI、VoxelGI、Reflection Probe、IBL、体积雾
@@ -44,37 +68,35 @@ Gryce Engine 是一个面向 Windows 的 C++26 游戏引擎，核心为**带反�
 
 ```
 Gryce-Engine/
-├── CMakeLists.txt              根构建脚本：依赖发现、测试注册、DLL 同步
-├── cmake/                      构建辅助模块，无硬编码路径
-│   ├── GryceDependencyPaths.cmake   依赖前缀自动推断 + 缺失时的排查提示
+├── CMakeLists.txt                   根构建脚本：依赖发现、测试注册、DLL 同步
+├── cmake/                           构建辅助（无硬编码路径）
+│   ├── GryceDependencyPaths.cmake   依赖前缀自动推断 + 缺失排查提示
 │   └── GryceFetchDeps.cmake         缺失依赖的 FetchContent 源码构建兜底
-├── engine/                     引擎本体（命名空间 gryce_engine）
-│   ├── api/                    C API 边界（core / entity / scene / component / render ...）
-│   ├── math/                   数学库与相机
-│   ├── scene/                  实体、场景、预制体、序列化、UUID
-│   ├── ecs/                    World、ComponentStore 与各 System
-│   │   └── systems/            animator / hierarchy / physics_2d / physics_3d /
-│   │                           audio / render_2d / render_3d / subviewport
-│   ├── components/             组件定义（2d / 3d / common）
-│   ├── reflection/             反射注册与内建类型反射
-│   ├── render/                 渲染抽象层与两个后端
-│   │   ├── opengl/             OpenGL 后端
-│   │   ├── vulkan/             Vulkan 后端（运行时加载 vulkan-1.dll）
-│   │   ├── renderer_rd/        管线实现：forward_clustered / shadow / effects / environment
-│   │   ├── storage_rd/         GPU 资源存储
-│   │   └── shaders/            着色器源
-│   ├── assets/                 OBJ / DDS / KTX / EXR / STB 加载与异步加载
-│   ├── resources/              项目、资源路径、Pak / Gpack、加密
-│   ├── animation/              骨骼、剪辑、姿态
-│   ├── platform/               窗口、输入、光标
-│   └── utils/                  glog 日志、帧率限制等
+├── engine/                          引擎本体（命名空间 gryce_engine）
+│   ├── api/                         C API 边界（core / entity / scene / component / render ...）
+│   ├── math/                        数学库与相机
+│   ├── scene/                       实体、场景、预制体、序列化、UUID
+│   ├── ecs/                         World、ComponentStore 与各 System（systems/ 子目录）
+│   ├── components/                  组件定义（2d / 3d / common）
+│   ├── reflection/                  反射注册与内建类型反射
+│   ├── render/                      渲染抽象层与两个后端
+│   │   ├── opengl/                  OpenGL 后端
+│   │   ├── vulkan/                  Vulkan 后端（运行时加载 vulkan-1.dll）
+│   │   ├── renderer_rd/             管线实现：forward_clustered / shadow / effects / environment
+│   │   ├── storage_rd/              GPU 资源存储
+│   │   └── shaders/                GLSL 着色器源
+│   ├── assets/                      OBJ / DDS / KTX / EXR / STB 加载与异步加载
+│   ├── resources/                   工程、资源路径、Pak / Gpack、加密
+│   ├── animation/                   骨骼、剪辑、姿态
+│   ├── platform/                    窗口、输入、光标
+│   └── utils/                       日志、帧率限制等
 ├── test/
-│   ├── renderer_smoke.cpp      冒烟 / 演示宿主
-│   ├── demo_project/           演示工程（project.data + 场景 / 模型 / 着色器）
-│   └── tools/                  Python 校验工具（后端一致性、SSR 精度）
-├── third_party/                第三方依赖（见下）
-├── toolchain/                  Python 辅助脚本
-└── .github/workflows/ci.yml    CI：构建 + CTest 冒烟测试
+│   ├── math_tests.cpp               数学层单元测试（CTest 唯一门禁）
+│   ├── renderer_smoke.cpp           演示宿主源码（GryceRenderSmoke.exe，不参与 CTest）
+│   └── demo_project/                演示工程（project.data + 场景 / 模型 / 着色器）
+├── third_party/                     仓库内置第三方依赖（Amplitude、imgui、stb ...）
+├── toolchain/                       Python 辅助脚本
+└── .github/workflows/ci.yml         CI：构建 + CTest（全部通过才算通过）
 ```
 
 ---
@@ -83,37 +105,23 @@ Gryce-Engine/
 
 | 依赖 | 来源 | 说明 |
 | --- | --- | --- |
-| GCC / gcc-libs | MSYS2 UCRT64 | 需支持 C++26 |
-| CMake ≥ 3.24、Ninja | MSYS2 UCRT64 | 构建系统 |
-| GLFW | MSYS2 UCRT64 | 窗口与输入 |
-| GLEW | MSYS2 UCRT64 | OpenGL 扩展加载 |
-| Box2D | MSYS2 UCRT64 | 2D 物理，导入目标 `box2d::box2d` |
-| Jolt Physics | MSYS2 UCRT64 | 3D 物理，导入目标 `Jolt::Jolt` |
-| Vulkan SDK | 可选 | 缺失时自动关闭 Vulkan 后端与对应测试 |
+| GCC / gcc-libs | MSYS2 UCRT64 / CLion MinGW | 需支持 C++26 |
+| CMake ≥ 3.24、Ninja | MSYS2 UCRT64 / CLion MinGW | 构建系统 |
+| GLFW | 系统包或 FetchContent | 窗口与输入 |
+| GLEW | 系统包或 FetchContent | OpenGL 扩展加载 |
+| Box2D | 系统包或 FetchContent | 2D 物理，导入目标 `box2d::box2d` |
+| Jolt Physics | 系统包或 FetchContent | 3D 物理，导入目标 `Jolt::Jolt` |
+| Vulkan SDK | 可选 | 缺失时自动关闭 Vulkan 后端（CTest 不依赖它） |
 | Amplitude Audio SDK | 仓库内置 `third_party/amplitude` | 预编译静态库，随仓库分发 |
 | stb / tinyexr / nlohmann_json / imgui / quickjs | 仓库内置 `third_party` | 图像、EXR、JSON、编辑器 UI、脚本 |
 
-这些依赖**不是必须手动安装**的：CMake 优先在系统里找，找不到会自动用 `FetchContent` 拉源码随工程一起编译（见下方"依赖的两种来源"）。想完全离线或统一版本，可在 MSYS2 UCRT64 终端里装系统包：
-
-```bash
-pacman -S --needed \
-  mingw-w64-ucrt-x86_64-gcc \
-  mingw-w64-ucrt-x86_64-gcc-libs \
-  mingw-w64-ucrt-x86_64-cmake \
-  mingw-w64-ucrt-x86_64-ninja \
-  mingw-w64-ucrt-x86_64-glfw \
-  mingw-w64-ucrt-x86_64-glew \
-  mingw-w64-ucrt-x86_64-box2d \
-  mingw-w64-ucrt-x86_64-jolt-physics
-```
-
 ### 依赖的两种来源
 
-注意：**CMake 本身不会自动下载依赖**。`find_package` / `find_library` 只在本机磁盘上搜索已安装的东西；要"自动下载"必须显式使用 `FetchContent`（CMake 内置）或 CPM / vcpkg / conan。本工程用 CMake 内置的 `FetchContent` 做兜底，策略由 `GRYCE_DEP_FETCH` 控制：
+**CMake 本身不会自动下载依赖**。`find_package` / `find_library` 只在本机搜索已安装的东西；要"自动下载"必须显式用 `FetchContent`。本工程用 CMake 内置的 `FetchContent` 做兜底，由 `GRYCE_DEP_FETCH` 控制：
 
 | 取值 | 行为 |
 | --- | --- |
-| `AUTO`（默认） | 系统包优先；某一项系统里找不到，就只把那一项拉源码编译 |
+| `AUTO`（默认） | 系统包优先；某项系统里找不到，就只把那一项拉源码编译 |
 | `ON` | 忽略系统包，全部拉源码编译（版本最可控，首次配置要下载） |
 | `OFF` | 只用系统包，完全离线（CI / 受控环境） |
 
@@ -123,45 +131,21 @@ cmake -S . -B build -G Ninja -DGRYCE_DEP_FETCH=AUTO
 
 源码按固定版本拉取：GLFW `3.4`、GLEW `glew-2.2.0`（官方 release 包，因为 git 仓库里没有构建期生成的头文件）、Box2D `v3.1.1`、Jolt Physics `v5.3.0`（CMake 入口在其 `Build/` 子目录）。
 
-**统一走 tarball，不走 `git clone`**：git 的智能 HTTP 协议一次 clone 要发多轮请求，穿过代理/加速器时极易被掐断（Jolt 全量 clone 约 60 MB，实测反复 `Connection was reset`；改走 tarball 后只有 18 MB，且是一次性 HTTPS GET）。tarball 还能用 SHA256 锁定内容，也不需要本机装 git。
+**统一走 tarball，不走 `git clone`**：git 的智能 HTTP 协议一次 clone 要发多轮请求，穿过代理 / 加速器时极易被掐断（Jolt 全量 clone 约 60 MB，实测反复 `Connection was reset`；tarball 只有 18 MB，一次性 HTTPS GET）。tarball 还能用 SHA256 锁定内容，也不需要本机装 git。下载物缓存在 `build/_deps/tarballs`，重配置不会重复下载；校验和不匹配会自动重新下载。
 
-下载物缓存在 `build/_deps/tarballs`，重配置不会重复下载；校验和不匹配会自动重新下载。
+**源码地址自动探测**：默认先试直连 GitHub，不通就自动换镜像（`ghfast.top` / `gh-proxy.com` / `gh.llkk.cc`），探测结果写入 CMake 缓存，后续配置不再重试。手动指定：`-DGRYCE_DEP_GIT_BASE=https://ghfast.top/https://github.com/`。若某个包反复下载失败（自动重试 3 次后报错），可换镜像、用本地源码（`-DFETCHCONTENT_SOURCE_DIR_JOLT=D:/deps/JoltPhysics`）或装系统包。
 
-**源码地址自动探测**：默认先试直连 GitHub，不通就自动换镜像（`ghfast.top` / `gh-proxy.com` / `gh.llkk.cc`），探测结果写进 CMake 缓存，后续配置不再重试。配置时能看到类似输出：
-
-```
--- Probing dependency source base: https://github.com/
--- Probing dependency source base: https://ghfast.top/https://github.com/
--- Dependency source base: https://ghfast.top/https://github.com/
-```
-
-想自己指定就传 `-DGRYCE_DEP_GIT_BASE=<前缀>`（例如 `https://ghfast.top/https://github.com/`）。若某个包反复下载失败，自动重试 3 次后报错，此时可：
-
-```bash
-# 1. 换镜像
-cmake -S . -B build -DGRYCE_DEP_GIT_BASE="https://ghfast.top/https://github.com/"
-
-# 2. 用本地已有源码，完全离线（CMake 原生变量，跳过下载）
-cmake -S . -B build -DFETCHCONTENT_SOURCE_DIR_JOLT=D:/deps/JoltPhysics
-
-# 3. 装系统包（pacman 见上），构建时会自动优先使用
-```
-
-已知代价：Jolt Physics 编译最慢；若不想等，装系统包即可让 CMake 跳过它。
-
-依赖前缀（`<prefix>` = 含 `include/` `lib/` `bin/` 的目录）按以下顺序推断，**无需手写路径**：
+**依赖前缀自动推断**（无需手写路径）：
 
 1. `-DGRYCE_DEP_PREFIX=<prefix>` 或环境变量 `GRYCE_DEP_PREFIX`（多路径用 `;` 分隔）
 2. 环境变量 `CMAKE_PREFIX_PATH`
 3. `MSYS2_ROOT` + `MSYSTEM`（如 `D:/msys64` + `UCRT64`）
 4. MSYS2 自带的 `MSYSTEM_PREFIX` / `MINGW_PREFIX`（POSIX 风格 `/ucrt64`，用 `cygpath` 转原生路径）
-5. C/C++ 编译器路径反推：`<root>/<msystem>/bin/g++.exe` → `<root>/<msystem>`
-
-常见场景：
+5. C/C++ 编译器路径反推：`<root>/<msystem>/bin/g++.exe` → `<root>/<msystem>`（CLion MinGW 即由此命中）
 
 | 场景 | 做法 |
 | --- | --- |
-| MSYS2 装在非默认盘符 / 非 UCRT64 | 无需操作（在对应的 MSYS2 终端里配置即可）；也可 `-DGRYCE_DEP_PREFIX=D:/msys64/ucrt64` |
+| MSYS2 装在非默认盘符 / 非 UCRT64 | 无需操作（在对应 MSYS2 终端里配置即可）；也可 `-DGRYCE_DEP_PREFIX=D:/msys64/ucrt64` |
 | CLion / JetBrains 自带 MinGW | 无需操作，前缀由编译器路径反推到 `<CLion>/bin/mingw` |
 | vcpkg | `cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake` |
 | 自定义前缀 | `-DGRYCE_DEP_PREFIX=<prefix>` 或 `export GRYCE_DEP_PREFIX=<prefix>` |
@@ -177,16 +161,17 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build build --parallel
 ```
 
-构建产物：
+构建产物（DLL 形式的引擎 + 演示宿主）：
 
 | 目标 | 说明 |
 | --- | --- |
 | `GryceCore.dll` | 抽象层 + 场景 / ECS / 组件 / 反射 / 资源 / 渲染抽象 + 物理与音频 |
 | `GryceRenderer.dll` | 渲染管线与 OpenGL / Vulkan 后端 |
 | `GrycePlatform.dll` | 窗口、输入、光标 |
-| `GryceRenderSmoke.exe` | 冒烟 / 演示宿主 |
+| `GryceRenderSmoke.exe` | 演示宿主（人工运行，非 CTest 用例） |
+| `GryceMathTests.exe` | 数学层单元测试宿主，仅 `BUILD_TESTING=ON` 时构建 |
 
-构建完成后，`GryceSyncRuntimeDlls` 目标会把引擎 DLL 及第三方运行库（Box2D / Jolt / GLFW / GLEW）复制到 `GryceRenderSmoke.exe` 同目录，脱离 MSYS2 终端也能直接运行。
+构建完成后，始终执行的 `GryceSyncRuntimeDlls` 目标会把引擎 DLL、第三方运行库（Box2D / Jolt / GLFW / GLEW）以及 **MinGW 运行时**（`libstdc++-6.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll`）复制到 `GryceRenderSmoke.exe` 同目录——**脱离 MinGW / MSYS2 终端也能直接运行**。
 
 可选构建开关：
 
@@ -229,32 +214,48 @@ build/GryceRenderSmoke.exe --api vulkan --simulate --frames 120 --shot build/fra
 
 ## 测试
 
+**CI 的通过条件只有一条：`ctest` 里的用例全部通过。** 任一用例失败，`ctest` 返回非零，job 即判定失败（CI 里没有 `continue-on-error`，也不会跳过用例）。
+
 ```bash
-ctest --test-dir build --output-on-failure -C Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
-- `renderer_smoke_opengl` / `renderer_smoke_vulkan`：初始化双后端、走帧管线、截图并校验退出码
-- `test/tools/backend_parity.py`：同一场景下对比 OpenGL 与 Vulkan 的逐像素差异，并检查 SSR / SSAO 等效果是否真正生效（需 `numpy`、`Pillow`）
-- `test/tools/ssr_accuracy.py`：用解析几何复核 SSR 反射的掩码一致性与命中误差
+当前注册的用例全部来自 `test/math_tests.cpp`，是**纯计算结果的数值核对**，由 `GryceMathTests.exe` 承载：
+
+| 用例 | 核对内容 |
+| --- | --- |
+| `math_vector` | `Vector2/3/4` 的加减乘除、点积叉积、长度与归一化，以及右手坐标系约定（X×Y=Z） |
+| `math_matrix` | `Matrix4` 的 translate / scale / rotate / multiply / transpose / inverse，以及 perspective、ortho、look_at、billboard 的投影结果 |
+| `math_quaternion` | 轴角构造、共轭与逆、乘法、slerp、`rotate_vector`，以及 `to_matrix` / `from_rotation_matrix` / 欧拉角往返的一致性 |
+| `math_camera` | 默认朝向与右手正交基、`look_at` 反解 yaw/pitch、WASD 前后左右移动、pitch 限幅、视图与投影矩阵 |
+| `math_ray` | `Ray::at` 求值、slab 法 AABB 求交（命中 / 未命中 / 内部起点）与命中距离 |
+
+设计约束（也是这类测试能成为门禁的前提）：
+
+- **不链接任何引擎 DLL**：被测的 `engine/math/*.cpp` 直接编译进测试可执行文件，因此与 GPU、驱动、窗口 / 无头环境完全解耦，CI 上毫秒级出结果，也不会因缺 `glfw3.dll` / MinGW 运行时卡到超时。
+- **确定性**：不读外部资源、不依赖浮点之外的随机量，同一份代码在任何机器上结果一致。
+
+老的像素比对用例（`renderer_smoke_opengl` / `renderer_smoke_vulkan`）及其 Python 工具（`test/tools/backend_parity.py`、`test/tools/ssr_accuracy.py`）已删除：它们靠"截图里非背景像素占比"判定，受无头环境 / 软件渲染 / 驱动版本影响很大，既不反映构建正确性也不反映计算正确性。`GryceRenderSmoke.exe` 本身保留为人工运行的演示宿主。
+
+新增 suite 时：在 `GRYCE_MATH_TEST_SUITES`（根 `CMakeLists.txt`）里加名字即可自动注册成一条 CTest。
 
 ---
 
 ## 演示工程
 
-`test/demo_project` 是最小可运行工程，结构如下：
+`test/demo_project` 是最小可运行工程：
 
 - `project.data`：工程配置，含入口场景、窗口尺寸、HDR / 色调映射 / 曝光、阴影与环境、SSR / SSAO / SSIL / PCSS 等开关
-- `scenes/main.gesc`：主场景，包含地面、若干 PBR 材质立方体（含镜面 `Chrome`）、火焰粒子、相机与光源，以及一个**带镜面材质的自由下坠立方体**（由 Jolt 刚体驱动，落到静态地面碰撞体上）
-- `models/`：Wavefront OBJ 基础网格 —— `cube.obj`（1×1×1，原点居中）、`quad.obj`（y=0 平面上的 2×2 地面，场景按 6× 缩放后为 12×12，与 `GroundCollider` 的半长 6 对齐）、`sphere.obj`（r=0.5 的 UV 球，备用）。三者均为右手系、逆时针外翻，与 `glFrontFace(GL_CCW)` / `VK_FRONT_FACE_COUNTER_CLOCKWISE` 一致
+- `scenes/main.gesc`：主场景，含地面、若干 PBR 材质立方体（含镜面 `Chrome`）、火焰粒子、相机与光源，以及一个**带镜面材质的自由下坠立方体**（由 Jolt 刚体驱动，落到静态地面碰撞体上）
+- `models/`：Wavefront OBJ 基础网格 —— `cube.obj`（1×1×1 原点居中）、`quad.obj`（y=0 平面 2×2 地面，场景按 6× 缩放为 12×12，与 `GroundCollider` 半长 6 对齐）、`sphere.obj`（r=0.5 UV 球，备用）。三者均为右手系、逆时针外翻，与 `glFrontFace(GL_CCW)` / `VK_FRONT_FACE_COUNTER_CLOCKWISE` 一致
 
-  > ⚠️ 注意根 `.gitignore` 里忽略 MSVC 中间产物的 `*.obj` 规则会连带吞掉模型文件，靠文件末尾的 `!test/demo_project/models/*.obj` 例外放行。新增模型目录时记得同步例外规则。
+  > ⚠️ 根 `.gitignore` 忽略 MSVC 中间产物的 `*.obj` 规则会连带吞掉模型文件，靠文件末尾的 `!test/demo_project/models/*.obj` 例外放行。新增模型目录时记得同步例外规则。
 
-- `shaders/`：预编译 SPIR-V（`shaders/spirv/`、`shaders/forward_clustered/spirv/`），作为 Vulkan 后端源码不可用时的兜底产物。GLSL 源码不在本工程内，统一由 `engine/render/shaders/` 提供（见 `engine/render/core_shaders.cpp` 的运行时查找逻辑）；`*.spv.hash` 只是本地缓存指纹，不入库
+- `shaders/`：预编译 SPIR-V（`shaders/spirv/`、`shaders/forward_clustered/spirv/`）作为兜底产物。GLSL 源统一在 `engine/render/shaders/`（见 `engine/render/core_shaders.cpp` 的运行时查找逻辑）；`*.spv.hash` 仅为本地缓存指纹，不入库
 
 ---
 
 ## 许可
 
-本项目主体采用 **MIT License**，详见 [LICENSE](LICENSE)。
-
-`third_party/` 下的第三方库遵循各自原有的许可证（如 `third_party/imgui/LICENSE.txt`、`third_party/quickjs/LICENSE` 等）。
+项目主体采用 **MIT License**，详见 [LICENSE](LICENSE)。`third_party/` 下的第三方库遵循各自原有许可证（如 `third_party/imgui/LICENSE.txt`、`third_party/quickjs/LICENSE` 等）。

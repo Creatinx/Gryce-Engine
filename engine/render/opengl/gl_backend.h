@@ -61,6 +61,21 @@ public:
     void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) override;
     void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) override;
 
+    // ---- 计算着色器 / 间接绘制（GPU-driven 基础设施）----
+    // OpenGL 4.3+ 具备 glDispatchCompute / SSBO / glDrawElementsIndirect，
+    // 低于该版本时 supports_compute_shaders() 返回 false，其余方法全部 no-op。
+    bool supports_compute_shaders() const override;
+    RHIShaderHandle create_compute_shader(const char* name, const char* shader_dir) override;
+    void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) override;
+    void bind_storage_buffer(RHIShaderHandle shader, const char* name,
+                             RHIBufferHandle buffer) override;
+    void draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                               RHIBufferHandle args, uint32_t offset) override;
+    void draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                              RHIBufferHandle args, uint32_t offset) override;
+    void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
+                                uint32_t offset) override;
+
     RHIMeshHandle create_mesh() override;
     RHIShaderHandle create_shader() override;
     RHITextureHandle create_texture() override;
@@ -121,6 +136,10 @@ public:
     RHIResourcePool<GLTexture> texture_pool_;
     RHIResourcePool<GLFramebuffer> framebuffer_pool_;
     RHIResourcePool<GLStorageBuffer> buffer_pool_;
+    // copy_texture_to_buffer 用的读回 FBO（懒创建、复用）：把任意纹理临时当颜色
+    // 附件读进 SSBO。不用 glGetTextureSubImage 是因为它要 GL 4.5，而本引擎的
+    // compute 门槛是 4.3。
+    uint32_t readback_fbo_ = 0;
 
     // 状态缓存：避免向 driver 下发重复的状态切换命令。
     bool state_cache_valid_ = false;

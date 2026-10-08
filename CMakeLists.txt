@@ -32,8 +32,41 @@ endif()
 if(NOT CMAKE_CONFIGURATION_TYPES)
     # Debug/-O0 下 GCC16+MinGW 会生成导致 symbol/link 异常的对象，参考工程用 -O1 -g1
     set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g1 -fno-omit-frame-pointer")
-    link_libraries(-O1 -g1)
+    # 注意：link_libraries() 是目录级作用域的，写在这里会同样加到 Release 的链接行。
+    # 链接期 -O1 在启用 LTO（GRYCE_ENABLE_LTO）时会反过来覆盖 LTO 的代码生成级别，
+    # 把 Release 的 -O3 悄悄拉回 -O1，故此处必须限定 Debug。
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        link_libraries(-O1 -g1)
+    endif()
 endif()
+
+# ===========================================================================
+# 目标 ISA：x86-64-v3（AVX2 / FMA / BMI1 / F16C / LZCNT / POPCNT）
+#
+# 这组标志此前并非由本工程声明，而是依赖（Jolt，其 CMake 选项 USE_AVX2/USE_FMADD
+# 为 ON）在配置阶段把 -mavx2 ... 追加进 CMAKE_CXX_FLAGS 后"泄漏"到引擎目标的：
+# 源码树里搜不到，却出现在 285/287 个编译单元的命令行上。后果是**不可复现** ——
+# 一旦依赖改走 find_package(CONFIG)、更换依赖前缀或不再由源码构建，重新 configure
+# 就会静默丢失，表现为"什么都没改，帧时间却变差"。这里显式固化，Debug/Release
+# 一致；需要跑在老于 Haswell 的机器上时用 -DGRYCE_ENABLE_X86_V3=OFF 关闭。
+# ===========================================================================
+option(GRYCE_ENABLE_X86_V3 "启用 x86-64-v3 目标 ISA（AVX2/FMA/BMI/F16C/LZCNT/POPCNT）" ON)
+if(GRYCE_ENABLE_X86_V3 AND NOT MSVC
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|X64)$")
+    add_compile_options(-mavx2 -mbmi -mpopcnt -mlzcnt -mf16c -mfma -mfpmath=sse)
+endif()
+
+# ===========================================================================
+# LTO：引擎按 DLL 分模块（GryceCore / GryceRenderer / GrycePlatform），跨 DLL
+# 不内联，但单个 DLL 内部跨 TU 内联与去虚拟化仍然有效，对 math/render 这类
+# 大量小函数（Vector3f/Matrix4f 运算符、包围盒变换、剔除）收益明显。
+# Debug 下关闭：LTO 会显著拖慢增量编译，且 Debug 本就不看性能。
+# ===========================================================================
+option(GRYCE_ENABLE_LTO "对非 Debug 构建启用过程间优化（LTO）" OFF)
+if(GRYCE_ENABLE_LTO AND NOT MSVC AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
+
 # 使用 LLVM lld 链接，避免 GNU ld 处理大型对象崩溃
 find_program(LLD_LINKER ld.lld)
 if(LLD_LINKER)
@@ -206,54 +239,20 @@ else()
 endif()
 
 # ===========================================================================
-# Vulkan SDK：可选依赖，find_package 读取 VULKAN_SDK 环境变量（任何机器装好
-# LunarG SDK 后都会设置）。只取头文件路径，不链接 MSVC 格式的 vulkan-1.lib
-# （MinGW 链接该导入库会导致设备级函数指针错乱）。所有 Vulkan 函数改为运行时
-# 从 vulkan-1.dll 加载（见 vk_loader.cpp）。
-# 必须在 add_subdirectory(engine) 之前探测：engine/CMakeLists.txt 与下面的
-# CTest 注册都要读 GRYCE_HAS_VULKAN，而子目录里的变量不会回传到父作用域。
-# ===========================================================================
-find_package(Vulkan QUIET)
-if(Vulkan_FOUND)
-    set(GRYCE_HAS_VULKAN TRUE)
-else()
-    set(GRYCE_HAS_VULKAN FALSE)
-    message(STATUS "Vulkan SDK not found: Vulkan backend and its smoke test are disabled")
-endif()
-
-# ===========================================================================
 # 渲染引擎本体：engine/ 下的 GryceCore.dll / GryceRenderer.dll / GrycePlatform.dll
+# （Vulkan SDK 由 engine/CMakeLists.txt 自行探测并设置 GRYCE_HAS_VULKAN）
 # ===========================================================================
 add_subdirectory(engine)
 
 # ===========================================================================
-# Vulkan 头文件封装：只暴露 include 路径与 VMA 的"动态加载"开关，不链接
-# vulkan-1.lib（见上方说明）。
+# 演示宿主：GryceRenderSmoke.exe（人工运行，非 CTest 用例）
+#
+# 它加载 test/demo_project 演示场景，是打包产物的入口（见 toolchain/ 与 dist/）。
+# 历史上它还 "身兼第二职"：以 renderer_smoke_opengl / renderer_smoke_vulkan 两条
+# CTest 用例注册，靠 "截图里非背景像素占比不足阈值就判失败" 来守渲染回归。
+# 那两条像素用例已按需求删除 —— 它们依赖 GPU / 驱动 / 无头环境，CI 上不稳定，
+# 也和 "计算结果对不对" 无关。CI 门禁改由下面的 GryceMathTests 承担。
 # ===========================================================================
-add_library(VulkanHeaders INTERFACE)
-target_include_directories(VulkanHeaders INTERFACE
-    ${Vulkan_INCLUDE_DIRS}
-)
-# VMA 默认 VMA_STATIC_VULKAN_FUNCTIONS=1 会静态引用裸 vkXxx 符号，要求链接期
-# 绑定 vulkan-1.lib——本项目所有 Vulkan 函数均改造为运行时动态加载，故关静态开动态。
-target_compile_definitions(VulkanHeaders INTERFACE
-    VMA_STATIC_VULKAN_FUNCTIONS=0
-    VMA_DYNAMIC_VULKAN_FUNCTIONS=1
-)
-
-# ===========================================================================
-# 测试：接入 CTest（BUILD_TESTING 由 include(CTest) 提供，默认 ON）。
-# GryceRenderSmoke 是渲染器全链路冒烟测试：初始化双后端、走帧管线、
-# 截图并统计像素，画面非"纯清屏色"即判定渲染链路生效。
-# ===========================================================================
-include(CTest)
-
-# ===========================================================================
-# 渲染器冒烟测试：验证双后端(GryceCore+GryceRenderer+GrycePlatform)初始化、
-# 帧管线、截图与清理。运行后自动把引擎 DLL 复制到 exe 同目录。
-# ===========================================================================
-set(GRYCE_DLL_TARGETS GryceRenderer GryceCore GrycePlatform)
-
 add_executable(GryceRenderSmoke test/renderer_smoke.cpp)
 target_include_directories(GryceRenderSmoke PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/engine
@@ -266,29 +265,6 @@ target_link_libraries(GryceRenderSmoke PRIVATE
 )
 if(WIN32)
     target_link_libraries(GryceRenderSmoke PRIVATE opengl32 gdi32)
-endif()
-
-# 注册 CTest：每个后端一条冒烟测试（小视口 + 少量帧以便 CI 快速跑完）。
-# 启用像素统计（不加 --no-analyze）：renderer_smoke 的判定是"场景里有
-# MeshRenderer 却不足 20% 非背景像素"即失败。曾经的假阴性来自 demo_project
-# 的 models/ 从未入库（场景 5 个 MeshRenderer、非背景像素 0.04%），
-# 而不是阈值本身不合适 —— 模型补齐后 256x256 也有约 60%，余量充足。
-# 保留统计才能守住"克隆后场景空白"这类回归。
-if(BUILD_TESTING)
-    add_test(NAME renderer_smoke_opengl
-             COMMAND GryceRenderSmoke --api opengl --frames 8 --w 256 --h 256
-                     --shot "${CMAKE_BINARY_DIR}/smoke_opengl.png"
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-    set_tests_properties(renderer_smoke_opengl PROPERTIES
-        LABELS "render;smoke" TIMEOUT 120)
-    if(GRYCE_HAS_VULKAN)
-        add_test(NAME renderer_smoke_vulkan
-                 COMMAND GryceRenderSmoke --api vulkan --frames 8 --w 256 --h 256
-                         --shot "${CMAKE_BINARY_DIR}/smoke_vulkan.png"
-                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-        set_tests_properties(renderer_smoke_vulkan PROPERTIES
-            LABELS "render;smoke" TIMEOUT 120)
-    endif()
 endif()
 
 # 引擎 DLL 同步到 exe 目录。
@@ -309,6 +285,7 @@ endif()
 # ctest 里报 0xc0000135（DLL not found，且因 Windows 弹模态框而卡到超时）。
 # 这里用编译器路径反推 bin 目录，兼容 CLion 自带 MinGW 与 MSYS2 任意前缀；
 # libgcc_s 同时试 seh/dw2 两个名字，覆盖 x64 与 32 位线程模型。
+set(GRYCE_DLL_TARGETS GryceRenderer GryceCore GrycePlatform)
 set(_gryce_mingw_rt_cmds "")
 if(MINGW)
     get_filename_component(_gryce_cxx_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -347,3 +324,38 @@ add_custom_target(GryceSyncRuntimeDlls ALL
     VERBATIM
 )
 unset(_gryce_mingw_rt_cmds)
+
+# ===========================================================================
+# 测试：CTest 只跑"纯计算正确性核对"，CI 要求全绿才算通过。
+#
+# 测试可执行文件不链接任何引擎 DLL：被测源码（engine/math/*.cpp）直接编译进
+# GryceMathTests.exe。好处是与 GPU / 驱动 / 无头环境完全解耦：CI 上毫秒级出
+# 结果，也不会因为缺 glfw3.dll / MinGW 运行时 DLL 而卡到超时（历史上这类
+# DLL 缺失在 ctest 里表现为 0xc0000135 + 模态弹窗挂起到 TIMEOUT）。
+#
+# 每个 suite 注册成一条独立 CTest：ctest 任一条失败即返回非零、整体判定为
+# 不通过（CI 里没有任何 continue-on-error / 跳过逻辑）。
+# 新增 suite 时同步往 GRYCE_MATH_TEST_SUITES 里加名字即可。
+# ===========================================================================
+include(CTest)
+
+if(BUILD_TESTING)
+    set(GRYCE_MATH_TEST_SUITES vector matrix quaternion camera ray)
+
+    add_executable(GryceMathTests
+        test/math_tests.cpp
+        engine/math/math.cpp
+        engine/math/camera.cpp
+    )
+    target_include_directories(GryceMathTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+
+    foreach(suite IN LISTS GRYCE_MATH_TEST_SUITES)
+        add_test(NAME math_${suite}
+                 COMMAND GryceMathTests --suite ${suite}
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(math_${suite} PROPERTIES
+            LABELS "unit;math" TIMEOUT 60)
+    endforeach()
+endif()

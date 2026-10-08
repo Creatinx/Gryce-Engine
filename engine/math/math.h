@@ -200,13 +200,15 @@ struct GRYCE_API Matrix4f {
 
     constexpr Matrix4f operator*(const Matrix4f& o) const {
         Matrix4f r;
-        for (int row = 0; row < 4; ++row) {
-            for (int col = 0; col < 4; ++col) {
-                float sum = 0.0f;
+        // 列主序：m[col*4+row]。k 放最内层使 o.m 访问内存连续，缓存更友好，
+        // 同时去掉每次迭代的 operator() 乘法取址。结果与原实现逐位等价。
+        for (int col = 0; col < 4; ++col) {
+            for (int row = 0; row < 4; ++row) {
+                float s = 0.0f;
                 for (int k = 0; k < 4; ++k) {
-                    sum += (*this)(row, k) * o(k, col);
+                    s += m[k * 4 + row] * o.m[col * 4 + k];
                 }
-                r(row, col) = sum;
+                r.m[col * 4 + row] = s;
             }
         }
         return r;
@@ -318,6 +320,8 @@ inline Matrix4f billboard_matrix(const Vector3f& position, const Vector3f& scale
     } else {
         x = x.normalized();
     }
+    // dir 已单位化，x 经归一化也单位化，且 dir·x = dir·(up×dir) = 0，
+    // 故 y = dir×x 已是单位向量，无需再 normalize（省一次 sqrt）。
     const Vector3f y = dir.cross(x);
 
     Matrix4f m = Matrix4f::identity();

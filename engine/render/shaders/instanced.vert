@@ -1,4 +1,4 @@
-#version 330 core
+#version 430 core
 
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
@@ -13,6 +13,14 @@ layout(location = 6) in vec4 aInstanceM1;
 layout(location = 7) in vec4 aInstanceM2;
 layout(location = 8) in vec4 aInstanceM3;
 
+// GPU 剔除路径（cull_instances.comp）：实例矩阵来自剔除后的紧凑 SSBO，
+// 用 gl_InstanceID 索引。uGpuCulled = 0 时走上面的顶点属性路径。
+layout(std430, binding = 2) readonly buffer DstModels {
+    mat4 dst_models[];
+};
+
+uniform int uGpuCulled; // 0 = 顶点属性实例流；1 = GPU 剔除后的 SSBO
+
 out vec3 vFragPos;
 out vec2 vTexCoord;
 out vec3 vColor;
@@ -23,7 +31,12 @@ uniform mat4 uView;
 uniform mat4 uProjection;
 
 void main() {
-    mat4 model = mat4(aInstanceM0, aInstanceM1, aInstanceM2, aInstanceM3);
+    mat4 model;
+    if (uGpuCulled != 0) {
+        model = dst_models[gl_InstanceID];
+    } else {
+        model = mat4(aInstanceM0, aInstanceM1, aInstanceM2, aInstanceM3);
+    }
 
     vec4 world_pos = model * vec4(aPos, 1.0);
     vFragPos = world_pos.xyz;

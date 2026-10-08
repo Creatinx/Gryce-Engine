@@ -40,14 +40,15 @@ void Camera::update(float delta_time,
 void Camera::update_vectors() {
     float yaw_rad   = math::to_radians(yaw_);
     float pitch_rad = math::to_radians(pitch_);
+    float cy = std::cos(yaw_rad), sy = std::sin(yaw_rad);
+    float cp = std::cos(pitch_rad), sp = std::sin(pitch_rad);
 
-    forward_.x = std::cos(yaw_rad) * std::cos(pitch_rad);
-    forward_.y = std::sin(pitch_rad);
-    forward_.z = std::sin(yaw_rad) * std::cos(pitch_rad);
-    forward_ = forward_.normalized();
-
-    right_ = forward_.cross(Vector3f::up()).normalized();
-    up_    = right_.cross(forward_).normalized();
+    // 球面坐标构造的 forward 已为单位向量（cy²+sy²=1 ⇒ 模长为 1），无需 normalize。
+    forward_ = Vector3f(cy * cp, sp, sy * cp);
+    // right = forward × up，需一次 normalize（模长为 |cos pitch|，pitch∈(-90,90) 不退化）。
+    right_   = forward_.cross(Vector3f::up()).normalized();
+    // up = right × forward，right、forward 同为单位且正交，结果已为单位向量，无需 normalize。
+    up_      = right_.cross(forward_);
 }
 
 void Camera::look_at(const Vector3f& target) {

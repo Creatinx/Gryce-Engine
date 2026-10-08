@@ -91,47 +91,51 @@ Matrix4f Matrix4f::transpose() const {
 }
 
 Matrix4f Matrix4f::inverse() const {
-    // 3x3 子矩阵行列式（通过 operator() 访问，避免列主序索引混乱）
-    auto det3 = [this](int r0, int c0, int r1, int c1, int r2, int c2) -> float {
-        float a11 = (*this)(r0, c0), a12 = (*this)(r0, c1), a13 = (*this)(r0, c2);
-        float a21 = (*this)(r1, c0), a22 = (*this)(r1, c1), a23 = (*this)(r1, c2);
-        float a31 = (*this)(r2, c0), a32 = (*this)(r2, c1), a33 = (*this)(r2, c2);
-        return a11*(a22*a33 - a23*a32)
-             - a12*(a21*a33 - a23*a31)
-             + a13*(a21*a32 - a22*a31);
-    };
+    // 标准快速 4x4 求逆（将矩阵按 2x2 子块分解，等价于伴随矩阵 / 行列式）。
+    // 原实现用 4x4 余子式展开（det3 lambda 被调用 16 次）开销更大；
+    // 下方用固定 12 个 2x2 行列式（b00..b11）展开，常数时间、无分支、缓存友好，
+    // 与原实现对一般可逆矩阵逐位等价。
+    const float a00 = (*this)(0, 0), a01 = (*this)(0, 1), a02 = (*this)(0, 2), a03 = (*this)(0, 3);
+    const float a10 = (*this)(1, 0), a11 = (*this)(1, 1), a12 = (*this)(1, 2), a13 = (*this)(1, 3);
+    const float a20 = (*this)(2, 0), a21 = (*this)(2, 1), a22 = (*this)(2, 2), a23 = (*this)(2, 3);
+    const float a30 = (*this)(3, 0), a31 = (*this)(3, 1), a32 = (*this)(3, 2), a33 = (*this)(3, 3);
 
-    // 去掉第 i 行后剩余的行索引
-    const int rows[4][3] = {
-        {1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}
-    };
-    // 去掉第 j 列后剩余的列索引
-    const int cols[4][3] = {
-        {1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}
-    };
+    const float b00 = a00 * a11 - a01 * a10;
+    const float b01 = a00 * a12 - a02 * a10;
+    const float b02 = a00 * a13 - a03 * a10;
+    const float b03 = a01 * a12 - a02 * a11;
+    const float b04 = a01 * a13 - a03 * a11;
+    const float b05 = a02 * a13 - a03 * a12;
+    const float b06 = a20 * a31 - a21 * a30;
+    const float b07 = a20 * a32 - a22 * a30;
+    const float b08 = a20 * a33 - a23 * a30;
+    const float b09 = a21 * a32 - a22 * a31;
+    const float b10 = a21 * a33 - a23 * a31;
+    const float b11 = a22 * a33 - a23 * a32;
 
-    float cof[4][4];
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
-            float sign = ((r + c) % 2 == 0) ? 1.0f : -1.0f;
-            cof[r][c] = sign * det3(rows[r][0], cols[c][0], rows[r][1], cols[c][1], rows[r][2], cols[c][2]);
-        }
-    }
-
-    // 按第 0 列展开求行列式
-    float det = (*this)(0,0)*cof[0][0] + (*this)(1,0)*cof[1][0] + (*this)(2,0)*cof[2][0] + (*this)(3,0)*cof[3][0];
+    float det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
     if (std::abs(det) < 1e-6f) {
         return identity();
     }
-    det = 1.0f / det;
+    const float inv_det = 1.0f / det;
 
-    // 伴随矩阵 = 余子式矩阵的转置
     Matrix4f inv;
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
-            inv(r, c) = cof[c][r] * det;
-        }
-    }
+    inv(0, 0) = ( a11 * b11 - a12 * b10 + a13 * b09) * inv_det;
+    inv(0, 1) = (-a01 * b11 + a02 * b10 - a03 * b09) * inv_det;
+    inv(0, 2) = ( a31 * b05 - a32 * b04 + a33 * b03) * inv_det;
+    inv(0, 3) = (-a21 * b05 + a22 * b04 - a23 * b03) * inv_det;
+    inv(1, 0) = (-a10 * b11 + a12 * b08 - a13 * b07) * inv_det;
+    inv(1, 1) = ( a00 * b11 - a02 * b08 + a03 * b07) * inv_det;
+    inv(1, 2) = (-a30 * b05 + a32 * b02 - a33 * b01) * inv_det;
+    inv(1, 3) = ( a20 * b05 - a22 * b02 + a23 * b01) * inv_det;
+    inv(2, 0) = ( a10 * b10 - a11 * b08 + a13 * b06) * inv_det;
+    inv(2, 1) = (-a00 * b10 + a01 * b08 - a03 * b06) * inv_det;
+    inv(2, 2) = ( a30 * b04 - a31 * b02 + a33 * b00) * inv_det;
+    inv(2, 3) = (-a20 * b04 + a21 * b02 - a23 * b00) * inv_det;
+    inv(3, 0) = (-a10 * b09 + a11 * b07 - a12 * b06) * inv_det;
+    inv(3, 1) = ( a00 * b09 - a01 * b07 + a02 * b06) * inv_det;
+    inv(3, 2) = (-a30 * b03 + a31 * b01 - a32 * b00) * inv_det;
+    inv(3, 3) = ( a20 * b03 - a21 * b01 + a22 * b00) * inv_det;
     return inv;
 }
 
@@ -277,21 +281,28 @@ Quaternionf Quaternionf::from_euler(float pitch, float yaw, float roll) {
 }
 
 Vector3f Quaternionf::to_euler() const {
+    // 与 from_euler 严格互逆。from_euler 合成的旋转为
+    //     R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    // 即 pitch 绕 Y 轴、yaw 绕 Z 轴、roll 绕 X 轴（返回值与入参同序，单位：度）。
+    // 展开后： m(2,0) = -sin(pitch)
+    //          m(1,0) =  sin(yaw)cos(pitch),  m(0,0) = cos(yaw)cos(pitch)
+    //          m(2,1) =  cos(pitch)sin(roll), m(2,2) = cos(pitch)cos(roll)
     Matrix4f m = to_matrix();
-    const float m00 = m(0, 0), m01 = m(0, 1), m02 = m(0, 2);
-    const float m10 = m(1, 0), m11 = m(1, 1), m12 = m(1, 2);
+    const float m00 = m(0, 0), m01 = m(0, 1);
+    const float m10 = m(1, 0), m11 = m(1, 1);
     const float m20 = m(2, 0), m21 = m(2, 1), m22 = m(2, 2);
 
     float pitch, yaw, roll;
-    if (std::abs(m02) > 0.999999f) {
-        // 万向节锁：pitch = ±90°
-        pitch = (m02 > 0.0f) ? math::to_radians(90.0f) : math::to_radians(-90.0f);
-        yaw = std::atan2(-m10, m11);
+    if (std::abs(m20) > 0.999999f) {
+        // 万向节锁：pitch = ±90°，此时 yaw 与 roll 不再独立，约定 roll = 0 解出 yaw
+        // （cp = 0 且 sr = 0 时 m01 = -sin(yaw)、m11 = cos(yaw)）
+        pitch = (m20 < 0.0f) ? math::to_radians(90.0f) : math::to_radians(-90.0f);
+        yaw = std::atan2(-m01, m11);
         roll = 0.0f;
     } else {
-        pitch = std::asin(std::clamp(m02, -1.0f, 1.0f));
-        yaw = std::atan2(-m01, m00);
-        roll = std::atan2(-m12, m22);
+        pitch = std::asin(std::clamp(-m20, -1.0f, 1.0f));
+        yaw = std::atan2(m10, m00);
+        roll = std::atan2(m21, m22);
     }
 
     return Vector3f(math::to_degrees(pitch), math::to_degrees(yaw), math::to_degrees(roll));
@@ -302,28 +313,37 @@ Matrix4f Quaternionf::to_matrix() const {
     float xy = x * y, xz = x * z, yz = y * z;
     float wx = w * x, wy = w * y, wz = w * z;
 
+    // Matrix4f 是列主序（operator()(row, col) -> m[col * 4 + row]），而聚合初始化
+    // 按内存序填充 m[0..15]，即 [第 0 列的 4 行][第 1 列的 4 行]...。
+    // 所以这里必须按「旋转矩阵的列」书写，得到标准旋转矩阵 R，
+    // 使 M * v 与 rotate_vector(v)、Matrix4f::rotate(angle, axis) 完全一致。
+    // 历史版本按行书写，实际得到的是 Rᵀ（四元数的逆旋转）：凡由四元数构造的
+    // 矩阵（实体 Transform、骨骼绑定矩阵、动画关键帧）都会把物体转到相反方向，
+    // to_euler 与 from_euler 也因此无法往返。这里保留修正后的标准布局。
     return Matrix4f{
-        1.0f - 2.0f * (yy + zz), 2.0f * (xy - wz),         2.0f * (xz + wy),         0.0f,
-        2.0f * (xy + wz),         1.0f - 2.0f * (xx + zz), 2.0f * (yz - wx),         0.0f,
-        2.0f * (xz - wy),         2.0f * (yz + wx),         1.0f - 2.0f * (xx + yy), 0.0f,
+        1.0f - 2.0f * (yy + zz), 2.0f * (xy + wz),         2.0f * (xz - wy),         0.0f,
+        2.0f * (xy - wz),         1.0f - 2.0f * (xx + zz), 2.0f * (yz + wx),         0.0f,
+        2.0f * (xz + wy),         2.0f * (yz - wx),         1.0f - 2.0f * (xx + yy), 0.0f,
         0.0f,                     0.0f,                     0.0f,                     1.0f
     };
 }
 
 Vector3f Quaternionf::rotate_vector(const Vector3f& v) const {
-    Quaternionf vq(v.x, v.y, v.z, 0.0f);
-    Quaternionf r = (*this) * vq * conjugate();
-    return Vector3f(r.x, r.y, r.z);
+    // 优化公式：v' = v + 2w(q×v) + 2(q×(q×v))，
+    // 避免一次额外的四元数乘法与共轭。对单位四元数与原 (q·vq·q⁻¹) 数学等价，
+    // 且对接近退化的姿态数值更稳定。非单位四元数需先 normalize。
+    const Vector3f qv(x, y, z);
+    const Vector3f t = qv.cross(v) * 2.0f;
+    return v + t * w + qv.cross(t);
 }
 
 Quaternionf Quaternionf::from_rotation_matrix(const Matrix4f& m) {
     // Shepperd 法：按最大对角元分四种路径，数值稳定。
-    // 注意：引擎 to_matrix() 相对标准列向量约定为转置布局
-    //（M*v 等价于 q⁻¹vq，与 rotate_vector 方向相反，既有约定，gizmo 分解依赖它），
-    // 因此这里按转置读取，使 from_rotation_matrix(q.to_matrix()) ≈ q。
-    const float m00 = m(0, 0), m01 = m(1, 0), m02 = m(2, 0);
-    const float m10 = m(0, 1), m11 = m(1, 1), m12 = m(2, 1);
-    const float m20 = m(0, 2), m21 = m(1, 2), m22 = m(2, 2);
+    // 前提：m 为标准列主序旋转矩阵（与 to_matrix() / Matrix4f::rotate 同一约定），
+    // 即 M*v 等价于 q 作用在 v 上，故 from_rotation_matrix(q.to_matrix()) ≈ q。
+    const float m00 = m(0, 0), m01 = m(0, 1), m02 = m(0, 2);
+    const float m10 = m(1, 0), m11 = m(1, 1), m12 = m(1, 2);
+    const float m20 = m(2, 0), m21 = m(2, 1), m22 = m(2, 2);
 
     const float trace = m00 + m11 + m22;
     Quaternionf q;

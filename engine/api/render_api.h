@@ -50,6 +50,13 @@ GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h
 
 GRYCE_RENDERER_API void  GRender_SetVSync(bool enabled);
 
+// 电源 / 省电模式：未插电（电池）时自动进入，极致压缩每帧工作以稳定高帧率。
+// 默认 auto 开启；forced 可手动强制开(true)/关(false)。插电时行为不变（零回归）。
+GRYCE_RENDERER_API bool  GRender_IsOnBattery();          // 即时探测是否未插交流电
+GRYCE_RENDERER_API void  GRender_SetPowerSaverAuto(bool enabled);
+GRYCE_RENDERER_API void  GRender_SetPowerSaverForced(bool forced);
+GRYCE_RENDERER_API bool  GRender_IsPowerSaverActive();
+
 // SSR 未命中回退强度（0..1）：
 //   1 = 命中处用屏幕空间反射替换该像素原本的 IBL 镜面项，未命中处保留 IBL /
 //       反射探针 —— 屏幕外方向也有反射，且不会"IBL + SSR"双重计能（推荐）；
@@ -70,6 +77,31 @@ GRYCE_RENDERER_API void  GRender_SetDebugView(int mode);
 GRYCE_RENDERER_API void  GRender_SetPCSSEnabled(bool enabled);
 GRYCE_RENDERER_API void  GRender_SetPCSSParams(float light_size, float max_radius_texels,
                                                float tap_scale);
+
+// 低/中/高配画质预设：0=高 1=中 2=低（仅切换运行时质量开关：阴影尺寸/PCSS/SSR/SSAO/SSIL）
+GRYCE_RENDERER_API void  GRender_SetQualityPreset(int preset);
+// 动态分辨率（DRS，默认关闭）：按实测帧时间自适应缩放内部渲染分辨率以稳定帧率
+GRYCE_RENDERER_API void  GRender_SetAdaptiveResolution(bool enabled);
+GRYCE_RENDERER_API void  GRender_SetResolutionScale(float scale);
+GRYCE_RENDERER_API void  GRender_SetDynamicResolutionTargetFPS(float fps);
+GRYCE_RENDERER_API void  GRender_SetDynamicResolutionMinScale(float scale);
+// GPU 视锥剔除 + 间接绘制（默认开启；后端不支持 compute 时自动回退 CPU 路径）
+// 把逐实例剔除搬到 GPU：CPU 每帧只上传一次实例数据 + 一次 dispatch，剔除结果
+// 直接进入间接绘制参数，不做 GPU→CPU 读回（避免同步停顿）。
+GRYCE_RENDERER_API void  GRender_SetGPUCullingEnabled(bool enabled);
+// 在视锥剔除之上叠加基于深度金字塔（HiZ）的遮挡剔除：被墙/地形挡住的实例不再
+// 进入间接绘制。依赖 R32F 颜色附件（GL 需 EXT_color_buffer_float），不支持时
+// 自动关闭（视锥剔除不受影响）。Vulkan 后端的 uv 翻转约定尚未在真机验证，
+// 出现物体闪烁可用它关掉。
+GRYCE_RENDERER_API void  GRender_SetOcclusionCullingEnabled(bool enabled);
+GRYCE_RENDERER_API bool GRender_IsOcclusionCullingActive();
+// 运行时探测结果：backend 是否真的具备 compute 能力且着色器编译成功。
+GRYCE_RENDERER_API bool  GRender_IsGPUCullingAvailable();
+
+// 阴影缓存（默认开启）：相机/光源/投射体静止时跳过每帧阴影重渲
+GRYCE_RENDERER_API void  GRender_SetShadowCacheEnabled(bool enabled);
+// 跨 mesh 实例化合批（默认开启）：把同 mesh + 同材质的不透明物体合并为单次 instanced draw
+GRYCE_RENDERER_API void  GRender_SetInstancingBatching(bool enabled);
 
 // 左上角白色 FPS 叠加（直接画在 2D overlay 层，不受 HDR/后处理影响）。
 GRYCE_RENDERER_API void  GRender_SetFPSOverlay(bool enabled);

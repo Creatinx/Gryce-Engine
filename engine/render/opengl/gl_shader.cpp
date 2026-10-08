@@ -115,6 +115,41 @@ uint32_t link_program(const std::string& vertex_src, const std::string& fragment
     return program;
 }
 
+// 单阶段计算程序（*.comp）。计算程序没有 rasterization 阶段，link 时不需要
+// 顶点/片段；失败返回 0（热重载据此保留旧程序）。
+uint32_t link_compute_program(const std::string& compute_src) {
+    uint32_t shader = glCreateShader(GL_COMPUTE_SHADER);
+    const char* src = compute_src.c_str();
+    glShaderSource(shader, 1, &src, nullptr);
+    glCompileShader(shader);
+
+    int success = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char log[512];
+        glGetShaderInfoLog(shader, 512, nullptr, log);
+        GLOG_ERROR("Compute shader compile failed: {}", log);
+        glDeleteShader(shader);
+        return 0;
+    }
+
+    uint32_t program = glCreateProgram();
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char log[512];
+        glGetProgramInfoLog(program, 512, nullptr, log);
+        GLOG_ERROR("Compute shader link failed: {}", log);
+        glDeleteProgram(program);
+        program = 0;
+    }
+
+    glDeleteShader(shader);
+    return program;
+}
+
 } // namespace
 
 bool GLShader::compile(const std::string& vertex_src,
@@ -452,7 +487,47 @@ bool GLShader::load_program(const std::string& name,
     return compile(src.vertex, src.fragment);
 }
 
+bool GLShader::load_compute(const std::string& name, const std::string& shader_dir) {
+    // 与 load_program 同源解析（项目磁盘 → bundle → core 引擎目录），只是取 .comp 单阶段。
+    ShaderStageSource src = resolve_shader_stage_source(name, shader_dir, ".comp", RenderAPI::OpenGL);
+    if (!src.ok()) {
+        GLOG_ERROR("GLShader::load_compute: failed to resolve '{}.comp' in '{}'", name, shader_dir);
+        return false;
+    }
+
+    source_name_ = name;
+    source_dir_ = src.path;
+    source_comp_path_ = src.path;
+    std::error_code ec;
+    comp_mtime_ = std::filesystem::last_write_time(src.path, ec);
+
+    std::vector<ShaderStageDesc> stages;
+    stages.emplace_back(ShaderStage::Compute, src.code);
+    return compile(stages);
+}
+
+int GLShader::storage_block_binding(const char* name) const {
+    if (!program_id_ || !name || !*name) return -1;
+
+    GLuint block_index = glGetProgramResourceIndex(program_id_, GL_SHADER_STORAGE_BLOCK, name);
+    if (block_index == GL_INVALID_INDEX) return -1;
+
+    // 取该 block 在着色器里声明的 layout(binding = N)
+    GLenum prop = GL_BUFFER_BINDING;
+    GLint binding = -1;
+    GLsizei length = 0;
+    glGetProgramResourceiv(program_id_, GL_SHADER_STORAGE_BLOCK, block_index,
+                           1, &prop, 1, &length, &binding);
+    return binding;
+}
+
 bool GLShader::shader_files_changed() const {
+    // 计算着色器：单阶段，只跟踪 .comp 的 mtime
+    if (!source_comp_path_.empty() && source_vert_path_.empty()) {
+        std::error_code ec;
+        auto comp_mtime = std::filesystem::last_write_time(source_comp_path_, ec);
+        return !ec && comp_mtime != comp_mtime_;
+    }
     if (source_name_.empty() || source_vert_path_.empty() || source_frag_path_.empty()) {
         return false;
     }
@@ -465,6 +540,34 @@ bool GLShader::shader_files_changed() const {
 }
 
 bool GLShader::reload() {
+    // 计算着色器：单阶段重编译
+    if (!source_comp_path_.empty() && source_vert_path_.empty()) {
+        std::string compute_src = load_file_text(source_comp_path_);
+        if (compute_src.empty()) {
+            GLOG_ERROR("GLShader::reload: failed to re-read compute '{}'", source_name_);
+            return false;
+        }
+        uint32_t new_program = link_compute_program(compute_src);
+        if (new_program == 0) {
+            GLOG_ERROR("GLShader::reload: compute recompile failed for '{}', keeping old program",
+                       source_name_);
+            return false;
+        }
+        if (program_id_) {
+            if (g_current_bound_program == program_id_) {
+                g_current_bound_program = 0;
+            }
+            glDeleteProgram(program_id_);
+        }
+        program_id_ = new_program;
+        uniform_cache_.clear();
+        sampler_uniform_cache_.clear();
+        sampler_uniform_scanned_ = false;
+        std::error_code ec;
+        comp_mtime_ = std::filesystem::last_write_time(source_comp_path_, ec);
+        return true;
+    }
+
     if (source_name_.empty() || source_vert_path_.empty() || source_frag_path_.empty()) {
         return false;
     }

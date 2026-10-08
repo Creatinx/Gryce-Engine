@@ -60,6 +60,18 @@ public:
         return result;
     }
 
+    // 零拷贝池访问：直接返回内部密集池的指针（未注册返回 nullptr）。
+    // 池内元素静态类型是 Component*，调用方按 T 做一次 static_cast 即可 ——
+    // 因为池是按 T 注册的，指针一定指向 T 实例（见 register_component）。
+    // 热路径（foreach_with_components 等）用这个替代 pool<T>()，省掉
+    // 每次调用一次的 vector 堆分配与逐元素填充。
+    // 注意：返回的指针在下次注册/反注册后可能失效，不可跨帧保存。
+    template<typename T>
+    const std::vector<components::Component*>* pool_ptr() const {
+        static_assert(std::is_base_of_v<components::Component, T>, "T must derive from Component");
+        return pool(ComponentTypeID(typeid(T)));
+    }
+
     template<typename T>
     bool has_component(EntityID entity) const {
         static_assert(std::is_base_of_v<components::Component, T>, "T must derive from Component");

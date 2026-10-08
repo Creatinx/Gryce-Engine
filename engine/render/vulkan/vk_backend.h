@@ -14,6 +14,7 @@
 #include "vk_shader.h"
 #include "vk_texture.h"
 #include "vk_framebuffer.h"
+#include "vk_compute.h"
 
 struct GLFWwindow;
 
@@ -60,6 +61,20 @@ public:
 
     void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) override;
     void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) override;
+
+    // ---- 计算着色器 / 间接绘制（GPU-driven 基础设施）----
+    bool supports_compute_shaders() const override;
+    RHIShaderHandle create_compute_shader(const char* name, const char* shader_dir) override;
+    void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) override;
+    void bind_storage_buffer(RHIShaderHandle shader, const char* name,
+                             RHIBufferHandle buffer) override;
+    void bind_instance_stream(RHIBufferHandle buffer) override;
+    void draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                               RHIBufferHandle args, uint32_t offset) override;
+    void draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                              RHIBufferHandle args, uint32_t offset) override;
+    void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
+                                uint32_t offset) override;
 
     RHIMeshHandle create_mesh() override;
     RHIShaderHandle create_shader() override;
@@ -160,6 +175,32 @@ private:
     RHIResourcePool<VulkanShader> shader_pool_;
     RHIResourcePool<VulkanTexture> texture_pool_;
     RHIResourcePool<VulkanFramebuffer> framebuffer_pool_;
+    // SSBO / 间接参数缓冲（GPU 剔除的数据载体）
+    RHIResourcePool<VulkanStorageBuffer> buffer_pool_;
+    // 计算管线与图形管线共用 RHIShaderHandle 的 index 空间。**绝不能靠"先查
+    // 哪个池 is_alive"来判别类型** —— RHIResourcePool 的 generation 从 1 起始
+    // 且 allocate 不递增（只在 deallocate 时 ++），两个池的第一个槽位都是
+    // {index=0, generation=1}，判别必然误杀第一个图形 shader（实测：Vulkan 上
+    // 所有网格消失、只剩 clear color，非背景像素 0.02%，校验层毫无报错）。
+    // 因此用 generation 的最高位做类型标记，让句柄自身携带类型信息。
+    RHIResourcePool<VulkanComputePipeline> compute_pool_;
+    // 生成时或上 kComputeShaderFlag，查池前必须用 this->pool_generation() 剥掉。
+    static constexpr uint32_t kComputeShaderFlag = 0x80000000u;
+
+    static bool is_compute_shader(RHIShaderHandle h) {
+        return (h.generation & kComputeShaderFlag) != 0;
+    }
+    static uint32_t pool_generation(RHIShaderHandle h) {
+        return h.generation & ~kComputeShaderFlag;
+    }
+    // GPU 剔除后：间接绘制用这个缓冲作为每实例属性流（覆盖 mesh 的实例缓冲）
+    RHIBufferHandle instance_stream_;
+
+    // force_indexed：间接绘制时决定走 vkCmdDrawIndexedIndirect(1) 还是
+    // vkCmdDrawIndirect(0)；-1 表示普通直接绘制（按 mesh 自身有无索引自动选）。
+    void draw_mesh_impl(RHIMeshHandle mesh, RHIShaderHandle shader,
+                        RHIBufferHandle indirect_args, uint32_t indirect_offset,
+                        int force_indexed);
 
     bool supports_dynamic_state_ = false;
     PFN_vkCmdSetCullModeEXT vk_cmd_set_cull_mode_ = nullptr;

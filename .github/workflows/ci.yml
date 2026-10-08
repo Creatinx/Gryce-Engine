@@ -1,7 +1,9 @@
 name: CI
 
 # 触发：任意 push/PR（main 之外的特性分支也一样，便于开发期快速反馈）。
-# 目标是"构建 + 跑 CTest 冒烟渲染测试"，尽量贴近本机 MSYS2/UCRT64 环境。
+# 门禁：configure + build + CTest 三者都必须成功；CTest 里任意一条用例失败，
+# ctest 返回非零，整个 job 即判定为失败（下面没有任何 continue-on-error /
+# 跳过逻辑，也不再有"截图制品"这类仅作参考的步骤）。
 on:
   push:
   pull_request:
@@ -51,16 +53,15 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      # 冒烟测试：OpenGL 后端渲染几帧+截图+像素统计，画面非纯清屏色即通过。
-      # （CI 无 GPU 时为软件渲染；若后端因无头环境报初始化失败，测试会返回非 0，
-      #   可在此把该测试单独标记 enabled:false 或按需跳过。）
-      - name: Test (CTest)
-        run: ctest --test-dir build --output-on-failure -C ${{ env.BUILD_TYPE }}
-
-      - name: Upload smoke screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-render
-          path: build/smoke_*.png
-        continue-on-error: true
+      # 唯一门禁：CTest 全部通过才算 CI 通过。
+      # 目前注册的是纯计算正确性用例（math_vector / matrix / quaternion /
+      # camera / ray），不依赖 GPU、驱动或窗口系统，毫秒级出结果。
+      #
+      # 原来的两条像素比对用例（renderer_smoke_opengl / renderer_smoke_vulkan）
+      # 已移除：它们靠"截图里非背景像素占比"判定，受无头环境 / 软件渲染 /
+      # 驱动器差异影响，既不反映构建正确性、也不反映计算正确性。
+      #
+      # --no-tests=error：万一以后改坏了 CMake 导致一条用例都没注册，ctest
+      # 会以错误退出，而不是"零用例零失败"地假绿。
+      - name: Test (CTest, all must pass)
+        run: ctest --test-dir build --output-on-failure --no-tests=error -C ${{ env.BUILD_TYPE }}

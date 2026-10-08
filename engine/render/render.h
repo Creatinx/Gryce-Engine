@@ -109,6 +109,58 @@ public:
     virtual void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) = 0;
     virtual void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) = 0;
 
+    // ---- 计算着色器 / 间接绘制（可选能力，默认关闭且空实现）----
+    // GPU-driven 渲染的基础设施：B0 阶段先以「默认空实现」加入接口，因此后端
+    // 未实现时不会破坏任何现有行为（supports_compute_shaders() 返回 false）。
+    // 逐步在 OpenGL / Vulkan 后端实现后即可支撑 GPU 剔除（遮挡剔除）与
+    // vkCmdDrawIndexedIndirect / glDrawElementsIndirect 的间接提交。
+    virtual bool supports_compute_shaders() const { return false; }
+
+    // 创建计算管线：加载并编译 {shader_dir}/{name}.comp。
+    // 不支持时返回无效句柄（is_valid() == false），调用方必须据此回退到 CPU 路径。
+    virtual RHIShaderHandle create_compute_shader(const char* /*name*/,
+                                                  const char* /*shader_dir*/) {
+        return RHIShaderHandle{};
+    }
+
+    // 派发计算工作组：(gx, gy, gz) 为工作组数量。
+    virtual void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) {
+        (void)shader; (void)gx; (void)gy; (void)gz;
+    }
+
+    // 把 SSBO 绑定到计算/图形着色器的存储缓冲槽位（按名字绑定，跨后端统一）。
+    virtual void bind_storage_buffer(RHIShaderHandle shader, const char* name, RHIBufferHandle buffer) {
+        (void)shader; (void)name; (void)buffer;
+    }
+
+    // 把纹理整层拷到缓冲（GPU 端，不做 CPU 映射、不产生同步停顿）。
+    // 用途：compute 着色器没有 sampled image 绑定能力时，把需要被 compute 读取的
+    // 渲染结果（HiZ 深度金字塔等）搬到 SSBO 里按索引读取。
+    // offset 单位为字节。数据布局为逐行紧密排列（row = width * sizeof(texel)）。
+    virtual void copy_texture_to_buffer(RHITextureHandle /*texture*/, RHIBufferHandle /*buffer*/,
+                                        uint32_t /*offset*/) {}
+
+    // 指定后续间接绘制的"每实例属性流"（替代 mesh 自带的实例缓冲）。
+    // GPU 剔除把可见实例矩阵紧凑写进 SSBO，Vulkan 侧直接把它当作 binding 1
+    // 的实例顶点缓冲用——这样图形着色器无需改动就能画出剔除结果，instanceCount
+    // 由间接参数给出。OpenGL 不需要：它由顶点着色器直接读 SSBO。
+    // 传无效句柄表示恢复使用 mesh 自身的实例缓冲。
+    virtual void bind_instance_stream(RHIBufferHandle buffer) { (void)buffer; }
+
+    // 间接绘制：绘制参数（indexCount / instanceCount / firstIndex 等）来自 GPU 缓冲，
+    // CPU 不再参与逐物体提交，从而把提交开销压到接近零。
+    virtual void draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                       RHIBufferHandle args, uint32_t offset) {
+        (void)mesh; (void)shader; (void)args; (void)offset;
+    }
+
+    // 非索引版间接绘制（DrawArraysIndirectCommand：count / instanceCount /
+    // first / baseInstance）。实例化几何在上传时被去索引展开，不走索引分支。
+    virtual void draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                      RHIBufferHandle args, uint32_t offset) {
+        (void)mesh; (void)shader; (void)args; (void)offset;
+    }
+
     // 工厂方法：创建后端特定资源，返回句柄
     virtual RHIMeshHandle create_mesh() = 0;
     virtual RHIShaderHandle create_shader() = 0;

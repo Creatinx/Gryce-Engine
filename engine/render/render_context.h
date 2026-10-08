@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -10,6 +11,7 @@
 
 #include "render/export.h"
 #include "render/render.h"
+#include "render/buffer.h"
 #include "math/math.h"
 
 namespace gryce_engine::render {
@@ -59,6 +61,24 @@ public:
     bool is_running() const;
     bool is_initialized() const;
 
+    // 当前是否允许直接创建 GPU 资源（GL/Vulkan context 已 current）。
+    // - 渲染线程运行时：只有渲染线程自己为 true
+    // - 渲染线程未运行（启动前 / 已暂停 / 已关闭）：context 在主线程，为 true
+    bool on_render_thread() const;
+
+    // 在正确的上下文中执行 GPU 资源操作：已在渲染线程则直接跑，否则转发。
+    // 返回 false 表示资源操作无法在当前状态下安全执行（渲染线程未运行）。
+    // **凡是会 create/destroy 纹理、FBO、SSBO、pipeline 的代码都必须走这里**，
+    // 直接在主线程调 GL 会静默失败（glCreateTextures 返回 0）。
+    bool run_with_gpu_context(std::function<void()> fn);
+
+    // 同上，但**阻塞到渲染线程执行完**才返回。
+    // 适用于会同时改写跨线程共享句柄（hdr_color_ / hdr_depth_ / hdr_fbo_ 等）
+    // 的重建操作：这些句柄同时被主线程的 render_scene 读取来绑定渲染目标，
+    // 异步执行会让主线程读到半途状态 —— Vulkan 上表现为绑到未完成的 render
+    // pass，主 pass 静默画不出任何东西（只剩走独立路径的粒子）。
+    bool run_with_gpu_context_sync(std::function<void()> fn);
+
     // -----------------------------------------------------------------------
     // 资源创建（必须在 start() 之前调用，此时 context 仍在主线程）
     // -----------------------------------------------------------------------
@@ -85,8 +105,21 @@ public:
     // 渲染命令（必须在 start() 之后调用，push 到 CMDBUFFER）
     // -----------------------------------------------------------------------
     void set_shader(RHIShaderHandle shader);
+    // uniform 名重载说明（性能相关，勿删）：
+    // 同时提供 const std::string& 与 const char* 两个版本时，调用方写字符串字面量
+    // （"uModel"）会优先匹配 std::string —— 数组到指针是标准转换，而字面量转
+    // std::string 是用户定义转换，前者更优。结果是**每次调用都堆分配一个临时
+    // std::string，只为立刻取 .c_str()**。逐物体路径（每帧上千次）上这是纯浪费。
+    // 因此对所有"字面量必然走这里"的接口再加一个 const char(&)[N] 模板，
+    // 它比 std::string 更精确匹配（恒等转换），直接转发到 const char* 版本。
+    template <size_t N> void set_uniform_int(RHIShaderHandle shader, const char (&name)[N], int value) {
+        set_uniform_int(shader, static_cast<const char*>(name), value);
+    }
     void set_uniform_int(RHIShaderHandle shader, const std::string& name, int value);
     void set_uniform_int(RHIShaderHandle shader, const char* name, int value);
+    template <size_t N> void set_uniform_float(RHIShaderHandle shader, const char (&name)[N], float value) {
+        set_uniform_float(shader, static_cast<const char*>(name), value);
+    }
     void set_uniform_float(RHIShaderHandle shader, const std::string& name, float value);
     void set_uniform_float(RHIShaderHandle shader, const char* name, float value);
     void set_uniform_vec2(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector2f& value);
@@ -95,6 +128,9 @@ public:
     void set_uniform_vec3(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector3f& value);
     void set_uniform_vec4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Vector4f& value);
     void set_uniform_vec4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Vector4f& value);
+    template <size_t N> void set_uniform_mat4(RHIShaderHandle shader, const char (&name)[N], const gryce_engine::math::Matrix4f& value) {
+        set_uniform_mat4(shader, static_cast<const char*>(name), value);
+    }
     void set_uniform_mat4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Matrix4f& value);
     void set_uniform_mat4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Matrix4f& value);
     // mat4 数组 uniform（骨骼 palette）。shared_ptr 按值捕获进命令队列，
@@ -124,6 +160,29 @@ public:
     void set_framebuffer(RHIFramebufferHandle fb);
     void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader);
     void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader);
+
+    // -----------------------------------------------------------------------
+    // 计算着色器 / 间接绘制（GPU-driven；不支持的后端上全部 no-op）
+    // -----------------------------------------------------------------------
+    // 派发计算工作组。shader 必须由 backend 的 create_compute_shader 创建。
+    void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz);
+    // 按名字把 SSBO 绑到着色器声明的 layout(binding=N)。
+    void bind_storage_buffer(RHIShaderHandle shader, const char* name, RHIBufferHandle buffer);
+    // 指定后续间接绘制的每实例属性流（Vulkan 用它替代 mesh 的实例缓冲；
+    // OpenGL 由顶点着色器直接读 SSBO，此为 no-op）。传无效句柄恢复默认。
+    void bind_instance_stream(RHIBufferHandle buffer);
+    // 间接绘制：绘制参数来自 GPU 缓冲（由 compute 写入）。
+    void draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                               RHIBufferHandle args, uint32_t offset);
+    void draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                              RHIBufferHandle args, uint32_t offset);
+    // 在渲染线程上更新缓冲内容（data 会被拷贝进命令，调用方可立即释放）。
+    void update_buffer(RHIBufferHandle buffer, const void* data, size_t size, size_t offset = 0);
+    // 纹理 → 缓冲的 GPU 端拷贝（供 compute 读原本只有颜色附件形态的数据）。
+    void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer, uint32_t offset);
+    // 在渲染线程上（重新）创建缓冲。
+    void create_buffer_storage(RHIBufferHandle buffer, size_t size, const void* data,
+                               BufferUsage usage);
 
     // 提交自定义命令到 CMDBUFFER（用于扩展如 2D 渲染器）
     void push_command(std::function<void(IRenderBackend*)>&& cmd);

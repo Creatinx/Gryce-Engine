@@ -114,7 +114,10 @@ private:
     std::vector<VkCommandPool> secondary_pools_;
 
     static constexpr int kMaxFramesInFlight = 8;
-    int frames_in_flight_ = 2;
+    // 默认 3 帧在途：让 CPU 录制第 N+1 帧的同时 GPU 仍在跑第 N 帧，
+    // 提高 CPU/GPU 重叠度，避免 GPU 在渲染线程录制命令时空转。
+    // 实际值取 min(交换链图像数, kMaxFramesInFlight)。
+    int frames_in_flight_ = 3;
     int current_frame_ = 0;
     uint32_t current_image_ = 0;
     std::vector<VkSemaphore> image_available_semaphores_;

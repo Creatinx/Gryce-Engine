@@ -36,6 +36,9 @@ public:
     // 是否使用 Vulkan（影响 GLFW 初始化方式）
     virtual bool is_vulkan() const { return false; }
 
+    // 是否使用 Direct3D 12（影响 GLFW 初始化方式：ImGui_ImplGlfw_InitForOther）。
+    virtual bool is_d3d12() const { return false; }
+
     // 将引擎纹理转换为 ImGui 用户纹理 ID（ImTextureID，供编辑器 Viewport
     // 面板 ImGui::Image 采样）。OpenGL 返回 GLuint 纹理对象 id，Vulkan 返回
     // 缓存的 VkDescriptorSet；返回 0 表示转换失败。

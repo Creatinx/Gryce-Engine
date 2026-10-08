@@ -1,10 +1,13 @@
 #include "renderer2d_impl.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <GL/glew.h>
 
@@ -419,6 +422,9 @@ void Renderer2D::init(RenderContext* ctx) {
             "times.ttf",
             "msyh.ttc",
             "simhei.ttf",
+            "micross.ttf",
+            "DejaVuSans.ttf",
+            "NotoSans-Regular.ttf",
             nullptr
         };
 
@@ -426,8 +432,39 @@ void Renderer2D::init(RenderContext* ctx) {
             std::string font_path = font_dir + font_names[i];
             if (font_atlas_.init(ctx_, font_path, 32.0f)) {
                 using_fallback_font_ = false;
+                GLOG_INFO("Renderer2D: loaded system font '{}'", font_path);
                 break;
             }
+        }
+    }
+
+    // 候选名全失败（精简版 Windows / 容器镜像的字体目录往往只有一两个文件）：
+    // 直接扫目录取第一个能解析的 TTF/TTC，避免必然掉进"实心色块"回退。
+    if (!font_atlas_.texture()) {
+        std::error_code ec;
+        const std::string font_dir = get_system_font_dir();
+        std::vector<std::string> candidates;
+        for (const auto& entry : std::filesystem::directory_iterator(font_dir, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file()) continue;
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return static_cast<char>(::tolower(c)); });
+            if (ext == ".ttf" || ext == ".ttc" || ext == ".otf") {
+                candidates.push_back(entry.path().string());
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        for (const std::string& path : candidates) {
+            if (font_atlas_.init(ctx_, path, 32.0f)) {
+                using_fallback_font_ = false;
+                GLOG_INFO("Renderer2D: loaded scanned system font '{}'", path);
+                break;
+            }
+        }
+        if (!font_atlas_.texture() && !candidates.empty()) {
+            GLOG_WARN("Renderer2D: {} font file(s) found in '{}' but none could be parsed",
+                      candidates.size(), font_dir);
         }
     }
 
@@ -461,11 +498,11 @@ void Renderer2D::shutdown() {
             // 保证执行完毕前本对象不被销毁。
             ctx_->push_command([this](IRenderBackend*) {
                 if (default_albedo_tex_ != 0) {
-                    glDeleteTextures(1, &default_albedo_tex_);
+                    destroy_default_texture(default_albedo_tex_);
                     default_albedo_tex_ = 0;
                 }
                 if (default_normal_tex_ != 0) {
-                    glDeleteTextures(1, &default_normal_tex_);
+                    destroy_default_texture(default_normal_tex_);
                     default_normal_tex_ = 0;
                 }
             });
@@ -474,11 +511,11 @@ void Renderer2D::shutdown() {
         } else {
             // 渲染线程未运行（暂停中）：context 已切回主线程，可直接删除
             if (default_albedo_tex_ != 0) {
-                glDeleteTextures(1, &default_albedo_tex_);
+                destroy_default_texture(default_albedo_tex_);
                 default_albedo_tex_ = 0;
             }
             if (default_normal_tex_ != 0) {
-                glDeleteTextures(1, &default_normal_tex_);
+                destroy_default_texture(default_normal_tex_);
                 default_normal_tex_ = 0;
             }
         }
@@ -537,16 +574,7 @@ bool Renderer2D::create_shadow_map() {
     shadow_map_ptr->set_wrap(TextureWrap::ClampToBorder, TextureWrap::ClampToBorder);
 
     // 2D 阴影贴图使用普通 sampler2D 采样，必须关闭深度比较模式。
-    auto* gl_shadow = static_cast<GLTexture*>(shadow_map_ptr);
-    if (gl_shadow && gl_shadow->texture_id()) {
-        if (gl_dsa_available()) {
-            glTextureParameteri(gl_shadow->texture_id(), GL_TEXTURE_COMPARE_MODE, GL_NONE);
-        } else {
-            glBindTexture(GL_TEXTURE_2D, gl_shadow->texture_id());
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
-    }
+    configure_depth_texture_for_sampling(shadow_map_ptr);
 
     shadow_fbo_ = ctx_->create_framebuffer();
     IFramebuffer* shadow_fbo_ptr = ctx_->framebuffer(shadow_fbo_);
@@ -740,8 +768,8 @@ void Renderer2D::end_frame() {
         const RHIFramebufferHandle scene_fbo = scene_fbo_;
         const int sw = static_cast<int>(screen_width_);
         const int sh = static_cast<int>(screen_height_);
-        ctx_->push_command([scene_fbo, sw, sh](IRenderBackend* backend) {
-            backend->bind_framebuffer(scene_fbo);
+        ctx_->push_command([this, scene_fbo, sw, sh](IRenderBackend* backend) {
+            if (use_backend_framebuffers()) backend->bind_framebuffer(scene_fbo);
             backend->set_viewport(0, 0, sw, sh);
             backend->clear(0.0f, 0.0f, 0.0f, 0.0f);
             backend->set_depth_test(false);
@@ -841,11 +869,10 @@ void Renderer2D::render_shadow_pass() {
         IFramebuffer* shadow_fbo_ptr = ctx_->framebuffer(shadow_fbo_);
         if (!mesh_ptr || !shader_ptr || !shadow_fbo_ptr) return;
 
-        backend->bind_framebuffer(shadow_fbo_);
+        if (use_backend_framebuffers()) backend->bind_framebuffer(shadow_fbo_);
         backend->set_viewport(0, 0, k_shadow_map_size, k_shadow_map_size);
         // 阴影 FBO 仅有深度附件，需显式禁用颜色读写。
-        glDrawBuffer(GL_NONE);
-        glReadBuffer(GL_NONE);
+        disable_color_writes_for_depth_only_target();
         backend->clear_depth();
         backend->set_depth_test(true);
         backend->set_blend(false);
@@ -932,7 +959,9 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         if (!mesh_ptr || !shader_ptr) return;
 
         // 阴影 pass 会切换 FBO，光照 pass 需要重新绑定到正确目标（scene FBO 或默认 backbuffer）。
-        backend->bind_framebuffer(target_is_scene_fbo ? scene_fbo : RHIFramebufferHandle{});
+        if (use_backend_framebuffers()) {
+            backend->bind_framebuffer(target_is_scene_fbo ? scene_fbo : RHIFramebufferHandle{});
+        }
         backend->set_viewport(0, 0, sw, sh);
         backend->set_depth_test(false);
         backend->set_blend(true);
@@ -941,26 +970,12 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
         // 创建默认 fallback 纹理（成员变量，仅渲染线程访问；
         // shutdown 时通过命令在同一线程删除，避免函数级 static 造成进程级泄漏）
         if (default_albedo_tex_ == 0) {
-            glGenTextures(1, &default_albedo_tex_);
-            glBindTexture(GL_TEXTURE_2D, default_albedo_tex_);
-            unsigned char white[] = {255, 255, 255, 255};
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glBindTexture(GL_TEXTURE_2D, 0);
+            const unsigned char white[] = {255, 255, 255, 255};
+            default_albedo_tex_ = create_default_1x1_texture(white);
         }
         if (default_normal_tex_ == 0) {
-            glGenTextures(1, &default_normal_tex_);
-            glBindTexture(GL_TEXTURE_2D, default_normal_tex_);
-            unsigned char blue[] = {128, 128, 255, 255};
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glBindTexture(GL_TEXTURE_2D, 0);
+            const unsigned char blue[] = {128, 128, 255, 255};
+            default_normal_tex_ = create_default_1x1_texture(blue);
         }
 
         shader_ptr->bind();
@@ -1005,14 +1020,14 @@ void Renderer2D::render_lit_sprites_forward(bool target_is_scene_fbo) {
             if (ITexture* albedo_ptr = ctx_->texture(batch.albedo)) {
                 albedo_ptr->bind(TextureSlots::k2DAlbedo);
             } else {
-                glBindTextureUnit(TextureSlots::k2DAlbedo, default_albedo_tex_);
+                bind_default_texture_slot(TextureSlots::k2DAlbedo, default_albedo_tex_);
             }
             shader_ptr->set_int("uAlbedo", TextureSlots::k2DAlbedo);
 
             if (ITexture* normal_ptr = ctx_->texture(batch.normal)) {
                 normal_ptr->bind(TextureSlots::k2DNormal);
             } else {
-                glBindTextureUnit(TextureSlots::k2DNormal, default_normal_tex_);
+                bind_default_texture_slot(TextureSlots::k2DNormal, default_normal_tex_);
             }
             shader_ptr->set_int("uNormalMap", TextureSlots::k2DNormal);
 
@@ -1052,7 +1067,7 @@ void Renderer2D::render_bloom_pass() {
             ITexture* input_ptr = ctx_->texture(input_tex);
             if (!mesh_ptr || !shader_ptr) return;
 
-            backend->bind_framebuffer(target);
+            if (use_backend_framebuffers()) backend->bind_framebuffer(target);
             backend->set_viewport(0, 0, w, h);
             backend->set_depth_test(false);
             backend->set_blend(false);
@@ -1118,7 +1133,7 @@ void Renderer2D::render_bloom_pass() {
         ITexture* bloom_ptr = ctx_->texture(bloom_result);
         if (!mesh_ptr || !shader_ptr) return;
 
-        backend->bind_framebuffer(RHIFramebufferHandle{});
+        if (use_backend_framebuffers()) backend->bind_framebuffer(RHIFramebufferHandle{});
         backend->set_viewport(0, 0, w, h);
         backend->set_depth_test(false);
         backend->set_blend(false);
@@ -1278,21 +1293,14 @@ void Renderer2D::draw_circle(float cx, float cy, float r, int segments, const Co
 }
 
 void Renderer2D::draw_text(float x, float y, const std::string& text, float font_size, const Color& color) {
-    if (!font_atlas_.texture()) {
-        float cursor_x = x;
-        float cursor_y = y;
-        float block_w = font_size * 0.6f;
-        float block_h = font_size;
-        for (char c : text) {
-            if (c == '\n') {
-                cursor_x = x;
-                cursor_y += block_h;
-                continue;
-            }
-            if (c != ' ') {
-                draw_rect(cursor_x, cursor_y - block_h * 0.8f, block_w, block_h, color);
-            }
-            cursor_x += block_w;
+    if (!font_atlas_.texture() || using_fallback_font_) {
+        // 回退图集的每个"字形"是一块实心色块（见 FontAtlas::create_fallback_atlas），
+        // 逐字符画出来就是左上角一条灰色矩形 —— 看着像渲染出错，比不显示更糟。
+        // 这里直接不画并告警一次：真正的信息在日志里，画面保持干净。
+        if (!warned_no_font_) {
+            warned_no_font_ = true;
+            GLOG_WARN("Renderer2D: no usable font atlas, text overlay disabled "
+                      "(ship res:/fonts/*.ttf or install system fonts)");
         }
         return;
     }
@@ -1573,6 +1581,50 @@ void Renderer2D::reset_scissor() {
         const auto size = screen_size();
         ctx_->set_scissor(0, 0, static_cast<int>(size.x), static_cast<int>(size.y));
     }
+}
+
+// ---------------------------------------------------------------------------
+// 后端适配钩子的默认实现（= OpenGL 行为）。
+// D3D12 等后端继承 Renderer2D 并覆盖这几个方法即可复用全部 2D 逻辑。
+// ---------------------------------------------------------------------------
+void Renderer2D::configure_depth_texture_for_sampling(ITexture* shadow_map) {
+    auto* gl_shadow = static_cast<GLTexture*>(shadow_map);
+    if (!gl_shadow || !gl_shadow->texture_id()) return;
+    if (gl_dsa_available()) {
+        glTextureParameteri(gl_shadow->texture_id(), GL_TEXTURE_COMPARE_MODE, GL_NONE);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, gl_shadow->texture_id());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+}
+
+void Renderer2D::disable_color_writes_for_depth_only_target() {
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+}
+
+uint32_t Renderer2D::create_default_1x1_texture(const unsigned char rgba[4]) {
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return static_cast<uint32_t>(id);
+}
+
+void Renderer2D::destroy_default_texture(uint32_t id) {
+    if (id == 0) return;
+    GLuint gl_id = static_cast<GLuint>(id);
+    glDeleteTextures(1, &gl_id);
+}
+
+void Renderer2D::bind_default_texture_slot(int slot, uint32_t id) {
+    glBindTextureUnit(static_cast<GLuint>(slot), static_cast<GLuint>(id));
 }
 
 } // namespace gryce_engine::render

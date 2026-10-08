@@ -48,6 +48,7 @@ InstancedMeshRenderer::~InstancedMeshRenderer() {
 void InstancedMeshRenderer::serialize(nlohmann::json& out) const {
     out["mesh_path"] = mesh_path;
     out["material_path"] = material_path;
+    if (!inline_material.is_null()) out["material"] = inline_material;
     out["instance_count"] = instance_count;
     out["spacing"] = spacing;
     out["seed"] = seed;
@@ -56,6 +57,7 @@ void InstancedMeshRenderer::serialize(nlohmann::json& out) const {
 void InstancedMeshRenderer::deserialize(const nlohmann::json& in) {
     mesh_path = in.value("mesh_path", "");
     material_path = in.value("material_path", "");
+    inline_material = in.contains("material") ? in["material"] : nlohmann::json();
     instance_count = in.value("instance_count", 1);
     spacing = in.value("spacing", 1.0f);
     seed = in.value("seed", 0);
@@ -81,8 +83,35 @@ void InstancedMeshRenderer::build_instance_matrices(const math::Matrix4f& world)
     if (!scratch_[scratch_index_]) {
         scratch_[scratch_index_] = std::make_shared<std::vector<math::Matrix4f>>();
     }
+    if (!sphere_scratch_[scratch_index_]) {
+        sphere_scratch_[scratch_index_] = std::make_shared<std::vector<math::Vector4f>>();
+    }
     auto& buffer = *scratch_[scratch_index_];
+    auto& spheres = *sphere_scratch_[scratch_index_];
     if (buffer.size() < count) buffer.resize(count);
+    if (spheres.size() < count) spheres.resize(count);
+
+    // 原型网格的本地包围球（GPU 剔除用）。取不到边界时半径给极大值，
+    // 保证"必定可见"——宁可多画也不漏画。
+    float local_radius = 1.0e30f;
+    if (geometry_ && !geometry_->vertices.empty()) {
+        double max_d2 = 0.0;
+        for (const auto& v : geometry_->vertices) {
+            const double d2 = static_cast<double>(v.position.x) * v.position.x +
+                              static_cast<double>(v.position.y) * v.position.y +
+                              static_cast<double>(v.position.z) * v.position.z;
+            if (d2 > max_d2) max_d2 = d2;
+        }
+        local_radius = static_cast<float>(std::sqrt(max_d2)) + 1.0e-3f;
+    }
+    // 实例只做绕 Y 旋转 + 均匀缩放（见下方 local 矩阵），因此缩放分量可直接
+    // 从矩阵的列长度读出，世界变换再乘一次。Matrix4f 是列主序：第 c 列由
+    // (0,c)(1,c)(2,c) 三个元素组成（translation 在第 3 列）。
+    const float world_max_scale = std::sqrt(std::max(
+        std::max(world(0, 0) * world(0, 0) + world(1, 0) * world(1, 0) + world(2, 0) * world(2, 0),
+                 world(0, 1) * world(0, 1) + world(1, 1) * world(1, 1) + world(2, 1) * world(2, 1)),
+        std::max(world(0, 2) * world(0, 2) + world(1, 2) * world(1, 2) + world(2, 2) * world(2, 2),
+                 0.0f)));
 
     // 网格排布：列数取 sqrt(count) 上取整，行数按剩余补齐，整体以原点为中心
     const float cell = std::max(0.01f, spacing);
@@ -115,6 +144,17 @@ void InstancedMeshRenderer::build_instance_matrices(const math::Matrix4f& world)
             math::Matrix4f::rotate(angle, math::Vector3f(0.0f, 1.0f, 0.0f)) *
             math::Matrix4f::scale(s, s, s);
         buffer[i] = world * local;
+
+        // 世界包围球：中心取平移列，半径 = 本地半径 × 实例缩放 × 世界缩放。
+        // 旋转不影响球。取本地包围球（而不是 AABB）保证剔除保守性。
+        if (local_radius < 1.0e29f) {
+            const math::Vector3f c(buffer[i](0, 3), buffer[i](1, 3), buffer[i](2, 3));
+            spheres[i] = math::Vector4f(c.x, c.y, c.z,
+                                        local_radius * s * world_max_scale);
+        } else {
+            spheres[i] = math::Vector4f(buffer[i](0, 3), buffer[i](1, 3), buffer[i](2, 3),
+                                        1.0e30f);
+        }
     }
 }
 
@@ -162,17 +202,28 @@ void InstancedMeshRenderer::prepare_gpu(render::RenderContext* ctx, const math::
     }
     if (!flat_vertices_ || flat_vertices_->empty()) return;
 
-    // 材质路径变化：主线程解析材质文件（贴图在渲染线程上传）
-    if (material_path != material_path_loaded_) {
-        material_path_loaded_ = material_path;
+    // 材质变化：主线程解析（贴图在渲染线程上传）。
+    // material_path 优先；为空则用内联 material 字段；两者都没有时**必须**给一个
+    // 默认材质 —— 绘制侧 material_ 为 nullptr 会跳过 mat->bind()，沿用上一个物体
+    // 的 uniform，实例就会显示成黑块。
+    const std::string material_key = material_path + "\x1f" + inline_material.dump();
+    if (material_key != material_path_loaded_) {
+        material_path_loaded_ = material_key;
         material_.reset();
         material_uploaded_.store(false, std::memory_order_release);
         if (!material_path.empty()) {
             auto mat = std::make_unique<render::Material>();
             if (!mat->load_from_file(material_path)) {
-                GLOG_WARN("InstancedMeshRenderer: material '{}' unavailable, using defaults", material_path);
+                GLOG_WARN("InstancedMeshRenderer: material '{}' unavailable, using defaults",
+                          material_path);
             }
             material_ = std::move(mat);
+        } else if (!inline_material.is_null()) {
+            auto mat = std::make_unique<render::Material>();
+            mat->deserialize(inline_material);
+            material_ = std::move(mat);
+        } else {
+            material_ = std::make_unique<render::Material>();
         }
     }
 
@@ -184,6 +235,7 @@ void InstancedMeshRenderer::prepare_gpu(render::RenderContext* ctx, const math::
     if (params_changed) {
         build_instance_matrices(world);
         cached_instances_ = scratch_[scratch_index_];
+        cached_spheres_ = sphere_scratch_[scratch_index_];
         scratch_index_ = (scratch_index_ + 1) % k_scratch_slots;
         last_world_ = world;
         last_count_ = instance_count;

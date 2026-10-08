@@ -102,7 +102,12 @@ struct RenderCommandTyped {
     // SetTexture：true 时按"原始深度"绑定（OpenGL 绑定关闭比较模式的 sampler，
     // 供 PCSS blocker search / SSAO 重建深度读取真实深度值）
     bool texture_raw_depth = false;
-    std::string uniform_name;
+    // uniform 名只保存指针，不做 std::string 拷贝。
+    // 所有调用点传的都是编译期字符串字面量（"uModel" / "uView" …），
+    // 生命周期覆盖整条命令的执行；原实现按值收 std::string，每次 set_uniform_*
+    // 都要构造（可能堆分配）一个字符串 —— 在数千实体的场景里是主要 CPU 开销。
+    // 命令在同一个进程内、当帧内即被消费，不存在跨进程/跨帧传递。
+    const char* uniform_name = nullptr;
     math::Vector2f uniform_vec2;
     math::Vector3f uniform_vec3;
     math::Vector4f uniform_vec4;
@@ -193,74 +198,74 @@ struct RenderCommandTyped {
         return cmd;
     }
 
-    static RenderCommandTyped make_set_texture(RHIShaderHandle s, RHITextureHandle t, int slot, std::string name) {
+    static RenderCommandTyped make_set_texture(RHIShaderHandle s, RHITextureHandle t, int slot, const char* name) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetTexture;
         cmd.shader = s;
         cmd.texture = t;
         // slot 复用 uniform_int
         cmd.uniform_int = slot;
-        cmd.uniform_name = std::move(name);
+        cmd.uniform_name = name ? name : "";
         return cmd;
     }
 
     static RenderCommandTyped make_set_texture_raw_depth(RHIShaderHandle s, RHITextureHandle t,
-                                                         int slot, std::string name) {
+                                                         int slot, const char* name) {
         RenderCommandTyped cmd = make_set_texture(s, t, slot, std::move(name));
         cmd.texture_raw_depth = true;
         return cmd;
     }
 
-    static RenderCommandTyped make_set_uniform_int(RHIShaderHandle s, std::string name, int value) {
+    static RenderCommandTyped make_set_uniform_int(RHIShaderHandle s, const char* name, int value) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetUniformInt;
         cmd.shader = s;
-        cmd.uniform_name = std::move(name);
+        cmd.uniform_name = name ? name : "";
         cmd.uniform_int = value;
         return cmd;
     }
 
-    static RenderCommandTyped make_set_uniform_float(RHIShaderHandle s, std::string name, float value) {
+    static RenderCommandTyped make_set_uniform_float(RHIShaderHandle s, const char* name, float value) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetUniformFloat;
         cmd.shader = s;
-        cmd.uniform_name = std::move(name);
+        cmd.uniform_name = name ? name : "";
         cmd.uniform_float = value;
         return cmd;
     }
 
-    static RenderCommandTyped make_set_uniform_vec2(RHIShaderHandle s, std::string name, const math::Vector2f& value) {
+    static RenderCommandTyped make_set_uniform_vec2(RHIShaderHandle s, const char* name, const math::Vector2f& value) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetUniformVec2;
         cmd.shader = s;
-        cmd.uniform_name = std::move(name);
+        cmd.uniform_name = name ? name : "";
         cmd.uniform_vec2 = value;
         return cmd;
     }
 
-    static RenderCommandTyped make_set_uniform_vec3(RHIShaderHandle s, std::string name, const math::Vector3f& value) {
+    static RenderCommandTyped make_set_uniform_vec3(RHIShaderHandle s, const char* name, const math::Vector3f& value) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetUniformVec3;
         cmd.shader = s;
-        cmd.uniform_name = std::move(name);
+        cmd.uniform_name = name ? name : "";
         cmd.uniform_vec3 = value;
         return cmd;
     }
 
-    static RenderCommandTyped make_set_uniform_vec4(RHIShaderHandle s, std::string name, const math::Vector4f& value) {
+    static RenderCommandTyped make_set_uniform_vec4(RHIShaderHandle s, const char* name, const math::Vector4f& value) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetUniformVec4;
         cmd.shader = s;
-        cmd.uniform_name = std::move(name);
+        cmd.uniform_name = name ? name : "";
         cmd.uniform_vec4 = value;
         return cmd;
     }
 
-    static RenderCommandTyped make_set_uniform_mat4(RHIShaderHandle s, std::string name, const math::Matrix4f& value) {
+    static RenderCommandTyped make_set_uniform_mat4(RHIShaderHandle s, const char* name, const math::Matrix4f& value) {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetUniformMat4;
         cmd.shader = s;
-        cmd.uniform_name = std::move(name);
+        cmd.uniform_name = name ? name : "";
         cmd.uniform_mat4 = value;
         return cmd;
     }

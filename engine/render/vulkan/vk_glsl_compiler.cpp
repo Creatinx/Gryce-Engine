@@ -40,10 +40,16 @@ using ResultGetErrorFn = const char* (*)(const void* result);
 using ResultGetLengthFn = size_t (*)(const void* result);
 using ResultGetBytesFn = const char* (*)(const void* result);
 using ResultReleaseFn = void (*)(const void* result);
+// 计算管线靠 SPIR-V 里的 OpName 拿 SSBO 块名 → 必须让 glslang 吐出调试名。
+using CompileOptionsNewFn = void* (*)();
+using CompileOptionsFreeFn = void (*)(void* options);
+using CompileOptionsSetDebugInfoFn = void (*)(void* options, bool generate);
 
-// shaderc_vertex_shader / shaderc_fragment_shader 的实际枚举值（首个成员为 0）。
+// shaderc_vertex_shader / shaderc_fragment_shader / shaderc_compute_shader
+// 的实际枚举值（shaderc_shader_kind 首个成员为 0）。
 constexpr int kShadercVertexShader = 0;
 constexpr int kShadercFragmentShader = 1;
+constexpr int kShadercComputeShader = 2;
 // 编译成功状态（shaderc_compilation_status_success = 0）。
 constexpr int kCompilationSuccess = 0;
 
@@ -69,6 +75,9 @@ struct ShadercApi {
     ResultGetLengthFn get_length = nullptr;
     ResultGetBytesFn get_bytes = nullptr;
     ResultReleaseFn result_release = nullptr;
+    CompileOptionsNewFn options_new = nullptr;
+    CompileOptionsFreeFn options_free = nullptr;
+    CompileOptionsSetDebugInfoFn options_set_debug_info = nullptr;
     bool valid = false;
 };
 
@@ -114,6 +123,9 @@ void do_load() {
     set_sym(a.get_length, lib, "shaderc_result_get_length");
     set_sym(a.get_bytes, lib, "shaderc_result_get_bytes");
     set_sym(a.result_release, lib, "shaderc_result_release");
+    set_sym(a.options_new, lib, "shaderc_compile_options_new");
+    set_sym(a.options_free, lib, "shaderc_compile_options_free");
+    set_sym(a.options_set_debug_info, lib, "shaderc_compile_options_set_generate_debug_info");
 
     a.valid = a.init && a.release && a.compile_into_spv && a.get_status &&
               a.get_error && a.get_length && a.get_bytes && a.result_release;
@@ -191,10 +203,26 @@ bool compile_glsl_to_spirv(const std::string& source, const std::string& file_na
         return false;
     }
 
-    const int kind = stage == GlslStage::Vertex ? kShadercVertexShader : kShadercFragmentShader;
+    const int kind = stage == GlslStage::Vertex    ? kShadercVertexShader
+                   : stage == GlslStage::Fragment ? kShadercFragmentShader
+                                                  : kShadercComputeShader;
     const char* name = file_name.empty() ? "shader" : file_name.c_str();
+
+    // 计算阶段显式生成调试信息（安全网）：VulkanComputePipeline 靠 SPIR-V 的
+    // OpName 取得 SSBO 块名。实测 glslang 默认已保留**结构体类型名**（块名就在
+    // 类型上），但局部变量名会被剥掉；显式打开可保证块名一定在，且计算着色器
+    // 数量极少（1~2 个），SPIR-V 体积差异可忽略。图形管线不需要块名，保持原样
+    // 以免影响既有 .spv 缓存。
+    void* options = nullptr;
+    if (kind == kShadercComputeShader && a.options_new && a.options_free &&
+        a.options_set_debug_info) {
+        options = a.options_new();
+        if (options) a.options_set_debug_info(options, true);
+    }
+
     void* result = a.compile_into_spv(compiler, source.data(), source.size(), kind,
-                                      name, "main", nullptr);
+                                      name, "main", options);
+    if (options && a.options_free) a.options_free(options);
     if (!result) {
         error = "shaderc_compile_into_spv returned null";
         return false;

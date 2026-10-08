@@ -592,6 +592,14 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
         case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; channels_ = 4; break;
         case TextureFormat::RGBA32F: vk_format = VK_FORMAT_R32G32B32A32_SFLOAT; channels_ = 4; break;
         case TextureFormat::R8: vk_format = VK_FORMAT_R8_UNORM; channels_ = 1; break;
+        // 单/双通道浮点：HiZ 深度金字塔（R32F）等。带 COLOR_ATTACHMENT 是为了
+        // 能当渲染目标；R32F 作为颜色附件并非 Vulkan 强制格式，create_image
+        // 会用 vkGetPhysicalDeviceFormatProperties 校验，不支持则返回 false，
+        // 上层据此关闭 HiZ 遮挡剔除（退回纯视锥剔除），不会崩。
+        case TextureFormat::R16F: vk_format = VK_FORMAT_R16_SFLOAT; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 1; break;
+        case TextureFormat::RG16F: vk_format = VK_FORMAT_R16G16_SFLOAT; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 2; break;
+        case TextureFormat::R32F: vk_format = VK_FORMAT_R32_SFLOAT; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 1; break;
+        case TextureFormat::RG32F: vk_format = VK_FORMAT_R32G32_SFLOAT; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 2; break;
         // 深度纹理同时标记 SAMPLED：HDR 深度（SSAO/GTAO 重建）和阴影贴图
         // 都需要在 shader 中采样，缺 SAMPLED 位会导致采样非法（验证层报错）。
         case TextureFormat::Depth16: vk_format = VK_FORMAT_D16_UNORM; usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; aspect = VK_IMAGE_ASPECT_DEPTH_BIT; channels_ = 1; break;
@@ -775,6 +783,18 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
                                  const void* data) {
     is_cubemap_ = false;
     VkDevice dev = device_->device();
+
+    // 颜色附件格式并非 Vulkan 强制集合（如 R32F）。这里先查驱动支持，
+    // 不支持就直接失败，让上层优雅降级而不是建出一个非法 image。
+    if ((usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
+        (aspect == VK_IMAGE_ASPECT_COLOR_BIT)) {
+        VkFormatProperties props{};
+        vkGetPhysicalDeviceFormatProperties(device_->physical_device(), format, &props);
+        if ((props.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) == 0) {
+            GLOG_ERROR("VulkanTexture: format {} is not usable as color attachment", (int)format);
+            return false;
+        }
+    }
 
     // 只有带数据上传的颜色可采样纹理才生成 mipmap。
     bool can_gen_mipmaps = (aspect == VK_IMAGE_ASPECT_COLOR_BIT) &&
@@ -1112,6 +1132,16 @@ void VulkanTexture::transition_layout(VkCommandBuffer cmd, VkImageLayout new_lay
             barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
             src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             break;
+        // 刚被渲染写入的纹理（HiZ 归约 pass 的输出）转作传输源：必须显式声明
+        // 颜色附件写入对 TRANSFER 阶段可见，否则可能拷到上一帧的旧内容。
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            break;
         default:
             break;
     }
@@ -1125,6 +1155,19 @@ void VulkanTexture::transition_layout(VkCommandBuffer cmd, VkImageLayout new_lay
         case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            break;
+        // copy_texture_to_buffer：把纹理搬进 SSBO 供 compute 读。
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             break;
         default:
             break;

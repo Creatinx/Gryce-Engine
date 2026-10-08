@@ -47,6 +47,7 @@ public:
     bool is_valid() const override { return image_ != VK_NULL_HANDLE; }
 
     VkImageView image_view() const { return image_view_; }
+    VkImage image() const { return image_; }
     VkSampler sampler() const { return sampler_; }
     // 非比较 sampler（仅深度贴图）：PCSS 需要用 sampler2D 读原始深度
     VkSampler depth_sampler() const { return depth_sampler_; }

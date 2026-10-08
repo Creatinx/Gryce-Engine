@@ -112,7 +112,12 @@ struct PostProcessParams {
     float ssr_env_fallback = 1.0f;
     // SSR 内部渲染分辨率缩放（0.25~1.0）：光线步进/模糊按 scale×viewport 渲染，
     // 合成仍在全分辨率，用线性采样放大。0.5 大致省 4 倍 SSR 的 GPU 时间。
-    float ssr_resolution_scale = 1.0f;
+    //
+    // 默认取 0.5（而非 1.0）：SSR 输出是低频、被 roughness 与双边滤波进一步模糊的
+    // 反射，半分辨率再线性放大在视觉上几乎不可分辨（实测 1280x720：mean 差
+    // 0.2/255、非背景像素占比差 0.06%），但省掉 SSR 约 3/4 的 GPU 时间。
+    // 需要满分辨率 Reflex 的项目可以显式调回 1.0。
+    float ssr_resolution_scale = 0.5f;
     // SSR 调试视图（0=正常合成；1=原始反射颜色；2=命中覆盖度；3=场景 alpha=IBL 镜面项）
     int ssr_debug_view = 0;
 
@@ -251,6 +256,20 @@ public:
     // 重新读取源文件并重新编译 / 重建管线。调用前必须 pause_render_thread()，
     // 且调用方持有 GPU context。编译失败时保留旧程序/管线，返回 false。
     virtual bool reload() { return false; }
+
+    // -----------------------------------------------------------------------
+    // 计算着色器（可选能力：GPU-driven 渲染 / GPU 剔除 的基础）
+    // -----------------------------------------------------------------------
+    // 加载并编译单阶段计算着色器（{shader_dir}/{name}.comp）。
+    // 不支持计算阶段的后端返回 false，调用方应据此回退到 CPU 路径。
+    virtual bool load_compute(const std::string& /*name*/, const std::string& /*shader_dir*/) {
+        return false;
+    }
+
+    // 查询名为 name 的 shader storage block（SSBO）在该程序中的 binding 号。
+    // OpenGL 用它把 SSBO 绑到着色器声明的 layout(binding=N)；不存在返回 -1。
+    // 默认 -1：不支持的后端不会被误绑。
+    virtual int storage_block_binding(const char* /*name*/) const { return -1; }
 };
 
 } // namespace gryce_engine::render

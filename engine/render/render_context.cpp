@@ -1,6 +1,7 @@
 #include "render_context.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <future>
 #include <thread>
 
@@ -81,7 +82,7 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
             // shader 可能为空（级联阴影/SSAO 等仅绑定纹理单元），此时仍须完成纹理绑定。
             IShader* s = backend->shader(cmd.shader);
             if (s) {
-                if (!cmd.uniform_name.empty()) {
+                if (cmd.uniform_name && cmd.uniform_name[0]) {
                     s->set_int(cmd.uniform_name, unit);
                 }
                 s->set_texture(unit, t);
@@ -339,6 +340,70 @@ bool RenderContext::is_initialized() const {
     return initialized_;
 }
 
+bool RenderContext::on_render_thread() const {
+    if (!backend_) return false;
+    // 渲染线程未运行时（启动前 / 已暂停 / 已关闭），context 留在主线程。
+    if (!running_ || !render_thread_) return true;
+    return render_thread_->on_render_thread();
+}
+
+bool RenderContext::run_with_gpu_context(std::function<void()> fn) {
+    if (!fn || !backend_) return false;
+    if (!running_ || !cmd_buffer_) {
+        // 渲染线程没在跑 → context 就在当前线程，直接执行。
+        fn();
+        return true;
+    }
+    if (render_thread_ && render_thread_->on_render_thread()) {
+        fn();
+        return true;
+    }
+    // 转发到渲染线程执行（异步）。必须走这里：主线程没有 current context。
+    cmd_buffer_->push([fn = std::move(fn)](IRenderBackend*) { fn(); });
+    return true;
+}
+
+bool RenderContext::run_with_gpu_context_sync(std::function<void()> fn) {
+    if (!fn || !backend_) return false;
+    if (!running_ || !cmd_buffer_) {
+        fn();
+        return true;
+    }
+    if (render_thread_ && render_thread_->on_render_thread()) {
+        fn();
+        return true;
+    }
+    // 转发并**等它执行完**再返回（照 capture_frame_rgba 的既有范式：
+    // push + submit + wait_for_idle + promise/future —— 光push 没用，命令要
+    // 经 submit() 才会交给渲染线程）。
+    //
+    // 为什么必须等：调用方（如 resize 重建整套 RT）会改写 hdr_color_ /
+    // hdr_depth_ / hdr_fbo_ 等跨线程共享句柄，而主线程的 render_scene 同时
+    // 在读同一批句柄绑定主 pass。异步执行时本帧后续命令会读到"重建到一半"的
+    // 句柄 —— Vulkan 上表现为 render pass 不完整、主 pass 静默画不出任何东西
+    // （画面只剩粒子这类走独立路径的东西）。
+    // 标志用 shared_ptr 而非栈上的 promise：超时返回后 promise 已析构，
+    // 而渲染线程可能刚好在这时才执行到 set_value —— 那会写已销毁对象。
+    // shared_ptr 由闭包按值捕获，生命周期与命令绑定。
+    auto flag = std::make_shared<std::promise<void>>();
+    std::future<void> future = flag->get_future();
+    cmd_buffer_->push([flag, fn = std::move(fn)](IRenderBackend*) {
+        fn();
+        flag->set_value();
+    });
+    cmd_buffer_->submit();
+    wait_for_idle();
+    // 超时兜底：渲染线程若在执行中崩溃/退出，promise 永远不会兑现，
+    // 无条件 get() 会把整个进程挂死。这里只保证"不永久卡住"。
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        GLOG_ERROR("RenderContext::run_with_gpu_context_sync: render thread did not "
+                   "complete the operation within 5s (returning anyway)");
+        return false;
+    }
+    future.get();
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // 资源创建（主线程直接调用 backend，此时 context 仍在主线程）
 // ---------------------------------------------------------------------------
@@ -528,8 +593,14 @@ void RenderContext::set_uniform_int(RHIShaderHandle shader, const std::string& n
 }
 
 bool RenderContext::is_texture_uniform(RHIShaderHandle shader, const char* name) const {
+    // 逐物体 uniform 写入会反复调到这里，绝大多数帧根本没写过采样器 uniform。
+    // 先做空表 + 长度快速拒绝，避免每个元素都构造一个临时 std::string 再比较。
+    if (texture_uniform_writes_.empty() || !name) return false;
+    const size_t len = std::strlen(name);
     for (const auto& e : texture_uniform_writes_) {
-        if (e.first == shader && e.second == name) return true;
+        if (e.first != shader) continue;
+        if (e.second.size() != len) continue;
+        if (std::memcmp(e.second.data(), name, len) == 0) return true;
     }
     return false;
 }
@@ -697,6 +768,78 @@ void RenderContext::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
 void RenderContext::draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) {
     if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_draw_indexed(mesh, shader));
+}
+
+// ---------------------------------------------------------------------------
+// 计算着色器 / 间接绘制
+// ---------------------------------------------------------------------------
+// 全部走命令队列：真正的 GL/VK 调用必须发生在持有上下文的渲染线程上，
+// 而调用方（RenderPipeline::render_scene）跑在主线程。
+void RenderContext::dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy,
+                                     uint32_t gz) {
+    push_command([shader, gx, gy, gz](IRenderBackend* backend) {
+        backend->dispatch_compute(shader, gx, gy, gz);
+    });
+}
+
+void RenderContext::bind_storage_buffer(RHIShaderHandle shader, const char* name,
+                                        RHIBufferHandle buffer) {
+    // 名字必须拷贝进命令：调用方的字符串可能是栈上临时量。
+    std::string name_copy(name ? name : "");
+    push_command([shader, name_copy, buffer](IRenderBackend* backend) {
+        backend->bind_storage_buffer(shader, name_copy.c_str(), buffer);
+    });
+}
+
+void RenderContext::bind_instance_stream(RHIBufferHandle buffer) {
+    push_command([buffer](IRenderBackend* backend) {
+        backend->bind_instance_stream(buffer);
+    });
+}
+
+void RenderContext::draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                          RHIBufferHandle args, uint32_t offset) {
+    push_command([mesh, shader, args, offset](IRenderBackend* backend) {
+        backend->draw_indexed_indirect(mesh, shader, args, offset);
+    });
+}
+
+void RenderContext::draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                         RHIBufferHandle args, uint32_t offset) {
+    push_command([mesh, shader, args, offset](IRenderBackend* backend) {
+        backend->draw_arrays_indirect(mesh, shader, args, offset);
+    });
+}
+
+void RenderContext::update_buffer(RHIBufferHandle buffer, const void* data, size_t size,
+                                  size_t offset) {
+    if (!data || size == 0) return;
+    // 数据按值拷贝进命令，调用方随后可安全释放/复用自己的缓冲。
+    std::vector<uint8_t> copy(static_cast<const uint8_t*>(data),
+                              static_cast<const uint8_t*>(data) + size);
+    push_command([buffer, copy = std::move(copy), offset](IRenderBackend* backend) {
+        IBuffer* b = backend->buffer(buffer);
+        if (b) b->update(copy.data(), copy.size(), offset);
+    });
+}
+
+void RenderContext::copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
+                                           uint32_t offset) {
+    push_command([texture, buffer, offset](IRenderBackend* backend) {
+        backend->copy_texture_to_buffer(texture, buffer, offset);
+    });
+}
+
+void RenderContext::create_buffer_storage(RHIBufferHandle buffer, size_t size, const void* data,
+                                          BufferUsage usage) {    std::vector<uint8_t> copy;
+    if (data && size > 0) {
+        copy.assign(static_cast<const uint8_t*>(data),
+                    static_cast<const uint8_t*>(data) + size);
+    }
+    push_command([buffer, size, copy = std::move(copy), usage](IRenderBackend* backend) {
+        IBuffer* b = backend->buffer(buffer);
+        if (b) b->create(size, copy.empty() ? nullptr : copy.data(), usage);
+    });
 }
 
 void RenderContext::push_command(std::function<void(IRenderBackend*)>&& cmd) {

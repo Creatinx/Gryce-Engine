@@ -57,6 +57,7 @@ components::Component* Entity::add_component(std::unique_ptr<components::Compone
     components::Component* raw = comp.get();
     raw->on_attach(this);
     components_.push_back(std::move(comp));
+    component_index_[std::type_index(typeid(*raw))] = raw;
     if (store_) {
         store_->register_component(id_, std::type_index(typeid(*raw)), raw);
     }
@@ -70,6 +71,7 @@ bool Entity::remove_component(components::Component* comp) {
     if (!comp) return false;
     for (auto it = components_.begin(); it != components_.end(); ++it) {
         if (it->get() == comp) {
+            component_index_.erase(std::type_index(typeid(*comp)));
             if (store_) {
                 store_->unregister_component(id_, std::type_index(typeid(*comp)));
             }

@@ -194,14 +194,27 @@ int GWindow_InitExternal(GWindowHandle hwnd, int w, int h) {
 
 namespace {
 
+// Renders the public render-API enum as a stable log token.
+const char* gapi_name(GRenderAPI api) {
+    switch (api) {
+        case GRYCE_RENDER_API_VULKAN: return "vulkan";
+        case GRYCE_RENDER_API_DX12:   return "dx12";
+        case GRYCE_RENDER_API_DX11:   return "dx11";
+        default:                      return "opengl";
+    }
+}
+
 // Creates (or recreates) the embedded GLFW child window for the given render
-// API. Vulkan requires GLFW_CLIENT_API = GLFW_NO_API, OpenGL uses the default.
+// API. Only OpenGL needs a GL context from GLFW; Vulkan / D3D12 use
+// GLFW_CLIENT_API = GLFW_NO_API and create their own swapchain on the native
+// window handle. (The old "non-Vulkan implies OpenGL" assumption made a DX12
+// request silently look for a GL context that was never created.)
 GLFWwindow* create_embedded_window(HWND parent, int w, int h, GRenderAPI api) {
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    if (api == GRYCE_RENDER_API_VULKAN) {
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    } else {
+    if (api == GRYCE_RENDER_API_OPENGL) {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    } else {
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     }
     GLFWwindow* embedded = glfwCreateWindow(w > 0 ? w : 640, h > 0 ? h : 480,
                                             "GryceEditorViewport", nullptr, nullptr);
@@ -251,7 +264,7 @@ int GWindow_InitExternalEx(GWindowHandle hwnd, int w, int h, GRenderAPI api) {
     g_platform.ext_height = h;
     g_platform.embedded_window = embedded;
     GLOG_INFO("Platform: external HWND initialized ({}x{}) api={}",
-              w, h, api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+              w, h, gapi_name(api));
     return 0;
 }
 
@@ -272,11 +285,10 @@ int GWindow_RecreateClientApi(GRenderAPI api) {
     }
     g_platform.embedded_window = embedded;
 
-    if (api != GRYCE_RENDER_API_VULKAN) {
+    if (api == GRYCE_RENDER_API_OPENGL) {
         glfwMakeContextCurrent(embedded);  // keep the render thread's GL context valid
     }
-    GLOG_INFO("Platform: embedded window recreated for {}",
-              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+    GLOG_INFO("Platform: embedded window recreated for {}", gapi_name(api));
     return 0;
 }
 

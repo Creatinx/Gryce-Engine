@@ -75,12 +75,21 @@ private:
     int _compute_tile_count(int pixels, int tile_size) const;
     // 计算 depth slice
     int _compute_depth_slice(float depth, float z_near, float z_far) const;
-    // 光源与集群的相交测试
+    // 光源与集群的相交测试（复用 build() 每帧预计算的 view_/inv_proj_，以及
+    // 已变换到观察空间的光源位置/方向 light_pos_vs / light_dir_vs）
     bool _light_intersects_cluster(const LightData& light, int tile_x, int tile_y, int slice_z,
-                                   const math::Camera& camera) const;
+                                   const math::Vector3f& light_pos_vs,
+                                   const math::Vector3f& light_dir_vs) const;
 
     RenderContext* ctx_ = nullptr;
     bool initialized_ = false;
+
+    // 每帧由 build() 计算一次、供所有相交测试复用的帧常量矩阵，
+    // 避免在 光源×集群 循环内反复求逆 / 重建视图矩阵。
+    math::Matrix4f view_;
+    math::Matrix4f inv_proj_;
+    // log 空间深度切片用的 1/log(z_far/z_near)，每帧算一次复用。
+    float inv_log_range_ = 0.0f;
 
     // 集群维度
     int tile_count_x_ = 0;

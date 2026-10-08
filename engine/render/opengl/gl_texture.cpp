@@ -109,6 +109,13 @@ GLFormatInfo to_gl_format(TextureFormat fmt) {
     switch (fmt) {
     case TextureFormat::R8:             return {GL_R8,              GL_RED,  GL_UNSIGNED_BYTE, 1};
     case TextureFormat::RG8:            return {GL_RG8,             GL_RG,   GL_UNSIGNED_BYTE, 2};
+    // 单/双通道浮点：HiZ 深度金字塔（R32F）、GTAO/SSAO 中间量等。
+    // 注意 R32F/RG32F 作为**颜色附件**可渲染需要 EXT_color_buffer_float，
+    // 由调用方用 IFramebuffer::is_complete() 判定，不支持时自然放弃该功能。
+    case TextureFormat::R16F:           return {GL_R16F,            GL_RED,  GL_HALF_FLOAT, 1};
+    case TextureFormat::RG16F:          return {GL_RG16F,           GL_RG,   GL_HALF_FLOAT, 2};
+    case TextureFormat::R32F:           return {GL_R32F,            GL_RED,  GL_FLOAT, 1};
+    case TextureFormat::RG32F:          return {GL_RG32F,           GL_RG,   GL_FLOAT, 2};
     case TextureFormat::RGB8:           return {GL_RGB8,            GL_RGB,  GL_UNSIGNED_BYTE, 3};
     case TextureFormat::RGBA8:          return {GL_RGBA8,           GL_RGBA, GL_UNSIGNED_BYTE, 4};
     case TextureFormat::RGBA16F:        return {GL_RGBA16F,         GL_RGBA, GL_HALF_FLOAT,    4};
@@ -601,6 +608,18 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
                      format == TextureFormat::Depth24 ||
                      format == TextureFormat::Depth24Stencil8 ||
                      format == TextureFormat::Depth32F);
+
+    // **必须校验 texture_id_**：没有 current GL context 时 glCreateTextures /
+    // glGenTextures 静默返回 0，glTextureStorage2D 报 GL_INVALID_OPERATION。
+    // 以前这里无条件 return true，导致上层以为纹理创建成功而继续往下走，
+    // 直到 FBO complete 检查才失败，报错信息完全指不到真正的根因
+    // （"resize HDR target failed" 实际是线程用错）。
+    if (texture_id_ == 0) {
+        GLOG_ERROR("GLTexture::create failed: glCreateTextures returned 0 ({}x{} fmt={}). "
+                   "Is the GL context current on this thread?", width, height,
+                   static_cast<int>(format));
+        return false;
+    }
 
     if (dsa) {
         glTextureStorage2D(texture_id_, 1, info.internal_format, width, height);

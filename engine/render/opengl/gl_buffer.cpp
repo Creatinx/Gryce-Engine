@@ -272,7 +272,15 @@ void GLMesh::bind() const {
 void GLMesh::draw() const {
     bind();
     if (has_index_ && index_count_ > 0) {
-        glDrawElements(GL_TRIANGLES, static_cast<int>(index_count_), GL_UNSIGNED_INT, nullptr);
+        // 有实例流时必须走 Instanced 变体：旧代码无条件用 glDrawElements，
+        // 索引网格 + 实例流会被静默绘制成 1 个实例（其余实例丢失）。
+        if (instance_count_ > 0) {
+            glDrawElementsInstanced(GL_TRIANGLES, static_cast<int>(index_count_),
+                                    GL_UNSIGNED_INT, nullptr,
+                                    static_cast<int>(instance_count_));
+        } else {
+            glDrawElements(GL_TRIANGLES, static_cast<int>(index_count_), GL_UNSIGNED_INT, nullptr);
+        }
     } else if (instance_count_ > 0) {
         glDrawArraysInstanced(GL_TRIANGLES, 0, static_cast<int>(vertex_count_),
                               static_cast<int>(instance_count_));
@@ -283,7 +291,29 @@ void GLMesh::draw() const {
 
 void GLMesh::draw_indexed() const {
     bind();
-    glDrawElements(GL_TRIANGLES, static_cast<int>(index_count_), GL_UNSIGNED_INT, nullptr);
+    if (instance_count_ > 0) {
+        glDrawElementsInstanced(GL_TRIANGLES, static_cast<int>(index_count_),
+                                GL_UNSIGNED_INT, nullptr,
+                                static_cast<int>(instance_count_));
+    } else {
+        glDrawElements(GL_TRIANGLES, static_cast<int>(index_count_), GL_UNSIGNED_INT, nullptr);
+    }
+}
+
+void GLMesh::draw_indexed_indirect(uint32_t offset) const {
+    // 调用方（GLBackend::draw_indexed_indirect）已把参数缓冲绑到
+    // GL_DRAW_INDIRECT_BUFFER 并插入了内存屏障。参数结构为
+    // DrawElementsIndirectCommand：{count, instanceCount, firstIndex, baseVertex, baseInstance}。
+    bind();
+    glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
+                           reinterpret_cast<const void*>(static_cast<uintptr_t>(offset)));
+}
+
+void GLMesh::draw_arrays_indirect(uint32_t offset) const {
+    // 参数结构为 DrawArraysIndirectCommand：{count, instanceCount, first, baseInstance}。
+    bind();
+    glDrawArraysIndirect(GL_TRIANGLES,
+                         reinterpret_cast<const void*>(static_cast<uintptr_t>(offset)));
 }
 
 uint32_t GLMesh::get_gl_type(VertexType type) const {
@@ -361,6 +391,15 @@ void GLStorageBuffer::update(const void* data, size_t size, size_t offset) {
                     data);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     GL_CHECK_ERROR();
+}
+
+bool GLStorageBuffer::readback(void* dst, size_t size, size_t offset) {
+    if (!ssbo_ || !dst || size == 0) return false;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset),
+                       static_cast<GLsizeiptr>(size), dst);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return true;
 }
 
 void GLStorageBuffer::bind(uint32_t binding_point) const {

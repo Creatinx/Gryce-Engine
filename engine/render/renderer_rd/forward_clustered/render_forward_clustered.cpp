@@ -859,10 +859,12 @@ void RenderForwardClustered::_render_decals(RenderContext* ctx) {
         if (!decal.enabled) continue;
 
         // 构建模型矩阵：平移 * 旋转(欧拉角) * 缩放
-        math::Matrix4f rot_x = math::Matrix4f::rotate(math::to_radians(decal.rotation.x), math::Vector3f(1, 0, 0));
-        math::Matrix4f rot_y = math::Matrix4f::rotate(math::to_radians(decal.rotation.y), math::Vector3f(0, 1, 0));
-        math::Matrix4f rot_z = math::Matrix4f::rotate(math::to_radians(decal.rotation.z), math::Vector3f(0, 0, 1));
-        math::Matrix4f model = math::Matrix4f::translate(decal.position) * rot_z * rot_y * rot_x * math::Matrix4f::scale(decal.scale);
+        // decal.rotation 来自 Quaternionf::to_euler()，语义为 (pitch 绕 Y, yaw 绕 Z, roll 绕 X)，
+        // 合成顺序 Rz(yaw) * Ry(pitch) * Rx(roll)，与 Transform::local_matrix() 完全一致。
+        math::Matrix4f rot_roll  = math::Matrix4f::rotate(math::to_radians(decal.rotation.z), math::Vector3f(1, 0, 0));
+        math::Matrix4f rot_pitch = math::Matrix4f::rotate(math::to_radians(decal.rotation.x), math::Vector3f(0, 1, 0));
+        math::Matrix4f rot_yaw   = math::Matrix4f::rotate(math::to_radians(decal.rotation.y), math::Vector3f(0, 0, 1));
+        math::Matrix4f model = math::Matrix4f::translate(decal.position) * rot_yaw * rot_pitch * rot_roll * math::Matrix4f::scale(decal.scale);
 
         // uWorldToDecal = inverse(model)
         math::Matrix4f world_to_decal = model.inverse();

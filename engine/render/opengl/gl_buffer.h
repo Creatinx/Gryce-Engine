@@ -27,6 +27,8 @@ public:
     void bind() const override;
     void draw() const override;
     void draw_indexed() const override;
+    void draw_indexed_indirect(uint32_t offset) const override;
+    void draw_arrays_indirect(uint32_t offset) const override;
 
     uint32_t vertex_count() const override { return vertex_count_; }
     uint32_t index_count() const override { return index_count_; }
@@ -63,6 +65,7 @@ public:
 
     bool create(size_t size, const void* data, BufferUsage usage) override;
     void update(const void* data, size_t size, size_t offset = 0) override;
+    bool readback(void* dst, size_t size, size_t offset = 0) override;
     void bind(uint32_t binding_point) const override;
     void destroy() override;
 

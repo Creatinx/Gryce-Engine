@@ -2,6 +2,7 @@
 
 #include "vk_device.h"
 #include "utils/glog/glog_lib.h"
+#include "render/buffer.h"
 
 #include <vma/vk_mem_alloc.h>
 
@@ -173,6 +174,51 @@ bool VulkanBuffer::upload(const void* data, VkDeviceSize size, VkDeviceSize offs
         vkDestroyCommandPool(dev, pool, nullptr);
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// VulkanStorageBuffer
+// ---------------------------------------------------------------------------
+
+bool VulkanStorageBuffer::create(size_t size, const void* data, BufferUsage /*usage*/) {
+    destroy();
+    if (size == 0 || !device_ || !device_->is_valid()) return false;
+
+    size_ = size;
+    const VkDeviceSize total = static_cast<VkDeviceSize>(size) * k_slots;
+    const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (!buffer_.init(device_, total, usage,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        size_ = 0;
+        GLOG_ERROR("VulkanStorageBuffer: failed to allocate {} bytes (x{} slots)", size, k_slots);
+        return false;
+    }
+    // 三个槽位都写一份初始数据：首帧无论如何都会读到有效内容。
+    if (data) {
+        for (uint32_t i = 0; i < k_slots; ++i) {
+            buffer_.upload(data, static_cast<VkDeviceSize>(size), static_cast<VkDeviceSize>(i) * size);
+        }
+    }
+    return true;
+}
+
+void VulkanStorageBuffer::update(const void* data, size_t size, size_t offset) {
+    if (!data || size == 0 || !is_valid()) return;
+    if (offset + size > size_) {
+        GLOG_ERROR("VulkanStorageBuffer::update: out of range (offset {} + size {} > {})",
+                   offset, size, size_);
+        return;
+    }
+    buffer_.upload(data, static_cast<VkDeviceSize>(size),
+                   static_cast<VkDeviceSize>(frame_offset() + offset));
+}
+
+void VulkanStorageBuffer::destroy() {
+    buffer_.shutdown();
+    size_ = 0;
 }
 
 } // namespace gryce_engine::render
