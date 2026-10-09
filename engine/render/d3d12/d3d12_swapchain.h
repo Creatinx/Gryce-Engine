@@ -42,6 +42,11 @@ public:
     ID3D12GraphicsCommandList* command_list() const { return command_list_; }
     ID3D12CommandAllocator* allocator() const { return allocators_[current_frame_]; }
     ID3D12Resource* back_buffer() const { return back_buffers_[current_index_]; }
+    // 按索引取 back buffer（截图回读用：Present 之后 current index 已变，
+    // 必须按"本帧展示的那个"索引回读，见 D3D12Backend::end_frame 的说明）。
+    ID3D12Resource* back_buffer_at(uint32_t index) const {
+        return index < back_buffers_.size() ? back_buffers_[index] : nullptr;
+    }
     D3D12_CPU_DESCRIPTOR_HANDLE back_buffer_rtv() const;
     // 当前帧在途槽位（0..frames_in_flight-1），供 backend 的围栏/资源复用使用
     int current_frame_index() const { return current_frame_; }

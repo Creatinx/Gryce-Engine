@@ -21,10 +21,12 @@
 // mingw-w64 vendor 头与 Windows SDK 头都提供这两个文件。
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <array>
 #include <string>
 
 #include "render/render.h"
 #include "render/rhi_resource_pool.h"
+#include "render/gpu_profiler.h"
 #include "d3d12_loader.h"
 #include "d3d12_swapchain.h"
 #include "d3d12_descriptors.h"
@@ -100,6 +102,20 @@ public:
     const char* api_version() const override;
     RenderBackendCapabilities get_capabilities() const override;
 
+    // ---- GPU 分段计时（M6 调试用；D3D12 时间戳查询）----
+    //   D3D12 用 ID3D12QueryHeap(TIMESTAMP) + ResolveQueryData 写进一段
+    //   READBACK 缓冲。与 GL/Vulkan 后端一致：区间平铺、不阻塞、按帧槽轮转，
+    //   在"槽被复用"时才回读结算。
+    //   ★ 这套计时是为了定位 DEVICE_HUNG 卡在哪一段 —— 设备挂起后 GPU 时间戳
+    //     不再推进，读回可看到"最后一个完成的 pass"，从而把 TDR 钉到具体段。
+    bool gpu_profile_supported() const override { return true; }
+    void set_gpu_profiling(bool enabled) override;
+    void gpu_profile_begin(const char* name) override;
+    void gpu_profile_end() override;
+    void gpu_profile_frame_boundary() override;
+    void gpu_profile_dump() override;
+    void gpu_profile_reset() override;
+
     // ---- 2D / UI 工厂（M5）----
     std::unique_ptr<IRenderer2D> create_renderer2d() override;
     std::unique_ptr<IImGuiBackend> create_imgui_backend() override;
@@ -160,8 +176,14 @@ private:
     void bind_swapchain_rt();
     // 输出 D3D12 调试层的校验消息（仅 GRYCE_D3D12_DEBUG=1 时有内容）。
     void dump_info_queue();
-    // 把回读的 RGBA 写成 PNG/BMP 落盘。
-    void save_screenshot(const std::string& path);
+    // ---- 截图（M5.3）两阶段 ----
+    //   begin_screenshot_copy 在 end_frame 里被调用，把纹理→回读缓冲的拷贝
+    //   **录制进本帧已有的命令列表**（必须和本帧绘制同一条列表，否则拷到空
+    //   buffer → 确定性黑帧）。finish_screenshot 在本帧提交并等 GPU 后调用，
+    //   从回读缓冲取像素并落盘。
+    bool begin_screenshot_copy(ID3D12GraphicsCommandList* cmd);
+    void finish_screenshot();
+    void release_screenshot_staging();
     // native_window 是 GLFWwindow*（见 render_context.cpp:157），D3D12 需要真实
     // HWND —— 走 glfwGetWin32Window 转换。非 GLFW 句柄时返回 nullptr。
     static HWND hwnd_from_native(void* native_window);
@@ -226,6 +248,38 @@ private:
     };
     std::vector<RetiredDescriptors> retired_descriptors_;
 
+    // ---- GPU 分段计时（时间戳查询）----
+    // 每帧槽一套 query heap 区间；k_gpu_slots = frames_in_flight(3) + 1 余量，
+    // 结算"两帧前的槽"时 GPU 必然已跑完。
+    static constexpr int k_gpu_slots = 4;
+    static constexpr int k_gpu_max_scopes = 32;
+    static constexpr int k_gpu_ts_per_slot = k_gpu_max_scopes * 2;   // 每段 begin+end
+
+    bool ensure_gpu_profiling_objects();
+    void release_gpu_profiling_objects();
+    // 设备挂起时把还挂在飞的槽立刻 Resolve+读回（TDR 定位用）。
+    void gpu_profile_flush_pending();
+
+    bool gpu_profiling_enabled_ = false;
+    bool gpu_profiling_ready_ = false;
+    int  gpu_slot_ = 0;
+    int  gpu_pending_scope_ = -1;
+    bool gpu_nested_warned_ = false;
+    // 每槽：begin/end 时间戳数（2×段数）与段名。
+    std::array<int, k_gpu_slots> gpu_scope_count_{};
+    std::array<std::array<std::string, k_gpu_max_scopes>, k_gpu_slots> gpu_scope_names_{};
+    // 一个 QueryHeap 覆盖全部槽（每槽一段连续区间），配一段 READBACK 缓冲。
+    ID3D12QueryHeap* gpu_query_heap_ = nullptr;
+    ID3D12Resource*  gpu_readback_ = nullptr;
+    uint64_t         gpu_timestamp_freq_ = 0;
+    // 每槽已为哪个"提交围栏值"发过 ResolveQueryData（0 = 本槽尚无待结算数据）。
+    std::array<uint64_t, k_gpu_slots> gpu_slot_fence_{};
+    uint64_t         gpu_last_drained_fence_ = 0;
+    // 设备挂起路径专用的 flush 围栏（不复用 swapchain 的 fence，避免干扰帧槽）。
+    ID3D12Fence*     gpu_flush_fence_ = nullptr;
+    uint64_t         gpu_flush_fence_value_ = 0;
+    GpuProfilerStats gpu_stats_;
+
     // 当前绑定的帧缓冲（nullptr 表示渲染到交换链 back buffer）。
     RHIFramebufferHandle bound_framebuffer_{};
 
@@ -233,6 +287,8 @@ private:
     bool initialized_ = false;
     bool frame_aborted_ = false;
     bool device_lost_ = false;
+    // 调试开关 GRYCE_D3D12_SERIALIZE=1：每帧末等 GPU 跑完（TDR 定位用）。
+    bool gpu_serialize_ = false;
     bool debug_layer_enabled_ = false;
     // 单调递增的帧号：shader 用它做惰性"每帧重置"，触发点在**本帧第一次写
     // shader 状态时**（不是 draw 时 —— 见 current_frame_id() 的时序说明）。
@@ -242,10 +298,18 @@ private:
 
     // ---- 截图（M5.3）----
     // 与 GL/Vulkan 同构：request_screenshot 记下路径与目标帧号，end_frame 里
-    // 帧号一到就回读 back buffer 并落盘。跨帧号是必要的 —— 请求发生在帧中间，
-    // 立刻回读拿到的是上一帧的内容。
+    // 帧号一到就把 back buffer 拷进回读缓冲；本帧提交并等 GPU 后取回像素落盘。
     std::string screenshot_path_;
     uint64_t screenshot_frame_ = 0;
+    // 本帧实际渲染进的 back buffer 索引：在 bind_swapchain_rt 记下 —— 交换链有 3 个
+    // back buffer 轮转，只有本帧绑定的那个持有本帧画面。
+    uint32_t rendered_buffer_index_ = 0;
+    // 截图待回读的中间对象（begin_screenshot_copy 填，finish_screenshot 消费）。
+    ID3D12Resource* shot_readback_ = nullptr;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT shot_footprint_{};
+    uint64_t shot_total_ = 0;
+    uint32_t shot_w_ = 0;
+    uint32_t shot_h_ = 0;
 
     // 当前帧待应用状态（D3D12 无"立即状态"，一切在录制时下发）
     float clear_r_ = 0.0f, clear_g_ = 0.0f, clear_b_ = 0.0f, clear_a_ = 1.0f;

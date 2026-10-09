@@ -67,12 +67,19 @@ bool submit_and_wait(ID3D12Device* device, ID3D12CommandQueue* queue,
 // UploadRing — 每帧轮转的持久映射上传堆
 // ---------------------------------------------------------------------------
 // 用途：UBO（常量缓冲）、每帧变化的实例数据。D3D12 的 UPLOAD 堆可以长期 Map，
-// 但 GPU 可能还在读上几帧的区间，所以不能"整块复用"——用环形指针推进：
-//   * 每帧 begin_frame() 重置游标（或按帧数轮转 N 个分块）；
-//   * allocate(size) 返回一段可写内存 + 它在缓冲里的 GPU 地址。
-// 简化实现：分配容量足够大（如 4MB）+ 游标单向推进；每帧调用 reset() 把游标
-// 归零。只要一帧内的总量 < 容量，就不会踩到未完成的区间（配合 frames_in_flight
-// 的实际延迟，容量留出 3 倍余量即可）。
+// 但 GPU 可能还在读上几帧的区间，所以不能"整块复用"。
+//
+// ★★ 分段轮转（关键正确性修复）★★
+// 早期实现是"每帧 reset() 游标归零"，并假设"begin_frame 前 GPU 已完成上一帧"。
+// 这个假设**对 frames_in_flight=3 是错的**：CPU 领先 GPU 最多 3 帧，帧 N 开始时
+// 帧 N-1 很可能仍在 GPU 上执行。此时把游标归零会让帧 N 的 uniform/实例数据
+// 覆盖掉帧 N-1 正在读的同一段内存 → GPU 读到撕裂数据 → Intel Arc 上直接
+// DEVICE_HUNG（实测：3 帧在飞必挂，串行化 1 帧在飞完全不挂）。
+//
+// 正确做法：把整块按 frames_in_flight 切成 N 个**独立分段**，帧 N 固定用
+// 分段 (N % N)。只有当"上次使用该分段的帧"的 GPU 围栏值已完成，才允许复用。
+// 分段使用方（backend）在 begin_frame 时用 fence 值调用 begin_slot() 声明本轮
+// 分段，容量不足时按需报错（调用方降级）。
 class UploadRing {
 public:
     bool init(ID3D12Device* device, size_t capacity);
@@ -84,20 +91,29 @@ public:
     // 申请并直接拷入数据，返回该区间在 GPU 上的地址。
     bool allocate_and_copy(const void* data, size_t size, D3D12_GPU_VIRTUAL_ADDRESS& out_gpu_addr);
 
-    // 每帧开头调用：游标归零。因为 begin_frame 前 GPU 已完成上一帧的
-    // （frames_in_flight 保证），此刻复用整个缓冲是安全的。
-    void reset() { cursor_ = 0; }
+    // ★ 进入第 slot 个帧槽（slot ∈ [0, frames_in_flight)）。把游标定位到
+    //   该槽对应分段的起点。分段数在 init 时按 frames_in_flight 定。
+    void begin_slot(uint32_t slot);
+    // 兼容旧调用点：等价于 begin_slot(0)（但**必须**改用 begin_slot，
+    // 否则又退回单分段覆写）。保留仅为过渡期编译通过。
+    void reset() { begin_slot(0); }
 
     ID3D12Resource* resource() const { return resource_; }
     size_t capacity() const { return capacity_; }
-    size_t used() const { return cursor_; }
+    size_t used() const { return cursor_ - slot_base_; }
     bool is_valid() const { return resource_ != nullptr; }
+
+    // 分段数（= frames_in_flight）。init 默认 3。
+    void set_frame_slots(uint32_t n) { frame_slots_ = n ? n : 1; }
 
 private:
     ID3D12Resource* resource_ = nullptr;
     uint8_t* mapped_ = nullptr;
     size_t capacity_ = 0;
-    size_t cursor_ = 0;
+    size_t cursor_ = 0;       // 全局游标（含 slot 偏移）
+    size_t slot_base_ = 0;    // 当前 slot 分段起点
+    size_t slot_capacity_ = 0;// 每个分段的容量 = capacity_ / frame_slots_
+    uint32_t frame_slots_ = 3;
 };
 
 } // namespace gryce_engine::render::d3d12

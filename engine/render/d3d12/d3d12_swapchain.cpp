@@ -289,11 +289,11 @@ bool D3D12Swapchain::end_frame() {
     //   加了 SSR 后帧变慢，三缓冲被占满的概率骤增，所以表现为"开 SSR 就挂、
     //   关 vsync 就正常"（关 vsync 时 Present 不阻塞，死锁不成立）。
     //
-    //   修法：用 DXGI_PRESENT_DO_NOT_WAIT，Present 立即返回；若返回
+    //   修法：vsync 时用 DXGI_PRESENT_DO_NOT_WAIT，Present 立即返回；若返回
     //   DXGI_STATUS_WAS_STILL_DRAWING 说明本帧还没消费完，短暂等待后重试，
     //   但重试次数有界（总等待 ≪ TDR 阈值），保证渲染线程不会长时间卡死。
-    const UINT present_flags =
-        vsync_ ? DXGI_PRESENT_DO_NOT_WAIT : 0u;
+    //   关 vsync 时 Present(0,0) 本身就是非阻塞的，直接用默认标志即可。
+    const UINT present_flags = vsync_ ? DXGI_PRESENT_DO_NOT_WAIT : 0u;
     for (int attempt = 0; ; ++attempt) {
         hr = swapchain_->Present(vsync_ ? 1 : 0, present_flags);
         if (hr != DXGI_STATUS_WAS_STILL_DRAWING) break;
@@ -336,7 +336,13 @@ void D3D12Swapchain::wait_all() {
             WaitForSingleObject(fence_event_, INFINITE);
         }
     }
-    std::fill(frame_fence_values_.begin(), frame_fence_values_.end(), 0);
+    // ★ 注意：**不要**在这里把 frame_fence_values_ 清零。
+    //   早先这里 `std::fill(..., 0)` 是想表达"所有槽都已经跑完、下次 begin_frame
+    //   不用等"，但那会破坏交换链的帧槽记账：等待只是在**调用点**完成了一次，
+    //   frame_fence_values_[i] 仍然代表"槽 i 上一次提交对应的围栏值"，下次
+    //   begin_frame 用它判断"这个槽的 GPU 是否还在忙"。清零等于谎报"从没提交过"，
+    //   后续 begin_frame 不再等待 → 复用仍被 GPU 占用的 allocator/back buffer。
+    //   围栏本身是单调的，重复 wait 同一个已达成值不会阻塞，所以保留原值最安全。
 }
 
 } // namespace gryce_engine::render::d3d12

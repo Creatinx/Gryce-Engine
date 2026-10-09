@@ -208,7 +208,17 @@ bool UploadRing::init(ID3D12Device* device, size_t capacity) {
         return false;
     }
     capacity_ = capacity;
+    // ★ 每帧槽的容量必须向下取整到 256 的倍数。
+    //   槽起点 = slot_capacity_ * slot，而 D3D12 要求**根 CBV 的 GPU 地址 256 对齐**。
+    //   若 slot_capacity_ 不是 256 的倍数（4MB/3 = 1398101），槽 1/2 的起点就会
+    //   落在非 256 边界上 → 该槽内所有 CBV 全部未对齐 → 调试层报
+    //   "SetGraphicsRootConstantBufferView: Pointer ... incorrectly aligned"，
+    //   GPU 读到垃圾常数 → 矩阵失效 → 几何画到屏幕外 → 画面周期性变黑
+    //   （周期恰好 = 帧槽数 3，因为只有槽 0 恰好对齐）。
+    slot_capacity_ = (capacity_ / (frame_slots_ ? frame_slots_ : 1))
+                     & ~static_cast<size_t>(kConstantBufferAlignment - 1);
     cursor_ = 0;
+    slot_base_ = 0;
     return true;
 }
 
@@ -222,13 +232,23 @@ void UploadRing::shutdown() {
         resource_ = nullptr;
     }
     capacity_ = 0;
+    slot_capacity_ = 0;
     cursor_ = 0;
+    slot_base_ = 0;
+}
+
+void UploadRing::begin_slot(uint32_t slot) {
+    const uint32_t slots = frame_slots_ ? frame_slots_ : 1;
+    slot = slot % slots;
+    slot_base_ = slot_capacity_ * static_cast<size_t>(slot);
+    cursor_ = slot_base_;
 }
 
 uint8_t* UploadRing::allocate(size_t size, size_t& out_offset, size_t& out_aligned_size) {
     if (!mapped_) return nullptr;
     const size_t aligned = align_up(size, kConstantBufferAlignment);
-    if (cursor_ + aligned > capacity_) return nullptr;
+    // 只在"本帧槽分段"内推进，绝不越界到别的槽 —— 那是跨帧并行的安全边界。
+    if (cursor_ + aligned > slot_base_ + slot_capacity_) return nullptr;
     out_offset = cursor_;
     out_aligned_size = aligned;
     uint8_t* p = mapped_ + cursor_;

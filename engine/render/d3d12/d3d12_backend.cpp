@@ -65,6 +65,12 @@ bool D3D12Backend::init(void* native_window) {
         const DWORD n = GetEnvironmentVariableA("GRYCE_D3D12_DEBUG", buf, sizeof(buf));
         want_debug = (n > 0 && buf[0] != '0');
     }
+    {
+        char buf[8] = {};
+        const DWORD n = GetEnvironmentVariableA("GRYCE_D3D12_SERIALIZE", buf, sizeof(buf));
+        gpu_serialize_ = (n > 0 && buf[0] != '0');
+        if (gpu_serialize_) GLOG_INFO("D3D12: per-frame GPU serialize enabled (GRYCE_D3D12_SERIALIZE=1)");
+    }
     if (want_debug && loader_.get_debug_interface) {
         ID3D12Debug* dbg = nullptr;
         if (SUCCEEDED(loader_.get_debug_interface(__mingw_uuidof<ID3D12Debug>(),
@@ -195,6 +201,7 @@ void D3D12Backend::release_device_objects() {
     // 资源池必须先于 device 释放：池内对象的析构会 Release 各自的 ID3D12Resource，
     // 设备提前释放会留下悬空引用。
     bound_framebuffer_ = RHIFramebufferHandle{};
+    release_gpu_profiling_objects();
     mesh_pool_.clear();
     texture_pool_.clear();
     framebuffer_pool_.clear();
@@ -279,6 +286,11 @@ void D3D12Backend::begin_frame() {
     // 帧号自增（从 1 开始，0 保留给"从未重置"）。
     ++frame_counter_;
 
+    // ★ GPU 计时帧边界（本帧命令列表已 Reset，但**上一帧已提交**）：
+    //   结算上一轮的结果、推进槽位。必须在录制新命令之前 —— 时间戳要落在
+    //   新帧的命令列表里（QueryHeap 槽轮转）。
+    gpu_profile_frame_boundary();
+
     // ★ 延迟释放：本帧 GPU 已跑完 frames_in_flight 之前的提交，把那些
     //   已被 GPU 完成引用的待销毁资源真正释放掉（见 retire_* 的说明）。
     //   必须在录制本帧命令**之前**做 —— 这样即使槽位被本帧的 create_* 复用，
@@ -289,9 +301,11 @@ void D3D12Backend::begin_frame() {
     // D3D12 要求一次性设置两个堆（SRV/CBV/UAV + Sampler）。
     descriptor_heaps_.bind(swapchain_.command_list());
 
-    // 上传环游标归零：本帧的 UBO / 实例数据从头开始分配。
-    // （begin_frame 前 GPU 已跑完 frames_in_flight 之前的帧，复用安全。）
-    upload_ring_.reset();
+    // 上传环游标推进到本帧槽的分段：UBO / 实例数据只在本槽分段内分配。
+    // ★ 绝不能用"整块 reset"—— 3 帧在飞时帧 N 会覆写帧 N-1 仍在读的内存，
+    //   是 DEVICE_HUNG 的根因（详见 UploadRing 的说明）。
+    upload_ring_.set_frame_slots(static_cast<uint32_t>(swapchain_.buffer_count()));
+    upload_ring_.begin_slot(static_cast<uint32_t>(swapchain_.current_frame_index()));
 
     // 本帧需要重新清屏 + 重新绑 RT（命令列表已 Reset，状态全丢）
     clear_dirty_ = true;
@@ -340,6 +354,25 @@ void D3D12Backend::end_frame() {
     if (frame_aborted_) return;
 
     ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+
+    // ---- 截图（M5.3）：把拷贝**录制进本帧的命令列表** ----
+    //
+    //   ★ 为什么必须录进本帧列表，而不能用"自建命令列表 + 立刻回读"：
+    //     本帧的场景绘制命令此刻还**躺在 swapchain_.command_list() 里没提交**。
+    //     若现在自建一个列表去 CopyTextureRegion，GPU 看到的 back buffer 里
+    //     根本还没有本帧的内容（要么是清的底色、要么是 3 帧前某个 buffer 的
+    //     残留），得到的就是确定性 period-3 的黑帧 / 陈旧帧。
+    //     唯一正确的时序是：拷贝和绘制在**同一条命令列表**里，绘制在前、拷贝
+    //     在后，一起提交 —— GPU 保证按提交顺序执行，拷到的必然是本帧结果。
+    //
+    //   拷贝完成后再做 RT→PRESENT，然后 Close/Execute/Present + 等 GPU，
+    //   最后从 readback 缓冲把像素取回来（见 end_frame 尾部的 finish_screenshot）。
+    const bool want_shot =
+        !screenshot_path_.empty() && frame_counter_ >= screenshot_frame_;
+    if (want_shot && cmd && back_buffer_as_rt_) {
+        begin_screenshot_copy(cmd);
+    }
+
     if (cmd && back_buffer_as_rt_) {
         // RENDER_TARGET → PRESENT，Present 前必须完成
         D3D12_RESOURCE_BARRIER to_present{};
@@ -356,13 +389,27 @@ void D3D12Backend::end_frame() {
         GLOG_ERROR("D3D12Backend::end_frame: swapchain end_frame failed");
     }
 
-    // ---- 截图（M5.3）----
-    // 放在 Present 之后：此时 back buffer 已回到 PRESENT 状态，capture_frame_rgba
-    // 的 PRESENT→COPY_SOURCE→PRESENT 屏障序列是合法且自然的（与 Vulkan 的
-    // PRESENT_SRC→TRANSFER_SRC 一致）。
-    if (!screenshot_path_.empty() && frame_counter_ >= screenshot_frame_) {
-        save_screenshot(screenshot_path_);
-        screenshot_path_.clear();
+    // 本帧已提交 → 等 GPU 跑完 → 从 readback 缓冲取回像素并落盘。
+    if (want_shot) {
+        finish_screenshot();
+    }
+
+    // ★ 调试用串行化（GRYCE_D3D12_SERIALIZE=1）：每帧结束等 GPU 全部跑完。
+    //   默认 3 帧在飞时 CPU 会跑到 GPU 前面好几帧，TDR 在 begin_frame 才被发现，
+    //   于是"检测到挂起的帧号"和"真正挂掉的那一帧"对不上，无法定位。串行化后
+    //   CPU 永远领先 GPU 0 帧，pass 轨迹的最后一条就是 GPU 真正卡住的位置。
+    //   仅调试用 —— 会彻底牺牲 CPU/GPU 并行度。
+    if (gpu_serialize_) {
+        swapchain_.wait_all();
+        if (device_) {
+            const HRESULT reason = device_->GetDeviceRemovedReason();
+            if (reason != S_OK && !device_lost_) {
+                device_lost_ = true;
+                GLOG_ERROR("D3D12Backend: [serialize] device removed after frame {} (reason=0x{:08X})",
+                           frame_counter_, static_cast<uint32_t>(reason));
+                dump_info_queue();
+            }
+        }
     }
 }
 
@@ -723,17 +770,22 @@ void D3D12Backend::request_screenshot(const std::string& path) {
     screenshot_frame_ = frame_counter_ + 1;
 }
 
-bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) {
-    if (!initialized_ || frame_aborted_ || !device_ || !queue_) return false;
+bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd) {
+    if (!initialized_ || !device_ || !cmd) return false;
 
-    ID3D12Resource* back = swapchain_.back_buffer();
-    if (!back) {
-        GLOG_ERROR("D3D12Backend::capture_frame_rgba: swapchain back buffer is null");
-        return false;
-    }
+    // 只在本帧确实渲染进了交换链时才截（否则 back buffer 里没有本帧内容）。
     const uint32_t w = swapchain_.width();
     const uint32_t h = swapchain_.height();
     if (w == 0 || h == 0) return false;
+
+    release_screenshot_staging();
+
+    ID3D12Resource* back = swapchain_.back_buffer_at(rendered_buffer_index_);
+    if (!back) back = swapchain_.back_buffer();
+    if (!back) {
+        GLOG_ERROR("D3D12Backend::begin_screenshot_copy: swapchain back buffer is null");
+        return false;
+    }
 
     // ---- 回读缓冲的尺寸**不能自己猜** ----
     // D3D12 的纹理拷贝行距必须 256 对齐，所以缓冲要按 GetCopyableFootprints
@@ -746,7 +798,7 @@ bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int
     UINT64 total = 0;
     device_->GetCopyableFootprints(&tex_desc, 0, 1, 0, &layout, &num_rows, &row_size, &total);
     if (total == 0 || layout.Footprint.RowPitch == 0) {
-        GLOG_ERROR("D3D12Backend::capture_frame_rgba: GetCopyableFootprints returned 0");
+        GLOG_ERROR("D3D12Backend::begin_screenshot_copy: GetCopyableFootprints returned 0");
         return false;
     }
 
@@ -774,12 +826,166 @@ bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int
                                                   __uuidof(ID3D12Resource),
                                                   reinterpret_cast<void**>(&readback));
     if (FAILED(hr) || !readback) {
-        GLOG_ERROR("D3D12Backend::capture_frame_rgba: CreateCommittedResource(readback) "
+        GLOG_ERROR("D3D12Backend::begin_screenshot_copy: CreateCommittedResource(readback) "
                    "failed 0x{:08X} ({} bytes)", static_cast<uint32_t>(hr), total);
         return false;
     }
 
-    // ---- 临时命令分配器/列表（截图是低频操作，用即建即弃最简单）----
+    // ★ 录制进**本帧已有的命令列表**（不能另建列表）：
+    //   本帧的绘制命令此刻还没提交，另建列表立刻拷贝只会拷到空 buffer。
+    //   这里插入的屏障/拷贝会和本帧绘制一起被提交，GPU 保证顺序。
+    auto transition = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES before,
+                          D3D12_RESOURCE_STATES after) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        b.Transition.pResource = res;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = before;
+        b.Transition.StateAfter = after;
+        cmd->ResourceBarrier(1, &b);
+    };
+
+    // 此刻 back buffer 处于本帧渲染留下的 RENDER_TARGET 态。
+    transition(back, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    // ★ 纹理 → 缓冲必须用 CopyTextureRegion + 显式 footprint，
+    //   **不能用 CopyResource**：CopyResource 要求源与目标的描述完全一致
+    //   （同类型、同尺寸、同格式），而这里是 2D 纹理 → 缓冲区，属于非法组合。
+    //   实测该调用不报错也不移除设备，只是**静默什么都不拷**，回读缓冲保持全 0
+    //   —— 表现就是"截图永远全黑"，让人误判成渲染管线没生效。
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = readback;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = layout;
+
+    D3D12_TEXTURE_COPY_LOCATION src_loc{};
+    src_loc.pResource = back;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src_loc.SubresourceIndex = 0;
+
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src_loc, nullptr);
+
+    // 拷完还原成 RENDER_TARGET —— 紧接着 end_frame 还要做 RT→PRESENT，
+    // 这里不能越权直接改成 PRESENT（否则连着两条屏障态不符）。
+    transition(back, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    // 拷贝所需信息留到 finish_screenshot（本帧提交并等 GPU 完成后）再用。
+    shot_readback_ = readback;
+    shot_footprint_ = layout;
+    shot_total_ = total;
+    shot_w_ = w;
+    shot_h_ = h;
+    return true;
+}
+
+void D3D12Backend::finish_screenshot() {
+    const std::string path = screenshot_path_;
+    screenshot_path_.clear();
+
+    if (!shot_readback_) return;
+
+    // ★ 本帧的命令列表已经 Close + Execute + Present 过了。这里 wait_all()
+    //   只是"排空在飞帧"，确保拷贝真的执行完（Map 前必须）。
+    swapchain_.wait_all();
+
+    void* mapped = nullptr;
+    const D3D12_RANGE read_range{0, static_cast<SIZE_T>(shot_total_)};
+    HRESULT hr = shot_readback_->Map(0, &read_range, &mapped);
+    if (FAILED(hr) || !mapped) {
+        GLOG_ERROR("D3D12Backend::finish_screenshot: Map failed 0x{:08X}",
+                   static_cast<uint32_t>(hr));
+        release_screenshot_staging();
+        return;
+    }
+
+    // 按 footprint 的行距逐行拆包（行距 ≥ w*4，多出来的是对齐填充）。
+    const uint32_t w = shot_w_;
+    const uint32_t h = shot_h_;
+    std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
+    const uint8_t* src = static_cast<const uint8_t*>(mapped);
+    const uint32_t row_pitch = shot_footprint_.Footprint.RowPitch;
+    const uint32_t copy_bytes = w * 4;
+    for (uint32_t y = 0; y < h; ++y) {
+        std::memcpy(rgba.data() + static_cast<size_t>(y) * copy_bytes,
+                    src + static_cast<size_t>(y) * row_pitch, copy_bytes);
+    }
+    // 回读堆不需要写回 CPU 侧的修改。
+    const D3D12_RANGE written{0, 0};
+    shot_readback_->Unmap(0, &written);
+    release_screenshot_staging();
+
+    if (path.empty()) return;
+    if (d3d12_path_ends_with(path, ".png")) {
+        if (stbi_write_png(path.c_str(), static_cast<int>(w), static_cast<int>(h), 4,
+                           rgba.data(), static_cast<int>(w) * 4)) {
+            GLOG_INFO("D3D12Backend: screenshot saved to '{}' ({}x{} PNG)", path, w, h);
+        } else {
+            GLOG_ERROR("D3D12Backend: stbi_write_png failed for '{}'", path);
+        }
+    } else {
+        save_bmp_from_rgba(path, rgba.data(), w, h);
+        GLOG_INFO("D3D12Backend: screenshot saved to '{}' ({}x{} BMP)", path, w, h);
+    }
+}
+
+void D3D12Backend::release_screenshot_staging() {
+    if (shot_readback_) {
+        shot_readback_->Release();
+        shot_readback_ = nullptr;
+    }
+    shot_total_ = 0;
+    shot_w_ = 0;
+    shot_h_ = 0;
+}
+
+bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) {
+    // 同步回读接口（非渲染线程帧内路径；引擎正式截图走 request_screenshot +
+    // finish_screenshot 的两阶段异步路径）。这里用自建命令列表立刻拷贝：
+    // 前提是**本帧命令已提交**（否则 back buffer 里没有本帧内容 —— 那正是这条
+    // 路径的固有局限，正式路径正是为绕开它而生）。用于调试/兼容调用。
+    if (!initialized_ || !device_ || !queue_) return false;
+
+    const uint32_t w = swapchain_.width();
+    const uint32_t h = swapchain_.height();
+    if (w == 0 || h == 0) return false;
+
+    ID3D12Resource* back = swapchain_.back_buffer_at(swapchain_.current_back_buffer_index());
+    if (!back) back = swapchain_.back_buffer();
+    if (!back) return false;
+
+    const D3D12_RESOURCE_DESC tex_desc = back->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+    UINT num_rows = 0;
+    UINT64 row_size = 0;
+    UINT64 total = 0;
+    device_->GetCopyableFootprints(&tex_desc, 0, 1, 0, &layout, &num_rows, &row_size, &total);
+    if (total == 0 || layout.Footprint.RowPitch == 0) return false;
+
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    hp.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    hp.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    hp.CreationNodeMask = 1;
+    hp.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.Format = DXGI_FORMAT_UNKNOWN;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* readback = nullptr;
+    HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                  __uuidof(ID3D12Resource),
+                                                  reinterpret_cast<void**>(&readback));
+    if (FAILED(hr) || !readback) return false;
+
     ID3D12CommandAllocator* alloc = nullptr;
     hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                          __uuidof(ID3D12CommandAllocator),
@@ -791,88 +997,48 @@ bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int
                                         reinterpret_cast<void**>(&cl));
     }
     if (FAILED(hr) || !cl) {
-        GLOG_ERROR("D3D12Backend::capture_frame_rgba: command objects failed 0x{:08X}",
-                   static_cast<uint32_t>(hr));
         if (alloc) alloc->Release();
         readback->Release();
         return false;
     }
-    // ★★ 这里**不能** Close()。★★
-    //
-    // CreateCommandList 返回的命令列表已经处于 **recording** 状态，可以直接录制。
-    //（"必须先 Close 才能 Reset" 那条规则只在你要**复用**同一个列表时才适用；
-    //  本函数是即建即弃，新建的 allocator 也是初始态，根本不需要 Reset。）
-    //
-    // 早先这里照搬了上面的经验写了 `cl->Close()`，于是紧接着的 transition /
-    // CopyTextureRegion 全部录制进了一个**已关闭**的列表 —— 调用本身不报错
-    // （返回 void），但最后那次 Close() 返回 E_FAIL，整段命令作废、GPU 什么都不做，
-    // 回读缓冲保持全 0。表现就是"截图永远纯黑"，前面几十分钟的排查都在追一个
-    // 根本不存在的渲染问题。
-    //
-    // 结论：保留 recording 态，直接开始录制。
+    // ★ CreateCommandList 返回即 recording 态，**不要** Close()（见 begin_ 分支注释）。
 
-    auto transition = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES before,
-                          D3D12_RESOURCE_STATES after) {
+    auto transition = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        b.Transition.pResource = res;
+        b.Transition.pResource = back;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         b.Transition.StateBefore = before;
         b.Transition.StateAfter = after;
         cl->ResourceBarrier(1, &b);
     };
+    transition(D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
-    // 交换链的 back buffer 在本函数被调用的时点（帧末 Present 之后）处于
-    // PRESENT 态 —— 不能指望隐式提升，必须显式切到 COPY_SOURCE。
-    transition(back, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    // ★ 纹理 → 缓冲必须用 CopyTextureRegion + 显式 footprint，
-    //   **不能用 CopyResource**：CopyResource 要求源与目标的描述完全一致
-    //   （同类型、同尺寸、同格式），而这里是 2D 纹理 → 缓冲区，属于非法组合。
-    //   实测该调用不报错也不移除设备，只是**静默什么都不拷**，回读缓冲保持全 0
-    //   —— 表现就是"截图永远全黑"，让人误判成渲染管线没生效（本会话为此绕了很久）。
     D3D12_TEXTURE_COPY_LOCATION dst{};
     dst.pResource = readback;
     dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     dst.PlacedFootprint = layout;
-
     D3D12_TEXTURE_COPY_LOCATION src_loc{};
     src_loc.pResource = back;
     src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     src_loc.SubresourceIndex = 0;
-
     cl->CopyTextureRegion(&dst, 0, 0, 0, &src_loc, nullptr);
-    transition(back, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+    transition(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
 
-    // ★ D3D12 的录制校验是**延迟**的：非法录制不在调用处报错（那些调用返回 void），
-    //   而是在 Close() 时以 E_INVALIDARG / E_FAIL 报出来。不检查 Close() 的返回值，
-    //   整个命令列表会被静默丢弃，表现就是"拷贝什么也没做、回读缓冲保持全 0"
-    //   —— 即"截图永远全黑"。所以这里必须查。
-    const HRESULT close_hr = cl->Close();
-    if (FAILED(close_hr)) {
-        GLOG_ERROR("D3D12Backend::capture_frame_rgba: command list Close failed 0x{:08X} "
-                   "(录制非法，回读内容无效)", static_cast<uint32_t>(close_hr));
+    if (FAILED(cl->Close())) {
+        GLOG_ERROR("D3D12Backend::capture_frame_rgba: command list Close failed");
     }
     ID3D12CommandList* lists[] = { cl };
     queue_->ExecuteCommandLists(1, lists);
-    // 等 GPU 跑完才能 Map。swapchain_.wait_all() 就是"signal 一个新 fence 值 + 等它"，
-    // 而队列是 FIFO，所以它等价于"等此前所有提交完成"。
     swapchain_.wait_all();
 
     void* mapped = nullptr;
     const D3D12_RANGE read_range{0, static_cast<SIZE_T>(total)};
     hr = readback->Map(0, &read_range, &mapped);
     if (FAILED(hr) || !mapped) {
-        GLOG_ERROR("D3D12Backend::capture_frame_rgba: Map failed 0x{:08X}",
-                   static_cast<uint32_t>(hr));
-        cl->Release();
-        alloc->Release();
-        readback->Release();
+        cl->Release(); alloc->Release(); readback->Release();
         return false;
     }
-
-    // 按 footprint 的行距逐行拆包（行距 ≥ w*4，多出来的是对齐填充）。
     out.resize(static_cast<size_t>(w) * h * 4);
     const uint8_t* src = static_cast<const uint8_t*>(mapped);
     const uint32_t row_pitch = layout.Footprint.RowPitch;
@@ -881,38 +1047,12 @@ bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int
         std::memcpy(out.data() + static_cast<size_t>(y) * copy_bytes,
                     src + static_cast<size_t>(y) * row_pitch, copy_bytes);
     }
-    // 回读堆不需要写回 CPU 侧的修改。
     const D3D12_RANGE written{0, 0};
     readback->Unmap(0, &written);
-
-    // back buffer 是交换链的资源，**不能**释放；只释放我们自己的三件套。
-    cl->Release();
-    alloc->Release();
-    readback->Release();
-
+    cl->Release(); alloc->Release(); readback->Release();
     width = static_cast<int>(w);
     height = static_cast<int>(h);
     return true;
-}
-
-void D3D12Backend::save_screenshot(const std::string& path) {
-    int width = 0, height = 0;
-    std::vector<uint8_t> rgba;
-    if (!capture_frame_rgba(rgba, width, height)) {
-        GLOG_ERROR("D3D12Backend: failed to capture framebuffer for screenshot '{}'", path);
-        return;
-    }
-    if (d3d12_path_ends_with(path, ".png")) {
-        if (stbi_write_png(path.c_str(), width, height, 4, rgba.data(), width * 4)) {
-            GLOG_INFO("D3D12Backend: screenshot saved to '{}' ({}x{} PNG)", path, width, height);
-        } else {
-            GLOG_ERROR("D3D12Backend: stbi_write_png failed for '{}'", path);
-        }
-    } else {
-        save_bmp_from_rgba(path, rgba.data(), static_cast<uint32_t>(width),
-                           static_cast<uint32_t>(height));
-        GLOG_INFO("D3D12Backend: screenshot saved to '{}' ({}x{} BMP)", path, width, height);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1153,6 +1293,8 @@ void D3D12Backend::bind_swapchain_rt() {
     b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     cmd->ResourceBarrier(1, &b);
     back_buffer_as_rt_ = true;
+    // 记下本帧实际渲染进的 back buffer 索引（截图回读用，见 end_frame 说明）。
+    rendered_buffer_index_ = swapchain_.current_back_buffer_index();
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = swapchain_.back_buffer_rtv();
     cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
@@ -1368,6 +1510,264 @@ RenderBackendCapabilities D3D12Backend::get_capabilities() const {
     caps.supports_r8                   = true;
     caps.supports_rgba16f              = true;   // DXGI_FORMAT_R16G16B16A16_FLOAT
     return caps;
+}
+
+// ---------------------------------------------------------------------------
+// GPU 分段计时（D3D12 时间戳查询）
+//
+// 为什么这套计时对当前调试特别重要：D3D12 在 frame 5 会 DEVICE_HUNG（TDR）。
+// TDR 是"GPU 某个 pass 执行超时（默认 2s）被驱动重置"，而 CPU 侧日志只能看到
+// 提交了哪些命令，看不到 GPU 真正卡在哪一段。时间戳查询可以在设备被移除后，
+// 把"最后一次成功推进到的时间戳"读出来 —— 那个段就是挂起点。
+//
+// 实现要点：
+//   * 一个 QueryHeap(TIMESTAMP) 覆盖全部槽，每槽 k_gpu_ts_per_slot 个查询；
+//   * begin/end 只做 vkCmdWriteTimestamp 的等价物：
+//       cmd->EndQuery(heap, TIMESTAMP, idx)   —— 无 GPU 停顿；
+//   * 结算放在"槽被复用"时：先把该槽的查询 ResolveQueryData 到一段 READBACK
+//     缓冲，再 Map 读取。此时 GPU 已跑过那帧（帧槽轮转 + 围栏保证），无阻塞。
+//   * 设备挂起后 ResolveQueryData/Map 仍可用（它们是 CPU 侧引擎命令），
+//     因此 dump 仍能给出"最后完成到哪一段"的证据。
+// ---------------------------------------------------------------------------
+bool D3D12Backend::ensure_gpu_profiling_objects() {
+    if (gpu_profiling_ready_) return true;
+    if (!device_ || !queue_) return false;
+
+    // 时间戳频率（次/秒）。用于把 tick 差换算成毫秒。
+    if (gpu_timestamp_freq_ == 0) {
+        if (FAILED(queue_->GetTimestampFrequency(&gpu_timestamp_freq_)) ||
+            gpu_timestamp_freq_ == 0) {
+            gpu_timestamp_freq_ = 1;   // 退化：至少不除零
+        }
+    }
+
+    D3D12_QUERY_HEAP_DESC qd{};
+    qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qd.Count = static_cast<UINT>(k_gpu_slots * k_gpu_ts_per_slot);
+    qd.NodeMask = 0;
+    if (FAILED(device_->CreateQueryHeap(&qd, __mingw_uuidof<ID3D12QueryHeap>(),
+                                        reinterpret_cast<void**>(&gpu_query_heap_)))) {
+        GLOG_WARN("D3D12Backend: CreateQueryHeap(TIMESTAMP) failed; GPU profiling disabled");
+        gpu_query_heap_ = nullptr;
+        return false;
+    }
+
+    // READBACK 缓冲：每槽存 "时间戳值 + 可用标志"（D3D12 无 availability 标志，
+    // 这里只存值，可用性由帧槽轮转保证）。
+    const UINT64 bytes = sizeof(uint64_t) *
+                         static_cast<UINT64>(k_gpu_slots * k_gpu_ts_per_slot);
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    hp.CreationNodeMask = 1;
+    hp.VisibleNodeMask = 1;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = bytes;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(device_->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            __mingw_uuidof<ID3D12Resource>(), reinterpret_cast<void**>(&gpu_readback_)))) {
+        GLOG_WARN("D3D12Backend: GPU profiling readback buffer creation failed; disabled");
+        gpu_query_heap_->Release();
+        gpu_query_heap_ = nullptr;
+        return false;
+    }
+    for (auto& f : gpu_slot_fence_) f = 0;
+    gpu_profiling_ready_ = true;
+    GLOG_INFO("D3D12Backend: GPU timestamp profiling ready (freq={} Hz)",
+              gpu_timestamp_freq_);
+    return true;
+}
+
+void D3D12Backend::release_gpu_profiling_objects() {
+    if (gpu_flush_fence_) { gpu_flush_fence_->Release(); gpu_flush_fence_ = nullptr; }
+    if (gpu_readback_) { gpu_readback_->Release(); gpu_readback_ = nullptr; }
+    if (gpu_query_heap_) { gpu_query_heap_->Release(); gpu_query_heap_ = nullptr; }
+    gpu_profiling_ready_ = false;
+}
+
+void D3D12Backend::set_gpu_profiling(bool enabled) {
+    if (enabled == gpu_profiling_enabled_) return;
+    gpu_profiling_enabled_ = enabled;
+    gpu_pending_scope_ = -1;
+    gpu_stats_.reset();
+    for (auto& c : gpu_scope_count_) c = 0;
+    if (enabled) {
+        if (!ensure_gpu_profiling_objects()) {
+            gpu_profiling_enabled_ = false;
+            return;
+        }
+        gpu_slot_ = 0;
+    }
+    GLOG_INFO("D3D12Backend: GPU profiling {}{}", enabled ? "enabled" : "disabled",
+              gpu_profiling_ready_ ? "" : " (unavailable)");
+}
+
+void D3D12Backend::gpu_profile_begin(const char* name) {
+    if (!gpu_profiling_enabled_ || !gpu_profiling_ready_) return;
+    if (gpu_pending_scope_ >= 0) {
+        if (!gpu_nested_warned_) {
+            gpu_nested_warned_ = true;
+            GLOG_WARN("D3D12Backend: gpu_profile_begin('{}') 嵌套调用被忽略（计时区间必须平铺）",
+                      name ? name : "?");
+        }
+        return;
+    }
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+    const int count = gpu_scope_count_[gpu_slot_];
+    if (count >= k_gpu_max_scopes) return;
+    const UINT idx = static_cast<UINT>(gpu_slot_ * k_gpu_ts_per_slot + count * 2);
+    cmd->EndQuery(gpu_query_heap_, D3D12_QUERY_TYPE_TIMESTAMP, idx);
+    gpu_scope_names_[gpu_slot_][count] = name ? name : "?";
+    gpu_scope_count_[gpu_slot_] = count + 1;
+    gpu_pending_scope_ = count;
+}
+
+void D3D12Backend::gpu_profile_end() {
+    if (gpu_pending_scope_ < 0 || !gpu_profiling_ready_) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (cmd) {
+        const UINT idx = static_cast<UINT>(gpu_slot_ * k_gpu_ts_per_slot +
+                                           gpu_pending_scope_ * 2 + 1);
+        cmd->EndQuery(gpu_query_heap_, D3D12_QUERY_TYPE_TIMESTAMP, idx);
+    }
+    gpu_pending_scope_ = -1;
+}
+
+void D3D12Backend::gpu_profile_frame_boundary() {
+    if (!gpu_profiling_enabled_ || !gpu_profiling_ready_) return;
+    // 上一帧若有区间未闭合（提前 return 等），丢弃挂起状态，保证配对不错位。
+    gpu_pending_scope_ = -1;
+
+    // 当前帧槽已录完，把它的查询区间在本帧命令列表里 Resolve 到 READBACK 缓冲。
+    // 这不阻塞 GPU（只是一个 GPU→GPU 拷贝命令），读回留到后面"槽被复用"时。
+    const int cur = gpu_slot_;
+    const int count = gpu_scope_count_[cur];
+    if (count > 0) {
+        ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+        if (cmd) {
+            const UINT first = static_cast<UINT>(cur * k_gpu_ts_per_slot);
+            const UINT n = static_cast<UINT>(count) * 2;
+            cmd->ResolveQueryData(gpu_query_heap_, D3D12_QUERY_TYPE_TIMESTAMP, first, n,
+                                  gpu_readback_,
+                                  static_cast<UINT64>(cur * k_gpu_ts_per_slot) *
+                                      sizeof(uint64_t));
+            gpu_slot_fence_[cur] = swapchain_.last_submitted_value() + 1;
+        }
+    }
+
+    // 推进到下一个槽，并结算"刚好要被覆盖的那个槽"（GPU 必然已跑完它）。
+    const int next = (cur + 1) % k_gpu_slots;
+    const int done = next;
+    const int done_count = gpu_scope_count_[done];
+    if (done_count > 0 && gpu_slot_fence_[done] != 0 &&
+        swapchain_.completed_value() >= gpu_slot_fence_[done]) {
+        void* mapped = nullptr;
+        D3D12_RANGE range{ static_cast<SIZE_T>(done * k_gpu_ts_per_slot) * sizeof(uint64_t),
+                           static_cast<SIZE_T>(done * k_gpu_ts_per_slot + k_gpu_ts_per_slot) *
+                               sizeof(uint64_t) };
+        if (SUCCEEDED(gpu_readback_->Map(0, &range, &mapped)) && mapped) {
+            const uint64_t* p = static_cast<const uint64_t*>(mapped);
+            const double freq = static_cast<double>(gpu_timestamp_freq_);
+            for (int i = 0; i < done_count; ++i) {
+                const uint64_t t0 = p[done * k_gpu_ts_per_slot + i * 2];
+                const uint64_t t1 = p[done * k_gpu_ts_per_slot + i * 2 + 1];
+                if (t1 <= t0) continue;
+                const double ms = static_cast<double>(t1 - t0) / freq * 1e3;
+                gpu_stats_.add(gpu_scope_names_[done][i], ms);
+            }
+            D3D12_RANGE empty{ 0, 0 };
+            gpu_readback_->Unmap(0, &empty);
+        }
+        gpu_slot_fence_[done] = 0;
+    }
+    gpu_scope_count_[done] = 0;
+    gpu_slot_ = next;
+    gpu_stats_.set_frames(gpu_stats_.frames() + 1);
+}
+
+void D3D12Backend::gpu_profile_dump() {
+    if (!gpu_profiling_enabled_) {
+        std::fprintf(stdout, "[gpu] 未开启 GPU 计时（GRender_SetGPUProfiling(1) / --bench）\n");
+        return;
+    }
+    // 设备可能已挂起：仍把已有的样本打出来 —— 最后一个有值的段就是 TDR 挂起点。
+    if (device_lost_) {
+        std::fprintf(stdout, "[gpu] (device lost; 以下为挂起前已结算的样本)\n");
+        // 挂起时"正在飞"的槽还没经过轮转结算，这里就地补一次 Resolve+读回。
+        gpu_profile_flush_pending();
+    }
+    gpu_stats_.print("D3D12");
+}
+
+// 设备挂起后把还挂在飞的所有槽立刻 Resolve + 读回。这些槽的时间戳是
+// 定位 TDR 的关键证据：设备移除后 GPU 时间戳停止推进，所以"最后一个有值的
+// 段"就是挂起前完成到的位置，其后的段全为 0（= GPU 卡在这里）。
+void D3D12Backend::gpu_profile_flush_pending() {
+    if (!gpu_profiling_ready_) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (cmd) {
+        for (int s = 0; s < k_gpu_slots; ++s) {
+            const int n = gpu_scope_count_[s];
+            if (n <= 0) continue;
+            const UINT first = static_cast<UINT>(s * k_gpu_ts_per_slot);
+            cmd->ResolveQueryData(gpu_query_heap_, D3D12_QUERY_TYPE_TIMESTAMP, first,
+                                  static_cast<UINT>(n) * 2, gpu_readback_,
+                                  static_cast<UINT64>(first) * sizeof(uint64_t));
+        }
+        // 提交一次让 Resolve 生效（设备已挂起时 ExecuteCommandLists 只是空转，
+        // 不报错；关键是让 READBACK 缓冲拿到 CPU 可读内容）。
+        ID3D12CommandList* lists[] = { cmd };
+        queue_->ExecuteCommandLists(1, lists);
+    }
+    // 给驱动一点时间把 Resolve 结果落进 READBACK 缓冲（设备挂起路径允许阻塞）。
+    if (gpu_flush_fence_ == nullptr) {
+        device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, __mingw_uuidof<ID3D12Fence>(),
+                             reinterpret_cast<void**>(&gpu_flush_fence_));
+    }
+    if (gpu_flush_fence_) {
+        const UINT64 v = ++gpu_flush_fence_value_;
+        if (SUCCEEDED(queue_->Signal(gpu_flush_fence_, v))) {
+            for (int i = 0; i < 200; ++i) {
+                if (gpu_flush_fence_->GetCompletedValue() >= v) break;
+                Sleep(5);
+            }
+        }
+    }
+    const double freq = static_cast<double>(gpu_timestamp_freq_ ? gpu_timestamp_freq_ : 1);
+    for (int s = 0; s < k_gpu_slots; ++s) {
+        const int n = gpu_scope_count_[s];
+        if (n <= 0) continue;
+        void* mapped = nullptr;
+        D3D12_RANGE range{ static_cast<SIZE_T>(s * k_gpu_ts_per_slot) * sizeof(uint64_t),
+                           static_cast<SIZE_T>(s * k_gpu_ts_per_slot + k_gpu_ts_per_slot) *
+                               sizeof(uint64_t) };
+        if (SUCCEEDED(gpu_readback_->Map(0, &range, &mapped)) && mapped) {
+            const uint64_t* p = static_cast<const uint64_t*>(mapped);
+            // 打印原始时间戳，便于肉眼分辨"哪一段开始全 0"。
+            for (int i = 0; i < n; ++i) {
+                const uint64_t t0 = p[s * k_gpu_ts_per_slot + i * 2];
+                const uint64_t t1 = p[s * k_gpu_ts_per_slot + i * 2 + 1];
+                const double ms = (t1 > t0) ? static_cast<double>(t1 - t0) / freq * 1e3 : 0.0;
+                if (t1 > t0) gpu_stats_.add(gpu_scope_names_[s][i], ms);
+            }
+            D3D12_RANGE empty{ 0, 0 };
+            gpu_readback_->Unmap(0, &empty);
+        }
+        gpu_scope_count_[s] = 0;
+    }
+}
+
+
+void D3D12Backend::gpu_profile_reset() {
+    gpu_stats_.reset();
+    for (auto& c : gpu_scope_count_) c = 0;
 }
 
 } // namespace gryce_engine::render::d3d12
