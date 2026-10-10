@@ -838,7 +838,11 @@ void RenderContext::create_buffer_storage(RHIBufferHandle buffer, size_t size, c
     }
     push_command([buffer, size, copy = std::move(copy), usage](IRenderBackend* backend) {
         IBuffer* b = backend->buffer(buffer);
-        if (b) b->create(size, copy.empty() ? nullptr : copy.data(), usage);
+        if (!b) return;
+        // ★ 先声明"这是一块 SSBO"。D3D12 必须据此把资源建到 DEFAULT 堆 + 打开
+        //   ALLOW_UNORDERED_ACCESS（UPLOAD 堆资源不能当 UAV）；GL/Vulkan 忽略。
+        b->set_storage(true);
+        b->create(size, copy.empty() ? nullptr : copy.data(), usage);
     });
 }
 

@@ -95,6 +95,7 @@
 #include "render/shader.h"
 #include "render/mesh.h"
 #include "d3d12_vulkanize.h"
+#include "d3d12_reflect.h"
 
 namespace gryce_engine::render::d3d12 {
 
@@ -273,6 +274,19 @@ public:
     // 供 backend 的 set_texture(unit, ITexture*) 直接按描述符索引绑定。
     void bind_texture_at_index(int index, D3D12Texture* tex);
 
+    // ★ 把一个 SSBO 绑到本 shader 的 SRV 表里（按 **GLSL 块名**）。
+    //   用途：GPU 剔除的实例流 —— `instanced.vert` 里
+    //   `layout(std430, binding=2) readonly buffer DstModels { mat4 dst_models[]; };`
+    //   在 HLSL 里是一个 StructuredBuffer，占一个 t 寄存器。它不在 sampler_names_
+    //   里（那是纹理采样器），所以必须单独登记，否则该槽位是空描述符 → 顶点着色器
+    //   读到全零矩阵 → 所有实例塌到原点（画面里只剩一团）。
+    //   由 backend 在每次间接绘制前调用（每帧重新登记）。
+    void set_external_buffer_srv(const char* block_name, ID3D12Resource* res, uint64_t size_bytes);
+    // 每帧清空外部 SSBO 绑定（与 uniform/纹理绑定同生命周期）。
+    void clear_external_buffer_srvs() { external_srv_.clear(); }
+    // 本 shader 反射出的 SSBO 块（块名 → 寄存器 / UAV 标志 / 步长），诊断用。
+    const std::vector<SsboBinding>& ssbo_bindings() const { return ssbo_bindings_; }
+
     // 当前是否为 skybox 管线（深度 LESS_EQUAL、不写深度、不剔除）。
     bool skybox() const { return skybox_; }
     const std::string& debug_name() const { return debug_name_; }
@@ -381,6 +395,19 @@ private:
     // 当前这张表绑定的纹理集合（用于"绑定没变就复用表"的判断）。
     std::vector<D3D12Texture*> bound_signature_;
     bool textures_dirty_ = false;
+
+    // ---- 外部 SSBO（GPU 剔除的实例流）----
+    // 本 shader 各阶段反射出的 SSBO 块（build_stage 时合并）。
+    std::vector<SsboBinding> ssbo_bindings_;
+    struct ExternalSrv {
+        ID3D12Resource* res = nullptr;
+        uint64_t size = 0;
+    };
+    std::unordered_map<std::string, ExternalSrv> external_srv_;
+    // 当前 SRV 表的起始槽位（表内第 k 槽 ↔ 寄存器 t{k}），写外部 SRV 时要用。
+    uint32_t current_srv_base_ = 0;
+    // 把 external_srv_ 写进表里对应的 t 寄存器槽位。
+    void apply_external_buffer_srvs(uint32_t srv_base);
 
     // ---- 引擎槽位（TextureSlots::kXxx）→ GLSL 采样器名 ----
     // ★ 为什么需要这张表（这是"画面全黑"的根因，见 .cpp 的详解）：

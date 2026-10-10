@@ -13,9 +13,11 @@ D3D12Buffer::~D3D12Buffer() {
     destroy();
 }
 
-void D3D12Buffer::set_context(ID3D12Device* device, ID3D12CommandQueue* queue) {
+void D3D12Buffer::set_context(ID3D12Device* device, ID3D12CommandQueue* queue,
+                              UploadSink* sink) {
     device_ = device;
     queue_ = queue;
+    sink_ = sink;
 }
 
 bool D3D12Buffer::create(size_t size, const void* data, BufferUsage usage) {
@@ -30,13 +32,20 @@ bool D3D12Buffer::create(size_t size, const void* data, BufferUsage usage) {
 
     // Static → DEFAULT（GPU 独占，创建时一次性上传）
     // Dynamic/Stream → UPLOAD（CPU 每帧可写）
-    is_upload_heap_ = (usage != BufferUsage::Static);
+    //
+    // ★ 例外：SSBO（storage_）。D3D12 只允许 **DEFAULT 堆**资源当 UAV，且必须显式
+    //   打开 ALLOW_UNORDERED_ACCESS（UPLOAD 堆带这个标志会被 CreateCommittedResource
+    //   直接拒绝）。所以 storage 缓冲一律 DEFAULT + UAV，update() 走 staging 拷贝
+    //   （录制进当前帧命令列表，见 UploadSink）。
+    is_upload_heap_ = (usage != BufferUsage::Static) && !storage_;
 
-    resource_ = create_buffer_resource(device_, size, is_upload_heap_);
+    resource_ = create_buffer_resource(device_, size, is_upload_heap_, storage_);
     if (!resource_) {
         size_ = 0;
         return false;
     }
+    state_ = is_upload_heap_ ? D3D12_RESOURCE_STATE_GENERIC_READ
+                             : D3D12_RESOURCE_STATE_COMMON;
 
     if (is_upload_heap_) {
         // 持久映射：UPLOAD 堆允许整生命周期保持映射，后续 update() 直接写。
@@ -82,8 +91,15 @@ void D3D12Buffer::update(const void* data, size_t size, size_t offset) {
         return;
     }
 
-    // DEFAULT 堆：走 staging 拷贝 + 等待。这是"正确的慢路径"，
-    // 静态缓冲本就不该频繁 update。
+    // DEFAULT 堆 SSBO：把 staging 拷贝**录制进当前帧命令列表**（sink 注入）。
+    // 走"提交+等待"的同步路径会让每帧更新的 SSBO（GPU 剔除的间接参数缓冲）
+    // 产生 N 次 GPU 停顿 —— 那是不可接受的。
+    if (sink_ && sink_->record_copy(resource_, offset, data, size, state_)) {
+        return;
+    }
+
+    // 兜底：无命令列表可用（帧外调用，或非 storage 的 DEFAULT 静态缓冲）。
+    // 这是"正确的慢路径"，静态缓冲本就不该频繁 update。
     ID3D12Resource* staging = create_upload_buffer(device_, size, data);
     if (!staging) return;
     immediate_submit_copy(device_, queue_, resource_, offset, staging, 0, size);
@@ -150,6 +166,12 @@ void D3D12Buffer::bind(uint32_t binding_point) const {
 
 void D3D12Buffer::destroy() {
     release();
+    // ★ storage 标记只能在 destroy() 里清（不能在 release() 里清）：create() 的
+    //   第一步会调 release()，而 set_storage() 在 create() 之前设置 —— 在
+    //   release() 里清会把刚设好的标记连同资源一起抹掉。句柄池会复用对象，
+    //   所以这里必须清，否则复用到非 storage 的 create 会误建 DEFAULT+UAV。
+    storage_ = false;
+    storage_read_write_ = true;
 }
 
 void D3D12Buffer::release() {
@@ -163,6 +185,7 @@ void D3D12Buffer::release() {
     }
     size_ = 0;
     is_upload_heap_ = false;
+    state_ = D3D12_RESOURCE_STATE_COMMON;
 }
 
 } // namespace gryce_engine::render::d3d12

@@ -48,9 +48,13 @@ ID3D12Resource* create_upload_buffer(ID3D12Device* device, size_t size, const vo
 
 // 建一块 GPU 专用缓冲资源（DEFAULT 或 UPLOAD 堆），不含任何数据。
 // upload_heap=true → UPLOAD（CPU 可写），false → DEFAULT（GPU 独占）。
+// allow_uav=true 时给 DEFAULT 堆资源加 ALLOW_UNORDERED_ACCESS（读写 SSBO 必需）。
+//   ★ 只有 DEFAULT 堆能带这个标志 —— UPLOAD 堆带上会被 CreateCommittedResource
+//     直接拒绝，所以参数组合 upload_heap=true && allow_uav=true 是无效的（忽略）。
 // 注意：DEFAULT 堆缓冲的初始态是 COMMON（不是 GENERIC_READ！），
 // 作为拷贝目标要先转 COPY_DEST。这里返回 COMMON 态资源，调用方自行转换。
-ID3D12Resource* create_buffer_resource(ID3D12Device* device, size_t size, bool upload_heap);
+ID3D12Resource* create_buffer_resource(ID3D12Device* device, size_t size, bool upload_heap,
+                                       bool allow_uav = false);
 
 // 提交一个"拷贝命令"并阻塞等待完成，用于资源初始化这类一次性操作。
 // 内部自建 allocator/list/fence，用完即销毁 —— 不要用于每帧热路径。

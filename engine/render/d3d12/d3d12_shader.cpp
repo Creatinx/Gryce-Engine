@@ -53,6 +53,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <system_error>
 #include <vector>
 
@@ -291,6 +292,21 @@ bool D3D12Shader::build_stage(const std::string& glsl_source, GlslVariant varian
     srv_register_count_ = std::max(srv_register_count_, max_register_in_hlsl(hlsl, 't'));
     sampler_register_count_ = std::max(sampler_register_count_, max_register_in_hlsl(hlsl, 's'));
 
+    // ★ 反射 SSBO 块（块名 → t/u 寄存器 / UAV 标志 / 元素步长）。
+    //   图形侧真正用到的是 `instanced.vert` 的 DstModels（GPU 剔除后的实例矩阵，
+    //   由 bind_instance_stream → set_external_buffer_srv 绑成 SRV）。
+    {
+        SsboReflection refl = reflect_ssbo_bindings(hlsl, vz.source);
+        for (SsboBinding& b : refl.bindings) {
+            // 同一块可能同时出现在 VS/FS（本工程不会），去重后追加。
+            bool dup = false;
+            for (const SsboBinding& e : ssbo_bindings_) {
+                if (e.block == b.block && e.reg == b.reg && e.is_uav == b.is_uav) { dup = true; break; }
+            }
+            if (!dup) ssbo_bindings_.push_back(b);
+        }
+    }
+
     // ---- 第 4 步：HLSL → DXIL ----
     DxcProfile profile = (variant == GlslVariant::Vertex) ? DxcProfile::Vs_6_0
                         : (variant == GlslVariant::Fragment) ? DxcProfile::Ps_6_0
@@ -316,6 +332,8 @@ bool D3D12Shader::compile(const std::string& vertex_src, const std::string& frag
     sampler_names_.clear();
     vertex_input_semantics_.clear();
     vertex_input_locations_.clear();
+    ssbo_bindings_.clear();
+    external_srv_.clear();
     srv_register_count_ = 0;
     sampler_register_count_ = 0;
     has_vs_uniforms_ = false;
@@ -621,7 +639,14 @@ ID3D12PipelineState* D3D12Shader::create_pso(const PsoKey& key) {
         e.SemanticName = nullptr;   // 稍后回填（vector 会重分配，不能存悬垂指针）
         e.SemanticIndex = sem_index;
         e.Format = dxgi_format_for_vertex_type(vtype);
-        e.InputSlot = 0;
+        // ★ 顶点数据走 slot 0，实例数据必须走 **独立 slot 1**。
+        //   D3D12 规定：**同一个 InputSlot 内的所有元素必须分类一致**
+        //   （不能既有 PER_VERTEX_DATA 又有 PER_INSTANCE_DATA）。早先把实例元素
+        //   也塞进 slot 0，CreateGraphicsPipelineState 直接返回 E_INVALIDARG
+        //   （0x80070057）—— 因为没有任何场景用 InstancedMeshRenderer，这个 bug
+        //   一直没被发现（实例化绘制在 D3D12 上是"能编译的死代码"）。
+        //   对应地，绘制侧必须 IASetVertexBuffers(1, ...) 绑上实例缓冲。
+        e.InputSlot = (cls == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA) ? 1u : 0u;
         e.AlignedByteOffset = offset;
         e.InputSlotClass = cls;
         e.InstanceDataStepRate = (cls == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA) ? 1 : 0;
@@ -1097,6 +1122,54 @@ void D3D12Shader::resolve_pending_textures() {
     pending_by_slot_.clear();
 }
 
+// ---------------------------------------------------------------------------
+// 外部 SSBO 的 SRV 绑定（GPU 剔除的实例流）
+// ---------------------------------------------------------------------------
+void D3D12Shader::set_external_buffer_srv(const char* block_name, ID3D12Resource* res,
+                                          uint64_t size_bytes) {
+    if (!block_name || !*block_name || !res) return;
+    external_srv_[block_name] = ExternalSrv{res, size_bytes};
+}
+
+// 把 external_srv_ 里登记的 SSBO 写成 StructuredBuffer SRV，放到表内该块的 t 寄存器槽位。
+// 必须在"表已建好（含 null 填充与纹理 SRV）之后"调用 —— 否则会被覆盖成空描述符。
+void D3D12Shader::apply_external_buffer_srvs(uint32_t srv_base) {
+    if (!backend_ || !backend_->device() || external_srv_.empty()) return;
+    if (srv_register_count_ == 0) return;
+
+    DescriptorHeapSet& heaps = backend_->descriptor_heaps();
+    for (const auto& [name, ext] : external_srv_) {
+        const SsboBinding* sb = find_ssbo(ssbo_bindings_, name);
+        if (!sb) {
+            // 只警告一次（每 draw 都调，刷屏会把真正的错误淹掉）。
+            static thread_local std::set<std::string> warned;
+            if (warned.insert(debug_name_ + "/" + name).second) {
+                GLOG_WARN("D3D12Shader '{}': external SSBO block '{}' not found in the compiled "
+                          "shader (buffer SRV not bound)", debug_name_, name);
+            }
+            continue;
+        }
+        if (sb->is_uav && sb->reg >= srv_register_count_) {
+            continue;
+        }
+        if (sb->reg >= srv_register_count_) continue;
+
+        const uint32_t stride = sb->stride ? sb->stride : 4u;
+        // raw（ByteAddressBuffer）必须用 R32_TYPELESS + stride 0 + RAW 标志；
+        // structured 用 UNKNOWN + stride + FLAG_NONE。混用会让设备被移除。
+        D3D12_SHADER_RESOURCE_VIEW_DESC d{};
+        d.Format = sb->is_raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.FirstElement = 0;
+        d.Buffer.NumElements = static_cast<uint32_t>(ext.size / (sb->is_raw ? 4u : stride));
+        d.Buffer.StructureByteStride = sb->is_raw ? 0u : stride;
+        d.Buffer.Flags = sb->is_raw ? D3D12_BUFFER_SRV_FLAG_RAW : D3D12_BUFFER_SRV_FLAG_NONE;
+        backend_->device()->CreateShaderResourceView(ext.res, &d,
+                                                     heaps.srv().cpu_handle(srv_base + sb->reg));
+    }
+}
+
 bool D3D12Shader::commit_textures() {
     if (!backend_) return true;
     if (srv_register_count_ == 0 && sampler_register_count_ == 0) return true;
@@ -1110,7 +1183,11 @@ bool D3D12Shader::commit_textures() {
     // 本帧已建过表，且当前纹理绑定与建表时**完全一致** → 直接复用。
     // 引擎几乎每个 draw 都会重新 set_texture（即使值没变），若不比较就会
     // 每 draw 重新申请一段描述符 → 堆迅速耗尽并反复扩容。
-    if (!srv_runs_.empty() && !textures_dirty_) return true;
+    if (!srv_runs_.empty() && !textures_dirty_) {
+        // 表没变，但外部 SSBO 绑定（实例流）可能在本帧才登记 → 仍要补写槽位。
+        apply_external_buffer_srvs(current_srv_base_);
+        return true;
+    }
     if (!srv_runs_.empty() && bound_signature_.size() == bound_textures_.size()) {
         bool same = true;
         for (size_t i = 0; i < bound_textures_.size(); ++i) {
@@ -1124,6 +1201,7 @@ bool D3D12Shader::commit_textures() {
                     backend_->ensure_texture_shader_readable(bt.tex);
                 }
             }
+            apply_external_buffer_srvs(current_srv_base_);
             return true;
         }
     }
@@ -1146,6 +1224,7 @@ bool D3D12Shader::commit_textures() {
             const DescriptorRun& r = it->second;
             srv_table_gpu_ = heaps.srv().gpu_handle(r.base);
             sampler_table_gpu_ = heaps.sampler().gpu_handle(r.smp_base);
+            current_srv_base_ = r.base;
             // ★ 复用描述符表时**仍然**要确保每张纹理处于 shader 可读态。
             //   缓存里存的是"表的槽位"，不是"资源的当前状态"——同一张图可能
             //   在上一个 pass 里被当作 RT 写过（effect 的 ping-pong 目标就是
@@ -1156,6 +1235,7 @@ bool D3D12Shader::commit_textures() {
                     backend_->ensure_texture_shader_readable(bt.tex);
                 }
             }
+            apply_external_buffer_srvs(r.base);
             return true;
         }
     }
@@ -1378,6 +1458,8 @@ void D3D12Shader::on_begin_frame(uint64_t frame_id) {
     }
     for (auto& bt : bound_textures_) bt.tex = nullptr;
     textures_dirty_ = false;
+    // 外部 SSBO（GPU 剔除的实例流）是"每 draw 登记"的绑定意图，随帧作废。
+    external_srv_.clear();
     pending_sampler_name_.reset();
     // 延迟绑定是"本帧的绑定意图"，随帧作废。
     // slot_sampler_name_ **不**清：槽位↔采样器名是引擎的固定约定（TextureSlots），

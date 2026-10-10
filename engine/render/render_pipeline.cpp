@@ -4487,7 +4487,12 @@ void RenderPipeline::init_gpu_culling(RenderContext& ctx) {
         const uint32_t capacity = 256;
         auto alloc = [&ctx](RHIBufferHandle h, size_t bytes) {
             IBuffer* b = ctx.buffer(h);
-            if (b) b->create(bytes, nullptr, BufferUsage::Dynamic);
+            if (!b) return;
+            // ★ 声明为 SSBO：D3D12 只允许 DEFAULT 堆资源当 UAV，必须在 create()
+            //   之前告知（GL/Vulkan 忽略该标记）。dst_models / args 会被 compute
+            //   写入（UAV），src_* / params / hiz 只读，但统一标记不做区分。
+            b->set_storage(true);
+            b->create(bytes, nullptr, BufferUsage::Dynamic);
         };
         alloc(gpu_cull_src_models_,  size_t(capacity) * sizeof(math::Matrix4f));
         alloc(gpu_cull_src_spheres_, size_t(capacity) * sizeof(math::Vector4f));
@@ -4684,6 +4689,14 @@ bool RenderPipeline::_create_hiz_targets(RenderContext& ctx, int levels, uint32_
         // buffer 0 写，实测直接段错误。
         if (!gpu_cull_hiz_.is_valid()) gpu_cull_hiz_ = ctx.create_buffer();
         IBuffer* buf = ctx.buffer(gpu_cull_hiz_);
+        // ★ 与 init_gpu_culling 的其它 5 个缓冲一致，必须声明为 SSBO。
+        //   否则 D3D12 会把它建成 **UPLOAD 堆**资源（Dynamic 且非 storage），
+        //   而它同时是 `copy_texture_to_buffer` 的拷贝**目标** —— UPLOAD 堆资源
+        //   恒定处于 GENERIC_READ，不能当 COPY_DEST，调试层直接报
+        //   "CopyBufferRegion: Resource state (GENERIC_READ) is invalid for use as a
+        //    destination buffer"，GPU 上则是拷贝被静默丢弃 → HiZ 金字塔永远为空
+        //   → 遮挡剔除结果不可信。GL/Vulkan 侧忽略该标记。
+        if (buf) buf->set_storage(true);
         if (!gpu_cull_hiz_.is_valid() || !buf ||
             !buf->create(static_cast<size_t>(hiz_floats_) * sizeof(float), nullptr,
                          BufferUsage::Dynamic)) {

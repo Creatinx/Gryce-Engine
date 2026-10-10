@@ -66,7 +66,8 @@ ID3D12Resource* create_upload_buffer(ID3D12Device* device, size_t size, const vo
     return res;
 }
 
-ID3D12Resource* create_buffer_resource(ID3D12Device* device, size_t size, bool upload_heap) {
+ID3D12Resource* create_buffer_resource(ID3D12Device* device, size_t size, bool upload_heap,
+                                       bool allow_uav) {
     if (!device || size == 0) return nullptr;
 
     D3D12_HEAP_PROPERTIES hp{};
@@ -83,6 +84,10 @@ ID3D12Resource* create_buffer_resource(ID3D12Device* device, size_t size, bool u
     rd.Format = DXGI_FORMAT_UNKNOWN;
     rd.SampleDesc.Count = 1;
     rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    // ★ UAV（读写 SSBO）需要显式打开 ALLOW_UNORDERED_ACCESS，否则
+    //   CreateUnorderedAccessView 会 E_INVALIDARG。且**只有 DEFAULT 堆**允许：
+    //   UPLOAD 堆资源带这个标志会被 CreateCommittedResource 直接拒绝。
+    if (allow_uav && !upload_heap) rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     const D3D12_RESOURCE_STATES initial =
         upload_heap ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COMMON;
@@ -92,8 +97,8 @@ ID3D12Resource* create_buffer_resource(ID3D12Device* device, size_t size, bool u
                                                  __mingw_uuidof<ID3D12Resource>(),
                                                  reinterpret_cast<void**>(&res));
     if (FAILED(hr) || !res) {
-        GLOG_ERROR("create_buffer_resource: failed (size={}, upload={}, hr=0x{:08x})", size,
-                   upload_heap, static_cast<unsigned>(hr));
+        GLOG_ERROR("create_buffer_resource: failed (size={}, upload={}, uav={}, hr=0x{:08x})", size,
+                   upload_heap, allow_uav, static_cast<unsigned>(hr));
         return nullptr;
     }
     return res;

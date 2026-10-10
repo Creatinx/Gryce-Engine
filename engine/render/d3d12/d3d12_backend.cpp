@@ -12,6 +12,9 @@
 #include "utils/glog/glog_lib.h"
 #include "stb/stb_image_write.h"
 #include "d3d12_renderer2d.h"
+#include "d3d12_reflect.h"
+#include "d3d12_texture.h"
+#include "d3d12_mesh.h"
 #ifdef GRYCE_D3D12_HAS_IMGUI
 #include "d3d12_imgui_backend.h"
 #endif
@@ -307,6 +310,11 @@ void D3D12Backend::begin_frame() {
     upload_ring_.set_frame_slots(static_cast<uint32_t>(swapchain_.buffer_count()));
     upload_ring_.begin_slot(static_cast<uint32_t>(swapchain_.current_frame_index()));
 
+    // HiZ 纹理→SSBO 的延迟重排：上一帧按 256 对齐行距拷进 READBACK 的暂存，
+    // 此刻 GPU 已跑完 → 在 CPU 重排成紧凑行并写回 SSBO（必须在 begin_slot 之后，
+    // 因为要经 UploadRing）。
+    drain_hiz_repacks();
+
     // 本帧需要重新清屏 + 重新绑 RT（命令列表已 Reset，状态全丢）
     clear_dirty_ = true;
     back_buffer_as_rt_ = false;
@@ -367,10 +375,19 @@ void D3D12Backend::end_frame() {
     //
     //   拷贝完成后再做 RT→PRESENT，然后 Close/Execute/Present + 等 GPU，
     //   最后从 readback 缓冲把像素取回来（见 end_frame 尾部的 finish_screenshot）。
-    const bool want_shot =
-        !screenshot_path_.empty() && frame_counter_ >= screenshot_frame_;
-    if (want_shot && cmd && back_buffer_as_rt_) {
-        begin_screenshot_copy(cmd);
+    // ★ 截图请求**只在真的拷成功了才消费**。早先的写法是
+    //     want_shot = !path.empty() && frame_counter_ >= screenshot_frame_
+    //   然后无条件 finish_screenshot() —— 而 finish_screenshot() 一进来就
+    //   `screenshot_path_.clear()`。于是只要**目标帧**恰好没有把交换链当作渲染
+    //   目标（back_buffer_as_rt_ == false，例如某些 pass 收尾留在离屏 RT 上），
+    //   begin_screenshot_copy 被跳过、请求却照样被丢弃 → 上层只看到
+    //   "截图未生成（渲染线程未写盘）"，且该帧数与分辨率有关，表现为"时好时坏"。
+    //   现在把 back_buffer_as_rt_ 纳入条件、并用 begin 的返回值决定是否消费，
+    //   没拷成就不清请求，下一帧继续尝试。
+    bool shot_now = false;
+    if (!screenshot_path_.empty() && frame_counter_ >= screenshot_frame_ && cmd &&
+        back_buffer_as_rt_) {
+        shot_now = begin_screenshot_copy(cmd);
     }
 
     if (cmd && back_buffer_as_rt_) {
@@ -390,7 +407,7 @@ void D3D12Backend::end_frame() {
     }
 
     // 本帧已提交 → 等 GPU 跑完 → 从 readback 缓冲取回像素并落盘。
-    if (want_shot) {
+    if (shot_now) {
         finish_screenshot();
     }
 
@@ -540,6 +557,21 @@ void D3D12Backend::set_cull_face(CullMode mode) { cull_ = mode; }
 // 引擎的 draw_mesh/draw_indexed 签名只有 (mesh, shader)，不带"实例数"——
 // 实例数在 mesh 内部（instance_count()）。所以这里按 mesh 的实例数选择
 // Instanced 还是非 Instanced 调用。
+void D3D12Backend::bind_vertex_slots(ID3D12GraphicsCommandList* cmd, D3D12Mesh* m) {
+    if (!cmd) return;
+    D3D12_VERTEX_BUFFER_VIEW vb{};
+    D3D12_VERTEX_BUFFER_VIEW ivb{};
+    if (m) {
+        vb = m->vertex_view();
+        if (m->is_instance_stream_valid()) ivb = m->instance_view();
+    }
+    cmd->IASetVertexBuffers(0, 1, &vb);
+    // slot 1 始终显式设置（可能为空 view）。PSO 里带 PER_INSTANCE_DATA 元素时
+    // 必须先绑好实例缓冲，否则调试层报 "no vertex buffer bound to slot 1"，
+    // 且在 GPU 上读到的是未定义数据。
+    cmd->IASetVertexBuffers(1, 1, &ivb);
+}
+
 void D3D12Backend::draw_indexed(RHIMeshHandle mesh_handle, RHIShaderHandle shader_handle) {
     if (!initialized_ || frame_aborted_) return;
 
@@ -600,7 +632,7 @@ void D3D12Backend::draw_indexed(RHIMeshHandle mesh_handle, RHIShaderHandle shade
     cmd->SetGraphicsRootSignature(s->root_signature());
     cmd->SetPipelineState(pso);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    cmd->IASetVertexBuffers(0, 1, &vb);
+    bind_vertex_slots(cmd, m);
     cmd->IASetIndexBuffer(&ib);
 
     // ---- 根参数 ----
@@ -668,7 +700,7 @@ void D3D12Backend::draw_mesh(RHIMeshHandle mesh_handle, RHIShaderHandle shader_h
     cmd->SetGraphicsRootSignature(s->root_signature());
     cmd->SetPipelineState(pso);
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    cmd->IASetVertexBuffers(0, 1, &vb);
+    bind_vertex_slots(cmd, m);
 
     // ★ draw_mesh 的语义 = "把网格整个画出来"，**有索引就走索引**。
     //   对齐 GLMesh::draw()（gl_buffer.cpp:272）：
@@ -1094,7 +1126,9 @@ RHIFramebufferHandle D3D12Backend::create_framebuffer() {
 RHIBufferHandle D3D12Backend::create_buffer() {
     const uint32_t index = buffer_pool_.allocate();
     D3D12Buffer* b = buffer_pool_.get(index);
-    if (b) b->set_context(device_, queue_);
+    // 注入 UploadSink（this）：DEFAULT 堆 SSBO 的 update() 需要把拷贝录制进
+    // 当前帧命令列表，而不是"提交+等待"。
+    if (b) b->set_context(device_, queue_, this);
     return { index, buffer_pool_.generation(index) };
 }
 
@@ -1195,6 +1229,10 @@ void D3D12Backend::destroy_mesh(RHIMeshHandle handle) {
 
 void D3D12Backend::destroy_shader(RHIShaderHandle handle) {
     if (!handle.is_valid()) return;
+    if (is_compute_shader(handle)) {
+        compute_pool_.deallocate(handle.index, compute_pool_generation(handle));
+        return;
+    }
     shader_pool_.deallocate(handle.index, handle.generation);
 }
 
@@ -1223,6 +1261,9 @@ IMesh* D3D12Backend::mesh(RHIMeshHandle handle) {
 }
 
 IShader* D3D12Backend::shader(RHIShaderHandle handle) {
+    // 计算句柄不是 IShader（另行成池 + 标志位），返回 nullptr 让调用方走
+    // dispatch_compute 那条路。这与 Vulkan 后面的处理一致。
+    if (is_compute_shader(handle)) return nullptr;
     return shader_pool_.get_if_alive(handle.index, handle.generation);
 }
 
@@ -1342,10 +1383,15 @@ void D3D12Backend::bind_framebuffer(RHIFramebufferHandle fb) {
     // （日志里满是 0x887A0005，看起来像"随机崩溃"）。修复后这个分支再也不会
     // 把尺寸不匹配的 RT 留在原地。
     if (!f || !f->is_complete()) {
-        GLOG_WARN("D3D12::bind_framebuffer: framebuffer not usable (idx={} gen={} ptr={} "
-                  "colors={} depth={}) — falling back to the swapchain back buffer",
-                  fb.index, fb.generation, static_cast<const void*>(f),
-                  f ? f->color_attachment_count() : 0u, (f && f->has_depth()) ? 1 : 0);
+        // 句柄**完全无效**是引擎的约定写法：bind_framebuffer({0,0}) = "回到屏幕"。
+        // 这是极高频的正常路径（2D overlay / 后处理收尾都会走），不能刷 WARN ——
+        // 否则真正的错误会被淹没。只有"句柄非空却不可用"才是异常。
+        if (fb.is_valid()) {
+            GLOG_WARN("D3D12::bind_framebuffer: framebuffer not usable (idx={} gen={} ptr={} "
+                      "colors={} depth={}) — falling back to the swapchain back buffer",
+                      fb.index, fb.generation, static_cast<const void*>(f),
+                      f ? f->color_attachment_count() : 0u, (f && f->has_depth()) ? 1 : 0);
+        }
         unbind_framebuffer();
         return;
     }
@@ -1493,11 +1539,442 @@ void D3D12Backend::ensure_texture_shader_readable(D3D12Texture* tex) {
 const char* D3D12Backend::api_name() const { return "D3D12"; }
 const char* D3D12Backend::api_version() const { return adapter_desc_; }
 
+// ===========================================================================
+// M6：计算着色器 / 间接绘制（GPU 剔除）
+// ===========================================================================
+// 引擎侧（RenderPipeline）的 GPU 剔除流程，D3D12 必须逐条满足：
+//   1. create_compute_shader("cull_instances", dir)   → 计算 PSO + 根签名
+//   2. bind_storage_buffer(shader, "<块名>", buffer)  × 6（按 **块名**！）
+//   3. dispatch_compute(shader, ceil(n/64), 1, 1)
+//   4. bind_instance_stream(dst_models)               → instanced.vert 读 SSBO
+//   5. draw_arrays_indirect(mesh, shader, args, off)  → ExecuteIndirect
+//   6. copy_texture_to_buffer(hiz_tex, hiz_ssbo, off) → HiZ 金字塔进 SSBO
+//
+// 与 GL/Vulkan 的两处根本差异（都源自 D3D12 的显式模型）：
+//   * **资源状态**必须显式翻转。GL 没有状态、Vulkan 靠 render pass 的 layout
+//     传递；D3D12 里"当 UAV 用"必须是 UNORDERED_ACCESS，"当间接参数"必须是
+//     INDIRECT_ARGUMENT，猜错轻则调试层报错、重则设备移除。
+//   * **间接绘制参数来自缓冲区**（ExecuteIndirect + 命令签名），签名必须与
+//     cull_instances.comp 写的 DrawArraysIndirectCommand 布局逐字节一致（16 字节）。
+// ---------------------------------------------------------------------------
+
+bool D3D12Backend::supports_compute_shaders() const {
+    return initialized_ && device_ != nullptr;
+}
+
+RHIShaderHandle D3D12Backend::create_compute_shader(const char* name, const char* shader_dir) {
+    if (!supports_compute_shaders()) return RHIShaderHandle{};
+    if (!name || !*name || !shader_dir) return RHIShaderHandle{};
+
+    const uint32_t index = compute_pool_.allocate();
+    RHIShaderHandle handle{index, compute_pool_.generation(index) | kComputeShaderFlag};
+    D3D12ComputeShader* cp = compute_pool_.get_if_alive(index, compute_pool_generation(handle));
+    if (!cp) return RHIShaderHandle{};
+
+    cp->set_context(this, device_);
+    if (!cp->load(name, shader_dir)) {
+        GLOG_WARN("D3D12Backend::create_compute_shader: failed to load '{}.comp' in '{}'",
+                  name, shader_dir);
+        compute_pool_.deallocate(index, compute_pool_generation(handle));
+        return RHIShaderHandle{};
+    }
+    GLOG_INFO("D3D12Backend: compute pipeline '{}' ready", name);
+    return handle;
+}
+
+D3D12ComputeShader* D3D12Backend::compute_shader(RHIShaderHandle h) {
+    if (!is_compute_shader(h)) return nullptr;
+    return compute_pool_.get_if_alive(h.index, compute_pool_generation(h));
+}
+
+void D3D12Backend::bind_storage_buffer(RHIShaderHandle shader, const char* name,
+                                       RHIBufferHandle buffer) {
+    if (!supports_compute_shaders() || !name) return;
+    if (!is_compute_shader(shader)) return;   // 图形句柄：SSBO SRV 走 bind_instance_stream
+    storage_bindings_[name] = buffer;
+}
+
+void D3D12Backend::transition_buffer(D3D12Buffer* b, D3D12_RESOURCE_STATES after) {
+    if (!b || !b->resource()) return;
+    const D3D12_RESOURCE_STATES before = b->state();
+    if (before == after) return;
+    // ★ UPLOAD 堆资源常驻 GENERIC_READ，**不能**出现在 barrier 里（GENERIC_READ 是
+    //   提升态，不能当 StateBefore；写进去会 E_INVALIDARG）。UPLOAD 缓冲本来就能
+    //   直接当 SRV/拷贝源用，无需转换。
+    if (before == D3D12_RESOURCE_STATE_GENERIC_READ) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+    D3D12_RESOURCE_BARRIER bar{};
+    bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    bar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    bar.Transition.pResource = b->resource();
+    bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    bar.Transition.StateBefore = before;
+    bar.Transition.StateAfter = after;
+    cmd->ResourceBarrier(1, &bar);
+    b->set_state(after);
+}
+
+void D3D12Backend::dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) {
+    if (!supports_compute_shaders() || frame_aborted_) return;
+    D3D12ComputeShader* cp = compute_shader(shader);
+    if (!cp || !cp->valid()) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+
+    cp->clear_bindings();
+    for (auto& [name, handle] : storage_bindings_) {
+        D3D12Buffer* b = buffer_pool_.get_if_alive(handle.index, handle.generation);
+        if (!b || !b->resource()) continue;
+        // 按该块在 HLSL 里的用途决定目标状态：UAV（写）→ UNORDERED_ACCESS；
+        // 只读 → NON_PIXEL_SHADER_RESOURCE（计算着色器不是像素阶段）。
+        const SsboBinding* sb = find_ssbo(cp->reflection().bindings, name);
+        const D3D12_RESOURCE_STATES want = (sb && sb->is_uav)
+                                               ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                                               : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        transition_buffer(b, want);
+        cp->bind_storage(name.c_str(), b->resource(), b->size());
+    }
+
+    if (!cp->dispatch(cmd, gx, gy, gz)) {
+        GLOG_WARN("D3D12Backend::dispatch_compute: dispatch failed for '{}'", cp->debug_name());
+        return;
+    }
+
+    // ★ dispatch 之后必须插一个 UAV 屏障：写入的 DstModels / DrawArgsBuffer 紧接着
+    //   要被 **顶点着色器**（实例流 SSBO）和 **ExecuteIndirect**（间接参数）读。
+    //   只靠资源状态转换不够 —— UAV 的写完成顺序对后续非 UAV 访问不保证可见。
+    //   用 pResource=nullptr 的"全局 UAV 屏障"：保守但一次覆盖全部 UAV。
+    D3D12_RESOURCE_BARRIER uav{};
+    uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uav.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    uav.UAV.pResource = nullptr;
+    cmd->ResourceBarrier(1, &uav);
+
+    // 清空本帧绑定记录，避免下一次 dispatch 误用上一帧的缓冲。
+    storage_bindings_.clear();
+}
+
+bool D3D12Backend::ensure_command_signatures() {
+    if (sig_draw_ && sig_draw_indexed_) return true;
+    if (!device_) return false;
+
+    if (!sig_draw_) {
+        D3D12_INDIRECT_ARGUMENT_DESC arg{};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+        D3D12_COMMAND_SIGNATURE_DESC desc{};
+        desc.ByteStride = sizeof(uint32_t) * 4;   // DrawArraysIndirectCommand = 16B
+        desc.NumArgumentDescs = 1;
+        desc.pArgumentDescs = &arg;
+        desc.NodeMask = 0;
+        const HRESULT hr = device_->CreateCommandSignature(
+            &desc, nullptr, __mingw_uuidof<ID3D12CommandSignature>(),
+            reinterpret_cast<void**>(&sig_draw_));
+        if (FAILED(hr)) {
+            GLOG_ERROR("D3D12Backend: CreateCommandSignature(DRAW) failed 0x{:08X}",
+                       static_cast<uint32_t>(hr));
+            sig_draw_ = nullptr;
+            return false;
+        }
+    }
+    if (!sig_draw_indexed_) {
+        D3D12_INDIRECT_ARGUMENT_DESC arg{};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+        D3D12_COMMAND_SIGNATURE_DESC desc{};
+        desc.ByteStride = sizeof(uint32_t) * 5;   // DrawElementsIndirectCommand = 20B
+        desc.NumArgumentDescs = 1;
+        desc.pArgumentDescs = &arg;
+        desc.NodeMask = 0;
+        const HRESULT hr = device_->CreateCommandSignature(
+            &desc, nullptr, __mingw_uuidof<ID3D12CommandSignature>(),
+            reinterpret_cast<void**>(&sig_draw_indexed_));
+        if (FAILED(hr)) {
+            GLOG_ERROR("D3D12Backend: CreateCommandSignature(DRAW_INDEXED) failed 0x{:08X}",
+                       static_cast<uint32_t>(hr));
+            sig_draw_indexed_ = nullptr;
+            return false;
+        }
+    }
+    return true;
+}
+
+void D3D12Backend::bind_instance_stream(RHIBufferHandle buffer) {
+    instance_stream_ = buffer;
+    if (!buffer.is_valid()) return;
+    // 可见实例矩阵由 compute 写进 dst_models，顶点着色器按 SSBO 读（uGpuCulled=1）。
+    // 它此刻可能仍是 UNORDERED_ACCESS（刚被 compute 写完）→ 必须转到
+    // NON_PIXEL_SHADER_RESOURCE（顶点阶段按 SRV 读）。
+    D3D12Buffer* b = buffer_pool_.get_if_alive(buffer.index, buffer.generation);
+    if (b) transition_buffer(b, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+}
+
+void D3D12Backend::draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                        RHIBufferHandle args, uint32_t offset) {
+    draw_indirect_impl(mesh, shader, args, offset, /*indexed=*/false);
+}
+
+void D3D12Backend::draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                                         RHIBufferHandle args, uint32_t offset) {
+    draw_indirect_impl(mesh, shader, args, offset, /*indexed=*/true);
+}
+
+void D3D12Backend::draw_indirect_impl(RHIMeshHandle mesh_handle, RHIShaderHandle shader_handle,
+                                      RHIBufferHandle args_handle, uint32_t offset, bool indexed) {
+    if (!initialized_ || frame_aborted_) return;
+
+    D3D12Mesh* m = mesh_pool_.get_if_alive(mesh_handle.index, mesh_handle.generation);
+    D3D12Shader* s = shader_pool_.get_if_alive(shader_handle.index, shader_handle.generation);
+    D3D12Buffer* args = buffer_pool_.get_if_alive(args_handle.index, args_handle.generation);
+    if (!m || !s || !s->is_valid() || !args || !args->resource()) return;
+    if (!ensure_command_signatures()) return;
+
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+
+    s->ensure_frame();
+
+    const D3D12_VERTEX_BUFFER_VIEW vb = m->vertex_view();
+    const D3D12_INDEX_BUFFER_VIEW ib = m->index_view();
+    if (vb.BufferLocation == 0 || !m->has_layout()) {
+        GLOG_WARN("D3D12::draw_arrays_indirect: mesh missing vertex buffer/layout; skipping");
+        return;
+    }
+    if (indexed && ib.BufferLocation == 0) {
+        GLOG_WARN("D3D12::draw_indexed_indirect: mesh has no index buffer; skipping");
+        return;
+    }
+
+    PsoKey key;
+    key.layout = make_layout_key(m->layout(), m->instance_layout());
+    key.rt_format = static_cast<uint32_t>(current_rt_format_);
+    key.ds_format = static_cast<uint32_t>(current_ds_format_);
+    key.depth_test = depth_test_ ? 1 : 0;
+    key.depth_write = (s->skybox() ? false : depth_write_) ? 1 : 0;
+    key.blend = blend_ ? (s->blending() ? 1 : 0) : 0;
+    key.cull = (cull_ == CullMode::None) ? 1 : (cull_ == CullMode::Front ? 2 : 0);
+    key.primitive_topology = 0;
+    key.instance_stream = (m->instance_count() > 0) ? 1 : 0;
+
+    ID3D12PipelineState* pso = s->pipeline_for(key);
+    if (!pso) {
+        GLOG_ERROR("D3D12::draw_arrays_indirect: no pipeline for this state/layout");
+        return;
+    }
+
+    cmd->SetGraphicsRootSignature(s->root_signature());
+    cmd->SetPipelineState(pso);
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    bind_vertex_slots(cmd, m);
+    if (indexed) cmd->IASetIndexBuffer(&ib);
+
+    // ★ 把"可见实例矩阵 SSBO"作为 SRV 绑到 instanced.vert 的 DstModels 寄存器。
+    //   必须在 commit_textures() 之前登记 —— 表的构建/复用路径会把它写进槽位。
+    D3D12Buffer* stream = instance_stream_.is_valid()
+                              ? buffer_pool_.get_if_alive(instance_stream_.index,
+                                                          instance_stream_.generation)
+                              : nullptr;
+    if (stream && stream->resource()) {
+        s->set_external_buffer_srv("DstModels", stream->resource(), stream->size());
+    }
+
+    const D3D12Shader::UniformCbv cb = s->commit_uniforms();
+    if (cb.vs != 0) cmd->SetGraphicsRootConstantBufferView(0, cb.vs);
+    if (cb.ps != 0) cmd->SetGraphicsRootConstantBufferView(1, cb.ps);
+    if (s->has_textures()) {
+        s->commit_textures();
+        if (s->has_srv_table()) {
+            cmd->SetGraphicsRootDescriptorTable(s->root_param_srv(), s->srv_table());
+        }
+        if (s->has_sampler_table()) {
+            cmd->SetGraphicsRootDescriptorTable(s->root_param_sampler(), s->sampler_table());
+        }
+    }
+
+    // 间接参数缓冲必须是 INDIRECT_ARGUMENT 态（不能直接拿 UAV 态用）。
+    transition_buffer(args, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    ID3D12CommandSignature* sig = indexed ? sig_draw_indexed_ : sig_draw_;
+    cmd->ExecuteIndirect(sig, 1, args->resource(), offset, nullptr, 0);
+}
+
+// ---------------------------------------------------------------------------
+// 纹理 → SSBO（HiZ 金字塔）
+// ---------------------------------------------------------------------------
+// ★ 为什么不能"一次 GPU 拷贝搞定"（这是 D3D12 与 GL/Vulkan 的实质差异）：
+//   引擎的 HiZ SSBO 布局是**逐行紧密**的（row = width * sizeof(R32F)，着色器里
+//   `hiz[offset + j*width + i]` 直接索引），而 D3D12 的 CopyTextureRegion 要求
+//   目标 footprint 的 RowPitch 是 **256 字节的整数倍**（D3D12_TEXTURE_DATA_PITCH_
+//   ALIGNMENT）。viewport 宽度取 2 的幂递减后几乎不可能满足（320→160 就是 640 字节，
+//   不是 256 的倍数）→ 整块拷贝必然写进带填充的行距，着色器的行索引随之错位。
+//   GL（glReadPixels→PBO）与 Vulkan（vkCmdCopyImageToBuffer 允许紧凑 rowLength）
+//   都没有这个限制，所以只有 D3D12 需要绕。
+//
+// 做法：把纹理先按 256 对齐的行距拷进一块 READBACK 暂存，**下一帧**（GPU 已跑完、
+// 有围栏保证）在 CPU 上重排成紧凑行，再用 UploadRing 拷进目标 SSBO。多一帧延迟
+// 对 HiZ 无影响 —— 金字塔本来就允许滞后（引擎自己也是分帧逐级构建的）。
+void D3D12Backend::copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
+                                          uint32_t offset) {
+    if (!initialized_ || frame_aborted_) return;
+    D3D12Texture* t = texture_pool_.get_if_alive(texture.index, texture.generation);
+    D3D12Buffer* b = buffer_pool_.get_if_alive(buffer.index, buffer.generation);
+    if (!t || !b || !t->resource() || !b->resource()) return;
+    const uint32_t w = static_cast<uint32_t>(t->width());
+    const uint32_t h = static_cast<uint32_t>(t->height());
+    if (w == 0 || h == 0) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+
+    const uint32_t pitch = static_cast<uint32_t>(align_up(static_cast<size_t>(w) * 4u, 256));
+    const uint64_t staging_size = static_cast<uint64_t>(pitch) * h;
+
+    // READBACK 暂存。
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    hp.CreationNodeMask = 1;
+    hp.VisibleNodeMask = 1;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = staging_size;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* staging = nullptr;
+    HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                  __mingw_uuidof<ID3D12Resource>(),
+                                                  reinterpret_cast<void**>(&staging));
+    if (FAILED(hr) || !staging) {
+        GLOG_ERROR("copy_texture_to_buffer: staging alloc failed 0x{:08X}", static_cast<uint32_t>(hr));
+        return;
+    }
+
+    // 源纹理状态：本帧刚被渲染成 RT → COPY_SOURCE → 还原。
+    const D3D12_RESOURCE_STATES tex_before = t->current_state();
+    auto tex_barrier = [&](D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER bar{};
+        bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        bar.Transition.pResource = t->resource();
+        bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        bar.Transition.StateBefore = from;
+        bar.Transition.StateAfter = to;
+        cmd->ResourceBarrier(1, &bar);
+    };
+    if (tex_before != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        tex_barrier(tex_before, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = staging;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Offset = 0;
+    dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
+    dst.PlacedFootprint.Footprint.Width = w;
+    dst.PlacedFootprint.Footprint.Height = h;
+    dst.PlacedFootprint.Footprint.Depth = 1;
+    dst.PlacedFootprint.Footprint.RowPitch = pitch;
+
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = t->resource();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    if (tex_before != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        tex_barrier(D3D12_RESOURCE_STATE_COPY_SOURCE, tex_before);
+    }
+
+    // 本帧提交后的围栏值 → 下一帧 drain 时用它判断 GPU 是否跑完。
+    PendingHizCopy p;
+    p.staging = staging;
+    p.w = w;
+    p.h = h;
+    p.pitch = pitch;
+    p.dst = buffer;
+    p.dst_offset = offset;
+    p.fence = swapchain_.last_submitted_value() + 1;
+    pending_hiz_.push_back(p);
+}
+
+// 在 begin_frame 里调用：把已完成（GPU 跑完）的 HiZ 暂存重排成紧凑行并拷进 SSBO。
+void D3D12Backend::drain_hiz_repacks() {
+    if (pending_hiz_.empty()) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+    const uint64_t done = swapchain_.completed_value();
+
+    for (size_t i = 0; i < pending_hiz_.size();) {
+        PendingHizCopy& p = pending_hiz_[i];
+        if (done < p.fence) { ++i; continue; }
+
+        const size_t tight_row = static_cast<size_t>(p.w) * 4u;
+        const size_t tight_size = tight_row * p.h;
+        std::vector<uint8_t> tight(tight_size);
+        D3D12_RANGE range{0, static_cast<SIZE_T>(static_cast<uint64_t>(p.pitch) * p.h)};
+        void* mapped = nullptr;
+        if (SUCCEEDED(p.staging->Map(0, &range, &mapped)) && mapped) {
+            const uint8_t* s = static_cast<const uint8_t*>(mapped);
+            for (uint32_t y = 0; y < p.h; ++y) {
+                std::memcpy(tight.data() + static_cast<size_t>(y) * tight_row,
+                            s + static_cast<size_t>(y) * p.pitch, tight_row);
+            }
+            const D3D12_RANGE written{0, 0};
+            p.staging->Unmap(0, &written);
+
+            D3D12Buffer* b = buffer_pool_.get_if_alive(p.dst.index, p.dst.generation);
+            if (b && b->resource()) {
+                D3D12_RESOURCE_STATES state = b->state();
+                if (record_copy(b->resource(), p.dst_offset, tight.data(), tight_size, state)) {
+                    b->set_state(state);
+                }
+            }
+        }
+        p.staging->Release();
+        pending_hiz_.erase(pending_hiz_.begin() + static_cast<long>(i));
+    }
+}
+
+// D3D12Buffer::UploadSink：CPU → DEFAULT 堆 SSBO。拷贝录制进当前帧命令列表，
+// 不提交、不等待（每帧多次调用也不会产生 GPU 停顿）。
+bool D3D12Backend::record_copy(ID3D12Resource* dst, uint64_t dst_offset, const void* data,
+                               size_t size, D3D12_RESOURCE_STATES& inout_state) {
+    if (!dst || !data || size == 0) return false;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd || !upload_ring_.is_valid()) return false;
+
+    size_t ring_offset = 0, aligned = 0;
+    uint8_t* p = upload_ring_.allocate(size, ring_offset, aligned);
+    if (!p) {
+        GLOG_WARN("D3D12Backend::record_copy: upload ring exhausted ({} bytes)", size);
+        return false;
+    }
+    std::memcpy(p, data, size);
+
+    auto barrier = [&](D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER bar{};
+        bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        bar.Transition.pResource = dst;
+        bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        bar.Transition.StateBefore = from;
+        bar.Transition.StateAfter = to;
+        cmd->ResourceBarrier(1, &bar);
+    };
+
+    const bool need_barrier = inout_state != D3D12_RESOURCE_STATE_COPY_DEST &&
+                              inout_state != D3D12_RESOURCE_STATE_GENERIC_READ;
+    if (need_barrier) barrier(inout_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    cmd->CopyBufferRegion(dst, dst_offset, upload_ring_.resource(), ring_offset, size);
+    if (need_barrier) barrier(D3D12_RESOURCE_STATE_COPY_DEST, inout_state);
+    return true;
+}
+
 RenderBackendCapabilities D3D12Backend::get_capabilities() const {
     // M3 阶段：交换链 / clear / present / 资源层（buffer/texture/mesh/framebuffer）
     // 已可用；着色器与管线状态要等 M4。
     RenderBackendCapabilities caps{};
-    caps.supports_compute              = false;  // M5
+    caps.supports_compute              = true;   // M6：compute 剔除 + 间接绘制
     caps.supports_geometry_shader      = false;
     caps.supports_dynamic_state        = false;
     caps.max_texture_slots             = 128;    // 描述符表可容纳的 SRV 数

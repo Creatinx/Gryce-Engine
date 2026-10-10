@@ -320,6 +320,8 @@ if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 render/d3d12/d3d12_spirv_cross.cpp
                 render/d3d12/d3d12_dxc.cpp
                 render/d3d12/d3d12_shader.cpp
+                render/d3d12/d3d12_reflect.cpp
+                render/d3d12/d3d12_compute.cpp
                 PROPERTIES INCLUDE_DIRECTORIES "${_gryce_d3d12_sdk_root}/um;${_gryce_d3d12_sdk_root}/shared")
         endif()
         target_sources(GryceRenderer
@@ -336,6 +338,8 @@ if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 render/d3d12/d3d12_spirv_cross.cpp
                 render/d3d12/d3d12_dxc.cpp
                 render/d3d12/d3d12_shader.cpp
+                render/d3d12/d3d12_reflect.cpp
+                render/d3d12/d3d12_compute.cpp
                 render/d3d12/d3d12_renderer2d.cpp
                 render/d3d12/d3d12_backend.cpp
         )

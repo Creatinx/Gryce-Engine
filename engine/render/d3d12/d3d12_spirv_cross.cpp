@@ -247,8 +247,20 @@ bool spirv_to_hlsl(const std::vector<uint32_t>& spirv, SpvcStage stage, const st
     a.set_uint(opts, kOptionHlslShaderModel, 50u);
     // 2) 用入口点名（引擎统一 "main"，生成 HLSL 的入口也叫 main）。
     a.set_bool(opts, kOptionHlslUseEntryPointName, 1u);
-    // 3) 支持非零 baseVertex/baseInstance（实例化几何可能用到）。
-    a.set_bool(opts, kOptionHlslNonZeroBaseVertex, 1u);
+    // 3) **关闭** "支持非零 baseVertex/baseInstance"。
+    //    打开它（=1）时 SPIRV-Cross 会为用到 gl_VertexIndex / gl_InstanceIndex 的
+    //    着色器额外发出一个
+    //        cbuffer SPIRV_Cross_VertexInfo { int BaseVertex; int BaseInstance; };
+    //    （隐式落在 register(b1)）。本项目的图形根签名只覆盖 b0（VS/PS 各一个），
+    //    于是 `CreateGraphicsPipelineState` 直接失败：
+    //        "Root Signature doesn't match Vertex Shader: Shader CBV descriptor range
+    //         (BaseShaderRegister=1, ...) is not fully bound in root signature"
+    //    —— 表现为 instance 化着色器（instanced.vert 用 gl_InstanceID 取 SSBO）
+    //    永远建不出 PSO。
+    //    关掉之后 gl_InstanceIndex 直接映射成 SV_InstanceID，这正是本引擎的语义：
+    //    所有绘制（含 ExecuteIndirect）的 baseVertex / baseInstance 恒为 0
+    //    （cull_instances.comp 写间接参数时 first=0、baseInstance=0）。
+    a.set_bool(opts, kOptionHlslNonZeroBaseVertex, 0u);
     // 4) 点精灵兼容（2D / 粒子 pass 可能用到 gl_PointSize / gl_PointCoord）。
     a.set_bool(opts, kOptionHlslPointSizeCompat, 1u);
     a.set_bool(opts, kOptionHlslPointCoordCompat, 1u);

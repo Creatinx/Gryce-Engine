@@ -36,10 +36,11 @@
 #include "d3d12_mesh.h"
 #include "d3d12_framebuffer.h"
 #include "d3d12_shader.h"
+#include "d3d12_compute.h"
 
 namespace gryce_engine::render::d3d12 {
 
-class D3D12Backend final : public IRenderBackend {
+class D3D12Backend final : public IRenderBackend, public D3D12Buffer::UploadSink {
 public:
     D3D12Backend() = default;
     ~D3D12Backend() override;
@@ -68,8 +69,24 @@ public:
     void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) override;
     void set_blend_equation(BlendEquation mode) override;
     void set_cull_face(CullMode mode) override;
-    void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) override;
+    void     draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) override;
     void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) override;
+
+    // ---- 计算着色器 / 间接绘制（M6：GPU 剔除）----
+    // GPU-driven 渲染：compute 视锥/HiZ 剔除 → 紧凑写入实例 SSBO + 间接参数，
+    // 绘制端 ExecuteIndirect 提交（CPU 不再逐物体参与）。语义与 GL/Vulkan 一致。
+    bool supports_compute_shaders() const override;
+    RHIShaderHandle create_compute_shader(const char* name, const char* shader_dir) override;
+    void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) override;
+    void bind_storage_buffer(RHIShaderHandle shader, const char* name,
+                             RHIBufferHandle buffer) override;
+    void bind_instance_stream(RHIBufferHandle buffer) override;
+    void draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                               RHIBufferHandle args, uint32_t offset) override;
+    void draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
+                              RHIBufferHandle args, uint32_t offset) override;
+    void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
+                                uint32_t offset) override;
 
     // ---- 帧率控制 ----
     void set_swap_interval(int interval) override;
@@ -188,6 +205,35 @@ private:
     // HWND —— 走 glfwGetWin32Window 转换。非 GLFW 句柄时返回 nullptr。
     static HWND hwnd_from_native(void* native_window);
 
+    // ---- 计算 / 间接绘制的私有支撑 ----
+    // D3D12Buffer::UploadSink：把 CPU 数据拷进 DEFAULT 堆 SSBO（录制进当前帧命令
+    // 列表，不走"提交+等待"，避免每帧 N 次 GPU 停顿）。
+    bool record_copy(ID3D12Resource* dst, uint64_t dst_offset, const void* data, size_t size,
+                     D3D12_RESOURCE_STATES& inout_state) override;
+    // 资源状态翻转（幂等）。UPLOAD 堆资源（GENERIC_READ）不可翻转，直接跳过。
+    void transition_buffer(D3D12Buffer* b, D3D12_RESOURCE_STATES after);
+    // 惰性创建间接绘制的命令签名（DrawInstanced / DrawIndexedInstanced 两种）。
+    bool ensure_command_signatures();
+    // draw_mesh / draw_indexed 与间接版的公共实现（间接版 args 有效）。
+    void draw_indirect_impl(RHIMeshHandle mesh, RHIShaderHandle shader, RHIBufferHandle args,
+                            uint32_t offset, bool indexed);
+    // 绑定顶点输入槽：slot 0 = 顶点流，slot 1 = 实例流（如果该网格有）。
+    // ★ D3D12 要求"同一 InputSlot 内分类一致"，所以实例元素必须落 slot 1
+    //   （见 d3d12_shader.cpp create_pso 的说明）；没有实例流时显式写入空 view
+    //   清掉上一帧的绑定，避免泄漏给下一个 PSO。
+    void bind_vertex_slots(ID3D12GraphicsCommandList* cmd, D3D12Mesh* m);
+    D3D12ComputeShader* compute_shader(RHIShaderHandle h);
+    // ★ 计算句柄用 generation 最高位做类型标记（与 Vulkan 后端同一约定）：
+    //   图形与计算是两个池，索引会撞车（都从 0 开始），必须靠标志位分辨，
+    //   绝不能"两个池都查一遍看哪个活着"。
+    static constexpr uint32_t kComputeShaderFlag = 0x80000000u;
+    static bool is_compute_shader(RHIShaderHandle h) {
+        return (h.generation & kComputeShaderFlag) != 0;
+    }
+    static uint32_t compute_pool_generation(RHIShaderHandle h) {
+        return h.generation & ~kComputeShaderFlag;
+    }
+
     Loader loader_{};
     IDXGIAdapter1*  adapter_ = nullptr;
     ID3D12Device*   device_  = nullptr;
@@ -204,6 +250,34 @@ private:
     RHIResourcePool<D3D12Framebuffer> framebuffer_pool_;
     RHIResourcePool<D3D12Buffer> buffer_pool_;
     RHIResourcePool<D3D12Shader> shader_pool_;
+    // 计算管线单独一个池（句柄靠 generation 最高位区分，见 kComputeShaderFlag）。
+    RHIResourcePool<D3D12ComputeShader> compute_pool_;
+
+    // ---- M6：GPU 剔除的绑定状态 ----
+    // 本帧按 **GLSL 块名** 记下的 SSBO 绑定；dispatch_compute 时解析成
+    // D3D12Buffer*、翻状态、写描述符。
+    std::unordered_map<std::string, RHIBufferHandle> storage_bindings_;
+    // bind_instance_stream 记下的"可见实例矩阵 SSBO"（供 instanced.vert 读）。
+    RHIBufferHandle instance_stream_{};
+    // 间接绘制命令签名（惰性创建并缓存）。
+    ID3D12CommandSignature* sig_draw_ = nullptr;
+    ID3D12CommandSignature* sig_draw_indexed_ = nullptr;
+
+    // ---- HiZ 纹理→SSBO 的延迟重排（见 d3d12_backend.cpp copy_texture_to_buffer）----
+    // D3D12 的 CopyTextureRegion 要求 256 对齐行距，而引擎的 HiZ SSBO 是紧凑行，
+    // 所以先按对齐行距拷进 READBACK 暂存，等 GPU 跑完（围栏）后下一帧在 CPU 上
+    // 重排成紧凑行再写回 SSBO。
+    struct PendingHizCopy {
+        ID3D12Resource* staging = nullptr;   // READBACK，行距 pitch
+        uint32_t w = 0;
+        uint32_t h = 0;
+        uint32_t pitch = 0;
+        RHIBufferHandle dst{};
+        uint64_t dst_offset = 0;
+        uint64_t fence = 0;                  // 该拷贝提交时的围栏值
+    };
+    std::vector<PendingHizCopy> pending_hiz_;
+    void drain_hiz_repacks();
 
     // ---- 延迟释放队列（见 retire_* 声明处的说明）----
     struct RetiredResource {

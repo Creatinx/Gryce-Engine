@@ -428,6 +428,8 @@ void print_usage() {
         "  --sensitivity <度/像素> 交互模式鼠标灵敏度（默认 0.12）\n"
         "  --play-frames <N>      交互模式运行 N 帧后自动退出（自检用）\n"
         "  --stress <N>           生成 N 个动态立方体的重负载场景（性能基准用）。\n"
+        "  --instanced <N>        注入 1 个 InstancedMeshRenderer（N 个实例），用于\n"
+        "                         验证 GPU 剔除（compute + 间接绘制）的 A/B 对照。\n"
         "                         与 --scene 互斥；生成后替换当前场景内容。\n"
         "  --stress-shadow        压力场景加载 N 个投影体（默认全开阴影投射）\n");
 }
@@ -529,6 +531,35 @@ StressReport generate_stress_scene(int count) {
     return rep;
 }
 
+// ---------------------------------------------------------------------------
+// 实例化场景注入器（--instanced N）
+//
+// 为什么需要它：GPU 剔除（compute 视锥剔除 + HiZ + 间接绘制）只在
+// **InstancedMeshRenderer 且实例数 ≥ 32** 时才启用（见
+// RenderPipeline::collect_instanced 的 k_min_gpu_cull_instances）。而 demo 场景
+// 用 MeshRenderer、--stress 也刻意用 MeshRenderer 打散合批 —— 于是这条路径在
+// 现有场景里**一次都跑不到**，"开关能编译、功能是死代码"。
+//
+// 这里灌一个 InstancedMeshRenderer 实体（走与 .gesc 完全相同的
+// SceneSerializer 路径），实例按 seed 确定性散布成一片，用来做
+// 「--no-gpu-cull A/B」的正确性对照：两条路径的画面应当**完全一致**。
+// ---------------------------------------------------------------------------
+bool spawn_instanced_scene(int count) {
+    if (count <= 0) return false;
+    char buf[768];
+    std::snprintf(buf, sizeof(buf),
+        R"({"version":2,"name":"InstancedField","entities":[{
+          "name":"InstancedField","parent":null,"enabled":true,
+          "transform":{"position":[0,1.0,0],"rotation":[0,0,0,1],
+                       "scale":[1.0,1.0,1.0]},
+          "components":[{"type":"InstancedMeshRenderer","enabled":true,
+            "mesh_path":"res:/models/cube.obj","material_path":"",
+            "instance_count":%d,"spacing":1.4,"seed":7,
+            "material":{"name":"InstancedMat","preset_name":"Gold"}}]}]})",
+        count);
+    return GEntity_ImportJson(buf, 0) != 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -573,6 +604,7 @@ int main(int argc, char** argv) {
     // 被稀释的阴影/合批/剔除/CPU 遍历开销暴露出来。0 = 不生成。
     int stress_count = 0;
     bool stress_shadow = false;   // 保留：投影体默认全开，此项仅用于日志标注
+    int instanced_count = 0;      // >0：注入一个 InstancedMeshRenderer（GPU 剔除验证用）
     bool frames_explicit = false;
     bool vsync = true;   // 默认开垂直同步；--no-vsync 用于性能测量
     float ssr_env_fallback_override = -1.0f;
@@ -677,6 +709,7 @@ int main(int argc, char** argv) {
         }
         else if (std::strcmp(a, "--play-frames") == 0) play_frames = std::atoi(need_value(a));
         else if (std::strcmp(a, "--stress") == 0) stress_count = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--instanced") == 0) instanced_count = std::atoi(need_value(a));
         else if (std::strcmp(a, "--stress-shadow") == 0) stress_shadow = true;
         else if (std::strcmp(a, "--bench") == 0) {
             // 可选帧数：--bench 200；不跟数字时用默认 240 帧
@@ -837,6 +870,11 @@ int main(int argc, char** argv) {
         std::printf("[smoke] --stress %d: 注入 %d 个实体（失败 %d）%s\n",
                     stress_count, rep.entities, rep.failed,
                     stress_shadow ? " [shadow-casters]" : "");
+    }
+    if (instanced_count > 0) {
+        const bool ok = spawn_instanced_scene(instanced_count);
+        std::printf("[smoke] --instanced %d: %s\n", instanced_count,
+                    ok ? "实例化实体已注入（GPU 剔除路径应被启用）" : "注入失败");
     }
 
     const SceneStats scene = scan_scene();

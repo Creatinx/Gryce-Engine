@@ -31,12 +31,41 @@ class D3D12Device;
 
 class D3D12Buffer final : public IBuffer {
 public:
+    // -----------------------------------------------------------------------
+    // UploadSink —— DEFAULT 堆 SSBO 的 CPU→GPU 更新通道（由 backend 实现并注入）
+    // -----------------------------------------------------------------------
+    // GL/Vulkan 可以直接写映射内存（UPLOAD/持久映射堆都能当 SSBO），D3D12 不行：
+    //   1) UAV（读写 SSBO）**只能**是 DEFAULT 堆资源（UPLOAD 堆加
+    //      ALLOW_UNORDERED_ACCESS 会被 CreateCommittedResource 直接拒绝）；
+    //   2) DEFAULT 堆 CPU 不能直接写，必须经 staging 拷贝。
+    // 而"每帧更新"的 SSBO（GPU 剔除的间接参数缓冲）若走"提交+等待"同步路径，
+    // 每帧会产生 N 次 GPU 停顿。所以这里把拷贝**录制进当前帧的命令列表**，
+    // 由 backend 统一提交 —— 零同步停顿。
+    class UploadSink {
+    public:
+        virtual ~UploadSink() = default;
+        // 把 data[0..size) 写到 dst 的 dst_offset 处。inout_state 传入/传出该资源
+        // 当前的 D3D12_RESOURCE_STATES（实现按需插入屏障并把最终态写回）。
+        // 返回 false 表示当前没有可用的命令列表（帧外调用）→ 调用方降级。
+        virtual bool record_copy(ID3D12Resource* dst, uint64_t dst_offset,
+                                 const void* data, size_t size,
+                                 D3D12_RESOURCE_STATES& inout_state) = 0;
+    };
+
     D3D12Buffer() = default;
     ~D3D12Buffer() override;
 
     // 后端在创建时注入的设备上下文。D3D12 资源无法脱离设备创建，
     // 而 IBuffer 的工厂签名（create_buffer()）不带设备参数，故用注入。
-    void set_context(ID3D12Device* device, ID3D12CommandQueue* queue);
+    // sink 可为 nullptr（此时 DEFAULT 堆缓冲的 update() 退回同步路径）。
+    void set_context(ID3D12Device* device, ID3D12CommandQueue* queue,
+                     UploadSink* sink = nullptr);
+
+    // ★ 标记为 SSBO。必须在 create() 之前调用（决定堆类型与资源标志）。
+    void set_storage(bool read_write) override {
+        storage_ = true;
+        storage_read_write_ = read_write;
+    }
 
     bool create(size_t size, const void* data, BufferUsage usage) override;
     void update(const void* data, size_t size, size_t offset) override;
@@ -54,17 +83,29 @@ public:
     }
     BufferUsage usage() const { return usage_; }
     uint32_t last_binding() const { return binding_point_; }  // bind() 最近一次记录
+    // 是否为 SSBO（DEFAULT 堆 + ALLOW_UNORDERED_ACCESS）。
+    bool is_storage() const { return storage_; }
+    bool is_storage_read_write() const { return storage_read_write_; }
+    // 资源当前的 D3D12 状态（backend 在插入屏障时必须据此，不能猜）。
+    D3D12_RESOURCE_STATES state() const { return state_; }
+    void set_state(D3D12_RESOURCE_STATES s) { state_ = s; }
 
 private:
     void release();
 
     ID3D12Device* device_ = nullptr;
     ID3D12CommandQueue* queue_ = nullptr;
+    UploadSink* sink_ = nullptr;
     ID3D12Resource* resource_ = nullptr;
     void* mapped_ = nullptr;
     size_t size_ = 0;
     BufferUsage usage_ = BufferUsage::Static;
     bool is_upload_heap_ = false;
+    bool storage_ = false;            // 是否被标记为 SSBO（DEFAULT + UAV）
+    bool storage_read_write_ = true;  // 是否会被 GPU 写（UAV）而非只读
+    // ★ 资源状态必须由我们跟踪：D3D12 的屏障要求 StateBefore **精确**匹配，
+    //   猜错会触发调试层报错 / 驱动 RemoveDevice。DEFAULT 堆建出来是 COMMON。
+    D3D12_RESOURCE_STATES state_ = D3D12_RESOURCE_STATE_COMMON;
     // bind() 在 D3D12 下不是立即生效的操作（真正的绑定走 root signature /
     // 描述符表），这里只记录意图，供上层查询。
     mutable uint32_t binding_point_ = 0;

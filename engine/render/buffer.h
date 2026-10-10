@@ -25,6 +25,13 @@ public:
     // 创建/重新创建缓冲
     virtual bool create(size_t size, const void* data, BufferUsage usage) = 0;
 
+    // 标记该缓冲会被着色器以 SSBO 方式访问（可选能力，默认忽略）。
+    // D3D12 的硬性约束：**只有 DEFAULT 堆资源才能当 UAV（读写 SSBO）**，UPLOAD 堆
+    // 资源加 ALLOW_UNORDERED_ACCESS 会被 CreateCommittedResource 直接拒绝。所以
+    // 后端必须在这一步之前知道"这是一块 SSBO"，才能选对堆类型与资源标志。
+    // 必须在 create() 之前调用。GL/Vulkan 不需要（它们允许 UPLOAD/持久映射当 SSBO）。
+    virtual void set_storage(bool /*read_write*/) {}
+
     // 更新缓冲数据（子区域）
     virtual void update(const void* data, size_t size, size_t offset = 0) = 0;
 
