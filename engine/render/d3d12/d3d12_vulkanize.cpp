@@ -20,6 +20,12 @@
 
 namespace gryce_engine::render::d3d12 {
 
+// ★ SSBO（Vulkan GLSL 的 `layout(std430, binding = N)` 块）在 D3D12 侧的
+//   寄存器基址。采样器固定在 t1..tN（pbr/instanced 系列实测 25 张），取 64 是
+//   留足两倍以上余量：一条 SRV 表内多占的槽位只是描述符，代价远小于"区间重叠
+//   导致的设备移除"。详见重建循环里的说明。
+constexpr int kStorageBindingBase = 64;
+
 namespace {
 
 // GLSL 内置名（不参与 location 分配、也不进 uniform 块）。
@@ -670,6 +676,41 @@ VulkanizedShader vulkanize_glsl(const std::string& source, GlslVariant variant) 
         return s;
     };
 
+    // ★★ SSBO 的 binding 必须整体搬到高位 —— 这是 D3D12 侧的结构性硬约束。
+    //
+    //   背景：D3D12 的描述符寄存器空间**只有一个**（t/s/u/b 各一条线），而
+    //   GLSL/Vulkan 是 (set, binding) 二维的。vulkanize 把采样器排在
+    //   `set=0, binding=1..N`（0 留给 Globals），SPIRV-Cross 又把 binding 号
+    //   原样当寄存器号 → 采样器落在 t1..tN。
+    //
+    //   原样透传的 SSBO 块（如 instanced.vert 的 `binding = 2`）于是也落在 t2，
+    //   和 frag 的采样器**抢同一个寄存器**：同一个 t2，VS 期望它是
+    //   ByteAddressBuffer、PS 期望它是 Texture2D。引擎侧一张 SRV 表只能放一种
+    //   描述符类型 → 描述符与着色器声明不符 → Intel Arc 上直接
+    //   DEVICE_REMOVED/DEVICE_HUNG，且**是否触发取决于当帧材质绑了几张纹理**
+    //   （表现为分辨率/场景相关的不确定性），极难定位。
+    //
+    //   解法：把 SSBO 的 binding 统一 +kStorageBindingBase 搬到采样器区间之外，
+    //   两个区间永不重叠。改的是**中间产物**（vulkanize 输出），原始 .vert/.comp
+    //   一行不动 → GL/Vulkan 主路径零影响。
+    auto rewrite_ssbo_binding = [](const std::string& s) -> std::string {
+        if (s.find("std430") == std::string::npos) return s;
+        const size_t bp = s.find("binding");
+        if (bp == std::string::npos) return s;
+        const size_t eq = s.find('=', bp);
+        if (eq == std::string::npos) return s;
+        size_t p = eq + 1;
+        while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) ++p;
+        size_t q = p;
+        while (q < s.size() && std::isdigit(static_cast<unsigned char>(s[q]))) ++q;
+        if (q == p) return s;
+        const long orig = std::strtol(s.substr(p, q - p).c_str(), nullptr, 10);
+        if (orig < 0 || orig >= kStorageBindingBase) return s;   // 已搬过 / 非法 → 原样
+        std::string r = s;
+        r.replace(p, q - p, std::to_string(kStorageBindingBase + orig));
+        return r;
+    };
+
     // 采样器顺序号（binding 0 保留给 Globals 块）。
     std::map<size_t, int> sampler_binding;   // line index → binding
     {
@@ -700,7 +741,9 @@ VulkanizedShader vulkanize_glsl(const std::string& source, GlslVariant variant) 
         if (!decl) {
             // 已被提到文件头的 const 不再原地输出（重复定义非法）。
             if (hoisted_const_lines.count(i)) continue;
-            out << lines[i] << "\n";
+            // SSBO 块的行（`layout(std430, binding = N) readonly buffer X {`）
+            // 不属于任何可识别 decl，走这条透传路径 —— 必须在这里重映射 binding。
+            out << rewrite_ssbo_binding(lines[i]) << "\n";
             continue;
         }
 

@@ -116,6 +116,16 @@ private:
 
     // 组件析构时置 false，延迟执行的命令据此放弃悬垂回调
     std::shared_ptr<std::atomic<bool>> alive_token_ = std::make_shared<std::atomic<bool>>(true);
+
+    // 实例流是否需要重新上传到 GPU（主线程置位 → 渲染线程消费）。
+    //
+    // ★ 必须"按需上传"：实例矩阵本身已经用 params_changed 做了脏检查，但上传
+    //   原先无条件每帧执行 —— D3D12 侧 upload_instances 是「Release 旧缓冲 +
+    //   新建 + immediate_submit_copy（提交命令列表并等 GPU fence）」，于是**每帧
+    //   插一次 GPU 全同步**到渲染线程中间，既把帧率压到 ~2.5fps，也扰乱了主
+    //   命令列表的提交顺序。GL/Vulkan 同样是无谓的每帧重传。
+    std::shared_ptr<std::atomic<bool>> instance_upload_dirty_ =
+        std::make_shared<std::atomic<bool>>(true);
 };
 
 } // namespace gryce_engine::components

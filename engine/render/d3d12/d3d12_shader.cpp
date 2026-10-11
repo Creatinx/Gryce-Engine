@@ -696,7 +696,14 @@ ID3D12PipelineState* D3D12Shader::create_pso(const PsoKey& key) {
     // ---- Rasterizer ----
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     pso.RasterizerState.CullMode = d3d12_cull_from(key.cull);
-    // 引擎约定：逆时针为正面（与 GL 默认一致）。
+    // ★ 引擎几何约定：逆时针为正面（GL 用默认的 glFrontFace(GL_CCW)，Vulkan 显式
+    //   用 VK_FRONT_FACE_COUNTER_CLOCKWISE）。D3D12 这边**不能**直接照抄成 TRUE ——
+    //   **SPIRV-Cross 转 HLSL 时开了 FlipVertexY（见 d3d12_spirv_cross.cpp 的
+    //   kOptionFlipVertexY），顶点 Y 一翻，三角形绕序也跟着从 CCW 变 CW**，所以这里
+    //   必须填 FALSE（= 顺时针为正面）才能与引擎几何对上。
+    //   写错（改成 TRUE）的症状很有欺骗性：CULL_MODE_BACK 会剔掉真正的正面、只剩
+    //   内表面，几何轮廓完全正常、只是明暗/颜色不对（暗面多、色调偏移），看起来
+    //   像"光照或色调映射的后端差异"，很难联想到是绕序。
     pso.RasterizerState.FrontCounterClockwise = FALSE;
     pso.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
     pso.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
@@ -1356,6 +1363,21 @@ bool D3D12Shader::commit_textures() {
     // 表句柄 = 该段的首地址（槽位 0 ↔ 寄存器 t0 / s0）。
     srv_table_gpu_ = heaps.srv().gpu_handle(srv_base);
     sampler_table_gpu_ = heaps.sampler().gpu_handle(smp_base);
+
+    // ★★ 本函数一共四条出口，**每一条**都必须做这两件事：把外部 SSBO 的 SRV
+    //    写进刚建好的这段表，并把 current_srv_base_ 更新成本段的基址。
+    //
+    //    漏掉的后果极具迷惑性（2026-10-10 实测，排查花了很久）：上面那个
+    //    "整段写 null 描述符"的循环会先把 DstModels（instanced.vert 的
+    //    可见实例矩阵 SSBO）所在槽位写成空描述符，新建表这条出口若不补写，
+    //    顶点着色器读实例矩阵就**恒为 0** → 所有实例退化到原点 → GPU 剔除
+    //    路径"一个实例都看不见"。而算错的只有这一个描述符：间接参数、
+    //    剔除结果、dst_models 的内容**全都是对的**（readback 逐项验过），
+    //    所以从日志/数值上完全看不出问题。
+    //    另一条出口用 current_srv_base_ 复用本段，若这里没更新它，
+    //    后续所有 draw 都会把 SSBO 描述符写到**别的表**里，同样静默失效。
+    current_srv_base_ = srv_base;
+    apply_external_buffer_srvs(srv_base);
 
     // 记进指纹缓存：本帧后续任何 draw 只要纹理集合相同就直接复用这段，
     // 不再重复申请描述符（见上面的说明）。

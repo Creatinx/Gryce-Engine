@@ -242,6 +242,8 @@ void InstancedMeshRenderer::prepare_gpu(render::RenderContext* ctx, const math::
         last_spacing_ = spacing;
         last_seed_ = seed;
         has_cache_ = true;
+        // 实例数据换了 → 需要重新上传（渲染线程消费这个标记）。
+        instance_upload_dirty_->store(true, std::memory_order_release);
     }
 
     if (instance_count_ == 0 || !cached_instances_) return;
@@ -251,11 +253,13 @@ void InstancedMeshRenderer::prepare_gpu(render::RenderContext* ctx, const math::
     const uint32_t count = instance_count_;
     const uint32_t bytes = count * static_cast<uint32_t>(sizeof(math::Matrix4f));
 
-    ctx->push_command([this, ctx, buffer, flat, count, bytes,
+    ctx->push_command([this, ctx, buffer, flat, count, bytes, dirty = instance_upload_dirty_,
                        token = alive_token_](render::IRenderBackend*) {
         if (!token->load(std::memory_order_acquire)) return;
 
+        bool just_created_mesh = false;
         if (!gpu_mesh_handle_.is_valid()) {
+            just_created_mesh = true;
             gpu_mesh_handle_ = ctx->create_mesh();
             render::IMesh* mesh = ctx->mesh(gpu_mesh_handle_);
             if (!mesh) {
@@ -292,7 +296,12 @@ void InstancedMeshRenderer::prepare_gpu(render::RenderContext* ctx, const math::
         }
 
         render::IMesh* mesh = ctx->mesh(gpu_mesh_handle_);
-        if (mesh && bytes <= buffer->size() * sizeof(math::Matrix4f)) {
+        // ★ 只在"实例数据变了"或"网格刚建出来"时上传（见头文件里的说明）。
+        //   并行帧下主线程可能连续 push 多帧、渲染线程按序消费，这里用 exchange
+        //   保证同一批脏标记只被消费一次。
+        const bool need_upload = just_created_mesh ||
+                                 dirty->exchange(false, std::memory_order_acq_rel);
+        if (need_upload && mesh && bytes <= buffer->size() * sizeof(math::Matrix4f)) {
             mesh->upload_instances(buffer->data(), bytes, count);
         }
 
