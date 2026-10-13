@@ -7,6 +7,7 @@
 #include "render/export.h"
 
 struct ImDrawData;
+struct ImGuiIO;
 struct GLFWwindow;
 
 namespace gryce_engine::render {
@@ -50,6 +51,7 @@ public:
 
 private:
     void apply_engine_style();
+    void setup_debug_font(ImGuiIO& io);
 
     GLFWwindow* window_ = nullptr;
     std::unique_ptr<IImGuiBackend> backend_;

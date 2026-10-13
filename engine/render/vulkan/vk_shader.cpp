@@ -260,6 +260,10 @@ bool VulkanShader::load_program(const std::string& name,
         auto* vk_target = dynamic_cast<VulkanFramebuffer*>(target);
         if (vk_target) {
             set_render_pass(vk_target->render_pass());
+            // 管线烘焙时光栅化采样数必须与目标 render pass 的颜色附件一致
+            // （MSAA 目标 → 4x；普通目标 → 1x）。draw 时 ensure_render_pass
+            // 还会按实际绑定的 render pass 再校准一次。
+            pipeline_samples_ = vk_target->color_samples_vk();
         }
     }
 
@@ -895,7 +899,8 @@ bool VulkanShader::create_pipeline() {
 
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    // 必须与 render pass 颜色附件采样数一致，否则管线创建被验证层拒绝。
+    multisample.rasterizationSamples = pipeline_samples_;
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil{};
     depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -977,21 +982,23 @@ bool VulkanShader::create_pipeline() {
 
 // 切换到指定 render pass：命中缓存直接换管线，否则按同一套资源与状态
 // 再建一条管线（见 create_pipeline 顶部的说明）。
-void VulkanShader::ensure_render_pass(VkRenderPass render_pass) {
+void VulkanShader::ensure_render_pass(VkRenderPass render_pass, VkSampleCountFlagBits samples) {
     if (render_pass == VK_NULL_HANDLE) return;
-    if (render_pass == render_pass_ && pipeline_blend_ != VK_NULL_HANDLE &&
-        pipeline_opaque_ != VK_NULL_HANDLE) {
+    if (render_pass == render_pass_ && samples == pipeline_samples_ &&
+        pipeline_blend_ != VK_NULL_HANDLE && pipeline_opaque_ != VK_NULL_HANDLE) {
         return;
     }
     auto it = pipeline_cache_.find(render_pass);
     auto it_opaque = pipeline_cache_opaque_.find(render_pass);
     if (it != pipeline_cache_.end() && it_opaque != pipeline_cache_opaque_.end()) {
         render_pass_ = render_pass;
+        pipeline_samples_ = samples;
         pipeline_blend_ = it->second;
         pipeline_opaque_ = it_opaque->second;
         return;
     }
     render_pass_ = render_pass;
+    pipeline_samples_ = samples;
     if (!create_pipeline()) {
         GLOG_WARN("VulkanShader '{}': failed to build pipeline for render_pass={}",
                   source_name_, reinterpret_cast<void*>(render_pass));

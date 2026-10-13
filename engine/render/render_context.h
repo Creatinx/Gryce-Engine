@@ -12,6 +12,7 @@
 #include "render/export.h"
 #include "render/render.h"
 #include "render/buffer.h"
+#include "render/shader.h"
 #include "math/math.h"
 
 namespace gryce_engine::render {
@@ -133,6 +134,14 @@ public:
     }
     void set_uniform_mat4(RHIShaderHandle shader, const std::string& name, const gryce_engine::math::Matrix4f& value);
     void set_uniform_mat4(RHIShaderHandle shader, const char* name, const gryce_engine::math::Matrix4f& value);
+    // 后处理参数（uSSR* / uSSAO* / tonemap 等一整套）。★ 必须走本接口（命令
+    // 缓冲）而不是拿 ctx->shader(h) 直接调 IShader::set_post_process_params：
+    // D3D12 的 uniform 影子内存由渲染线程按帧复位，主线程录制期直接写会被
+    // 复位擦掉 —— SSR 偶发整帧丢失（好帧/坏帧随机）正是这个竞争。
+    void set_post_process_params(RHIShaderHandle shader, const PostProcessParams& params);
+    // 同一份参数发给多个 shader 时用此重载：只拷贝一次 shared_ptr。
+    void set_post_process_params(RHIShaderHandle shader,
+                                 std::shared_ptr<const PostProcessParams> params);
     // mat4 数组 uniform（骨骼 palette）。shared_ptr 按值捕获进命令队列，
     // 渲染线程执行时数据仍有效；调用方随后可安全复用/释放自己的引用。
     void set_uniform_mat4_array(RHIShaderHandle shader, const char* name,
@@ -158,6 +167,10 @@ public:
     void set_blend_func(BlendFactor src, BlendFactor dst);
     void set_cull_face(CullMode mode);
     void set_framebuffer(RHIFramebufferHandle fb);
+    // MSAA 解析（主 HDR 目标启用多样本时，场景 pass 结束后调用）。
+    // 把 src（多样本）的颜色附件解析到 dst（单样本）；两端均非多样本时
+    // 后端为空操作。与其它渲染命令一样走命令缓冲，在渲染线程按序执行。
+    void resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst);
     void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader);
     void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader);
 
@@ -180,6 +193,9 @@ public:
     void update_buffer(RHIBufferHandle buffer, const void* data, size_t size, size_t offset = 0);
     // 纹理 → 缓冲的 GPU 端拷贝（供 compute 读原本只有颜色附件形态的数据）。
     void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer, uint32_t offset);
+    // 显式关闭当前 render pass（Vulkan 用；使拷贝/compute 能在 pass 外录制，
+    // 其余后端为 no-op）。调用后须重新 set_framebuffer 才能继续绘制。
+    void end_render_pass_for_transfer();
     // 在渲染线程上（重新）创建缓冲。
     void create_buffer_storage(RHIBufferHandle buffer, size_t size, const void* data,
                                BufferUsage usage);
@@ -223,6 +239,9 @@ public:
 
     // 高层便捷方法：委托给 backend 或在运行期推入命令缓冲
     void request_screenshot(const std::string& path);
+
+    // 调试探针透传（默认空实现，见 IRenderBackend::probe_texture）
+    void probe_texture(RHITextureHandle tex, const char* tag);
 
     // 同步模式 present：提交、获取、执行、释放，全部在主线程内完成（无 RenderThread）
     void present_sync();

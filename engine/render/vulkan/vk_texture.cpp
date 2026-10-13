@@ -562,6 +562,58 @@ bool VulkanTexture::create_depth(int width, int height) {
                         VK_IMAGE_ASPECT_DEPTH_BIT, nullptr);
 }
 
+bool VulkanTexture::create_msaa(TextureFormat format, int width, int height, int samples) {
+    if (!device_ || !device_->is_valid()) return false;
+    if (width <= 0 || height <= 0 || samples < 2) return false;
+
+    destroy();
+    width_ = width;
+    height_ = height;
+    channels_ = 4;
+    is_cubemap_ = false;
+
+    // MSAA 附件：只作渲染目标（不可采样 → 无 SAMPLED 位；无 mip）。
+    // 深度格式例外：VK 规范要求颜色/深度同采样数，MSAA 深度必须能被 depth
+    // resolve shader（sampler2DMS texelFetch）采样，所以带 SAMPLED 位。
+    VkFormat vk_format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    switch (format) {
+        case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; break;
+        case TextureFormat::RGBA8:   vk_format = VK_FORMAT_R8G8B8A8_UNORM; break;
+        case TextureFormat::R16F:    vk_format = VK_FORMAT_R16_SFLOAT; break;
+        case TextureFormat::Depth24:
+            vk_format = VK_FORMAT_D24_UNORM_S8_UINT;
+            usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            break;
+        default:
+            GLOG_ERROR("VulkanTexture::create_msaa: unsupported MSAA format {}",
+                       static_cast<int>(format));
+            return false;
+    }
+    format_ = vk_format;
+
+    // 采样数取 2 的幂（Vulkan 只保证 1/2/4/8/16 等标准值）。
+    VkSampleCountFlagBits vk_samples = VK_SAMPLE_COUNT_1_BIT;
+    switch (samples) {
+        case 2:  vk_samples = VK_SAMPLE_COUNT_2_BIT;  break;
+        case 4:  vk_samples = VK_SAMPLE_COUNT_4_BIT;  break;
+        case 8:  vk_samples = VK_SAMPLE_COUNT_8_BIT;  break;
+        case 16: vk_samples = VK_SAMPLE_COUNT_16_BIT; break;
+        default:
+            GLOG_ERROR("VulkanTexture::create_msaa: samples must be power of two (got {})",
+                       samples);
+            return false;
+    }
+
+    if (!create_image(vk_format, usage, aspect, nullptr, vk_samples)) {
+        return false;
+    }
+    samples_ = vk_samples;
+    return true;
+}
+
 bool VulkanTexture::create(TextureFormat format, int width, int height, const void* data) {
     destroy();
     width_ = width;
@@ -780,8 +832,9 @@ bool VulkanTexture::create_compressed(TextureFormat format, int width, int heigh
 }
 
 bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                                 const void* data) {
+                                 const void* data, VkSampleCountFlagBits samples) {
     is_cubemap_ = false;
+    samples_ = samples;
     VkDevice dev = device_->device();
 
     // 颜色附件格式并非 Vulkan 强制集合（如 R32F）。这里先查驱动支持，
@@ -821,7 +874,7 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     info.usage = usage;
-    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.samples = samples;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo alloc_info{};
@@ -905,7 +958,8 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
         initial_transition_to_read_only(aspect);
     }
     layout_ = (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                                                    : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+              : (samples > VK_SAMPLE_COUNT_1_BIT) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                                  : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return true;
 }
 

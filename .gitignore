@@ -19,6 +19,13 @@ dist/
 *.pdb
 *.idb
 
+# ---- Python 缓存（test/tools 下的辅助脚本）----
+__pycache__/
+*.pyc
+
+# ImGui 运行期窗口布局（调试窗口拖动后自动保存，属于本机状态）
+imgui.ini
+
 # ---- IDE ----
 .idea/
 .vscode/

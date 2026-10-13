@@ -58,6 +58,13 @@ bool DDSLoader::load(const std::string& path, CompressedImage& out) {
         return false;
     }
     const std::streamsize size = file.tellg();
+    // tellg 失败返回 -1：static_cast<size_t>(-1) == SIZE_MAX，下面的 vector
+    // 构造会直接尝试天文数字的分配。加 1GB 上限（DDS 纹理的合理天花板）。
+    constexpr std::streamsize k_max_dds_bytes = static_cast<std::streamsize>(1) << 30;
+    if (size < 0 || size > k_max_dds_bytes) {
+        GLOG_ERROR("DDSLoader: invalid file size {} for '{}'", static_cast<long long>(size), resolved);
+        return false;
+    }
     file.seekg(0, std::ios::beg);
     std::vector<uint8_t> bytes(static_cast<size_t>(size));
     if (!file.read(reinterpret_cast<char*>(bytes.data()), size)) {

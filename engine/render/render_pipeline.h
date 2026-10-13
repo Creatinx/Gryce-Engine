@@ -203,6 +203,9 @@ public:
     void set_power_saver_auto(bool e) { power_saver_auto_ = e; }
     void set_power_saver_forced(bool f) { power_saver_forced_ = f; }
     bool power_saver_active() const { return power_saver_active_; }
+    // 调试 UI 读取当前（自动/强制）开关状态用。
+    bool power_saver_auto_enabled() const { return power_saver_auto_; }
+    bool power_saver_forced_enabled() const { return power_saver_forced_; }
     bool on_battery() const { return on_battery_; }
     // 即时探测电源状态（不依赖渲染循环的轮询缓存），供外部 API 查询
     bool query_on_battery() const { return _detect_on_battery(); }
@@ -500,6 +503,12 @@ public:
     // HDR / Tone mapping 控制
     void set_hdr_enabled(bool enabled) { hdr_enabled_ = enabled; }
     bool hdr_enabled() const { return hdr_enabled_; }
+    // MSAA 采样数请求（init 之前调用直接生效；init 之后调用只记录请求，
+    // 下次目标重建时生效 —— C API 层会主动触发重建）。>=1 = 显式指定
+    // （1 = 关闭）；<=0 = 用默认 4x / env GRYCE_MSAA。实际上限取后端
+    // 能力协商，创建失败自动降级回 1x。
+    void set_msaa_samples(int samples) { msaa_request_ = samples; }
+    int msaa_samples() const { return msaa_samples_; }
     void set_exposure(float exposure) {
         exposure_ = exposure;
         pp_params_.exposure = exposure;
@@ -882,10 +891,29 @@ private:
     void init_gpu_culling(RenderContext& ctx);
     void release_gpu_culling(RenderContext& ctx);
     bool ensure_gpu_cull_buffers(RenderContext& ctx, uint32_t instance_count);
-    // 阶段一（render pass 之外）：上传实例数据 + 派发 compute，写下每批的槽位
+    // 阶段一（render pass 之外）：一次上传全部批次数据 + 一次 dispatch 完成剔除。
+    // 批次数/实例数上限内的批次都会写入 args 槽位；其余回退普通 instanced。
     void cull_instanced_batches_gpu(RenderContext& ctx, const Frustum& frustum);
     // 阶段二（不透明 pass 内）：用阶段一的结果做间接绘制
     void draw_instanced_batches_indirect(RenderContext& ctx);
+
+    // cull_instanced_batches_gpu 的 CPU 侧暂存（成员而非栈上，避免每帧分配）：
+    // 合并 dispatch 需要把各批数据顺序拼成一块上传。
+    struct CullBatchRange {
+        const std::vector<math::Matrix4f>* matrices = nullptr;
+        const std::vector<math::Vector4f>* spheres = nullptr;
+        uint32_t src_base = 0;    // 在拼接缓冲里的起始实例下标
+        uint32_t dst_base = 0;    // 在 dst_models 里的起始实例下标
+        uint32_t args_slot = k_gpu_cull_invalid_slot;
+    };
+    std::vector<CullBatchRange> cull_batch_ranges_scratch_;
+    std::vector<math::Matrix4f> cull_src_models_scratch_;
+    std::vector<math::Vector4f> cull_src_spheres_scratch_;
+    // args 槽位 → 该批在 dst_models 里的基址（绘制阶段给 GL 设 uGpuCulledBase；
+    // Vulkan/D3D12 已由 baseInstance/StartInstanceLocation 偏移，不需要）
+    std::vector<uint32_t> cull_slot_dst_base_;
+    // GL 的 gl_InstanceID 不认 baseInstance，需要 uGpuCulledBase uniform 补基址
+    bool gl_instanced_base_uniform_ = false;
 
     // 间接绘制参数缓冲的槽位数：每批用独立槽位，避免"本批写参数 / 上批仍在读"
     // 的写后读冲突。超过这个批次数的批次回退普通 instanced draw。
@@ -895,13 +923,14 @@ private:
     bool gpu_culling_enabled_ = true;
     bool gpu_culling_available_ = false;   // 运行时能力探测结果（compute + shader 就绪）
     RHIShaderHandle cull_shader_;                 // cull_instances.comp
-    RHIBufferHandle gpu_cull_src_models_;         // SSBO：输入实例矩阵
-    RHIBufferHandle gpu_cull_src_spheres_;        // SSBO：输入世界包围球
-    RHIBufferHandle gpu_cull_dst_models_;         // SSBO：可见实例矩阵（紧凑）
-    RHIBufferHandle gpu_cull_args_;               // 间接绘制参数
-    RHIBufferHandle gpu_cull_params_;             // 剔除参数（实例数 + 6 视锥面）
+    RHIBufferHandle gpu_cull_src_models_;         // SSBO：输入实例矩阵（所有批顺序拼接）
+    RHIBufferHandle gpu_cull_src_spheres_;        // SSBO：输入世界包围球（同上）
+    RHIBufferHandle gpu_cull_dst_models_;         // SSBO：可见实例矩阵（按批分段紧凑）
+    RHIBufferHandle gpu_cull_args_;               // 间接绘制参数（64 槽数组）
+    RHIBufferHandle gpu_cull_params_;             // 剔除参数（总数 + 批数 + 6 视锥面 + HiZ）
+    RHIBufferHandle gpu_cull_batch_ranges_;       // SSBO：每批 (src_base, count, dst_base, args_slot)
     RHIBufferHandle gpu_cull_hiz_;                // SSBO：深度金字塔各级（2x2 max 归约）
-    uint32_t gpu_cull_capacity_ = 0;              // 当前 SSBO 能容纳的实例数
+    uint32_t gpu_cull_capacity_ = 0;              // 当前 SSBO 能容纳的实例数（全批合计）
 
     // -----------------------------------------------------------------------
     // GPU 遮挡剔除（HiZ）
@@ -1146,8 +1175,32 @@ private:
     RHITextureHandle hdr_original_color_;
     RHITextureHandle hdr_depth_;
     RHIFramebufferHandle hdr_fbo_;
+    // MSAA（仅前向 HDR pass）：多样本颜色附件，pass 末尾 resolve 回
+    // 单样本 hdr_color_（GL blit / VK render pass resolve 附件 / D3D12
+    // ResolveSubresource）。后处理链零改动，始终看到单样本 hdr_color_。
+    // msaa_samples_ > 1 时这些句柄有效；创建失败自动降级回 1x。
+    RHITextureHandle hdr_msaa_color_;
+    // OpenGL / D3D12 需要：两家的规范都要求 render target 与深度附件采样数
+    // 一致（GL: GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE；D3D12: OMSetRenderTargets
+    // 的 DSV/RTV multisample count 必须匹配），前向 MSAA pass 的深度也必须是
+    // 多样本。GL 在 resolve 时与颜色一起 blit；D3D12 没有深度 ResolveSubresource，
+    // 用 depth_resolve_shader_ 逐样本平均写回单样本 hdr_depth_。
+    // Vulkan 允许混合采样数，深度直接共用单样本 hdr_depth_。
+    RHITextureHandle hdr_msaa_depth_;
+    RHIFramebufferHandle hdr_msaa_fbo_;
+    // 仅 D3D12：深度 resolve pass 的目标（无颜色附件，深度 = 单样本 hdr_depth_）。
+    RHIFramebufferHandle hdr_depth_only_fbo_;
+    RHIShaderHandle depth_resolve_shader_;
+    int msaa_samples_ = 1;
+    int msaa_request_ = 0;   // set_msaa_samples 的显式请求（0 = 未设置）
     RHIShaderHandle tonemap_shader_;
     RHIMeshHandle fullscreen_mesh_;
+
+    // 前向 HDR pass 实际绑定的帧缓冲：MSAA 开启时为多样本目标，否则 hdr_fbo_。
+    // 注意 end_hdr_forward_pass 之后（水面/SSR/后处理）必须用 hdr_fbo_（单样本）。
+    RHIFramebufferHandle forward_hdr_fbo() const {
+        return (msaa_samples_ > 1 && hdr_msaa_fbo_.is_valid()) ? hdr_msaa_fbo_ : hdr_fbo_;
+    }
 
     // Deferred Rendering：GBuffer（3x MRT 彩色 + 1x 深度）
     bool deferred_enabled_ = false;

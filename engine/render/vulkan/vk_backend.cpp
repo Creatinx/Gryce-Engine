@@ -335,6 +335,7 @@ void VulkanBackend::begin_frame() {
     geometry_secondary_cb_ = VK_NULL_HANDLE;
     geometry_secondary_recording_ = false;
     current_render_pass_ = VK_NULL_HANDLE;
+    current_render_pass_samples_ = VK_SAMPLE_COUNT_1_BIT;
     current_framebuffer_vk_ = VK_NULL_HANDLE;
     render_pass_contents_secondary_ = false;
 
@@ -511,6 +512,10 @@ void VulkanBackend::gpu_profile_dump() {
         return;
     }
     gpu_stats_.print("Vulkan");
+}
+
+double VulkanBackend::gpu_frame_time_ms() const {
+    return gpu_profiling_enabled_ ? gpu_stats_.total_ms_per_frame() : 0.0;
 }
 
 void VulkanBackend::gpu_profile_reset() {
@@ -906,6 +911,9 @@ void VulkanBackend::begin_render_pass_secondary(VkRenderPass rp, VkFramebuffer f
 
     vkCmdBeginRenderPass(primary, &rp_info, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
     current_render_pass_ = rp;
+    // 目前 begin_render_pass_secondary 只用于 swapchain pass（单样本）；
+    // 多样本 offscreen pass 一律走 bind_framebuffer。
+    current_render_pass_samples_ = VK_SAMPLE_COUNT_1_BIT;
     current_framebuffer_vk_ = fb;
     render_pass_contents_secondary_ = true;
 }
@@ -917,6 +925,52 @@ void VulkanBackend::end_current_render_pass() {
         vkCmdEndRenderPass(primary);
         render_pass_contents_secondary_ = false;
     }
+}
+
+// 显式关闭 render pass，让紧随其后的 copy/dispatch 命令可以在 pass 之外录制。
+// 顺序不可颠倒：必须先把 geometry/inline secondary 执行进主 CB（它们以
+// RENDER_PASS_CONTINUE 录制，只能在 pass 内执行），再 vkCmdEndRenderPass。
+// 调用后 current_render_pass_ 为空，下一个 bind_framebuffer 会重新开 pass。
+void VulkanBackend::end_render_pass_for_transfer() {
+    if (!initialized_ || frame_aborted_) return;
+    const bool had_pass = (current_render_pass_ != VK_NULL_HANDLE);
+
+    end_geometry_secondary();
+    end_and_execute_inline_secondary();
+    end_current_render_pass();
+
+    // 关闭 pass 后附件实际已落在 render pass 的 finalLayout 上（颜色为
+    // SHADER_READ_ONLY_OPTIMAL，深度为 DEPTH_STENCIL_READ_ONLY_OPTIMAL，见
+    // VulkanFramebuffer::create_render_pass），但纹理对象的 layout_ 缓存不会
+    // 自动更新；若不回写，紧随其后的 transition_layout 会用错误的 oldLayout
+    // （首帧仍是 UNDEFINED）把图像内容当作未定义处理，拷出垃圾数据。
+    if (had_pass && current_framebuffer_.is_valid()) {
+        auto* vk_fb = static_cast<VulkanFramebuffer*>(framebuffer(current_framebuffer_));
+        if (vk_fb) {
+            if (auto* color_tex = vk_fb->color_texture()) {
+                // 多样本颜色附件被 resolve 附件接手：pass 末尾自身留在
+                // COLOR_ATTACHMENT_OPTIMAL（finalLayout），真正可采样的是
+                // resolve 目标（SHADER_READ_ONLY_OPTIMAL，创建时已缓存）。
+                color_tex->set_layout(vk_fb->color_sample_count() > 1
+                                          ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                          : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+            if (auto* resolve_tex = vk_fb->resolve_texture()) {
+                resolve_tex->set_layout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+            if (auto* depth_tex = vk_fb->depth_texture()) {
+                depth_tex->set_layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+            }
+        }
+    }
+
+    // 关键：清空句柄，让 copy/dispatch 的 render-pass guard 放行，并且后续绘制
+    // 必须先重新绑定 framebuffer（begin_inline_secondary 继承的 renderPass 也
+    // 由此变回 VK_NULL_HANDLE，录出来的才是 pass 之外的合法命令）。
+    current_render_pass_ = VK_NULL_HANDLE;
+    current_render_pass_samples_ = VK_SAMPLE_COUNT_1_BIT;
+    current_framebuffer_vk_ = VK_NULL_HANDLE;
+    render_pass_contents_secondary_ = false;
 }
 
 void VulkanBackend::bind_pipeline(VkCommandBuffer cmd, VkPipeline pipeline) {
@@ -1027,6 +1081,9 @@ void VulkanBackend::bind_framebuffer(RHIFramebufferHandle fb) {
     // 使用 VulkanFramebuffer 自身的 clear 逻辑，但指定 secondary contents
     vk_fb->begin_render_pass(primary, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
     current_render_pass_ = vk_fb->render_pass();
+    // 记录颜色附件采样数：draw 时据此设置管线 rasterizationSamples，
+    // 并让 render pass 的 pResolveAttachments 在 pass 末尾自动解析到单样本纹理。
+    current_render_pass_samples_ = vk_fb->color_samples_vk();
     current_framebuffer_vk_ = vk_fb->framebuffer();
     render_pass_contents_secondary_ = true;
     current_framebuffer_ = fb;
@@ -1096,7 +1153,8 @@ void VulkanBackend::draw_mesh_impl(RHIMeshHandle mesh, RHIShaderHandle shader,
     // 各持不同的 VkRenderPass 对象）。绘制前按当前 render pass 切换/新建管线，
     // 否则管线与 render pass 不兼容时驱动会静默丢弃这一 draw（表现为整条后处理
     // 链没有输出，目标停留在 framebuffer 默认清屏色）。
-    vk_shader->ensure_render_pass(current_render_pass_);
+    // samples 必须与 render pass 颜色附件采样数一致（多样本目标走 MSAA）。
+    vk_shader->ensure_render_pass(current_render_pass_, current_render_pass_samples_);
 
     // Secondary CB 必须显式设置动态 viewport/scissor。
     // 对后处理全屏 pass 使用正 viewport（Vulkan 纹理原点在左上），避免 offscreen
@@ -1228,21 +1286,57 @@ RHIShaderHandle VulkanBackend::create_compute_shader(const char* name, const cha
 }
 
 void VulkanBackend::dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) {
-    if (!supports_compute_shaders()) return;
+    if (!supports_compute_shaders() || frame_aborted_) return;
     // 图形着色器句柄不该走到这里（图形 draw 由 draw_mesh_impl 处理）；
     // 反过来若拿图形句柄去查计算池，靠标志位就能立刻分辨而非碰运气。
     if (!is_compute_shader(shader)) return;
     auto* cp = compute_pool_.get_if_alive(shader.index, pool_generation(shader));
     if (!cp || !cp->valid()) return;
+    // vkCmdDispatch 不能录在 render pass 内（VUID-vkCmdDispatch-renderpass）。
+    // 而 begin_frame 在帧头就开了 swapchain pass，GPU 剔除的 dispatch 又是帧内
+    // 第一条命令群，必然撞上——早年这里直接 WARN 跳过，导致 Vulkan 的剔除
+    // 链路从未真正执行过（画面表现为实例完全不渲染，而被墙挡住的场景又恰好
+    // "看起来像全剔除"，极具迷惑性）。
+    //
+    // 现在显式断开 pass 再派发：
+    //   1. 先把 pending 的 geometry/inline secondary 执行进主 CB（它们以
+    //      RENDER_PASS_CONTINUE 录制，只能在 pass 内执行）；
+    //   2. vkCmdEndRenderPass，清空 pass 状态；
+    //   3. dispatch 录进**主命令缓冲**——pass 之外 inline secondary 不会被
+    //      vkCmdExecuteCommands 执行（execute_inline_secondary 的 guard），
+    //      录进它等于静默丢弃，与 copy_texture_to_buffer 同一约束；
+    //   4. 按 LOAD 变体恢复 swapchain pass：此刻本帧尚未向 swapchain 录过
+    //      任何绘制，恢复不丢内容；清除动作在 begin_frame 首次开 pass 时
+    //      已录进主 CB，LOAD 不会二次清除。
+    // 断开的 pass 若并非 forward/swapchain pass（当前无此调用方），只关不恢复，
+    // 由后续 bind_framebuffer 重新开，并 WARN 提示。
+    bool reopen_forward = false;
     if (current_render_pass_ != VK_NULL_HANDLE) {
-        // render pass 内派发是非法用法；直接跳过（画面退化为未剔除，不会崩溃），
-        // 并提示调用方调整派发时机。
-        GLOG_WARN("VulkanBackend::dispatch_compute: skipped (cannot dispatch inside a render pass)");
-        return;
+        reopen_forward = in_forward_pass_ && !current_framebuffer_.is_valid();
+        end_geometry_secondary();
+        end_and_execute_inline_secondary();
+        end_current_render_pass();
+        current_render_pass_ = VK_NULL_HANDLE;
+        current_render_pass_samples_ = VK_SAMPLE_COUNT_1_BIT;
+        current_framebuffer_vk_ = VK_NULL_HANDLE;
+        render_pass_contents_secondary_ = false;
+        if (!reopen_forward) {
+            GLOG_WARN("VulkanBackend::dispatch_compute: closed an offscreen render pass to "
+                      "dispatch; it will be re-opened by the next bind_framebuffer");
+        }
     }
-    VkCommandBuffer cmd = current_command_buffer();
+    VkCommandBuffer cmd = primary_command_buffer();
     if (cmd == VK_NULL_HANDLE) return;
     cp->dispatch(cmd, gx, gy, gz);
+    if (reopen_forward) {
+        VkClearValue clears[2]{};
+        clears[0].color = {{clear_r_, clear_g_, clear_b_, clear_a_}};
+        clears[1].depthStencil = {1.0f, 0};
+        begin_render_pass_secondary(swapchain_.render_pass_load(),
+                                    swapchain_.framebuffer(current_image_), clears, 2,
+                                    swapchain_.extent());
+        in_forward_pass_ = true;
+    }
 }
 
 void VulkanBackend::bind_storage_buffer(RHIShaderHandle shader, const char* name,
@@ -1253,7 +1347,10 @@ void VulkanBackend::bind_storage_buffer(RHIShaderHandle shader, const char* name
     if (!cp) return;  // 图形着色器句柄：Vulkan 侧由 bind_instance_stream 承担
     auto* b = buffer_pool_.get_if_alive(buffer.index, buffer.generation);
     if (!b || !name) return;
-    cp->set_storage_buffer(name, b->vk_buffer());
+    // 帧槽偏移必须一起进描述符：CPU 写（update）与间接绘制读取都落在
+    // frame_offset() 段，compute 少了它就只能读到 slot 0 的陈旧数据。
+    cp->set_storage_buffer(name, b->vk_buffer(),
+                           static_cast<VkDeviceSize>(b->frame_offset()));
 }
 
 void VulkanBackend::bind_instance_stream(RHIBufferHandle buffer) {
@@ -1282,7 +1379,13 @@ void VulkanBackend::copy_texture_to_buffer(RHITextureHandle tex, RHIBufferHandle
         GLOG_WARN("VulkanBackend::copy_texture_to_buffer: skipped (inside a render pass)");
         return;
     }
-    VkCommandBuffer cmd = current_command_buffer();
+    // 必须录进主命令缓冲，而非 current_command_buffer()（inline secondary）：
+    // inline secondary 只在 render pass 开着时才会被 vkCmdExecuteCommands 执行
+    // （execute_inline_secondary 的 guard），pass 关闭后录进它的命令会被静默
+    // 丢弃。主 CB 在 begin_frame 起就处于录制状态，且调用方（build_hiz）已先
+    // 用 end_render_pass_for_transfer 把全部 pending secondary 执行进主 CB，
+    // 因此这里追加的拷贝命令顺序正确、且在 pass 之外合法。
+    VkCommandBuffer cmd = primary_command_buffer();
     if (cmd == VK_NULL_HANDLE) return;
 
     const VkImageAspectFlags aspect = t->is_depth() ? VK_IMAGE_ASPECT_DEPTH_BIT
@@ -1416,6 +1519,22 @@ RenderBackendCapabilities VulkanBackend::get_capabilities() const {
     caps.supports_depth32f = true;
     caps.supports_r8 = true;
     caps.supports_rgba16f = true;
+    // Vulkan 规范（无 VK_AMD_mixed_attachment_samples / VK_NV_framebuffer_mixed_samples
+    // 扩展时）同样强制同一 subpass 的颜色/深度附件采样数一致
+    // （VUID-VkSubpassDescription-pDepthStencilAttachment-01418），与 GL/D3D12 一致。
+    // 深度多样样本后用 depth resolve pass（sampler2DMS 逐样本平均）写回单样本。
+    caps.msaa_depth_must_match_samples = true;
+    // MSAA 上限取 framebufferColorSampleCounts 的最高 2 幂位（RenderPipeline
+    // 的默认 4x 会与之取 min；create_msaa 失败时逐级降级）。
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(device_.physical_device(), &props);
+    const VkSampleCountFlags counts = props.limits.framebufferColorSampleCounts;
+    uint32_t max_samples = 1;
+    if (counts & VK_SAMPLE_COUNT_16_BIT) max_samples = 16;
+    else if (counts & VK_SAMPLE_COUNT_8_BIT) max_samples = 8;
+    else if (counts & VK_SAMPLE_COUNT_4_BIT) max_samples = 4;
+    else if (counts & VK_SAMPLE_COUNT_2_BIT) max_samples = 2;
+    caps.max_msaa_color_samples = max_samples;
     return caps;
 }
 
@@ -1429,8 +1548,17 @@ void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,
         return;
     }
 
-    const uint32_t row_size = (width * 3 + 3) & ~3u;
-    const uint32_t data_size = row_size * height;
+    // 64-bit 计算行/数据尺寸：uint32 乘法在极端分辨率下会回绕，
+    // 导致 BMP 头里的尺寸字段与实际写出数据不一致。
+    const uint64_t row_size64 = (static_cast<uint64_t>(width) * 3 + 3) & ~3ull;
+    const uint64_t data_size64 = row_size64 * height;
+    if (data_size64 > 0xFFFFFFFFull - 54) {
+        GLOG_ERROR("save_bgr_bmp: frame {}x{} too large for BMP ({} bytes)",
+                   width, height, data_size64);
+        return;
+    }
+    const uint32_t row_size = static_cast<uint32_t>(row_size64);
+    const uint32_t data_size = static_cast<uint32_t>(data_size64);
     const uint32_t file_size = 54 + data_size;
 
     unsigned char header[54] = {};

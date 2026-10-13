@@ -3,17 +3,27 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+#include <assimp/texture.h>
 
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::assets {
 
 namespace {
+
+namespace fs = std::filesystem;
 
 math::Vector3f to_vector3f(const aiVector3D& v) {
     return math::Vector3f(v.x, v.y, v.z);
@@ -28,8 +38,145 @@ std::string dir_of(const std::string& path) {
     return (pos == std::string::npos) ? std::string() : path.substr(0, pos + 1);
 }
 
+// FBX 等格式的贴图路径带反斜杠，统一归一化为 '/'（Windows 同样接受）。
+std::string normalize_separators(std::string path) {
+    for (char& c : path) {
+        if (c == '\\') c = '/';
+    }
+    return path;
+}
+
+// 内嵌贴图（aiScene::mTextures）落盘缓存目录。
+// 贴图加载链路（Material::load_texture_from_path → AssetManager）只认磁盘路径，
+// 因此把内嵌数据解出到临时目录后按普通文件路径引用。
+fs::path embedded_texture_cache_dir() {
+    static const fs::path dir = fs::temp_directory_path() / "gryce-embedded-textures";
+    return dir;
+}
+
+// 压缩内嵌贴图（achFormatHint 为空时按 magic bytes 兜底判定扩展名）。
+const char* sniff_compressed_extension(const uint8_t* data, size_t size) {
+    if (size >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') return "png";
+    if (size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) return "jpg";
+    if (size >= 2 && data[0] == 'B' && data[1] == 'M') return "bmp";
+    if (size >= 18 && std::memcmp(data + size - 18, "TRUEVISION-XFILE.", 17) == 0) return "tga";
+    return nullptr;
+}
+
+// 非压缩 aiTexel（b,g,r,a 四字节）→ 未压缩 TGA32（同为 BGRA 字节序，可整块拷贝）。
+// 18 字节 TGA 头 + width*height*4 像素；descriptor 0x28 = 原点在左上、8 位 alpha。
+
+// TGA 头的宽/高是 16-bit 字段，尺寸超出后头里的值与实际写出的数据不一致，
+// 下游解码器按头读取会得到截断、错乱的像素。
+constexpr uint32_t k_max_tga_dimension = 0xFFFFu;
+// 单张内嵌贴图落盘上限：尺寸/字节数都来自不可信的文件，需要一个绝对天花板，
+// 否则恶意模型可以让 importing 线程往临时目录灌十几 GB 数据。
+constexpr uint64_t k_max_embedded_texture_bytes = 256ull * 1024u * 1024u;
+
+bool write_uncompressed_tga(const fs::path& path, const aiTexture* tex) {
+    const uint32_t w = tex->mWidth;
+    const uint32_t h = tex->mHeight;
+    if (w == 0 || h == 0) return false;
+    if (w > k_max_tga_dimension || h > k_max_tga_dimension) {
+        GLOG_WARN("AssimpImporter: embedded texture {}x{} exceeds TGA 16-bit dimension limit, skipped", w, h);
+        return false;
+    }
+
+    // 64-bit 计算总字节数：32-bit 下 w*h*4 会回绕（例如 0x10000*0x10000*4 → 0），
+    // 回绕后写出的字节数远小于头声明的尺寸，下游会读到越界像素。
+    const uint64_t pixel_bytes = static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4ull;
+    if (pixel_bytes > k_max_embedded_texture_bytes) {
+        GLOG_WARN("AssimpImporter: embedded texture {}x{} needs {} bytes, over the 256 MiB cap, skipped",
+                  w, h, pixel_bytes);
+        return false;
+    }
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+
+    uint8_t header[18] = {0};
+    header[2] = 2;                       // datatypecode: 未压缩真彩色
+    header[12] = static_cast<uint8_t>(w & 0xFF);
+    header[13] = static_cast<uint8_t>((w >> 8) & 0xFF);
+    header[14] = static_cast<uint8_t>(h & 0xFF);
+    header[15] = static_cast<uint8_t>((h >> 8) & 0xFF);
+    header[16] = 32;                     // bits per pixel
+    header[17] = 0x28;                   // top-left origin + 8 alpha bits
+    out.write(reinterpret_cast<const char*>(header), sizeof(header));
+
+    out.write(reinterpret_cast<const char*>(tex->pcData),
+              static_cast<std::streamsize>(pixel_bytes));
+    if (!out.good()) {
+        out.close();
+        // 不留下半截文件：写失败后残留的损坏 TGA 会被下一次导入当成有效缓存命中。
+        std::error_code ec;
+        fs::remove(path, ec);
+        return false;
+    }
+    return true;
+}
+
+// 提取 scene->mTextures[idx] 到缓存目录，返回落盘路径；失败返回空串。
+// cache 以贴图索引为键去重：同一 scene 内多个材质引用同一内嵌贴图只写一次盘。
+std::string extract_embedded_texture(const aiScene* scene, unsigned int index,
+                                     std::unordered_map<unsigned int, std::string>& cache) {
+    if (index >= scene->mNumTextures) return {};
+
+    auto it = cache.find(index);
+    if (it != cache.end()) return it->second;
+
+    const aiTexture* tex = scene->mTextures[index];
+    if (!tex || !tex->pcData) return {};
+
+    std::error_code ec;
+    fs::create_directories(embedded_texture_cache_dir(), ec); // 已存在时静默
+
+    fs::path path;
+    if (tex->mHeight == 0) {
+        // 压缩数据：mWidth 为字节数，原样落盘
+        const auto* data = reinterpret_cast<const uint8_t*>(tex->pcData);
+        const size_t size = tex->mWidth;
+        if (size == 0) return {};
+
+        std::string ext;
+        if (tex->achFormatHint[0] != '\0') {
+            ext = tex->achFormatHint;
+        } else if (const char* sniffed = sniff_compressed_extension(data, size)) {
+            ext = sniffed;
+        } else {
+            GLOG_WARN("AssimpImporter: embedded texture {} has unknown compressed format", index);
+            return {};
+        }
+
+        path = embedded_texture_cache_dir() / ("embedded_" + std::to_string(index) + "." + ext);
+        std::ofstream out(path, std::ios::binary);
+        if (!out) {
+            GLOG_ERROR("AssimpImporter: cannot open '{}' for embedded texture", path.string());
+            return {};
+        }
+        out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+        if (!out.good()) {
+            GLOG_ERROR("AssimpImporter: failed writing embedded texture '{}'", path.string());
+            return {};
+        }
+    } else {
+        // 非压缩 ARGB8888 像素数组
+        path = embedded_texture_cache_dir() / ("embedded_" + std::to_string(index) + ".tga");
+        if (!write_uncompressed_tga(path, tex)) {
+            GLOG_ERROR("AssimpImporter: failed decoding embedded texture '{}'", path.string());
+            return {};
+        }
+    }
+
+    cache.emplace(index, path.string());
+    return path.string();
+}
+
 // 从 aiMaterial 提取 PBR 材质字段（贴图路径基于模型文件目录解析）。
-void process_material(const aiScene* scene, aiMesh* mesh, const std::string& base_dir, MeshData& data) {
+// "*N" 形式的路径指向 aiScene::mTextures 内嵌贴图，提取落盘后重定向。
+void process_material(const aiScene* scene, aiMesh* mesh, const std::string& base_dir,
+                      std::unordered_map<unsigned int, std::string>& embedded_cache,
+                      MeshData& data) {
     if (!scene->HasMaterials() || mesh->mMaterialIndex >= scene->mNumMaterials) return;
     const aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
 
@@ -58,8 +205,24 @@ void process_material(const aiScene* scene, aiMesh* mesh, const std::string& bas
     auto get_texture = [&](aiTextureType type, std::string& out_path) {
         if (mat->GetTextureCount(type) == 0) return;
         aiString tex_path;
-        if (mat->GetTexture(type, 0, &tex_path) == AI_SUCCESS) {
-            out_path = base_dir + tex_path.C_Str();
+        if (mat->GetTexture(type, 0, &tex_path) != AI_SUCCESS) return;
+
+        const char* raw = tex_path.C_Str();
+        if (raw[0] == '*') {
+            // 内嵌贴图引用："*N" → aiScene::mTextures[N]
+            const unsigned int index = static_cast<unsigned int>(std::strtoul(raw + 1, nullptr, 10));
+            out_path = extract_embedded_texture(scene, index, embedded_cache);
+            return;
+        }
+        out_path = normalize_separators(base_dir + raw);
+        // FBX 等格式常记录导出机器的绝对路径（换机后必然失效）：
+        // 拼接口径不存在时，回退用文件名在模型目录查找（贴图通常与模型同目录分发）。
+        std::error_code ec;
+        if (!fs::exists(out_path, ec)) {
+            const fs::path fallback = fs::path(base_dir) / fs::path(raw).filename();
+            if (fallback != out_path && fs::exists(fallback, ec)) {
+                out_path = normalize_separators(fallback.string());
+            }
         }
     };
     get_texture(aiTextureType_DIFFUSE, data.material.albedo_map);
@@ -72,7 +235,8 @@ void process_material(const aiScene* scene, aiMesh* mesh, const std::string& bas
     data.material.valid = true;
 }
 
-MeshData process_mesh(const aiScene* scene, aiMesh* mesh, const std::string& base_dir) {
+MeshData process_mesh(const aiScene* scene, aiMesh* mesh, const std::string& base_dir,
+                      std::unordered_map<unsigned int, std::string>& embedded_cache) {
     MeshData data;
     data.name = mesh->mName.C_Str();
 
@@ -87,25 +251,45 @@ MeshData process_mesh(const aiScene* scene, aiMesh* mesh, const std::string& bas
         data.vertices.push_back(v);
     }
 
-    data.indices.reserve(static_cast<std::size_t>(mesh->mNumFaces) * 3);
+    // 面数来自不可信文件：32-bit 下 mNumFaces*3 会回绕（如 0x60000000*3 → 0），
+    // 回绕后 reserve 容量失真、push 反复重分配；总量上限同时防恶意文件撑爆内存。
+    constexpr uint64_t k_max_index_count = 256ull * 1024 * 1024;  // ≈ 1 GB (uint32)
+    const uint64_t expected_indices = static_cast<uint64_t>(mesh->mNumFaces) * 3ull;
+    if (expected_indices > k_max_index_count) {
+        GLOG_WARN("AssimpImporter: mesh '{}' declares {} faces ({} indices), over cap; indices dropped",
+                  data.name, mesh->mNumFaces, expected_indices);
+        return data;  // 只保留顶点，空索引网格渲染时 draw 0 个图元，安全
+    }
+    data.indices.reserve(static_cast<std::size_t>(expected_indices));
     for (unsigned int i = 0; i < mesh->mNumFaces; ++i) {
         const aiFace& face = mesh->mFaces[i];
         for (unsigned int j = 0; j < face.mNumIndices; ++j) {
-            data.indices.push_back(face.mIndices[j]);
+            const unsigned int idx = face.mIndices[j];
+            // 索引值同样来自文件：越界索引会让 GPU/下游读到垃圾地址（段错误）。
+            // 出现第一个越界值就丢弃整个网格的索引 —— 半截索引会拼出错乱三角形。
+            if (idx >= mesh->mNumVertices) {
+                GLOG_WARN("AssimpImporter: mesh '{}' face {} has out-of-range index {} ({} vertices); indices dropped",
+                          data.name, i, idx, mesh->mNumVertices);
+                data.indices.clear();
+                return data;
+            }
+            data.indices.push_back(idx);
         }
     }
 
-    process_material(scene, mesh, base_dir, data);
+    process_material(scene, mesh, base_dir, embedded_cache, data);
     return data;
 }
 
-void process_node(aiNode* node, const aiScene* scene, const std::string& base_dir, std::vector<MeshData>& out) {
+void process_node(aiNode* node, const aiScene* scene, const std::string& base_dir,
+                  std::unordered_map<unsigned int, std::string>& embedded_cache,
+                  std::vector<MeshData>& out) {
     for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-        out.push_back(process_mesh(scene, mesh, base_dir));
+        out.push_back(process_mesh(scene, mesh, base_dir, embedded_cache));
     }
     for (unsigned int i = 0; i < node->mNumChildren; ++i) {
-        process_node(node->mChildren[i], scene, base_dir, out);
+        process_node(node->mChildren[i], scene, base_dir, embedded_cache, out);
     }
 }
 
@@ -126,7 +310,8 @@ std::vector<MeshData> AssimpImporter::import(const std::string& path) const {
         return result;
     }
 
-    process_node(scene->mRootNode, scene, dir_of(path), result);
+    std::unordered_map<unsigned int, std::string> embedded_cache;
+    process_node(scene->mRootNode, scene, dir_of(path), embedded_cache, result);
 
     std::size_t total_vertices = 0;
     for (const auto& m : result) total_vertices += m.vertices.size();
@@ -264,11 +449,12 @@ SkinnedModelData AssimpImporter::import_skinned(const std::string& path) const {
     }
 
     // 3. 提取 mesh（复用常规路径）+ 顶点骨骼权重
+    std::unordered_map<unsigned int, std::string> embedded_cache;
     std::function<void(aiNode*)> collect_meshes = [&](aiNode* node) {
         for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
             aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
             SkinnedMeshData data;
-            static_cast<MeshData&>(data) = process_mesh(scene, mesh, base_dir);
+            static_cast<MeshData&>(data) = process_mesh(scene, mesh, base_dir, embedded_cache);
 
             if (mesh->mNumBones > 0 && !name_to_index.empty()) {
                 data.bone_influences.resize(data.vertices.size());

@@ -1568,10 +1568,10 @@ void RenderForwardClustered::_render_ssao(RenderContext* ctx) {
     pp_params_.ssao_tan_half = std::tan(math::to_radians(current_camera_.fov()) * 0.5f);
     pp_params_.ssao_aspect = current_camera_.aspect();
 
-    // 同步后处理参数到 shader
+    // 同步后处理参数到 shader（走命令缓冲：D3D12 影子内存由渲染线程按帧复位，
+    // 主线程直接写会被擦掉 —— 后处理偶发失效的根因）
     for (RHIShaderHandle h : {gtao_shader_, ssao_blur_shader_}) {
-        IShader* s = ctx->shader(h);
-        if (s) s->set_post_process_params(pp_params_);
+        ctx->set_post_process_params(h, pp_params_);
     }
 
     ctx->set_depth_test(false);
@@ -1612,10 +1612,9 @@ void RenderForwardClustered::_render_bloom(RenderContext* ctx) {
     ctx->set_cull_face(CullMode::None);
     ctx->set_blend(false);
 
-    // 同步后处理参数
+    // 同步后处理参数（走命令缓冲：D3D12 影子内存由渲染线程按帧复位）
     for (RHIShaderHandle h : {bloom_threshold_shader_, bloom_downsample_shader_, bloom_upsample_shader_}) {
-        IShader* s = ctx->shader(h);
-        if (s) s->set_post_process_params(pp_params_);
+        ctx->set_post_process_params(h, pp_params_);
     }
 
     // 1. Threshold：HDR 全分辨率 → D0（半分辨率）
@@ -1666,8 +1665,7 @@ void RenderForwardClustered::_render_auto_exposure(RenderContext* ctx) {
     ctx->set_blend(false);
 
     for (RHIShaderHandle h : {lum_average_shader_, exposure_update_shader_}) {
-        IShader* s = ctx->shader(h);
-        if (s) s->set_post_process_params(pp_params_);
+        ctx->set_post_process_params(h, pp_params_);
     }
 
     // 亮度链：HDR → L0 ... L4 → 1x1
@@ -1708,9 +1706,8 @@ void RenderForwardClustered::_render_taa(RenderContext* ctx) {
     ctx->set_cull_face(CullMode::None);
     ctx->set_blend(false);
 
-    if (IShader* s = ctx->shader(taa_resolve_shader_)) {
-        s->set_post_process_params(pp_params_);
-    }
+    // 走命令缓冲：D3D12 影子内存由渲染线程按帧复位，主线程直接写会被擦掉
+    ctx->set_post_process_params(taa_resolve_shader_, pp_params_);
 
     ctx->set_framebuffer(taa_fbo_[write]);
     ctx->set_viewport(0, 0, viewport_width_, viewport_height_);
@@ -1741,9 +1738,8 @@ void RenderForwardClustered::_render_tonemap(RenderContext* ctx) {
     ctx->set_cull_face(CullMode::None);
     ctx->set_blend(false);
 
-    if (IShader* s = ctx->shader(tonemap_shader_)) {
-        s->set_post_process_params(pp_params_);
-    }
+    // 走命令缓冲：D3D12 影子内存由渲染线程按帧复位，主线程直接写会被擦掉
+    ctx->set_post_process_params(tonemap_shader_, pp_params_);
 
     ctx->set_texture(tonemap_shader_, hdr_in, TextureSlots::kTonemapHDR, "uHDRTexture");
     ctx->set_uniform_int(tonemap_shader_, "uHDRTexture", TextureSlots::kTonemapHDR);

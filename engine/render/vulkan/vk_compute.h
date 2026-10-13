@@ -55,8 +55,11 @@ public:
     bool load(const std::string& name, const std::string& shader_dir);
     bool valid() const { return pipeline_ != VK_NULL_HANDLE; }
 
-    // 按 GLSL 块名绑定 SSBO（binding 号由反射得出）
-    void set_storage_buffer(const char* name, VkBuffer buffer);
+    // 按 GLSL 块名绑定 SSBO（binding 号由反射得出）。offset 必须传
+    // VulkanStorageBuffer::frame_offset()：CPU 写（IBuffer::update）与
+    // vkCmdDrawIndirect 都落在当前帧槽位，描述符不同步就会读到上一周期的
+    // 数据（表现为隔帧渲染/实例消失）。
+    void set_storage_buffer(const char* name, VkBuffer buffer, VkDeviceSize offset = 0);
     // 绑定管线 + 描述符集 → 派发 → 插入 compute→draw 的内存屏障
     void dispatch(VkCommandBuffer cmd, uint32_t gx, uint32_t gy, uint32_t gz);
     // 每帧开始：轮转描述符集槽位（此时 frame fence 已等过，上一周期已空闲）
@@ -82,7 +85,9 @@ private:
 
     std::unordered_map<std::string, uint32_t> binding_by_name_;
     std::vector<uint32_t> bindings_;                // 去重、升序
-    std::unordered_map<uint32_t, VkBuffer> bound_;  // binding → 当前缓冲
+    // binding → (缓冲, 帧槽字节偏移)。偏移随帧轮转变化，去重时必须一起比较，
+    // 否则"缓冲没变但槽位转了"会被误判为未变化而跳过描述符更新。
+    std::unordered_map<uint32_t, std::pair<VkBuffer, VkDeviceSize>> bound_;
     // 未绑定槽位的占位缓冲：Vulkan 要求描述符集里被着色器引用的每个 binding
     // 都必须写过有效缓冲，否则是未定义行为。
     VulkanBuffer dummy_;

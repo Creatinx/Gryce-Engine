@@ -51,6 +51,9 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
         case RenderCommandType::BindFramebuffer:
             backend->bind_framebuffer(cmd.framebuffer);
             break;
+        case RenderCommandType::ResolveFramebuffer:
+            backend->resolve_framebuffer(cmd.framebuffer, cmd.framebuffer_dst);
+            break;
         case RenderCommandType::DrawMesh:
             backend->draw_mesh(cmd.mesh, cmd.shader);
             break;
@@ -122,6 +125,52 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
         case RenderCommandType::SetScissor:
             backend->set_scissor(cmd.scissor.x, cmd.scissor.y, cmd.scissor.w, cmd.scissor.h);
             break;
+        case RenderCommandType::DispatchCompute:
+            backend->dispatch_compute(cmd.shader, cmd.compute_grid.gx, cmd.compute_grid.gy,
+                                      cmd.compute_grid.gz);
+            break;
+        case RenderCommandType::BindStorageBuffer:
+            if (cmd.storage_name) {
+                backend->bind_storage_buffer(cmd.shader, cmd.storage_name->c_str(), cmd.buffer);
+            }
+            break;
+        case RenderCommandType::BindInstanceStream:
+            backend->bind_instance_stream(cmd.buffer);
+            break;
+        case RenderCommandType::DrawIndexedIndirect:
+            backend->draw_indexed_indirect(cmd.mesh, cmd.shader, cmd.buffer,
+                                           static_cast<uint32_t>(cmd.uniform_int));
+            break;
+        case RenderCommandType::DrawArraysIndirect:
+            backend->draw_arrays_indirect(cmd.mesh, cmd.shader, cmd.buffer,
+                                          static_cast<uint32_t>(cmd.uniform_int));
+            break;
+        case RenderCommandType::UpdateBuffer: {
+            IBuffer* b = backend->buffer(cmd.buffer);
+            if (b && cmd.buffer_data) {
+                b->update(cmd.buffer_data->data(), cmd.buffer_data->size(), cmd.buffer_offset);
+            }
+            break;
+        }
+        case RenderCommandType::CopyTextureToBuffer:
+            backend->copy_texture_to_buffer(cmd.texture, cmd.buffer,
+                                            static_cast<uint32_t>(cmd.uniform_int));
+            break;
+        case RenderCommandType::EndRenderPassForTransfer:
+            backend->end_render_pass_for_transfer();
+            break;
+        case RenderCommandType::CreateBufferStorage: {
+            IBuffer* b = backend->buffer(cmd.buffer);
+            if (!b) break;
+            // ★ 先声明"这是一块 SSBO"。D3D12 必须据此把资源建到 DEFAULT 堆 + 打开
+            //   ALLOW_UNORDERED_ACCESS（UPLOAD 堆资源不能当 UAV）；GL/Vulkan 忽略。
+            b->set_storage(true);
+            b->create(cmd.buffer_size,
+                      (cmd.buffer_data && !cmd.buffer_data->empty()) ? cmd.buffer_data->data()
+                                                                     : nullptr,
+                      cmd.buffer_usage);
+            break;
+        }
         default:
             break;
     }
@@ -664,6 +713,17 @@ void RenderContext::set_uniform_mat4(RHIShaderHandle shader, const char* name, c
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_uniform_mat4(shader, name ? name : "", value));
 }
 
+void RenderContext::set_post_process_params(RHIShaderHandle shader, const PostProcessParams& params) {
+    // 每效果每帧一次，构造一个 shared_ptr 供命令携带（避免内联 60+ 字段）。
+    set_post_process_params(shader, std::make_shared<const PostProcessParams>(params));
+}
+
+void RenderContext::set_post_process_params(RHIShaderHandle shader,
+                                            std::shared_ptr<const PostProcessParams> params) {
+    if (!cmd_buffer_ || !params) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_post_process_params(shader, std::move(params)));
+}
+
 void RenderContext::set_uniform_mat4_array(RHIShaderHandle shader, const char* name,
                                            std::shared_ptr<const std::vector<gryce_engine::math::Matrix4f>> values) {
     if (!values || values->empty()) return;
@@ -760,6 +820,12 @@ void RenderContext::set_framebuffer(RHIFramebufferHandle fb) {
     cmd_buffer_->push_typed(RenderCommandTyped::make_bind_framebuffer(fb));
 }
 
+void RenderContext::resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) {
+    if (!cmd_buffer_) return;
+    if (!src.is_valid() || !dst.is_valid() || src == dst) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_resolve_framebuffer(src, dst));
+}
+
 void RenderContext::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
     if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_draw_mesh(mesh, shader));
@@ -777,73 +843,69 @@ void RenderContext::draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) {
 // 而调用方（RenderPipeline::render_scene）跑在主线程。
 void RenderContext::dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy,
                                      uint32_t gz) {
-    push_command([shader, gx, gy, gz](IRenderBackend* backend) {
-        backend->dispatch_compute(shader, gx, gy, gz);
-    });
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_dispatch_compute(shader, gx, gy, gz));
 }
 
 void RenderContext::bind_storage_buffer(RHIShaderHandle shader, const char* name,
                                         RHIBufferHandle buffer) {
+    if (!cmd_buffer_) return;
     // 名字必须拷贝进命令：调用方的字符串可能是栈上临时量。
-    std::string name_copy(name ? name : "");
-    push_command([shader, name_copy, buffer](IRenderBackend* backend) {
-        backend->bind_storage_buffer(shader, name_copy.c_str(), buffer);
-    });
+    auto name_copy = std::make_shared<const std::string>(name ? name : "");
+    cmd_buffer_->push_typed(
+        RenderCommandTyped::make_bind_storage_buffer(shader, std::move(name_copy), buffer));
 }
 
 void RenderContext::bind_instance_stream(RHIBufferHandle buffer) {
-    push_command([buffer](IRenderBackend* backend) {
-        backend->bind_instance_stream(buffer);
-    });
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_bind_instance_stream(buffer));
 }
 
 void RenderContext::draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
                                           RHIBufferHandle args, uint32_t offset) {
-    push_command([mesh, shader, args, offset](IRenderBackend* backend) {
-        backend->draw_indexed_indirect(mesh, shader, args, offset);
-    });
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(
+        RenderCommandTyped::make_draw_indexed_indirect(mesh, shader, args, offset));
 }
 
 void RenderContext::draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
                                          RHIBufferHandle args, uint32_t offset) {
-    push_command([mesh, shader, args, offset](IRenderBackend* backend) {
-        backend->draw_arrays_indirect(mesh, shader, args, offset);
-    });
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(
+        RenderCommandTyped::make_draw_arrays_indirect(mesh, shader, args, offset));
 }
 
 void RenderContext::update_buffer(RHIBufferHandle buffer, const void* data, size_t size,
                                   size_t offset) {
+    if (!cmd_buffer_) return;
     if (!data || size == 0) return;
-    // 数据按值拷贝进命令，调用方随后可安全释放/复用自己的缓冲。
-    std::vector<uint8_t> copy(static_cast<const uint8_t*>(data),
-                              static_cast<const uint8_t*>(data) + size);
-    push_command([buffer, copy = std::move(copy), offset](IRenderBackend* backend) {
-        IBuffer* b = backend->buffer(buffer);
-        if (b) b->update(copy.data(), copy.size(), offset);
-    });
+    // 数据按值拷贝进命令（shared_ptr 承载），调用方随后可安全释放/复用自己的缓冲。
+    auto copy = std::make_shared<const std::vector<uint8_t>>(
+        static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+    cmd_buffer_->push_typed(RenderCommandTyped::make_update_buffer(buffer, std::move(copy), offset));
 }
 
 void RenderContext::copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
                                            uint32_t offset) {
-    push_command([texture, buffer, offset](IRenderBackend* backend) {
-        backend->copy_texture_to_buffer(texture, buffer, offset);
-    });
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_copy_texture_to_buffer(texture, buffer, offset));
+}
+
+void RenderContext::end_render_pass_for_transfer() {
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_end_render_pass_for_transfer());
 }
 
 void RenderContext::create_buffer_storage(RHIBufferHandle buffer, size_t size, const void* data,
-                                          BufferUsage usage) {    std::vector<uint8_t> copy;
+                                          BufferUsage usage) {
+    if (!cmd_buffer_) return;
+    std::shared_ptr<const std::vector<uint8_t>> copy;
     if (data && size > 0) {
-        copy.assign(static_cast<const uint8_t*>(data),
-                    static_cast<const uint8_t*>(data) + size);
+        copy = std::make_shared<const std::vector<uint8_t>>(
+            static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
     }
-    push_command([buffer, size, copy = std::move(copy), usage](IRenderBackend* backend) {
-        IBuffer* b = backend->buffer(buffer);
-        if (!b) return;
-        // ★ 先声明"这是一块 SSBO"。D3D12 必须据此把资源建到 DEFAULT 堆 + 打开
-        //   ALLOW_UNORDERED_ACCESS（UPLOAD 堆资源不能当 UAV）；GL/Vulkan 忽略。
-        b->set_storage(true);
-        b->create(size, copy.empty() ? nullptr : copy.data(), usage);
-    });
+    cmd_buffer_->push_typed(
+        RenderCommandTyped::make_create_buffer_storage(buffer, size, std::move(copy), usage));
 }
 
 void RenderContext::push_command(std::function<void(IRenderBackend*)>&& cmd) {
@@ -1007,22 +1069,57 @@ void RenderContext::request_screenshot(const std::string& path) {
     }
 }
 
+void RenderContext::probe_texture(RHITextureHandle tex, const char* tag) {
+    if (!backend_) return;
+    // tag 不能按指针捕获：API 不强制传字面量，调用方传栈上临时量时渲染线程
+    // 执行到这条命令时栈帧早已销毁 → UAF。与 gpu_profile_begin 同口径按值拷贝。
+    std::string tag_copy = tag ? tag : "";
+    if (running_) {
+        cmd_buffer_->push([tex, tag_copy](IRenderBackend* backend) {
+            backend->probe_texture(tex, tag_copy.c_str());
+        });
+    } else {
+        backend_->probe_texture(tex, tag_copy.c_str());
+    }
+}
+
 bool RenderContext::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) {
     if (!backend_) return false;
     if (!running_) {
         return backend_->capture_frame_rgba(out, width, height);
     }
-
-    std::promise<bool> promise;
-    std::future<bool> future = promise.get_future();
     if (!cmd_buffer_) return false;
-    cmd_buffer_->push([&out, &width, &height, &promise](IRenderBackend* backend) {
-        bool ok = backend->capture_frame_rgba(out, width, height);
-        promise.set_value(ok);
+
+    // 结果与 promise 都用 shared_ptr 承载、闭包按值捕获：生命周期与命令绑定。
+    // 栈上 promise 在等待提前返回（超时/异常）后析构，渲染线程才执行到
+    // set_value 会写已销毁对象（run_with_gpu_context_sync 已有同样的结论）；
+    // 输出缓冲同理 —— 超时返回后调用方的 out/width/height 引用也可能失效，
+    // 所以渲染线程只写 shared_ptr，成功后在主线程一次性搬回。
+    auto result = std::make_shared<std::vector<uint8_t>>();
+    auto dims = std::make_shared<std::pair<int, int>>();
+    auto promise = std::make_shared<std::promise<bool>>();
+    std::future<bool> future = promise->get_future();
+    cmd_buffer_->push([result, dims, promise](IRenderBackend* backend) {
+        int w = 0, h = 0;
+        bool ok = backend->capture_frame_rgba(*result, w, h);
+        *dims = {w, h};
+        promise->set_value(ok);
     });
     cmd_buffer_->submit();
     wait_for_idle();
-    return future.get();
+    // 超时兜底：渲染线程若崩溃/退出，promise 永远不会兑现，无条件 get() 会挂死。
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        GLOG_ERROR("RenderContext::capture_frame_rgba: render thread did not "
+                   "complete the operation within 5s (returning false)");
+        return false;
+    }
+    const bool ok = future.get();
+    if (ok) {
+        out = std::move(*result);
+        width = dims->first;
+        height = dims->second;
+    }
+    return ok;
 }
 
 std::unique_ptr<IRenderer2D> RenderContext::create_renderer2d() {

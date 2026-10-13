@@ -61,6 +61,11 @@ public:
     bool is_cubemap() const override { return is_cubemap_; }
 
     bool create(TextureFormat format, int width, int height, const void* data = nullptr) override;
+    // 多样本（MSAA）颜色附件：SampleDesc.Count=N，仅作渲染目标
+    // （不建 SRV、无 mip），由 backend 的 ResolveSubresource 解析到单样本纹理。
+    bool create_msaa(TextureFormat format, int width, int height, int samples) override;
+    int sample_count() const override { return static_cast<int>(sample_count_); }
+    bool is_multisampled() const override { return sample_count_ > 1; }
     bool create_compressed(TextureFormat format, int width, int height, int mip_levels,
                            const void* const* mip_data, const size_t* mip_sizes) override;
 
@@ -101,9 +106,10 @@ public:
 private:
     void release();
     // 创建底层资源（DEFAULT 堆；depth 走 ALLOW_DEPTH_STENCIL）。
+    // samples > 1 时创建多样本 RT 资源（不能带 mip、不能被采样）。
     bool create_resource(uint32_t width, uint32_t height, uint32_t depth_or_array,
                          uint32_t mip_levels, DXGI_FORMAT fmt, bool allow_rt, bool allow_ds,
-                         bool is_cube, bool is_volume);
+                         bool is_cube, bool is_volume, uint32_t samples = 1);
     // 通用上传：把 data 按 row_pitch 对齐后拷贝进 (mip, slice) 子资源。
     bool upload_subresource(const void* data, uint32_t width, uint32_t height,
                             uint32_t mip, uint32_t slice, uint32_t bytes_per_pixel);
@@ -120,6 +126,7 @@ private:
     int height_ = 0;
     uint32_t mip_levels_ = 1;
     uint32_t array_size_ = 1;
+    uint32_t sample_count_ = 1;   // 1 = 普通纹理；>1 = 多样本 RT（不可采样）
     DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
     // 建 SRV 时用的视图格式。对普通纹理等于 format_；对深度纹理是它的
     // "颜色视图"等价物（D32_FLOAT → R32_FLOAT），因为深度格式不能直接做 SRV。

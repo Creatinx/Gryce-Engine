@@ -44,6 +44,13 @@ public:
     void resize(int width, int height) override;
     void attach_color_texture(ITexture* texture) override;
     void attach_depth_texture(ITexture* texture) override;
+    // 记录 resolve 目标（单样本纹理）。D3D12 没有 render pass 式的自动解析，
+    // 真正动作由 D3D12Backend::resolve_framebuffer 用 ResolveSubresource 完成；
+    // 这里只保存引用供其查询。
+    void attach_resolve_texture(ITexture* texture) override;
+    // 颜色附件 0 的采样数（PSO 的 SampleDesc.Count 必须与之一致）。
+    // 实现在 .cpp（需要 D3D12Texture 完整定义）。
+    int color_sample_count() const override;
     bool is_complete() const override;
     int width() const override { return width_; }
     int height() const override { return height_; }
@@ -58,6 +65,8 @@ public:
     D3D12_CPU_DESCRIPTOR_HANDLE depth_dsv() const { return depth_dsv_; }
     D3D12Texture* depth_texture() const { return depth_; }
     D3D12Texture* color_texture(uint32_t i) const;
+    // resolve 目标纹理（多样本颜色的解析去处；未设置时为 nullptr）。
+    D3D12Texture* resolve_texture() const { return resolve_; }
 
     // 颜色/深度的 DXGI 格式（PSO 必须与 RT 格式匹配，否则 CreateGraphicsPipelineState
     // 返回 E_INVALIDARG）。无附件时返回 UNKNOWN。
@@ -88,6 +97,8 @@ private:
     std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> color_rtvs_;
     D3D12Texture* depth_ = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE depth_dsv_{};
+    // resolve 目标（单样本）：ResolveSubresource 的目的地。不占描述符槽位。
+    D3D12Texture* resolve_ = nullptr;
 
     int width_ = 0;
     int height_ = 0;

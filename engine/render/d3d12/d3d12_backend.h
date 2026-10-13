@@ -1,18 +1,23 @@
 // =============================================================================
 // d3d12_backend — D3D12 后端
 //
-// 已实现范围（M2 + M3）：
-//   * M2：init（loader → factory → 适配器 → 设备 → 队列 → 交换链）、
-//     begin/end_frame 的真实录制-提交-Present 循环、clear、set_viewport、
-//     shutdown、wait_gpu_idle、set_swap_interval。
-//   * M3：资源层 —— 描述符堆管理器（CBV_SRV_UAV + Sampler）、上传路径
-//     （staging / UploadRing）、Buffer、Texture（含 mip / cubemap /
-//     压缩 / HDR）、Mesh、Framebuffer，以及五个 RHIResourcePool 的接线。
+// 已实现范围（M0–M6，见 docs/d3d12-backend-plan.md 的「实施现状」）：
+//   * 设备/交换链/帧循环：loader（运行时加载 d3d12.dll/dxgi.dll）、适配器与设备、
+//     命令队列/分配器/列表、帧栅栏、RTV/DSV 堆、FLIP_DISCARD 交换链、
+//     录制-提交-Present、截图回读。
+//   * 资源层：描述符堆管理器（CBV_SRV_UAV + Sampler）、上传路径（staging /
+//     UploadRing）、Buffer、Texture（mip / cubemap / 压缩 / HDR / 深度）、Mesh、
+//     Framebuffer，以及五个 RHIResourcePool 的接线。
+//   * 着色器链：GLSL →（清 vulkan 方言 → SPIR-V）→ HLSL（SPIRV-Cross）→ DXIL（DXC），
+//     root signature + PSO 缓存、按名字的 set_* uniform（root constants/UBO）、
+//     按 slot/名字的纹理绑定、compute 管线与间接绘制。
+//   * 2D 渲染器（复用 renderer2d_impl）、ImGui 后端、与 RenderPipeline 的端到端联调。
 //
-// 尚未实现（M4+，见 docs/d3d12-backend-plan.md）：
-//   着色器链（GLSL→SPIR-V→HLSL→DXIL）、管线状态对象（root signature + PSO）、
-//   2D 渲染器、ImGui 后端、RenderPipeline 端到端联调。
-//   这些接口仍返回空句柄 / nullptr，调用方按 IRenderBackend 默认语义回退。
+// ★ Y 方向（最容易踩的一条，见 .cpp 里 ensure_present_target 的详解）：
+//   翻译层用 FLIP_VERTEX_Y 把整条管线等效成 OpenGL 约定，因此"画到屏幕"的 pass
+//   全部落在内部 present 目标上，帧末由一条自带 blit 通道翻一次写进真实 back buffer。
+//   不要再尝试"关掉 FLIP_VERTEX_Y 让几何方向天然正确"—— 那会让每个全屏 pass 都多翻
+//   一次，画面方向随启用的 pass 变化，且着色器里 GL 约定的 V 翻转全部失效。
 // =============================================================================
 #pragma once
 
@@ -40,7 +45,8 @@
 
 namespace gryce_engine::render::d3d12 {
 
-class D3D12Backend final : public IRenderBackend, public D3D12Buffer::UploadSink {
+class D3D12Backend final : public IRenderBackend, public D3D12Buffer::UploadSink,
+                           public ResourceRetireSink {
 public:
     D3D12Backend() = default;
     ~D3D12Backend() override;
@@ -118,6 +124,9 @@ public:
     const char* api_name() const override;
     const char* api_version() const override;
     RenderBackendCapabilities get_capabilities() const override;
+    // MSAA resolve：把 src 帧缓冲的多样本颜色 ResolveSubresource 到 dst 的
+    // 单样本颜色附件。两端均非多样本时直接返回（无意义）。
+    void resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) override;
 
     // ---- GPU 分段计时（M6 调试用；D3D12 时间戳查询）----
     //   D3D12 用 ID3D12QueryHeap(TIMESTAMP) + ResolveQueryData 写进一段
@@ -132,6 +141,7 @@ public:
     void gpu_profile_frame_boundary() override;
     void gpu_profile_dump() override;
     void gpu_profile_reset() override;
+    double gpu_frame_time_ms() const override;
 
     // ---- 2D / UI 工厂（M5）----
     std::unique_ptr<IRenderer2D> create_renderer2d() override;
@@ -151,6 +161,17 @@ public:
     // ---- 截图（M5.3）----
     void request_screenshot(const std::string& path) override;
     bool capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) override;
+
+    // ---- 调试探针（SSR 竞态排查用，env GRYCE_DX12_PROBE_SSR=1 门控）----
+    // 在指定帧把纹理拷回 CPU，输出均值 / 非零占比 / 内容哈希。
+    void probe_texture(RHITextureHandle tex, const char* tag) override;
+
+    // ★ ImGui（或其它自带 D3D12 原生约定的覆盖层）绘制前调用：
+    //   把本帧的 present 目标内容先翻转 blit 进真实 back buffer，并把 back buffer
+    //   设为当前 RT —— 覆盖层随后直接画在"已纠正方向"的成品之上。
+    //   （引擎自身的 2D/3D pass 走 GL 约定，必须落在 present 目标里一起被翻转；
+    //     ImGui 的内置着色器是 D3D 原生约定，翻转后反而会上下颠倒。）
+    void flush_present_blit_for_overlay();
 
     // ---- D3D12 侧扩展（供 shader / pipeline 层使用）----
     ID3D12Device* device() const { return device_; }
@@ -186,6 +207,21 @@ private:
     void retire_buffer(uint32_t index, uint32_t generation);
     // 每次 begin_frame 调一次：把已完成围栏值之前的 retire 项真正释放。
     void drain_retired();
+    // ---- present 目标 + 帧末翻转 blit（见 d3d12_backend.cpp 的详解）----
+    // 为什么需要：本后端用 SPIRV-Cross 的 FLIP_VERTEX_Y 把整条管线等效成 OpenGL
+    // 的坐标/纹理约定（这样引擎所有 GL 版着色器里的 V 翻转、屏幕空间 UV 计算
+    // 都原样成立，实测画面与 GL 逐像素一致）。代价是**最终成品在 D3D 的呈现
+    // 方向上是上下镜像的**：D3D 的 back buffer 第 0 行在屏幕顶部，而 GL 约定的
+    // 第 0 行在屏幕底部。所以引擎所有"画到屏幕"的 pass 先落在后端内部的
+    // present 目标上，帧末再用一条自带的 blit 通道翻一次写进真实 back buffer。
+    //   * 这样翻转只发生一次，且与"这一帧开了哪些 pass"无关（早先把 FLIP_VERTEX_Y
+    //     关掉时，镜像次数会随 pass 数量变化 → 开/关 SSR 画面方向都不一样）。
+    bool ensure_present_target();
+    void release_present_target();
+    bool ensure_blit_pipeline();
+    void record_present_blit(ID3D12GraphicsCommandList* cmd);
+    // 当前"屏幕 RT"的 RTV：present 目标（未 blit）或真实 back buffer（已 blit）。
+    D3D12_CPU_DESCRIPTOR_HANDLE screen_rtv() const;
     // 把当前帧的 clear 录进命令列表（含 back buffer 状态转换）。
     void record_clear_if_dirty();
     // 把 RT 切回交换链 back buffer（idempotent：已是当前 RT 时不做重复屏障）。
@@ -201,6 +237,18 @@ private:
     bool begin_screenshot_copy(ID3D12GraphicsCommandList* cmd);
     void finish_screenshot();
     void release_screenshot_staging();
+    // 调试探针：帧提交后等 GPU、回读统计并打日志（见 probe_texture）。
+    void probe_drain();
+    struct PendingProbe {
+        ID3D12Resource* readback = nullptr;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+        uint64_t total = 0;
+        uint32_t w = 0, h = 0;
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        const char* tag = nullptr;
+        uint64_t frame = 0;
+    };
+    std::vector<PendingProbe> pending_probes_;
     // native_window 是 GLFWwindow*（见 render_context.cpp:157），D3D12 需要真实
     // HWND —— 走 glfwGetWin32Window 转换。非 GLFW 句柄时返回 nullptr。
     static HWND hwnd_from_native(void* native_window);
@@ -309,6 +357,10 @@ public:
     //   修法：归还也按围栏值排队，GPU 真正跑过那一帧之后才 free_range。
     void retire_descriptor_range(uint32_t srv_base, uint32_t srv_count,
                                  uint32_t smp_base, uint32_t smp_count);
+    // D3D12Mesh::ResourceRetireSink：网格缓冲被替换（容量不足而重建）时，把旧资源
+    // 挂到"最近一次已提交"的围栏值上，等 GPU 跑完那几帧再真正 Release。
+    // 直接 Release 会让仍被在飞命令列表引用的资源消失 → RemoveDevice/DEVICE_HUNG。
+    void retire_gpu_resource(ID3D12Resource* res) override;
     // 当帧"刚提交、尚未完成"的围栏值（归还请求要挂在这个值上）。
     uint64_t pending_fence_value() const { return swapchain_.last_submitted_value(); }
 
@@ -321,6 +373,12 @@ private:
         uint32_t smp_count = 0;
     };
     std::vector<RetiredDescriptors> retired_descriptors_;
+    // 被替换掉的网格缓冲（同上：按围栏值延迟释放）。
+    struct RetiredRawResource {
+        uint64_t fence_value = 0;
+        ID3D12Resource* res = nullptr;
+    };
+    std::vector<RetiredRawResource> retired_raw_resources_;
 
     // ---- GPU 分段计时（时间戳查询）----
     // 每帧槽一套 query heap 区间；k_gpu_slots = frames_in_flight(3) + 1 余量，
@@ -370,6 +428,32 @@ private:
     // 本帧 back buffer 是否已被切到 RENDER_TARGET（决定 end_frame 是否要切回 PRESENT）
     bool back_buffer_as_rt_ = false;
 
+    // ---- present 目标（画到屏幕的 pass 的真正落点）+ 帧末翻转 blit ----
+    ID3D12Resource* present_tex_ = nullptr;              // 与交换链同尺寸/同格式
+    uint32_t present_w_ = 0, present_h_ = 0;
+    ID3D12DescriptorHeap* present_rtv_heap_ = nullptr;   // NON_SHADER_VISIBLE，1 槽
+    D3D12_CPU_DESCRIPTOR_HANDLE present_rtv_{};
+    D3D12_RESOURCE_STATES present_state_ = D3D12_RESOURCE_STATE_COMMON;
+    bool present_dirty_ = false;      // 本帧有 pass 落在 present 目标上（需要 blit）
+    bool present_flushed_ = false;    // 本帧已 blit 进真实 back buffer（UI 覆盖层之后）
+    bool backbuffer_as_rt_ = false;   // 真实 back buffer 当前是否处于 RENDER_TARGET
+    bool using_present_target_ = false;   // 当前绑定的"屏幕 RT"是否是 present 目标
+    // 翻转 blit 的自带管线（VS 用 SV_VertexID 生成全屏三角形，PS 采样 present 目标）。
+    // 顶点着色器**不做** Y 翻转 —— 恰是这一条让最终图像从 GL 约定转回 D3D 呈现方向。
+    ID3D12RootSignature* blit_root_ = nullptr;
+    ID3D12PipelineState* blit_pso_ = nullptr;
+    bool blit_pipeline_failed_ = false;   // 创建失败后不再重试（每帧只警告一次）
+    // blit 用的 SRV 描述符槽位：**按帧槽固定复用**（每槽一个），不是每帧新申请。
+    // ★★ 绝不能每帧从共享堆里 allocate 一个不归还：D3D12 的 SHADER_VISIBLE 堆一旦
+    //    被撑满，DescriptorAllocator 会**重建更大的堆并拷贝描述符** —— 已录进在飞
+    //    命令列表的 GPU 句柄（绝对地址）立刻悬空，实测就是
+    //      "CreateGraphicsPipelineState failed ... removed_reason=0x887A0006"
+    //      （DEVICE_HUNG）然后整条链雪崩。短跑看不出，跑够帧数（8192/每帧 1 个）
+    //    才爆 —— 这正是"只渲染了一帧画面是对的、后面就挂了"的成因。
+    //    按帧槽复用是安全的：begin_frame 已经等过该槽的围栏值，用同一槽的帧
+    //    必然已经跑完。
+    std::vector<uint32_t> present_srv_slots_;   // 下标 = 帧槽；UINT32_MAX = 未分配
+
     // ---- 截图（M5.3）----
     // 与 GL/Vulkan 同构：request_screenshot 记下路径与目标帧号，end_frame 里
     // 帧号一到就把 back buffer 拷进回读缓冲；本帧提交并等 GPU 后取回像素落盘。
@@ -411,6 +495,9 @@ private:
     // PSO 把 RT 格式编译进去，所以换 RT 必须换 PSO —— 与 Vulkan 一致。
     DXGI_FORMAT current_rt_format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
     DXGI_FORMAT current_ds_format_ = DXGI_FORMAT_UNKNOWN;
+    // 当前绑定 RT 颜色附件 0 的多样本数（决定 PSO 的 SampleDesc.Count 与
+    // RasterizerState.MultisampleEnable；多样本 RT 由 RenderPipeline 显式开启）。
+    uint32_t current_rt_samples_ = 1;
 
     // 适配器描述（api_version() 返回它；init 成功后有效）
     char adapter_desc_[160] = {};

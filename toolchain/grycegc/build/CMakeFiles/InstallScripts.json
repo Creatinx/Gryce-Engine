@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/Gryce-Engine/toolchain/grycegc/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

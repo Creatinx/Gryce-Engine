@@ -12,6 +12,9 @@ namespace gryce_engine::render {
 namespace {
 
 // 当前绑定的 VAO，避免重复的 glBindVertexArray 调用。
+// thread_local：GL 命令全部在渲染线程执行（GL context 单线程持有），
+// 主线程若有代码绕过 RenderContext 直接调 GLMesh::bind()，会拿到独立的
+// 缓存副本而每次"未命中"重绑 —— 不崩溃，但性能退化；禁止那样调用。
 thread_local GLuint g_current_bound_vao = 0;
 
 } // namespace

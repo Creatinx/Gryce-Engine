@@ -16,6 +16,8 @@
 //
 // --play：进入交互模式 —— 鼠标锁定（光标隐藏、锁定在窗口内）用鼠标转视角，
 //         WASD 前后左右移动、空格/左Ctrl 升降、Shift 加速、Esc 退出。
+//         按一下 Alt 切换"锁定/解锁"（解锁后指针可见、视角冻结，可去点菜单或
+//         别的窗口；再按一下 Alt 恢复锁定），松开 Alt 不会自动恢复。
 //         交互模式下 --frames 表示"第 N 帧截一次图"，不退出。
 //
 // 退出码: 0 = 正常；1 = 初始化失败；2 = 渲染结果为空（着色器/管线未生效）。 
@@ -58,6 +60,8 @@ constexpr int kKeySpace = 32;
 constexpr int kKeyA = 65, kKeyD = 68, kKeyE = 69, kKeyQ = 81, kKeyS = 83, kKeyW = 87;
 constexpr int kKeyEscape = 256;
 constexpr int kKeyLeftShift = 340, kKeyLeftControl = 341;
+// 左右 Alt（GLFW_KEY_LEFT_ALT / RIGHT_ALT）：按一下切换"锁定/解锁"指针。
+constexpr int kKeyLeftAlt = 342, kKeyRightAlt = 346;
 
 // 相机本地坐标约定：-Z 前、+X 右、+Y 上（与 math::Camera::update_vectors 一致）。
 struct FpsCamera {
@@ -70,6 +74,17 @@ struct FpsCamera {
     bool mouse_ready = false;
     double last_mx = 0.0;
     double last_my = 0.0;
+    // 指针是否处于"锁定（GLFW_CURSOR_DISABLED）"态。每帧按下面条件重算：
+    //   窗口有焦点 && 用户没主动解锁 → 锁定；否则放开（指针可见可移动）。
+    bool cursor_locked = false;
+    // 用户通过 Alt 主动切换出的"解锁"态：true=指针放开、视角冻结。
+    // 是"按一下切换"，不是"按住"：松开 Alt 不会自动恢复锁定。
+    bool user_unlocked = false;
+    // 上一帧的 Alt 状态：只在"按下沿"触发一次切换，长按产生的键盘自动重复
+    // 不会连续误触发。
+    bool alt_was_held = false;
+    // 上一帧的焦点状态：重新获得焦点时把 user_unlocked 复位成锁定。
+    bool was_focused = false;
 
     static void normalize(GQuat& q) {
         const float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
@@ -164,6 +179,64 @@ struct FpsCamera {
 
         if (window.get_key(kKeyEscape)) return false;
 
+        // ---- 指针锁定策略 ----
+        //  1) **只在窗口有焦点时锁定**：Alt-Tab 切走还锁着鼠标的话，指针被系统
+        //     扣在这个窗口里，别的窗口点不到、也看不到指针。失焦即放开。
+        //  2) **按一下 Alt 切换**（是"切换"，不是"按住"）：解锁后指针可见、视角
+        //     冻结，可以自由去点菜单或别的窗口；再按一下 Alt 恢复锁定。松开 Alt
+        //     不会自动恢复，所以"按住"语义下那套长按/自动重复的坑不存在。
+        //  3) 重新获得焦点时回到锁定态，避免"点回游戏却还停在解锁态、鼠标转不了视角"。
+        const bool alt_down = window.get_key(kKeyLeftAlt) || window.get_key(kKeyRightAlt);
+        if (alt_down != alt_was_held) {
+            // 原始按键边沿：只看"键有没有送到窗口、送了几次"，与锁定策略无关。
+            // 排查"按一下 Alt 却切了两次/没切"时先看这一行（一次按下只应有一行 DOWN）。
+            std::printf("[smoke] alt raw: %s (focused=%d)\n", alt_down ? "DOWN" : "UP",
+                        window.has_focus() ? 1 : 0);
+            std::fflush(stdout);
+        }
+        if (alt_down && !alt_was_held) {
+            // 只在"按下沿"切换一次：长按产生的键盘自动重复不会连续误触发。
+            user_unlocked = !user_unlocked;
+            // ASCII 前缀 "alt toggle:" 便于脚本计数（test/tools/cursor_lock_stress.ps1）。
+            std::printf("[smoke] alt toggle: %s (focused=%d)\n",
+                        user_unlocked ? "UNLOCKED" : "LOCKED",
+                        window.has_focus() ? 1 : 0);
+            std::fflush(stdout);
+        }
+        alt_was_held = alt_down;
+
+        const bool focused = window.has_focus();
+        if (focused && !was_focused) user_unlocked = false;   // 重新进入窗口 → 默认锁定
+        was_focused = focused;
+
+        const bool want_lock = focused && !user_unlocked;
+        if (want_lock != cursor_locked) {
+            cursor_locked = want_lock;
+            window.set_cursor_disabled(want_lock);
+            // 状态变化时打一行日志：交互模式出问题时（"鼠标被别的窗口抢走后没回来"
+            // 之类）能从日志一眼看出是哪一步没生效。
+            // 用 ASCII 标记（LOCKED/UNLOCKED + reason=…）：中文说明在后，
+            // 这样脚本也能按 ASCII 前缀校验状态机（test/tools/cursor_lock_probe.ps1）。
+            std::printf("[smoke] cursor state: %s (reason=%s) 指针%s（%s）\n",
+                        want_lock ? "LOCKED" : "UNLOCKED",
+                        !focused ? "focus-lost" : (user_unlocked ? "alt" : "focus"),
+                        want_lock ? "已锁定" : "已放开",
+                        !focused ? "窗口失焦" : (user_unlocked ? "Alt 解锁" : "窗口获得焦点"));
+            std::fflush(stdout);   // 交互模式被强杀时也要留下这行（重定向时是整块缓冲）
+            // 刚锁上时把指针挪回中心并对齐基线，避免"放开期间指针在别处"
+            // 造成解锁瞬间视角跳一下。
+            mouse_ready = false;
+        }
+        if (!cursor_locked) {
+            // 未锁定（失焦或用户解锁）：不读鼠标增量、不回中、不转视角。
+            // 只把当前指针位置记成基线，重新锁定时不会跳。
+            window.get_cursor_pos(last_mx, last_my);
+            mouse_ready = true;
+            // 位移仍然照常（解锁也能走位，和大多数游戏一致）。
+            apply_movement(window, dt);
+            return true;
+        }
+
         int w = 0, h = 0;
         window.get_size(w, h);
         const double cx = w > 0 ? w * 0.5 : 0.0;
@@ -175,6 +248,10 @@ struct FpsCamera {
             last_mx = cx;
             last_my = cy;
             mouse_ready = true;
+            // 刚锁定的这一帧先把指针拉回中心，再以中心为基线（丢弃这一帧的增量）。
+            window.set_cursor_pos(cx, cy);
+            apply_movement(window, dt);
+            return true;
         }
         const double dx = mx - last_mx;
         const double dy = my - last_my;
@@ -191,42 +268,47 @@ struct FpsCamera {
             moved = true;
         }
 
+        if (apply_movement(window, dt)) moved = true;
+
+        if (moved) {
+            const GQuat q = to_quat();
+            GEntity_SetLocalRotation(entity, &q);
+        }
+        return true;
+    }
+
+    // WASD/空格/Ctrl 位移（视角锁定与否都要能用：按住 Alt 只是放开指针，
+    // 不该把走位也一起禁掉）。返回是否真的移动了。
+    bool apply_movement(Window& window, float dt) {
         const float in_fwd = (window.get_key(kKeyW) ? 1.0f : 0.0f) -
                              (window.get_key(kKeyS) ? 1.0f : 0.0f);
         const float in_side = (window.get_key(kKeyD) ? 1.0f : 0.0f) -
                               (window.get_key(kKeyA) ? 1.0f : 0.0f);
         const float in_up = ((window.get_key(kKeySpace) || window.get_key(kKeyE)) ? 1.0f : 0.0f) -
                             ((window.get_key(kKeyLeftControl) || window.get_key(kKeyQ)) ? 1.0f : 0.0f);
+        if (in_fwd == 0.0f && in_side == 0.0f && in_up == 0.0f) return false;
 
-        if (in_fwd != 0.0f || in_side != 0.0f || in_up != 0.0f) {
-            const GQuat q = to_quat();
-            GVec3 f{};
-            rotate(q, 0.0f, 0.0f, -1.0f, f);
-            // 水平前向（WASD 只在地面平面内移动，抬头不影响前进方向）
-            const float flat = std::sqrt(f.x * f.x + f.z * f.z);
-            const float fx = flat > 1e-4f ? f.x / flat : 0.0f;
-            const float fz = flat > 1e-4f ? f.z / flat : 0.0f;
-            // right = normalize(forward × worldUp) = (-f.z, 0, f.x)
-            GVec3 move{};
-            move.x = fx * in_fwd - fz * in_side;
-            move.y = in_up;
-            move.z = fz * in_fwd + fx * in_side;
-            const float len = std::sqrt(move.x * move.x + move.y * move.y + move.z * move.z);
-            if (len > 1e-4f) {
-                const float sprint = window.get_key(kKeyLeftShift) ? 2.5f : 1.0f;
-                const float scale = speed * sprint * dt / len;
-                position.x += move.x * scale;
-                position.y += move.y * scale;
-                position.z += move.z * scale;
-                GEntity_SetLocalPosition(entity, &position);
-            }
-            moved = true;
-        }
+        const GQuat q = to_quat();
+        GVec3 f{};
+        rotate(q, 0.0f, 0.0f, -1.0f, f);
+        // 水平前向（WASD 只在地面平面内移动，抬头不影响前进方向）
+        const float flat = std::sqrt(f.x * f.x + f.z * f.z);
+        const float fx = flat > 1e-4f ? f.x / flat : 0.0f;
+        const float fz = flat > 1e-4f ? f.z / flat : 0.0f;
+        // right = normalize(forward × worldUp) = (-f.z, 0, f.x)
+        GVec3 move{};
+        move.x = fx * in_fwd - fz * in_side;
+        move.y = in_up;
+        move.z = fz * in_fwd + fx * in_side;
+        const float len = std::sqrt(move.x * move.x + move.y * move.y + move.z * move.z);
+        if (len <= 1e-4f) return false;
 
-        if (moved) {
-            const GQuat q = to_quat();
-            GEntity_SetLocalRotation(entity, &q);
-        }
+        const float sprint = window.get_key(kKeyLeftShift) ? 2.5f : 1.0f;
+        const float scale = speed * sprint * dt / len;
+        position.x += move.x * scale;
+        position.y += move.y * scale;
+        position.z += move.z * scale;
+        GEntity_SetLocalPosition(entity, &position);
         return true;
     }
 };
@@ -281,6 +363,13 @@ ProjectSettings load_project_settings(const std::string& project_root) {
             }
         }
         s.render_api = j.value("render_api", s.render_api);
+        // 配置里的值常被手改成带首尾空白（如 "vulkan "），会与后端名比对失败，这里去掉
+        {
+            const std::string& v = s.render_api;
+            const size_t b = v.find_first_not_of(" \t\r\n");
+            const size_t e = v.find_last_not_of(" \t\r\n");
+            s.render_api = (b == std::string::npos) ? std::string{} : v.substr(b, e - b + 1);
+        }
         s.main_scene = j.value("main_scene", j.value("entry_scene", s.main_scene));
         s.hdr = j.value("hdr", s.hdr);
         s.tone_map_mode = j.value("tone_map_mode", s.tone_map_mode);
@@ -412,6 +501,8 @@ void print_usage() {
         "  --pcss / --no-pcss     接触硬化软阴影开关（默认取 project.data）\n"
         "  --debug-view <0..8>    调试视图：5=阴影因子 6=直接光 7=环境光 8=级联着色\n"
         "  --fps / --no-fps       左上角白色 FPS 叠加（默认开）\n"
+        "  --fps-limit <N>        软件锁帧：帧率上限 N（0 = 不限制；与 --vsync 互补）\n"
+        "  --no-debug-ui          不画调试 UI（左上角读数 + ImGui 调试窗口）\n"
         "  --bench [N]            开启 GPU 分段计时，跑 N 帧（默认 240）后打印每 pass 平均 GPU 时间\n"
         "  --ssr / --no-ssr       覆盖屏幕空间反射开关（A/B 对照用）\n"
         "  --ssao / --no-ssao     覆盖屏幕空间环境光遮蔽开关\n"
@@ -419,6 +510,7 @@ void print_usage() {
         "  --no-analyze           跳过截图统计\n"
         "  --no-gpu-cull          关闭 GPU 视锥剔除（A/B 对照用）\n"
         "  --no-occlusion         关闭 HiZ 遮挡剔除（A/B 对照用）\n"
+        "  --msaa <N>             MSAA 采样数（前向 HDR pass；默认 4，--no-msaa 关闭）\n"
         "  --power-saver          强制开启省电模式（低分辨率 HDR + 跳过后处理）\n"
         "  --no-power-saver       强制关闭省电模式（A/B 对照用）\n"
         "  --list                 打印场景清单后退出\n"
@@ -583,6 +675,7 @@ int main(int argc, char** argv) {
     int ssao_override = -1;
     int ssil_override = -1;
     int env_override = -1;
+    int msaa_override = -1;   // -1 = 默认 4x；0 = 关闭；N = 指定采样数
     bool play_mode = false;
     // --simulate：只把引擎切进 Play 模式（World::update 生效，组件 on_update 跑起来），
     // 但不把相机交给 FpsCamera，也不锁鼠标。用于脚本/CI 验证粒子、动画这类依赖
@@ -612,6 +705,8 @@ int main(int argc, char** argv) {
     int debug_view_override = -1;
     int pcss_override = -1;
     bool fps_overlay = true;   // 左上角白色 FPS，默认开
+    int  fps_limit = -1;       // --fps-limit N（<0 表示不设置，保持默认 0 = 不限速）
+    bool debug_ui_enabled = true;   // --no-debug-ui 关闭调试 UI
     // -1 = 不干预（用引擎默认）；0/1 = 强制关/开。用于 A/B 对照优化开销。
     int gpu_cull_override = -1;
     int occlusion_override = -1;
@@ -670,6 +765,11 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--no-power-saver") == 0) power_saver_override = 0;
         else if (std::strcmp(a, "--fps") == 0) fps_overlay = true;
         else if (std::strcmp(a, "--no-fps") == 0) fps_overlay = false;
+        // --fps-limit N：软件锁帧（帧率上限），0 = 不限制。与 --vsync 互补。
+        else if (std::strcmp(a, "--fps-limit") == 0) fps_limit = std::atoi(need_value(a));
+        // --no-debug-ui：完全不画调试 UI（关掉左上角读数与 ImGui 调试窗口），
+        // 用于"纯画面"截图比对（UI 会让两张图必然不同）。
+        else if (std::strcmp(a, "--no-debug-ui") == 0) debug_ui_enabled = false;
         else if (std::strcmp(a, "--ssr-debug") == 0) ssr_debug_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--resolution") == 0) {
             // --resolution 1920x1080 等价于 --w 1920 --h 1080
@@ -691,6 +791,9 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--no-ssil") == 0) ssil_override = 0;
         else if (std::strcmp(a, "--env") == 0) env_override = 1;
         else if (std::strcmp(a, "--no-env") == 0) env_override = 0;
+        // MSAA：--msaa N / --no-msaa（A/B 对照用）。0 = 关闭。
+        else if (std::strcmp(a, "--msaa") == 0) msaa_override = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--no-msaa") == 0) msaa_override = 0;
         else if (std::strcmp(a, "--simulate") == 0) simulate_mode = true;
         else if (std::strcmp(a, "--move") == 0) move_cam = true;
         else if (std::strcmp(a, "--cam-pos") == 0) {
@@ -799,6 +902,9 @@ int main(int argc, char** argv) {
     // 3) 渲染器（Project Settings 里"重启生效"的项必须在 init 之前应用）
     GRender_SetShadowMapSize(cfg.shadow_map_size);
     GRender_SetVSync(vsync);
+    // 调试 UI 也属于"init 前生效"：引擎在 GRender_Init 里决定要不要接管 ImGui，
+    // --no-debug-ui 必须在那之前告知，否则 ImGui 照旧会初始化（只是不画面板）。
+    if (!debug_ui_enabled) GRender_SetDebugUI(false);
 
     GRenderInitDesc desc{};
     desc.version = sizeof(GRenderInitDesc);
@@ -807,6 +913,13 @@ int main(int argc, char** argv) {
     desc.viewport_w = width;
     desc.viewport_h = height;
     desc.sync_mode = sync_mode;
+    // MSAA 必须在 GRender_Init 之前下发：采样数决定 init 时创建的 HDR 目标
+    // 形态（多样本颜色附件 + resolve 目标）。--no-msaa → 1（= 关闭）。
+    if (msaa_override >= 0) {
+        const int msaa = msaa_override > 0 ? msaa_override : 1;
+        GRender_SetMSAASamples(msaa);
+        std::printf("[smoke] msaa = %d%s\n", msaa, msaa == 1 ? " (off)" : "x");
+    }
     if (GRender_Init(&desc) != 0) {
         std::fprintf(stderr, "[smoke] GRender_Init failed\n");
         GCore_Shutdown();
@@ -847,6 +960,12 @@ int main(int argc, char** argv) {
     GRender_SetPCSSParams(cfg.pcss_light_size, cfg.pcss_max_radius, 1.0f);
     // 左上角白色 FPS（默认开；--no-fps 关闭）
     GRender_SetFPSOverlay(fps_overlay);
+    if (!debug_ui_enabled) GRender_SetDebugUI(false);
+    if (fps_limit >= 0) {
+        GRender_SetFrameRateLimit(fps_limit);
+        std::printf("[smoke] fps limit = %d%s\n", fps_limit,
+                    fps_limit == 0 ? " (unlimited)" : "");
+    }
     if (gpu_cull_override >= 0) GRender_SetGPUCullingEnabled(gpu_cull_override != 0);
     if (occlusion_override >= 0) GRender_SetOcclusionCullingEnabled(occlusion_override != 0);
     if (power_saver_override >= 0) GRender_SetPowerSaverForced(power_saver_override != 0);
@@ -893,12 +1012,11 @@ int main(int argc, char** argv) {
     FpsCamera play_cam;
     if (play_mode) {
         if (play_cam.init_from_entity(play_speed, play_sensitivity)) {
+            // 光标锁定不在这里做：FpsCamera::update 每帧按"窗口有焦点 && 用户没主动
+            // 解锁"重算（失焦自动放开，重新获得焦点自动恢复），单一来源，避免两处状态打架。
             window.focus_window();
-            window.set_cursor_disabled(true);
-            int w = 0, h = 0;
-            window.get_size(w, h);
-            if (w > 0 && h > 0) window.set_cursor_pos(w * 0.5, h * 0.5);
-            std::printf("[smoke] --play: 鼠标已锁定 | 鼠标=转视角  WASD=移动  "
+            std::printf("[smoke] --play: 鼠标=转视角（仅窗口有焦点时锁定；"
+                        "按一下 Alt 切换锁定/解锁）  WASD=移动  "
                         "空格/左Ctrl=升降  Shift=加速  Esc=退出  (speed=%.1f m/s sens=%.2f°/px)\n",
                         static_cast<double>(play_speed),
                         static_cast<double>(play_sensitivity));
@@ -1093,11 +1211,21 @@ int main(int argc, char** argv) {
     // running_ 读出来仍是 false，走到"同步销毁"分支糊弄过去了。
     // D3D12 的关闭路径分配更多，堆块被 0xFEEEFEEE 填充，
     // running_ 读成 true → 走 enqueue_destroy → 对垃圾 mutex 加锁 → SIGSEGV。
+    // 帧率/帧时间读数：锁帧、VSync 这类"锁帧技术"的效果就靠这两个数验证
+    // （--fps-limit 30 时这里应该稳定在 30 左右）。
+    // 必须在 GRender_Shutdown() **之前**取 —— 渲染器销毁后统计就清零了。
+    const float final_fps = GRender_GetFPS();
+    const float final_frame_ms = GRender_GetFrameTimeMs();
+    const int   final_limit = GRender_GetFrameRateLimit();
+
     GCore_Shutdown();
     GRender_Shutdown();
     Window::shutdown_sdk();
 
     std::printf("[smoke] done, rendered=%d frames, shot=%s\n", rendered, shot_path.c_str());
+    std::printf("[smoke] fps=%.1f frame=%.2f ms (limit=%d vsync=%d)\n",
+                static_cast<double>(final_fps), static_cast<double>(final_frame_ms),
+                final_limit, vsync ? 1 : 0);
 
     if (!shot_requested) return 0;
     if (!std::filesystem::exists(shot_path)) {

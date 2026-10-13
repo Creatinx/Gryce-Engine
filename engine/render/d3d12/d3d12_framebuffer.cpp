@@ -86,6 +86,7 @@ void D3D12Framebuffer::release_attachments() {
     color_rtvs_.clear();
     depth_ = nullptr;
     depth_dsv_ = {};
+    resolve_ = nullptr;
 }
 
 void D3D12Framebuffer::attach_color_texture(ITexture* texture) {
@@ -143,9 +144,46 @@ void D3D12Framebuffer::attach_depth_texture(ITexture* texture) {
     }
 }
 
+void D3D12Framebuffer::attach_resolve_texture(ITexture* texture) {
+    if (!texture) {
+        resolve_ = nullptr;
+        return;
+    }
+    auto* tex = static_cast<D3D12Texture*>(texture);
+    if (!tex->is_valid() || tex->is_depth()) {
+        GLOG_WARN("D3D12Framebuffer::attach_resolve_texture: resolve target must be a valid "
+                  "non-depth texture");
+        return;
+    }
+    if (tex->is_multisampled()) {
+        GLOG_WARN("D3D12Framebuffer::attach_resolve_texture: resolve target must be "
+                  "single-sample");
+        return;
+    }
+    // 与颜色附件同格式同尺寸（ResolveSubresource 的硬性要求）。
+    if (!color_textures_.empty() && color_textures_[0] &&
+        (color_textures_[0]->dxgi_format() != tex->dxgi_format() ||
+         color_textures_[0]->width() != tex->width() ||
+         color_textures_[0]->height() != tex->height())) {
+        GLOG_WARN("D3D12Framebuffer::attach_resolve_texture: resolve target does not match "
+                  "color attachment ({}x{} vs {}x{})",
+                  tex->width(), tex->height(), color_textures_[0]->width(),
+                  color_textures_[0]->height());
+        return;
+    }
+    resolve_ = tex;
+}
+
 bool D3D12Framebuffer::is_complete() const {
     // D3D12 没有 GL 式的 completeness 检查；语义上"至少有一个颜色或深度附件"即可用。
     return !color_textures_.empty() || depth_ != nullptr;
+}
+
+int D3D12Framebuffer::color_sample_count() const {
+    // 有颜色附件取颜色 0；depth-only 帧缓冲（深度 resolve pass）没有颜色附件，
+    // 但 PSO 的 SampleDesc 仍必须与绑定的 DSV 采样数一致，所以回落到深度附件。
+    if (!color_textures_.empty()) return color_textures_[0]->sample_count();
+    return depth_ ? depth_->sample_count() : 1;
 }
 
 void D3D12Framebuffer::bind() const {

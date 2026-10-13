@@ -172,6 +172,13 @@ void D3D12ImGuiBackend::render_draw_data(ImDrawData* draw_data) {
     ID3D12GraphicsCommandList* cmd = backend_->swapchain().command_list();
     if (!cmd) return;
 
+    // ★ 先把引擎本帧的画面（GL 约定，上下镜像）翻转 blit 进真实 back buffer，
+    //   并把 back buffer 设为当前 RT —— ImGui 的内置着色器是 D3D 原生约定
+    //   （左上原点、y 向下），必须画在"已经纠正过方向"的成品之上，否则它自己
+    //   会跟着被翻一次（UI 上下颠倒）。这与 Vulkan 后端给 ImGui 投影单独做
+    //   Y 翻转是同一个道理，只是这里用 blit 把引擎内容先搬正更直接。
+    backend_->flush_present_blit_for_overlay();
+
     // ★ 把 ImGui 自己的 SRV 堆绑上去（替换引擎主堆），绘制完再换回来。
     ID3D12DescriptorHeap* heaps[] = {g_imgui_srv_heap};
     cmd->SetDescriptorHeaps(1, heaps);

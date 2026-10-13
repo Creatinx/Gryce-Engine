@@ -4,6 +4,32 @@
 
 namespace gryce_engine::utils {
 
+// 把 UTF-8 文本写到 stderr。
+// Windows 控制台：先把 UTF-8 转成 UTF-16 再 WriteConsoleW —— 这样渲染不依赖
+// 控制台代码页，中文在任何终端/IDE 控制台都能正确显示（仅 SetConsoleOutputCP
+// 在部分终端下不生效，会退化成乱码）。stderr 被重定向为文件/管道时回退为
+// 直接写字节，保持 UTF-8 原样输出。
+static void write_stderr_utf8(const std::string& text) {
+#if defined(_WIN32)
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD mode = 0;
+    if (h != nullptr && h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode)) {
+        const int need = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                             static_cast<int>(text.size()), nullptr, 0);
+        if (need > 0) {
+            std::wstring wide(static_cast<size_t>(need), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                                wide.data(), need);
+            DWORD written = 0;
+            WriteConsoleW(h, wide.data(), static_cast<DWORD>(wide.size()), &written, nullptr);
+            return;
+        }
+    }
+#endif
+    std::cerr << text;
+    std::cerr.flush();
+}
+
 // ---------------------------------------------------------------------------
 // ConsoleLogger
 // ---------------------------------------------------------------------------
@@ -78,13 +104,15 @@ void ConsoleLogger::log(LogLevel level, const std::string& message) {
     const char* name  = level_str(level);
     std::string ts    = timestamp();
 
-    std::cerr << color
-              << '[' << ts << ']'
-              << '[' << name << ']'
-              << '[' << message << ']'
-              << reset
-              << '\n';
-    std::cerr.flush();
+    std::string line;
+    line.reserve(message.size() + 48);
+    line += color;
+    line += '['; line += ts;   line += ']';
+    line += '['; line += name; line += ']';
+    line += '['; line += message; line += ']';
+    line += reset;
+    line += '\n';
+    write_stderr_utf8(line);
 }
 
 void ConsoleLogger::log(LogLevel level, const std::string& message, std::source_location loc) {

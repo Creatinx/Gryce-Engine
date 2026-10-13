@@ -37,6 +37,9 @@ constexpr uint32_t kOpDecorate = 71;
 constexpr uint32_t kOpVariable = 59;
 // Decoration / StorageClass 枚举值
 constexpr uint32_t kDecorationBlock = 2;
+// BufferBlock(3)：GLSL 4.30+ 对 SSBO 的装饰（Block 是 UBO 的）。glslang 在
+// **两种**语义下都给 SSBO 打 BufferBlock，只认 Block 会一个绑定都取不到。
+constexpr uint32_t kDecorationBufferBlock = 3;
 constexpr uint32_t kDecorationBinding = 33;
 // 两种方言对 SSBO 的表示不同（实测 glslangValidator）：
 //   -V（Vulkan 语义，shaderc 走这条）→ storage class = StorageBuffer(12)
@@ -115,7 +118,10 @@ std::vector<SpirvStorageBinding> reflect_storage_buffers(const std::vector<uint3
                 break;
             case kOpDecorate:
                 // ops[0] = target, ops[1] = decoration, ops[2..] = 字面量
-                if (nops >= 2 && ops[1] == kDecorationBlock) block_structs[ops[0]] = 0;
+                if (nops >= 2 && (ops[1] == kDecorationBlock ||
+                                  ops[1] == kDecorationBufferBlock)) {
+                    block_structs[ops[0]] = 0;
+                }
                 if (nops >= 3 && ops[1] == kDecorationBinding) binding_of[ops[0]] = ops[2];
                 break;
             case kOpVariable:
@@ -329,7 +335,8 @@ bool VulkanComputePipeline::create_pipeline(const std::vector<uint32_t>& code) {
     return true;
 }
 
-void VulkanComputePipeline::set_storage_buffer(const char* name, VkBuffer buffer) {
+void VulkanComputePipeline::set_storage_buffer(const char* name, VkBuffer buffer,
+                                               VkDeviceSize offset) {
     if (!name || !valid()) return;
     auto it = binding_by_name_.find(name);
     if (it == binding_by_name_.end()) {
@@ -344,8 +351,12 @@ void VulkanComputePipeline::set_storage_buffer(const char* name, VkBuffer buffer
         return;
     }
     auto cur = bound_.find(it->second);
-    if (cur != bound_.end() && cur->second == buffer) return;  // 未变化
-    bound_[it->second] = buffer;
+    // 偏移参与去重：帧槽每帧轮转，offset 必然逐帧变化；只比缓冲会把"换了槽位"
+    // 误判成未变化，描述符就会一直指向上一周期的数据段。
+    if (cur != bound_.end() && cur->second.first == buffer && cur->second.second == offset) {
+        return;  // 未变化
+    }
+    bound_[it->second] = {buffer, offset};
     dirty_ = true;
 }
 
@@ -357,15 +368,20 @@ void VulkanComputePipeline::update_descriptors() {
     for (uint32_t b : bindings_) {
         auto it = bound_.find(b);
         VkBuffer buf = VK_NULL_HANDLE;
-        if (it != bound_.end() && it->second != VK_NULL_HANDLE) {
-            buf = it->second;
+        VkDeviceSize buf_offset = 0;
+        if (it != bound_.end() && it->second.first != VK_NULL_HANDLE) {
+            buf = it->second.first;
+            buf_offset = it->second.second;
         } else if (dummy_.buffer() != VK_NULL_HANDLE) {
             buf = dummy_.buffer();
         }
         if (buf == VK_NULL_HANDLE) continue;
         VkDescriptorBufferInfo info{};
         info.buffer = buf;
-        info.offset = 0;
+        // 帧槽偏移：与 CPU 写（VulkanStorageBuffer::update）和间接绘制读取
+        // （vkCmdDrawIndirect 的 offset）落在同一段，着色器看到的仍是从 0 起。
+        // VK_WHOLE_SIZE 表示"从 offset 到缓冲末尾"，无需按 size_ 收窄。
+        info.offset = buf_offset;
         info.range = VK_WHOLE_SIZE;
         infos.push_back(info);
     }

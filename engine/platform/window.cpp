@@ -24,6 +24,13 @@ namespace gryce_engine::platform {
 // 其余消息全部转发给原始 WndProc（GLFW 的 windowProc）。
 static LRESULT CALLBACK window_resize_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     Window* self = static_cast<Window*>(reinterpret_cast<void*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)));
+    // 单独按 Alt 会激活窗口的系统菜单（进入菜单模式），之后键盘事件被系统菜单
+    // 接管：表现为"按一下 Alt 之后 Alt 就失灵了、松开也收不到 UP"，随后所有
+    // Alt 都失效（GLFW 的按键状态卡在按下）。游戏/工具窗口不需要菜单栏，这里
+    // 直接吞掉 SC_KEYMENU，让 Alt 始终作为普通按键送到窗口。
+    if (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_KEYMENU) {
+        return 0;
+    }
     if (msg == WM_NCHITTEST && self) {
         if (IsZoomed(hwnd)) {
             return HTCLIENT;
@@ -413,18 +420,16 @@ void Window::set_vsync(bool enabled) {
 
 void Window::set_cursor_visible(bool visible) {
     if (!handle_) return;
-    CursorMode desired = visible ? CursorMode::Normal : CursorMode::Hidden;
-    if (desired == cursor_mode_) return;
-    cursor_mode_ = desired;
+    // 不做"和上次相同就跳过"的缓存判断：GLFW/系统会在窗口失焦等情况下自行
+    // 改动光标模式，本地缓存一旦与实际失同步，跳过就会变成静默失效（表现为
+    // "有时候锁得住、大部分时候锁不住"）。glfwSetInputMode 本身幂等且开销极小，
+    // 每次都实际下发最稳妥。
     glfwSetInputMode(handle_, GLFW_CURSOR,
         visible ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_HIDDEN);
 }
 
 void Window::set_cursor_disabled(bool disabled) {
     if (!handle_) return;
-    CursorMode desired = disabled ? CursorMode::Disabled : CursorMode::Normal;
-    if (desired == cursor_mode_) return;
-    cursor_mode_ = desired;
     glfwSetInputMode(handle_, GLFW_CURSOR,
         disabled ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 }

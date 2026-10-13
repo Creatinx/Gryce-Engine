@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "utils/crypto/random.h"
 #include "utils/glog/glog_lib.h"
 
 #if defined(_WIN32)
@@ -270,19 +271,7 @@ void inc32(uint8_t counter[16]) {
 // ============================================================================
 // 随机 IV 生成
 // ============================================================================
-
-bool get_random_bytes(uint8_t* buf, size_t len) {
-#if defined(_WIN32)
-    return BCryptGenRandom(nullptr, buf, static_cast<ULONG>(len),
-                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
-#else
-    FILE* f = std::fopen("/dev/urandom", "rb");
-    if (!f) return false;
-    const size_t read = std::fread(buf, 1, len, f);
-    std::fclose(f);
-    return read == len;
-#endif
-}
+// 2026-10-13：改用 utils::random_bytes（共享实现）。
 
 } // namespace
 
@@ -390,7 +379,7 @@ bool aes_gcm_encrypt_buf(const uint8_t key[32],
                          const uint8_t* plaintext, size_t plaintext_len,
                          std::vector<uint8_t>& out) {
     uint8_t iv[12];
-    if (!get_random_bytes(iv, sizeof(iv))) {
+    if (!utils::random_bytes(iv, sizeof(iv))) {
         GLOG_ERROR("aes_gcm: failed to generate random IV");
         return false;
     }

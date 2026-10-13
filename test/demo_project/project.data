@@ -4,7 +4,7 @@
   "engine_version": ">=0.1.0",
   "entry_scene": "res:/scenes/main.gesc",
   "window": { "width": 1920, "height": 1080, "title": "Gryce Renderer" },
-  "render_api": "vulkan ",
+  "render_api": "vulkan",
   "hdr": true,
   "tone_map_mode": 1,
   "exposure": 1.0,

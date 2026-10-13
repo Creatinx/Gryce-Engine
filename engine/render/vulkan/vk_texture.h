@@ -32,6 +32,11 @@ public:
     bool is_cubemap() const override { return is_cubemap_; }
     bool create_depth(int width, int height) override;
     bool create(TextureFormat format, int width, int height, const void* data = nullptr) override;
+    // 多样本（MSAA）颜色附件：仅作渲染目标（无 SAMPLED 用途、无 mip），
+    // 由 render pass 的 resolve 附件或 blit 解析到单样本纹理。
+    bool create_msaa(TextureFormat format, int width, int height, int samples) override;
+    int sample_count() const override { return static_cast<int>(samples_); }
+    bool is_multisampled() const override { return samples_ > 1; }
     bool create_compressed(TextureFormat format, int width, int height,
                            int mip_levels, const void* const* mip_data,
                            const size_t* mip_sizes) override;
@@ -61,7 +66,8 @@ public:
 private:
     void destroy();
     bool create_image(VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                      const void* data = nullptr);
+                      const void* data = nullptr,
+                      VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     // 创建后立即把带 SAMPLED 用途的渲染目标过渡到可采样布局，避免
     // 首次作为附件渲染前被采样时 layout 仍是 UNDEFINED（验证层报错 + 垃圾色）
     void initial_transition_to_read_only(VkImageAspectFlags aspect);
@@ -80,6 +86,7 @@ private:
     int channels_ = 4;
     bool is_cubemap_ = false;
     uint32_t mip_levels_ = 1;
+    VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkFormat format_ = VK_FORMAT_R8G8B8A8_UNORM;
     TextureFilter min_filter_ = TextureFilter::Linear;
     TextureFilter mag_filter_ = TextureFilter::Linear;

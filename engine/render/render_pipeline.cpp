@@ -239,6 +239,42 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         shadow_atlas_enabled_ = false;
     }
 
+    // ---- MSAA 采样数协商（仅前向 HDR pass）----
+    // 默认 4x；env GRYCE_MSAA 覆盖：0/off = 关，1/on = 4x，或直接给 2/4/8/16。
+    // 上限取后端能力（GL_MAX_SAMPLES / framebufferColorSampleCounts /
+    // CheckFeatureSupport），create_msaa 失败还会逐级降级。
+    msaa_samples_ = 1;
+    if (hdr_enabled_ && !deferred_enabled_) {
+        int requested = 4;
+        if (const char* env = std::getenv("GRYCE_MSAA")) {
+            const std::string v(env);
+            if (v == "0" || v == "off" || v == "OFF") requested = 1;
+            else if (v == "1" || v == "on" || v == "ON") requested = 4;
+            else {
+                try { requested = std::stoi(v); } catch (...) { requested = 4; }
+            }
+        }
+        // 显式 setter（smoke CLI --msaa/--no-msaa）优先于 env。
+        if (msaa_request_ >= 1) requested = msaa_request_;
+        uint32_t backend_max = 1;
+        if (ctx->backend()) backend_max = ctx->backend()->get_capabilities().max_msaa_color_samples;
+        if (requested > 1) {
+            if (backend_max <= 1) {
+                GLOG_INFO("RenderPipeline: backend reports no MSAA support, disabling");
+                requested = 1;
+            } else {
+                while (requested > 1 && static_cast<uint32_t>(requested) > backend_max) requested /= 2;
+            }
+        }
+        msaa_samples_ = requested;
+        if (msaa_samples_ > 1) {
+            GLOG_INFO("RenderPipeline: MSAA enabled ({}x, backend max {}x)", msaa_samples_,
+                      backend_max);
+        }
+    } else if (deferred_enabled_) {
+        GLOG_INFO("RenderPipeline: MSAA skipped (deferred path renders HDR directly)");
+    }
+
     if (hdr_enabled_) {
         if (!create_hdr_target(ctx)) {
             GLOG_WARN("RenderPipeline: HDR target failed, falling back to LDR");
@@ -254,7 +290,7 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         }
     }
 
-    pbr_shader_ = load_shader("pbr", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    pbr_shader_ = load_shader("pbr", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!pbr_shader_.is_valid()) {
         GLOG_ERROR("RenderPipeline: failed to load pbr shader");
         return false;
@@ -262,13 +298,13 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
 
     // 蒙皮 PBR shader 为可选项：旧项目 shader 目录没有 skinned_pbr 时
     // 只告警降级（SkinnedMeshRenderer 不绘制），不影响普通渲染管线。
-    skinned_pbr_shader_ = load_shader("skinned_pbr", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false, true);
+    skinned_pbr_shader_ = load_shader("skinned_pbr", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false, true);
     if (!skinned_pbr_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: skinned_pbr shader unavailable, skinned rendering disabled");
     }
 
     // Scene View 网格线 shader：可选，加载失败仅禁用网格线。
-    grid_shader_ = load_shader("grid", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    grid_shader_ = load_shader("grid", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!grid_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: grid shader unavailable, viewport grid disabled");
     } else if (!create_grid_mesh(ctx)) {
@@ -278,24 +314,24 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
 
     // 3D 粒子 shader：可选，加载失败仅禁用粒子绘制。
     // 目标与不透明几何一致（HDR 或后缓冲），使粒子参与 tonemap/bloom。
-    particle_shader_ = load_shader("particle", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    particle_shader_ = load_shader("particle", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!particle_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: particle shader unavailable, 3D particles disabled");
     }
-    particle_depth_shader_ = load_shader("particle_depth", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    particle_depth_shader_ = load_shader("particle_depth", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!particle_depth_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: particle_depth shader unavailable, falling back to particle shader for SSR depth");
     }
 
     // 3D 线段 shader：可选，加载失败仅禁用线段绘制。
     // 与粒子目标一致（HDR 或后缓冲），使线段参与 tonemap/bloom。
-    line3d_shader_ = load_shader("line3d", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    line3d_shader_ = load_shader("line3d", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!line3d_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: line3d shader unavailable, 3D lines disabled");
     }
 
     // GPU 实例化网格 shader：可选，加载失败仅禁用实例化网格绘制。
-    instanced_shader_ = load_shader("instanced", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    instanced_shader_ = load_shader("instanced", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!instanced_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: instanced shader unavailable, instanced meshes disabled");
     }
@@ -305,20 +341,20 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
 
     // 广告牌 shader：可选，加载失败仅禁用 Billboard 绘制。
     // 与线段/粒子目标一致（HDR 或后缓冲），使广告牌参与 tonemap/bloom。
-    billboard_shader_ = load_shader("billboard", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    billboard_shader_ = load_shader("billboard", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!billboard_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: billboard shader unavailable, billboards disabled");
     }
 
     // 3D 文本 shader：可选，加载失败仅禁用 TextMesh3D 绘制。
-    text3d_shader_ = load_shader("text3d", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    text3d_shader_ = load_shader("text3d", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!text3d_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: text3d shader unavailable, 3D text disabled");
     }
 
     // 体积光柱 shader：可选，加载失败仅禁用 VolumetricLight 绘制。
     // 与线段/粒子/广告牌目标一致（HDR 或后缓冲），使光柱参与 tonemap/bloom。
-    volumelight_shader_ = load_shader("volumelight", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    volumelight_shader_ = load_shader("volumelight", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!volumelight_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: volumelight shader unavailable, volumetric lights disabled");
     }
@@ -374,6 +410,19 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
     if (!tonemap_shader_.is_valid()) {
         GLOG_ERROR("RenderPipeline: failed to load tonemap shader");
         return false;
+    }
+
+    // MSAA 深度 resolve（仅 D3D12/Vulkan）：前向 MSAA pass 的深度是多样样本，
+    // pass 结束后用本 shader 逐样本平均写回单样本 hdr_depth_。GL 走 blit，
+    // 不需要。目标帧缓冲是 depth-only（无颜色附件）。
+    if (msaa_samples_ > 1 && hdr_depth_only_fbo_.is_valid() && ctx_ && ctx_->backend() &&
+        (std::strcmp(ctx_->backend()->api_name(), "D3D12") == 0 ||
+         std::strcmp(ctx_->backend()->api_name(), "Vulkan") == 0)) {
+        depth_resolve_shader_ = load_shader("depth_resolve", hdr_depth_only_fbo_,
+                                            /*color_output=*/false, /*post_process=*/true);
+        if (!depth_resolve_shader_.is_valid()) {
+            GLOG_WARN("RenderPipeline: depth_resolve shader failed, MSAA depth stays unresolved");
+        }
     }
 
     // 预先把所有级联 shadow sampler 绑定到固定 PBR shadow slot，避免首次使用
@@ -482,7 +531,7 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
     // ---- Decal 初始化 ----
     decal_storage_.init(ctx);
     // 加载 decal shader（后处理管线，从 HDR 深度读取，blend 到 HDR 颜色）
-    decal_shader_ = load_shader("decal", hdr_enabled_ ? hdr_fbo_ : RHIFramebufferHandle{}, true, false);
+    decal_shader_ = load_shader("decal", hdr_enabled_ ? forward_hdr_fbo() : RHIFramebufferHandle{}, true, false);
     if (!decal_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: decal shader unavailable, decal rendering disabled");
         decal_enabled_ = false;
@@ -646,14 +695,31 @@ void RenderPipeline::shutdown() {
         ctx_->destroy_framebuffer(hdr_fbo_);
         hdr_fbo_ = RHIFramebufferHandle{};
     }
+    if (hdr_msaa_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(hdr_msaa_fbo_);
+        hdr_msaa_fbo_ = RHIFramebufferHandle{};
+    }
+    if (hdr_depth_only_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(hdr_depth_only_fbo_);
+        hdr_depth_only_fbo_ = RHIFramebufferHandle{};
+    }
     if (hdr_color_.is_valid()) {
         ctx_->destroy_texture(hdr_color_);
         hdr_color_ = RHITextureHandle{};
+    }
+    if (hdr_msaa_color_.is_valid()) {
+        ctx_->destroy_texture(hdr_msaa_color_);
+        hdr_msaa_color_ = RHITextureHandle{};
+    }
+    if (hdr_msaa_depth_.is_valid()) {
+        ctx_->destroy_texture(hdr_msaa_depth_);
+        hdr_msaa_depth_ = RHITextureHandle{};
     }
     if (hdr_depth_.is_valid()) {
         ctx_->destroy_texture(hdr_depth_);
         hdr_depth_ = RHITextureHandle{};
     }
+    msaa_samples_ = 1;
     if (viewport_fbo_.is_valid()) {
         ctx_->destroy_framebuffer(viewport_fbo_);
         viewport_fbo_ = RHIFramebufferHandle{};
@@ -689,6 +755,10 @@ void RenderPipeline::shutdown() {
     if (owns_shaders_ && taa_resolve_shader_.is_valid()) {
         ctx_->destroy_shader(taa_resolve_shader_);
         taa_resolve_shader_ = RHIShaderHandle{};
+    }
+    if (owns_shaders_ && depth_resolve_shader_.is_valid()) {
+        ctx_->destroy_shader(depth_resolve_shader_);
+        depth_resolve_shader_ = RHIShaderHandle{};
     }
     if (owns_shaders_ && gtao_shader_.is_valid()) {
         ctx_->destroy_shader(gtao_shader_);
@@ -2685,6 +2755,15 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                     camera_->get_view_matrix(), camera_->position(),
                     pp_params_, viewport_width_, viewport_height_);
         if (ssr_.output_texture().is_valid()) hdr_color_ = ssr_.output_texture();
+            // 临时诊断（GRYCE_TRACE_HDR=1）：见 render_scene 里同名日志的说明。
+            if (std::getenv("GRYCE_TRACE_HDR")) {
+                static int trace_frame2 = 0;
+                ++trace_frame2;
+                GLOG_WARN("[hdr2] frame={} hdr=idx{} gen{} ssr_out=idx{} gen{} valid={}",
+                          trace_frame2, hdr_color_.index, hdr_color_.generation,
+                          ssr_.output_texture().index, ssr_.output_texture().generation,
+                          ssr_.output_texture().is_valid() ? 1 : 0);
+            }
     }
 
     // 3. SSIL 屏幕空间间接光照（SSR 后、SSAO 前）
@@ -3120,6 +3199,16 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
                         camera_->get_view_matrix(), camera_->position(),
                         pp_params_, viewport_width_, viewport_height_);
             if (ssr_.output_texture().is_valid()) hdr_color_ = ssr_.output_texture();
+            // 临时诊断（GRYCE_TRACE_HDR=1）：这一帧交给后续 pass（含 tonemap）的
+            // HDR 到底是哪个纹理。若坏帧里 hdr != ssr_out，说明重指向没生效。
+            if (std::getenv("GRYCE_TRACE_HDR")) {
+                static int trace_frame = 0;
+                ++trace_frame;
+                GLOG_WARN("[hdr] frame={} hdr=idx{} gen{} ssr_out=idx{} gen{} valid={}",
+                          trace_frame, hdr_color_.index, hdr_color_.generation,
+                          ssr_.output_texture().index, ssr_.output_texture().generation,
+                          ssr_.output_texture().is_valid() ? 1 : 0);
+            }
         }
         if (ssil_enabled_ && ssil_.valid()) {
             render_ssil(ctx);
@@ -3745,9 +3834,18 @@ bool RenderPipeline::resize_render_targets_impl(int width, int height) {
             if (hdr_color_.is_valid()) ctx_->destroy_texture(hdr_color_);
             if (hdr_depth_.is_valid()) ctx_->destroy_texture(hdr_depth_);
             if (hdr_fbo_.is_valid()) ctx_->destroy_framebuffer(hdr_fbo_);
+            if (hdr_msaa_color_.is_valid()) ctx_->destroy_texture(hdr_msaa_color_);
+            if (hdr_msaa_depth_.is_valid()) ctx_->destroy_texture(hdr_msaa_depth_);
+            if (hdr_msaa_fbo_.is_valid()) ctx_->destroy_framebuffer(hdr_msaa_fbo_);
+            if (hdr_depth_only_fbo_.is_valid()) ctx_->destroy_framebuffer(hdr_depth_only_fbo_);
             hdr_color_ = old_color;
             hdr_depth_ = old_depth;
             hdr_fbo_ = old_fbo;
+            hdr_msaa_color_ = RHITextureHandle{};
+            hdr_msaa_depth_ = RHITextureHandle{};
+            hdr_msaa_fbo_ = RHIFramebufferHandle{};
+            hdr_depth_only_fbo_ = RHIFramebufferHandle{};
+            msaa_samples_ = 1;
             return false;
         }
         if (old_color.is_valid()) ctx_->destroy_texture(old_color);
@@ -3887,12 +3985,14 @@ bool RenderPipeline::create_fullscreen_mesh(RenderContext* ctx) {
 }
 
 void RenderPipeline::begin_hdr_forward_pass(RenderContext& ctx) {
-    GLOG_DEBUG("RenderPipeline::begin_hdr_forward_pass: hdr_fbo_={} viewport={}x{}",
-              hdr_fbo_.index, viewport_width_, viewport_height_);
+    GLOG_DEBUG("RenderPipeline::begin_hdr_forward_pass: hdr_fbo_={} msaa={} viewport={}x{}",
+              hdr_fbo_.index, msaa_samples_, viewport_width_, viewport_height_);
     // 复位"当前 HDR 颜色"：上一帧 SSR/DOF/MotionBlur 可能把它指向了自己的输出。
     if (hdr_original_color_.is_valid()) hdr_color_ = hdr_original_color_;
     ctx.set_shader(pbr_shader_);
-    ctx.set_framebuffer(hdr_fbo_);
+    // MSAA 开启时整个前向 pass（天空盒/网格/物体/透明/粒子/线段/viewmodel）
+    // 画进多样本目标；end_hdr_forward_pass 负责解析回单样本 hdr_color_。
+    ctx.set_framebuffer(forward_hdr_fbo());
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     // 深度清除受 glDepthMask 影响：上一帧 grid/透明 pass 会把深度写关闭，
     // 必须先恢复深度写，否则 glClear(DEPTH_BUFFER_BIT) 是空操作，深度缓冲
@@ -3905,7 +4005,43 @@ void RenderPipeline::begin_hdr_forward_pass(RenderContext& ctx) {
 }
 
 void RenderPipeline::end_hdr_forward_pass(RenderContext& ctx) {
-    (void)ctx;
+    // MSAA resolve：把多样本颜色解析进单样本 hdr_color_，之后的水面/SSR/
+    // 后处理链零改动（始终看到单样本纹理）。
+    // ★ 必须紧跟前向 pass 的绘制命令、先于任何后续 bind_framebuffer：
+    //   D3D12 的 ResolveSubresource 要求源仍处于 RENDER_TARGET 态，而
+    //   bind_framebuffer 的 FB→FB 切换会先把上一个 fb 的附件转成
+    //   shader-readable（那正是为了这个顺序特意把 resolve 放在这里的原因）。
+    //   Vulkan 由 render pass 的 pResolveAttachments 在 pass 内自动完成，
+    //   该命令是 no-op；GL 在这里做 glBlitFramebuffer。
+    if (msaa_samples_ > 1 && hdr_msaa_fbo_.is_valid() && hdr_fbo_.is_valid()) {
+        ctx.resolve_framebuffer(hdr_msaa_fbo_, hdr_fbo_);
+        // D3D12/Vulkan 深度 resolve：D3D12 没有深度版 ResolveSubresource，
+        // Vulkan 的 pResolveAttachments 只解析颜色；两家的规范又都强制
+        // DSV/RTV（VK：同 subpass 附件）采样数一致，所以前向 pass 挂的是
+        // 多样本深度，这里用全屏 pass 逐样本平均写回单样本 hdr_depth_
+        // （SSR/SSAO/GTAO 随后按往常采样）。GL 已在 resolve_color_to 里与
+        // 颜色一起 blit 深度。
+        // LESS 比较需要基准值：先 clear 到 1.0（深度恒 <= 1.0，必然通过）。
+        if (hdr_msaa_depth_.is_valid() && hdr_depth_only_fbo_.is_valid() &&
+            depth_resolve_shader_.is_valid() && fullscreen_mesh_.is_valid() && ctx_ &&
+            ctx_->backend() &&
+            (std::strcmp(ctx_->backend()->api_name(), "D3D12") == 0 ||
+             std::strcmp(ctx_->backend()->api_name(), "Vulkan") == 0)) {
+            ctx.set_framebuffer(hdr_depth_only_fbo_);
+            ctx.clear_depth();
+            ctx.set_shader(depth_resolve_shader_);
+            // raw_depth：多样本深度贴图默认带 compare sampler，texelFetch 不需要
+            // 比较语义，走非比较 sampler 路径（VK 侧否则会报 sampler 模式不匹配）。
+            ctx.set_texture_raw_depth(depth_resolve_shader_, hdr_msaa_depth_,
+                                      TextureSlots::kTonemapHDR, "uMsDepth");
+            ctx.set_uniform_int(depth_resolve_shader_, "uMsDepth", TextureSlots::kTonemapHDR);
+            ctx.set_uniform_int(depth_resolve_shader_, "uSamples", msaa_samples_);
+            ctx.set_depth_test(true);
+            ctx.set_depth_write(true);
+            ctx.set_cull_face(CullMode::None);
+            ctx.draw_mesh(fullscreen_mesh_, depth_resolve_shader_);
+        }
+    }
 }
 
 bool RenderPipeline::create_grid_mesh(RenderContext* ctx) {
@@ -4468,6 +4604,7 @@ void RenderPipeline::init_gpu_culling(RenderContext& ctx) {
         gpu_cull_dst_models_  = ctx.create_buffer();
         gpu_cull_args_        = ctx.create_buffer();
         gpu_cull_params_      = ctx.create_buffer();
+        gpu_cull_batch_ranges_ = ctx.create_buffer();
         gpu_cull_hiz_         = ctx.create_buffer();
 
         // HiZ 归约着色器：后处理形态（GL 走纹理单元 0，Vulkan 走 binding 0）。
@@ -4481,6 +4618,11 @@ void RenderPipeline::init_gpu_culling(RenderContext& ctx) {
         // NDC uv 与深度纹素行的 y 是否差一次翻转：Vulkan 主 pass 用负高度
         // viewport（与 GL 投影对齐），后处理用正高度，两者相反。
         hiz_flip_y_ = (std::string(ctx.backend()->api_name()) == "Vulkan") ? 1 : 0;
+        // GL 的 glDrawArraysIndirect 忽略 baseInstance，合并 dispatch 后各批数据
+        // 在 DstModels 里分段存放，GL 必须用 uGpuCulledBase uniform 补基址；
+        // Vulkan（instanced 属性取址）与 D3D12（SV_InstanceID）已被 firstInstance /
+        // StartInstanceLocation 偏移，该 uniform 在那边恒为 0（不叠加）。
+        gl_instanced_base_uniform_ = (std::string(ctx.backend()->api_name()) == "OpenGL");
 
         // 初始容量直接在这里分配（渲染线程，IBuffer::create 可同步执行）。
         // 后续扩容走 ensure_gpu_cull_buffers 的命令队列路径。
@@ -4498,9 +4640,11 @@ void RenderPipeline::init_gpu_culling(RenderContext& ctx) {
         alloc(gpu_cull_src_spheres_, size_t(capacity) * sizeof(math::Vector4f));
         alloc(gpu_cull_dst_models_,  size_t(capacity) * sizeof(math::Matrix4f));
         alloc(gpu_cull_args_,        size_t(k_gpu_cull_max_slots) * 16u);
-        // 剔除参数：416 字节（std430：count+3pad / 6 视锥面 / 相机 / HiZ 配置 /
-        // 12 层描述 / viewProj），与 cull_instances.comp 的 CullParams 块一致
+        // 剔除参数：416 字节（std430：count+batch_count+2pad / 6 视锥面 / 相机 /
+        // HiZ 配置 / 12 层描述 / viewProj），与 cull_instances.comp 的 CullParams 块一致
         alloc(gpu_cull_params_,      416u);
+        // 每批一段 ivec4：(src_base, count, dst_base, args_slot)，最多 64 批
+        alloc(gpu_cull_batch_ranges_, size_t(k_gpu_cull_max_slots) * 16u);
         gpu_cull_capacity_ = capacity;
 
         gpu_culling_available_ = true;
@@ -4515,7 +4659,7 @@ void RenderPipeline::release_gpu_culling(RenderContext& ctx) {
     }
     for (RHIBufferHandle h : {gpu_cull_src_models_, gpu_cull_src_spheres_,
                               gpu_cull_dst_models_, gpu_cull_args_, gpu_cull_params_,
-                              gpu_cull_hiz_}) {
+                              gpu_cull_batch_ranges_, gpu_cull_hiz_}) {
         if (h.is_valid()) ctx.destroy_buffer(h);
     }
     gpu_cull_src_models_ = RHIBufferHandle{};
@@ -4523,6 +4667,7 @@ void RenderPipeline::release_gpu_culling(RenderContext& ctx) {
     gpu_cull_dst_models_ = RHIBufferHandle{};
     gpu_cull_args_ = RHIBufferHandle{};
     gpu_cull_params_ = RHIBufferHandle{};
+    gpu_cull_batch_ranges_ = RHIBufferHandle{};
     gpu_cull_hiz_ = RHIBufferHandle{};
     gpu_cull_capacity_ = 0;
     gpu_culling_available_ = false;
@@ -4543,6 +4688,8 @@ bool RenderPipeline::ensure_gpu_cull_buffers(RenderContext& ctx, uint32_t instan
     // 间接参数：64 个槽位（每批一个），避免"批 N 写参数 / 批 N-1 还在读"的
     // 写后读冲突。每槽 = DrawArraysIndirectCommand（16 字节）。
     ctx.create_buffer_storage(gpu_cull_args_, k_gpu_cull_max_slots * 16u, nullptr,
+                              BufferUsage::Dynamic);
+    ctx.create_buffer_storage(gpu_cull_batch_ranges_, k_gpu_cull_max_slots * 16u, nullptr,
                               BufferUsage::Dynamic);
     gpu_cull_capacity_ = capacity;
     return true;
@@ -4791,6 +4938,11 @@ void RenderPipeline::build_hiz(RenderContext& ctx) {
         ctx.set_uniform_int(hiz_reduce_shader_, "uInput", TextureSlots::kTonemapHDR);
         ctx.draw_mesh(fullscreen_mesh_, hiz_reduce_shader_);
 
+        // Vulkan 不允许 render pass 内录 transfer 命令：先把 pending 的绘制
+        // （secondary CB）执行进主 CB 并关闭 pass，再拷贝（拷贝必须录在 pass 外，
+        // 否则后端 guard 会直接 WARN 并跳过，遮挡剔除退化为未剔除）。
+        ctx.end_render_pass_for_transfer();
+
         // 本级立刻进 SSBO：渲染与拷贝都发生在同一帧的这条命令流里，
         // 下一帧的 cull 就能用上（拷贝同样要求 render pass 之外）。
         ctx.copy_texture_to_buffer(hiz_tex_[i], gpu_cull_hiz_, hiz_offset_[i] * 4u);
@@ -4817,131 +4969,196 @@ void RenderPipeline::build_hiz(RenderContext& ctx) {
 
 void RenderPipeline::cull_instanced_batches_gpu(RenderContext& ctx, const Frustum& frustum) {
     // 必须在主渲染目标绑定之前调用：Vulkan 不允许 render pass 内 vkCmdDispatch。
+    //
+    // 合并 dispatch：所有批次拼成一段连续输入，一次 dispatch 完成全部剔除。
+    // 每线程按 idx 找到所属批次（BatchRanges 线性扫描，≤64 批，代价可忽略），
+    // 可见实例写进该批在 dst_models 里的独立分段，atomicAdd 对应 args 槽位的
+    // instanceCount。相比逐批 upload+dispatch：命令条目从 ~9×B 降到 4 条，
+    // dispatch 从 B 次降到 1 次，且各批上传不再共享 offset 0（此前完全依赖
+    // 命令队列按序执行才正确）。
+
+    // ---- 第一遍：筛批次、算总量（容量未定前不分配）----
+    // 注意 scratch[i].args_slot == i 且 src_base/dst_base 都是前缀和：二者同序推进。
+    cull_batch_ranges_scratch_.clear();
     uint32_t slot = 0;
+    uint32_t total = 0;
     for (auto& b : pending_batches_) {
         b.args_slot = k_gpu_cull_invalid_slot;
         if (!b.matrices || b.matrices->empty() || !b.mesh.is_valid()) continue;
         if (slot >= k_gpu_cull_max_slots) continue; // 槽位用尽 → 该批回退普通 instanced
 
+        CullBatchRange r;
+        r.matrices = b.matrices.get();
+        r.spheres = b.spheres.get();
+        r.args_slot = slot;
+        r.src_base = total;
+        r.dst_base = total;
         const uint32_t count = static_cast<uint32_t>(b.matrices->size());
-        if (!ensure_gpu_cull_buffers(ctx, count)) continue;
-        const uint32_t args_offset = slot * 16u;
+        cull_batch_ranges_scratch_.push_back(r);
+        total += count;
         b.args_slot = slot;
         ++slot;
+    }
+    if (cull_batch_ranges_scratch_.empty() || total == 0) return;
 
-        // 1) 复位间接绘制参数：count = 原型网格顶点数，instanceCount 由 GPU 累加
-        RHIMeshHandle mesh_h = b.mesh;
+    if (!ensure_gpu_cull_buffers(ctx, total)) return;
+
+    const uint32_t batch_count = static_cast<uint32_t>(cull_batch_ranges_scratch_.size());
+
+    // ---- 第二遍：拼接输入数据（各批 src/dst 分段都以 total 为基数排布）----
+    cull_src_models_scratch_.clear();
+    cull_src_spheres_scratch_.clear();
+    cull_src_models_scratch_.reserve(total);
+    cull_src_spheres_scratch_.reserve(total);
+    for (const auto& r : cull_batch_ranges_scratch_) {
+        cull_src_models_scratch_.insert(cull_src_models_scratch_.end(),
+                                        r.matrices->begin(), r.matrices->end());
+        cull_src_spheres_scratch_.insert(cull_src_spheres_scratch_.end(),
+                                         r.spheres->begin(), r.spheres->end());
+    }
+
+    // ---- 1) 一次复位全部使用中的 args 槽位 ----
+    // count = 原型网格顶点数（渲染线程才能解析 IMesh，顶点数在那边取）；
+    // baseInstance = 该批在 dst_models 里的基址：Vulkan 的 instanced 属性取址与
+    // gl_InstanceIndex、D3D12 的 SV_InstanceID 都被 firstInstance / StartInstanceLocation
+    // 偏移，填对基址各批才能读到自己的分段（GL 忽略该字段，走 uGpuCulledBase）。
+    struct SlotInfo {
+        RHIMeshHandle mesh;
+        uint32_t dst_base = 0;
+    };
+    std::vector<SlotInfo> slot_infos(batch_count);
+    cull_slot_dst_base_.assign(batch_count, 0);
+    for (const auto& b : pending_batches_) {
+        if (b.args_slot == k_gpu_cull_invalid_slot) continue;
+        if (b.args_slot >= batch_count) continue;
+        slot_infos[b.args_slot].mesh = b.mesh;
+        slot_infos[b.args_slot].dst_base = cull_batch_ranges_scratch_[b.args_slot].dst_base;
+        cull_slot_dst_base_[b.args_slot] = cull_batch_ranges_scratch_[b.args_slot].dst_base;
+    }
+    {
         RenderContext* ctx_ptr = &ctx;
         RHIBufferHandle args_h = gpu_cull_args_;
-        ctx.push_command([ctx_ptr, mesh_h, args_h, args_offset](IRenderBackend* backend) {
-            IMesh* m = ctx_ptr->mesh(mesh_h);
+        std::vector<uint8_t> reset(static_cast<size_t>(batch_count) * 16u, 0);
+        ctx.push_command([ctx_ptr, args_h, slot_infos = std::move(slot_infos),
+                          reset = std::move(reset)](IRenderBackend* backend) mutable {
+            for (size_t i = 0; i < slot_infos.size(); ++i) {
+                if (!slot_infos[i].mesh.is_valid()) continue;
+                IMesh* m = ctx_ptr->mesh(slot_infos[i].mesh);
+                if (!m) continue;
+                struct DrawArraysIndirect {
+                    uint32_t count;
+                    uint32_t instance_count;
+                    uint32_t first;
+                    uint32_t base_instance;
+                } cmd{};
+                cmd.count = m->vertex_count();
+                cmd.instance_count = 0;
+                cmd.first = 0;
+                cmd.base_instance = slot_infos[i].dst_base;
+                std::memcpy(reset.data() + i * 16u, &cmd, sizeof(cmd));
+            }
             IBuffer* args = backend->buffer(args_h);
-            if (!m || !args) return;
-            struct DrawArraysIndirect {
-                uint32_t count;
-                uint32_t instance_count;
-                uint32_t first;
-                uint32_t base_instance;
-            } cmd{};
-            cmd.count = m->vertex_count();
-            cmd.instance_count = 0;
-            cmd.first = 0;
-            cmd.base_instance = 0;
-            args->update(&cmd, sizeof(cmd), args_offset);
+            if (args && !reset.empty()) args->update(reset.data(), reset.size(), 0);
         });
-
-        // 2) 上传本批实例数据（矩阵 + 世界包围球）
-        ctx.update_buffer(gpu_cull_src_models_, b.matrices->data(),
-                          size_t(count) * sizeof(math::Matrix4f), 0);
-        ctx.update_buffer(gpu_cull_src_spheres_, b.spheres->data(),
-                          size_t(count) * sizeof(math::Vector4f), 0);
-
-        // 3) 剔除参数（实例数 + 6 个视锥面 + HiZ 描述）走 SSBO：Vulkan GLSL 不允许
-        //    块外裸 uniform，GL 侧又没有 push constant，统一用 std430 块最省事。
-        //    视锥面与 CPU 侧 CullFrustum 完全同一约定（dot(n,c)+d >= -r 视为可见）。
-        //    布局与 cull_instances.comp 的 CullParams 块严格一致（416 字节）。
-        struct GpuCullParams {
-            uint32_t count;
-            uint32_t pad0;
-            uint32_t pad1;
-            uint32_t pad2;
-            float planes[6][4];
-            float cam_pos_near[4];   // xyz 相机位置, w 近平面
-            float cam_fwd_far[4];    // xyz 相机前向, w 远平面
-            float hiz_cfg[4];        // x 半径→像素系数, y bias, z 层数, w 开关
-            float hiz_levels[RenderPipeline::k_hiz_max_levels][4];  // (w, h, 元素起点, 0)
-            float view_proj[16];
-        } params{};
-        params.count = count;
-        for (int i = 0; i < 6; ++i) {
-            params.planes[i][0] = frustum.planes[i].x;
-            params.planes[i][1] = frustum.planes[i].y;
-            params.planes[i][2] = frustum.planes[i].z;
-            params.planes[i][3] = frustum.planes[i].w;
-        }
-        if (camera_) {
-            const math::Vector3f cam = camera_->position();
-            // 相机前向 = 视图矩阵第三行的反方向（世界空间）
-            const math::Matrix4f view = camera_->get_view_matrix();
-            math::Vector3f fwd(-view(2, 0), -view(2, 1), -view(2, 2));
-            const float len = fwd.length();
-            if (len > 1e-5f) fwd = fwd / len;
-            params.cam_pos_near[0] = cam.x; params.cam_pos_near[1] = cam.y;
-            params.cam_pos_near[2] = cam.z; params.cam_pos_near[3] = camera_->near_plane();
-            params.cam_fwd_far[0] = fwd.x; params.cam_fwd_far[1] = fwd.y;
-            params.cam_fwd_far[2] = fwd.z;  params.cam_fwd_far[3] = camera_->far_plane();
-            // 世界半径 → 屏幕像素：r * (0.5*H/tan(fovY/2)) / 视深度
-            const float tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
-            params.hiz_cfg[0] = (tan_half > 1e-4f)
-                                    ? 0.5f * static_cast<float>(viewport_height_) / tan_half
-                                    : 0.0f;
-        }
-        // 遮挡测试开关：金字塔未就绪时只做视锥剔除（w=0，着色器直接返回 false）
-        // 只用**已建好**的层级：正在分帧补齐时，尚未构建的级在 SSBO 里还是
-        // 上一轮的数据，让着色器选到那些级会得到过期的覆盖关系。
-        const bool hiz_ready = occlusion_culling_enabled_ && hiz_built_levels_ > 0 &&
-                               gpu_cull_hiz_.is_valid() && camera_;
-        params.hiz_cfg[1] = 0.1f;     // 深度偏置，单位=米（线性距离空间比较）
-        params.hiz_cfg[2] = static_cast<float>(
-            hiz_ready ? ((hiz_built_levels_ < k_hiz_max_levels) ? hiz_built_levels_
-                                                                : k_hiz_max_levels)
-                      : 0);
-        // w: 0 = 关闭；1 = 开启；2 = 开启且 NDC uv 的 y 需要翻转（Vulkan 主 pass
-        // 用负高度 viewport，与深度纹素行差一次翻转）
-        params.hiz_cfg[3] = hiz_ready ? (hiz_flip_y_ ? 2.0f : 1.0f) : 0.0f;
-        if (hiz_ready) {
-            // 双重保险：层数既受 k_hiz_max_levels 约束，也受实际已建级数约束
-            const int levels = (hiz_built_levels_ < k_hiz_max_levels) ? hiz_built_levels_
-                                                                     : k_hiz_max_levels;
-            for (int i = 0; i < levels; ++i) {
-                params.hiz_levels[i][0] = static_cast<float>(hiz_w_[i]);
-                params.hiz_levels[i][1] = static_cast<float>(hiz_h_[i]);
-                params.hiz_levels[i][2] = static_cast<float>(hiz_offset_[i]);
-                params.hiz_levels[i][3] = 0.0f;
-            }
-            const math::Matrix4f vp = get_projection_matrix() * camera_->get_view_matrix();
-            for (int c = 0; c < 4; ++c) {
-                for (int r = 0; r < 4; ++r) params.view_proj[c * 4 + r] = vp(r, c);
-            }
-        }
-        ctx.update_buffer(gpu_cull_params_, &params, sizeof(params), 0);
-        // 4) 绑定 SSBO 并派发剔除
-        ctx.set_shader(cull_shader_);
-        // 名字必须与 .comp 里的**块名**逐字一致（glGetProgramResourceIndex 查的是
-      // 块名，且大小写敏感）。src_models / dst_models 是块**内部成员名**，不是块名
-        // —— 用它们查询会返回 GL_INVALID_INDEX，绑定静默失败，compute 读到未绑定的
-      // SSBO，于是剔除"看起来开销为零"实则从未生效（instanceCount 恒为初始值，
-        // 等于每帧全量绘制）。块名不能改成小写：GLSL 不允许块名与成员名同名。
-        ctx.bind_storage_buffer(cull_shader_, "SrcModels", gpu_cull_src_models_);
-        ctx.bind_storage_buffer(cull_shader_, "SrcSpheres", gpu_cull_src_spheres_);
-        ctx.bind_storage_buffer(cull_shader_, "DstModels", gpu_cull_dst_models_);
-        ctx.bind_storage_buffer(cull_shader_, "DrawArgsBuffer", gpu_cull_args_);
-        ctx.bind_storage_buffer(cull_shader_, "CullParams", gpu_cull_params_);
-        if (hiz_ready) {
-            ctx.bind_storage_buffer(cull_shader_, "HiZLevels", gpu_cull_hiz_);
-        }
-        ctx.dispatch_compute(cull_shader_, (count + 63u) / 64u, 1, 1);
     }
+
+    // ---- 2) 上传拼接后的实例数据（各批一次 upload 合成一次）----
+    ctx.update_buffer(gpu_cull_src_models_, cull_src_models_scratch_.data(),
+                      cull_src_models_scratch_.size() * sizeof(math::Matrix4f), 0);
+    ctx.update_buffer(gpu_cull_src_spheres_, cull_src_spheres_scratch_.data(),
+                      cull_src_spheres_scratch_.size() * sizeof(math::Vector4f), 0);
+
+    // ---- 3) 每批范围描述（src_base, count, dst_base, args_slot）----
+    std::vector<uint8_t> ranges_bytes(batch_count * 16u, 0);
+    for (uint32_t i = 0; i < batch_count; ++i) {
+        const CullBatchRange& r = cull_batch_ranges_scratch_[i];
+        const int32_t quad[4] = {static_cast<int32_t>(r.src_base),
+                                 static_cast<int32_t>(r.matrices->size()),
+                                 static_cast<int32_t>(r.dst_base),
+                                 static_cast<int32_t>(r.args_slot)};
+        std::memcpy(ranges_bytes.data() + static_cast<size_t>(i) * 16u, quad, sizeof(quad));
+    }
+    ctx.update_buffer(gpu_cull_batch_ranges_, ranges_bytes.data(), ranges_bytes.size(), 0);
+
+    // ---- 4) 剔除参数（每帧一份）：total + batch_count + 视锥面 + HiZ 描述 ----
+    struct GpuCullParams {
+        uint32_t count;
+        uint32_t batch_count;
+        uint32_t pad1;
+        uint32_t pad2;
+        float planes[6][4];
+        float cam_pos_near[4];   // xyz 相机位置, w 近平面
+        float cam_fwd_far[4];    // xyz 相机前向, w 远平面
+        float hiz_cfg[4];        // x 半径→像素系数, y bias, z 层数, w 开关
+        float hiz_levels[RenderPipeline::k_hiz_max_levels][4];  // (w, h, 元素起点, 0)
+        float view_proj[16];
+    } params{};
+    params.count = total;
+    params.batch_count = batch_count;
+    for (int i = 0; i < 6; ++i) {
+        params.planes[i][0] = frustum.planes[i].x;
+        params.planes[i][1] = frustum.planes[i].y;
+        params.planes[i][2] = frustum.planes[i].z;
+        params.planes[i][3] = frustum.planes[i].w;
+    }
+    if (camera_) {
+        const math::Vector3f cam = camera_->position();
+        // 相机前向 = 视图矩阵第三行的反方向（世界空间）
+        const math::Matrix4f view = camera_->get_view_matrix();
+        math::Vector3f fwd(-view(2, 0), -view(2, 1), -view(2, 2));
+        const float len = fwd.length();
+        if (len > 1e-5f) fwd = fwd / len;
+        params.cam_pos_near[0] = cam.x; params.cam_pos_near[1] = cam.y;
+        params.cam_pos_near[2] = cam.z; params.cam_pos_near[3] = camera_->near_plane();
+        params.cam_fwd_far[0] = fwd.x; params.cam_fwd_far[1] = fwd.y;
+        params.cam_fwd_far[2] = fwd.z;  params.cam_fwd_far[3] = camera_->far_plane();
+        // 世界半径 → 屏幕像素：r * (0.5*H/tan(fovY/2)) / 视深度
+        const float tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+        params.hiz_cfg[0] = (tan_half > 1e-4f)
+                                ? 0.5f * static_cast<float>(viewport_height_) / tan_half
+                                : 0.0f;
+    }
+    // 遮挡测试开关：金字塔未就绪时只做视锥剔除（w=0，着色器直接返回 false）
+    const bool hiz_ready = occlusion_culling_enabled_ && hiz_built_levels_ > 0 &&
+                           gpu_cull_hiz_.is_valid() && camera_;
+    params.hiz_cfg[1] = 0.1f;     // 深度偏置，单位=米（线性距离空间比较）
+    params.hiz_cfg[2] = static_cast<float>(
+        hiz_ready ? ((hiz_built_levels_ < k_hiz_max_levels) ? hiz_built_levels_
+                                                            : k_hiz_max_levels)
+                  : 0);
+    // w: 0 = 关闭；1 = 开启；2 = 开启且 NDC uv 的 y 需要翻转（Vulkan 主 pass
+    // 用负高度 viewport，与深度纹素行差一次翻转）
+    params.hiz_cfg[3] = hiz_ready ? (hiz_flip_y_ ? 2.0f : 1.0f) : 0.0f;
+    if (hiz_ready) {
+        const int levels = (hiz_built_levels_ < k_hiz_max_levels) ? hiz_built_levels_
+                                                                 : k_hiz_max_levels;
+        for (int i = 0; i < levels; ++i) {
+            params.hiz_levels[i][0] = static_cast<float>(hiz_w_[i]);
+            params.hiz_levels[i][1] = static_cast<float>(hiz_h_[i]);
+            params.hiz_levels[i][2] = static_cast<float>(hiz_offset_[i]);
+            params.hiz_levels[i][3] = 0.0f;
+        }
+        const math::Matrix4f vp = get_projection_matrix() * camera_->get_view_matrix();
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 4; ++r) params.view_proj[c * 4 + r] = vp(r, c);
+        }
+    }
+    ctx.update_buffer(gpu_cull_params_, &params, sizeof(params), 0);
+
+    // ---- 5) 绑定 SSBO 并**一次**派发全部批次 ----
+    ctx.set_shader(cull_shader_);
+    // 名字必须与 .comp 里的**块名**逐字一致（glGetProgramResourceIndex 查的是
+    // 块名，且大小写敏感）。块名不能改成小写：GLSL 不允许块名与成员名同名。
+    ctx.bind_storage_buffer(cull_shader_, "SrcModels", gpu_cull_src_models_);
+    ctx.bind_storage_buffer(cull_shader_, "SrcSpheres", gpu_cull_src_spheres_);
+    ctx.bind_storage_buffer(cull_shader_, "DstModels", gpu_cull_dst_models_);
+    ctx.bind_storage_buffer(cull_shader_, "DrawArgsBuffer", gpu_cull_args_);
+    ctx.bind_storage_buffer(cull_shader_, "CullParams", gpu_cull_params_);
+    ctx.bind_storage_buffer(cull_shader_, "BatchRanges", gpu_cull_batch_ranges_);
+    if (hiz_ready) {
+        ctx.bind_storage_buffer(cull_shader_, "HiZLevels", gpu_cull_hiz_);
+    }
+    ctx.dispatch_compute(cull_shader_, (total + 63u) / 64u, 1, 1);
 }
 
 void RenderPipeline::draw_instanced_batches_indirect(RenderContext& ctx) {
@@ -4967,6 +5184,14 @@ void RenderPipeline::draw_instanced_batches_indirect(RenderContext& ctx) {
         // GL 需要它切换到"从 SSBO 取实例矩阵"；Vulkan 的 instanced.vert 没有
         // 这个 uniform，设置会被忽略（顶点流已由 bind_instance_stream 指向 SSBO）。
         ctx.set_uniform_int(instanced_shader_, "uGpuCulled", culled ? 1 : 0);
+        // 合并 dispatch 后各批在 DstModels 里分段：GL 的 gl_InstanceID 从 0 起算，
+        // 必须显式加基址（Vulkan/D3D12 由 baseInstance 偏移，不设）。
+        if (gl_instanced_base_uniform_) {
+            const uint32_t base = (culled && b.args_slot < cull_slot_dst_base_.size())
+                                      ? cull_slot_dst_base_[b.args_slot]
+                                      : 0u;
+            ctx.set_uniform_int(instanced_shader_, "uGpuCulledBase", static_cast<int>(base));
+        }
 
         const Material* mat = b.material;
         const bool two_sided = mat && mat->two_sided;
@@ -5820,7 +6045,9 @@ void RenderPipeline::render_decal_forward(RenderContext& ctx) {
     ctx.set_uniform_float(decal_shader_, "uScreenHeight", (float)viewport_height_);
 
     // 渲染状态：blend 开、深度读/写关（基于 depth buffer 投影）
-    ctx.set_framebuffer(hdr_fbo_);
+    // MSAA 开启时贴花属于前向 pass 的一部分，必须画进多样本目标
+    //（Vulkan 下中途改绑 1x framebuffer 会重启带 CLEAR 的 render pass）。
+    ctx.set_framebuffer(forward_hdr_fbo());
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_blend(true);
     ctx.set_depth_test(false);

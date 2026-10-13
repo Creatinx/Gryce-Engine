@@ -56,6 +56,16 @@ public:
         return entries_.empty();
     }
 
+    // "合计(摊到每帧)" 的数值版（与 print() 的口径一致）：调试 UI 的 GPU 帧时间读数。
+    // 注意它是**自上次 reset 以来的累计平均**，不是"最近一帧"，UI 上按平均值标注。
+    double total_ms_per_frame() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const double denom = frames_ > 0 ? static_cast<double>(frames_) : 1.0;
+        double total = 0.0;
+        for (const auto& kv : entries_) total += kv.second.sum_ms / denom;
+        return total;
+    }
+
     // 按平均耗时降序打印。frames <= 0 时按 samples 求平均。
     //
     // 输出两列关键指标，避免"按样本平均"被误读成"每帧成本"：

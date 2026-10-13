@@ -318,6 +318,8 @@ static void cmd_reparent_entity(GEntityHandle h, GEntityHandle new_parent) {
 static void process_command(const GCommand& cmd) {
     switch (cmd.type) {
         case ECMD_LOAD_SCENE: {
+            // path 用 ={} 零初始化，strncpy 最多写 [0,255]，path[255] 恒为 '\0'；
+            // payload 数组本身 256 字节，读取不越界 —— 字符串必然正确终止。
             char path[256] = {};
             std::strncpy(path, reinterpret_cast<const char*>(cmd.payload), 255);
             cmd_load_scene(path);
@@ -647,6 +649,9 @@ void GCore_BeginFrame(float dt) {
     // 注意：必须在本帧命令处理之前清零，否则会抹掉刚累加的 delta。
     gryce_core::g_core_state.input.mouse_delta_x = 0;
     gryce_core::g_core_state.input.mouse_delta_y = 0;
+    // input_events 只承载"本帧"事件（fill by process_command），帧起点清空
+    // 防止长会话下无界增长。clear 不释放容量，热路径复用已分配的缓冲。
+    gryce_core::g_core_state.input.input_events.clear();
 
     gryce_core::g_core_state.cmdbuf.swap();
     int count = 0;

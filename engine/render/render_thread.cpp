@@ -10,6 +10,7 @@
 #include "render/render_commands.h"
 #include "render/mesh.h"
 #include "render/shader.h"
+#include "render/buffer.h"
 #include "render/texture.h"
 #include "render/framebuffer.h"
 #include "utils/glog/glog_lib.h"
@@ -50,12 +51,24 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
         case RenderCommandType::BindFramebuffer:
             backend->bind_framebuffer(cmd.framebuffer);
             break;
+        case RenderCommandType::ResolveFramebuffer:
+            backend->resolve_framebuffer(cmd.framebuffer, cmd.framebuffer_dst);
+            break;
         case RenderCommandType::DrawMesh:
             backend->draw_mesh(cmd.mesh, cmd.shader);
             break;
         case RenderCommandType::DrawIndexed:
             backend->draw_indexed(cmd.mesh, cmd.shader);
             break;
+        case RenderCommandType::SetPostProcessParams: {
+            // 后处理参数必须在渲染线程按命令序应用：D3D12 的 uniform 影子内存
+            // 按帧复位（on_begin_frame），主线程录制期直接写会被擦掉。
+            IShader* s = backend->shader(cmd.shader);
+            if (s && cmd.post_process_params) {
+                s->set_post_process_params(*cmd.post_process_params);
+            }
+            break;
+        }
         case RenderCommandType::SetSwapInterval:
             backend->set_swap_interval(cmd.swap_interval);
             break;
@@ -121,6 +134,51 @@ void dispatch_typed_command(IRenderBackend* backend, const RenderCommandTyped& c
         case RenderCommandType::SetScissor:
             backend->set_scissor(cmd.scissor.x, cmd.scissor.y, cmd.scissor.w, cmd.scissor.h);
             break;
+        case RenderCommandType::DispatchCompute:
+            backend->dispatch_compute(cmd.shader, cmd.compute_grid.gx, cmd.compute_grid.gy,
+                                      cmd.compute_grid.gz);
+            break;
+        case RenderCommandType::BindStorageBuffer:
+            if (cmd.storage_name) {
+                backend->bind_storage_buffer(cmd.shader, cmd.storage_name->c_str(), cmd.buffer);
+            }
+            break;
+        case RenderCommandType::BindInstanceStream:
+            backend->bind_instance_stream(cmd.buffer);
+            break;
+        case RenderCommandType::DrawIndexedIndirect:
+            backend->draw_indexed_indirect(cmd.mesh, cmd.shader, cmd.buffer,
+                                           static_cast<uint32_t>(cmd.uniform_int));
+            break;
+        case RenderCommandType::DrawArraysIndirect:
+            backend->draw_arrays_indirect(cmd.mesh, cmd.shader, cmd.buffer,
+                                          static_cast<uint32_t>(cmd.uniform_int));
+            break;
+        case RenderCommandType::UpdateBuffer: {
+            IBuffer* b = backend->buffer(cmd.buffer);
+            if (b && cmd.buffer_data) {
+                b->update(cmd.buffer_data->data(), cmd.buffer_data->size(), cmd.buffer_offset);
+            }
+            break;
+        }
+        case RenderCommandType::CopyTextureToBuffer:
+            backend->copy_texture_to_buffer(cmd.texture, cmd.buffer,
+                                            static_cast<uint32_t>(cmd.uniform_int));
+            break;
+        case RenderCommandType::EndRenderPassForTransfer:
+            backend->end_render_pass_for_transfer();
+            break;
+        case RenderCommandType::CreateBufferStorage: {
+            IBuffer* b = backend->buffer(cmd.buffer);
+            if (!b) break;
+            // ★ 先声明"这是一块 SSBO"（D3D12 必须据此选 DEFAULT 堆 + UAV 标志）。
+            b->set_storage(true);
+            b->create(cmd.buffer_size,
+                      (cmd.buffer_data && !cmd.buffer_data->empty()) ? cmd.buffer_data->data()
+                                                                     : nullptr,
+                      cmd.buffer_usage);
+            break;
+        }
         case RenderCommandType::CustomLambda:
         case RenderCommandType::None:
             break;

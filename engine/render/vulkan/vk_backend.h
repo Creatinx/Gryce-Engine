@@ -75,6 +75,7 @@ public:
                               RHIBufferHandle args, uint32_t offset) override;
     void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
                                 uint32_t offset) override;
+    void end_render_pass_for_transfer() override;
 
     RHIMeshHandle create_mesh() override;
     RHIShaderHandle create_shader() override;
@@ -102,6 +103,11 @@ public:
     const char* api_name() const override;
     const char* api_version() const override;
     RenderBackendCapabilities get_capabilities() const override;
+    // Vulkan 的解析由 render pass 的 pResolveAttachments 在 pass 内自动完成，
+    // 这里无需（也不能）在 pass 外补做。
+    void resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) override {
+        (void)src; (void)dst;
+    }
 
     void request_screenshot(const std::string& path) override;
     bool capture_frame_rgba(std::vector<uint8_t>& out, int& w, int& h) override;
@@ -117,6 +123,7 @@ public:
     void gpu_profile_frame_boundary() override;
     void gpu_profile_dump() override;
     void gpu_profile_reset() override;
+    double gpu_frame_time_ms() const override;
 
     VulkanDevice* device() { return &device_; }
     VulkanSwapchain* swapchain() { return &swapchain_; }
@@ -214,6 +221,9 @@ private:
     VkCommandBuffer geometry_secondary_cb_ = VK_NULL_HANDLE;
     bool geometry_secondary_recording_ = false;
     VkRenderPass current_render_pass_ = VK_NULL_HANDLE;
+    // 当前 render pass 颜色附件的采样数：draw 时同步给 shader，
+    // 保证管线 rasterizationSamples 与 render pass 附件一致。
+    VkSampleCountFlagBits current_render_pass_samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkFramebuffer current_framebuffer_vk_ = VK_NULL_HANDLE;
     bool render_pass_contents_secondary_ = false;
 

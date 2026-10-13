@@ -56,6 +56,7 @@ public:
     void set_blend_equation(BlendEquation mode) override;
     void set_cull_face(CullMode mode) override;
     void bind_framebuffer(RHIFramebufferHandle fb) override;
+    void resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) override;
     void unbind_framebuffer() override;
 
     void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) override;
@@ -70,9 +71,11 @@ public:
     void bind_storage_buffer(RHIShaderHandle shader, const char* name,
                              RHIBufferHandle buffer) override;
     void draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
-                               RHIBufferHandle args, uint32_t offset) override;
+                              RHIBufferHandle args, uint32_t offset) override;
     void draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
                               RHIBufferHandle args, uint32_t offset) override;
+    // GL_DRAW_INDIRECT_BUFFER 绑定缓存（同缓冲跳过重复 bind，省去每批 unbind）
+    void bind_indirect_buffer_if_needed(uint32_t buffer_id);
     void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
                                 uint32_t offset) override;
 
@@ -121,6 +124,7 @@ public:
     void gpu_profile_frame_boundary() override;
     void gpu_profile_dump() override;
     void gpu_profile_reset() override;
+    double gpu_frame_time_ms() const override;
 
  private:
     GLFWwindow* window_ = nullptr;
@@ -140,6 +144,16 @@ public:
     // 附件读进 SSBO。不用 glGetTextureSubImage 是因为它要 GL 4.5，而本引擎的
     // compute 门槛是 4.3。
     uint32_t readback_fbo_ = 0;
+    // 读回 FBO 当前附着的纹理 id：HiZ 重建帧里逐级连续拷同一批纹理，
+    // 附件不变时跳过 glFramebufferTexture2D + glCheckFramebufferStatus
+    // （重挂附件会使驱动侧 FBO 状态失效，是实际可见的提交开销）。
+    uint32_t readback_fbo_attached_tex_ = 0;
+    bool readback_fbo_attached_ok_ = false;
+    // GL_DRAW_INDIRECT_BUFFER 绑定缓存：连续多批 culled 绘制同一 args 缓冲时
+    // 免去反复 bind/unbind；按 GL 对象名缓存（名字即绑定语义），
+    // destroy_buffer 时失效（防止销毁后名字被新缓冲复用导致漏绑）。
+    uint32_t bound_indirect_buffer_ = 0;
+    bool indirect_binding_cached_ = false;
 
     // 状态缓存：避免向 driver 下发重复的状态切换命令。
     bool state_cache_valid_ = false;

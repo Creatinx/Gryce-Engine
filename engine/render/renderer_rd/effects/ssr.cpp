@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 namespace gryce_engine::render {
 
@@ -219,6 +220,13 @@ void SSR_RD::render(RenderContext* ctx,
         // 目标创建是 GPU 资源操作：必须排到渲染线程执行（GL 在无 current context 的
         // 线程上 glCreateFramebuffers 返回 0，会静默失败并让 SSR 永久失效）。
         // 本帧跳过，下一帧尺寸已对齐即可正常渲染。
+        // 临时诊断：这一帧会整帧丢失 SSR（调用方若仍用原始 HDR 就会看到"金属退回纯 IBL"）。
+        {
+            static int skip_idx = 0;
+            GLOG_WARN("[ssr] skip frame call#={} (comp={}x{} viewport={}x{} dirty={})",
+                      ++skip_idx, comp_w_, comp_h_, viewport_w, viewport_h,
+                      targets_dirty_ ? 1 : 0);
+        }
         const int w = viewport_w;
         const int h = viewport_h;
         ctx->run_on_render_thread([this, w, h]() { create_targets(w, h); });
@@ -231,10 +239,13 @@ void SSR_RD::render(RenderContext* ctx,
     ctx->set_blend(false);
 
     // 同步后处理参数（uSSR* 相机参数/粗糙度上限/厚度等）
+    // ★ 必须走命令缓冲（ctx->set_post_process_params）：D3D12 的 uniform 影子
+    //   内存由渲染线程按帧复位，主线程录制期直接写 IShader 会被复位擦掉 ——
+    //   这正是 SSR 偶发整帧丢失（好帧/坏帧随机、仅 DX12）的根因。
+    auto pp_shared = std::make_shared<const PostProcessParams>(params);
     for (RHIShaderHandle h : {ssr_hiz_shader_, ssr_trace_shader_,
                               ssr_blur_shader_, ssr_composite_shader_}) {
-        IShader* s = ctx->shader(h);
-        if (s) s->set_post_process_params(params);
+        ctx->set_post_process_params(h, pp_shared);
     }
 
     // ---- 不再构建 HiZ 金字塔 ----
@@ -311,6 +322,19 @@ void SSR_RD::render(RenderContext* ctx,
         ctx->set_uniform_int(ssr_composite_shader_, "uSSRTex", TextureSlots::kSSRTexture);
         ctx->draw_mesh(fullscreen_mesh_, ssr_composite_shader_);
     } // ssr_composite
+
+    // ---- 调试探针（env GRYCE_DX12_PROBE_SSR=1 时生效；其余后端 no-op）----
+    // 把 SSR 链的四张纹理拷回 CPU 输出内容统计，用于对比好/坏帧定位丢失段。
+    // depth_in / normal_in 是 trace 的两个采样输入：若它们好坏帧一致而
+    // trace_out 坏帧全零 → 问题在 trace 的 CBV/描述符绑定而非纹理内容。
+    if (std::getenv("GRYCE_DX12_PROBE_SSR")) {
+        ctx->probe_texture(color_tex, "hdr_in");
+        ctx->probe_texture(depth_tex, "depth_in");
+        ctx->probe_texture(normal_roughness_tex, "normal_in");
+        ctx->probe_texture(ssr_tex_, "trace_out");
+        ctx->probe_texture(ssr_tex_blur_, "blur_out");
+        ctx->probe_texture(composite_tex_, "composite_out");
+    }
 
     ctx->set_depth_test(true);
     ctx->set_depth_write(true);

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml)
 
-面向 Windows 的 **C++26 游戏引擎**，核心为带反射系统的 **ECS 架构** 与 **双后端（OpenGL / Vulkan）渲染器**。当前主线在渲染器：已打通场景序列化、资源系统、2D/3D 物理、音频与动画，并附带可直接运行的演示程序 `GryceRenderSmoke`。
+面向 Windows 的 **C++26 游戏引擎**，核心为带反射系统的 **ECS 架构** 与 **三后端（OpenGL / Vulkan / D3D12）渲染器**。当前主线在渲染器：已打通场景序列化、资源系统、2D/3D 物理、音频与动画，并附带可直接运行的演示程序 `GryceRenderSmoke`。
 
 > **平台与工具链**：Windows 为主目标。构建脚本不含任何机器专属绝对路径——依赖前缀由 `cmake/GryceDependencyPaths.cmake` 从环境变量与编译器路径自动推断。已验证可直接用于 **MSYS2 UCRT64**、**CLion / JetBrains 自带 MinGW**、**vcpkg** 及任意自定义前缀；缺依赖时 `FetchContent` 自动拉源码兜底，拉不到还会自动换镜像，因此克隆下来即可构建。
 
@@ -16,7 +16,8 @@
 pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-gcc-libs \
                     mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja \
                     mingw-w64-ucrt-x86_64-glfw mingw-w64-ucrt-x86_64-glew \
-                    mingw-w64-ucrt-x86_64-box2d mingw-w64-ucrt-x86_64-jolt-physics
+                    mingw-w64-ucrt-x86_64-box2d mingw-w64-ucrt-x86_64-jolt-physics \
+                    mingw-w64-ucrt-x86_64-assimp
 #    CLion 自带 MinGW / vcpkg / 自定义前缀：无需额外操作，CMake 自动推断前缀
 
 # 2. 配置 + 构建
@@ -44,7 +45,8 @@ build/GryceRenderSmoke.exe --api opengl --play
 
 **渲染**
 
-- 双后端：OpenGL 与 Vulkan，共用上层管线与着色器源（Vulkan 函数运行时从 `vulkan-1.dll` 加载，不绑定 MSVC 导入库）
+- 三后端：OpenGL / Vulkan / D3D12，共用上层管线与着色器源（Vulkan、D3D12 的函数与着色器链均运行时加载，不绑定 MSVC 导入库；D3D12 现状见 `docs/d3d12-backend-plan.md`）
+- 内置调试 UI：左上角 FPS / 帧时间 / 限速状态叠加（带帧时间曲线），以及 ImGui 调试窗口（F1 开关）——可热开关垂直同步、帧率上限（软件锁帧）、省电模式、GPU 计时，以及阴影 / GPU 剔除 / SSR / IBL 等渲染开关
 - Clustered Forward 前向管线、HDR、色调映射、自动曝光
 - PBR 材质与预设（如 `Chrome` 等金属 / 镜面预设）
 - 阴影：Shadow Atlas、VSM / ESM、PCSS 软阴影、点光源阴影、接触阴影
@@ -111,6 +113,7 @@ Gryce-Engine/
 | GLEW | 系统包或 FetchContent | OpenGL 扩展加载 |
 | Box2D | 系统包或 FetchContent | 2D 物理，导入目标 `box2d::box2d` |
 | Jolt Physics | 系统包或 FetchContent | 3D 物理，导入目标 `Jolt::Jolt` |
+| Assimp | 可选，系统包或 FetchContent | 模型导入（FBX / glTF / DAE / PLY / STL 等；OBJ 走内置加载器），缺失时非 OBJ 格式不可用 |
 | Vulkan SDK | 可选 | 缺失时自动关闭 Vulkan 后端（CTest 不依赖它） |
 | Amplitude Audio SDK | 仓库内置 `third_party/amplitude` | 预编译静态库，随仓库分发 |
 | stb / tinyexr / nlohmann_json / imgui / quickjs | 仓库内置 `third_party` | 图像、EXR、JSON、编辑器 UI、脚本 |
@@ -129,7 +132,7 @@ Gryce-Engine/
 cmake -S . -B build -G Ninja -DGRYCE_DEP_FETCH=AUTO
 ```
 
-源码按固定版本拉取：GLFW `3.4`、GLEW `glew-2.2.0`（官方 release 包，因为 git 仓库里没有构建期生成的头文件）、Box2D `v3.1.1`、Jolt Physics `v5.3.0`（CMake 入口在其 `Build/` 子目录）。
+源码按固定版本拉取：GLFW `3.4`、GLEW `glew-2.2.0`（官方 release 包，因为 git 仓库里没有构建期生成的头文件）、Box2D `v3.1.1`、Jolt Physics `v5.3.0`（CMake 入口在其 `Build/` 子目录）、Assimp `v5.4.3`（静态库，importer 按需裁剪为 FBX/OBJ/glTF/Collada/PLY/STL/3DS/Blend）。
 
 **统一走 tarball，不走 `git clone`**：git 的智能 HTTP 协议一次 clone 要发多轮请求，穿过代理 / 加速器时极易被掐断（Jolt 全量 clone 约 60 MB，实测反复 `Connection was reset`；tarball 只有 18 MB，一次性 HTTPS GET）。tarball 还能用 SHA256 锁定内容，也不需要本机装 git。下载物缓存在 `build/_deps/tarballs`，重配置不会重复下载；校验和不匹配会自动重新下载。
 

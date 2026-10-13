@@ -44,6 +44,9 @@ using ResultReleaseFn = void (*)(const void* result);
 using CompileOptionsNewFn = void* (*)();
 using CompileOptionsFreeFn = void (*)(void* options);
 using CompileOptionsSetDebugInfoFn = void (*)(void* options, bool generate);
+// 目标环境：SSBO 在 Vulkan 语义下才是 StorageBuffer 存储类（GL 语义是
+// Uniform + BufferBlock，在 Vulkan 上不能当 SSBO 用）。
+using CompileOptionsSetTargetEnvFn = void (*)(void* options, int target, uint32_t version);
 
 // shaderc_vertex_shader / shaderc_fragment_shader / shaderc_compute_shader
 // 的实际枚举值（shaderc_shader_kind 首个成员为 0）。
@@ -52,6 +55,23 @@ constexpr int kShadercFragmentShader = 1;
 constexpr int kShadercComputeShader = 2;
 // 编译成功状态（shaderc_compilation_status_success = 0）。
 constexpr int kCompilationSuccess = 0;
+// shaderc_target_env_vulkan = 0。
+constexpr int kShadercTargetEnvVulkan = 0;
+// 目标版本必须是 **vulkan 1.2**（不能是 1.0）：SSBO 在 SPIR-V 里的表示随目标
+// 版本变化——1.0 目标产出 SPIR-V 1.0，其中 SSBO 是旧式表示（storage class
+// Uniform + BufferBlock 装饰，即 UBO 语义）；从 1.1 目标（SPIR-V 1.3）起才改为
+// 现代表示（storage class StorageBuffer + Block 装饰）。
+// 引擎给 compute 块建的是 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER 描述符
+// （vk_compute.cpp），旧式表示会让着色器侧变成只读 UBO 语义，
+// DstModels / DrawArgsBuffer 的写入被静默丢弃（instanceCount 恒为 0，
+// 间接绘制一个实例都不出）。本机实测 glslangValidator：
+//   --target-env vulkan1.0 → Block=0, StorageBuffer vars=0
+//   --target-env vulkan1.1 → Block=1, StorageBuffer vars=1
+// 引擎 app_info.apiVersion = VK_API_VERSION_1_2，故 1.2 目标安全。
+// 版本字编码为 (major << 16) | (minor << 8)：vulkan 1.2 = 0x00010200。
+// 注意不能写成 (2 << 16)——那是非法版本号，shaderc 会静默回退到默认（1.0），
+// 于是又拿到旧式 SSBO 表示，问题看似"改了没用"。
+constexpr uint32_t kShadercTargetEnvVersionVulkan12 = (1u << 16) | (2u << 8);
 
 #ifdef _WIN32
 using LibHandle = HMODULE;
@@ -78,6 +98,8 @@ struct ShadercApi {
     CompileOptionsNewFn options_new = nullptr;
     CompileOptionsFreeFn options_free = nullptr;
     CompileOptionsSetDebugInfoFn options_set_debug_info = nullptr;
+    // 可选符号：缺失时静默跳过（老版本 shaderc 也能用，只是拿不到 Vulkan 语义）。
+    CompileOptionsSetTargetEnvFn options_set_target_env = nullptr;
     bool valid = false;
 };
 
@@ -123,9 +145,25 @@ void do_load() {
     set_sym(a.get_length, lib, "shaderc_result_get_length");
     set_sym(a.get_bytes, lib, "shaderc_result_get_bytes");
     set_sym(a.result_release, lib, "shaderc_result_release");
+    // 注意 new/free 与 initialize/release 是同一对函数的两代命名（签名完全一致：
+    // 无参构造 / 析构）。部分 shaderc 构建（实测 VulkanSDK 1.4.350.0 的
+    // shaderc_shared.dll）只导出老版 initialize/release，若只按新名加载，
+    // options_new 会是 nullptr → options 块被整体跳过 → target_env 与 debug info
+    // 全都静默不生效（compute 按 GL 语义产出 Uniform+BufferBlock，SSBO 绑不上）。
+    // 因此两代名字都要试，任一命中即可。
     set_sym(a.options_new, lib, "shaderc_compile_options_new");
+    if (!a.options_new) set_sym(a.options_new, lib, "shaderc_compile_options_initialize");
     set_sym(a.options_free, lib, "shaderc_compile_options_free");
+    if (!a.options_free) set_sym(a.options_free, lib, "shaderc_compile_options_release");
     set_sym(a.options_set_debug_info, lib, "shaderc_compile_options_set_generate_debug_info");
+    set_sym(a.options_set_target_env, lib, "shaderc_compile_options_set_target_env");
+
+    if (!a.options_new || !a.options_free) {
+        GLOG_WARN("shaderc: compile options API missing "
+                  "(shaderc_compile_options_new/initialize), "
+                  "Vulkan compute shaders will be compiled without target env "
+                  "(SSBO semantics may be wrong)");
+    }
 
     a.valid = a.init && a.release && a.compile_into_spv && a.get_status &&
               a.get_error && a.get_length && a.get_bytes && a.result_release;
@@ -214,10 +252,22 @@ bool compile_glsl_to_spirv(const std::string& source, const std::string& file_na
     // 数量极少（1~2 个），SPIR-V 体积差异可忽略。图形管线不需要块名，保持原样
     // 以免影响既有 .spv 缓存。
     void* options = nullptr;
-    if (kind == kShadercComputeShader && a.options_new && a.options_free &&
-        a.options_set_debug_info) {
+    if (kind == kShadercComputeShader && a.options_new && a.options_free) {
         options = a.options_new();
-        if (options) a.options_set_debug_info(options, true);
+        if (options) {
+            if (a.options_set_debug_info) a.options_set_debug_info(options, true);
+            // 计算着色器必须按 **Vulkan 语义 + 现代 SSBO 表示**编译：
+            //   - 源码用 `#version 450`（无 core profile）书写；
+            //   - 目标环境显式设为 Vulkan 1.2（不能用 1.0，理由见上方常量注释）。
+            // 旧式表示（Uniform + BufferBlock）在 Vulkan 上是只读 UBO 语义，
+            // writeonly 的 DstModels 与读写的 DrawArgsBuffer 写入会被静默丢弃，
+            // 间接绘制的 instanceCount 恒为 0（实例全灭）。
+            // 图形着色器仍走默认选项（不受影响）。
+            if (a.options_set_target_env) {
+                a.options_set_target_env(options, kShadercTargetEnvVulkan,
+                                         kShadercTargetEnvVersionVulkan12);
+            }
+        }
     }
 
     void* result = a.compile_into_spv(compiler, source.data(), source.size(), kind,

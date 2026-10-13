@@ -1,5 +1,6 @@
 #include "d3d12_upload.h"
 
+#include <cstdlib>
 #include <cstring>
 
 #include "utils/glog/glog_lib.h"
@@ -272,6 +273,16 @@ bool UploadRing::allocate_and_copy(const void* data, size_t size,
     }
     std::memcpy(p, data, size);
     out_gpu_addr = resource_->GetGPUVirtualAddress() + offset;
+    // 调试流水：GRYCE_DX12_PROBE_RING=1 时打每次分配（帧号 / 全局偏移 / 段内偏移 /
+    // 大小 / 数据哈希）。与 CBV 探针对照可验证"在飞窗口内没有跨帧同段覆写"。
+    static const bool ring_probe_on = std::getenv("GRYCE_DX12_PROBE_RING") != nullptr;
+    if (ring_probe_on) {
+        uint64_t h = 1469598103934665603ull;
+        const uint8_t* d = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < size; ++i) { h ^= d[i]; h *= 1099511628211ull; }
+        GLOG_WARN("[ring] frame={} off={} slot_off={} size={} hash=0x{:016X}",
+                  frame_tag_, offset, offset - slot_base_, size, h);
+    }
     return true;
 }
 

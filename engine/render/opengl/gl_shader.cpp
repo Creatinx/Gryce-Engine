@@ -172,6 +172,7 @@ bool GLShader::compile(const std::vector<ShaderStageDesc>& stages) {
     uniform_cache_.clear();
     sampler_uniform_cache_.clear();
     sampler_uniform_scanned_ = false;
+    storage_block_binding_cache_.clear();
 
     std::vector<uint32_t> shader_ids;
     shader_ids.reserve(stages.size());
@@ -509,8 +510,14 @@ bool GLShader::load_compute(const std::string& name, const std::string& shader_d
 int GLShader::storage_block_binding(const char* name) const {
     if (!program_id_ || !name || !*name) return -1;
 
+    auto it = storage_block_binding_cache_.find(name);
+    if (it != storage_block_binding_cache_.end()) return it->second;
+
     GLuint block_index = glGetProgramResourceIndex(program_id_, GL_SHADER_STORAGE_BLOCK, name);
-    if (block_index == GL_INVALID_INDEX) return -1;
+    if (block_index == GL_INVALID_INDEX) {
+        storage_block_binding_cache_.emplace(name, -1);
+        return -1;
+    }
 
     // 取该 block 在着色器里声明的 layout(binding = N)
     GLenum prop = GL_BUFFER_BINDING;
@@ -518,7 +525,8 @@ int GLShader::storage_block_binding(const char* name) const {
     GLsizei length = 0;
     glGetProgramResourceiv(program_id_, GL_SHADER_STORAGE_BLOCK, block_index,
                            1, &prop, 1, &length, &binding);
-    return binding;
+    storage_block_binding_cache_.emplace(name, static_cast<int>(binding));
+    return static_cast<int>(binding);
 }
 
 bool GLShader::shader_files_changed() const {
@@ -563,6 +571,7 @@ bool GLShader::reload() {
         uniform_cache_.clear();
         sampler_uniform_cache_.clear();
         sampler_uniform_scanned_ = false;
+        storage_block_binding_cache_.clear();
         std::error_code ec;
         comp_mtime_ = std::filesystem::last_write_time(source_comp_path_, ec);
         return true;
@@ -596,6 +605,7 @@ bool GLShader::reload() {
     uniform_cache_.clear();
     sampler_uniform_cache_.clear();
     sampler_uniform_scanned_ = false;
+    storage_block_binding_cache_.clear();
     pp_dirty_ = true; // 重编译后需重新应用 post-process 参数
 
     std::error_code ec;

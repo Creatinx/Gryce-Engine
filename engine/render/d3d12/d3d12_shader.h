@@ -86,6 +86,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -137,12 +138,14 @@ struct PsoKey {
     uint8_t  cull = 0;             // 0 = Back, 1 = None, 2 = Front
     uint8_t  primitive_topology = 0; // D3D12_PRIMITIVE_TOPOLOGY_TYPE 子集
     uint8_t  instance_stream = 0;  // 是否追加实例属性（location 5..8）
+    uint8_t  samples = 1;          // RT 多样本数（1/2/4/8/16；PSO SampleDesc.Count
+                                   // 必须与实际绑定的 RT 采样数一致）
 
     bool operator==(const PsoKey& o) const {
         return layout == o.layout && rt_format == o.rt_format && ds_format == o.ds_format &&
                depth_test == o.depth_test && depth_write == o.depth_write && blend == o.blend &&
                cull == o.cull && primitive_topology == o.primitive_topology &&
-               instance_stream == o.instance_stream;
+               instance_stream == o.instance_stream && samples == o.samples;
     }
 };
 
@@ -153,6 +156,7 @@ struct PsoKeyHash {
         mix(k.rt_format); mix(k.ds_format);
         mix((k.depth_test << 0) | (k.depth_write << 1) | (k.blend << 2) | (k.cull << 3) |
             (k.primitive_topology << 4) | (k.instance_stream << 6));
+        mix(k.samples);
         return h;
     }
 };
@@ -354,6 +358,16 @@ private:
     uint32_t srv_register_count_ = 0;
     // Sampler 表范围上界（同上，扫 register(sX)）。
     uint32_t sampler_register_count_ = 0;
+    // 着色器**自己声明为比较采样器**的寄存器集合（HLSL 里的 `SamplerComparisonState`）。
+    // ★ 采样器模式必须以此为准，不能看纹理对象的状态：同一个纹理可能同时以
+    //   "比较采样器"（阴影贴图 uShadowMap）和"普通采样器"（PCSS 需要的原始深度
+    //   uShadowMapDepthN）被绑定 —— 模式由纹理决定时必然有一边是错的。
+    //   实测后果：GPU 校验层报
+    //     "Sampler mode differs from that expected by shader:
+    //      Expected SAMPLER_MODE_COMPARISON, In Descriptor SAMPLER_MODE_DEFAULT"
+    //   这是 GPU 层面的**未定义行为**，普通调试层完全不报，表现为"同一批命令
+    //   有时采样正确、有时采到垃圾"（金属反射间歇性变成平坦的环境平均值）。
+    std::set<uint32_t> comparison_sampler_regs_;
     bool has_vs_uniforms_ = false;
     bool has_ps_uniforms_ = false;
     std::vector<std::string> vertex_input_semantics_;
@@ -423,7 +437,15 @@ private:
     std::unordered_map<int, D3D12Texture*> pending_by_slot_;
     // set_int(<采样器名>, unit) 与**紧接**的 set_texture(unit, tex) 构成精确配对时，
     // 用它当场落位（不必等到 commit）。这是"名字先行"的命名绑定路径。
+    // ★ 必须同时记住那个 set_int 里的 unit（= slot），只有"下一个 set_texture 的
+    //   slot 与之相同"才算配对成功。否则名字会**悬挂**到后面某次不相关的
+    //   set_texture 上，把那张纹理绑到该名字的寄存器 —— 实测的表现是
+    //   BRDF LUT 被绑到 uPrefilterMap、阴影图被绑到 uBRDFLUT（金属全黑、
+    //   镜面 IBL 丢失），且完全静默。引擎的调用模式多为
+    //   "set_texture 在前、set_int 在后"（见 upload_ibl_textures），
+    //   那种顺序本来就不构成配对，只应走 slot 延迟解析。
     std::optional<std::string> pending_sampler_name_;
+    int pending_sampler_slot_ = -1;
 
     // ---- 管线 ----
     ID3D12RootSignature* root_signature_ = nullptr;

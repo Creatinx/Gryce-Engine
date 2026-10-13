@@ -295,3 +295,68 @@ function(gryce_fetch_jolt)
         set_target_properties(Jolt PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
     endif()
 endfunction()
+
+# ---------------------------------------------------------------------------
+# Assimp：模型导入（FBX / glTF / DAE / PLY / STL / 3DS / Blend；
+# OBJ 另有引擎内置 ObjLoader，这里也开上以覆盖 asset_manager 的格式列表）。
+#
+# 与 GLFW/GLEW/Box2D/Jolt 的区别：Assimp 是**可选**依赖——缺了只是非 OBJ
+# 格式不可用（AssetManager 里 #ifdef GRYCE_HAS_ASSIMP 条件编译），所以根
+# CMakeLists 对它不 FATAL_ERROR，只告警降级。
+#
+# 裁剪策略（默认全关，按需开）：
+#   - 只开 asset_manager is_model_format() 列出的 8 种 importer，
+#     省下几十个用不到的格式的编译时间；
+#   - ASSIMP_NO_EXPORT=ON：引擎只导入不导出；
+#   - tests/tools/samples/docs 全关；WARNINGS_AS_ERRORS 关（GCC 16 下
+#     assimp 5.4.3 自有告警，不该拦住构建）。
+# 静态库（BUILD_SHARED_LIBS 默认 OFF）：不产生 DLL，无需同步运行库。
+# ---------------------------------------------------------------------------
+function(gryce_fetch_assimp)
+    if(TARGET assimp::assimp OR TARGET assimp)
+        return()
+    endif()
+    message(STATUS "Fetching Assimp (system package not found)")
+    set(ASSIMP_BUILD_TESTS                OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ASSIMP_TOOLS         OFF CACHE BOOL "" FORCE)  # assimp_cmd 命令行工具
+    set(ASSIMP_BUILD_SAMPLES              OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_DOCS                 OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_INSTALL                    OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_WARNINGS_AS_ERRORS         OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_NO_EXPORT                  ON  CACHE BOOL "" FORCE)  # import-only
+    set(ASSIMP_BUILD_ZLIB                 ON  CACHE BOOL "" FORCE)  # 自带 zlib，不依赖系统
+    set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT   OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT   OFF CACHE BOOL "" FORCE)
+    foreach(_gryce_fmt IN ITEMS FBX OBJ GLTF COLLADA PLY STL 3DS BLEND)
+        set(ASSIMP_BUILD_${_gryce_fmt}_IMPORTER ON CACHE BOOL "" FORCE)
+    endforeach()
+    # assimp 的 ASSIMP_INJECT_DEBUG_POSTFIX 默认 ON：Debug 构建下它会往**缓存**
+    # 写 CMAKE_DEBUG_POSTFIX="d"。FetchContent 是在主工程作用域里
+    # add_subdirectory(assimp)，该缓存项随后被引擎自身的目标读取——
+    # GryceCore.dll 会被改名成 GryceCored.dll，污染产物命名（toolchain/
+    # 打包脚本按固定名找文件）。显式关掉，并清掉本构建目录里已存在的注入项。
+    set(ASSIMP_INJECT_DEBUG_POSTFIX OFF CACHE BOOL "" FORCE)
+    unset(CMAKE_DEBUG_POSTFIX CACHE)
+    # box2d/Jolt 的 fetch 函数把 BUILD_SHARED_LIBS=ON 写进了全局缓存，assimp
+    # 读它会编出 libassimp-5.dll——运行时还要多同步一个第三方 DLL。这里为
+    # assimp 单独锁成静态库（符号直接进 GryceCore.dll），用完恢复全局值，
+    # 不影响后续依赖。
+    set(_gryce_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    gryce_fetch_tarball(assimp "assimp/assimp/archive/refs/tags/v5.4.3.tar.gz"
+        "66dfbaee288f2bc43172440a55d0235dfc7bf885dda6435c038e8000e79582cb" _pkg)
+    FetchContent_Declare(assimp
+        URL         "${_pkg}"
+        URL_HASH    SHA256=66dfbaee288f2bc43172440a55d0235dfc7bf885dda6435c038e8000e79582cb)
+    FetchContent_MakeAvailable(assimp)
+    if(_gryce_saved_build_shared_libs)
+        set(BUILD_SHARED_LIBS "${_gryce_saved_build_shared_libs}" CACHE BOOL "" FORCE)
+    else()
+        unset(BUILD_SHARED_LIBS CACHE)
+    endif()
+    # assimp 5.4.3 的根 CMakeLists 里 set(CMAKE_CXX_STANDARD 17) 只作用于
+    # 自己的目录子树，宿主工程仍是 C++26，互不影响。
+    if(TARGET assimp AND NOT TARGET assimp::assimp)
+        add_library(assimp::assimp ALIAS assimp)
+    endif()
+endfunction()

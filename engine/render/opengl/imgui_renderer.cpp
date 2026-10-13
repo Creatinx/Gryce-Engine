@@ -9,9 +9,14 @@
 #include <vector>
 
 #include "render/imgui_backend.h"
+#include "render/imgui_font_data.h"
 #include "utils/glog/glog_lib.h"
 
 namespace {
+
+// 调试 UI 默认字号（px）。Cousine 在 13~14px 与旧默认（ProggyForever 13px）
+// 的 x-height 接近；14px 让等宽字体在小面板里更易读。
+constexpr float kDebugUIFontSize = 14.0f;
 
 struct ImDrawListDeleter {
     void operator()(ImDrawList* list) const {
@@ -57,6 +62,7 @@ bool ImGuiRenderer::init(GLFWwindow* window, std::unique_ptr<IImGuiBackend> back
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     apply_engine_style();
+    setup_debug_font(io);
 
     if (backend_->is_vulkan()) {
         ImGui_ImplGlfw_InitForVulkan(window, true);
@@ -168,6 +174,52 @@ void ImGuiRenderer::render_draw_data(ImDrawData* draw_data) {
     if (backend_) {
         backend_->render_draw_data(draw_data);
     }
+}
+
+void ImGuiRenderer::setup_debug_font(ImGuiIO& io) {
+    // -----------------------------------------------------------------------
+    // 等宽字体 + 抗锯齿
+    //
+    // 默认字体是 ProggyForever（比例宽度）。调试 UI 里有大量对齐的数字列
+    // （FPS / 帧时间直方图 / 参数表），比例字体会逐帧抖动，换成等宽字体后
+    // 列对齐稳定、数值变化不再引起整行重排。
+    //
+    // Cousine 以编译期数组内嵌（imgui_font_data.h），不依赖运行时字体文件。
+    //
+    // 抗锯齿分三层，全部显式打开：
+    //   1. 栅格化过采样：OversampleH=2（14px 小字号的自动值也是 2，这里显式
+    //      固定，避免将来改字号时静默变成 1）；OversampleV=1（Y 轴无亚像素
+    //      定位，过采样无收益）。
+    //   2. 图集双线性过滤：三个后端默认即双线性 —— GL 建纹理时 GL_LINEAR
+    //      （imgui_impl_opengl3.cpp），Vulkan 渲染开始绑定 SamplerLinearDS
+    //      （imgui_impl_vulkan.cpp），D3D12 根签名静态采样器
+    //      MIN_MAG_MIP_LINEAR（imgui_impl_dx12.cpp "Bilinear sampling is
+    //      required"）。因此**不能**给 atlas 设 ImFontAtlasFlags_NoBakedLines
+    //      —— 那会让线条退化为多边形且禁用 AntiAliasedLinesUseTex。
+    //   3. 绘制标志：AntiAliasedLines / LinesUseTex / Fill 显式置 true
+    //      （虽与默认一致，写出来防止将来 StyleColorsDark 变体改动默认）。
+    // -----------------------------------------------------------------------
+    ImFontConfig font_cfg;
+    // 静态内嵌数据的生命周期贯穿整个进程：绝不能让 atlas 在析构时 free 它。
+    font_cfg.FontDataOwnedByAtlas = false;
+    font_cfg.OversampleH = 2;
+    font_cfg.OversampleV = 1;
+    ImFont* font = io.Fonts->AddFontFromMemoryTTF(
+        const_cast<void*>(static_cast<const void*>(kCousineRegularTtf)),
+        static_cast<int>(kCousineRegularTtfSize), kDebugUIFontSize, &font_cfg);
+    if (!font) {
+        // 内嵌数据损坏等极端情况：退回默认字体，UI 仍可用（退化为比例宽度）。
+        GLOG_WARN("ImGuiRenderer: failed to load embedded mono font, "
+                  "falling back to default font");
+        io.Fonts->AddFontDefault();
+        return;
+    }
+    io.FontDefault = font;
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.AntiAliasedLines = true;
+    style.AntiAliasedLinesUseTex = true;
+    style.AntiAliasedFill = true;
 }
 
 void ImGuiRenderer::apply_engine_style() {

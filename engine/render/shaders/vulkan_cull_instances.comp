@@ -1,4 +1,8 @@
-#version 450 core
+// 注意：**不能写 `#version 450 core`** —— core profile 会让 glslang 按 GL 语义
+// 翻译 SSBO（Uniform 存储类 + BufferBlock 装饰），那在 Vulkan 上是只读 UBO 语义，
+// 既不能当 SSBO 绑，引擎的 SPIR-V 反射也认不出来（compute 一个描述符都取不到，
+// GPU 剔除静默失效）。无 profile + Vulkan 目标环境才是 StorageBuffer 语义。
+#version 450
 // ===========================================================================
 // vulkan_cull_instances.comp — GPU 视锥剔除（Vulkan GLSL 方言）
 // ===========================================================================
@@ -15,6 +19,10 @@
 // 的查询结果不一致。
 // ---------------------------------------------------------------------------
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// 一批 = 一个 (mesh, material) 分组。合并 dispatch 下一次处理全部批次，
+// 因此 args 是数组（每批一个槽位），与 k_gpu_cull_max_slots 一致。
+const int kMaxBatchSlots = 64;
 
 // DrawArraysIndirectCommand（VkDrawIndirectCommand，16 字节）
 struct DrawArraysIndirectCommand {
@@ -37,13 +45,14 @@ layout(std430, binding = 2) writeonly buffer DstModels {
     mat4 dst_models[];
 };
 
+// 合并 dispatch 后每批一个槽位，故为数组（CPU 侧一次复位全部使用中的槽位）。
 layout(std430, binding = 3) buffer DrawArgsBuffer {
-    DrawArraysIndirectCommand args;
+    DrawArraysIndirectCommand args[kMaxBatchSlots];
 };
 
 layout(std430, binding = 4) readonly buffer CullParams {
-    uint uInstanceCount;
-    uint _pad0;
+    uint uInstanceCount;   // 全部批次的实例总数（拼接缓冲长度）
+    uint uBatchCount;      // 参与本次剔除的批数
     uint _pad1;
     uint _pad2;
     vec4 uFrustumPlanes[6];
@@ -58,6 +67,15 @@ layout(std430, binding = 4) readonly buffer CullParams {
 // 深度金字塔（2x2 max 归约，R32F），由 CPU 侧逐级 copy_texture_to_buffer 填入
 layout(std430, binding = 5) readonly buffer HiZLevels {
     float hiz[];
+};
+
+// 合并 dispatch 的批次描述：每批一段 ivec4
+//   x = src_base  该批在 SrcModels/SrcSpheres 里的起始实例下标
+//   y = count     该批实例数
+//   z = dst_base  该批在 DstModels 里的起始下标（各批独立分段，互不踩）
+//   w = args_slot 该批在 DrawArgsBuffer 里的槽位
+layout(std430, binding = 6) readonly buffer BatchRanges {
+    ivec4 batch_ranges[];
 };
 
 // 窗口深度 w → 线性距离（z = near*far/(far - w*(far-near))，与全引擎约定一致）
@@ -124,6 +142,15 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= uInstanceCount) return;
 
+    // 找到 idx 所属批次：≤64 段范围，线性扫描足够便宜（每线程最多 64 次比较）
+    int batch = -1;
+    for (int b = 0; b < int(uBatchCount); ++b) {
+        ivec4 r = batch_ranges[b];
+        if (int(idx) >= r.x && int(idx) < r.x + r.y) { batch = b; break; }
+    }
+    if (batch < 0) return;
+    ivec4 range = batch_ranges[batch];
+
     vec4 sphere = src_spheres[idx];
     for (int i = 0; i < 6; ++i) {
         // 小于 -radius 表示球整体在该半空间之外 → 不可见
@@ -134,7 +161,8 @@ void main() {
     }
     if (occluded(sphere)) return;
 
-    // 可见：紧凑写入输出槽位，原子累加的返回值即最终 instanceCount
-    uint slot = atomicAdd(args.instanceCount, 1u);
-    dst_models[slot] = src_models[idx];
+    // 可见：写进该批在 dst_models 里的独立分段；原子累加对应槽位的
+    // instanceCount，返回值即该批内的局部下标。
+    uint local = atomicAdd(args[range.w].instanceCount, 1u);
+    dst_models[uint(range.z) + local] = src_models[idx];
 }

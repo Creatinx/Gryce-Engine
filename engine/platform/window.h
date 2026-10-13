@@ -110,9 +110,6 @@ public:
     static void shutdown_sdk();
 
 private:
-    enum class CursorMode { Normal, Hidden, Disabled };
-    CursorMode cursor_mode_ = CursorMode::Normal;
-
     GLFWwindow* handle_ = nullptr;
     Cursor* current_cursor_ = nullptr;
     WindowMode mode_;

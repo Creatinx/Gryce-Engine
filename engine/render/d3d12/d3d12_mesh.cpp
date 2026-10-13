@@ -51,9 +51,56 @@ D3D12Mesh::~D3D12Mesh() {
     release();
 }
 
-void D3D12Mesh::set_context(ID3D12Device* device, ID3D12CommandQueue* queue) {
+void D3D12Mesh::set_context(ID3D12Device* device, ID3D12CommandQueue* queue,
+                            ResourceRetireSink* retire_sink) {
     device_ = device;
     queue_ = queue;
+    retire_sink_ = retire_sink;
+}
+
+// 缓冲更新（顶点 / 索引 / 实例流共用）。
+//
+// ★★ 这里**必须**复用容量足够的旧缓冲，绝不能"每次上传都 Release 重建"：
+//    D3D12 严禁销毁仍被已提交命令列表引用的资源。实例流是逐帧上传的
+//    （粒子系统每帧 upload_instances，且实例数逐帧变化），旧实现每次先
+//    Release 再重建 → 销毁了前 1~2 帧的 draw 仍在读的那块缓冲 → 驱动判非法，
+//    表现为随机几帧后 DXGI_ERROR_DEVICE_HUNG / 设备移除（实测 Play 模式必挂，
+//    静态帧因为压根不更新实例流所以看不出问题）。
+//    容量不足时才新建，并把旧资源挂给后端延迟释放（等 GPU 跑完那几帧再 Release）。
+bool D3D12Mesh::update_or_create_buffer(ID3D12Resource** buf, uint32_t* capacity,
+                                       const void* data, uint32_t size, const char* what) {
+    if (!device_ || !queue_ || !buf || !capacity || !data || size == 0) return false;
+
+    if (*buf && *capacity >= size) {
+        // 原地更新：staging → 已有资源，不触碰资源生命周期。
+        ID3D12Resource* staging = create_upload_buffer(device_, size, data);
+        if (!staging) {
+            GLOG_ERROR("D3D12Mesh: staging alloc failed for {} ({} bytes)", what, size);
+            return false;
+        }
+        const bool ok = immediate_submit_copy(device_, queue_, *buf, 0, staging, 0, size);
+        staging->Release();
+        if (!ok) {
+            GLOG_ERROR("D3D12Mesh: in-place copy failed for {}", what);
+            return false;
+        }
+        return true;
+    }
+
+    // 容量不足：新建 → 旧资源交给后端延迟释放（没有 sink 时只能立即释放，
+    // 那只应发生在后端已销毁之后的收尾阶段）。
+    ID3D12Resource* next = create_and_upload(data, size, what);
+    if (!next) return false;
+    if (*buf) {
+        if (retire_sink_) {
+            retire_sink_->retire_gpu_resource(*buf);
+        } else {
+            (*buf)->Release();
+        }
+    }
+    *buf = next;
+    *capacity = size;
+    return true;
 }
 
 ID3D12Resource* D3D12Mesh::create_and_upload(const void* data, uint32_t size, const char* what) {
@@ -79,25 +126,21 @@ ID3D12Resource* D3D12Mesh::create_and_upload(const void* data, uint32_t size, co
 }
 
 void D3D12Mesh::upload_vertices(const void* data, uint32_t size, uint32_t count) {
-    if (vertex_buffer_) {
-        vertex_buffer_->Release();
-        vertex_buffer_ = nullptr;
-    }
     vertex_count_ = 0;
-    vertex_buffer_ = create_and_upload(data, size, "vertex buffer");
-    if (!vertex_buffer_) return;
+    if (!update_or_create_buffer(&vertex_buffer_, &vertex_buffer_bytes_, data, size,
+                                 "vertex buffer")) {
+        return;
+    }
     vertex_count_ = count;
     create_vb_view();
 }
 
 void D3D12Mesh::upload_indices(const void* data, uint32_t size, uint32_t count) {
-    if (index_buffer_) {
-        index_buffer_->Release();
-        index_buffer_ = nullptr;
-    }
     index_count_ = 0;
-    index_buffer_ = create_and_upload(data, size, "index buffer");
-    if (!index_buffer_) return;
+    if (!update_or_create_buffer(&index_buffer_, &index_buffer_bytes_, data, size,
+                                 "index buffer")) {
+        return;
+    }
     index_count_ = count;
     create_ib_view();
 }
@@ -114,13 +157,13 @@ void D3D12Mesh::set_instance_layout(const VertexLayout& layout) {
 }
 
 void D3D12Mesh::upload_instances(const void* data, uint32_t size, uint32_t count) {
-    if (instance_buffer_) {
-        instance_buffer_->Release();
-        instance_buffer_ = nullptr;
-    }
     instance_count_ = 0;
-    instance_buffer_ = create_and_upload(data, size, "instance buffer");
-    if (!instance_buffer_) return;
+    // ★ 逐帧上传的高频路径（粒子系统每帧调用）：容量够就原地更新，
+    //   绝不 Release 重建 —— 见 update_or_create_buffer 的说明。
+    if (!update_or_create_buffer(&instance_buffer_, &instance_buffer_bytes_, data, size,
+                                 "instance buffer")) {
+        return;
+    }
     instance_count_ = count;
     create_instance_view();
 }
@@ -171,6 +214,9 @@ void D3D12Mesh::release() {
     if (vertex_buffer_) { vertex_buffer_->Release(); vertex_buffer_ = nullptr; }
     if (index_buffer_)  { index_buffer_->Release();  index_buffer_ = nullptr; }
     if (instance_buffer_) { instance_buffer_->Release(); instance_buffer_ = nullptr; }
+    vertex_buffer_bytes_ = 0;
+    index_buffer_bytes_ = 0;
+    instance_buffer_bytes_ = 0;
     vb_view_ = {};
     ib_view_ = {};
     instance_view_ = {};

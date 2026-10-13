@@ -20,6 +20,11 @@ layout(std430, binding = 2) readonly buffer DstModels {
 };
 
 uniform int uGpuCulled; // 0 = 顶点属性实例流；1 = GPU 剔除后的 SSBO
+// GPU 剔除路径下本批在 DstModels 里的起始下标。GL 的 gl_InstanceID 恒从 0 开始
+// （glDrawArraysIndirect 忽略 baseInstance），而合并 dispatch 后各批数据是分段的，
+// 必须显式加基址。Vulkan / D3D12 的实例索引已被 firstInstance / StartInstanceLocation
+// 偏移（args 里的 baseInstance = 基址），这两个后端上该 uniform 恒为 0，不再叠加。
+uniform int uGpuCulledBase;
 
 out vec3 vFragPos;
 out vec2 vTexCoord;
@@ -33,7 +38,7 @@ uniform mat4 uProjection;
 void main() {
     mat4 model;
     if (uGpuCulled != 0) {
-        model = dst_models[gl_InstanceID];
+        model = dst_models[gl_InstanceID + uGpuCulledBase];
     } else {
         model = mat4(aInstanceM0, aInstanceM1, aInstanceM2, aInstanceM3);
     }

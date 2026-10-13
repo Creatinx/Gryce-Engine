@@ -40,6 +40,32 @@ void RenderPipeline::set_contact_shadow_params(float strength, float radius_worl
 
 
 bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
+    // MSAA 目标统一清理（入口防泄漏 + 各失败分支降级用）。
+    // reset_samples=false 仅用于入口清理：不能把 msaa_samples_ 抹掉，
+    // 否则后面的 MSAA 创建块会被跳过（调用方传入的请求值必须保留到
+    // 创建失败时才降级）。
+    auto destroy_msaa = [this, ctx](bool reset_samples) {
+        if (hdr_msaa_fbo_.is_valid()) {
+            ctx->destroy_framebuffer(hdr_msaa_fbo_);
+            hdr_msaa_fbo_ = RHIFramebufferHandle{};
+        }
+        if (hdr_msaa_color_.is_valid()) {
+            ctx->destroy_texture(hdr_msaa_color_);
+            hdr_msaa_color_ = RHITextureHandle{};
+        }
+        if (hdr_msaa_depth_.is_valid()) {
+            ctx->destroy_texture(hdr_msaa_depth_);
+            hdr_msaa_depth_ = RHITextureHandle{};
+        }
+        if (hdr_depth_only_fbo_.is_valid()) {
+            ctx->destroy_framebuffer(hdr_depth_only_fbo_);
+            hdr_depth_only_fbo_ = RHIFramebufferHandle{};
+        }
+        if (reset_samples) msaa_samples_ = 1;
+    };
+    // 先清理上一轮（resize 会重复调用）：旧 MSAA 资源不销毁会泄漏。
+    destroy_msaa(/*reset_samples=*/false);
+
     hdr_color_ = ctx->create_texture();
     // 记住"真正的" HDR 颜色附件。SSR/DOF/MotionBlur 等 pass 会把 hdr_color_
     // 指向自己的输出，每帧开头必须复位，否则下一帧的效果会拿上一帧的输出当输入。
@@ -70,6 +96,86 @@ bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
     if (!hdr_fbo_ptr->is_complete()) {
         GLOG_ERROR("RenderPipeline: HDR framebuffer incomplete");
         return false;
+    }
+
+    // ---- MSAA 多样本目标（可选）----
+    // 前向 pass 画进 hdr_msaa_fbo_，end_hdr_forward_pass 解析回 hdr_color_。
+    if (msaa_samples_ > 1) {
+        hdr_msaa_color_ = ctx->create_texture();
+        ITexture* msaa_color_ptr = ctx->texture(hdr_msaa_color_);
+        if (!hdr_msaa_color_.is_valid() || !msaa_color_ptr ||
+            !msaa_color_ptr->create_msaa(TextureFormat::RGBA16F, viewport_width_, viewport_height_,
+                                         msaa_samples_)) {
+            GLOG_WARN("create_hdr_target: MSAA color texture failed ({}x), falling back to 1x",
+                      msaa_samples_);
+            destroy_msaa(/*reset_samples=*/true);
+        }
+    }
+
+    // 深度附件形态：OpenGL 规范要求 FBO 内所有附件采样数一致
+    // （否则 GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE），必须另建一份多样本深度，
+    // resolve 时与颜色一起 blit 回单样本 hdr_depth_；Vulkan/D3D12 允许
+    // 颜色多样本 + 深度单样本混合，直接共用单样本深度（省显存、无需深度 resolve）。
+    if (msaa_samples_ > 1) {
+        const bool depth_must_match = ctx->backend() &&
+            ctx->backend()->get_capabilities().msaa_depth_must_match_samples;
+        if (depth_must_match) {
+            hdr_msaa_depth_ = ctx->create_texture();
+            ITexture* msaa_depth_ptr = ctx->texture(hdr_msaa_depth_);
+            if (!hdr_msaa_depth_.is_valid() || !msaa_depth_ptr ||
+                !msaa_depth_ptr->create_msaa(TextureFormat::Depth24, viewport_width_,
+                                             viewport_height_, msaa_samples_)) {
+                GLOG_WARN("create_hdr_target: MSAA depth texture failed ({}x), falling back to 1x",
+                          msaa_samples_);
+                destroy_msaa(/*reset_samples=*/true);
+            }
+        }
+        // 深度 resolve pass 的目标帧缓冲（无颜色附件）。GL 的 resolve 走
+        // glBlitFramebuffer 直接写 hdr_fbo_，不需要它；D3D12/Vulkan 没有深度
+        // resolve API（VK 的 pResolveAttachments 只解析颜色），用 shader 逐样本平均。
+        const char* api = ctx->backend() ? ctx->backend()->api_name() : "";
+        const bool needs_depth_resolve_pass =
+            std::strcmp(api, "D3D12") == 0 || std::strcmp(api, "Vulkan") == 0;
+        if (needs_depth_resolve_pass && msaa_samples_ > 1 && hdr_msaa_depth_.is_valid()) {
+            hdr_depth_only_fbo_ = ctx->create_framebuffer();
+            IFramebuffer* depth_only_ptr = ctx->framebuffer(hdr_depth_only_fbo_);
+            if (!hdr_depth_only_fbo_.is_valid() || !depth_only_ptr ||
+                !depth_only_ptr->create(viewport_width_, viewport_height_)) {
+                GLOG_WARN("create_hdr_target: depth-only framebuffer failed, falling back to 1x");
+                destroy_msaa(/*reset_samples=*/true);
+            } else {
+                depth_only_ptr->attach_depth_texture(hdr_depth_ptr);
+                if (!depth_only_ptr->is_complete()) {
+                    GLOG_WARN("create_hdr_target: depth-only framebuffer incomplete, falling back to 1x");
+                    destroy_msaa(/*reset_samples=*/true);
+                }
+            }
+        }
+    }
+
+    if (msaa_samples_ > 1) {
+        hdr_msaa_fbo_ = ctx->create_framebuffer();
+        IFramebuffer* msaa_fbo_ptr = ctx->framebuffer(hdr_msaa_fbo_);
+        ITexture* msaa_color_ptr = ctx->texture(hdr_msaa_color_);
+        if (!hdr_msaa_fbo_.is_valid() || !msaa_fbo_ptr ||
+            !msaa_fbo_ptr->create(viewport_width_, viewport_height_)) {
+            GLOG_WARN("create_hdr_target: MSAA framebuffer failed, falling back to 1x");
+            destroy_msaa(/*reset_samples=*/true);
+        } else {
+            msaa_fbo_ptr->attach_color_texture(msaa_color_ptr);
+            // 深度：GL 挂多样本深度（附件采样数一致）；其余后端挂单样本 hdr_depth_。
+            if (hdr_msaa_depth_.is_valid()) {
+                msaa_fbo_ptr->attach_depth_texture(ctx->texture(hdr_msaa_depth_));
+            } else {
+                msaa_fbo_ptr->attach_depth_texture(hdr_depth_ptr);
+            }
+            // resolve 目标：pass 末尾多样本颜色解析进这张单样本纹理。
+            msaa_fbo_ptr->attach_resolve_texture(hdr_color_ptr);
+            if (!msaa_fbo_ptr->is_complete()) {
+                GLOG_WARN("create_hdr_target: MSAA framebuffer incomplete, falling back to 1x");
+                destroy_msaa(/*reset_samples=*/true);
+            }
+        }
     }
 
     return true;
@@ -375,8 +481,7 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
         pp_params_.ssao_aspect = camera_->aspect();
     }
     for (RHIShaderHandle h : {gtao_shader_, ssao_blur_shader_}) {
-        IShader* s = ctx_->shader(h);
-        if (s) s->set_post_process_params(pp_params_);
+        ctx_->set_post_process_params(h, pp_params_);
     }
 
     ctx.set_depth_test(false);
@@ -451,9 +556,9 @@ void RenderPipeline::render_contact_shadow(RenderContext& ctx) {
     pp_params_.cs_strength = contact_shadow_strength_;
     pp_params_.cs_light_dir_view = math::Vector4f(
         light_dir_view.x, light_dir_view.y, light_dir_view.z, 0.0f);
-    if (IShader* s = ctx_->shader(contact_shadow_shader_)) {
-        s->set_post_process_params(pp_params_);
-    }
+    // 走命令缓冲：D3D12 影子内存由渲染线程按帧复位，主线程直接写会被擦掉
+    // （无效句柄在渲染线程侧由 backend->shader() 返回 nullptr 安全跳过）
+    ctx_->set_post_process_params(contact_shadow_shader_, pp_params_);
 
     ctx.set_depth_test(false);
     ctx.set_cull_face(CullMode::None);
@@ -520,6 +625,15 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     // TAA 开启时读取 TAA 解析后的 HDR，否则读原始 HDR
     const bool use_taa = pp_params_.taa_enabled != 0 && taa_targets_valid_;
     const RHITextureHandle hdr_in = use_taa ? taa_tex_[taa_ping_] : hdr_color_;
+    // 临时诊断（GRYCE_TRACE_HDR=1）：tonemap 这一帧实际用的是哪个纹理。
+    // 中间还有 fog / DOF / motion blur 会重指向 hdr_color_，所以这个值才是
+    // "最终画面是否包含 SSR" 的决定因素。
+    if (std::getenv("GRYCE_TRACE_HDR")) {
+        static int t = 0;
+        ++t;
+        GLOG_WARN("[hdr3] frame={} use_taa={} hdr_in=idx{} gen{}", t, use_taa ? 1 : 0,
+                  hdr_in.index, hdr_in.generation);
+    }
 
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
@@ -575,7 +689,8 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     ctx.set_uniform_int(tonemap_shader_, "uContactShadowTexture", TextureSlots::kTonemapContactShadow);
     ctx.set_uniform_int(tonemap_shader_, "uContactShadowEnabled", cs_valid ? 1 : 0);
     ctx.set_uniform_float(tonemap_shader_, "uContactShadowStrength", contact_shadow_strength_);
-    tonemap_ptr->set_post_process_params(pp_params_);
+    // 走命令缓冲：D3D12 影子内存由渲染线程按帧复位，主线程直接写会被擦掉
+    ctx.set_post_process_params(tonemap_shader_, pp_params_);
 
     ctx.draw_mesh(fullscreen_mesh_, tonemap_shader_);
 }
@@ -601,9 +716,9 @@ void RenderPipeline::render_bloom(RenderContext& ctx) {
     ctx.set_blend(false);
 
     // 后处理参数同步到 bloom shader（Vulkan push constants / GL bind 时应用）
+    // 走命令缓冲：D3D12 影子内存由渲染线程按帧复位，主线程直接写会被擦掉
     for (RHIShaderHandle h : {bloom_threshold_shader_, bloom_downsample_shader_, bloom_upsample_shader_}) {
-        IShader* s = ctx_->shader(h);
-        if (s) s->set_post_process_params(pp_params_);
+        ctx_->set_post_process_params(h, pp_params_);
     }
 
     // 1. Threshold：HDR 全分辨率 → D0（半分辨率）
@@ -669,8 +784,7 @@ void RenderPipeline::render_auto_exposure(RenderContext& ctx) {
     ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
     for (RHIShaderHandle h : {lum_average_shader_, exposure_update_shader_}) {
-        IShader* s = ctx_->shader(h);
-        if (s) s->set_post_process_params(pp_params_);
+        ctx_->set_post_process_params(h, pp_params_);
     }
 
     // 亮度链：HDR → L0 ... L4 → 1x1
@@ -724,9 +838,8 @@ void RenderPipeline::render_taa(RenderContext& ctx) {
     ctx.set_depth_test(false);
     ctx.set_cull_face(CullMode::None);
     ctx.set_blend(false);
-    if (IShader* s = ctx_->shader(taa_resolve_shader_)) {
-        s->set_post_process_params(pp_params_);
-    }
+    // 走命令缓冲：D3D12 影子内存由渲染线程按帧复位，主线程直接写会被擦掉
+    ctx_->set_post_process_params(taa_resolve_shader_, pp_params_);
 
     ctx.set_framebuffer(taa_fbo_[write]);
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);

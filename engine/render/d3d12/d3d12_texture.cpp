@@ -196,6 +196,7 @@ void D3D12Texture::release() {
     height_ = 0;
     mip_levels_ = 1;
     array_size_ = 1;
+    sample_count_ = 1;
     format_ = DXGI_FORMAT_UNKNOWN;
     srv_format_ = DXGI_FORMAT_UNKNOWN;
     is_cubemap_ = false;
@@ -205,7 +206,8 @@ void D3D12Texture::release() {
 
 bool D3D12Texture::create_resource(uint32_t width, uint32_t height, uint32_t depth_or_array,
                                    uint32_t mip_levels, DXGI_FORMAT fmt, bool allow_rt,
-                                   bool allow_ds, bool is_cube, bool is_volume) {
+                                   bool allow_ds, bool is_cube, bool is_volume,
+                                   uint32_t samples) {
     if (!device_ || fmt == DXGI_FORMAT_UNKNOWN) return false;
 
     D3D12_HEAP_PROPERTIES hp{};
@@ -232,7 +234,9 @@ bool D3D12Texture::create_resource(uint32_t width, uint32_t height, uint32_t dep
     // 深度资源用 typeless 格式落地，DSV/SRV 各自用类型化视图（见上面的说明）。
     // `fmt` 仍是"逻辑/类型化"格式，用于 DSV、SRV、PSO 的 DSVFormat。
     rd.Format = is_depth_format(fmt) ? depth_typeless_format(fmt) : fmt;
-    rd.SampleDesc.Count = 1;
+    // 多样本资源：Count=N + Quality=0（标准多重采样模式，质量级别 0 恒存在）。
+    // D3D12 要求多样本纹理 MipLevels=1，调用方（create_msaa）已保证。
+    rd.SampleDesc.Count = static_cast<UINT>(samples > 0 ? samples : 1);
     rd.SampleDesc.Quality = 0;
     rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
@@ -285,6 +289,7 @@ bool D3D12Texture::create_resource(uint32_t width, uint32_t height, uint32_t dep
     srv_format_ = is_depth_format(fmt) ? depth_srv_format(fmt) : fmt;
     is_cubemap_ = is_cube;
     is_depth_ = is_depth_format(fmt);
+    sample_count_ = samples > 0 ? samples : 1;
     current_state_ = initial;
     return true;
 }
@@ -492,6 +497,31 @@ bool D3D12Texture::create_depth(int width, int height) {
     texture_format_ = TextureFormat::Depth32F;
     if (!create_resource(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                          1, 1, DXGI_FORMAT_D32_FLOAT, false, true, false, false)) {
+        return false;
+    }
+    return true;
+}
+
+bool D3D12Texture::create_msaa(TextureFormat format, int width, int height, int samples) {
+    if (width <= 0 || height <= 0) return false;
+    // 只接受 2 的幂且 <= 16（能力协商在 RenderPipeline 侧做，这里做最后一道防线）。
+    if (samples < 2 || samples > 16 || (samples & (samples - 1)) != 0) {
+        GLOG_ERROR("D3D12Texture::create_msaa: invalid samples {} (must be 2/4/8/16)", samples);
+        return false;
+    }
+    release();
+    texture_format_ = format;
+    const DXGI_FORMAT fmt = to_dxgi_format(format);
+    if (fmt == DXGI_FORMAT_UNKNOWN) {
+        GLOG_ERROR("D3D12Texture::create_msaa: unsupported format {}", static_cast<int>(format));
+        return false;
+    }
+    // 多样本 RT：ALLOW_RENDER_TARGET + MipLevels=1 + Count=samples。
+    // 不建 SRV（多样本资源不可直接采样），解析由 backend 的 ResolveSubresource 完成。
+    if (!create_resource(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                         1, 1, fmt, /*allow_rt=*/true, /*allow_ds=*/false,
+                         /*is_cube=*/false, /*is_volume=*/false,
+                         static_cast<uint32_t>(samples))) {
         return false;
     }
     return true;
@@ -827,6 +857,11 @@ bool D3D12Texture::create_srv(D3D12_CPU_DESCRIPTOR_HANDLE dest) const {
         srv.TextureCube.MostDetailedMip = 0;
         srv.TextureCube.MipLevels = mip_levels_;
         srv.TextureCube.ResourceMinLODClamp = 0.0f;
+    } else if (sample_count_ > 1) {
+        // 多样本资源的 SRV 必须用 TEXTURE2DMS 维度（如 MSAA 深度 resolve shader
+        // 逐样本读取）。TEXTURE2D 会被 debug layer 拒绝并触发 RemoveDevice。
+        srv.Format = view_fmt;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
     } else {
         srv.Format = view_fmt;
         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -844,9 +879,15 @@ bool D3D12Texture::create_rtv(D3D12_CPU_DESCRIPTOR_HANDLE dest, uint32_t mip,
     if (!device_ || !resource_ || is_depth_) return false;
     D3D12_RENDER_TARGET_VIEW_DESC rtv{};
     rtv.Format = format_;
-    rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    rtv.Texture2D.MipSlice = mip;
-    rtv.Texture2D.PlaneSlice = 0;
+    if (sample_count_ > 1) {
+        // 多样本资源的 RTV 必须用 TEXTURE2DMS 维度（无 MipSlice/PlaneSlice 字段）。
+        // 用 TEXTURE2D 会被 debug layer 拒绝并触发 RemoveDevice。
+        rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+    } else {
+        rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtv.Texture2D.MipSlice = mip;
+        rtv.Texture2D.PlaneSlice = 0;
+    }
     device_->CreateRenderTargetView(resource_, &rtv, dest);
     (void)slice;
     return true;
@@ -856,9 +897,13 @@ bool D3D12Texture::create_dsv(D3D12_CPU_DESCRIPTOR_HANDLE dest) const {
     if (!device_ || !resource_ || !is_depth_) return false;
     D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};
     dsv.Format = format_;
-    dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    if (sample_count_ > 1) {
+        dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
+    } else {
+        dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsv.Texture2D.MipSlice = 0;
+    }
     dsv.Flags = D3D12_DSV_FLAG_NONE;
-    dsv.Texture2D.MipSlice = 0;
     device_->CreateDepthStencilView(resource_, &dsv, dest);
     return true;
 }

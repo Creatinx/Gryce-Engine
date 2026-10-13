@@ -91,6 +91,27 @@ uint32_t max_register_in_hlsl(const std::string& hlsl, char letter) {
     return best;
 }
 
+// 扫 HLSL 里所有 `SamplerComparisonState <name> : register(sN);`，把 N 收进 out。
+// 依据 SPIRV-Cross 的约定：带比较的采样器（GLSL 的 sampler2DShadow / SampleCmp）
+// 会生成 SamplerComparisonState，而普通采样器是 SamplerState —— 这是"着色器期望
+// 哪种采样器模式"的权威来源（见 comparison_sampler_regs_ 的说明）。
+void collect_comparison_samplers(const std::string& hlsl, std::set<uint32_t>& out) {
+    const std::string key = "SamplerComparisonState";
+    for (size_t p = hlsl.find(key); p != std::string::npos; p = hlsl.find(key, p + 1)) {
+        const size_t reg = hlsl.find("register(s", p);
+        if (reg == std::string::npos) continue;
+        size_t q = reg + std::strlen("register(s");
+        uint32_t v = 0;
+        bool any = false;
+        while (q < hlsl.size() && std::isdigit(static_cast<unsigned char>(hlsl[q]))) {
+            v = v * 10u + static_cast<uint32_t>(hlsl[q] - '0');
+            ++q;
+            any = true;
+        }
+        if (any) out.insert(v);
+    }
+}
+
 // VertexType → DXGI_FORMAT。
 DXGI_FORMAT dxgi_format_for_vertex_type(VertexType t) {
     switch (t) {
@@ -291,6 +312,9 @@ bool D3D12Shader::build_stage(const std::string& glsl_source, GlslVariant varian
     //   这里取 max+1 才是真正覆盖全部引用的范围上界。
     srv_register_count_ = std::max(srv_register_count_, max_register_in_hlsl(hlsl, 't'));
     sampler_register_count_ = std::max(sampler_register_count_, max_register_in_hlsl(hlsl, 's'));
+    // 记录本阶段"期望比较采样器"的寄存器（VS/FS 合并）——采样器模式以此为准，
+    // 见 comparison_sampler_regs_ 的说明。
+    collect_comparison_samplers(hlsl, comparison_sampler_regs_);
 
     // ★ 反射 SSBO 块（块名 → t/u 寄存器 / UAV 标志 / 元素步长）。
     //   图形侧真正用到的是 `instanced.vert` 的 DstModels（GPU 剔除后的实例矩阵，
@@ -753,8 +777,15 @@ ID3D12PipelineState* D3D12Shader::create_pso(const PsoKey& key) {
 
     // ---- 渲染目标格式 ----
     // 单 RT（引擎的 MRT 只在 G-buffer 用，且 deferred 未接线；后续需要时扩）。
-    pso.SampleDesc.Count = 1;
+    // ★ SampleDesc.Count 必须与当前绑定 RT 的实际采样数一致，否则
+    //   CreateGraphicsPipelineState 返回 E_INVALIDARG（调试层：
+    //   "RTV format X sample count N does not match PSO sample count M"）。
+    pso.SampleDesc.Count = key.samples;
     pso.SampleDesc.Quality = 0;
+    // 多样本光栅化开关：Count>1 时必须开（不开则按 1x 光栅化，采样点不写，
+    // resolve 出来是清屏色）；Count=1 时必须关（开了等于要求 alpha-to-coverage
+    // 语义之外的每采样点混合，且与 RT 采样数不符）。
+    pso.RasterizerState.MultisampleEnable = (key.samples > 1) ? TRUE : FALSE;
 
     // ★ NumRenderTargets 必须与实际绑定的颜色附件数一致。
     // 阴影 / 深度 prepass 的帧缓冲是**纯深度**（没有颜色附件），此时
@@ -882,6 +913,7 @@ void D3D12Shader::set_int(const std::string& name, int value) {
     if (sampler_index_for_name(name) >= 0) {
         slot_sampler_name_[value] = name;   // slot → 采样器名（本帧后续空名绑定要用）
         pending_sampler_name_ = name;       // 紧邻的 set_texture 可当场精确落位
+        pending_sampler_slot_ = value;      // ★ 配对必须同 slot（见头文件说明）
         return;
     }
     write_uniform_raw(name.c_str(), &value, sizeof(int));
@@ -1082,9 +1114,19 @@ void D3D12Shader::set_texture(int slot, ITexture* texture) {
     ensure_frame();
     auto* t = dynamic_cast<D3D12Texture*>(texture);
 
-    if (pending_sampler_name_.has_value()) {
+    // ★ 精确配对仅在"名字来自本 slot"时成立：dispatch 的命名绑定路径是
+    //   set_int(name, unit) → set_texture(unit, tex)（同 unit），而引擎里
+    //   另一大类调用是 set_texture(...) → set_uniform_int(name, slot)
+    //   （见 upload_ibl_textures / shadow 绑定），后者根本不构成配对。
+    //   旧实现不检查 slot，于是 set_int 记下的名字会悬挂到**后面某次不相关**的
+    //   set_texture 上：实测 BRDF LUT 被绑到 uPrefilterMap 的寄存器、级联阴影图
+    //   被绑到 uBRDFLUT 的寄存器（金属全黑 + 镜面 IBL 全丢，且没有任何日志）。
+    //   无论配对成功与否都清掉 pending —— "紧接"的语义一旦被别的纹理绑定打断，
+    //   就不能再拿这个名字去解释那张纹理。
+    if (pending_sampler_name_.has_value() && slot == pending_sampler_slot_) {
         const std::string name = *pending_sampler_name_;
         pending_sampler_name_.reset();
+        pending_sampler_slot_ = -1;
         slot_sampler_name_[slot] = name;   // 顺手记牢 slot↔name，供后续空名绑定复用
         pending_by_slot_.erase(slot);      // 精确绑定覆盖同 slot 的延迟项
         const int index = sampler_index_for_name(name);
@@ -1096,6 +1138,9 @@ void D3D12Shader::set_texture(int slot, ITexture* texture) {
         // 该名字不在本 shader 的采样器表里（例如把别的 pass 的名字传了过来）。
         // 不丢弃：退回按 slot 延迟解析。
     }
+    // 未配对（或配对失败）：清掉悬挂的待配对名，避免它被后续无关绑定"领走"。
+    pending_sampler_name_.reset();
+    pending_sampler_slot_ = -1;
 
     // 空名绑定：只记"哪个 slot 要绑哪张图"，名字稍后补齐。
     pending_by_slot_[slot] = t;
@@ -1329,6 +1374,28 @@ bool D3D12Shader::commit_textures() {
         D3D12Texture* tex = bound_textures_[i].tex;
         if (!tex || !tex->is_valid()) continue;   // 未绑定 → 保留空描述符
 
+        // 调试开关 GRYCE_DX12_TRACE_BIND=1：打印 pbr 上"反射相关"采样器实际绑到的
+        // 纹理（仅在该采样器首次出现/换纹理时打一次）。排查"某几帧反射内容不对"
+        // 这类间歇问题时，对比好帧/坏帧的这张映射表最直接。
+        if (std::getenv("GRYCE_DX12_TRACE_BIND") && debug_name_ == "pbr") {
+            static std::unordered_map<std::string, std::string> logged;
+            const std::string& n = sampler_names_[i];
+            if (n == "uSSRProbeAtlas" || n == "uSSRTexture" || n == "uPrefilterMap" ||
+                n == "uIrradianceMap" || n == "uBRDFLUT" || n == "uSSRHiZ") {
+                char desc[160];
+                std::snprintf(desc, sizeof(desc), "%s reg=t%u tex=%p %dx%d fmt=%d cube=%d",
+                              n.c_str(), 1u + static_cast<unsigned>(i),
+                              static_cast<const void*>(tex), tex->width(), tex->height(),
+                              static_cast<int>(tex->dxgi_format()),
+                              tex->is_cubemap() ? 1 : 0);
+                if (logged[n] != desc) {
+                    logged[n] = desc;
+                    GLOG_WARN("[bind] frame={} {}", backend_ ? backend_->current_frame_id() : 0,
+                              desc);
+                }
+            }
+        }
+
         // ★ 采样前必须把资源转到 "shader 可读"：effect 的离屏目标（SSR blur/
         //   composite、bloom 各级）刚被上一个 pass 当 RT 写过，当前状态是
         //   RENDER_TARGET。D3D12 采样这种资源是非法用法 —— 调试层可能只给一条
@@ -1339,7 +1406,24 @@ bool D3D12Shader::commit_textures() {
         tex->create_srv(heaps.srv().cpu_handle(srv_slot));
 
         D3D12_SAMPLER_DESC sd{};
-        sd.Filter = tex->dxgi_filter();
+        // ★★ 采样器模式以**着色器自己的声明**为准，不看纹理对象的状态 ★★
+        //   同一个纹理会同时以"比较采样器"（shadow 的 uShadowMap）和"普通采样器"
+        //   （PCSS 的原始深度 uShadowMapDepthN）被同一个 shader 绑定 —— 模式只跟
+        //   纹理走的话必然有一边不匹配。GPU 校验层对此报：
+        //     "Sampler mode differs from that expected by shader:
+        //      Expected SAMPLER_MODE_COMPARISON, In Descriptor SAMPLER_MODE_DEFAULT"
+        //   这是 GPU 层未定义行为：同一批命令有时正确、有时采到垃圾（实测表现为
+        //   金属反射间歇性塌成平坦的环境平均值，而普通调试层一声不吭）。
+        const bool want_comparison =
+            comparison_sampler_regs_.count(1u + static_cast<uint32_t>(i)) != 0;
+        if (want_comparison) {
+            // 与 GL 侧的 sampler2DShadow 语义对齐：线性比较滤波 + LESS_EQUAL。
+            sd.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+        } else {
+            // 普通采样器必须清掉比较位（纹理侧万一被标成比较滤波也不跟随）。
+            sd.Filter = static_cast<D3D12_FILTER>(
+                static_cast<uint32_t>(tex->dxgi_filter()) & ~0x80u);
+        }
         sd.AddressU = tex->dxgi_address_u();
         sd.AddressV = tex->dxgi_address_v();
         sd.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -1350,10 +1434,8 @@ bool D3D12Shader::commit_textures() {
         //   WARNING —— 本引擎每个 draw 都会重建采样器描述符，几百条警告会把
         //   ID3D12InfoQueue 的 1024 条环形缓冲**冲爆**，把真正的错误挤出去
         //   （排查时吃过这个亏）。所以按过滤类型给合规的值。
-        const bool comparison_filter =
-            (static_cast<uint32_t>(sd.Filter) & 0x80u) != 0u;   // D3D12_FILTER 的比较位
-        sd.ComparisonFunc = comparison_filter ? D3D12_COMPARISON_FUNC_LESS_EQUAL
-                                              : D3D12_COMPARISON_FUNC_NEVER;
+        sd.ComparisonFunc = want_comparison ? D3D12_COMPARISON_FUNC_LESS_EQUAL
+                                            : D3D12_COMPARISON_FUNC_NEVER;
         sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 0.0f;
         sd.MinLOD = 0.0f;
         sd.MaxLOD = D3D12_FLOAT32_MAX;
@@ -1430,6 +1512,102 @@ D3D12Shader::UniformCbv D3D12Shader::commit_uniforms() {
         su.gpu = gpu;
         su.dirty = false;
         *slots[i] = gpu;
+    }
+
+    // 调试：GRYCE_DX12_TRACE_FRAME=<帧号> 时，把该帧内每次 pbr draw 的
+    // CBV 地址与 uModel 平移打出来（uModel 能唯一识别是哪个物体）。
+    // 用途：判断"某个物体的 draw 拿到了别人的 uniform"这类逐 draw 状态串位。
+    if (const char* want = std::getenv("GRYCE_DX12_TRACE_FRAME")) {
+        if (debug_name_ == "pbr" && backend_->current_frame_id() == std::strtoull(want, nullptr, 10)) {
+            auto it = vs_u_.table.find("uModel");
+            if (it != vs_u_.table.end() &&
+                static_cast<size_t>(it->second.offset) + 48 + 12 <= vs_u_.shadow.size()) {
+                float t[3];
+                std::memcpy(t, vs_u_.shadow.data() + it->second.offset + 48, sizeof(t));
+                static int draw_idx = 0;
+                GLOG_WARN("[draw] idx={} cbv_vs=0x{:x} cbv_ps=0x{:x} model=({:.2f},{:.2f},{:.2f})",
+                          ++draw_idx, static_cast<unsigned long long>(out.vs),
+                          static_cast<unsigned long long>(out.ps),
+                          static_cast<double>(t[0]), static_cast<double>(t[1]),
+                          static_cast<double>(t[2]));
+            }
+        }
+    }
+
+    // 调试：GRYCE_DX12_PROBE_CBV=1 时，对名字含 GRYCE_DX12_PROBE_CBV_NAME
+    // （默认 "ssr_trace"）的 shader 打出每次 commit 的 CBV 信息：
+    // GPU 地址 / Ring 偏移 / 块大小 / 影子内存 FNV-1a 哈希 / 关键 uniform 解码值。
+    // 用法（好/坏帧对比）：
+    //   * 影子哈希好坏帧不同 → C++ 侧 uniform 状态出错（值被复位/写错）；
+    //   * 影子哈希相同但 GPU 结果不同 → GPU 侧读到的内存被后续帧覆写
+    //     （跨帧数据竞争；此时对比 Ring 偏移与 GRYCE_DX12_PROBE_RING 流水）。
+    // 历史：SSR 偶发整帧丢失即"主线程录制期直接写 pp 参数、被渲染线程帧复位
+    // 擦掉"—— 本探针的零值帧图案（uView 正常、uSSR* 全零）定位到该竞争，
+    // 现由 SetPostProcessParams 命令修复（set_post_process_params 走命令缓冲）。
+    static const bool cbv_probe_on = std::getenv("GRYCE_DX12_PROBE_CBV") != nullptr;
+    static const std::string cbv_probe_name = [] {
+        const char* f = std::getenv("GRYCE_DX12_PROBE_CBV_NAME");
+        return std::string(f ? f : "ssr_trace");
+    }();
+    if (cbv_probe_on && backend_ && debug_name_.find(cbv_probe_name) != std::string::npos) {
+            auto fnv = [](const uint8_t* d, size_t n) {
+                uint64_t h = 1469598103934665603ull;
+                for (size_t i = 0; i < n; ++i) { h ^= d[i]; h *= 1099511628211ull; }
+                return h;
+            };
+            static uint64_t cbv_probe_frame = 0;
+            static int cbv_probe_draw = 0;
+            const uint64_t fid = backend_->current_frame_id();
+            if (fid != cbv_probe_frame) { cbv_probe_frame = fid; cbv_probe_draw = 0; }
+            ++cbv_probe_draw;
+            const D3D12_GPU_VIRTUAL_ADDRESS ring_base =
+                backend_->upload_ring().resource()
+                    ? backend_->upload_ring().resource()->GetGPUVirtualAddress()
+                    : 0;
+
+            for (int st = 0; st < 2; ++st) {
+                StageUniforms& su = st == 0 ? vs_u_ : ps_u_;
+                if (!su.present || su.block_size == 0 || su.shadow.empty()) continue;
+                auto rf = [&su](const char* name, float& out) -> bool {
+                    auto it = su.table.find(name);
+                    if (it == su.table.end() ||
+                        static_cast<size_t>(it->second.offset) + 4 > su.shadow.size()) {
+                        return false;
+                    }
+                    std::memcpy(&out, su.shadow.data() + it->second.offset, sizeof(float));
+                    return true;
+                };
+                float near_f = 0, far_f = 0, max_rough = 0, thick = 0, tan_half = 0, aspect = 0;
+                float steps_f = 0;
+                rf("uSSRNear", near_f);
+                rf("uSSRFar", far_f);
+                rf("uSSRMaxRoughness", max_rough);
+                rf("uSSRThickness", thick);
+                rf("uSSRTanHalfFov", tan_half);
+                rf("uSSRAspect", aspect);
+                rf("uSSRMaxSteps", steps_f);
+                float view0[4] = {0, 0, 0, 0};
+                auto itv = su.table.find("uView");
+                if (itv != su.table.end() &&
+                    static_cast<size_t>(itv->second.offset) + 16 <= su.shadow.size()) {
+                    std::memcpy(view0, su.shadow.data() + itv->second.offset, sizeof(view0));
+                }
+                const D3D12_GPU_VIRTUAL_ADDRESS gpu = st == 0 ? out.vs : out.ps;
+                GLOG_WARN("[cbv] frame={} draw={} shader={} stage={} size={} "
+                          "gpu=0x{:x} ring_off={} hash=0x{:016X} near={:.3f} far={:.3f} "
+                          "maxRough={:.3f} maxSteps={:.0f} thick={:.4f} tanHalf={:.4f} "
+                          "aspect={:.4f} view0=({:.3f},{:.3f},{:.3f},{:.3f})",
+                          fid, cbv_probe_draw, debug_name_, st == 0 ? "vs" : "ps",
+                          su.block_size, static_cast<unsigned long long>(gpu),
+                          ring_base ? static_cast<long long>(gpu - ring_base) : -1,
+                          fnv(reinterpret_cast<const uint8_t*>(su.shadow.data()), su.shadow.size()),
+                          static_cast<double>(near_f), static_cast<double>(far_f),
+                          static_cast<double>(max_rough), static_cast<double>(steps_f),
+                          static_cast<double>(thick), static_cast<double>(tan_half),
+                          static_cast<double>(aspect), static_cast<double>(view0[0]),
+                          static_cast<double>(view0[1]), static_cast<double>(view0[2]),
+                          static_cast<double>(view0[3]));
+            }
     }
     return out;
 }

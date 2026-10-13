@@ -41,6 +41,14 @@ struct RenderBackendCapabilities {
     bool supports_depth32f = true;
     bool supports_r8 = true;
     bool supports_rgba16f = false;
+    // 多样本颜色附件支持的最大采样数（1 = 不支持 MSAA；按 2 的幂上报）。
+    uint32_t max_msaa_color_samples = 1;
+    // MSAA 目标的深度附件是否必须与颜色同采样数：
+    //   OpenGL 规范要求 FBO 内所有附件采样数一致 → true（深度也建多样本，
+    //   resolve 时与颜色一起 blit 回单样本）；
+    //   Vulkan / D3D12 允许颜色多样本 + 深度单样本混合 → false（深度直接
+    //   共用单样本附件，省一份多样本深度显存，也无需深度 resolve）。
+    bool msaa_depth_must_match_samples = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -140,6 +148,18 @@ public:
     virtual void copy_texture_to_buffer(RHITextureHandle /*texture*/, RHIBufferHandle /*buffer*/,
                                         uint32_t /*offset*/) {}
 
+    // 显式关闭当前 render pass（若开着），使紧随其后的 copy/dispatch 类命令可以
+    // 在 pass 之外合法录制。Vulkan 不允许 render pass 内出现 transfer/compute 命令；
+    // OpenGL / D3D12 没有 render pass 概念，默认空实现即可。
+    // 调用方须知：关闭后必须重新绑定 framebuffer 才能继续绘制。
+    virtual void end_render_pass_for_transfer() {}
+
+    // ---- 调试探针（可选，默认空实现）----
+    // 把指定纹理拷回 CPU 并输出统计信息（均值 / 非零占比 / 内容哈希），
+    // 用于定位"合法序列算出不同结果"类的间歇性画面问题（D3D12 SSR 竞态排查）。
+    // 仅调试用：实现方自行门控（环境变量），对正常路径零影响。
+    virtual void probe_texture(RHITextureHandle /*tex*/, const char* /*tag*/) {}
+
     // 指定后续间接绘制的"每实例属性流"（替代 mesh 自带的实例缓冲）。
     // GPU 剔除把可见实例矩阵紧凑写进 SSBO，Vulkan 侧直接把它当作 binding 1
     // 的实例顶点缓冲用——这样图形着色器无需改动就能画出剔除结果，instanceCount
@@ -186,6 +206,14 @@ public:
     virtual void bind_framebuffer(RHIFramebufferHandle fb) { (void)fb; }
     virtual void unbind_framebuffer() {}
 
+    // MSAA 解析：把 src 帧缓冲的多样本颜色附件解析到 dst 的单样本颜色附件。
+    // 主 HDR 目标启用 MSAA 时，场景 pass 结束后调用一次，后续 pass 无缝
+    // 采样解析结果（hdr_color_ 保持单样本形态，下游零改动）。
+    // 两端都不是多样本时后端可直接忽略。在渲染线程的命令流里执行。
+    virtual void resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) {
+        (void)src; (void)dst;
+    }
+
     // 帧率 / 呈现控制
     virtual void set_swap_interval(int interval) { (void)interval; }
     virtual void set_gpu_busy_spin(bool enabled, int iterations) {
@@ -213,6 +241,9 @@ public:
     // 打印累计结果（按累计帧数求平均），print 后不清空。
     virtual void gpu_profile_dump() {}
     virtual void gpu_profile_reset() {}
+    // GPU 总耗时读数（摊到每帧，ms；自开启计时以来的累计平均）。
+    // 供调试 UI 显示"GPU 帧时间"；未开启计时或不支持时返回 0。
+    virtual double gpu_frame_time_ms() const { return 0.0; }
 
     // 能力查询（将 vendor-specific 特性、格式支持等显式化）
     virtual RenderBackendCapabilities get_capabilities() const = 0;

@@ -275,6 +275,7 @@ bool GLTexture::create_empty(int width, int height, int channels) {
     height_ = height;
     channels_ = channels;
     is_cubemap_ = false;
+    samples_ = 1;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -316,6 +317,7 @@ bool GLTexture::upload_data(const void* data, int width, int height, int channel
     height_ = height;
     channels_ = channels;
     is_cubemap_ = false;
+    samples_ = 1;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -595,6 +597,7 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
     height_ = height;
     channels_ = info.channels;
     is_cubemap_ = false;
+    samples_ = 1;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -700,6 +703,60 @@ bool GLTexture::create(TextureFormat format, int width, int height, const void* 
     return true;
 }
 
+bool GLTexture::create_msaa(TextureFormat format, int width, int height, int samples) {
+    if (width <= 0 || height <= 0 || samples < 2) return false;
+
+    // 与 create() 相同的旧资源清理（旧 id 可能仍缓存在 g_bound_textures 槽位中）
+    if (texture_id_) {
+        clear_texture_slot_cache(texture_id_);
+        glDeleteTextures(1, &texture_id_);
+    }
+    if (raw_sampler_) {
+        glDeleteSamplers(1, &raw_sampler_);
+        raw_sampler_ = 0;
+    }
+
+    GLFormatInfo info = to_gl_format(format);
+    width_ = width;
+    height_ = height;
+    channels_ = info.channels;
+    is_cubemap_ = false;
+    samples_ = samples;
+
+    // 多样本纹理目标独立于 GL_TEXTURE_2D；存储不可变（无 mip、无过滤参数）。
+    const bool dsa = gl_dsa_available();
+    if (dsa) {
+        glCreateTextures(GL_TEXTURE_2D_MULTISAMPLE, 1, &texture_id_);
+    } else {
+        glGenTextures(1, &texture_id_);
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, texture_id_);
+    }
+    if (texture_id_ == 0) {
+        GLOG_ERROR("GLTexture::create_msaa failed: glCreateTextures returned 0 "
+                   "({}x{} x{}, fmt={})", width, height, samples,
+                   static_cast<int>(format));
+        return false;
+    }
+
+    // 固定采样位置（GL_TRUE）：与 Vulkan/D3D12 常规 MSAA 路径对应，且保证
+    // resolve 结果确定（非固定位置的驱动实现会在边缘产生抖动）。
+    // ★ DSA 版是 glTextureStorage2DMultisample(texture, ...)；非 DSA 版才是
+    //   glTexStorage2DMultisample(target, ...)。把 texture id 传给后者会被
+    //   解释成 target enum → GL_INVALID_ENUM，纹理拿不到存储 →
+    //   FBO 报 GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT（MSAA 整个失效）。
+    if (dsa) {
+        glTextureStorage2DMultisample(texture_id_, samples, info.internal_format, width, height,
+                                      GL_TRUE);
+    } else {
+        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, samples, info.internal_format,
+                                width, height, GL_TRUE);
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+    }
+    GLOG_INFO("Texture created (MSAA): {}x{} x{} format={}", width, height, samples,
+              static_cast<int>(format));
+    return true;
+}
+
 bool GLTexture::create_compressed(TextureFormat format, int width, int height,
                                   int mip_levels, const void* const* mip_data,
                                   const size_t* mip_sizes) {
@@ -718,6 +775,7 @@ bool GLTexture::create_compressed(TextureFormat format, int width, int height,
     height_ = height;
     channels_ = info.channels;
     is_cubemap_ = false;
+    samples_ = 1;
 
     const bool dsa = gl_dsa_available();
     if (dsa) {
@@ -817,6 +875,9 @@ void GLTexture::unbind() const {
 }
 
 void GLTexture::set_filter(TextureFilter min, TextureFilter mag) {
+    // 多样本纹理没有过滤参数（GL 对 MULTISAMPLE 目标设置过滤会报
+    // INVALID_OPERATION），直接忽略。
+    if (samples_ > 1) return;
     if (gl_dsa_available()) {
         glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(to_gl_filter(min)));
         glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(to_gl_filter(mag)));
@@ -830,6 +891,8 @@ void GLTexture::set_filter(TextureFilter min, TextureFilter mag) {
 }
 
 void GLTexture::set_wrap(TextureWrap s, TextureWrap t) {
+    // 多样本纹理无 wrap 参数（同上）。
+    if (samples_ > 1) return;
     if (gl_dsa_available()) {
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, static_cast<GLint>(to_gl_wrap(s)));
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, static_cast<GLint>(to_gl_wrap(t)));

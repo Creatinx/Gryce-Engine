@@ -82,6 +82,11 @@ private:
     // Uniform 位置缓存：避免每帧重复查询 driver。
     mutable std::unordered_map<std::string, int> uniform_cache_;
 
+    // SSBO block 名 → layout binding 缓存：storage_block_binding 原先每次调用都
+    // 两次 glGetProgramResource*（驱动查询）；program 生命周期内绑定不变，
+    // 热重载时统一清空。GPU 剔除路径每批每帧查 5-6 次，收益明显。
+    mutable std::unordered_map<std::string, int> storage_block_binding_cache_;
+
     // 采样器 uniform 名字集合（由 program 反射得到）：set_int 需要据此判断
     // 写入的是「引擎槽位」还是普通整数，前者要按 gl_slot_map.h 换算成
     // 真正绑定的纹理单元，否则采样器指向未绑定的单元，采样恒为 0。

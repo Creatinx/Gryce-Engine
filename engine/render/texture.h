@@ -209,6 +209,22 @@ public:
     // 显式格式创建（PBR、阴影图、HDR 等场景）
     virtual bool create(TextureFormat format, int width, int height, const void* data = nullptr) = 0;
 
+    // -----------------------------------------------------------------------
+    // 多样本（MSAA）渲染目标
+    // -----------------------------------------------------------------------
+    // 创建 samples>1 的多样本颜色附件（主 HDR 目标的抗锯齿形态）。约束：
+    //   * 只能作渲染目标，不能上传数据、不能采样（各后端着色器均不支持
+    //     采样多样本图像），故无 data 参数；
+    //   * samples 必须为 2 的幂（GL 允许任意值，但 VK/D3D12 只保证幂次）；
+    //   * 后端不支持（或超出设备上限）时返回 false，调用方应降级到 1x。
+    virtual bool create_msaa(TextureFormat format, int width, int height, int samples) {
+        (void)format; (void)width; (void)height; (void)samples;
+        return false;
+    }
+    // 多样本数（1 = 普通纹理）。create_msaa 成功后返回请求的 samples。
+    virtual int sample_count() const { return 1; }
+    virtual bool is_multisampled() const { return sample_count() > 1; }
+
     // 上传块压缩纹理（2D，含全部 mip 层）。
     // mip_data[i]/mip_sizes[i] 为第 i 层数据；层尺寸按 max(1, w>>i) 推算。
     // 不支持压缩纹理的后端返回 false。

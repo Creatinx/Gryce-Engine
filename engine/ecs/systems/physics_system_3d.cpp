@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -97,15 +98,17 @@ public:
 
 // Jolt 全局初始化（分配器 / 工厂 / 类型注册）只允许执行一次。
 // 进程生命周期内不反注册，避免多个物理系统实例重复初始化导致崩溃。
+// 用 call_once：static bool 标志在多线程首帧并发创建物理系统时存在竞态，
+// 两个线程可能同时通过检查并重复 RegisterTypes（Jolt 不允许）。
 void ensure_jolt_globals() {
-    static bool done = false;
-    if (done) return;
-    done = true;
-    JPH::RegisterDefaultAllocator();
-    if (JPH::Factory::sInstance == nullptr) {
-        JPH::Factory::sInstance = new JPH::Factory();
-    }
-    JPH::RegisterTypes();
+    static std::once_flag once;
+    std::call_once(once, [] {
+        JPH::RegisterDefaultAllocator();
+        if (JPH::Factory::sInstance == nullptr) {
+            JPH::Factory::sInstance = new JPH::Factory();
+        }
+        JPH::RegisterTypes();
+    });
 }
 
 inline JPH::Vec3 to_jolt(const math::Vector3f& v) { return JPH::Vec3(v.x, v.y, v.z); }

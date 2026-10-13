@@ -43,6 +43,9 @@ target_sources(GryceCore
         math/camera.cpp
         utils/glog/glog_lib.cpp
         utils/frame_limiter.cpp
+        utils/crypto/crc32.cpp
+        utils/crypto/chacha20.cpp
+        utils/crypto/random.cpp
         resources/project.cpp
         resources/resource_path.cpp
         resources/gpack_bundle.cpp
@@ -130,6 +133,15 @@ target_link_libraries(GryceCore PUBLIC Jolt::Jolt)
 # 音频：Amplitude Audio SDK（静态库，含 flatbuffers/samplerate 私有依赖，见根 CMake）
 target_link_libraries(GryceCore PUBLIC amplitude)
 
+# 模型导入：Assimp（FBX/glTF/DAE/PLY/STL/3DS/Blend）。目标由根 CMakeLists
+# 统一准备（系统包或 FetchContent 源码）；缺失时整个块不生效，
+# asset_manager.cpp 走 #else 分支（非 OBJ 格式报错返回 nullptr，OBJ 不受影响）。
+if(TARGET assimp::assimp)
+    target_sources(GryceCore PRIVATE assets/assimp_importer.cpp)
+    target_compile_definitions(GryceCore PUBLIC GRYCE_HAS_ASSIMP)
+    target_link_libraries(GryceCore PUBLIC assimp::assimp)
+endif()
+
 # ---------------------------------------------------------------------------
 # GryceRenderer.dll
 # ---------------------------------------------------------------------------
@@ -207,6 +219,9 @@ if(GRYCE_ENABLE_IMGUI)
             ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_opengl3.cpp
     )
     target_include_directories(GryceRenderer PUBLIC ${CMAKE_SOURCE_DIR}/third_party/imgui)
+    # 引擎自带的调试 UI（左上角 FPS/帧时间 + ImGui 调试窗口，见 api/render_api.cpp）
+    # 需要知道"ImGui 核心源已编入本 DLL"，否则不能 include <imgui.h>。
+    target_compile_definitions(GryceRenderer PRIVATE GRYCE_HAS_IMGUI)
     if(WIN32)
         set_source_files_properties(${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_widgets.cpp PROPERTIES COMPILE_FLAGS -w)
     endif()
@@ -272,24 +287,40 @@ endif()
 # private include 给 d3d12_backend.cpp / d3d12_loader.cpp 这两个文件，不污染其他 TU。
 # ---------------------------------------------------------------------------
 set(GRYCE_HAS_D3D12 FALSE)
-# D3D12 后端当前是进行中的 WIP（18 个源文件，尚未通过全量编译）。
-# 默认 OFF，保证 GL / Vulkan 主路径的构建始终可用；需要继续开发 D3D12 时
-# 显式 -DGRYCE_ENABLE_D3D12=ON 打开。
-option(GRYCE_ENABLE_D3D12 "启用 D3D12 后端（WIP，默认关闭）" OFF)
+# D3D12 后端：18 个源文件全部编译链接通过，`--api dx12` 在 demo_project 上与
+# OpenGL 截图逐像素一致（平均 |Δ| = 0.06/255，见 docs/d3d12-backend-plan.md
+# 的「实施现状」）。2026-10-13 起默认 ON：
+#   * M0–M6 全部落地，已知缺陷（含 SSR 偶发整帧丢失的跨线程竞争）均已修复；
+#   * GPU 剔除（compute 视锥 + HiZ 遮挡 + 间接绘制）实测与 CPU 路径视觉等价；
+#   * 运行时动态加载 d3d12.dll/dxgi.dll/dxcompiler.dll，老 Windows 缺失时
+#     后端自己静默降级，不影响 GL/Vulkan 主线；
+#   * 编译期按头文件探测：mingw vendor 头或 Windows SDK 头**都不存在**的
+#     机器上依旧静默关闭（与 GRYCE_HAS_VULKAN 同一套写法），配置不失败。
+# 需要关闭时显式 -DGRYCE_ENABLE_D3D12=OFF。
+option(GRYCE_ENABLE_D3D12 "启用 D3D12 后端" ON)
 if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # mingw-w64 vendor 头路径：$MINGW_ROOT/x86_64-w64-mingw32/include/，
     # 不是 $MINGW_ROOT/include/。CLion 自带 mingw 路径示例：
     #   D:/JetBrains/CLion 2026.2.3.1/bin/mingw/x86_64-w64-mingw32/include/d3d12.h
     get_filename_component(_gryce_cxx_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
     set(_gryce_mingw_root "${_gryce_cxx_dir}/..")
-    set(_gryce_vendor_include "${_gryce_mingw_root}/x86_64-w64-mingw32/include")
     set(_gryce_d3d12_header_found FALSE)
 
-    if(EXISTS "${_gryce_vendor_include}/d3d12.h")
-        # mingw vendor 头优先（已 M0 验证）。无需任何额外 include —— GCC 默认就
-        # 知道这路径。
-        set(_gryce_d3d12_header_found TRUE)
-    else()
+    # vendor 头候选目录：CLion 自带 mingw 放在 x86_64-w64-mingw32/include/，
+    # 而 MSYS2 UCRT64 把 d3d12.h 直接放在 <root>/include/。两处都探。
+    set(_gryce_vendor_includes
+        "${_gryce_mingw_root}/x86_64-w64-mingw32/include"
+        "${_gryce_mingw_root}/include")
+    foreach(_gryce_inc IN LISTS _gryce_vendor_includes)
+        if(EXISTS "${_gryce_inc}/d3d12.h")
+            # mingw vendor 头优先（已 M0 验证）。无需任何额外 include —— GCC 默认就
+            # 知道这路径。
+            set(_gryce_d3d12_header_found TRUE)
+            break()
+        endif()
+    endforeach()
+
+    if(NOT _gryce_d3d12_header_found)
         # 回退到 Windows SDK 头。SDK um/ 头与 mingw 头不能并存，所以只把 SDK
         # include 加给 d3d12 后端的两个 TU。
         foreach(_gryce_sdk_ver IN ITEMS "10.0.26100.0" "10.0.22621.0" "10.0.19041.0")
@@ -365,7 +396,7 @@ if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         else()
             set(_gryce_d3d12_headers_desc "mingw-w64 vendor")
         endif()
-        message(STATUS "Gryce: D3D12 backend enabled (WinNative, skeleton stage; headers: ${_gryce_d3d12_headers_desc})")
+        message(STATUS "Gryce: D3D12 backend enabled (full; headers: ${_gryce_d3d12_headers_desc})")
     else()
         message(STATUS "Gryce: D3D12 headers not found (mingw vendor or Windows SDK); backend disabled")
     endif()
@@ -427,3 +458,26 @@ endif()
 if(WIN32)
     target_link_libraries(GrycePlatform PUBLIC imm32)
 endif()
+
+# ---------------------------------------------------------------------------
+# 引擎 DLL 重链接后立即同步到 exe 目录（${GRYCE_EXE_OUTPUT_DIR}，由顶层传入）。
+#
+# 为什么挂 POST_BUILD：日常迭代常用
+#   cmake --build . --target GryceRenderer
+# 单独构建引擎库，顶层 GryceSyncRuntimeDlls（ALL 目标）不参与，exe 目录
+# 会留下旧 DLL，运行时加载过期二进制（"改了代码却看不到变化"的经典陷阱）。
+# 命令必须挂在 DLL 自身而不是 exe 上：挂 exe 时改引擎代码 exe 不重链接、
+# 不会触发；挂 DLL 则每次重链接必触发。
+# add_custom_command(TARGET) 只接受本目录创建的 target，故三个引擎 DLL
+# 都在此处理；第三方 DLL 是 IMPORTED 目标无法挂 POST_BUILD，仍由顶层
+# GryceSyncRuntimeDlls 负责。copy_if_different 幂等，两处重复执行无副作用。
+foreach(_gryce_dll IN ITEMS GryceCore GryceRenderer GrycePlatform)
+    add_custom_command(TARGET ${_gryce_dll} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:${_gryce_dll}>"
+                "${GRYCE_EXE_OUTPUT_DIR}"
+        COMMENT "Syncing ${_gryce_dll}.dll next to GryceRenderSmoke.exe"
+        VERBATIM
+    )
+endforeach()
+unset(_gryce_dll)

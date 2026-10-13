@@ -50,6 +50,46 @@ GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h
 
 GRYCE_RENDERER_API void  GRender_SetVSync(bool enabled);
 
+// ---------------------------------------------------------------------------
+// 帧率上限（"锁帧"）—— 与 VSync 互补的第二道限速
+//
+//   VSync 由交换链锁在显示器刷新率上（60/144/240 取决于显示器，不可调）；
+//   帧率上限是软件节流：目标帧率任意可调，且不引入撕裂之外的行为差异。
+//   fps <= 0 表示不限制（默认）。两者可以同时开启 —— 谁更严格谁生效。
+//
+//   实现位置在 GRender_EndFrame（提交/present 之后按需补睡到目标帧间隔），
+//   因此同步模式与异步模式都生效，且不影响引擎内部的帧并行度。
+// ---------------------------------------------------------------------------
+GRYCE_RENDERER_API void  GRender_SetFrameRateLimit(int fps);
+GRYCE_RENDERER_API int   GRender_GetFrameRateLimit(void);
+
+// ---------------------------------------------------------------------------
+// 帧统计读数（调试 UI / 自动化验证用）
+//   GRender_GetFPS()            平滑后的帧率
+//   GRender_GetFrameTimeMs()    最近一帧的墙钟帧时间（ms）
+//   GRender_GetGPUFrameTimeMs() GPU 总耗时（摊到每帧；需先开启 GPU 计时，见
+//                               GRender_SetGPUProfiling），未开启返回 0
+// ---------------------------------------------------------------------------
+GRYCE_RENDERER_API float  GRender_GetFPS(void);
+GRYCE_RENDERER_API float  GRender_GetFrameTimeMs(void);
+GRYCE_RENDERER_API float  GRender_GetGPUFrameTimeMs(void);
+
+// ---------------------------------------------------------------------------
+// 调试 UI（左上角 FPS/帧时间叠加 + ImGui 调试窗口）
+//
+//   默认跟随 GRender_SetFPSOverlay：开着就在左上角画 FPS/帧时间读数，
+//   并且在"宿主没有自己的 ImGui 上下文"时由引擎接管 ImGui，额外弹出一个调试窗口
+//   （F1 显示/隐藏），里面有：垂直同步、帧率上限、省电模式、GPU 计时的热开关，
+//   以及若干渲染开关（阴影 / GPU 剔除 / SSR / IBL 强度）。
+//
+//   宿主自己管 ImGui（例如编辑器）时引擎不会抢上下文，此时宿主可以在自己的
+//   NewFrame/Render 之间调用 GRender_DrawDebugPanel() 把这套面板画出来。
+// ---------------------------------------------------------------------------
+GRYCE_RENDERER_API void  GRender_SetDebugUI(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsDebugUIActive(void);
+// 在宿主自持 ImGui 上下文时调用（须处于 ImGui::NewFrame() 与 ImGui::Render() 之间）。
+GRYCE_RENDERER_API void  GRender_DrawDebugPanel(void);
+
 // 电源 / 省电模式：未插电（电池）时自动进入，极致压缩每帧工作以稳定高帧率。
 // 默认 auto 开启；forced 可手动强制开(true)/关(false)。插电时行为不变（零回归）。
 GRYCE_RENDERER_API bool  GRender_IsOnBattery();          // 即时探测是否未插交流电
@@ -129,6 +169,11 @@ GRYCE_RENDERER_API void GRender_SetScene2D(bool enabled);
 // --- Project Settings（渲染质量；大部分可运行时调整，阴影贴图尺寸/后端重启生效）---
 GRYCE_RENDERER_API void  GRender_SetHDR(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsHDR(void);
+// MSAA 采样数（前向 HDR pass；1 = 关闭，默认 4）。init 前调用直接生效；
+// init 后调用同步重建 HDR 目标。实际上限由后端能力协商（GL_MAX_SAMPLES /
+// framebufferColorSampleCounts / D3D12 CheckFeatureSupport），创建失败自动降级。
+GRYCE_RENDERER_API void  GRender_SetMSAASamples(int samples);
+GRYCE_RENDERER_API int   GRender_GetMSAASamples(void);
 GRYCE_RENDERER_API void  GRender_SetToneMapMode(int mode);   // 0=None, 1=Reinhard, 2=ACES
 GRYCE_RENDERER_API int   GRender_GetToneMapMode(void);
 GRYCE_RENDERER_API void  GRender_SetExposure(float exposure);

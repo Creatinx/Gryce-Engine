@@ -5,34 +5,10 @@
 #include <filesystem>
 #include <fstream>
 
+#include "utils/crypto/crc32.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::resources {
-
-namespace {
-
-// 简单 CRC32 表
-uint32_t crc32_table[256];
-bool crc32_table_initialized = []() {
-    for (int i = 0; i < 256; ++i) {
-        uint32_t c = static_cast<uint32_t>(i);
-        for (int j = 0; j < 8; ++j) {
-            c = (c >> 1) ^ (0xEDB88320u & static_cast<uint32_t>(-(c & 1u)));
-        }
-        crc32_table[i] = c;
-    }
-    return true;
-}();
-
-uint32_t compute_crc32(const uint8_t* data, size_t len) {
-    uint32_t c = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; ++i) {
-        c = crc32_table[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
-    }
-    return c ^ 0xFFFFFFFFu;
-}
-
-} // namespace
 
 GPackReader::~GPackReader() {
     if (file_) {
@@ -104,8 +80,11 @@ bool GPackReader::open(const std::string& path) {
             entries_.clear();
             return false;
         }
-        if (static_cast<uint64_t>(path_len) > file_size) {
-            GLOG_ERROR("GPackReader: path_len {} exceeds file size in '{}'", path_len, path);
+        // path_len 只受文件大小约束不够：恶意头写 0xFFFFFFFF 仍会触发 ~4GB 字符串
+        // 分配。加绝对上限（对齐最长合理资源路径）。
+        constexpr uint32_t k_max_entry_path_len = 4096;
+        if (path_len > k_max_entry_path_len || static_cast<uint64_t>(path_len) > file_size) {
+            GLOG_ERROR("GPackReader: path_len {} exceeds limit in '{}'", path_len, path);
             std::fclose(f);
             entries_.clear();
             return false;
@@ -233,7 +212,7 @@ bool GPackWriter::write(const std::string& output_path) const {
         entry.path = path;
         entry.data_size = data.size();
         entry.data_offset = current_offset;
-        entry.crc32 = compute_crc32(data.data(), data.size());
+        entry.crc32 = utils::crc32(data.data(), data.size());
         entries.push_back(entry);
         current_offset += data.size();
     }

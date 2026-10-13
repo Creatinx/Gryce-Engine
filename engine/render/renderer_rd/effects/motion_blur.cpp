@@ -7,6 +7,8 @@
 #include "render/gpu_scope.h"
 #include "utils/glog/glog_lib.h"
 
+#include <memory>
+
 namespace gryce_engine::render {
 
 // ---------------------------------------------------------------------------
@@ -154,10 +156,11 @@ void MotionBlur_RD::render(RenderContext* ctx,
     ctx->set_cull_face(CullMode::None);
     ctx->set_blend(false);
 
-    // 同步后处理参数
+    // 同步后处理参数（走命令缓冲：D3D12 影子内存由渲染线程按帧复位，
+    // 主线程直接写会被擦掉 —— 后处理偶发失效的根因）
+    auto pp_shared = std::make_shared<const PostProcessParams>(params);
     for (RHIShaderHandle h : {motion_vectors_shader_, motion_blur_shader_}) {
-        IShader* s = ctx->shader(h);
-        if (s) s->set_post_process_params(params);
+        ctx->set_post_process_params(h, pp_shared);
     }
 
     // Pass 1: 计算运动向量（如果外部未提供）

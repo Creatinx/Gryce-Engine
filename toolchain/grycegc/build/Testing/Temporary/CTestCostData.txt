@@ -1,0 +1,6 @@
+grycegc_cli 1 0.0726798
+grycegc_crc32 1 0.069786
+grycegc_pe 1 0.122609
+grycegc_aes 1 0.0670697
+grycegc_smoke 1 11.3306
+---

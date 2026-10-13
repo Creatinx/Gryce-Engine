@@ -197,6 +197,10 @@ void GLBackend::gpu_profile_dump() {
     gpu_stats_.print("OpenGL");
 }
 
+double GLBackend::gpu_frame_time_ms() const {
+    return gpu_profiling_enabled_ ? gpu_stats_.total_ms_per_frame() : 0.0;
+}
+
 void GLBackend::gpu_profile_reset() {
     gpu_stats_.reset();
     for (auto& c : gpu_scope_count_) c = 0;
@@ -248,8 +252,17 @@ void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,
         return;
     }
 
-    const uint32_t row_size = (width * 3 + 3) & ~3u;
-    const uint32_t data_size = row_size * height;
+    // 64-bit 计算行/数据尺寸：uint32 乘法在极端分辨率下会回绕，
+    // 导致 BMP 头里的尺寸字段与实际写出数据不一致。
+    const uint64_t row_size64 = (static_cast<uint64_t>(width) * 3 + 3) & ~3ull;
+    const uint64_t data_size64 = row_size64 * height;
+    if (data_size64 > 0xFFFFFFFFull - 54) {
+        GLOG_ERROR("save_bgr_bmp: frame {}x{} too large for BMP ({} bytes)",
+                   width, height, data_size64);
+        return;
+    }
+    const uint32_t row_size = static_cast<uint32_t>(row_size64);
+    const uint32_t data_size = static_cast<uint32_t>(data_size64);
     const uint32_t file_size = 54 + data_size;
 
     unsigned char header[54] = {};
@@ -367,6 +380,17 @@ void GLBackend::bind_framebuffer(RHIFramebufferHandle fb) {
         fbo->bind();
     } else {
         unbind_framebuffer();
+    }
+}
+
+void GLBackend::resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) {
+    IFramebuffer* src_fbo = framebuffer(src);
+    IFramebuffer* dst_fbo = framebuffer(dst);
+    if (!src_fbo || !dst_fbo) return;
+    // src 非多样本时无解析可做（调用方本就不该发这条命令）。
+    if (src_fbo->color_sample_count() <= 1) return;
+    if (!src_fbo->resolve_color_to(dst_fbo)) {
+        GLOG_WARN("GLBackend::resolve_framebuffer: blit failed");
     }
 }
 
@@ -591,10 +615,8 @@ void GLBackend::draw_indexed_indirect(RHIMeshHandle mesh, RHIShaderHandle shader
     if (!m || !s || !b) return;
 
     s->bind();
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, b->buffer_id());
+    bind_indirect_buffer_if_needed(b->buffer_id());
     m->draw_indexed_indirect(offset);
-    // 立刻解绑：间接缓冲不应残留给后续普通绘制路径。
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     GL_CHECK_ERROR();
 }
 
@@ -607,10 +629,17 @@ void GLBackend::draw_arrays_indirect(RHIMeshHandle mesh, RHIShaderHandle shader,
     if (!m || !s || !b) return;
 
     s->bind();
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, b->buffer_id());
+    bind_indirect_buffer_if_needed(b->buffer_id());
     m->draw_arrays_indirect(offset);
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     GL_CHECK_ERROR();
+}
+
+void GLBackend::bind_indirect_buffer_if_needed(uint32_t buffer_id) {
+    // 间接缓冲只在间接绘制时被读取，留着绑定不影响普通绘制路径；解绑纯属多余。
+    if (indirect_binding_cached_ && bound_indirect_buffer_ == buffer_id) return;
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffer_id);
+    bound_indirect_buffer_ = buffer_id;
+    indirect_binding_cached_ = true;
 }
 
 // 纹理 → SSBO 的 GPU 端拷贝（glReadPixels 走 PBO 路径，不做 CPU 映射）。
@@ -623,6 +652,8 @@ void GLBackend::copy_texture_to_buffer(RHITextureHandle tex, RHIBufferHandle buf
 
     if (readback_fbo_ == 0) {
         glGenFramebuffers(1, &readback_fbo_);
+        readback_fbo_attached_tex_ = 0;
+        readback_fbo_attached_ok_ = false;
     }
     // 备份当前读 FBO / 打包缓冲，结束后还原，绝不影响正在进行的渲染状态。
     GLint prev_read_fbo = 0;
@@ -631,10 +662,16 @@ void GLBackend::copy_texture_to_buffer(RHITextureHandle tex, RHIBufferHandle buf
     glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prev_pack_buffer);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, readback_fbo_);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           t->texture_id(), 0);
-    const bool complete = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-    if (complete) {
+    // 附件与完整性只在纹理变化时重做：HiZ 逐级拷贝时附件连续不变，
+    // 重挂附件会作废驱动侧 FBO 缓存，glCheckFramebufferStatus 也是一次往返。
+    if (readback_fbo_attached_tex_ != t->texture_id()) {
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               t->texture_id(), 0);
+        readback_fbo_attached_ok_ =
+            glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        readback_fbo_attached_tex_ = t->texture_id();
+    }
+    if (readback_fbo_attached_ok_) {
         // R32F 颜色附件的读回格式是 GL_RED/GL_FLOAT（OpenGL 规范要求的组合）。
         glBindBuffer(GL_PIXEL_PACK_BUFFER, b->buffer_id());
         glReadPixels(0, 0, t->width(), t->height(), GL_RED, GL_FLOAT,
@@ -707,6 +744,8 @@ RHIBufferHandle GLBackend::create_buffer() {
 }
 
 void GLBackend::destroy_buffer(RHIBufferHandle handle) {
+    // GL 对象名可能被新缓冲复用：作废间接绑定缓存，防止漏绑到已销毁的名字。
+    indirect_binding_cached_ = false;
     buffer_pool_.deallocate(handle.index, handle.generation);
 }
 
@@ -734,6 +773,16 @@ RenderBackendCapabilities GLBackend::get_capabilities() const {
     caps.supports_depth32f = true;
     caps.supports_r8 = true;
     caps.supports_rgba16f = true;
+    // MSAA：GL 3.3+ 核心支持；上报 GL_MAX_SAMPLES（驱动上限，通常 32）。
+    // 颜色附件为浮点格式（RGBA16F）时的实际上限由 create_msaa 的
+    // glTexStorage2DMultisample 成败决定（失败则上层降级）。
+    GLint max_samples = 1;
+    glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+    caps.max_msaa_color_samples = static_cast<uint32_t>(std::max(max_samples, 1));
+    // ★ GL 规范硬性要求：同一 FBO 的所有附件（颜色/深度）采样数必须一致，
+    //   否则 glCheckFramebufferStatus 报 GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE。
+    //   Vulkan/D3D12 允许混合（质量取 min），它们保持默认 false。
+    caps.msaa_depth_must_match_samples = true;
     return caps;
 }
 

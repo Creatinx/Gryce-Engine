@@ -169,6 +169,45 @@ if(Jolt_DIR)
 endif()
 
 # ===========================================================================
+# 模型导入：Assimp（FBX / glTF / DAE / PLY / STL / 3DS / Blend，OBJ 走引擎
+# 内置 ObjLoader）。与 GLFW/GLEW 同策略：优先系统包（MSYS2
+# mingw-w64-ucrt-x86_64-assimp / vcpkg 的 assimpConfig.cmake），缺失时按
+# GRYCE_DEP_FETCH 拉源码静态编译。
+# 与上面几项的区别：Assimp 是**可选**依赖——缺了只是非 OBJ 格式导入不可用
+# （engine/assets/asset_manager.cpp 里由 GRYCE_HAS_ASSIMP 条件编译，OBJ 不受
+# 影响），所以这里不 FATAL_ERROR，只告警降级。
+# ===========================================================================
+if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
+    find_package(assimp QUIET CONFIG)
+endif()
+
+gryce_fetch_enabled(_gryce_may_fetch)
+if(NOT TARGET assimp::assimp)
+    if(NOT _gryce_may_fetch)
+        gryce_dependency_hint("Assimp (MSYS2: mingw-w64-ucrt-x86_64-assimp; optional, OBJ import works without it)")
+    endif()
+    gryce_fetch_assimp()
+endif()
+
+# 系统共享库（libassimp-5.dll）需要随第三方运行库同步到 exe 目录；
+# FetchContent 源码构建出来的是静态库（TARGET_FILE 是 .a），不复制。
+set(_gryce_assimp_sync_cmd "")
+if(TARGET assimp::assimp)
+    get_target_property(_gryce_assimp_imported assimp::assimp IMPORTED)
+    if(_gryce_assimp_imported)
+        set(_gryce_assimp_sync_cmd
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:assimp::assimp>" "$<TARGET_FILE_DIR:GryceRenderSmoke>")
+    endif()
+    unset(_gryce_assimp_imported)
+    message(STATUS "Assimp: available (FBX/glTF/DAE/PLY/STL import enabled)")
+else()
+    message(WARNING
+        "Assimp unavailable: non-OBJ model formats (FBX/glTF/DAE/PLY/STL) will not import.\n"
+        "OBJ import via the built-in ObjLoader is unaffected.")
+endif()
+
+# ===========================================================================
 # 音频依赖：Amplitude Audio SDK（SparkyStudios）
 # 以预编译静态库形式随仓库分发（third_party/amplitude）：SDK 源码需 GCC16
 # 补丁且构建耗时，故引擎侧只消费头文件 + libAmplitude.a 及其两个私有依赖
@@ -238,12 +277,17 @@ else()
     endif()
 endif()
 
+# GryceRenderSmoke.exe 的运行时输出目录。engine/ 子目录里引擎 DLL 的
+# POST_BUILD 拷贝命令需要它（那边无法引用尚未定义的 exe target，
+# add_custom_command(TARGET) 也不允许跨目录挂命令，拷贝只能挂在 DLL 自身）。
+# 默认不设 RUNTIME_OUTPUT_DIRECTORY，即落在 ${CMAKE_BINARY_DIR} 根下。
+set(GRYCE_EXE_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
+
 # ===========================================================================
 # 渲染引擎本体：engine/ 下的 GryceCore.dll / GryceRenderer.dll / GrycePlatform.dll
 # （Vulkan SDK 由 engine/CMakeLists.txt 自行探测并设置 GRYCE_HAS_VULKAN）
 # ===========================================================================
 add_subdirectory(engine)
-
 # ===========================================================================
 # 演示宿主：GryceRenderSmoke.exe（人工运行，非 CTest 用例）
 #
@@ -268,13 +312,13 @@ if(WIN32)
 endif()
 
 # 引擎 DLL 同步到 exe 目录。
-# 注意：不能用 add_custom_command(... POST_BUILD) —— 那条命令只在
-# GryceRenderSmoke 自身被重新链接时执行；若只改了引擎代码，GryceCore/
-# GryceRenderer 会重新链接而 exe 不会，于是 exe 目录里留下旧 DLL，
-# 运行时加载的是过期二进制（排查"改了代码却看不到变化"的经典陷阱）。
-# 这里用始终执行的 ALL 目标 + copy_if_different，幂等且不会漏拷。
-# 第三方运行库（glfw3.dll / glew32.dll）也一并同步：它们来自依赖前缀，
-# 非 MSYS2 shell 里启动时 PATH 上不一定有，复制到 exe 同目录最稳。
+# 注意：这个 ALL 目标不能替代 POST_BUILD 拷贝 —— 它只在（全量）构建时执行，
+# 日常 `cmake --build . --target GryceRenderer` 单独构建引擎库时不会触发，
+# exe 目录里会留下旧 DLL，运行时加载过期二进制（"改了代码却看不到变化"
+# 的经典陷阱）。所以引擎 DLL 自身也挂了 POST_BUILD 拷贝，见下方 foreach。
+# 这里负责第三方运行库（glfw3.dll / glew32.dll / box2d / Jolt）与 MinGW
+# 运行时：它们来自依赖前缀或编译器 bin 目录，非 MSYS2 shell 里启动时 PATH
+# 上不一定有，复制到 exe 同目录最稳；且多为 IMPORTED 目标，无法挂 POST_BUILD。
 # 用 $<TARGET_FILE:...> 而不是绝对路径：系统包场景解析为 IMPORTED_LOCATION，
 # FetchContent 场景解析为本地构建产物，两种来源一套代码。
 #
@@ -318,12 +362,14 @@ add_custom_target(GryceSyncRuntimeDlls ALL
             "$<TARGET_FILE:glfw>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:GLEW::GLEW>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
+    ${_gryce_assimp_sync_cmd}
     ${_gryce_mingw_rt_cmds}
     DEPENDS ${GRYCE_DLL_TARGETS} GryceRenderSmoke
     COMMENT "Syncing engine, third-party and MinGW runtime DLLs next to GryceRenderSmoke.exe"
     VERBATIM
 )
 unset(_gryce_mingw_rt_cmds)
+unset(_gryce_assimp_sync_cmd)
 
 # ===========================================================================
 # 测试：CTest 只跑"纯计算正确性核对"，CI 要求全绿才算通过。

@@ -82,6 +82,26 @@ bool D3D12Backend::init(void* native_window) {
             dbg->EnableDebugLayer();
             debug_layer_enabled_ = true;
             GLOG_INFO("D3D12: debug layer enabled (GRYCE_D3D12_DEBUG=1)");
+            // GRYCE_D3D12_GPU_VALIDATION=1：额外打开 GPU 侧校验。
+            // 专门抓"GPU 读到了尚未完成写入 / 未正确同步"这类可见性问题 ——
+            // 普通调试层只校验 API 调用，对这类竞态是静默的（而它正是"同一批命令
+            // 有时出对有时出错"的典型成因）。
+            {
+                char vb[8] = {};
+                const DWORD n = GetEnvironmentVariableA("GRYCE_D3D12_GPU_VALIDATION", vb, sizeof(vb));
+                if (n > 0 && vb[0] != '0') {
+                    ID3D12Debug1* dbg1 = nullptr;
+                    if (SUCCEEDED(dbg->QueryInterface(__mingw_uuidof<ID3D12Debug1>(),
+                                                      reinterpret_cast<void**>(&dbg1))) && dbg1) {
+                        dbg1->SetEnableGPUBasedValidation(TRUE);
+                        GLOG_INFO("D3D12: GPU-based validation enabled "
+                                  "(GRYCE_D3D12_GPU_VALIDATION=1)");
+                        dbg1->Release();
+                    } else {
+                        GLOG_WARN("D3D12: ID3D12Debug1 unavailable, GPU validation skipped");
+                    }
+                }
+            }
             dbg->Release();
         } else {
             GLOG_WARN("D3D12: debug layer unavailable (install Windows 'Graphics Tools')");
@@ -172,12 +192,33 @@ bool D3D12Backend::init(void* native_window) {
         return false;
     }
 
-    // 8) 上传环（M3）：UBO / 每帧实例数据用。4MB 足够 M3 阶段，后续按需调。
-    if (!upload_ring_.init(device_, 4 * 1024 * 1024)) {
+    // 8) 上传环（M3）：UBO / 每帧实例数据 / HiZ 回写用。
+    //
+    // ★ 容量必须按**单次最大分配**反推，否则会出现"看起来只是慢一点、实际上
+    //   数据被丢掉"的静默故障：UploadRing 按 frames_in_flight 切成独立分段，
+    //   单次分配超过一个分段就是**永远失败**，调用方的降级路径各不相同。
+    //   本引擎里最大的一笔是 GPU 遮挡剔除的 HiZ 纹理→SSBO 回写：
+    //   w*h 字节（1920x1080 = 2,073,600B）。旧的固定 4MB → 每槽 1.4MB，
+    //   于是每帧必然告警一次 "upload ring exhausted (2073600 bytes)"，
+    //   而 drain_hiz_repacks 拿不到空间就把这条 HiZ 数据**直接丢弃**
+    //   → GPU 剔除用的 HiZ 层级长期是旧内容/零，遮挡剔除静默失效。
+    //   现在按"一个槽 ≥ 一帧 HiZ + 余量"给足容量（槽数 = frames_in_flight）。
+    const size_t hiz_bytes = static_cast<size_t>(swapchain_.width()) *
+                             static_cast<size_t>(swapchain_.height());
+    // 一个槽 = 一帧 HiZ（w*h） + 该帧全部常量/实例数据（实测 1080p 下约 0.5~1MB，
+    // 给 2MB 余量；4K 时 HiZ 涨到 8MB，同理跟着涨）。
+    // 4MB 余量覆盖：一帧的 UBO/实例数据（实测 1080p 约 0.5~1.4MB）+
+    // Play 模式下额外的逐帧动态上传（粒子实例、探针重烘的常量）。
+    const size_t per_slot = hiz_bytes + 4u * 1024u * 1024u;
+    const size_t ring_capacity = per_slot * swapchain_.buffer_count();
+    if (!upload_ring_.init(device_, ring_capacity)) {
         GLOG_ERROR("D3D12::init: upload ring init failed");
         release_device_objects();
         return false;
     }
+    GLOG_INFO("D3D12: upload ring {} MB ({} slots x {} KB, HiZ={} KB)", 
+              ring_capacity / (1024 * 1024), swapchain_.buffer_count(),
+              per_slot / 1024, hiz_bytes / 1024);
 
     initialized_ = true;
     GLOG_INFO("D3D12::init OK (FL=0x{:04x}, adapter={}, {}x{})",
@@ -210,10 +251,23 @@ void D3D12Backend::release_device_objects() {
     framebuffer_pool_.clear();
     buffer_pool_.clear();
 
+    // 延迟释放队列里剩余的网格缓冲：走到这里调用方已经 wait_gpu_idle
+    // （D3D12::shutdown 的既定顺序），可以安全销毁。
+    for (RetiredRawResource& r : retired_raw_resources_) {
+        if (r.res) r.res->Release();
+    }
+    retired_raw_resources_.clear();
+
     upload_ring_.shutdown();
     descriptor_heaps_.shutdown();
 
     swapchain_.shutdown();
+
+    // present 目标与翻转 blit 的自带管线（必须在设备销毁之前）
+    release_present_target();
+    if (blit_pso_)  { blit_pso_->Release();  blit_pso_  = nullptr; }
+    if (blit_root_) { blit_root_->Release(); blit_root_ = nullptr; }
+    blit_pipeline_failed_ = false;
 
     if (queue_)   { queue_->Release();   queue_   = nullptr; }
     if (device_)  { device_->Release();  device_  = nullptr; }
@@ -225,6 +279,10 @@ void D3D12Backend::release_device_objects() {
     initialized_ = false;
     frame_aborted_ = false;
     back_buffer_as_rt_ = false;
+    backbuffer_as_rt_ = false;
+    present_dirty_ = false;
+    present_flushed_ = false;
+    using_present_target_ = false;
     clear_dirty_ = true;
     adapter_desc_[0] = '\0';
     feature_level_ = D3D_FEATURE_LEVEL_12_0;
@@ -251,6 +309,9 @@ void D3D12Backend::begin_frame() {
     if (!initialized_) return;
     frame_aborted_ = false;
     back_buffer_as_rt_ = false;
+    backbuffer_as_rt_ = false;
+    present_dirty_ = false;
+    present_flushed_ = false;
 
     // 设备健康探针：GetDeviceRemovedReason() 一旦非 S_OK 就是**不可恢复**的
     // （D3D12 的 device removed 是终态，之后所有调用固定返回 0x887A0005）。
@@ -263,6 +324,10 @@ void D3D12Backend::begin_frame() {
             GLOG_ERROR("D3D12Backend: device removed at frame {} (reason=0x{:08X})",
                        frame_counter_, static_cast<uint32_t>(reason));
             dump_info_queue();
+            // 设备挂起时把 GPU 计时段打出来：最后一个有值（且已结束）的段是
+            // 挂起前完成到的位置，配合 gpu_profile_flush_pending 的"挂起点"输出
+            // 就能把 TDR 钉到具体 pass（后端自带这套定位机制的用途）。
+            if (gpu_profiling_enabled_) gpu_profile_dump();
         }
     }
 
@@ -279,6 +344,9 @@ void D3D12Backend::begin_frame() {
         }
         viewport_w_ = static_cast<int>(swapchain_.width());
         viewport_h_ = static_cast<int>(swapchain_.height());
+        // present 目标与交换链同尺寸：尺寸变了就重建（旧资源已被 GPU 引用完，
+        // 本帧还没提交任何命令，这里直接 Release 是安全的）。
+        release_present_target();
     }
 
     if (!swapchain_.begin_frame()) {
@@ -309,6 +377,8 @@ void D3D12Backend::begin_frame() {
     //   是 DEVICE_HUNG 的根因（详见 UploadRing 的说明）。
     upload_ring_.set_frame_slots(static_cast<uint32_t>(swapchain_.buffer_count()));
     upload_ring_.begin_slot(static_cast<uint32_t>(swapchain_.current_frame_index()));
+    // 调试：Ring 分配流水的帧标签（仅 GRYCE_DX12_PROBE_RING=1 时打日志）。
+    upload_ring_.set_frame_tag(frame_counter_);
 
     // HiZ 纹理→SSBO 的延迟重排：上一帧按 256 对齐行距拷进 READBACK 的暂存，
     // 此刻 GPU 已跑完 → 在 CPU 重排成紧凑行并写回 SSBO（必须在 begin_slot 之后，
@@ -355,8 +425,364 @@ void D3D12Backend::record_clear_if_dirty() {
     // 交换链：PRESENT → RENDER_TARGET + 绑 RT + 视口/剪裁（幂等）。
     bind_swapchain_rt();
     if (!back_buffer_as_rt_) return;
-    cmd->ClearRenderTargetView(swapchain_.back_buffer_rtv(), c, 0, nullptr);
+    // 清的是"当前屏幕 RT"：present 目标（正常路径）或真实 back buffer（降级路径）。
+    cmd->ClearRenderTargetView(screen_rtv(), c, 0, nullptr);
 }
+// ===========================================================================
+// present 目标 + 帧末翻转 blit
+// ===========================================================================
+// 背景（见头文件与 docs/d3d12-backend-plan.md §5 的"渲染目标 Y 方向"）：
+//   本后端用 SPIRV-Cross 的 FLIP_VERTEX_Y 把整条管线等效成 **OpenGL 的坐标/
+//   纹理约定**（含 gl_FragCoord 与 RT 采样方向）。这样做的好处是引擎全部
+//   GL 版着色器里的 V 翻转、屏幕空间 UV 推导都原样成立 —— 实测画面与 GL
+//   逐像素一致（|Δ| ≈ 0.06/255）。
+//   代价只有一个：最终成品相对 D3D 的呈现方向是**上下镜像**的（D3D 的 back
+//   buffer 第 0 行在屏幕顶部，GL 约定的第 0 行在屏幕底部）。
+//   所以：所有"画到屏幕"的 pass 先落在下面的 present 目标上，帧末由一条自带
+//   的 blit 通道翻转着写进真实 back buffer。
+//   ★ 关键点：翻转只发生一次，且与"这一帧开了哪些 pass"无关。早先试过直接
+//     关掉 FLIP_VERTEX_Y（让几何方向天然正确），结果是每个全屏 pass 都会多翻
+//     一次 → 镜像次数的奇偶随 pass 数量变化，开/关 SSR 的画面方向都不一样；
+//     而且引擎着色器里那些 GL 约定的 V 翻转全部失效（金属反射、屏幕空间效果
+//     全错）。集中在帧末翻一次是唯一稳的做法。
+//
+// blit 通道本身**不做** Y 翻转：把 present 目标按 D3D 原生方向铺满 back buffer
+// 恰好把 GL 约定转回 D3D 呈现方向。
+// ===========================================================================
+
+bool D3D12Backend::ensure_present_target() {
+    if (!device_) return false;
+    const uint32_t w = swapchain_.width();
+    const uint32_t h = swapchain_.height();
+    if (w == 0 || h == 0) return false;
+    if (present_tex_ && present_w_ == w && present_h_ == h) return true;
+
+    release_present_target();
+
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    hp.CreationNodeMask = 1;
+    hp.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = w;
+    rd.Height = h;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    // 与交换链同格式（d3d12_swapchain.cpp:59 设的就是这个），blit 是逐像素拷贝。
+    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    rd.SampleDesc.Count = 1;
+    rd.SampleDesc.Quality = 0;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    // 创建时给一个 CLEAR_VALUE，且用**当前帧的清屏色**：调试层对"带 CLEAR_VALUE
+    // 的资源被清成另一个值"以及"没有 CLEAR_VALUE 的 RT 被清"都会报
+    // "clear values do not match those passed to resource creation"。
+    // 引擎的清屏色是稳定值（场景背景色），这里跟着它走即可消掉这条告警。
+    D3D12_CLEAR_VALUE cv{};
+    cv.Format = rd.Format;
+    cv.Color[0] = clear_r_;
+    cv.Color[1] = clear_g_;
+    cv.Color[2] = clear_b_;
+    cv.Color[3] = clear_a_;
+    HRESULT hr = device_->CreateCommittedResource(
+        &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv,
+        __mingw_uuidof<ID3D12Resource>(), reinterpret_cast<void**>(&present_tex_));
+    if (FAILED(hr) || !present_tex_) {
+        GLOG_ERROR("D3D12Backend: present target creation failed 0x{:08X} ({}x{})",
+                   static_cast<uint32_t>(hr), w, h);
+        present_tex_ = nullptr;
+        return false;
+    }
+    present_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    // RTV 堆：RTV 必须放在 NON_SHADER_VISIBLE 堆里（放 SHADER_VISIBLE 会被
+    // CreateDescriptorHeap 直接拒绝）。
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    hd.NumDescriptors = 1;
+    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    hr = device_->CreateDescriptorHeap(&hd, __mingw_uuidof<ID3D12DescriptorHeap>(),
+                                       reinterpret_cast<void**>(&present_rtv_heap_));
+    if (FAILED(hr) || !present_rtv_heap_) {
+        GLOG_ERROR("D3D12Backend: present target RTV heap creation failed 0x{:08X}",
+                   static_cast<uint32_t>(hr));
+        release_present_target();
+        return false;
+    }
+    present_rtv_ = present_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+    device_->CreateRenderTargetView(present_tex_, nullptr, present_rtv_);
+
+    present_w_ = w;
+    present_h_ = h;
+    return true;
+}
+
+void D3D12Backend::release_present_target() {
+    if (present_tex_) {
+        present_tex_->Release();
+        present_tex_ = nullptr;
+    }
+    if (present_rtv_heap_) {
+        present_rtv_heap_->Release();
+        present_rtv_heap_ = nullptr;
+    }
+    present_rtv_ = D3D12_CPU_DESCRIPTOR_HANDLE{};
+    present_w_ = present_h_ = 0;
+    present_state_ = D3D12_RESOURCE_STATE_COMMON;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12Backend::screen_rtv() const {
+    if (using_present_target_) return present_rtv_;
+    return swapchain_.back_buffer_rtv();
+}
+
+bool D3D12Backend::ensure_blit_pipeline() {
+    if (blit_pso_ && blit_root_) return true;
+    if (blit_pipeline_failed_) return false;
+    if (!device_ || !loader_.d3d_compile || !loader_.serialize_root_signature) {
+        // 没有 d3dcompiler（极少见：ImGui 后端也要它）时退化成旧行为：
+        // 直接画进 back buffer（上下镜像），至少不会崩。
+        GLOG_WARN("D3D12Backend: d3dcompiler unavailable -> present flip disabled "
+                  "(final image will be vertically mirrored)");
+        blit_pipeline_failed_ = true;
+        return false;
+    }
+
+    // ---- 根签名：参数 0 = 1 个 SRV 描述符表(t0)，参数 1 = 静态采样器(s0) ----
+    D3D12_DESCRIPTOR_RANGE srv_range{};
+    srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srv_range.NumDescriptors = 1;
+    srv_range.BaseShaderRegister = 0;
+    srv_range.RegisterSpace = 0;
+    srv_range.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER params[1]{};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[0].DescriptorTable.NumDescriptorRanges = 1;
+    params[0].DescriptorTable.pDescriptorRanges = &srv_range;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC smp{};
+    smp.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;   // 逐像素拷贝，点采样
+    smp.AddressU = smp.AddressV = smp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    smp.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    smp.MaxAnisotropy = 1;
+    smp.MinLOD = 0.0f;
+    smp.MaxLOD = D3D12_FLOAT32_MAX;
+    smp.ShaderRegister = 0;
+    smp.RegisterSpace = 0;
+    smp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rs_desc{};
+    rs_desc.NumParameters = 1;
+    rs_desc.pParameters = params;
+    rs_desc.NumStaticSamplers = 1;
+    rs_desc.pStaticSamplers = &smp;
+    rs_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    ID3DBlob* sig_blob = nullptr;
+    ID3DBlob* err_blob = nullptr;
+    HRESULT hr = loader_.serialize_root_signature(
+        &rs_desc, D3D_ROOT_SIGNATURE_VERSION_1, &sig_blob, &err_blob);
+    if (FAILED(hr) || !sig_blob) {
+        GLOG_ERROR("D3D12Backend: blit root signature serialize failed 0x{:08X}{}",
+                   static_cast<uint32_t>(hr),
+                   err_blob ? std::string(": ") +
+                                  static_cast<const char*>(err_blob->GetBufferPointer())
+                            : std::string());
+        if (sig_blob) sig_blob->Release();
+        if (err_blob) err_blob->Release();
+        blit_pipeline_failed_ = true;
+        return false;
+    }
+    hr = device_->CreateRootSignature(0, sig_blob->GetBufferPointer(),
+                                      sig_blob->GetBufferSize(),
+                                      __mingw_uuidof<ID3D12RootSignature>(),
+                                      reinterpret_cast<void**>(&blit_root_));
+    sig_blob->Release();
+    if (err_blob) err_blob->Release();
+    if (FAILED(hr) || !blit_root_) {
+        GLOG_ERROR("D3D12Backend: blit CreateRootSignature failed 0x{:08X}",
+                   static_cast<uint32_t>(hr));
+        blit_pipeline_failed_ = true;
+        return false;
+    }
+
+    // ---- 内嵌 HLSL：VS 由 SV_VertexID 生成全屏三角形，PS 直取纹理 ----
+    // ★ 两者都**不**做 Y 翻转 —— 这正是"翻回 D3D 呈现方向"的那一次翻转
+    //   （引擎侧已经被 FLIP_VERTEX_Y 整体反过来了）。
+    static const char* k_blit_hlsl = R"(
+Texture2D    g_present : register(t0);
+SamplerState g_sampler : register(s0);
+
+struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+
+VSOut vs_main(uint vid : SV_VertexID) {
+    // (0,0) (2,0) (0,2) -> 覆盖整屏的大三角形
+    float2 p = float2((vid << 1) & 2, vid & 2);
+    VSOut o;
+    o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    o.uv  = p;
+    return o;
+}
+
+float4 ps_main(VSOut i) : SV_Target {
+    return float4(g_present.Sample(g_sampler, i.uv).rgb, 1.0);
+}
+)";
+
+    auto compile = [&](const char* entry, const char* target, ID3DBlob** out) -> bool {
+        ID3DBlob* err = nullptr;
+        const HRESULT h = loader_.d3d_compile(k_blit_hlsl, std::strlen(k_blit_hlsl), nullptr,
+                                              nullptr, nullptr, entry, target, 0, 0, out, &err);
+        if (FAILED(h) || !*out) {
+            GLOG_ERROR("D3D12Backend: blit shader '{}' compile failed 0x{:08X}{}",
+                       entry, static_cast<uint32_t>(h),
+                       err ? std::string(": ") +
+                                 static_cast<const char*>(err->GetBufferPointer())
+                           : std::string());
+            if (err) err->Release();
+            return false;
+        }
+        if (err) err->Release();
+        return true;
+    };
+
+    ID3DBlob* vs_blob = nullptr;
+    ID3DBlob* ps_blob = nullptr;
+    if (!compile("vs_main", "vs_5_0", &vs_blob) || !compile("ps_main", "ps_5_0", &ps_blob)) {
+        if (vs_blob) vs_blob->Release();
+        if (ps_blob) ps_blob->Release();
+        blit_pipeline_failed_ = true;
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+    pd.pRootSignature = blit_root_;
+    pd.VS.pShaderBytecode = vs_blob->GetBufferPointer();
+    pd.VS.BytecodeLength = vs_blob->GetBufferSize();
+    pd.PS.pShaderBytecode = ps_blob->GetBufferPointer();
+    pd.PS.BytecodeLength = ps_blob->GetBufferSize();
+    pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pd.SampleMask = UINT_MAX;
+    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pd.RasterizerState.FrontCounterClockwise = FALSE;
+    pd.RasterizerState.DepthClipEnable = TRUE;
+    pd.DepthStencilState.DepthEnable = FALSE;
+    pd.DepthStencilState.StencilEnable = FALSE;
+    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pd.NumRenderTargets = 1;
+    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pd.SampleDesc.Count = 1;
+
+    hr = device_->CreateGraphicsPipelineState(&pd, __mingw_uuidof<ID3D12PipelineState>(),
+                                              reinterpret_cast<void**>(&blit_pso_));
+    vs_blob->Release();
+    ps_blob->Release();
+    if (FAILED(hr) || !blit_pso_) {
+        GLOG_ERROR("D3D12Backend: blit CreateGraphicsPipelineState failed 0x{:08X}",
+                   static_cast<uint32_t>(hr));
+        blit_pso_ = nullptr;
+        blit_pipeline_failed_ = true;
+        return false;
+    }
+    return true;
+}
+
+void D3D12Backend::record_present_blit(ID3D12GraphicsCommandList* cmd) {
+    if (!cmd) return;
+    if (!ensure_present_target()) return;
+    if (!ensure_blit_pipeline()) return;
+
+    ID3D12Resource* back = swapchain_.back_buffer();
+    if (!back) return;
+
+    // present 目标：RENDER_TARGET → PIXEL_SHADER_RESOURCE（采样前必须切态）。
+    if (present_state_ != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = present_tex_;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = present_state_;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        cmd->ResourceBarrier(1, &b);
+        present_state_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+
+    // back buffer：PRESENT → RENDER_TARGET（本帧此前一直没动过它）。
+    if (!backbuffer_as_rt_) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = back;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        cmd->ResourceBarrier(1, &b);
+        backbuffer_as_rt_ = true;
+    }
+
+    // SRV 写进引擎主堆。★ 用**按帧槽固定复用**的槽位，绝不每帧新申请：
+    //   每帧泄漏一个槽位会在堆满时触发 DescriptorAllocator 的"重建+拷贝"，
+    //   让在飞命令列表里的描述符句柄悬空 → DEVICE_HUNG（见头文件成员处的说明）。
+    const uint32_t frame_slot = static_cast<uint32_t>(swapchain_.current_frame_index());
+    const size_t slot_count = swapchain_.buffer_count();
+    if (present_srv_slots_.size() < slot_count) {
+        present_srv_slots_.assign(slot_count, UINT32_MAX);
+    }
+    uint32_t srv_base = present_srv_slots_[frame_slot];
+    if (srv_base == UINT32_MAX) {
+        if (!descriptor_heaps_.srv().allocate_range(1, srv_base)) {
+            GLOG_WARN("D3D12Backend: present blit SRV heap exhausted; frame left mirrored");
+            return;
+        }
+        present_srv_slots_[frame_slot] = srv_base;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    device_->CreateShaderResourceView(present_tex_, &sd,
+                                      descriptor_heaps_.srv().cpu_handle(srv_base));
+
+    // 描述符表要求"引擎主堆"是当前堆（ImGui 可能刚把自己的堆绑上去过）。
+    descriptor_heaps_.bind(cmd);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = swapchain_.back_buffer_rtv();
+    cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    D3D12_VIEWPORT vp{};
+    vp.Width = static_cast<float>(present_w_);
+    vp.Height = static_cast<float>(present_h_);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    cmd->RSSetViewports(1, &vp);
+    D3D12_RECT sr{};
+    sr.right = static_cast<LONG>(present_w_);
+    sr.bottom = static_cast<LONG>(present_h_);
+    cmd->RSSetScissorRects(1, &sr);
+
+    cmd->SetGraphicsRootSignature(blit_root_);
+    cmd->SetPipelineState(blit_pso_);
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmd->SetGraphicsRootDescriptorTable(
+        0, descriptor_heaps_.srv().gpu_handle(srv_base));
+    cmd->DrawInstanced(3, 1, 0, 0);
+
+    present_flushed_ = true;
+}
+
+void D3D12Backend::flush_present_blit_for_overlay() {
+    if (!initialized_ || present_flushed_) return;
+    if (!present_dirty_) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+    record_present_blit(cmd);
+}
+
 void D3D12Backend::end_frame() {
     if (!initialized_) return;
     if (frame_aborted_) return;
@@ -385,12 +811,20 @@ void D3D12Backend::end_frame() {
     //   现在把 back_buffer_as_rt_ 纳入条件、并用 begin 的返回值决定是否消费，
     //   没拷成就不清请求，下一帧继续尝试。
     bool shot_now = false;
+
+    // ★ 帧末翻转 blit：本帧所有"画到屏幕"的 pass 都落在 present 目标上（GL 约定，
+    //   上下镜像），这里翻一次写进真实 back buffer —— 之后的截图拷贝与 Present
+    //   看到的都是与 GL/Vulkan 同方向的成品。
+    if (cmd && present_dirty_ && !present_flushed_) {
+        record_present_blit(cmd);
+    }
+
     if (!screenshot_path_.empty() && frame_counter_ >= screenshot_frame_ && cmd &&
         back_buffer_as_rt_) {
         shot_now = begin_screenshot_copy(cmd);
     }
 
-    if (cmd && back_buffer_as_rt_) {
+    if (cmd && backbuffer_as_rt_) {
         // RENDER_TARGET → PRESENT，Present 前必须完成
         D3D12_RESOURCE_BARRIER to_present{};
         to_present.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -400,6 +834,7 @@ void D3D12Backend::end_frame() {
         to_present.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         to_present.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         cmd->ResourceBarrier(1, &to_present);
+        backbuffer_as_rt_ = false;
     }
 
     if (!swapchain_.end_frame()) {
@@ -410,6 +845,9 @@ void D3D12Backend::end_frame() {
     if (shot_now) {
         finish_screenshot();
     }
+
+    // 调试探针回读（env 门控；无挂起探针时零成本）。
+    probe_drain();
 
     // ★ 调试用串行化（GRYCE_D3D12_SERIALIZE=1）：每帧结束等 GPU 全部跑完。
     //   默认 3 帧在飞时 CPU 会跑到 GPU 前面好几帧，TDR 在 begin_frame 才被发现，
@@ -615,6 +1053,7 @@ void D3D12Backend::draw_indexed(RHIMeshHandle mesh_handle, RHIShaderHandle shade
     key.layout = make_layout_key(m->layout(), m->instance_layout());
     key.rt_format = static_cast<uint32_t>(current_rt_format_);
     key.ds_format = static_cast<uint32_t>(current_ds_format_);
+    key.samples = static_cast<uint8_t>(current_rt_samples_);
     key.depth_test = depth_test_ ? 1 : 0;
     // skybox 管线不写深度（与 GL/Vulkan 的 skybox 约定一致）。
     key.depth_write = (s->skybox() ? false : depth_write_) ? 1 : 0;
@@ -684,6 +1123,7 @@ void D3D12Backend::draw_mesh(RHIMeshHandle mesh_handle, RHIShaderHandle shader_h
     key.layout = make_layout_key(m->layout(), m->instance_layout());
     key.rt_format = static_cast<uint32_t>(current_rt_format_);
     key.ds_format = static_cast<uint32_t>(current_ds_format_);
+    key.samples = static_cast<uint8_t>(current_rt_samples_);
     key.depth_test = depth_test_ ? 1 : 0;
     key.depth_write = (s->skybox() ? false : depth_write_) ? 1 : 0;
     key.blend = blend_ ? (s->blending() ? 1 : 0) : 0;
@@ -765,8 +1205,17 @@ void save_bmp_from_rgba(const std::string& path, const uint8_t* rgba, uint32_t w
         GLOG_ERROR("D3D12 save_bmp: failed to open '{}'", path);
         return;
     }
-    const uint32_t row_size = (width * 3 + 3) & ~3u;
-    const uint32_t data_size = row_size * height;
+    // 64-bit 计算行/数据尺寸：uint32 乘法在极端分辨率下会回绕，
+    // 导致 BMP 头里的尺寸字段与实际写出数据不一致。
+    const uint64_t row_size64 = (static_cast<uint64_t>(width) * 3 + 3) & ~3ull;
+    const uint64_t data_size64 = row_size64 * height;
+    if (data_size64 > 0xFFFFFFFFull - 54) {
+        GLOG_ERROR("D3D12 save_bmp: frame {}x{} too large for BMP ({} bytes)",
+                   width, height, data_size64);
+        return;
+    }
+    const uint32_t row_size = static_cast<uint32_t>(row_size64);
+    const uint32_t data_size = static_cast<uint32_t>(data_size64);
     const uint32_t file_size = 54 + data_size;
 
     unsigned char header[54] = {};
@@ -971,6 +1420,204 @@ void D3D12Backend::release_screenshot_staging() {
     shot_h_ = 0;
 }
 
+// ---------------------------------------------------------------------------
+// 调试探针（SSR 竞态排查）
+//
+// 背景：D3D12 上 SSR 偶发"整帧丢失"（合法序列、GPU 校验零报错、时序相关）。
+// 本探针在指定帧把 SSR 链上的纹理拷回 CPU，输出内容统计（均值 / 非零占比 /
+// FNV 哈希），与同帧截图对比即可定位丢失发生在哪一段：
+//   * composite_out 哈希好坏帧一致、截图不同 → 丢失在 composite **之后**
+//     （tonemap 采样侧：描述符/状态问题）
+//   * composite_out 哈希好坏帧不同 → 丢失在 composite **之前**（继续看
+//     trace_out / blur_out / hdr_in 定位具体输入）
+// 门控：GRYCE_DX12_PROBE_SSR=1 启用；GRYCE_DX12_PROBE_FRAME=<N> 指定帧
+// （默认 60）。拷贝录进本帧命令列表，帧提交后等 GPU 再回读（与截图同款
+// 两阶段模式，保证读到的是本帧内容）。
+// ---------------------------------------------------------------------------
+void D3D12Backend::probe_texture(RHITextureHandle tex, const char* tag) {
+    if (!initialized_ || device_lost_) return;
+    if (!std::getenv("GRYCE_DX12_PROBE_SSR")) return;
+
+    uint64_t want_frame = 60;
+    if (const char* f = std::getenv("GRYCE_DX12_PROBE_FRAME")) {
+        want_frame = std::strtoull(f, nullptr, 10);
+    }
+    if (frame_counter_ != want_frame) return;
+
+    D3D12Texture* t = texture_pool_.get_if_alive(tex.index, tex.generation);
+    if (!t || !t->is_valid() || !t->resource()) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+
+    const D3D12_RESOURCE_DESC desc = t->resource()->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+    const uint32_t w = static_cast<uint32_t>(desc.Width);
+    const uint32_t h = static_cast<uint32_t>(desc.Height);
+    if (w == 0 || h == 0) return;
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+    UINT num_rows = 0;
+    UINT64 row_size = 0;
+    UINT64 total = 0;
+    device_->GetCopyableFootprints(&desc, 0, 1, 0, &layout, &num_rows, &row_size, &total);
+    if (total == 0) return;
+
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    hp.CreationNodeMask = 1;
+    hp.VisibleNodeMask = 1;
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.Format = DXGI_FORMAT_UNKNOWN;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bd.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    ID3D12Resource* readback = nullptr;
+    HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                  __uuidof(ID3D12Resource),
+                                                  reinterpret_cast<void**>(&readback));
+    if (FAILED(hr) || !readback) {
+        GLOG_ERROR("D3D12Backend::probe_texture: readback alloc failed 0x{:08X} ({} bytes)",
+                   static_cast<uint32_t>(hr), static_cast<uint64_t>(total));
+        return;
+    }
+
+    // before → COPY_SOURCE，拷完还原（净状态不变，不影响后续 pass）。
+    const D3D12_RESOURCE_STATES before = t->current_state();
+    auto transition = [&](D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        b.Transition.pResource = t->resource();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        cmd->ResourceBarrier(1, &b);
+    };
+    transition(before, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = readback;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = layout;
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = t->resource();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    transition(D3D12_RESOURCE_STATE_COPY_SOURCE, before);
+
+    PendingProbe p{};
+    p.readback = readback;
+    p.footprint = layout;
+    p.total = total;
+    p.w = w;
+    p.h = h;
+    p.format = desc.Format;
+    p.tag = tag;
+    p.frame = frame_counter_;
+    pending_probes_.push_back(p);
+}
+
+void D3D12Backend::probe_drain() {
+    if (pending_probes_.empty()) return;
+    // 本帧已提交 → 排空在飞帧，保证拷贝执行完（Map 前必须）。
+    swapchain_.wait_all();
+
+    for (const PendingProbe& p : pending_probes_) {
+        if (!p.readback) continue;
+        void* mapped = nullptr;
+        const D3D12_RANGE read_range{0, static_cast<SIZE_T>(p.total)};
+        HRESULT hr = p.readback->Map(0, &read_range, &mapped);
+        if (FAILED(hr) || !mapped) {
+            GLOG_ERROR("D3D12Backend::probe_drain: Map failed 0x{:08X}", static_cast<uint32_t>(hr));
+            p.readback->Release();
+            continue;
+        }
+        const uint8_t* base = static_cast<const uint8_t*>(mapped);
+        const uint32_t row_pitch = p.footprint.Footprint.RowPitch;
+
+        // FNV-1a 64 位内容哈希（逐行跳过对齐填充）。
+        uint64_t hash = 1469598103934665603ull;
+        auto mix = [&](const uint8_t* data, size_t n) {
+            for (size_t i = 0; i < n; ++i) {
+                hash ^= data[i];
+                hash *= 1099511628211ull;
+            }
+        };
+        // half → float（仅用于均值展示；哈希走原始位）。
+        auto half_to_float = [](uint16_t h) -> float {
+            const uint32_t sign = (h >> 15) & 0x1u;
+            uint32_t exp = (h >> 10) & 0x1Fu;
+            uint32_t man = h & 0x3FFu;
+            uint32_t bits = 0;
+            if (exp == 0) {
+                if (man == 0) {
+                    bits = sign << 31;
+                } else {
+                    exp = 127 - 15 + 1;
+                    while ((man & 0x400u) == 0) { man <<= 1; --exp; }
+                    man &= 0x3FFu;
+                    bits = (sign << 31) | (exp << 23) | (man << 13);
+                }
+            } else if (exp == 31) {
+                bits = (sign << 31) | (0xFFu << 23) | (man << 13);
+            } else {
+                bits = (sign << 31) | ((exp - 15 + 127) << 23) | (man << 13);
+            }
+            float out = 0.0f;
+            std::memcpy(&out, &bits, sizeof(out));
+            return out;
+        };
+
+        double ch_sum[4] = {0, 0, 0, 0};
+        size_t nonzero = 0;
+        size_t counted = 0;
+        const bool is_rgba16f = (p.format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+        const uint32_t bpp = is_rgba16f ? 8u : 4u;
+        for (uint32_t y = 0; y < p.h; ++y) {
+            const uint8_t* row = base + static_cast<size_t>(y) * row_pitch;
+            mix(row, static_cast<size_t>(p.w) * bpp);
+            for (uint32_t x = 0; x < p.w; ++x) {
+                const uint8_t* px = row + static_cast<size_t>(x) * bpp;
+                bool nz = false;
+                for (uint32_t c = 0; c < 4; ++c) {
+                    float v = 0.0f;
+                    if (is_rgba16f) {
+                        uint16_t bits = 0;
+                        std::memcpy(&bits, px + c * 2, 2);
+                        v = half_to_float(bits);
+                    } else {
+                        v = static_cast<float>(px[c]) / 255.0f;
+                    }
+                    ch_sum[c] += v;
+                    if (v != 0.0f) nz = true;
+                }
+                if (nz) ++nonzero;
+                ++counted;
+            }
+        }
+        const size_t n = counted ? counted : 1;
+        GLOG_WARN("[probe] frame={} tag={} {}x{} fmt={} mean=({:.4f},{:.4f},{:.4f},{:.4f}) "
+                  "nonzero={:.3f} hash=0x{:016X}",
+                  p.frame, p.tag ? p.tag : "?", p.w, p.h,
+                  static_cast<int>(p.format), ch_sum[0] / n, ch_sum[1] / n, ch_sum[2] / n,
+                  ch_sum[3] / n, static_cast<double>(nonzero) / static_cast<double>(n), hash);
+
+        const D3D12_RANGE written{0, 0};
+        p.readback->Unmap(0, &written);
+        p.readback->Release();
+    }
+    pending_probes_.clear();
+}
+
 bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) {
     // 同步回读接口（非渲染线程帧内路径；引擎正式截图走 request_screenshot +
     // finish_screenshot 的两阶段异步路径）。这里用自建命令列表立刻拷贝：
@@ -1098,7 +1745,9 @@ bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int
 RHIMeshHandle D3D12Backend::create_mesh() {
     const uint32_t index = mesh_pool_.allocate();
     D3D12Mesh* m = mesh_pool_.get(index);
-    if (m) m->set_context(device_, queue_);
+    // 传入 retire sink：网格缓冲容量不足而重建时，旧资源要按围栏值延迟释放
+    // （见 D3D12Mesh::update_or_create_buffer 的说明）。
+    if (m) m->set_context(device_, queue_, this);
     return { index, mesh_pool_.generation(index) };
 }
 
@@ -1189,6 +1838,21 @@ void D3D12Backend::drain_retired() {
     });
     drain(retired_buffers_, [this](uint32_t i, uint32_t g) { buffer_pool_.deallocate(i, g); });
 
+    // 被替换掉的网格缓冲（见 retire_gpu_resource）。
+    {
+        size_t keep = 0;
+        for (size_t i = 0; i < retired_raw_resources_.size(); ++i) {
+            RetiredRawResource& r = retired_raw_resources_[i];
+            if (r.fence_value <= done) {
+                if (r.res) r.res->Release();
+            } else {
+                if (keep != i) retired_raw_resources_[keep] = r;
+                ++keep;
+            }
+        }
+        retired_raw_resources_.resize(keep);
+    }
+
     // 描述符区间归还（见 retire_descriptor_range 的说明）。
     {
         DescriptorHeapSet& heaps = descriptor_heaps_;
@@ -1219,6 +1883,16 @@ void D3D12Backend::retire_descriptor_range(uint32_t srv_base, uint32_t srv_count
     r.smp_base = smp_base;
     r.smp_count = smp_count;
     retired_descriptors_.push_back(r);
+}
+
+void D3D12Backend::retire_gpu_resource(ID3D12Resource* res) {
+    if (!res) return;
+    // 与 retire_descriptor_range 同一时间基准：GPU 跑过"最近一次已提交"的围栏值，
+    // 就说明引用该资源的命令列表已经执行完，可以安全销毁。
+    RetiredRawResource r{};
+    r.fence_value = swapchain_.last_submitted_value();
+    r.res = res;
+    retired_raw_resources_.push_back(r);
 }
 
 // 销毁：用带 generation 校验的 deallocate —— 旧句柄二次销毁不会误杀复用槽位。
@@ -1326,18 +2000,51 @@ void D3D12Backend::bind_swapchain_rt() {
     // 屏障**（StateBefore 与实际不符会让调试层报错，驱动侧也可能被判非法）。
     if (back_buffer_as_rt_) return;
 
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = swapchain_.back_buffer();
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    cmd->ResourceBarrier(1, &b);
+    // ★ 引擎的"画到屏幕"落在后端内部的 present 目标上（帧末统一翻转 blit 进
+    //   真实 back buffer），见 ensure_present_target 的详解。
+    //   若该目标不可用（显存不足/d3dcompiler 缺失），退回旧的"直接画进 back
+    //   buffer"行为：画面上下镜像但不会崩。
+    // ★ present_flushed_ == true 表示本帧已经做过翻转 blit（UI 覆盖层绘制前那一刷），
+    //   此后的"画到屏幕"必须直接画在**真实 back buffer** 上（它此刻已在
+    //   RENDER_TARGET 态）：否则会画进 present 目标却再也不会被拷出去 —— 画面丢内容。
+    const bool use_present_target =
+        !present_flushed_ && ensure_present_target() && !blit_pipeline_failed_;
+    using_present_target_ = use_present_target;
+    ID3D12Resource* target = use_present_target ? present_tex_ : swapchain_.back_buffer();
+    if (!target) return;
+
+    if (use_present_target) {
+        if (present_state_ != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+            D3D12_RESOURCE_BARRIER b{};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = present_tex_;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            b.Transition.StateBefore = present_state_;
+            b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            cmd->ResourceBarrier(1, &b);
+            present_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        }
+        present_dirty_ = true;
+    } else {
+        // 降级路径，或"UI 之后又画屏幕"：back buffer 可能已经是 RT（blit 留下的），
+        // 只有还停在 PRESENT 时才需要这一次转换。
+        if (!backbuffer_as_rt_) {
+            D3D12_RESOURCE_BARRIER b{};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = swapchain_.back_buffer();
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+            b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            cmd->ResourceBarrier(1, &b);
+            backbuffer_as_rt_ = true;
+        }
+    }
     back_buffer_as_rt_ = true;
     // 记下本帧实际渲染进的 back buffer 索引（截图回读用，见 end_frame 说明）。
     rendered_buffer_index_ = swapchain_.current_back_buffer_index();
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = swapchain_.back_buffer_rtv();
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = use_present_target ? present_rtv_
+                                                         : swapchain_.back_buffer_rtv();
     cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
     rt_w_ = swapchain_.width();
@@ -1363,6 +2070,8 @@ void D3D12Backend::bind_swapchain_rt() {
     // 交换链脚手架目前没有深度附件。
     current_rt_format_ = DXGI_FORMAT_R8G8B8A8_UNORM;
     current_ds_format_ = DXGI_FORMAT_UNKNOWN;
+    // 交换链 RT 恒为单样本。
+    current_rt_samples_ = 1;
 }
 
 void D3D12Backend::bind_framebuffer(RHIFramebufferHandle fb) {
@@ -1412,18 +2121,12 @@ void D3D12Backend::bind_framebuffer(RHIFramebufferHandle fb) {
         bound_framebuffer_ = RHIFramebufferHandle{};
     }
 
-    // 从交换链切到离屏：先把 back buffer 的状态切回 PRESENT（如果它作为 RT 被用过），
-    // 否则本帧 end_frame 的 RT→PRESENT 屏障会与实际状态不符。
-    if (back_buffer_as_rt_) {
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = swapchain_.back_buffer();
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        cmd->ResourceBarrier(1, &b);
-        back_buffer_as_rt_ = false;
-    }
+    // 从"屏幕"切到离屏：这里**不要**去动真实 back buffer。
+    // 引擎的屏幕 RT 现在是后端内部的 present 目标（见 ensure_present_target），
+    // 真实 back buffer 本帧一直停在 PRESENT 态，对它发 RT→PRESENT 的屏障会与
+    // 实际状态不符（调试层每条 ExecuteCommandLists 报一次 ERROR）。
+    // present 目标自己的状态由帧末的翻转 blit 统一处理（RT → PIXEL_SHADER_RESOURCE）。
+    back_buffer_as_rt_ = false;
 
     f->record_transition_to_rt(cmd);
 
@@ -1463,6 +2166,8 @@ void D3D12Backend::bind_framebuffer(RHIFramebufferHandle fb) {
     // 记录 RT 格式：PSO 把它们编译进去，换 RT 必须换 PSO。
     current_rt_format_ = f->color_format();
     current_ds_format_ = f->has_depth() ? f->depth_format() : DXGI_FORMAT_UNKNOWN;
+    // 记录 RT 采样数：PSO 的 SampleDesc.Count / MultisampleEnable 必须与之一致。
+    current_rt_samples_ = static_cast<uint32_t>(f->color_sample_count());
 
 }
 
@@ -1483,6 +2188,70 @@ void D3D12Backend::unbind_framebuffer() {
     // 无论此前是否绑定过离屏 FB，都保证最终落在交换链 back buffer 上。
     // （bind_swapchain_rt 自带幂等判断，已是当前 RT 时不会重复录屏障。）
     bind_swapchain_rt();
+}
+
+// ---------------------------------------------------------------------------
+// MSAA resolve（ResolveSubresource）
+//
+// D3D12 没有 render pass 式的自动解析（Vulkan 的 pResolveAttachments），也
+// 没有 GL 的 glBlitFramebuffer：多样本颜色必须在命令列表上显式
+// ResolveSubresource 到单样本纹理，后续 pass 才能像往常一样采样它。
+//
+// 硬性约束（违反即 E_INVALIDARG / 调试层错误）：
+//   * src 必须处于 RENDER_TARGET 态、dst 必须处于 RESOLVE_DEST 态；
+//   * 两者同格式、同尺寸，dst 必须单样本；
+//   * 命令录在 pass 之外（D3D12 无 render pass 概念，天然满足）。
+// ---------------------------------------------------------------------------
+void D3D12Backend::resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) {
+    if (!initialized_ || frame_aborted_) return;
+
+    D3D12Framebuffer* src_fb = framebuffer_pool_.get_if_alive(src.index, src.generation);
+    D3D12Framebuffer* dst_fb = framebuffer_pool_.get_if_alive(dst.index, dst.generation);
+    if (!src_fb || !dst_fb) return;
+    // 非多样本源：调用方不应发起；直接返回（无意义且 ResolveSubresource 会拒绝）。
+    if (src_fb->color_sample_count() <= 1) return;
+
+    D3D12Texture* src_tex = src_fb->color_texture(0);
+    // dst 取解析目标（attach_resolve_texture 指定）；未指定则退回其颜色附件 0。
+    D3D12Texture* dst_tex = dst_fb->resolve_texture();
+    if (!dst_tex) dst_tex = dst_fb->color_texture(0);
+    if (!src_tex || !dst_tex || !src_tex->resource() || !dst_tex->resource()) {
+        GLOG_WARN("D3D12Backend::resolve_framebuffer: missing color attachments (src={} dst={})",
+                  static_cast<const void*>(src_tex), static_cast<const void*>(dst_tex));
+        return;
+    }
+    if (dst_tex->is_multisampled()) {
+        GLOG_ERROR("D3D12Backend::resolve_framebuffer: destination is multisampled");
+        return;
+    }
+
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+
+    auto transition = [cmd](D3D12Texture* tex, D3D12_RESOURCE_STATES after) {
+        const D3D12_RESOURCE_STATES before = tex->current_state();
+        if (before == after) return;
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = tex->resource();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = before;
+        b.Transition.StateAfter = after;
+        cmd->ResourceBarrier(1, &b);
+        tex->set_current_state(after);
+    };
+
+    // 1) 多样本源 → RENDER_TARGET（bind_framebuffer 通常已切过，幂等）。
+    transition(src_tex, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    // 2) 单样本目标 → RESOLVE_DEST。
+    transition(dst_tex, D3D12_RESOURCE_STATE_RESOLVE_DEST);
+    // 3) 解析。格式取源附件（两者同格式，调用方保证）。
+    cmd->ResolveSubresource(dst_tex->resource(), 0, src_tex->resource(), 0,
+                            src_tex->dxgi_format());
+    // 4) 目标转回 shader 可读：后续 pass 直接采样（ensure_texture_shader_readable
+    //    因此变成 no-op，不会补第二条屏障）。
+    transition(dst_tex, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 
 // ---------------------------------------------------------------------------
@@ -1748,6 +2517,7 @@ void D3D12Backend::draw_indirect_impl(RHIMeshHandle mesh_handle, RHIShaderHandle
     key.layout = make_layout_key(m->layout(), m->instance_layout());
     key.rt_format = static_cast<uint32_t>(current_rt_format_);
     key.ds_format = static_cast<uint32_t>(current_ds_format_);
+    key.samples = static_cast<uint8_t>(current_rt_samples_);
     key.depth_test = depth_test_ ? 1 : 0;
     key.depth_write = (s->skybox() ? false : depth_write_) ? 1 : 0;
     key.blend = blend_ ? (s->blending() ? 1 : 0) : 0;
@@ -1929,6 +2699,11 @@ void D3D12Backend::drain_hiz_repacks() {
                 if (record_copy(b->resource(), p.dst_offset, tight.data(), tight_size, state)) {
                     b->set_state(state);
                 }
+                // 失败（上传环单段装不下）时只能丢掉这一层级 —— 容量已按
+                // "一帧 HiZ + 常量/实例数据" 定标，正常不会再走到这里；
+                // record_copy 内部会打 WARN。**不能**保留重试：留下的一条会在
+                // 下一帧继续抢占整段，把该帧常量/实例数据的空间挤光，雪崩成
+                // 满屏 "upload ring exhausted"。
             }
         }
         p.staging->Release();
@@ -1986,6 +2761,34 @@ RenderBackendCapabilities D3D12Backend::get_capabilities() const {
     caps.supports_depth32f             = true;
     caps.supports_r8                   = true;
     caps.supports_rgba16f              = true;   // DXGI_FORMAT_R16G16B16A16_FLOAT
+    // D3D12 强制 OMSetRenderTargets 的 DSV 与全部 RTV 采样数一致
+    // （spec / debug layer：multisample count and quality must match），
+    // 与 OpenGL 同属"深度必须同采样数"阵营；Vulkan 允许混合。
+    caps.msaa_depth_must_match_samples = true;
+    // MSAA 上限：对 HDR 颜色格式逐级查询质量级别（NumQualityLevels>0 即支持）。
+    // 标准多重采样模式恒占质量级别 0，Query Quality=0 总是成立。
+    caps.max_msaa_color_samples        = 1;
+    if (device_) {
+        static const DXGI_FORMAT kMsaaFormats[] = {
+            DXGI_FORMAT_R16G16B16A16_FLOAT,  // HDR 主目标（MSAA 的实际用途）
+            DXGI_FORMAT_R8G8B8A8_UNORM,      // LDR / 交换链等价格式
+        };
+        for (DXGI_FORMAT fmt : kMsaaFormats) {
+            for (UINT count = 16; count >= 2; count /= 2) {
+                D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS q{};
+                q.Format = fmt;
+                q.SampleCount = count;
+                q.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+                if (SUCCEEDED(device_->CheckFeatureSupport(
+                        D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof(q))) &&
+                    q.NumQualityLevels > 0) {
+                    caps.max_msaa_color_samples = count;
+                    break;
+                }
+            }
+            if (caps.max_msaa_color_samples > 1) break;
+        }
+    }
     return caps;
 }
 
@@ -2233,6 +3036,15 @@ void D3D12Backend::gpu_profile_flush_pending() {
                 const uint64_t t1 = p[s * k_gpu_ts_per_slot + i * 2 + 1];
                 const double ms = (t1 > t0) ? static_cast<double>(t1 - t0) / freq * 1e3 : 0.0;
                 if (t1 > t0) gpu_stats_.add(gpu_scope_names_[s][i], ms);
+                // t0 有值、t1 没值 = 这段开始执行但从未结束 → TDR 挂起点。
+                // （上面注释说"打印原始时间戳便于分辨哪一段开始全 0"，这里把
+                //   结论直接点明：没结束的那一段才是真正卡住的 pass。）
+                else if (t0 != 0) {
+                    std::fprintf(stdout, "[gpu] 挂起点: slot=%d scope='%s' (t0=%llu t1=%llu)\n",
+                                 s, gpu_scope_names_[s][i].c_str(),
+                                 static_cast<unsigned long long>(t0),
+                                 static_cast<unsigned long long>(t1));
+                }
             }
             D3D12_RANGE empty{ 0, 0 };
             gpu_readback_->Unmap(0, &empty);
@@ -2245,6 +3057,10 @@ void D3D12Backend::gpu_profile_flush_pending() {
 void D3D12Backend::gpu_profile_reset() {
     gpu_stats_.reset();
     for (auto& c : gpu_scope_count_) c = 0;
+}
+
+double D3D12Backend::gpu_frame_time_ms() const {
+    return gpu_profiling_enabled_ ? gpu_stats_.total_ms_per_frame() : 0.0;
 }
 
 } // namespace gryce_engine::render::d3d12

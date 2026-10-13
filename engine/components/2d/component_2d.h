@@ -40,6 +40,8 @@ GRYCE_API Transform2D world_transform_2d(const scene::Entity* entity);
 inline uint64_t hash_float(float v) {
     uint32_t bits;
     static_assert(sizeof(bits) == sizeof(v), "float size mismatch");
+    // float → uint32 位拷贝：float 平凡可拷贝（static_assert 已保证尺寸），
+    // memcpy 是标准定义的合法类型双关，避免 -fstrict-aliasing 下的 UB。
     std::memcpy(&bits, &v, sizeof(v));
     return static_cast<uint64_t>(bits);
 }

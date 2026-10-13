@@ -7,32 +7,14 @@
 #include <fstream>
 #include <random>
 
+#include "utils/crypto/chacha20.h"
+#include "utils/crypto/crc32.h"
+#include "utils/crypto/random.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::resources {
 
 namespace {
-
-// 简单 CRC32 表
-uint32_t crc32_table[256];
-bool crc32_table_initialized = []() {
-    for (int i = 0; i < 256; ++i) {
-        uint32_t c = static_cast<uint32_t>(i);
-        for (int j = 0; j < 8; ++j) {
-            c = (c >> 1) ^ (0xEDB88320u & static_cast<uint32_t>(-(c & 1u)));
-        }
-        crc32_table[i] = c;
-    }
-    return true;
-}();
-
-uint32_t compute_crc32(const uint8_t* data, size_t len) {
-    uint32_t c = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; ++i) {
-        c = crc32_table[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
-    }
-    return c ^ 0xFFFFFFFFu;
-}
 
 // Base64URL 编码（无填充）
 // 将 src 的 src_len 字节编码为 Base64URL 字符串
@@ -53,100 +35,6 @@ std::string base64url_encode(const uint8_t* src, size_t src_len) {
     // 移除填充字符 '='
     while (!out.empty() && out.back() == '=') out.pop_back();
     return out;
-}
-
-#if defined(_WIN32)
-#include <windows.h>
-#include <bcrypt.h>
-
-// 从 Windows CNG 获取随机字节
-bool get_random_bytes(uint8_t* buf, size_t len) {
-    return BCryptGenRandom(nullptr, buf, static_cast<ULONG>(len), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
-}
-#else
-// 从 /dev/urandom 获取随机字节
-bool get_random_bytes(uint8_t* buf, size_t len) {
-    FILE* f = std::fopen("/dev/urandom", "rb");
-    if (!f) return false;
-    const size_t read = std::fread(buf, 1, len, f);
-    std::fclose(f);
-    return read == len;
-}
-#endif
-
-// ---------------------------------------------------------------------------
-// ChaCha20（RFC 7539）流加密，用于 GPAK v4 数据区加密。
-// 32 字节密钥 + 12 字节 nonce + 32 位块计数器（counter 从 byte_offset/64 起）。
-// chacha20_xor 支持从任意字节偏移对缓冲区加/解密（加密与解密为同一互逆操作）。
-// 纯 C++ 实现，不依赖平台加密库，确保 Linux 构建一致。
-// ---------------------------------------------------------------------------
-
-static inline uint32_t rotl32(uint32_t x, unsigned n) { return (x << n) | (x >> (32 - n)); }
-
-static void chacha20_quarter_round(uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d) {
-    a += b; d = rotl32(d ^ a, 16);
-    c += d; b = rotl32(b ^ c, 12);
-    a += b; d = rotl32(d ^ a, 8);
-    c += d; b = rotl32(b ^ c, 7);
-}
-
-// 生成单个 64 字节 keystream 块。counter 独立于 nonce（计数器低 32 位拼接 nonce）。
-static void chacha20_block(const uint8_t key[32], uint32_t counter,
-                           const uint8_t nonce[12], uint8_t out[64]) {
-    static const uint32_t kConst[4] = {0x61707865u, 0x3320646eu, 0x79622d32u, 0x6b206574u};
-    uint32_t state[16];
-    for (int i = 0; i < 4; ++i) state[i] = kConst[i];
-    for (int i = 0; i < 8; ++i)
-        state[4 + i] = (static_cast<uint32_t>(key[i * 4]) << 24) |
-                       (static_cast<uint32_t>(key[i * 4 + 1]) << 16) |
-                       (static_cast<uint32_t>(key[i * 4 + 2]) << 8) |
-                       static_cast<uint32_t>(key[i * 4 + 3]);
-    state[12] = counter;
-    for (int i = 0; i < 3; ++i)
-        state[13 + i] = (static_cast<uint32_t>(nonce[i * 4]) << 24) |
-                        (static_cast<uint32_t>(nonce[i * 4 + 1]) << 16) |
-                        (static_cast<uint32_t>(nonce[i * 4 + 2]) << 8) |
-                        static_cast<uint32_t>(nonce[i * 4 + 3]);
-
-    uint32_t ws[16];
-    std::memcpy(ws, state, sizeof(ws));
-    for (int i = 0; i < 10; ++i) {
-        chacha20_quarter_round(ws[0], ws[4],  ws[8], ws[12]);
-        chacha20_quarter_round(ws[1], ws[5],  ws[9], ws[13]);
-        chacha20_quarter_round(ws[2], ws[6], ws[10], ws[14]);
-        chacha20_quarter_round(ws[3], ws[7], ws[11], ws[15]);
-        chacha20_quarter_round(ws[0], ws[5], ws[10], ws[15]);
-        chacha20_quarter_round(ws[1], ws[6], ws[11], ws[12]);
-        chacha20_quarter_round(ws[2], ws[7], ws[ 8], ws[13]);
-        chacha20_quarter_round(ws[3], ws[4], ws[ 9], ws[14]);
-    }
-    for (int i = 0; i < 16; ++i) ws[i] += state[i];
-
-    uint8_t* b = out;
-    for (int i = 0; i < 16; ++i) {
-        const uint32_t v = ws[i];
-        b[i * 4]     = static_cast<uint8_t>(v);
-        b[i * 4 + 1] = static_cast<uint8_t>(v >> 8);
-        b[i * 4 + 2] = static_cast<uint8_t>(v >> 16);
-        b[i * 4 + 3] = static_cast<uint8_t>(v >> 24);
-    }
-}
-
-// 对 buf 的 len 个字节，用与 byte_offset 处 keystream 对齐的流做 XOR。
-// 加密与解密都调用本函数（XOR 互逆）。
-static void chacha20_xor(const uint8_t key[32], const uint8_t nonce[12],
-                         uint64_t byte_offset, uint8_t* buf, size_t len) {
-    while (len > 0) {
-        const uint64_t block_index = byte_offset / 64;
-        const size_t start_in_block = static_cast<size_t>(byte_offset % 64);
-        uint8_t ks[64];
-        chacha20_block(key, static_cast<uint32_t>(block_index), nonce, ks);
-        const size_t take = (len < (64 - start_in_block)) ? len : (64 - start_in_block);
-        for (size_t i = 0; i < take; ++i) buf[i] ^= ks[start_in_block + i];
-        buf += take;
-        len -= take;
-        byte_offset += take;
-    }
 }
 
 // 全局加解密密钥（32 字节原始）。PakWriter::write 与 PakReader::read 共享。
@@ -266,8 +154,11 @@ bool PakReader::open(const std::string& path) {
             entries_.clear();
             return false;
         }
-        if (static_cast<uint64_t>(path_len) > file_size) {
-            GLOG_ERROR("PakReader: path_len {} exceeds file size in '{}'", path_len, path);
+        // path_len 只受文件大小约束不够：恶意头写 0xFFFFFFFF 仍会触发 ~4GB 字符串
+        // 分配。加绝对上限（对齐最长合理资源路径）。
+        constexpr uint32_t k_max_entry_path_len = 4096;
+        if (path_len > k_max_entry_path_len || static_cast<uint64_t>(path_len) > file_size) {
+            GLOG_ERROR("PakReader: path_len {} exceeds limit in '{}'", path_len, path);
             std::fclose(f);
             entries_.clear();
             return false;
@@ -427,7 +318,7 @@ std::vector<uint8_t> PakReader::read(const std::string& original_path) const {
     if (encrypted_ && target->data_size > 0) {
         const std::string& key = pak_crypto_key();
         if (key.size() == 32 && nonce_.size() == 12) {
-            chacha20_xor(reinterpret_cast<const uint8_t*>(key.data()), nonce_.data(),
+            utils::chacha20_xor(reinterpret_cast<const uint8_t*>(key.data()), nonce_.data(),
                          target->data_offset, data.data(), data.size());
         } else {
             GLOG_ERROR("PakReader: '{}' is encrypted but no decrypt key is set in '{}'",
@@ -445,7 +336,7 @@ std::vector<uint8_t> PakReader::read(const std::string& original_path) const {
 std::string PakWriter::generate_random_name() {
     // 32 字节随机数 -> Base64URL 编码（43 字符，无填充）
     uint8_t random_bytes[32];
-    if (!get_random_bytes(random_bytes, sizeof(random_bytes))) {
+    if (!utils::random_bytes(random_bytes, sizeof(random_bytes))) {
         // 失败时回退到时间种子 + 计数器
         static std::mt19937_64 rng(std::chrono::steady_clock::now().time_since_epoch().count());
         for (size_t i = 0; i < sizeof(random_bytes); i += 8) {
@@ -494,7 +385,7 @@ bool PakWriter::write(const std::string& output_path) const {
     const uint32_t version = encrypt ? 4 : 3;
     uint8_t nonce[12] = {};
     if (encrypt) {
-        if (!get_random_bytes(nonce, sizeof(nonce))) {
+        if (!utils::random_bytes(nonce, sizeof(nonce))) {
             GLOG_ERROR("PakWriter: failed to generate encryption nonce");
             std::fclose(out);
             return false;
@@ -530,7 +421,7 @@ bool PakWriter::write(const std::string& output_path) const {
         entry.path = path;
         entry.data_size = data.size();
         entry.data_offset = current_offset;
-        entry.crc32 = compute_crc32(data.data(), data.size());
+        entry.crc32 = utils::crc32(data.data(), data.size());
         entries.push_back(entry);
         current_offset += data.size();
     }
@@ -569,7 +460,7 @@ bool PakWriter::write(const std::string& output_path) const {
         if (encrypt) {
             // 用本包 nonce + 该 entry 的 data_offset 对齐的流加密后写出
             std::vector<uint8_t> enc = data;
-            chacha20_xor(reinterpret_cast<const uint8_t*>(key.data()), nonce,
+            utils::chacha20_xor(reinterpret_cast<const uint8_t*>(key.data()), nonce,
                          entries[i].data_offset, enc.data(), enc.size());
             std::fwrite(enc.data(), 1, enc.size(), out);
         } else {

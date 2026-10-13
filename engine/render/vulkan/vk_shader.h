@@ -129,7 +129,9 @@ public:
     void invalidate_texture_cache(const VulkanTexture* tex);
 
     // 同一 shader 被画进不同 render pass 时切换/复用管线（见 .cpp 说明）。
-    void ensure_render_pass(VkRenderPass render_pass);
+    // samples 为当前 render pass 颜色附件的采样数，管线的
+    // rasterizationSamples 必须与之一致（VUID-VkGraphicsPipelineCreateInfo）。
+    void ensure_render_pass(VkRenderPass render_pass, VkSampleCountFlagBits samples);
 
 private:
     bool load_spirv_from_file(const std::string& path, std::vector<uint32_t>& out);
@@ -171,6 +173,10 @@ private:
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
 
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
+    // 当前管线的光栅化采样数（随绑定的 render pass 附件推导）。
+    // render pass 已把采样数烘进附件描述，不同采样数天然对应不同
+    // render pass 句柄，故 pipeline_cache_ 仍以 render pass 为键即可。
+    VkSampleCountFlagBits pipeline_samples_ = VK_SAMPLE_COUNT_1_BIT;
     // 每个 VkRenderPass 一条图形管线（Vulkan 把 render pass 烘进管线）
     std::unordered_map<VkRenderPass, VkPipeline> pipeline_cache_;      // 混合变体
     std::unordered_map<VkRenderPass, VkPipeline> pipeline_cache_opaque_; // 不混合变体
