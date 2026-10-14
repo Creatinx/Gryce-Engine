@@ -104,13 +104,13 @@ Gryce-Engine/
 
 ### GryceGC 工具链
 
-`toolchain/grycegc` 是引擎的命令行工具链（C++23，自包含零引擎 DLL 依赖，
+`toolchain` 是引擎的命令行工具链（C++23，自包含零引擎 DLL 依赖，
 与 GryceMathTests 同构——把需要的 engine 源码直接编进 `grycegc_core` 静态库）。
 随主工程一起构建（`GRYCE_BUILD_TOOLCHAIN=ON` 默认开，也可独立配置）。
 
 ```bash
 # 独立构建（不装 Python）
-cmake -S toolchain/grycegc -B build-grycegc -G Ninja
+cmake -S toolchain -B toolchain/build -G Ninja
 ```
 
 常用命令（`GryceGC help <command>` 查看完整参数）：

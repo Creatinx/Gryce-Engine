@@ -65,4 +65,4 @@ cmp_*.png
 dbg*.png
 
 # GryceGC 工具链构建产物
-toolchain/grycegc/build/
+toolchain/build/

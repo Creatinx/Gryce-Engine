@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 
 # ---------------------------------------------------------------------------
-# toolchain/grycegc — Gryce-Engine 命令行工具链（C++20）
+# toolchain — Gryce-Engine 命令行工具链（C++23）
 #
 # 支持两种构建模式：
-#   1) 独立配置：cmake -S toolchain/grycegc -B build-grycegc
+#   1) 独立配置：cmake -S toolchain -B build
 #   2) 作为根 CMakeLists 的 add_subdirectory（选项 GRYCE_BUILD_TOOLCHAIN 控制）
 #
 # 关键设计：自包含、零引擎 DLL 依赖。同 GryceMathTests 模式，
@@ -14,7 +14,7 @@ cmake_minimum_required(VERSION 3.24)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(GryceGC VERSION 1.0.0 LANGUAGES CXX)
-    set(GRYCE_ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." CACHE PATH "Gryce-Engine source root")
+    set(GRYCE_ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH "Gryce-Engine source root")
     enable_testing()
     set(BUILD_TESTING ON CACHE BOOL "Build GryceGC tests" FORCE)
     set(GRYCEGC_STANDALONE ON)

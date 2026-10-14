@@ -350,11 +350,12 @@ void run_smoke() {
     // 2) CWD 相对路径
     candidates.emplace_back("cmake-build-debug");
     candidates.emplace_back("build");
-    // 3) 从测试可执行文件位置反推引擎根 build（grycegc/build → 引擎根/build）
+    // 3) 从测试可执行文件位置反推引擎根 build（toolchain/build 或 build/toolchain，
+    //    两种布局同深，../../build 均指向引擎根/build）
     char exe_path_buf[MAX_PATH];
     if (GetModuleFileNameA(nullptr, exe_path_buf, MAX_PATH) > 0) {
         const fs::path self(exe_path_buf);
-        candidates.emplace_back(self.parent_path() / ".." / ".." / ".." / "build");
+        candidates.emplace_back(self.parent_path() / ".." / ".." / "build");
     }
     fs::path build_dir;
     for (const auto& c : candidates) {
@@ -720,12 +721,12 @@ void run_package() {
     // 1) CWD 相对路径
     candidates.emplace_back("build");
     candidates.emplace_back("cmake-build-debug");
-    // 2) 从测试可执行文件反推引擎根 build（grycegc/build 或 build/toolchain/grycegc）
+    // 2) 从测试可执行文件反推引擎根 build（toolchain/build 或 build/toolchain，
+    //    两种布局同深，../../build 均指向引擎根/build）
     char exe_path_buf[MAX_PATH];
     if (GetModuleFileNameA(nullptr, exe_path_buf, MAX_PATH) > 0) {
         const fs::path self(exe_path_buf);
         candidates.emplace_back(self.parent_path() / ".." / ".." / "build");
-        candidates.emplace_back(self.parent_path() / ".." / ".." / ".." / "build");
     }
     fs::path build_dir;
     for (const auto& c : candidates) {
