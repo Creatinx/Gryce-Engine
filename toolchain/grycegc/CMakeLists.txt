@@ -43,11 +43,25 @@ add_library(grycegc_core STATIC
     src/core/fsutil.cpp
     src/core/pe_image.cpp
     src/core/dep_resolver.cpp
+    src/core/packager.cpp
+    src/core/process.cpp
+    src/core/meta.cpp
+    src/core/gitinfo.cpp
+    src/core/versioninfo.cpp
     src/commands/registry.cpp
     src/commands/cmd_help.cpp
     src/commands/cmd_deps.cpp
     src/commands/cmd_verify.cpp
-    src/commands/stubs.cpp
+    src/commands/cmd_package.cpp
+    src/commands/cmd_run.cpp
+    src/commands/cmd_copyright.cpp
+    src/commands/cmd_meta.cpp
+    src/commands/cmd_encrypt.cpp
+    src/commands/cmd_pak.cpp
+    src/commands/cmd_debug.cpp
+    src/commands/cmd_bench.cpp
+    src/commands/cmd_font.cpp
+    src/commands/cmd_build.cpp
     # 引擎侧：共享密码学（GryceCore 与本工具共用）
     ${GRYCE_ENGINE_ROOT}/engine/utils/glog/glog_lib.cpp
     ${GRYCE_ENGINE_ROOT}/engine/utils/crypto/crc32.cpp
@@ -62,10 +76,11 @@ add_library(grycegc_core STATIC
 target_include_directories(grycegc_core PUBLIC
     src
     ${GRYCE_ENGINE_ROOT}/engine
-    ${GRYCE_ENGINE_ROOT}/third_party/nlohmann_json/include
+    ${GRYCE_ENGINE_ROOT}/third_party/nlohmann_json
 )
 target_compile_definitions(grycegc_core PUBLIC
-    GRYCE_GC_VERSION="${PROJECT_VERSION}"
+    # grycegc 自有版本号（不继承根 project 的版本，独立构建与子目录构建一致）
+    GRYCE_GC_VERSION="1.0.0"
 )
 
 if(WIN32)
@@ -87,7 +102,7 @@ if(BUILD_TESTING)
     target_link_libraries(GryceGCTests PRIVATE grycegc_core)
     set_target_properties(GryceGCTests PROPERTIES OUTPUT_NAME "GryceGCTests")
 
-    set(_grycegc_suites cli crc32 pe aes smoke)
+    set(_grycegc_suites cli crc32 pe aes smoke crypto pak meta package)
     foreach(s IN LISTS _grycegc_suites)
         add_test(NAME grycegc_${s}
                  COMMAND GryceGCTests --suite ${s}

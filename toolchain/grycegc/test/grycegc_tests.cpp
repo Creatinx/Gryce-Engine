@@ -9,7 +9,10 @@
 // ---------------------------------------------------------------------------
 
 #include "cli.h"
+#include "commands/commands.h"
 #include "core/fsutil.h"
+#include "core/meta.h"
+#include "core/packager.h"
 #include "core/pe_image.h"
 #include "core/dep_resolver.h"
 
@@ -35,6 +38,8 @@
 // 共享 crypto（直接从引擎源码编译进 grycegc_core）
 #include "utils/crypto/crc32.h"
 #include "resources/aes_gcm.h"
+#include "resources/gpack_bundle.h"
+#include "resources/pak_bundle.h"
 
 namespace {
 
@@ -395,11 +400,394 @@ void run_smoke() {
     std::printf("[suite smoke] done\n");
 }
 
+// ---------------------------------------------------------------------------
+// suite: crypto（encrypt/decrypt/keygen 命令级往返 + 篡改检测）
+// ---------------------------------------------------------------------------
+void run_crypto() {
+    using namespace grycegc;
+    std::printf("[suite crypto]\n");
+    namespace fs = std::filesystem;
+    const fs::path tmp = temp_dir() / "grycegc_test_crypto";
+    fs::remove_all(tmp);
+    mkdir_p(tmp);
+
+    const fs::path pt = tmp / "pt.bin";
+    std::string plain = "GryceGC crypto roundtrip payload 0123456789abcdef";
+    EXPECT(write_binary(pt, plain), "write plaintext");
+
+    Options ko;
+    ko.flags.insert("hex");
+    // keygen 走 stdout；用 set 形式直接构造 Options 不可行，改为进程级不可用——
+    // 这里直接生成密钥字节写文件，再让命令读 @file。
+    uint8_t key_bytes[32];
+    for (int i = 0; i < 32; ++i) key_bytes[i] = static_cast<uint8_t>(i * 13 + 7);
+    const fs::path key_file = tmp / "key.bin";
+    EXPECT(write_binary(key_file, key_bytes, sizeof(key_bytes)), "write key file");
+    const std::string key_spec = "@" + key_file.string();
+
+    auto make_opts = [&](const char* sub, const std::string& in, const std::string& out,
+                         const std::string& algo, const std::string& aad,
+                         bool raw) {
+        Options o;
+        if (sub) o.positionals.push_back(sub);
+        o.single["in"] = in;
+        o.single["out"] = out;
+        o.single["key"] = key_spec;
+        if (!algo.empty()) o.single["algo"] = algo;
+        if (!aad.empty()) o.single["aad"] = aad;
+        if (raw) o.flags.insert("raw");
+        return o;
+    };
+
+    // AES-GCM 容器往返
+    const fs::path ct1 = tmp / "ct1.bin", rt1 = tmp / "rt1.bin";
+    EXPECT(cmd_encrypt(make_opts(nullptr, pt.string(), ct1.string(), "aes-gcm", "aad-1",
+                                 false)) == 0,
+           "encrypt aes-gcm");
+    EXPECT(cmd_decrypt(make_opts(nullptr, ct1.string(), rt1.string(), "aes-gcm", "aad-1",
+                                 false)) == 0,
+           "decrypt aes-gcm");
+    auto rt1_bytes = read_all(rt1);
+    EXPECT(rt1_bytes.size() == plain.size() &&
+               std::memcmp(rt1_bytes.data(), plain.data(), plain.size()) == 0,
+           "aes-gcm roundtrip content");
+
+    // ChaCha20 容器往返
+    const fs::path ct2 = tmp / "ct2.bin", rt2 = tmp / "rt2.bin";
+    EXPECT(cmd_encrypt(make_opts(nullptr, pt.string(), ct2.string(), "chacha20", "",
+                                 false)) == 0,
+           "encrypt chacha20");
+    EXPECT(cmd_decrypt(make_opts(nullptr, ct2.string(), rt2.string(), "chacha20", "",
+                                 false)) == 0,
+           "decrypt chacha20");
+    auto rt2_bytes = read_all(rt2);
+    EXPECT(rt2_bytes.size() == plain.size() &&
+               std::memcmp(rt2_bytes.data(), plain.data(), plain.size()) == 0,
+           "chacha20 roundtrip content");
+
+    // raw（引擎兼容）往返
+    const fs::path ct3 = tmp / "ct3.bin", rt3 = tmp / "rt3.bin";
+    EXPECT(cmd_encrypt(make_opts(nullptr, pt.string(), ct3.string(), "aes-gcm", "",
+                                 true)) == 0,
+           "encrypt raw");
+    auto ct3_bytes = read_all(ct3);
+    EXPECT(ct3_bytes.size() == 12 + plain.size() + 16, "raw layout iv||ct||tag");
+    EXPECT(cmd_decrypt(make_opts(nullptr, ct3.string(), rt3.string(), "aes-gcm", "",
+                                 false)) == 0,
+           "decrypt raw");
+    auto rt3_bytes = read_all(rt3);
+    EXPECT(rt3_bytes.size() == plain.size() &&
+               std::memcmp(rt3_bytes.data(), plain.data(), plain.size()) == 0,
+           "raw roundtrip content");
+
+    // 篡改检测：改 1 字节密文必须解密失败
+    auto bad = read_all(ct1);
+    bad[20] ^= 0xFF;
+    const fs::path ct_bad = tmp / "ct_bad.bin";
+    EXPECT(write_binary(ct_bad, bad.data(), bad.size()), "write tampered");
+    EXPECT(cmd_decrypt(make_opts(nullptr, ct_bad.string(), (tmp / "rt_bad.bin").string(),
+                                 "aes-gcm", "aad-1", false)) != 0,
+           "tamper detected");
+
+    // 错误密钥必须失败
+    uint8_t other[32];
+    for (int i = 0; i < 32; ++i) other[i] = ~key_bytes[i];
+    const fs::path key2 = tmp / "key2.bin";
+    EXPECT(write_binary(key2, other, sizeof(other)), "write key2");
+    Options o2 = make_opts(nullptr, ct1.string(), (tmp / "rt_k2.bin").string(), "aes-gcm",
+                           "aad-1", false);
+    o2.single["key"] = "@" + key2.string();
+    EXPECT(cmd_decrypt(o2) != 0, "wrong key rejected");
+
+    // keygen：--out 文件长度与 --bytes 一致
+    const fs::path kg = tmp / "kg.bin";
+    Options g;
+    g.single["bytes"] = "48";
+    g.single["out"] = kg.string();
+    EXPECT(cmd_keygen(g) == 0 && read_all(kg).size() == 48, "keygen 48 bytes");
+
+    fs::remove_all(tmp);
+    std::printf("[suite crypto] done\n");
+}
+
+// ---------------------------------------------------------------------------
+// suite: pak（gpack + pak v4 加密往返，与引擎读写器互操作）
+// ---------------------------------------------------------------------------
+void run_pak() {
+    using namespace grycegc;
+    std::printf("[suite pak]\n");
+    namespace fs = std::filesystem;
+    namespace res = gryce_engine::resources;
+    const fs::path tmp = temp_dir() / "grycegc_test_pak";
+    fs::remove_all(tmp);
+    mkdir_p(tmp);
+
+    // 准备源文件
+    const fs::path src = tmp / "src";
+    mkdir_p(src / "models");
+    mkdir_p(src / "scenes");
+    const std::string c1 = "v 0.1 0.2 0.3\n";
+    const std::string c2 = "scene gryce\n";
+    const std::string c3 = "void main(){}\n";
+    EXPECT(write_binary(src / "models" / "cube.obj", c1), "write obj");
+    EXPECT(write_binary(src / "scenes" / "main.gesc", c2), "write gesc");
+    EXPECT(write_binary(src / "simple.frag", c3), "write frag");
+
+    Options o;
+    o.positionals = {"create"};
+    o.single["out"] = (tmp / "t.gpack").string();
+    o.positionals.push_back(src.string());
+    EXPECT(cmd_pak(o) == 0, "pak create gpack");
+
+    // list / verify / extract
+    Options lo;
+    lo.positionals = {"list"};
+    lo.single["file"] = (tmp / "t.gpack").string();
+    EXPECT(cmd_pak(lo) == 0, "pak list gpack");
+
+    Options vo;
+    vo.positionals = {"verify"};
+    vo.single["file"] = (tmp / "t.gpack").string();
+    EXPECT(cmd_pak(vo) == 0, "pak verify gpack");
+
+    Options eo;
+    eo.positionals = {"extract"};
+    eo.single["file"] = (tmp / "t.gpack").string();
+    eo.single["out"] = (tmp / "out_gpack").string();
+    EXPECT(cmd_pak(eo) == 0, "pak extract gpack");
+    EXPECT(read_all(tmp / "out_gpack" / "models" / "cube.obj") ==
+               std::vector<uint8_t>(c1.begin(), c1.end()),
+           "extracted obj content");
+    EXPECT(read_all(tmp / "out_gpack" / "scenes" / "main.gesc") ==
+               std::vector<uint8_t>(c2.begin(), c2.end()),
+           "extracted gesc content");
+
+    // pak v4 加密往返
+    uint8_t kb[32];
+    for (int i = 0; i < 32; ++i) kb[i] = static_cast<uint8_t>(i * 5 + 3);
+    const fs::path kf = tmp / "pakkey.bin";
+    EXPECT(write_binary(kf, kb, sizeof(kb)), "write pak key");
+    const std::string khex = [&] {
+        static const char* d = "0123456789abcdef";
+        std::string s;
+        for (uint8_t b : kb) { s.push_back(d[b >> 4]); s.push_back(d[b & 0xF]); }
+        return s;
+    }();
+
+    Options o2;
+    o2.positionals = {"create"};
+    o2.single["out"] = (tmp / "t.pak").string();
+    o2.single["key"] = khex;
+    o2.positionals.push_back(src.string());
+    EXPECT(cmd_pak(o2) == 0, "pak create v4");
+
+    Options v2;
+    v2.positionals = {"verify"};
+    v2.single["file"] = (tmp / "t.pak").string();
+    v2.single["key"] = khex;
+    EXPECT(cmd_pak(v2) == 0, "pak verify v4");
+
+    Options e2;
+    e2.positionals = {"extract"};
+    e2.single["file"] = (tmp / "t.pak").string();
+    e2.single["out"] = (tmp / "out_pak").string();
+    e2.single["key"] = khex;
+    EXPECT(cmd_pak(e2) == 0, "pak extract v4");
+    EXPECT(read_all(tmp / "out_pak" / "simple.frag") ==
+               std::vector<uint8_t>(c3.begin(), c3.end()),
+           "extracted frag content (v4)");
+
+    // 错误密钥：verify 必须失败
+    Options v3;
+    v3.positionals = {"verify"};
+    v3.single["file"] = (tmp / "t.pak").string();
+    v3.single["key"] = std::string(64, '0');
+    EXPECT(cmd_pak(v3) != 0, "pak verify v4 wrong key fails");
+
+    // 与引擎 PakReader 互操作（工具写的包引擎能读）
+    {
+        res::set_pak_crypto_key(std::string(reinterpret_cast<const char*>(kb), 32));
+        res::PakReader pr;
+        EXPECT(pr.open((tmp / "t.pak").string()), "engine PakReader opens grycegc pak");
+        EXPECT(pr.contains("models/cube.obj"), "engine sees original path");
+        auto data = pr.read("models/cube.obj");
+        EXPECT(data.size() == c1.size() && std::memcmp(data.data(), c1.data(), c1.size()) == 0,
+               "engine reads correct bytes");
+        res::set_pak_crypto_key("");
+    }
+
+    std::error_code rec;
+    fs::remove_all(tmp, rec);  // reader 句柄可能仍占用，忽略清理失败
+    std::printf("[suite pak] done\n");
+}
+
+// ---------------------------------------------------------------------------
+// suite: meta（gryce.meta.json / project.data / PE trailer）
+// ---------------------------------------------------------------------------
+void run_meta() {
+    using namespace grycegc;
+    std::printf("[suite meta]\n");
+    namespace fs = std::filesystem;
+    const fs::path tmp = temp_dir() / "grycegc_test_meta";
+    fs::remove_all(tmp);
+    mkdir_p(tmp);
+
+    // 目录级 set/get/show
+    Options s1;
+    s1.positionals = {"set"};
+    s1.single["key"] = "version";
+    s1.single["value"] = "1.2.3";
+    s1.single["target"] = tmp.string();
+    EXPECT(cmd_meta(s1) == 0, "meta set dir");
+    Options g1;
+    g1.positionals = {"get"};
+    g1.single["key"] = "version";
+    g1.single["target"] = tmp.string();
+    // get 打印到 stdout；直接验证文件内容
+    auto j = meta_read_dir(tmp).to_json();
+    EXPECT(j.contains("version") && j["version"] == "1.2.3", "meta json merged");
+    EXPECT(cmd_meta(g1) == 0, "meta get dir");
+
+    // stamp-git（仓库内应成功）
+    Options st;
+    st.positionals = {"stamp-git"};
+    st.single["target"] = tmp.string();
+    const int st_rc = cmd_meta(st);
+    if (st_rc == 0) {
+        auto j2 = meta_read_dir(tmp).to_json();
+        EXPECT(j2.contains("build_id") && j2["build_id"].is_string() &&
+                   !j2["build_id"].get<std::string>().empty(),
+               "stamp-git wrote build_id");
+        EXPECT(j2.contains("version") && j2["version"] == "1.2.3",
+               "stamp-git preserved existing keys");
+    } else {
+        std::printf("  [skip] stamp-git（不在 git 仓库）\n");
+    }
+
+    // project.data 合并（保留既有键、覆盖同名键）
+    EXPECT(write_binary(tmp / "project.data", "# comment\nname=demo\nrender_api=vulkan\n"),
+           "write project.data");
+    Options sp;
+    sp.positionals = {"set"};
+    sp.single["key"] = "render_api";
+    sp.single["value"] = "opengl";
+    sp.single["target"] = tmp.string();
+    sp.flags.insert("project");
+    EXPECT(cmd_meta(sp) == 0, "meta set project.data");
+    EXPECT(project_data_get(tmp, "name") == "demo", "project.data keeps other keys");
+    EXPECT(project_data_get(tmp, "render_api") == "opengl", "project.data overrides");
+    Options sp2 = sp;
+    sp2.single["key"] = "extra";
+    sp2.single["value"] = "42";
+    EXPECT(cmd_meta(sp2) == 0, "meta set project.data append");
+    EXPECT(project_data_get(tmp, "extra") == "42", "project.data appends new key");
+
+    // PE trailer 往返（拷贝 GryceGC.exe 自身当样本，避免动引擎产物）
+    const fs::path self_exe = []() -> fs::path {
+        char buf[MAX_PATH];
+        if (GetModuleFileNameA(nullptr, buf, MAX_PATH) > 0) return fs::path(buf);
+        return {};
+    }();
+    if (!self_exe.empty() && fs::exists(self_exe)) {
+        const fs::path sample = tmp / "sample.exe";
+        fs::copy_file(self_exe, sample, fs::copy_options::overwrite_existing);
+        Options ts;
+        ts.positionals = {"set"};
+        ts.single["key"] = "build_id";
+        ts.single["value"] = "deadbeef";
+        ts.single["target"] = sample.string();
+        EXPECT(cmd_meta(ts) == 0, "meta set pe trailer");
+        auto tj = meta_read_pe_trailer(sample);
+        EXPECT(tj.has_value() && tj->contains("build_id") &&
+                   (*tj)["build_id"] == "deadbeef",
+               "pe trailer roundtrip");
+    } else {
+        std::printf("  [skip] pe trailer（取不到自身路径）\n");
+    }
+
+    fs::remove_all(tmp);
+    std::printf("[suite meta] done\n");
+}
+
+// ---------------------------------------------------------------------------
+// suite: package（Packager 对真实构建树；不存在则跳过）
+// ---------------------------------------------------------------------------
+void run_package() {
+    using namespace grycegc;
+    std::printf("[suite package]\n");
+    namespace fs = std::filesystem;
+    std::vector<fs::path> candidates;
+    // 1) CWD 相对路径
+    candidates.emplace_back("build");
+    candidates.emplace_back("cmake-build-debug");
+    // 2) 从测试可执行文件反推引擎根 build（grycegc/build 或 build/toolchain/grycegc）
+    char exe_path_buf[MAX_PATH];
+    if (GetModuleFileNameA(nullptr, exe_path_buf, MAX_PATH) > 0) {
+        const fs::path self(exe_path_buf);
+        candidates.emplace_back(self.parent_path() / ".." / ".." / "build");
+        candidates.emplace_back(self.parent_path() / ".." / ".." / ".." / "build");
+    }
+    fs::path build_dir;
+    for (const auto& c : candidates) {
+        if (fs::is_directory(c) && fs::exists(c / "GryceRenderSmoke.exe")) {
+            build_dir = fs::weakly_canonical(c);
+            break;
+        }
+    }
+    if (build_dir.empty()) {
+        std::printf("  [skip] no engine build tree\n");
+        std::printf("[suite package] done\n");
+        return;
+    }
+
+    const fs::path out_root = temp_dir() / "grycegc_test_pkg";
+    fs::remove_all(out_root);
+    mkdir_p(out_root);
+
+    PackageOptions po;
+    po.build_dir = build_dir;
+    po.output = out_root;
+    po.name = "GryceEngine";
+    // demo_project 相对仓库根（build_dir 的父目录），不依赖 CWD
+    po.project_src = (build_dir.parent_path() / "test" / "demo_project").string();
+    if (!fs::is_directory(po.project_src)) po.project_src.clear();
+    Packager packager(po);
+    const auto res = packager.run();
+    EXPECT(res.ok, "package run");
+    if (!res.ok) {
+        std::printf("[suite package] done\n");
+        return;
+    }
+    const fs::path pkg = res.pkg_root;
+    EXPECT(fs::exists(pkg / "GryceRenderSmoke.exe"), "exe at pkg root");
+    EXPECT(fs::exists(pkg / "GryceCore.dll"), "core dll at pkg root");
+    EXPECT(fs::exists(pkg / "dll"), "dll/ folder exists");
+    EXPECT(fs::exists(pkg / "run.bat"), "run.bat exists");
+    EXPECT(fs::exists(pkg / "run_vulkan.bat"), "run_vulkan.bat exists");
+    EXPECT(fs::exists(pkg / "run_play.bat"), "run_play.bat exists");
+    EXPECT(fs::exists(pkg / "README.txt"), "README.txt exists");
+    EXPECT(res.assets && fs::exists(pkg / "demo_project"), "demo_project packed");
+    EXPECT(fs::exists(pkg / "dll" / "libstdc++-6.dll"), "mingw runtime in dll/");
+
+    // 包自洽性：闭包全部可解析、无缺失
+    DepResolver resolver(pkg, {pkg, pkg / "dll"});
+    const auto closure = resolver.resolve(pkg / "GryceRenderSmoke.exe");
+    EXPECT(closure.missing.empty(), "package closure has no missing dll");
+
+    // 与 Python 版对拍已在 CLI 冒烟覆盖（字节级一致）；这里只验证二次打包稳定
+    const auto res2 = packager.run();
+    EXPECT(res2.ok, "package idempotent rerun");
+
+    fs::remove_all(out_root);
+    std::printf("[suite package] done\n");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 3 || std::strcmp(argv[1], "--suite") != 0) {
-        std::fprintf(stderr, "usage: %s --suite <cli|crc32|pe|aes|smoke>\n", argv[0]);
+        std::fprintf(stderr, "usage: %s --suite <cli|crc32|pe|aes|smoke|crypto|pak|meta|package>\n",
+                     argv[0]);
         return 2;
     }
     g_suite = argv[2];
@@ -408,6 +796,10 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(g_suite, "pe")) run_pe();
     else if (!std::strcmp(g_suite, "aes")) run_aes();
     else if (!std::strcmp(g_suite, "smoke")) run_smoke();
+    else if (!std::strcmp(g_suite, "crypto")) run_crypto();
+    else if (!std::strcmp(g_suite, "pak")) run_pak();
+    else if (!std::strcmp(g_suite, "meta")) run_meta();
+    else if (!std::strcmp(g_suite, "package")) run_package();
     else {
         std::fprintf(stderr, "unknown suite: %s\n", g_suite);
         return 2;

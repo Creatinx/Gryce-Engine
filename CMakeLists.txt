@@ -405,3 +405,17 @@ if(BUILD_TESTING)
             LABELS "unit;math" TIMEOUT 60)
     endforeach()
 endif()
+
+# ===========================================================================
+# GryceGC 工具链（toolchain/grycegc）
+#
+# 自包含零引擎 DLL 依赖：把需要的 engine 源码（aes_gcm / gpack / pak /
+# glog / utils/crypto）直接编进 grycegc_core 静态库，与 GryceMathTests 同构。
+# 独立构建：cmake -S toolchain/grycegc -B build-grycegc -G Ninja
+# 日常发布：toolchain/grycegc/build/GryceGC package --build-dir build
+# ===========================================================================
+option(GRYCE_BUILD_TOOLCHAIN "构建 GryceGC 命令行工具链" ON)
+
+if(GRYCE_BUILD_TOOLCHAIN)
+    add_subdirectory(toolchain/grycegc)
+endif()

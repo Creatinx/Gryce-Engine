@@ -34,8 +34,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // 处理全局 --help / -h：转发到 cmd_help，topic 由第一个非选项 token 决定
-    if (opts.has("help") || opts.has("h")) {
+    // 处理全局 --help / -h：转发到 cmd_help，topic 由第一个非选项 token 决定。
+    // 注意只认 flag 形式（无值）：--h 640 这种带值的选项（bench 的高度参数）
+    // 不能误触发帮助。
+    if (opts.is_flag("help") || opts.is_flag("h")) {
         grycegc::Options help_opts;
         help_opts.argc = 0;
         if (!command.empty()) help_opts.positionals.push_back(command);

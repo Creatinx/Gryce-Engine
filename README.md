@@ -97,8 +97,44 @@ Gryce-Engine/
 │   ├── renderer_smoke.cpp           演示宿主源码（GryceRenderSmoke.exe，不参与 CTest）
 │   └── demo_project/                演示工程（project.data + 场景 / 模型 / 着色器）
 ├── third_party/                     仓库内置第三方依赖（Amplitude、imgui、stb ...）
-├── toolchain/                       Python 辅助脚本
+├── toolchain/
+│   └── grycegc/                     GryceGC 命令行工具链（C++，替代原 Python 脚本）
 └── .github/workflows/ci.yml         CI：构建 + CTest（全部通过才算通过）
+```
+
+### GryceGC 工具链
+
+`toolchain/grycegc` 是引擎的命令行工具链（C++23，自包含零引擎 DLL 依赖，
+与 GryceMathTests 同构——把需要的 engine 源码直接编进 `grycegc_core` 静态库）。
+随主工程一起构建（`GRYCE_BUILD_TOOLCHAIN=ON` 默认开，也可独立配置）。
+
+```bash
+# 独立构建（不装 Python）
+cmake -S toolchain/grycegc -B build-grycegc -G Ninja
+```
+
+常用命令（`GryceGC help <command>` 查看完整参数）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `package` | 打包成可脱线运行的发布目录（exe + core DLL 同级 + `dll/` + `demo_project` + 启动器 + README） |
+| `run` | 跨平台启动器：注入 `dll/` 到 PATH 后启动宿主（替代 `run*.bat`） |
+| `verify` | 校验发布包自洽性（所有导入 DLL 在包内可解析） |
+| `deps` | 列出 exe 的完整 DLL 依赖闭包（core / 依赖分类） |
+| `copyright` | 版权印章：COPYRIGHT.txt + README 页脚 + PE trailer（可选 VERSIONINFO） |
+| `meta` | 元数据读写：`gryce.meta.json` / `project.data` / PE trailer / git 戳 |
+| `encrypt` / `decrypt` / `keygen` | AES-256-GCM / ChaCha20 加解密（与引擎 `aes_gcm_buf` 字节兼容） |
+| `pak` | 资源包 create/list/extract/verify（`.gpack` v1 / `.pak` v3+v4 加密） |
+| `debug` | 以预设调试环境变量启动宿主（D3D12 debug layer / trace / probe / glog） |
+| `bench` | 帧耗时 A/B 基准（单行 KV 输出） |
+| `font` | 重新生成 `engine/render/imgui_font_data.h` |
+| `build` | cmake configure + build 封装 |
+
+```bash
+# 典型发布流程
+GryceGC package --build-dir build --verify
+GryceGC copyright --package dist/GryceEngine --holder "Your Name" --license MIT
+GryceGC run --package dist/GryceEngine -- --frames 120 --shot out.png
 ```
 
 ---

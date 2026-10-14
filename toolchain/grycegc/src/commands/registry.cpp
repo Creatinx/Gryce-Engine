@@ -34,42 +34,117 @@ const std::vector<Command>& kTable() {
          "  --dll-folder <name> 依赖 DLL 所在子目录名（默认 dll）\n",
          &cmd_verify},
 
-        // 以下子命令在后续 milestone 中接入；当前直接调用会提示"未实现"
-        {"package", "[M2] 打包成可脱机运行的发布目录",
-         "用法: GryceGC package [options]（M2 milestone 待实现）\n",
+        {"package", "打包成可脱线运行的发布目录（移植自 toolchain/main.py）",
+         "用法: GryceGC package [options]\n"
+         "选项:\n"
+         "  --build-dir <dir>   CMake 构建目录（默认 cmake-build-debug）\n"
+         "  --exe <path>        可执行文件（默认自动探测 GryceRenderSmoke.exe）\n"
+         "  --output <dir>      输出根目录（默认 dist）\n"
+         "  --name <name>       发布包文件夹名（默认 GryceEngine）\n"
+         "  --project <dir>     资源项目根（默认 test/demo_project）\n"
+         "  --dll-folder <n>    依赖 DLL 文件夹名（默认 dll）\n"
+         "  --api <api>         默认启动器后端 opengl|vulkan（默认 opengl）\n"
+         "  --extra-dir <dir>   额外 DLL 搜索目录（可重复）\n"
+         "  --no-assets         不打包 demo_project 资源\n"
+         "  --clean             打包前清空输出目录\n"
+         "  --verify            打包后立即校验自洽性\n",
          &cmd_package},
-        {"run", "[M2] 跨平台启动器（替代 run*.bat）",
-         "用法: GryceGC run [options] -- [exe args]（M2 milestone 待实现）\n",
+
+        {"run", "跨平台启动器（替代 run*.bat）：注入 dll/ 到 PATH 后启动宿主",
+         "用法: GryceGC run --package <dir>|--build-dir <dir> [--api opengl|vulkan] [--play] [-- <exe args>]\n"
+         "选项:\n"
+         "  --package <dir>     发布包目录（含 run.bat 的目录）\n"
+         "  --build-dir <dir>   构建目录（直接用构建产物启动）\n"
+         "  --api <api>         渲染后端（默认 opengl）\n"
+         "  --play              交互模式（WASD + 鼠标）\n"
+         "  --                  之后的参数原样透传给宿主\n",
          &cmd_run},
-        {"copyright", "[M2] 在包/二进制上盖版权印章",
-         "用法: GryceGC copyright [options]（M2 milestone 待实现）\n",
+
+        {"copyright", "版权/许可印章：COPYRIGHT.txt + README 页脚 + PE trailer（+ VERSIONINFO）",
+         "用法: GryceGC copyright --package <dir>|--exe <file> --holder <name> [options]\n"
+         "选项:\n"
+         "  --holder <name>     版权持有者（必填）\n"
+         "  --year <yyyy>       年份（默认 2026）\n"
+         "  --license <id>      SPDX 或自定义 license 标识（如 MIT）\n"
+         "  --license-file <f>  license 全文文件（追加进 COPYRIGHT.txt）\n"
+         "  --version-info      同时写 PE VERSIONINFO 资源（Windows）\n"
+         "  --product <name>    VERSIONINFO ProductName\n"
+         "  --version <ver>     VERSIONINFO ProductVersion\n",
          &cmd_copyright},
-        {"meta", "[M2] 元数据读写（gryce.meta.json / project.data / PE 尾）",
-         "用法: GryceGC meta set|show|get [options]（M2 milestone 待实现）\n",
+
+        {"meta", "元数据读写：gryce.meta.json / project.data / PE trailer",
+         "用法: GryceGC meta <set|get|show|stamp-git> [options]\n"
+         "选项:\n"
+         "  --key <k>           键名（set/get 必填）\n"
+         "  --value <v>         值（set 必填）\n"
+         "  --target <path>     目录 / PE 文件（默认当前目录）\n"
+         "  --project           目标按 <target>/project.data 处理\n"
+         "  stamp-git           写入 git HEAD 短戳与提交日期\n",
          &cmd_meta},
-        {"encrypt", "[M3] AES-256-GCM / ChaCha20 加解密（兼容引擎 aes_gcm_buf）",
-         "用法: GryceGC encrypt [options]（M3 milestone 待实现）\n",
+
+        {"encrypt", "加密文件（AES-256-GCM / ChaCha20；引擎 aes_gcm_buf 兼容）",
+         "用法: GryceGC encrypt --in <f> --out <f> --key <spec> [options]\n"
+         "选项:\n"
+         "  --algo <a>          aes-gcm（默认）| chacha20\n"
+         "  --aad <text>        附加认证数据（默认空）\n"
+         "  --raw               不写容器头（引擎兼容裸 iv||ct||tag）\n"
+         "  --key <spec>        64 位 hex / @文件 / env:VAR / prompt:提示语\n",
          &cmd_encrypt},
-        {"decrypt", "[M3] 对应 decrypt 命令（输入格式由 --algo 决定）",
-         "用法: GryceGC decrypt [options]（M3 milestone 待实现）\n",
+
+        {"decrypt", "解密文件（自动识别 GRYCENC1 容器；无容器按 --algo 裸格式）",
+         "用法: GryceGC decrypt --in <f> --out <f> --key <spec> [--algo a] [--aad t]\n",
          &cmd_decrypt},
-        {"keygen", "[M3] 生成密码学安全随机密钥（默认 32 字节）",
-         "用法: GryceGC keygen --out <file> [--hex]（M3 milestone 待实现）\n",
+
+        {"keygen", "生成密码学安全随机密钥（默认 32 字节）",
+         "用法: GryceGC keygen [--bytes N] [--hex] [--out <file>]\n",
          &cmd_keygen},
-        {"pak", "[M3] 资源包 create/list/extract/verify（.gpack / .pak）",
-         "用法: GryceGC pak <sub> [options]（M3 milestone 待实现）\n",
+
+        {"pak", "资源包 create/list/extract/verify（.gpack GPAK v1 / .pak v3+v4）",
+         "用法: GryceGC pak <create|list|extract|verify> [options]\n"
+         "  create  --out <f> [输入文件或目录...] [--key hex]   # --key 仅 .pak(v4 加密)\n"
+         "  list    --file <f> [--key hex]\n"
+         "  extract --file <f> --out <dir> [--key hex]\n"
+         "  verify  --file <f> [--key hex]                      # CRC32 校验\n",
          &cmd_pak},
-        {"debug", "[M4] 以预设的调试环境变量启动宿主（d3d12 / trace / probe）",
-         "用法: GryceGC debug [options]（M4 milestone 待实现）\n",
+
+        {"debug", "以预设的调试环境变量启动宿主（d3d12 / trace / probe / glog）",
+         "用法: GryceGC debug --package <dir>|--build-dir <dir>|--exe <f> [options]\n"
+         "选项:\n"
+         "  --d3d12             GRYCE_D3D12_DEBUG=1\n"
+         "  --gpu-validation    GRYCE_D3D12_GPU_VALIDATION=1\n"
+         "  --serialize         GRYCE_D3D12_SERIALIZE=1\n"
+         "  --trace-hdr         GRYCE_TRACE_HDR=1\n"
+         "  --trace-frame N     GRYCE_DX12_TRACE_FRAME=N\n"
+         "  --trace-bind        GRYCE_DX12_TRACE_BIND=1\n"
+         "  --probe-ssr         GRYCE_DX12_PROBE_SSR=1\n"
+         "  --probe-frame N     GRYCE_DX12_PROBE_FRAME=N\n"
+         "  --probe-cbv NAME    GRYCE_DX12_PROBE_CBV=NAME\n"
+         "  --ring              GRYCE_DX12_PROBE_RING=1\n"
+         "  --glog N            GLOG_minloglevel=N\n"
+         "  --with-debugger D   cdb|windbg|x64dbg\n"
+         "  --api <api>         opengl|vulkan|dx12\n",
          &cmd_debug},
-        {"bench", "[M4] 移植 bench_ab.sh：Debug/Release 帧耗时 A/B 基准",
-         "用法: GryceGC bench --build-dir <dir> --w N --h N [--runs 3]（M4 milestone 待实现）\n",
+
+        {"bench", "帧耗时 A/B 基准（移植 bench_ab.sh，输出单行 KV）",
+         "用法: GryceGC bench --build-dir <dir> --w N --h N [--runs 3] [--api opengl]\n",
          &cmd_bench},
-        {"font", "[M4] 重新生成 engine/render/imgui_font_data.h",
-         "用法: GryceGC font [源字体.ttf]（M4 milestone 待实现）\n",
+
+        {"font", "重新生成 engine/render/imgui_font_data.h",
+         "用法: GryceGC font [源字体.ttf] [--out engine/render/imgui_font_data.h]\n"
+         "默认源: third_party/imgui/misc/fonts/Cousine-Regular.ttf\n",
          &cmd_font},
-        {"build", "[M5] cmake configure + build 封装",
-         "用法: GryceGC build [options]（M5 milestone 待实现）\n",
+
+        {"build", "cmake configure + build 封装（复用主工程工具链）",
+         "用法: GryceGC build [options]\n"
+         "选项:\n"
+         "  --build-dir <dir>   构建目录（默认 build）\n"
+         "  --preset <p>        debug（默认）| release\n"
+         "  --target <name>     构建目标（可重复）\n"
+         "  --d3d12 <on|off>    D3D12 后端开关（默认 on）\n"
+         "  --lto               开启 LTO\n"
+         "  --test              构建后跑 CTest\n"
+         "  --clean             构建前清空目录\n"
+         "  --jobs N            并行度\n",
          &cmd_build},
     };
     return table;
