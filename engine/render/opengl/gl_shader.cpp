@@ -168,6 +168,17 @@ std::string to_glsl_es300(const std::string& src, ShaderStage stage) {
     std::string out = "#version 300 es\n";
     out += kPrecisionBlock;
 
+    // 5) 纹理单元预算宏。WebGL2 的 GL_MAX_TEXTURE_IMAGE_UNITS 在真实 GPU 上
+    //    是 16（ANGLE/D3D11 上报 16，SwiftShader 上报 32），而 GLSL 的采样器
+    //    计数发生在**编译期**：声明了就是一个纹理单元，运行时 if/常量折叠都
+    //    省不掉。pbr 系着色器声明了 25 个采样器，在 16 上限的机器上 ANGLE
+    //    直接拒绝链接：
+    //      "FRAGMENT shader texture image units count exceeds
+    //       MAX_TEXTURE_IMAGE_UNITS(16)"
+    //    链接失败会让 RenderPipeline 退化成只清屏——画面只剩 ImGui。
+    //    注入这个宏让着色器按后端裁掉可降级特性（见各 .frag 里的说明）。
+    out += "#define GRYCE_WEBGL_LOW_TEX_UNITS 1\n";
+
     const std::size_t version_pos = src.find("#version");
     if (version_pos == std::string::npos) {
         out += src;

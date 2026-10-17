@@ -1,5 +1,18 @@
 #version 330 core
 
+// ---------------------------------------------------------------------------
+// 纹理单元预算（编译期，不可运行时省）
+// ---------------------------------------------------------------------------
+// 采样器声明即占用纹理单元。桌面 GL 上限 32，浏览器 WebGL2 在真实 GPU 上
+// 只有 16（ANGLE/D3D11），超了会链接失败 → 管线退化成只清屏（画面只剩
+// ImGui）。本文件 18 个采样器，WebGL 下裁掉 PCSS 的 4 张深度图退回 PCF。
+// 详见 pbr.frag 顶部同一段说明。
+#ifdef GRYCE_WEBGL_LOW_TEX_UNITS
+#define GRYCE_HAS_PCSS 0
+#else
+#define GRYCE_HAS_PCSS 1
+#endif
+
 in vec3 vFragPos;
 in vec2 vTexCoord;
 in vec3 vColor;
@@ -41,10 +54,12 @@ uniform sampler2DShadow uShadowMap;
 uniform sampler2DShadow uShadowMap1;
 uniform sampler2DShadow uShadowMap2;
 uniform sampler2DShadow uShadowMap3;
+#if GRYCE_HAS_PCSS
 uniform sampler2D uShadowMapDepth;
 uniform sampler2D uShadowMapDepth1;
 uniform sampler2D uShadowMapDepth2;
 uniform sampler2D uShadowMapDepth3;
+#endif
 
 uniform samplerCube uIrradianceMap;
 uniform samplerCube uPrefilterMap;
@@ -171,10 +186,14 @@ vec2 shadow_texel_size(int cascade) {
 }
 
 float shadow_raw_depth(int cascade, vec2 uv) {
+#if GRYCE_HAS_PCSS
     if (cascade == 0) return texture(uShadowMapDepth, uv).r;
     if (cascade == 1) return texture(uShadowMapDepth1, uv).r;
     if (cascade == 2) return texture(uShadowMapDepth2, uv).r;
     return texture(uShadowMapDepth3, uv).r;
+#else
+    return 0.0;   // 无 PCSS 深度图（调用点已由 GRYCE_HAS_PCSS 关掉）
+#endif
 }
 
 // 级联边界（相机空间距离）：boundary(0)=near，boundary(count)=far
@@ -271,7 +290,7 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
 
     float bias = slope_bias(cascade, normal, light_dir);
-    float lit = (uPCSSEnabled != 0)
+    float lit = (GRYCE_HAS_PCSS != 0 && uPCSSEnabled != 0)
                     ? pcss_cascade(cascade, proj, bias, dot(normal, light_dir))
                     : pcf_cascade(cascade, proj, 2.0, bias);
 
@@ -294,7 +313,7 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
             float lit2 = 1.0;
             if (p2.z <= 1.0 && p2.x >= 0.0 && p2.x <= 1.0 && p2.y >= 0.0 && p2.y <= 1.0) {
                 float bias2 = slope_bias(c2, normal, light_dir);
-                lit2 = (uPCSSEnabled != 0)
+                lit2 = (GRYCE_HAS_PCSS != 0 && uPCSSEnabled != 0)
                            ? pcss_cascade(c2, p2, bias2, dot(normal, light_dir))
                            : pcf_cascade(c2, p2, 2.0, bias2);
             }

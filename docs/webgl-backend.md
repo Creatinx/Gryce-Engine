@@ -76,6 +76,20 @@ cd build-webgl && python -m http.server 8932 --bind 127.0.0.1 &
 
 `build-webgl/index.html`（手动放置，非 CMake 产物）会把根路径 `/` 跳转到应用页并保留 query。
 
+**真机 GPU 验证**：上面两条都带 `--disable-gpu --enable-unsafe-swiftshader`，跑的是软件光栅
+（SwiftShader 报 32 个纹理单元、且不校验某些 WebGL 限制），**不能代表真机**。要测真机 GPU 换成
+`--headless=new` 并去掉那三个开关：
+
+```bash
+"$CHROME" --headless=new --no-sandbox --window-size=960,540 --virtual-time-budget=30000 \
+    --screenshot=shot_webgl_gpu.png \
+    --enable-logging=stderr --v=0 \
+    "file:///D:/Gryce-Engine/dist/GryceRenderSmoke.single.html?--api=webgl&--frames=8&--no-debug-ui&--no-fps" \
+    2>&1 | grep -o "GL_INVALID[A-Z_]*: [a-zA-Z:. ]*" | sort | uniq -c
+```
+`GL_INVALID_OPERATION` 计数必须是 **0** —— WebGL 的采样器类型冲突/单元越界在这里只报一次就
+静默丢 draw，光看画面容易误判。
+
 **命令行参数**经 URL query 传入（`test/webgl_shell.html` 解析）：`?--api=webgl&--frames=8&--scene=res%3A%2Fscenes%2Fstress.gesc`。
 规则：query 按 `&` 分段，含 `=` 的拆成两个 argv，否则作为独立 flag。所以 `--api=webgl` 与
 `--api webgl` 两种桌面写法都能表达。
@@ -188,6 +202,30 @@ shim 内部分四类，按「是否真可达」划分：
 `deferred_lighting.frag` 的 `cascade_shadow()` 都有
 `if (proj.x<0.0 || proj.x>1.0 || proj.y<0.0 || proj.y>1.0) return 1.0;` 显式早退，另有 5%
 边缘 `smoothstep` 淡出到全亮；PCF 滤波核只有几个 texel 宽（<< 5% 贴图边长），淡出区完全覆盖。
+
+### 4.1 纹理单元预算：16 个，编译期硬约束
+
+真实 GPU 的 WebGL2 只给 **16** 个片段纹理单元（ANGLE/D3D11 上报 16；SwiftShader 上报
+**32**，所以一切"在无头软件光栅上正常、真机全黑"的现象都先怀疑这条）。GLSL 的采样器计数
+发生在**编译期**：声明并被引用就算占用一个单元，运行时 `if` 和常量折叠都省不掉。
+
+于是 pbr 系着色器按后端裁特性，宏 `GRYCE_WEBGL_LOW_TEX_UNITS` 由 `gl_shader.cpp` 的
+ESSL300 转换注入：
+
+| 着色器 | 桌面 | WebGL | 裁掉的 |
+|---|---|---|---|
+| `pbr.frag` | 25 | 14 | PCSS 原始深度(4)、VSM/ESM(4)、SDFGI(1)、点光阴影(2) |
+| `instanced.frag` | 25 | 14 | 同上 |
+| `skinned_pbr.frag` | 18 | 14 | PCSS 原始深度(4) |
+
+保留的是 PBR 主链路：6 张材质贴图 + 4 级联 PCF + IBL 三件套 + SSAO。被裁的特性在
+WebGL 下**静默退化**（PCSS→PCF、VSM/ESM→PCF、无 GI 间接光、点光不投影）；demo 场景用
+平行光且 GI 本来关闭，视觉无差。
+
+槽位 → 单元映射同步分档（`gl_slot_map.h`）：桌面 32 单元沿用原有表，16 单元走紧凑表 ——
+前向主 pass 的 14 个采样器落在 0..15，后处理复用 0..7（与前向不共存），WebGL 已裁掉的
+采样器（PCSS 深度、点光阴影、VSM）丢到 16+ 死区**只绑定不被采样**。注意 WebGL 还额外要求
+同一个单元上不能同时是 `sampler2D` 和 `samplerCube`，所以 IBL 的两张 cubemap 单独占 4/5。
 
 ---
 
@@ -320,7 +358,7 @@ glossy / chrome / gold / plastic / rough / dark-metal + 12 个球）。渲染正
 | 项 | 状态 |
 |---|---|
 | **Firefox / Edge 交叉验证** | **未做** —— 本机未安装 Firefox 或 Edge，全部验证走 Chrome headless（SwiftShader 软件渲染）。计划验收标准第 1 条只完成 1/3 |
-| 真机 GPU（非 SwiftShader） | 未验证。软件光栅与真机在精度/性能上会有差异，但 WebGL2 规范路径相同 |
+| 真机 GPU（非 SwiftShader） | **已验证**（2026-10-17，`--headless=new` 走 ANGLE/D3D11）：渲染结果与 SwiftShader 一致（mean\|d\|=0.11，差异来自省电模式与阴影滤波降级）。见 §4.1 与 §9 的两条真机专属排错项 |
 | Assimp（FBX/glTF 导入） | 未做。web 首版 OBJ-only；`--preload-file` 带 92MB FBX 不适合 web 分发 |
 | 物理 / 音频 | stub 静音。Box2D / Jolt / Amplitude 源码构建 under Emscripten 列为后续可选项 |
 | ImGui 中文字体 | 需预载字体文件到 MEMFS |
@@ -347,3 +385,5 @@ glossy / chrome / gold / plastic / rough / dark-metal + 12 个球）。渲染正
 | `--shell-file ignored when not generating html output` | target 缺 `SUFFIX ".html"` |
 | `Aborted('FS' was not exported...)` | 壳读了 `Module.FS` 但没 `-sEXPORTED_RUNTIME_METHODS=FS`；**会在 main() 中途把运行时杀掉**，表现为日志只打了一两行 |
 | `WebGL2 shim: glTexParameterfv(GL_TEXTURE_BORDER_COLOR) is not available` | **预期行为**，border clamp 已按 §4 退化为 edge clamp |
+| **画面上只剩 ImGui、3D 全黑**，日志里 `FRAGMENT shader texture image units count exceeds MAX_TEXTURE_IMAGE_UNITS(16)` + `RenderPipeline: failed to load shader program 'pbr'` + `falling back to clear-only` | 采样器数量超限。桌面 GL 给 32 个片段纹理单元，**真实 GPU 的 WebGL2 只给 16**（ANGLE/D3D11），而 SwiftShader 上报 32 —— 所以软件光栅下永不暴露，真机必黑。pbr 系着色器原有 25 个采样器。修法：`gl_shader.cpp` 的 ESSL300 转换注入 `GRYCE_WEBGL_LOW_TEX_UNITS`，pbr/instanced/skinned_pbr 按它 `#ifdef` 裁掉 PCSS 原始深度(4)、VSM/ESM(4)、GI(1)、点光阴影(2)，25→14、18→14 |
+| 画面整屏**纯绿**（RGB 0,219,0）或花屏，日志里 `GL_INVALID_OPERATION: glDrawElements: Two textures of different types use the same sampler location` | 纹理单元槽位映射在 16 单元下塌缩：`gl_texture_unit_for_slot` 原来把 slot≥16 一律落到 unit 9，于是 emissive、级联 1..3、IBL 三张（samplerCube）、tonemap 的 HDR/bloom/LUT/曝光全挤在同一个单元，sampler2D 和 samplerCube 直接撞车 → 每个 draw 都被 WebGL 拒绝。修法：`gl_slot_map.h` 按 `max_units` 分档，16 单元走紧凑表（前向 14 个采样器落在 0..15，后处理复用 0..7，WebGL 已裁掉的采样器丢到 16+ 死区） |

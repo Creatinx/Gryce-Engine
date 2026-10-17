@@ -1,5 +1,26 @@
 #version 430 core
 
+// ---------------------------------------------------------------------------
+// 纹理单元预算（编译期，不可运行时省）
+// ---------------------------------------------------------------------------
+// 采样器只要**声明并被引用**就占用一个纹理单元，运行时 if / 常量折叠都省不掉。
+// 桌面 GL 的 GL_MAX_TEXTURE_IMAGE_UNITS 是 32；浏览器 WebGL2 在真实 GPU 上
+// 只给 16（ANGLE/D3D11），25 个采样器会直接链接失败并让整条管线退化成只清屏
+// （画面只剩 ImGui）。SwiftShader 上报 32，所以软件光栅下不会暴露。
+// WebGL 下裁掉 PCSS 深度图 / VSM·ESM / GI / 点光阴影共 10 个采样器，
+// 详情与取舍见 pbr.frag 顶部同一段说明。
+#ifdef GRYCE_WEBGL_LOW_TEX_UNITS
+#define GRYCE_HAS_PCSS 0
+#define GRYCE_HAS_VSM 0
+#define GRYCE_HAS_GI 0
+#define GRYCE_HAS_POINT_SHADOW 0
+#else
+#define GRYCE_HAS_PCSS 1
+#define GRYCE_HAS_VSM 1
+#define GRYCE_HAS_GI 1
+#define GRYCE_HAS_POINT_SHADOW 1
+#endif
+
 in vec3 vFragPos;
 in vec2 vTexCoord;
 in vec3 vColor;
@@ -41,16 +62,20 @@ uniform sampler2DShadow uShadowMap;
 uniform sampler2DShadow uShadowMap1;
 uniform sampler2DShadow uShadowMap2;
 uniform sampler2DShadow uShadowMap3;
+#if GRYCE_HAS_PCSS
 uniform sampler2D uShadowMapDepth;
 uniform sampler2D uShadowMapDepth1;
 uniform sampler2D uShadowMapDepth2;
 uniform sampler2D uShadowMapDepth3;
+#endif
 
 // ---- VSM/ESM 阴影纹理（RGBA16F 颜色纹理，与 PCF 共享级联） ----
+#if GRYCE_HAS_VSM
 uniform sampler2D uVSMTexture0;
 uniform sampler2D uVSMTexture1;
 uniform sampler2D uVSMTexture2;
 uniform sampler2D uVSMTexture3;
+#endif
 
 uniform samplerCube uIrradianceMap;
 uniform samplerCube uPrefilterMap;
@@ -69,7 +94,9 @@ uniform int uTwoSided;
 // ---------------------------------------------------------------------------
 // GI 全局光照（SDFGI / VoxelGI）
 // ---------------------------------------------------------------------------
+#if GRYCE_HAS_GI
 uniform sampler2D uGITexture;
+#endif
 uniform int uGIEnabled;
 uniform int uGIMode; // 0=None, 1=SDFGI, 2=VoxelGI
 uniform float uGIIndirectIntensity;
@@ -97,8 +124,10 @@ uniform int uHDREnabled;       // 1=输出线性 HDR（由 tonemap pass 处理�
 // ---- 点光源阴影（双抛物面映射） ----
 // 最多 4 个点光源阴影，每个 2 个 face（front/back）
 uniform int uPointShadowCount;
+#if GRYCE_HAS_POINT_SHADOW
 uniform sampler2D uPointShadowMap0;
 uniform sampler2D uPointShadowMap1;
+#endif
 uniform vec3 uPointLightPosWorld[4];
 uniform float uPointLightRange[4];
 
@@ -204,10 +233,14 @@ vec2 shadow_texel_size(int cascade) {
 }
 
 float shadow_raw_depth(int cascade, vec2 uv) {
+#if GRYCE_HAS_PCSS
     if (cascade == 0) return texture(uShadowMapDepth, uv).r;
     if (cascade == 1) return texture(uShadowMapDepth1, uv).r;
     if (cascade == 2) return texture(uShadowMapDepth2, uv).r;
     return texture(uShadowMapDepth3, uv).r;
+#else
+    return 0.0;   // 无 PCSS 深度图（调用点已由 GRYCE_HAS_PCSS 关掉）
+#endif
 }
 
 // 级联边界（相机空间距离）：boundary(0)=near，boundary(count)=far
@@ -341,7 +374,7 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
 
     float bias = slope_bias(cascade, normal, light_dir);
     float filter_r = shadow_filter_radius(cascade, frag_pos);
-    float lit = (uPCSSEnabled != 0)
+    float lit = (GRYCE_HAS_PCSS != 0 && uPCSSEnabled != 0)
                     ? pcss_cascade(cascade, proj, bias, dot(normal, light_dir), filter_r)
                     : pcf_cascade(cascade, proj, filter_r, bias);
 
@@ -364,7 +397,7 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
             float lit2 = 1.0;
             if (p2.z <= 1.0 && p2.x >= 0.0 && p2.x <= 1.0 && p2.y >= 0.0 && p2.y <= 1.0) {
                 float bias2 = slope_bias(c2, normal, light_dir);
-                lit2 = (uPCSSEnabled != 0)
+                lit2 = (GRYCE_HAS_PCSS != 0 && uPCSSEnabled != 0)
                            ? pcss_cascade(c2, p2, bias2, dot(normal, light_dir),
                                           shadow_filter_radius(c2, frag_pos))
                            : pcf_cascade(c2, p2, shadow_filter_radius(c2, frag_pos), bias2);
@@ -405,11 +438,15 @@ float point_shadow_sample(vec3 frag_pos, vec3 light_pos, float range, sampler2D 
 }
 
 float point_shadow(vec3 frag_pos, int light_index, vec3 light_pos, float range) {
+#if GRYCE_HAS_POINT_SHADOW
     if (uPointShadowCount <= 0 || light_index >= uPointShadowCount) return 1.0;
     // 根据 light_index 选择纹理
     if (light_index == 0) return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap0);
     if (light_index == 1) return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap1);
     return 1.0;
+#else
+    return 1.0;   // WebGL：点光阴影纹理已裁掉，按无遮挡处理
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +472,7 @@ float esm_sample(sampler2D esm_tex, vec2 uv, float frag_depth, float exponent) {
 // ---------------------------------------------------------------------------
 // VSM/ESM 级联阴影采样（替代 PCF/PCSS 路径）
 // ---------------------------------------------------------------------------
+#if GRYCE_HAS_VSM
 float cascade_shadow_vsm_esm(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cascade) {
     out_cascade = 0;
     if (uUseShadowMap == 0 || uCascadeCount <= 0) return 1.0;
@@ -504,6 +542,7 @@ float cascade_shadow_vsm_esm(vec3 frag_pos, vec3 normal, vec3 light_dir, out int
     }
     return lit;
 }
+#endif // GRYCE_HAS_VSM
 
 // ---------------------------------------------------------------------------
 // 主函数
@@ -542,11 +581,16 @@ void main() {
             L = normalize(-uLightDir[i]);
             radiance = uLightColor[i] * uLightIntensity[i];
             if (i == uShadowLightIndex) {
+#if GRYCE_HAS_VSM
                 if (uShadowMode == 0) {
                     shadow = cascade_shadow(vFragPos, N, L, shadow_cascade);
                 } else {
                     shadow = cascade_shadow_vsm_esm(vFragPos, N, L, shadow_cascade);
                 }
+#else
+                // WebGL：VSM/ESM 纹理已裁掉，uShadowMode 配成什么值都走 PCF。
+                shadow = cascade_shadow(vFragPos, N, L, shadow_cascade);
+#endif
                 shadow_factor = shadow;
             }
         } else {
@@ -664,11 +708,13 @@ void main() {
     }
 
     // GI 全局光照间接采样（叠加到环境光之上）
+#if GRYCE_HAS_GI
     if (uGIEnabled != 0) {
         vec2 gi_uv = vScreenUV + 0.5 / vec2(textureSize(uGITexture, 0));
         vec3 gi_indirect = texture(uGITexture, gi_uv).rgb;
         ambient += gi_indirect * albedo * uGIIndirectIntensity;
     }
+#endif
 
     vec3 emissive = uEmissiveColor * (uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
