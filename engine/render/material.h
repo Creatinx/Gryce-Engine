@@ -16,8 +16,12 @@ class RenderContext;
 
 // 从资源路径加载一张贴图并上传 GPU（含压缩/浮点分支与 1x1 白色回退）。
 // 供材质之外的消费方复用（如 3D 粒子贴图）。必须在持有 GPU context 的线程调用。
+// srgb=true 表示这张图是 sRGB 编码的颜色图（albedo / emissive），后端会用
+// *_SRGB 格式创建，采样时硬件解码到线性空间；数据图（normal/roughness/...）
+// 必须保持 false，否则等于给数值做了 gamma。
 GRYCE_RENDERER_API RHITextureHandle load_texture_from_path(RenderContext* ctx,
-                                                           const std::string& path);
+                                                           const std::string& path,
+                                                           bool srgb = false);
 
 // ---------------------------------------------------------------------------
 // Material — 渲染材质
@@ -76,13 +80,34 @@ public:
     // 贴图路径/use 标志被编辑器修改后置位；渲染线程在下一帧重新 upload_to_gpu。
     bool textures_dirty = false;
 
+    // 「被显式指定」标志：MeshRenderer 上传 GPU 时用模型文件自带材质补齐**未指定**
+    // 的字段。历史上靠"值是否等于默认值"来判断未指定，于是无法把 metallic 显式
+    // 设成 0（默认值同样是 0）—— 文件里写着 metallic=1 的老 FBX 永远覆盖不掉，
+    // 表现就是"导入的模型每块都像金属"。场景 JSON / 预设 / API 赋值都会置位。
+    bool albedo_overridden = false;
+    bool roughness_overridden = false;
+    bool metallic_overridden = false;
+
     Material() = default;
     explicit Material(const std::string& material_name) : name(material_name) {}
 
     // 便捷设置：基础颜色（无 albedo 贴图时使用）
-    void set_albedo(const math::Vector3f& color) { albedo_color = color; }
-    void set_roughness(float value) { roughness = value; }
-    void set_metallic(float value) { metallic = value; }
+    void set_albedo(const math::Vector3f& color) {
+        albedo_color = color;
+        albedo_overridden = true;
+    }
+    void set_roughness(float value) {
+        roughness = value;
+        roughness_overridden = true;
+    }
+    void set_metallic(float value) {
+        metallic = value;
+        metallic_overridden = true;
+    }
+
+    // 只复制材质参数（不含 GPU 贴图句柄）。多材质拆分时把父实体的材质设置
+    // 当作模板下发到各子实体，避免"父实体调好了、子网格还是文件里的原值"。
+    void copy_settings_from(const Material& src);
 
     // 物理材质属性（用于 ImGui 显示与物理计算）
     float softness = 0.0f;          // 软度 0~1，0=硬，1=软
@@ -131,7 +156,7 @@ public:
     RHITextureHandle emissive_texture() const { return emissive_map_; }
 
 private:
-    RHITextureHandle load_texture(RenderContext* ctx, const std::string& path);
+    RHITextureHandle load_texture(RenderContext* ctx, const std::string& path, bool srgb = false);
 
     RHITextureHandle albedo_map_;
     RHITextureHandle normal_map_;

@@ -63,7 +63,7 @@ void SDFGI_RD::update(const math::Vector3f& camera_pos,
                        const std::vector<math::Vector3f>& light_colors) {
     if (!initialized_) return;
 
-    // TODO: 实现 SDFGI 更新循环
+    // 更新循环尚未实现（预留步骤）：
     // 1. 体素化场景几何体到 SDF
     // 2. 从光源注入光照到 GI 体素
     // 3. 各向异性扩散填充 GI 体素

@@ -14,9 +14,20 @@
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
+# 库类型：桌面按 DLL 分模块（GryceCore / GryceRenderer / GrycePlatform），
+# Emscripten 下三个都编成静态库，与 smoke main 链成单一 wasm
+#（side-module/DLL 在 Emscripten 下没有意义）。
+# ---------------------------------------------------------------------------
+if(EMSCRIPTEN)
+    set(_gryce_lib_type STATIC)
+else()
+    set(_gryce_lib_type SHARED)
+endif()
+
+# ---------------------------------------------------------------------------
 # GryceCore.dll
 # ---------------------------------------------------------------------------
-add_library(GryceCore SHARED)
+add_library(GryceCore ${_gryce_lib_type})
 
 set_target_properties(GryceCore PROPERTIES
     OUTPUT_NAME GryceCore RUNTIME_OUTPUT_NAME GryceCore PREFIX ""
@@ -54,7 +65,10 @@ target_sources(GryceCore
         resources/resource_loader.cpp
         assets/asset_manager.cpp
         assets/async_loader.cpp
+        assets/material_rules.cpp
         assets/obj_loader.cpp
+        assets/mesh_optimizer.cpp
+        assets/mesh_lod.cpp
         assets/stb_image_impl.cpp
         ${CMAKE_SOURCE_DIR}/third_party/stb/stb_image_write_impl.cpp
         assets/compressed_image.cpp
@@ -90,6 +104,7 @@ target_sources(GryceCore
         scene/scene.cpp
         scene/prefab.cpp
         scene/scene_serializer.cpp
+        scene/multi_material_assembly.cpp
         ecs/world.cpp
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
@@ -145,7 +160,7 @@ endif()
 # ---------------------------------------------------------------------------
 # GryceRenderer.dll
 # ---------------------------------------------------------------------------
-add_library(GryceRenderer SHARED)
+add_library(GryceRenderer ${_gryce_lib_type})
 
 set_target_properties(GryceRenderer PROPERTIES
     OUTPUT_NAME GryceRenderer RUNTIME_OUTPUT_NAME GryceRenderer PREFIX ""
@@ -409,6 +424,18 @@ target_include_directories(GryceRenderer PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/nlohmann_json
 )
 
+# Emscripten（WebGL2）：把 <GL/glew.h> 重定向到 DSA shim
+#（cmake/web/GL/glew.h → engine/render/opengl/gl_webgl_shim.h）。
+# 桌面构建不加这个目录，9 处 #include <GL/glew.h> 零改动。
+if(EMSCRIPTEN)
+    target_include_directories(GryceRenderer PUBLIC
+        ${CMAKE_SOURCE_DIR}/cmake/web
+    )
+    # ImGui 的 GL 后端以 GLES3 路径编译（imgui_impl_opengl3.h 按此宏
+    # 包含 <GLES3/gl3.h> 并使用 ES 300 着色器前缀）。
+    target_compile_definitions(GryceRenderer PUBLIC IMGUI_IMPL_OPENGL_ES3)
+endif()
+
 target_link_libraries(GryceRenderer PUBLIC GryceCore)
 # 渲染器依赖平台窗口/输入（render_api/render.cpp 调用 GWindow_*）
 target_link_libraries(GryceRenderer PRIVATE GrycePlatform)
@@ -429,7 +456,7 @@ endif()
 # ---------------------------------------------------------------------------
 # GrycePlatform.dll
 # ---------------------------------------------------------------------------
-add_library(GrycePlatform SHARED)
+add_library(GrycePlatform ${_gryce_lib_type})
 
 set_target_properties(GrycePlatform PROPERTIES
     OUTPUT_NAME GrycePlatform RUNTIME_OUTPUT_NAME GrycePlatform PREFIX ""

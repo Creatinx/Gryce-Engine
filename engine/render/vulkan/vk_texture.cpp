@@ -165,7 +165,7 @@ bool VulkanTexture::upload_data(const void* data, int width, int height, int cha
     } else {
         channels_ = channels;
     }
-    format_ = channels_to_format(channels_, false);
+    format_ = channels_to_format(channels_, srgb_);
 
     // 有实际数据上传时才需要生成 mipmap，因此只有 data != nullptr 时才加 TRANSFER_SRC。
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -257,7 +257,7 @@ bool VulkanTexture::upload_cubemap(const void* faces[6], int width, int height, 
         channels_ = channels;
         for (int f = 0; f < 6; ++f) face_ptrs[f] = faces[f];
     }
-    format_ = channels_to_format(channels_, false);
+    format_ = channels_to_format(channels_, srgb_);
 
     VkDevice dev = device_->device();
 

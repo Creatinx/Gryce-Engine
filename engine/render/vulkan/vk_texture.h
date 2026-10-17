@@ -22,6 +22,7 @@ public:
 
     bool load_from_file(const std::string& path) override;
     bool load_from_memory(const void* data, size_t size) override;
+    void set_srgb(bool srgb) override { srgb_ = srgb; }
     bool create_empty(int width, int height, int channels = 4) override;
     bool upload_data(const void* data, int width, int height, int channels = 4) override;
     bool upload_data_hdr(const void* data, int width, int height, int channels = 4) override;
@@ -85,6 +86,8 @@ private:
     int height_ = 0;
     int channels_ = 4;
     bool is_cubemap_ = false;
+    // 颜色纹理：用 *_SRGB 格式创建，采样时硬件解码到线性空间
+    bool srgb_ = false;
     uint32_t mip_levels_ = 1;
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkFormat format_ = VK_FORMAT_R8G8B8A8_UNORM;

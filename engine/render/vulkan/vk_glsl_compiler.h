@@ -1,3 +1,6 @@
+// vk_glsl_compiler.h — GLSL → SPIR-V 编译入口（shaderc 运行时动态加载）：
+// 声明着色阶段枚举、可用性探测与编译函数；shaderc 缺失时调用方回退到
+// 预编译的 .spv 产物。
 #pragma once
 
 #include <cstdint>

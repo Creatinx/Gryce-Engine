@@ -63,7 +63,7 @@ bool parse_int_assignment(const std::string& text, const char* key, uint32_t& ou
 
 // ---- GLSL 侧：`layout(std430, binding = N) [readonly|writeonly] buffer <Block> {...}`
 //
-// ★ 关键（2026-10-09 实测确认）：SPIR-V 在 shaderc 之后 **不带 OpName**（HLSL 里
+// ★ 关键（实测确认）：SPIR-V 在 shaderc 之后 **不带 OpName**（HLSL 里
 // 的变量名全是 `_28` / `_329` 这种 ID 回退名），所以**不能靠名字把 GLSL 块与 HLSL
 // 变量对上**。能对上的是 **binding 号**：SPIRV-Cross 把 GLSL `binding = N` 原样
 // 映射成 `register(tN)`（只读 SSBO）或 `register(uN)`（可写 SSBO）。
@@ -111,7 +111,7 @@ std::vector<GlslBlock> parse_glsl_blocks(const std::string& glsl_raw) {
             }
         }
 
-        // 块内第一个成员名（诊断用）。
+        // 块内第一个成员名（仅随反射结果输出，供人工核对）。
         const size_t brace = glsl.find('{', q);
         if (brace != std::string::npos) {
             const size_t semi = glsl.find(';', brace);

@@ -16,6 +16,79 @@ AsyncLoader& AsyncLoader::instance() {
     return loader;
 }
 
+#ifdef __EMSCRIPTEN__
+
+// ---------------------------------------------------------------------------
+// Web 版：Emscripten 不带 -pthread 时 std::thread 不可用（-pthread 又要求
+// COOP/COEP + SharedArrayBuffer，部署成本高）。异步加载退化为**同步执行**：
+// submit() 立即跑完 worker 并把任务投进 completed_，poll() 照常在主线程执行
+// 回调 —— 语义契约与桌面版一致（回调仍在主线程、仍在 poll 时执行），
+// 只是"异步"窗口消失。workers_ 恒为空，worker_thread() 永不被引用。
+// ---------------------------------------------------------------------------
+
+void AsyncLoader::start(int num_threads) {
+    (void)num_threads;
+    if (running_) return;
+    running_ = true;
+    GLOG_INFO("AsyncLoader: web build, synchronous mode (0 worker threads)");
+}
+
+void AsyncLoader::shutdown() {
+    if (!running_) return;
+    running_ = false;
+    workers_.clear();
+    {
+        std::lock_guard<std::mutex> lock(tasks_mutex_);
+        tasks_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex_);
+        completed_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        queue_.clear();
+    }
+    GLOG_INFO("AsyncLoader shutdown");
+}
+
+bool AsyncLoader::submit(const std::string& path, std::type_index type,
+                         std::function<void()> worker,
+                         std::function<void()> on_complete) {
+    (void)type;
+    if (!running_) start();
+
+    std::lock_guard<std::mutex> lock(tasks_mutex_);
+    auto it = tasks_.find(path);
+    if (it != tasks_.end()) {
+        // 已有任务：桌面版在 Pending/Loading 时追加回调，这里任务必定已
+        // Ready/Failed（同步执行完就进 completed_ 了），同样只追加回调。
+        if (on_complete) it->second->callbacks.push_back(std::move(on_complete));
+        return false;
+    }
+
+    auto task = std::make_shared<LoadingTask>(path, type, std::move(worker), std::move(on_complete));
+    task->state.store(LoadingState::Pending);
+    tasks_[path] = task;
+
+    task->state.store(LoadingState::Loading);
+    try {
+        task->worker();
+        task->state.store(LoadingState::Ready);
+    } catch (const std::exception& e) {
+        GLOG_ERROR("AsyncLoader: failed to load '{}': {}", task->path, e.what());
+        task->state.store(LoadingState::Failed);
+    }
+
+    {
+        std::lock_guard<std::mutex> clock(completed_mutex_);
+        completed_.push_back(task);
+    }
+    return true;
+}
+
+#else // !__EMSCRIPTEN__
+
 void AsyncLoader::start(int num_threads) {
     if (running_) return;
 
@@ -96,6 +169,39 @@ bool AsyncLoader::submit(const std::string& path, std::type_index type,
     return true;
 }
 
+void AsyncLoader::worker_thread() {
+    while (running_) {
+        std::shared_ptr<LoadingTask> task;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            cv_.wait(lock, [this] { return !running_ || !queue_.empty(); });
+            if (!running_) break;
+            if (queue_.empty()) continue;
+            task = queue_.front();
+            queue_.pop_front();
+        }
+
+        if (!task) continue;
+
+        task->state.store(LoadingState::Loading);
+
+        try {
+            task->worker();
+            task->state.store(LoadingState::Ready);
+        } catch (const std::exception& e) {
+            GLOG_ERROR("AsyncLoader: failed to load '{}': {}", task->path, e.what());
+            task->state.store(LoadingState::Failed);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(completed_mutex_);
+            completed_.push_back(task);
+        }
+    }
+}
+
+#endif // __EMSCRIPTEN__
+
 void AsyncLoader::poll() {
     std::deque<std::shared_ptr<LoadingTask>> done;
     {
@@ -131,37 +237,6 @@ LoadingState AsyncLoader::get_state(const std::string& path) const {
 bool AsyncLoader::is_loading(const std::string& path) const {
     LoadingState s = get_state(path);
     return s == LoadingState::Pending || s == LoadingState::Loading;
-}
-
-void AsyncLoader::worker_thread() {
-    while (running_) {
-        std::shared_ptr<LoadingTask> task;
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-            cv_.wait(lock, [this] { return !running_ || !queue_.empty(); });
-            if (!running_) break;
-            if (queue_.empty()) continue;
-            task = queue_.front();
-            queue_.pop_front();
-        }
-
-        if (!task) continue;
-
-        task->state.store(LoadingState::Loading);
-
-        try {
-            task->worker();
-            task->state.store(LoadingState::Ready);
-        } catch (const std::exception& e) {
-            GLOG_ERROR("AsyncLoader: failed to load '{}': {}", task->path, e.what());
-            task->state.store(LoadingState::Failed);
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(completed_mutex_);
-            completed_.push_back(task);
-        }
-    }
 }
 
 } // namespace gryce_engine::assets

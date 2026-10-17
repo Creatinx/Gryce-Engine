@@ -1,23 +1,32 @@
 #include "assimp_importer.h"
 
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/texture.h>
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include <stb_image.h>
+#include <stb_image_write.h>
+
+#include "utils/crypto/crc32.h"
 #include "utils/glog/glog_lib.h"
+
+#include "assets/texture_path.h"
 
 namespace gryce_engine::assets {
 
@@ -38,13 +47,8 @@ std::string dir_of(const std::string& path) {
     return (pos == std::string::npos) ? std::string() : path.substr(0, pos + 1);
 }
 
-// FBX 等格式的贴图路径带反斜杠，统一归一化为 '/'（Windows 同样接受）。
-std::string normalize_separators(std::string path) {
-    for (char& c : path) {
-        if (c == '\\') c = '/';
-    }
-    return path;
-}
+// 贴图路径工具（反斜杠归一化 / 绝对路径 / 大小写不敏感查找）与 OBJ 加载器共用
+using texture_path::normalize_separators;
 
 // 内嵌贴图（aiScene::mTextures）落盘缓存目录。
 // 贴图加载链路（Material::load_texture_from_path → AssetManager）只认磁盘路径，
@@ -117,7 +121,10 @@ bool write_uncompressed_tga(const fs::path& path, const aiTexture* tex) {
 }
 
 // 提取 scene->mTextures[idx] 到缓存目录，返回落盘路径；失败返回空串。
-// cache 以贴图索引为键去重：同一 scene 内多个材质引用同一内嵌贴图只写一次盘。
+// cache 以贴图索引为键去重：同一 scene 内多个材质引用同一内嵌贴图只解析一次。
+//
+// 落盘文件名带**内容哈希**（crc32）而不是只带索引：不同模型的内嵌贴图都是从
+// "*0" 开始的，只用索引命名会让第二个模型拿到第一个模型的图（缓存串味）。
 std::string extract_embedded_texture(const aiScene* scene, unsigned int index,
                                      std::unordered_map<unsigned int, std::string>& cache) {
     if (index >= scene->mNumTextures) return {};
@@ -130,6 +137,9 @@ std::string extract_embedded_texture(const aiScene* scene, unsigned int index,
 
     std::error_code ec;
     fs::create_directories(embedded_texture_cache_dir(), ec); // 已存在时静默
+
+    const uint8_t* hash_data = nullptr;
+    size_t hash_size = 0;
 
     fs::path path;
     if (tex->mHeight == 0) {
@@ -148,21 +158,36 @@ std::string extract_embedded_texture(const aiScene* scene, unsigned int index,
             return {};
         }
 
-        path = embedded_texture_cache_dir() / ("embedded_" + std::to_string(index) + "." + ext);
-        std::ofstream out(path, std::ios::binary);
-        if (!out) {
-            GLOG_ERROR("AssimpImporter: cannot open '{}' for embedded texture", path.string());
-            return {};
-        }
-        out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
-        if (!out.good()) {
-            GLOG_ERROR("AssimpImporter: failed writing embedded texture '{}'", path.string());
-            return {};
+        hash_data = data;
+        hash_size = size;
+        char name_buf[64];
+        std::snprintf(name_buf, sizeof(name_buf), "embedded_%08x.%s",
+                      utils::crc32(data, size), ext.c_str());
+        path = embedded_texture_cache_dir() / name_buf;
+
+        if (!fs::is_regular_file(path, ec)) {
+            std::ofstream out(path, std::ios::binary);
+            if (!out) {
+                GLOG_ERROR("AssimpImporter: cannot open '{}' for embedded texture", path.string());
+                return {};
+            }
+            out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+            if (!out.good()) {
+                GLOG_ERROR("AssimpImporter: failed writing embedded texture '{}'", path.string());
+                return {};
+            }
         }
     } else {
         // 非压缩 ARGB8888 像素数组
-        path = embedded_texture_cache_dir() / ("embedded_" + std::to_string(index) + ".tga");
-        if (!write_uncompressed_tga(path, tex)) {
+        const uint64_t pixel_bytes = static_cast<uint64_t>(tex->mWidth) * tex->mHeight * 4ull;
+        hash_data = reinterpret_cast<const uint8_t*>(tex->pcData);
+        hash_size = static_cast<size_t>(pixel_bytes);
+
+        char name_buf[64];
+        std::snprintf(name_buf, sizeof(name_buf), "embedded_%08x.tga",
+                      utils::crc32(hash_data, hash_size));
+        path = embedded_texture_cache_dir() / name_buf;
+        if (!fs::is_regular_file(path, ec) && !write_uncompressed_tga(path, tex)) {
             GLOG_ERROR("AssimpImporter: failed decoding embedded texture '{}'", path.string());
             return {};
         }
@@ -172,67 +197,237 @@ std::string extract_embedded_texture(const aiScene* scene, unsigned int index,
     return path.string();
 }
 
-// 从 aiMaterial 提取 PBR 材质字段（贴图路径基于模型文件目录解析）。
-// "*N" 形式的路径指向 aiScene::mTextures 内嵌贴图，提取落盘后重定向。
+// ---------------------------------------------------------------------------
+// 打包贴图拆通道（glTF metallicRoughness / 常见 ORM 布局）
+// ---------------------------------------------------------------------------
+// glTF 把三张灰度图打包进一张贴图：R=AO、G=roughness、B=metallic。
+// 引擎的 roughness / metallic / ao 三个槽位各自采样 .r，共用同一张图会让三者
+// 全读到 R 通道 —— 表现就是"文件里明明写了粗糙度，模型却要么全金属要么全粗糙"。
+// 导入时拆成单通道 PNG 缓存起来，渲染侧完全不用改。
+fs::path derived_map_cache_dir() {
+    static const fs::path dir = fs::temp_directory_path() / "gryce-derived-maps";
+    return dir;
+}
+
+std::string write_channel_png(const std::vector<uint8_t>& rgba, int width, int height,
+                              int channel, uint32_t content_hash, const char* tag) {
+    std::error_code ec;
+    fs::create_directories(derived_map_cache_dir(), ec);
+
+    char name_buf[96];
+    std::snprintf(name_buf, sizeof(name_buf), "%08x_%s.png", content_hash, tag);
+    const fs::path path = derived_map_cache_dir() / name_buf;
+    if (fs::is_regular_file(path, ec)) return normalize_separators(path.string());
+
+    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    std::vector<uint8_t> plane(pixel_count);
+    for (size_t i = 0; i < pixel_count; ++i) {
+        plane[i] = rgba[i * 4 + static_cast<size_t>(channel)];
+    }
+    if (!stbi_write_png(path.string().c_str(), width, height, 1, plane.data(), width)) {
+        GLOG_WARN("AssimpImporter: failed writing derived map '{}'", path.string());
+        return {};
+    }
+    return normalize_separators(path.string());
+}
+
+// 把一张打包贴图拆成 roughness(G)/metallic(B)/ao(R) 三张单通道图。
+bool split_packed_channels(const std::string& path, std::string* roughness_out,
+                           std::string* metallic_out, std::string* ao_out) {
+    int w = 0;
+    int h = 0;
+    int ch = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4);
+    if (!pixels) {
+        GLOG_WARN("AssimpImporter: cannot decode packed map '{}', channels kept as-is", path);
+        return false;
+    }
+    const size_t byte_count = static_cast<size_t>(w) * static_cast<size_t>(h) * 4ull;
+    const std::vector<uint8_t> rgba(pixels, pixels + byte_count);
+    stbi_image_free(pixels);
+
+    const uint32_t hash = utils::crc32(rgba.data(), rgba.size());
+    if (roughness_out) *roughness_out = write_channel_png(rgba, w, h, 1, hash, "roughness");
+    if (metallic_out) *metallic_out = write_channel_png(rgba, w, h, 2, hash, "metallic");
+    if (ao_out) *ao_out = write_channel_png(rgba, w, h, 0, hash, "ao");
+    return true;
+}
+
+const aiMaterialProperty* find_property(const aiMaterial* mat, const char* key) {
+    for (unsigned i = 0; i < mat->mNumProperties; ++i) {
+        const aiMaterialProperty* prop = mat->mProperties[i];
+        if (prop && std::strcmp(prop->mKey.C_Str(), key) == 0) return prop;
+    }
+    return nullptr;
+}
+
+// 从 aiMaterial 提取材质数据。
+//
+// 各格式能提供的信息差别很大，这里只负责"把文件里有的都读出来"，
+// 真正的 PBR 推导统一交给 material_rules.h::resolve_surface()：
+//   金属度工作流（glTF / 新版 FBX）→ metallicFactor / roughnessFactor 直接可用
+//   镜面工作流（老 FBX / Collada）→ Ks / Shininess 反推
+//   什么都没有（PLY / STL）→ 按有无基色贴图兜底
 void process_material(const aiScene* scene, aiMesh* mesh, const std::string& base_dir,
                       std::unordered_map<unsigned int, std::string>& embedded_cache,
                       MeshData& data) {
     if (!scene->HasMaterials() || mesh->mMaterialIndex >= scene->mNumMaterials) return;
     const aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
 
+    SurfaceInput input;
+    aiString material_name;
+    if (mat->Get(AI_MATKEY_NAME, material_name) == AI_SUCCESS) {
+        data.material.name = material_name.C_Str();
+    }
+
+    // ---- 贴图：按槽位优先级取第一张能真正落盘的 ----
+    auto get_texture = [&](std::initializer_list<aiTextureType> types) -> std::string {
+        for (aiTextureType type : types) {
+            if (mat->GetTextureCount(type) == 0) continue;
+            aiString tex_path;
+            if (mat->GetTexture(type, 0, &tex_path) != AI_SUCCESS) continue;
+            const char* raw = tex_path.C_Str();
+            if (!raw || raw[0] == '\0') continue;
+
+            if (raw[0] == '*') {
+                // 内嵌贴图引用："*N" → aiScene::mTextures[N]
+                const unsigned int index = static_cast<unsigned int>(std::strtoul(raw + 1, nullptr, 10));
+                const std::string extracted = extract_embedded_texture(scene, index, embedded_cache);
+                if (!extracted.empty()) return extracted;
+                continue;
+            }
+            const std::string resolved = texture_path::resolve(base_dir, raw);
+            if (!resolved.empty()) return resolved;
+            GLOG_WARN("AssimpImporter: material '{}' references missing texture '{}' (searched '{}')",
+                      data.material.name, raw, base_dir);
+        }
+        return {};
+    };
+
+    data.material.albedo_map = get_texture({aiTextureType_BASE_COLOR, aiTextureType_DIFFUSE});
+    data.material.normal_map = get_texture({aiTextureType_NORMAL_CAMERA, aiTextureType_NORMALS});
+    data.material.roughness_map = get_texture({aiTextureType_DIFFUSE_ROUGHNESS});
+    data.material.metallic_map = get_texture({aiTextureType_METALNESS});
+    data.material.ao_map = get_texture({aiTextureType_AMBIENT_OCCLUSION, aiTextureType_LIGHTMAP});
+    data.material.emissive_map = get_texture({aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR});
+    const std::string specular_map = get_texture({aiTextureType_SPECULAR});
+
+    // 打包贴图（roughness 与 metallic 指向同一张 ORM）→ 按通道拆开
+    if (!data.material.roughness_map.empty() &&
+        data.material.roughness_map == data.material.metallic_map) {
+        const bool ao_packed = (data.material.ao_map == data.material.roughness_map);
+        GLOG_INFO("AssimpImporter: material '{}' uses a packed metallic/roughness map, splitting channels",
+                  data.material.name);
+        split_packed_channels(data.material.roughness_map, &data.material.roughness_map,
+                              &data.material.metallic_map,
+                              ao_packed ? &data.material.ao_map : nullptr);
+    }
+
+    // ---- 标量参数 ----
     aiColor3D color;
     if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS) {
-        data.material.albedo_color = math::Vector3f(color.r, color.g, color.b);
+        input.base_color = math::Vector3f(color.r, color.g, color.b);
+    }
+    if (mat->Get(AI_MATKEY_COLOR_SPECULAR, color) == AI_SUCCESS) {
+        input.specular_color = math::Vector3f(color.r, color.g, color.b);
+        // assimp 的 FBX 导入器对 phong 材质即使文件没写 specular 也会填 0.9 灰，
+        // 真值只在 "$raw.Specular" 里 —— 拿默认值当"作者写了镜面"会把大量
+        // 电介质误判成金属。其它格式没有 $raw.* 时，0.9 灰且无镜面贴图也算未指定。
+        const aiMaterialProperty* raw_spec = find_property(mat, "$raw.Specular");
+        if (raw_spec) {
+            float raw_values[3] = {0.0f, 0.0f, 0.0f};
+            if (raw_spec->mType == aiPTI_Float &&
+                raw_spec->mDataLength >= sizeof(raw_values)) {
+                std::memcpy(raw_values, raw_spec->mData, sizeof(raw_values));
+            }
+            input.has_specular = (raw_values[0] + raw_values[1] + raw_values[2]) > 1e-4f;
+        } else {
+            const bool default_gray = std::abs(color.r - 0.9f) < 1e-3f &&
+                                      std::abs(color.g - 0.9f) < 1e-3f &&
+                                      std::abs(color.b - 0.9f) < 1e-3f;
+            input.has_specular = !default_gray || !specular_map.empty();
+        }
     }
     if (mat->Get(AI_MATKEY_COLOR_EMISSIVE, color) == AI_SUCCESS) {
-        data.material.emissive_color = math::Vector3f(color.r, color.g, color.b);
+        input.emissive = math::Vector3f(color.r, color.g, color.b);
     }
-    float opacity = 1.0f;
-    if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
-        data.material.opacity = opacity;
+
+    float metallic_factor = 0.0f;
+    if (mat->Get(AI_MATKEY_METALLIC_FACTOR, metallic_factor) == AI_SUCCESS) {
+        input.has_metallic = true;
+        input.metallic = metallic_factor;
+    }
+    float roughness_factor = -1.0f;
+    if (mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness_factor) == AI_SUCCESS &&
+        roughness_factor >= 0.0f) {
+        // FBX 的 Physical Material、glTF 的 roughnessFactor 都落在这里；
+        // 优先级必须高于 Shininess —— 老 FBX 常同时带 shininess=2（3ds Max 默认）
+        // 和一条真正的 roughnessFactor，用 shininess 反推会让整模型比文件写的更亮。
+        input.has_roughness = true;
+        input.roughness = roughness_factor;
     }
     float shininess = -1.0f;
     if (mat->Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS && shininess >= 0.0f) {
-        // Blinn 高光指数转 GGX 粗糙度（常见近似）
-        data.material.roughness = std::sqrt(2.0f / (shininess + 2.0f));
-        if (data.material.roughness > 1.0f) data.material.roughness = 1.0f;
+        input.has_shininess = true;
+        input.shininess = shininess;
     }
-    float metallic = 0.0f;
-    if (mat->Get(AI_MATKEY_METALLIC_FACTOR, metallic) == AI_SUCCESS) {
-        data.material.metallic = metallic;
+    float specular_strength = 1.0f;
+    if (mat->Get(AI_MATKEY_SPECULAR_FACTOR, specular_strength) == AI_SUCCESS) {
+        input.has_specular_strength = true;
+        input.specular_strength = specular_strength;
     }
 
-    auto get_texture = [&](aiTextureType type, std::string& out_path) {
-        if (mat->GetTextureCount(type) == 0) return;
-        aiString tex_path;
-        if (mat->GetTexture(type, 0, &tex_path) != AI_SUCCESS) return;
+    float opacity = 1.0f;
+    if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS) {
+        input.has_opacity = true;
+        input.opacity = opacity;
+    } else {
+        // 部分格式只给透明度因子：opacity = 1 - transparency
+        float transparency = 0.0f;
+        if (mat->Get(AI_MATKEY_TRANSPARENCYFACTOR, transparency) == AI_SUCCESS &&
+            transparency > 0.0f) {
+            input.has_opacity = true;
+            input.opacity = 1.0f - transparency;
+        }
+    }
+    int two_sided = 0;
+    if (mat->Get(AI_MATKEY_TWOSIDED, two_sided) == AI_SUCCESS && two_sided != 0) {
+        input.two_sided = true;
+    }
 
-        const char* raw = tex_path.C_Str();
-        if (raw[0] == '*') {
-            // 内嵌贴图引用："*N" → aiScene::mTextures[N]
-            const unsigned int index = static_cast<unsigned int>(std::strtoul(raw + 1, nullptr, 10));
-            out_path = extract_embedded_texture(scene, index, embedded_cache);
-            return;
-        }
-        out_path = normalize_separators(base_dir + raw);
-        // FBX 等格式常记录导出机器的绝对路径（换机后必然失效）：
-        // 拼接口径不存在时，回退用文件名在模型目录查找（贴图通常与模型同目录分发）。
-        std::error_code ec;
-        if (!fs::exists(out_path, ec)) {
-            const fs::path fallback = fs::path(base_dir) / fs::path(raw).filename();
-            if (fallback != out_path && fs::exists(fallback, ec)) {
-                out_path = normalize_separators(fallback.string());
-            }
-        }
-    };
-    get_texture(aiTextureType_DIFFUSE, data.material.albedo_map);
-    get_texture(aiTextureType_NORMALS, data.material.normal_map);
-    get_texture(aiTextureType_EMISSIVE, data.material.emissive_map);
-    get_texture(aiTextureType_DIFFUSE_ROUGHNESS, data.material.roughness_map);
-    get_texture(aiTextureType_METALNESS, data.material.metallic_map);
-    get_texture(aiTextureType_AMBIENT_OCCLUSION, data.material.ao_map);
+    const bool has_diffuse_map = !data.material.albedo_map.empty();
+    input.has_base_color_map = has_diffuse_map;
+    input.has_specular_map = !specular_map.empty();
+
+    // 有自发光贴图但没写自发光颜色：颜色按白色处理，否则 shader 里
+    // emissive = uEmissiveColor * map 恒为 0，贴图等于白导。
+    if (!data.material.emissive_map.empty() &&
+        surface_luminance(input.emissive) < 1e-4f) {
+        input.emissive = math::Vector3f::one();
+    }
+
+    const SurfaceResult surface = resolve_surface(input);
+
+    data.material.albedo_color = surface.base_color;
+    data.material.roughness = surface.roughness;
+    data.material.metallic = surface.metallic;
+    data.material.opacity = surface.opacity;
+    data.material.emissive_color = surface.emissive;
+    data.material.two_sided = surface.two_sided;
+    data.material.surface_type = surface.type;
+
+    // 镜面工作流里的金属：没有漫反射贴图时，镜面贴图就是它的基色贴图
+    if (!has_diffuse_map && surface.metallic > 0.5f && !specular_map.empty()) {
+        data.material.albedo_map = specular_map;
+    }
 
     data.material.valid = true;
+    GLOG_INFO("AssimpImporter: material '{}' -> {} (roughness {}, metallic {}, opacity {}, maps: albedo={}, normal={}, rough={}, metal={}, ao={}, emissive={})",
+              data.material.name, surface_type_name(surface.type), surface.roughness,
+              surface.metallic, surface.opacity,
+              !data.material.albedo_map.empty(), !data.material.normal_map.empty(),
+              !data.material.roughness_map.empty(), !data.material.metallic_map.empty(),
+              !data.material.ao_map.empty(), !data.material.emissive_map.empty());
 }
 
 MeshData process_mesh(const aiScene* scene, aiMesh* mesh, const std::string& base_dir,
@@ -293,17 +488,27 @@ void process_node(aiNode* node, const aiScene* scene, const std::string& base_di
     }
 }
 
+// 统一的读取配置（含 post-process 标志）。
+// FBX 内嵌贴图（Video 的 Content 数据）默认以外部文件名引用（assimp 的
+// useLegacyEmbeddedTextureNaming 默认为 false），而这些名字通常是导出机的
+// 临时路径、换机后必然失效 → 开启 legacy 命名让内嵌贴图按 "*N" 引用，
+// 交由 extract_embedded_texture 提取落盘。对未内嵌贴图的模型无影响。
+const aiScene* read_scene(Assimp::Importer& importer, const std::string& path) {
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_EMBEDDED_TEXTURES_LEGACY_NAMING, true);
+    return importer.ReadFile(path,
+        aiProcess_Triangulate |
+        aiProcess_FlipUVs |
+        aiProcess_GenNormals |
+        aiProcess_CalcTangentSpace);
+}
+
 } // namespace
 
 std::vector<MeshData> AssimpImporter::import(const std::string& path) const {
     std::vector<MeshData> result;
 
     Assimp::Importer importer;
-    const aiScene* scene = importer.ReadFile(path,
-        aiProcess_Triangulate |
-        aiProcess_FlipUVs |
-        aiProcess_GenNormals |
-        aiProcess_CalcTangentSpace);
+    const aiScene* scene = read_scene(importer, path);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) {
         GLOG_ERROR("AssimpImporter: failed to load '{}': {}", path, importer.GetErrorString());
@@ -388,12 +593,9 @@ SkinnedModelData AssimpImporter::import_skinned(const std::string& path) const {
     SkinnedModelData model;
 
     Assimp::Importer importer;
-    // 与 import() 相同的 post-process 标志；蒙皮权重随顶点保留，不受影响
-    const aiScene* scene = importer.ReadFile(path,
-        aiProcess_Triangulate |
-        aiProcess_FlipUVs |
-        aiProcess_GenNormals |
-        aiProcess_CalcTangentSpace);
+    // 与 import() 相同的读取配置（post-process 标志 + 内嵌贴图 legacy 命名）；
+    // 蒙皮权重随顶点保留，不受影响
+    const aiScene* scene = read_scene(importer, path);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) {
         GLOG_ERROR("AssimpImporter: failed to load '{}': {}", path, importer.GetErrorString());

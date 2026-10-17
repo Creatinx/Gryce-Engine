@@ -240,7 +240,7 @@ public:
     // 高层便捷方法：委托给 backend 或在运行期推入命令缓冲
     void request_screenshot(const std::string& path);
 
-    // 调试探针透传（默认空实现，见 IRenderBackend::probe_texture）
+    // 纹理探针透传（默认空实现，见 IRenderBackend::probe_texture）
     void probe_texture(RHITextureHandle tex, const char* tag);
 
     // 同步模式 present：提交、获取、执行、释放，全部在主线程内完成（无 RenderThread）
@@ -274,7 +274,7 @@ private:
     bool initialized_ = false;
     // Vulkan 校验层默认关闭：它会拦截每一条 vkCmd* 调用，把命令录制拖慢数倍，
     // 帧时间被 CPU 侧吃满（与 vk_instance.h 的"默认关闭以提升性能"一致）。
-    // 排查校验报错时用环境变量 GRYCE_VULKAN_VALIDATION=1 显式打开。
+    // 需要逐条报错时用 GRYCE_VULKAN_VALIDATION=1 显式打开。
     bool validation_enabled_ = false;
     bool running_ = false;
 

@@ -24,5 +24,6 @@ int cmd_debug(const Options&);
 int cmd_bench(const Options&);
 int cmd_font(const Options&);
 int cmd_build(const Options&);
+int cmd_webpack(const Options&);
 
 } // namespace grycegc

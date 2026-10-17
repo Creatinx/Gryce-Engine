@@ -10,6 +10,7 @@
 #include "components/component_factory.h"
 #include "components/prefab_instance.h"
 #include "components/transform.h"
+#include "scene/multi_material_assembly.h"
 #include "scene/prefab.h"
 #include "resources/resource_path.h"
 #include "utils/glog/glog_lib.h"
@@ -309,7 +310,14 @@ std::unique_ptr<Scene> SceneSerializer::load_from_file(const std::string& path) 
 
     try {
         nlohmann::json json = nlohmann::json::parse(content);
-        return deserialize(json);
+        auto scene = deserialize(json);
+        // 装配层收尾：多子网格模型（FBX/glTF）按子网格拆成多个实体，
+        // 让每个子网格带上自己的材质（引擎 MeshRenderer 单网格单材质）。
+        // 幂等，放在这里是因为所有场景加载路径都会经过本函数。
+        if (scene) {
+            expand_multi_material_entities(*scene);
+        }
+        return scene;
     } catch (const std::exception& e) {
         GLOG_ERROR("SceneSerializer: failed to parse '{}': {}", resolved, e.what());
         return nullptr;

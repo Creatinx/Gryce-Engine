@@ -1,3 +1,7 @@
+// render_api.cpp — Gryce C ABI 的渲染层实现：初始化/关机、帧序列
+//（BeginFrame → RenderWorld / RenderGizmo / RenderGameView → EndFrame）、视口纹理
+// 查询、VSync / 锁帧 / 省电模式、帧统计读数，以及调试 UI 的接管与面板入口。
+// 帧级状态集中在文件内的 g_renderer，跨线程访问一律走 g_renderer.mutex。
 #include "api/render_api.h"
 #include "api/api_guard.h"
 #include "api/viewport_api.h"
@@ -162,9 +166,11 @@ static RenderAPI to_internal_api(GRenderAPI api) {
     switch (api) {
         case GRYCE_RENDER_API_VULKAN: return RenderAPI::Vulkan;
         case GRYCE_RENDER_API_DX12:   return RenderAPI::DX12;
+        // WebGL（Emscripten 构建）：与 OpenGL 共用 GLBackend，必须显式映射。
+        case GRYCE_RENDER_API_WEBGL:  return RenderAPI::WebGL;
         // DX11 未实现：显式映射让 create_render_backend 走"创建失败"分支报错。
         // 绝不能 fall-through 到 OpenGL —— 那样请求 DX 会静默跑成 OpenGL，
-        // 用户毫无察觉（2026-10-06 修掉的接线坑）。
+        // 用户毫无察觉。
         case GRYCE_RENDER_API_DX11:   return RenderAPI::DX11;
         default: return RenderAPI::OpenGL;
     }
@@ -582,7 +588,7 @@ static void upload_pending_meshes(scene::Scene& scn, RenderContext& ctx) {
         scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
             if (uploaded >= k_max_uploads_per_frame) return;
             if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
-            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path, mr->submesh_index);
             if (data && !data->empty()) {
                 mr->upload_to_gpu(&ctx, data.get(), /*allow_while_running=*/false);
                 ++uploaded;
@@ -640,7 +646,7 @@ static void queue_pending_mesh_uploads(scene::Scene& scn, RenderContext& ctx) {
     ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
         scn, [&](scene::Entity*, components::MeshRenderer* mr, components::Transform*) {
             if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
-            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path, mr->submesh_index);
             if (data && !data->empty()) {
                 meshes.push_back({mr, data, mr->alive_token()});
             }
@@ -765,7 +771,10 @@ static void apply_backend_switch() {
     g_renderer.backend_pending = false;
     g_renderer.current_backend = api;
     GLOG_INFO("GRender: backend switched to {}",
-              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+              api == GRYCE_RENDER_API_VULKAN ? "vulkan"
+              : api == GRYCE_RENDER_API_DX12 ? "dx12"
+              : api == GRYCE_RENDER_API_WEBGL ? "webgl"
+                                              : "opengl");
 }
 
 extern "C" {
@@ -777,7 +786,18 @@ int GRender_Init(const GRenderInitDesc* desc) {
     std::lock_guard lock(g_renderer.mutex);
     if (g_renderer.initialized) return 0;
 
+    // WebGL2：WebGL context 与创建它的线程绑定，浏览器的 rAF 主循环天然是
+    // 单线程模型 —— 强制 sync_mode（渲染线程不启动，命令在主线程内联执行）。
+    // 这也避免了 pthreads + SharedArrayBuffer 的 COOP/COEP 部署门槛。
+#ifdef __EMSCRIPTEN__
+    if (!desc->sync_mode) {
+        GLOG_INFO("GRender_Init: WebGL build forces sync_mode=1 "
+                  "(WebGL context is main-thread bound)");
+    }
+    g_renderer.sync_mode = true;
+#else
     g_renderer.sync_mode = desc->sync_mode;
+#endif
 
     auto backend = create_render_backend(to_internal_api(desc->api));
     if (!backend) {
@@ -1102,7 +1122,8 @@ void GRender_RenderWorld(void) {
 
 void GRender_RenderGizmo(void) {
     GRYCE_API_GUARD();
-    // TODO(Phase 4): ImGuizmo + Viewport Toolbar
+    // Gizmo 渲染入口：当前为空实现（操作 Gizmo 与视口工具栏尚未接入），
+    // 保留 ABI 占位，调用方无需判空。
 }
 
 void GRender_RenderGameView(void) {
@@ -1119,7 +1140,8 @@ void GRender_SetDisplayMode(const char* mode) {
     if (!mode || mode[0] == '\0') return;
     g_renderer.display_mode = mode;
     GLOG_INFO("GRender_SetDisplayMode: {}", g_renderer.display_mode);
-    // TODO(Phase): 在下层后端/管线应用线框模式（当前仅记录，UI 已正确接线）。
+    // 线框等显示模式当前只记录状态并写日志：下推到后端/管线的真正线框
+    // 渲染尚未接入，UI 侧已接线，设置可即时查询。
 }
 
 void GRender_EndFrame(void) {
@@ -1684,7 +1706,8 @@ GTextureHandle GRender_GetViewportTexture(void) {
 
 GTextureHandle GRender_GetGameViewTexture(void) {
     GRYCE_API_GUARD();
-    // TODO: separate GameView FBO when PlayMode is active
+    // 运行模式（PlayMode）下 GameView 尚无独立 FBO：返回与 SceneView 共用的
+    // 视口纹理，与 GRender_RenderGameView 画的目标一致。
     return GRender_GetViewportTexture();
 }
 
@@ -1845,12 +1868,15 @@ void GGameView_SetCamera(GEntityHandle camera_entity) {
 void GRender_RequestBackend(GRenderAPI api) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
-    if (api != GRYCE_RENDER_API_OPENGL && api != GRYCE_RENDER_API_VULKAN) return;
+    if (api != GRYCE_RENDER_API_OPENGL && api != GRYCE_RENDER_API_VULKAN &&
+        api != GRYCE_RENDER_API_WEBGL) return;
     if (api == g_renderer.current_backend && !g_renderer.backend_pending) return;
     g_renderer.pending_backend_api = api;
     g_renderer.backend_pending = true;
     GLOG_INFO("GRender_RequestBackend: {} requested",
-              api == GRYCE_RENDER_API_VULKAN ? "vulkan" : "opengl");
+              api == GRYCE_RENDER_API_VULKAN ? "vulkan"
+              : api == GRYCE_RENDER_API_WEBGL ? "webgl"
+                                              : "opengl");
 }
 
 void GRender_RequestSurfaceRecreate(void) {

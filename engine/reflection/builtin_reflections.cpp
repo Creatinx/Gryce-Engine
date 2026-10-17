@@ -600,7 +600,7 @@ namespace gryce_engine::reflection {
 void register_builtin_reflections() {
     // 触碰单例，语义上标记注册入口；真正的注册由本 TU 静态初始化完成
     const size_t count = Registry::instance().type_count();
-    // 调试：检查注册是否生效
+    // 启动自检：确认反射注册已生效
     if (count == 0) {
         std::fprintf(stderr, "[reflection] WARNING: 0 types registered (builtin_reflections TU may not be linked)\n");
     }

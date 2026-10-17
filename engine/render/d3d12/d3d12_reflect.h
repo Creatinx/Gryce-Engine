@@ -7,7 +7,7 @@
 //
 //     GLSL 块名  →  HLSL register(tN/uN) 里的 N
 //
-// ★ 关键（2026-10-09 实测）：SPIRV-Cross 拿到的 SPIR-V **不含 OpName**，所以
+// ★ 关键（实测确认）：SPIRV-Cross 拿到的 SPIR-V **不含 OpName**，所以
 // HLSL 里的变量名全是 `_28` / `_329` 这种 ID 回退名，**按名字配对完全不可行**。
 // 能可靠配对的是 **binding 号**：SPIRV-Cross 把 GLSL 的 `binding = N` 原样映射为
 // `register(tN)`（只读 → ByteAddressBuffer）或 `register(uN)`（可写 →
@@ -29,9 +29,9 @@ namespace gryce_engine::render::d3d12 {
 
 struct SsboBinding {
     std::string block;     // GLSL 块名（引擎绑定用的键）
-    std::string member;    // 块内第一个成员名（诊断用）
-    std::string hlsl_var;  // HLSL 里出现的变量名（诊断用）
-    std::string hlsl_type; // StructuredBuffer<T> 里的 T（诊断用）
+    std::string member;    // 块内第一个成员名（仅随反射结果输出，供人工核对）
+    std::string hlsl_var;  // HLSL 里出现的变量名（仅随反射结果输出，供人工核对）
+    std::string hlsl_type; // StructuredBuffer<T> 里的 T（仅随反射结果输出，供人工核对）
     uint32_t reg = 0;      // register(tN/uN) 里的 N
     bool is_uav = false;   // true = RW...Buffer → u 寄存器
     // ★ raw buffer（HLSL `ByteAddressBuffer`，无 `<T>`）。

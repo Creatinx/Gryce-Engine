@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "render/shader.h"
@@ -81,6 +82,13 @@ private:
 
     // Uniform 位置缓存：避免每帧重复查询 driver。
     mutable std::unordered_map<std::string, int> uniform_cache_;
+
+    // 已经告警过的"找不到的 uniform"：前向 shader 上会无条件写一批只属于
+    // 延迟管线的 uniform（uGIMode / uShadowAtlasEnabled / uUseSSIL …），
+    // 每帧 20+ 条告警会把日志和帧率一起拖垮（实测 124 帧 2760 条）。
+    // 告警只留第一条，之后静默跳过。
+    mutable std::unordered_set<std::string> missing_uniform_warned_;
+    void warn_missing_uniform(const char* setter, const char* name) const;
 
     // SSBO block 名 → layout binding 缓存：storage_block_binding 原先每次调用都
     // 两次 glGetProgramResource*（驱动查询）；program 生命周期内绑定不变，

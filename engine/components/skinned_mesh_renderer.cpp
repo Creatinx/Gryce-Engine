@@ -137,16 +137,16 @@ render::IMesh* SkinnedMeshRenderer::upload_to_gpu(render::RenderContext* ctx, bo
     // 模型自带材质合并（与 MeshRenderer 相同策略：组件显式设置优先）
     if (material && merged.material.valid) {
         const assets::MeshMaterialData& mm = merged.material;
-        const math::Vector3f one = math::Vector3f::one();
         const math::Vector3f zero = math::Vector3f::zero();
-        if (material->albedo_color == one) material->albedo_color = mm.albedo_color;
+        if (!material->albedo_overridden) material->albedo_color = mm.albedo_color;
         if (material->emissive_color == zero) material->emissive_color = mm.emissive_color;
         if (material->opacity == 1.0f && mm.opacity < 1.0f) {
             material->opacity = mm.opacity;
             material->blend_mode = render::Material::BlendMode::Blend;
         }
-        if (material->roughness == 0.5f) material->roughness = mm.roughness;
-        if (material->metallic == 0.0f) material->metallic = mm.metallic;
+        if (!material->roughness_overridden) material->roughness = mm.roughness;
+        if (!material->metallic_overridden) material->metallic = mm.metallic;
+        if (mm.two_sided) material->two_sided = true;
         if (material->albedo_map_path.empty()) material->albedo_map_path = mm.albedo_map;
         if (material->normal_map_path.empty()) material->normal_map_path = mm.normal_map;
         if (material->emissive_map_path.empty()) material->emissive_map_path = mm.emissive_map;

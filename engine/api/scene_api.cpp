@@ -98,7 +98,8 @@ GEntityHandle pick_with_ray(gryce_engine::scene::Scene& scn,
 
         if (auto* mr = e->get_component<gryce_engine::components::MeshRenderer>()) {
             if (mr->enabled && !mr->mesh_path.empty()) {
-                auto mesh = gryce_engine::assets::AssetManager::instance().load_mesh(mr->mesh_path);
+                auto mesh = gryce_engine::assets::AssetManager::instance().load_mesh(
+                    mr->mesh_path, mr->submesh_index);
                 if (mesh) has_bounds = world_aabb_of_vertices(mesh->vertices, world, bmin, bmax);
             }
         }

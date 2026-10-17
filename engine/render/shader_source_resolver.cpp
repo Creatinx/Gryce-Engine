@@ -89,13 +89,17 @@ std::string resolve_from_disk_or_bundle(const std::string& key) {
 }
 
 // 解析单个扩展名（".vert" / ".frag"）。返回 readable 路径或空串。
-// Vulkan 场景优先尝试 "vulkan_{name}"，缺失则回退 "{name}"。
+// Vulkan 场景优先尝试 "vulkan_{name}"，WebGL 场景优先尝试
+// "webgl_{name}"（目前只有 instanced 需要变体），缺失则回退 "{name}"。
 std::string resolve_one(const std::string& name, const std::string& ext,
                         const std::string& shader_dir, RenderAPI api) {
-    // 候选键名：Vulkan 优先 vulkan_ 前缀（descriptor binding 语义），否则直接基名。
+    // 候选键名：Vulkan 优先 vulkan_ 前缀（descriptor binding 语义），
+    // WebGL 优先 webgl_ 前缀（SSBO 等 ES3.0 缺失语义的变体），否则直接基名。
     std::vector<std::string> keys;
     if (api == RenderAPI::Vulkan) {
         keys.push_back(join_path(shader_dir, "vulkan_" + name + ext));
+    } else if (api == RenderAPI::WebGL) {
+        keys.push_back(join_path(shader_dir, "webgl_" + name + ext));
     }
     keys.push_back(join_path(shader_dir, name + ext));
 
@@ -107,7 +111,8 @@ std::string resolve_one(const std::string& name, const std::string& ext,
     // core 兜底：引擎默认 shader 目录（未打包/编辑器模式；打包产物已把 core
     // 兜底一并打进项目 shader 包，故此处仅在无盘文件缺失时补充定位）。
     //
-    // 注意候选顺序必须与上面一致：Vulkan 要先取 vulkan_ 前缀的分支。
+    // 注意候选顺序必须与上面一致：Vulkan 要先取 vulkan_ 前缀的分支，
+    // WebGL 要先取 webgl_ 前缀的分支。
     // 两套 shader 的 GLSL 方言不同（GL 版用 layout(location=) + 裸 uniform，
     // 这些在 Vulkan GLSL 里非法；Vulkan 版用 descriptor binding 语义）。
     // 若兜底忽略 api 直接取基名，Vulkan 会拿到 GL 版源码，shaderc 编译必然
@@ -120,6 +125,8 @@ std::string resolve_one(const std::string& name, const std::string& ext,
         std::vector<std::string> fallback_names;
         if (api == RenderAPI::Vulkan) {
             fallback_names.push_back("vulkan_" + name + ext);
+        } else if (api == RenderAPI::WebGL) {
+            fallback_names.push_back("webgl_" + name + ext);
         }
         fallback_names.push_back(name + ext);
         for (const std::string& file : fallback_names) {

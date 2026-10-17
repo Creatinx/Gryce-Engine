@@ -1,3 +1,6 @@
+// imgui_renderer.cpp — ImGuiRenderer：引擎内置的 ImGui 封装（GLFW 平台层 +
+// 各后端 IImGuiBackend），自持上下文与等宽字体图集，把 NewFrame→Render 产出
+// 的 draw data 经回调交给渲染线程执行；宿主自持上下文时亦可复用其面板绘制。
 #include "imgui_renderer.h"
 
 #include <GLFW/glfw3.h>

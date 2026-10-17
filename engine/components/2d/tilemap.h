@@ -36,7 +36,7 @@ public:
     // 开启后会在 on_init / 反序列化时自动创建子实体作为碰撞体。
     bool generate_colliders = false;
 
-    // 是否可见碰撞体占位（调试用）
+    // 是否绘制碰撞体占位标记（在每个已生成碰撞体的瓦片中心画红色小方块）
     bool debug_draw_colliders = false;
 
     // 是否使用 Tileset 纹理渲染（false 时使用索引彩色方块）

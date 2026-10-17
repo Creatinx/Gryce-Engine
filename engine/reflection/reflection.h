@@ -150,7 +150,7 @@ public:
         return out;
     }
 
-    // 已注册类型数量（测试/调试）
+    // 已注册类型数量（测试/监控用）
     size_t type_count() const { return types_.size(); }
 
 private:

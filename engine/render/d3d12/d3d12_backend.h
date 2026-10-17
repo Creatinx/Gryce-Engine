@@ -128,7 +128,7 @@ public:
     // 单样本颜色附件。两端均非多样本时直接返回（无意义）。
     void resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) override;
 
-    // ---- GPU 分段计时（M6 调试用；D3D12 时间戳查询）----
+    // ---- GPU 分段计时（D3D12 时间戳查询）----
     //   D3D12 用 ID3D12QueryHeap(TIMESTAMP) + ResolveQueryData 写进一段
     //   READBACK 缓冲。与 GL/Vulkan 后端一致：区间平铺、不阻塞、按帧槽轮转，
     //   在"槽被复用"时才回读结算。
@@ -162,7 +162,7 @@ public:
     void request_screenshot(const std::string& path) override;
     bool capture_frame_rgba(std::vector<uint8_t>& out, int& width, int& height) override;
 
-    // ---- 调试探针（SSR 竞态排查用，env GRYCE_DX12_PROBE_SSR=1 门控）----
+    // ---- 纹理探针（env GRYCE_DX12_PROBE_SSR=1 门控）----
     // 在指定帧把纹理拷回 CPU，输出均值 / 非零占比 / 内容哈希。
     void probe_texture(RHITextureHandle tex, const char* tag) override;
 
@@ -237,7 +237,7 @@ private:
     bool begin_screenshot_copy(ID3D12GraphicsCommandList* cmd);
     void finish_screenshot();
     void release_screenshot_staging();
-    // 调试探针：帧提交后等 GPU、回读统计并打日志（见 probe_texture）。
+    // 纹理探针：帧提交后等 GPU、回读统计并打日志（见 probe_texture）。
     void probe_drain();
     struct PendingProbe {
         ID3D12Resource* readback = nullptr;
@@ -419,7 +419,8 @@ private:
     bool initialized_ = false;
     bool frame_aborted_ = false;
     bool device_lost_ = false;
-    // 调试开关 GRYCE_D3D12_SERIALIZE=1：每帧末等 GPU 跑完（TDR 定位用）。
+    // GRYCE_D3D12_SERIALIZE=1：每帧末等 GPU 跑完，令 TDR 报错帧号与真正
+    // 挂住的帧对齐（默认 3 帧在飞时二者相差数帧，无法定位）。
     bool gpu_serialize_ = false;
     bool debug_layer_enabled_ = false;
     // 单调递增的帧号：shader 用它做惰性"每帧重置"，触发点在**本帧第一次写

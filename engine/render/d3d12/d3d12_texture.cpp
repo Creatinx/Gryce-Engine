@@ -109,7 +109,7 @@ uint32_t bytes_per_pixel(DXGI_FORMAT fmt) {
 }
 
 // 对应 TextureFormat 的"默认"通道数 → 挑一个 RGBA8 之外的合适格式。
-TextureFormat pick_format_for_channels(int channels, bool want_hdr) {
+TextureFormat pick_format_for_channels(int channels, bool want_hdr, bool want_srgb = false) {
     if (want_hdr) {
         switch (channels) {
             case 1: return TextureFormat::R16F;
@@ -123,8 +123,8 @@ TextureFormat pick_format_for_channels(int channels, bool want_hdr) {
         case 1: return TextureFormat::R8;
         case 2: return TextureFormat::RG8;
         case 3:
-        case 4: return TextureFormat::RGBA8;
-        default: return TextureFormat::RGBA8;
+        case 4:
+        default: return want_srgb ? TextureFormat::SRGB8_ALPHA8 : TextureFormat::RGBA8;
     }
 }
 
@@ -529,7 +529,7 @@ bool D3D12Texture::create_msaa(TextureFormat format, int width, int height, int 
 
 bool D3D12Texture::upload_data(const void* data, int width, int height, int channels) {
     if (!data || width <= 0 || height <= 0) return false;
-    const TextureFormat fmt = pick_format_for_channels(channels, false);
+    const TextureFormat fmt = pick_format_for_channels(channels, false, srgb_);
     const DXGI_FORMAT dxgi = to_dxgi_format(fmt);
     const uint32_t bpp = bytes_per_pixel(dxgi);
 

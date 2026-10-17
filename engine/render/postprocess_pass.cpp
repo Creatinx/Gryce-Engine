@@ -1,3 +1,6 @@
+// postprocess_pass.cpp — 后处理与 G-Buffer 子系统（RenderPipeline 的对应部分）：
+// HDR / bloom / 自动曝光 / TAA / SSAO / 接触阴影 / 颜色 LUT 的目标创建与渲染、
+// tonemap 输出，以及法线预通道与延迟光照的 G-Buffer pass。
 #include "render_pipeline.h"
 
 #include <algorithm>
@@ -625,8 +628,8 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     // TAA 开启时读取 TAA 解析后的 HDR，否则读原始 HDR
     const bool use_taa = pp_params_.taa_enabled != 0 && taa_targets_valid_;
     const RHITextureHandle hdr_in = use_taa ? taa_tex_[taa_ping_] : hdr_color_;
-    // 临时诊断（GRYCE_TRACE_HDR=1）：tonemap 这一帧实际用的是哪个纹理。
-    // 中间还有 fog / DOF / motion blur 会重指向 hdr_color_，所以这个值才是
+    // HDR 链路追踪（GRYCE_TRACE_HDR=1 开启）：打印 tonemap 这一帧实际读取的
+    // HDR 纹理。中间 fog / DOF / motion blur 会重指向 hdr_color_，该值才是
     // "最终画面是否包含 SSR" 的决定因素。
     if (std::getenv("GRYCE_TRACE_HDR")) {
         static int t = 0;
@@ -1149,7 +1152,14 @@ void RenderPipeline::render_normal_prepass(scene::Scene& scene, RenderContext& c
                 ctx.set_uniform_int(depth_normal_shader_, "uUseRoughnessMap", 0);
             }
 
-            ctx.draw_mesh(mr->gpu_mesh_handle(), depth_normal_shader_);
+            // 必须与主通道用同一个 LOD 级别：预通道写的是深度，若这里画 L0
+            // 而主通道画 L2，深度与几何就不是同一张表面（细碎三角形在预通道里
+            // 挡住的像素在主通道被判定为遮挡），表现为边缘闪烁与破洞；
+            // 顺带也白付一遍高模几何的钱。分块 LOD 时一块一画。
+            const int prepass_draws = mr->draw_mesh_count();
+            for (int di = 0; di < prepass_draws; ++di) {
+                ctx.draw_mesh(mr->draw_mesh_handle_at(di), depth_normal_shader_);
+            }
         });
 }
 

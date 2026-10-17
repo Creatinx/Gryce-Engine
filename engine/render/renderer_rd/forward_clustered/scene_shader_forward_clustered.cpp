@@ -38,7 +38,14 @@ void SceneShaderForwardClustered::shutdown() {
 
 std::string SceneShaderForwardClustered::_group_to_shader_name(ShaderGroup group) const {
     switch (group) {
+#ifdef __EMSCRIPTEN__
+        // WebGL2 没有 SSBO：基础组改走非 SSBO 的 scene_pbr（除光源数据源
+        // （uniform 数组 vs SSBO）外与 scene_pbr_ssbo 功能相同）。
+        // 桌面仍用 scene_pbr_ssbo（GL 4.3+ / Vulkan 路径）。
+        case SHADER_GROUP_BASE:            return "scene_pbr";
+#else
         case SHADER_GROUP_BASE:            return "scene_pbr_ssbo";
+#endif
         case SHADER_GROUP_ADVANCED:        return "scene_pbr_advanced";
         case SHADER_GROUP_MULTIVIEW:       return "scene_pbr_multiview";
         case SHADER_GROUP_MOTION_VECTORS:  return "scene_motion_vectors";

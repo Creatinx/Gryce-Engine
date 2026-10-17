@@ -1,3 +1,6 @@
+// d3d12_upload.cpp — 上传缓冲助手实现：纹理行距重排（repack_rows）、
+// 一次性 staging 上传（create_upload_buffer / immediate_upload_buffer），
+// 以及 UploadRing 环形上传堆的按帧分段分配。
 #include "d3d12_upload.h"
 
 #include <cstdlib>
@@ -273,8 +276,8 @@ bool UploadRing::allocate_and_copy(const void* data, size_t size,
     }
     std::memcpy(p, data, size);
     out_gpu_addr = resource_->GetGPUVirtualAddress() + offset;
-    // 调试流水：GRYCE_DX12_PROBE_RING=1 时打每次分配（帧号 / 全局偏移 / 段内偏移 /
-    // 大小 / 数据哈希）。与 CBV 探针对照可验证"在飞窗口内没有跨帧同段覆写"。
+    // 分配流水日志：GRYCE_DX12_PROBE_RING=1 时打每次分配（帧号 / 全局偏移 /
+    // 段内偏移 / 大小 / 数据哈希），用于验证在飞窗口内没有跨帧同段覆写。
     static const bool ring_probe_on = std::getenv("GRYCE_DX12_PROBE_RING") != nullptr;
     if (ring_probe_on) {
         uint64_t h = 1469598103934665603ull;

@@ -91,8 +91,12 @@ public:
             ssr_push_.thickness = params.ssr_thickness;
             ssr_push_.bilateral_filter = params.ssr_bilateral_filter;
             ssr_push_.env_fallback = params.ssr_env_fallback;
-            // 复用保留字段做调试视图（不改 push 块布局）
-            ssr_push_._pad_tail[0] = static_cast<float>(params.ssr_debug_view);
+            // 调试视图（composite 读 +136 的 debug_view 字段）。
+            // 注意不能写 _pad_tail[0]：它在 +136，而 vulkan_ssr_composite.frag 原来
+            // 把 _pad_tail 声明在 +132，正好压在 probe_valid 上 —— 于是每帧
+            // set_int("uSSRProbeValid") 都会把调试模式冲成整数 1（按 float 读是
+            // 1.4e-45 ≈ 0），SSR 调试视图因此永远不生效。
+            ssr_push_.debug_view = static_cast<float>(params.ssr_debug_view);
         }
         if (push_kind_ == PostProcessPushKind::GTAO) {
             gtao_push_.near_plane = params.ssao_near;
@@ -193,6 +197,12 @@ private:
     // 接触阴影：独立小 push constant 块（48 字节），不占用共享后处理块。
     // 共享块已 224 字节，追加接触阴影字段会超过设备 maxPushConstantsSize(256)。
     bool contact_shadow_ = false;
+    // 深度 resolve（仅 D3D12/Vulkan 的 MSAA 深度回写）：唯一一条"是后处理、却要写
+    // 深度"的全屏管线。post-process 管线默认把 depthTest/depthWrite 全关，且
+    // draw 路径不对固定描述符集的后处理 shader 施加深度动态状态（见 vk_backend.cpp
+    // draw 分支），因此必须在 create_pipeline 时把 depthWrite 烘成 VK_TRUE，
+    // 否则 shader 里的 gl_FragDepth 不落盘 —— MSAA 下 SSR/SSAO 读到整片远平面。
+    bool depth_write_pp_ = false;
     // 水性材质（非后处理 mesh pass）：独立固定描述符集 + WaterPushData
     bool water_ = false;
     // 特效后处理 push constant 块的选择（决定 create_pipeline 的 push range 与
@@ -466,7 +476,8 @@ private:
         math::Vector2f texel_size;  // +120（HIZ pass 用它；其余忽略）
         float env_fallback;         // +128 SSR 未命中回退强度（composite 用）
         int probe_valid;            // +132 SSR 退化射线探针兜底开关（trace 用）
-        float _pad_tail[2];         // +136 补齐 16 字节
+        float debug_view;           // +136 SSR 调试视图模式（composite 用；trace 忽略）
+        float _pad_tail[1];         // +140 补齐 16 字节
     };
     static_assert(sizeof(SSRPushData) == 144, "SSRPushData must be 144 bytes");
     static_assert(offsetof(SSRPushData, screen_size) == 80, "std430: screen_size at +80");
@@ -476,6 +487,7 @@ private:
     static_assert(offsetof(SSRPushData, texel_size) == 120, "std430: texel_size at +120");
     static_assert(offsetof(SSRPushData, env_fallback) == 128, "std430: env_fallback at +128");
     static_assert(offsetof(SSRPushData, probe_valid) == 132, "std430: probe_valid at +132");
+    static_assert(offsetof(SSRPushData, debug_view) == 136, "std430: debug_view at +136");
 
     // SSIL 专用 push constant（std430，128 字节，< 256）。对应 vulkan_ssil_trace.frag /
     // vulkan_ssil_blur.frag 的 PushConstants 块。camera_pos 同样需要补 std430 的

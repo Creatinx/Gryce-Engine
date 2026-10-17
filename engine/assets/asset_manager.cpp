@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "assets/mesh_optimizer.h"
 #include "assets/obj_loader.h"
 #include "assets/compressed_image.h"
 #include "assets/dds_loader.h"
@@ -164,6 +165,80 @@ AssetHandle<TextureData> AssetManager::load<TextureData>(const std::string& path
 // ---------------------------------------------------------------------------
 // Mesh 加载
 // ---------------------------------------------------------------------------
+std::string AssetManager::resolve_mesh_source_unlocked(const std::string& path) {
+    std::string resolved = resources::ResourcePath::resolve(path);
+    if (!std::filesystem::exists(resolved)) {
+        std::string temp_path = extract_from_bundle_unlocked(path);
+        if (!temp_path.empty()) {
+            resolved = std::move(temp_path);
+        }
+    }
+    return resolved;
+}
+
+std::vector<MeshData> AssetManager::import_mesh_file(const std::string& path,
+                                                     const std::string& resolved) {
+    // OBJ 用内置加载器（快、UV 朝向可控）；其他格式走 Assimp
+    if (ends_with_ci(resolved, ".obj")) {
+        ObjLoader loader;
+        return loader.load(resolved);
+    }
+#ifdef GRYCE_HAS_ASSIMP
+    AssimpImporter importer;
+    return importer.import(resolved);
+#else
+    GLOG_ERROR("AssetManager: non-OBJ formats require Assimp ({})", path);
+    return {};
+#endif
+}
+
+std::vector<std::shared_ptr<MeshData>> AssetManager::load_mesh_group_unlocked(const std::string& path) {
+    auto cached = mesh_groups_.find(path);
+    if (cached != mesh_groups_.end()) {
+        return cached->second.meshes;
+    }
+
+    const std::string resolved = resolve_mesh_source_unlocked(path);
+    std::vector<MeshData> meshes = import_mesh_file(path, resolved);
+    if (meshes.empty()) {
+        GLOG_ERROR("AssetManager: failed to load mesh '{}'", path);
+        return {};
+    }
+
+    // 导入期顶点焊接：摄影测量/CAD 导出的网格常常完全去索引化（每三角形 3 个
+    // 独立顶点），几何阶段会为此白白多花几倍带宽。放在这里做，所有格式
+    // （Assimp 的 FBX/GLTF/DAE… 与内置 OBJ）一次性覆盖到。
+    //
+    // GRYCE_NO_MESH_WELD=1 可关闭（性能 A/B 与画面回归对照用）。
+    static const bool weld_disabled = std::getenv("GRYCE_NO_MESH_WELD") != nullptr;
+    if (weld_disabled) {
+        GLOG_WARN("AssetManager: mesh welding disabled by GRYCE_NO_MESH_WELD");
+    } else {
+        for (MeshData& m : meshes) {
+            optimize_imported_mesh(m, ends_with_ci(resolved, ".obj") ? "obj" : "assimp");
+        }
+    }
+
+    std::vector<std::shared_ptr<MeshData>> group;
+    group.reserve(meshes.size());
+    for (auto& m : meshes) {
+        auto data = std::make_shared<MeshData>();
+        *data = std::move(m);
+        data->set_path(path);
+        group.push_back(std::move(data));
+    }
+
+    MeshGroupEntry entry;
+    entry.meshes = std::move(group);
+    entry.source_path = resolved;
+    std::error_code ec;
+    entry.source_mtime = std::filesystem::last_write_time(resolved, ec);
+    auto inserted = mesh_groups_.emplace(path, std::move(entry));
+    GLOG_INFO("AssetManager: cached mesh group '{}' ({} submesh(es))",
+              path, inserted.first->second.meshes.size());
+    return inserted.first->second.meshes;
+}
+
 std::shared_ptr<MeshData> AssetManager::load_mesh_internal(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = assets_.find(path);
@@ -172,52 +247,24 @@ std::shared_ptr<MeshData> AssetManager::load_mesh_internal(const std::string& pa
         return std::dynamic_pointer_cast<MeshData>(it->second.asset);
     }
 
-    std::string resolved = resources::ResourcePath::resolve(path);
-    if (!std::filesystem::exists(resolved)) {
-        std::string temp_path = extract_from_bundle_unlocked(path);
-        if (!temp_path.empty()) {
-            resolved = std::move(temp_path);
-        }
-    }
+    // 逐子网格视图是唯一导入入口，合并视图按需构建（同一份文件只导入一次）。
+    const std::vector<std::shared_ptr<MeshData>> group = load_mesh_group_unlocked(path);
+    if (group.empty()) return nullptr;
 
-    std::vector<MeshData> meshes;
-
-    // OBJ 用内置加载器（快、UV 朝向可控）；其他格式走 Assimp
-    if (ends_with_ci(resolved, ".obj")) {
-        ObjLoader loader;
-        meshes = loader.load(resolved);
-    }
-#ifdef GRYCE_HAS_ASSIMP
-    else {
-        AssimpImporter importer;
-        meshes = importer.import(resolved);
-    }
-#else
-    else {
-        GLOG_ERROR("AssetManager: non-OBJ formats require Assimp ({})", path);
-        return nullptr;
-    }
-#endif
-
-    if (meshes.empty()) {
-        GLOG_ERROR("AssetManager: failed to load mesh '{}'", path);
-        return nullptr;
-    }
-
-    // 引擎 MeshRenderer 按单网格渲染；多子网格模型（常见于 GLB）需要把
+    // 引擎 MeshRenderer 按单网格渲染；多子网格模型需要把
     // 所有子网格合并成单一 MeshData，否则只会显示第一个子网格。
     auto data = std::make_shared<MeshData>();
-    data->name = meshes.front().name;
-    for (auto& m : meshes) {
+    data->name = group.front()->name;
+    for (const auto& m : group) {
         const uint32_t base = static_cast<uint32_t>(data->vertices.size());
-        data->vertices.insert(data->vertices.end(), m.vertices.begin(), m.vertices.end());
-        data->indices.reserve(data->indices.size() + m.indices.size());
-        for (uint32_t idx : m.indices) {
+        data->vertices.insert(data->vertices.end(), m->vertices.begin(), m->vertices.end());
+        data->indices.reserve(data->indices.size() + m->indices.size());
+        for (uint32_t idx : m->indices) {
             data->indices.push_back(base + idx);
         }
         // 取模型内第一个有效材质作为整体材质（其余子网格沿用默认）
-        if (m.material.valid && !data->material.valid) {
-            data->material = m.material;
+        if (m->material.valid && !data->material.valid) {
+            data->material = m->material;
         }
     }
     data->set_path(path);
@@ -225,11 +272,13 @@ std::shared_ptr<MeshData> AssetManager::load_mesh_internal(const std::string& pa
     entry.asset = data;
     entry.memory_size = data->memory_size();
     entry.last_access = std::chrono::steady_clock::now();
-    entry.source_path = resolved;
-    std::error_code ec;
-    entry.source_mtime = std::filesystem::last_write_time(resolved, ec);
+    auto group_it = mesh_groups_.find(path);
+    if (group_it != mesh_groups_.end()) {
+        entry.source_path = group_it->second.source_path;
+        entry.source_mtime = group_it->second.source_mtime;
+    }
     assets_[path] = std::move(entry);
-    GLOG_INFO("AssetManager: cached mesh '{}' ({} vertices)", path, data->vertices.size());
+    GLOG_INFO("AssetManager: cached merged mesh '{}' ({} vertices)", path, data->vertices.size());
     return data;
 }
 
@@ -443,20 +492,44 @@ std::vector<std::string> AssetManager::poll_hot_reload() {
     struct ChangedAsset {
         std::string path;
         bool is_mesh = false;
+        bool merged = false;  // assets_ 里有合并视图
+        bool group = false;   // mesh_groups_ 里有逐子网格视图
     };
     std::vector<ChangedAsset> changed;
 
     // 先收集变化路径：stat 需要源文件已 resolve，直接在缓存条目里比对 mtime
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& [path, entry] : assets_) {
-            if (entry.source_path.empty()) continue;
+        auto mtime_changed = [](const std::string& source_path,
+                                std::filesystem::file_time_type recorded) {
+            if (source_path.empty()) return false;
             std::error_code ec;
-            auto now = std::filesystem::last_write_time(entry.source_path, ec);
-            if (ec) continue;
-            if (now != entry.source_mtime) {
-                changed.push_back({path, entry.asset->type() == "MeshData"});
+            const auto now = std::filesystem::last_write_time(source_path, ec);
+            return !ec && now != recorded;
+        };
+
+        for (const auto& [path, entry] : assets_) {
+            if (!mtime_changed(entry.source_path, entry.source_mtime)) continue;
+            ChangedAsset item;
+            item.path = path;
+            item.is_mesh = entry.asset->type() == std::string("MeshData");
+            item.merged = true;
+            item.group = mesh_groups_.find(path) != mesh_groups_.end();
+            changed.push_back(std::move(item));
+        }
+        // 只被逐子网格视图缓存引用的网格（多材质模型按子网格渲染时走的就是这条）
+        for (const auto& [path, entry] : mesh_groups_) {
+            if (!mtime_changed(entry.source_path, entry.source_mtime)) continue;
+            bool already = false;
+            for (const auto& c : changed) {
+                if (c.path == path) { already = true; break; }
             }
+            if (already) continue;
+            ChangedAsset item;
+            item.path = path;
+            item.is_mesh = true;
+            item.group = true;
+            changed.push_back(std::move(item));
         }
     }
 
@@ -471,11 +544,17 @@ std::vector<std::string> AssetManager::poll_hot_reload() {
         unload(item.path);
         const std::string resolved = resources::ResourcePath::resolve(item.path);
         if (!std::filesystem::exists(resolved)) continue;
-        if (item.is_mesh) {
-            if (load_mesh_internal(item.path)) result.push_back(item.path);
+        bool ok = false;
+        if (!item.is_mesh) {
+            ok = load_texture_internal(item.path) != nullptr;
         } else {
-            if (load_texture_internal(item.path)) result.push_back(item.path);
+            if (item.merged) ok = load_mesh_internal(item.path) != nullptr;
+            if (item.group) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                ok = !load_mesh_group_unlocked(item.path).empty() || ok;
+            }
         }
+        if (ok) result.push_back(item.path);
     }
 
     if (!result.empty()) {
@@ -484,7 +563,23 @@ std::vector<std::string> AssetManager::poll_hot_reload() {
     return result;
 }
 
-std::shared_ptr<const MeshData> AssetManager::load_mesh(const std::string& path) {
+std::vector<std::shared_ptr<const MeshData>> AssetManager::load_meshes(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::vector<std::shared_ptr<MeshData>> group = load_mesh_group_unlocked(path);
+    return {group.begin(), group.end()};
+}
+
+std::shared_ptr<const MeshData> AssetManager::load_mesh(const std::string& path, int submesh_index) {
+    if (submesh_index >= 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const std::vector<std::shared_ptr<MeshData>> group = load_mesh_group_unlocked(path);
+        const size_t index = static_cast<size_t>(submesh_index);
+        if (index < group.size()) return group[index];
+        GLOG_WARN("AssetManager: submesh {} out of range for '{}' ({} submesh(es))",
+                  submesh_index, path, group.size());
+        return nullptr;
+    }
+
     auto shared = load_mesh_internal(path);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -495,24 +590,164 @@ std::shared_ptr<const MeshData> AssetManager::load_mesh(const std::string& path)
     return shared;
 }
 
-std::shared_ptr<const MeshData> AssetManager::load_mesh_shared(const std::string& path) {
-    return load_mesh(path);
+std::shared_ptr<const MeshData> AssetManager::load_mesh_shared(const std::string& path, int submesh_index) {
+    return load_mesh(path, submesh_index);
+}
+
+// ---------------------------------------------------------------------------
+// 自动 LOD 链
+// ---------------------------------------------------------------------------
+std::shared_ptr<const LodChain> AssetManager::load_mesh_lods(const std::string& path,
+                                                             int submesh_index) {
+    const std::string key = path + "#" + std::to_string(submesh_index);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = lod_chains_.find(key);
+        if (it != lod_chains_.end()) return it->second;   // 可能是 nullptr（已判定不可做）
+    }
+
+    // 生成过程要重新进入 load_mesh（内部加锁），必须放在锁外。
+    static const bool lod_disabled = std::getenv("GRYCE_NO_LOD") != nullptr;
+    static bool warned_disabled = false;
+    if (lod_disabled && !warned_disabled) {
+        GLOG_WARN("AssetManager: automatic LOD disabled by GRYCE_NO_LOD");
+        warned_disabled = true;
+    }
+
+    std::shared_ptr<const LodChain> chain;
+    if (!lod_disabled) {
+        auto base = load_mesh(path, submesh_index);
+        if (base) {
+            LodBuildSettings settings;
+            // 只开放"级数"一个环境变量：做 A/B 时改这一个就够，
+            // 比例/下限属于算法常量，暴露出去只会让结果不可复现。
+            if (const char* levels = std::getenv("GRYCE_LOD_LEVELS")) {
+                settings.max_levels = std::atoi(levels);
+            }
+            chain = build_lod_chain(base, settings, submesh_index);
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    lod_chains_[key] = chain;
+    return chain;
+}
+
+void AssetManager::clear_lod_cache() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lod_chains_.clear();
+    chunk_lods_.clear();
+}
+
+// ---------------------------------------------------------------------------
+// 空间分块 LOD
+// ---------------------------------------------------------------------------
+std::shared_ptr<const ChunkedLod> AssetManager::load_mesh_chunk_lods(const std::string& path,
+                                                                    int submesh_index,
+                                                                    int cells_per_axis) {
+    const std::string key = path + "#" + std::to_string(submesh_index) + "@" +
+                            std::to_string(std::max(cells_per_axis, 0));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = chunk_lods_.find(key);
+        if (it != chunk_lods_.end()) return it->second;   // 可能是 nullptr（已判定不值得分块）
+    }
+
+    // 与 load_mesh_lods 同样的开关：GRYCE_NO_LOD 一并关掉分块，
+    // GRYCE_NO_CHUNK_LOD 只关分块（保留逐物体 LOD，用于 A/B 对照）。
+    static const bool lod_disabled = std::getenv("GRYCE_NO_LOD") != nullptr;
+    static const bool chunk_disabled = std::getenv("GRYCE_NO_CHUNK_LOD") != nullptr;
+    // 值得分块的门槛：小于这个规模，逐物体 LOD 已经够用，分块只会白增绘制批次。
+    static const std::size_t min_tris = []() {
+        const char* env = std::getenv("GRYCE_CHUNK_LOD_MIN_TRIS");
+        return env ? static_cast<std::size_t>(std::max(0, std::atoi(env))) : std::size_t{120000};
+    }();
+
+    std::shared_ptr<const ChunkedLod> chunked;
+    if (!lod_disabled && !chunk_disabled) {
+        auto base = load_mesh(path, submesh_index);
+        std::size_t tris = 0;
+        if (base) {
+            tris = base->indices.empty() ? base->vertices.size() / 3 : base->indices.size() / 3;
+        }
+        if (base && tris >= min_tris) {
+            LodBuildSettings settings;
+            if (const char* levels = std::getenv("GRYCE_LOD_LEVELS")) {
+                settings.max_levels = std::atoi(levels);
+            }
+            // 每轴切几块：调用方可以显式指定，否则按目标三角形数反推。
+            // GRYCE_CHUNK_CELLS 覆盖（扫格数对三角形数/绘制批次的影响）。
+            int cells = cells_per_axis;
+            if (cells <= 0) {
+                if (const char* env_cells = std::getenv("GRYCE_CHUNK_CELLS")) {
+                    cells = std::atoi(env_cells);
+                } else {
+                    cells = choose_chunk_cells(tris);
+                }
+            }
+            if (cells > 1) {
+                chunked = build_chunked_lod(base, settings, submesh_index, cells);
+            }
+        } else if (base) {
+            GLOG_INFO("MeshLOD: '{}' sub{} {} tris < {} — skip chunking, per-object LOD only",
+                      path, submesh_index, tris, min_tris);
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    chunk_lods_[key] = chunked;
+    return chunked;
 }
 
 void AssetManager::unload(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
     assets_.erase(path);
+    mesh_groups_.erase(path);
+    for (auto it = lod_chains_.begin(); it != lod_chains_.end();) {
+        // 键形如 "path#submesh"：只清退该模型自己的 LOD 链
+        if (it->first.compare(0, path.size() + 1, path + "#") == 0) {
+            it = lod_chains_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = chunk_lods_.begin(); it != chunk_lods_.end();) {
+        // 键形如 "path#submesh@cells"
+        if (it->first.compare(0, path.size() + 1, path + "#") == 0) {
+            it = chunk_lods_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void AssetManager::unload_mesh(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
     assets_.erase(path);
+    mesh_groups_.erase(path);
+    for (auto it = lod_chains_.begin(); it != lod_chains_.end();) {
+        if (it->first.compare(0, path.size() + 1, path + "#") == 0) {
+            it = lod_chains_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = chunk_lods_.begin(); it != chunk_lods_.end();) {
+        if (it->first.compare(0, path.size() + 1, path + "#") == 0) {
+            it = chunk_lods_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void AssetManager::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     assets_.clear();
+    mesh_groups_.clear();
     skinned_models_.clear();
+    lod_chains_.clear();
+    chunk_lods_.clear();
 }
 
 bool AssetManager::has(const std::string& path) const {

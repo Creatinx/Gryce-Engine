@@ -26,6 +26,9 @@ typedef enum {
     GRYCE_RENDER_API_VULKAN = 1,
     GRYCE_RENDER_API_DX11   = 2,
     GRYCE_RENDER_API_DX12   = 3,
+    // WebGL（Emscripten/wasm 构建专用）：与 OpenGL 共用 GLBackend，
+    // 经 #ifdef __EMSCRIPTEN__ 适配 WebGL2。追加在末尾，保持 ABI 兼容。
+    GRYCE_RENDER_API_WEBGL  = 4,
 } GRenderAPI;
 
 typedef enum {
@@ -93,7 +96,7 @@ typedef enum {
     ECMD_GIZMO_SET_SPACE,
     ECMD_GIZMO_MANIPULATE,
 
-    // GryceSRT 脚本（Phase 1/2）
+    // GryceSRT 脚本
     ECMD_SET_SCRIPT = 500,
     ECMD_RELOAD_SCRIPTS,
 

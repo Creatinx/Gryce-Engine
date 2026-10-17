@@ -45,6 +45,10 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 using gryce_engine::platform::Window;
 using gryce_engine::platform::WindowMode;
 using gryce_engine::platform::WindowContextType;
@@ -245,20 +249,33 @@ struct FpsCamera {
         double mx = 0.0, my = 0.0;
         window.get_cursor_pos(mx, my);
         if (!mouse_ready) {
+            mouse_ready = true;
+#ifndef __EMSCRIPTEN__
+            // 刚锁定的这一帧先把指针拉回中心，再以中心为基线（丢弃这一帧的增量）。
             last_mx = cx;
             last_my = cy;
-            mouse_ready = true;
-            // 刚锁定的这一帧先把指针拉回中心，再以中心为基线（丢弃这一帧的增量）。
             window.set_cursor_pos(cx, cy);
+#else
+            // 浏览器 pointer lock 下光标位置是累积量，没有"回中"这一步；
+            // 直接以当前实际位置为基线。
+            last_mx = mx;
+            last_my = my;
+#endif
             apply_movement(window, dt);
             return true;
         }
         const double dx = mx - last_mx;
         const double dy = my - last_my;
         // 立即回中：锁定模式下光标会被系统不断推走，回中可以避免越界与漂移
+#ifndef __EMSCRIPTEN__
         window.set_cursor_pos(cx, cy);
         last_mx = cx;
         last_my = cy;
+#else
+        // 同上：pointer lock 的位置只会单调累积，基线跟着实际位置走。
+        last_mx = mx;
+        last_my = my;
+#endif
 
         bool moved = false;
         if (dx != 0.0 || dy != 0.0) {
@@ -654,6 +671,40 @@ bool spawn_instanced_scene(int count) {
 
 } // namespace
 
+#ifdef __EMSCRIPTEN__
+// 浏览器常驻循环的状态。emscripten_set_main_loop_arg 靠异常展开 main 的栈，
+// 所以循环能碰到的东西必须是堆对象（见 main 里 Window/FpsCamera 的分配）。
+struct WebLoopState {
+    Window* window = nullptr;
+    FpsCamera* camera = nullptr;
+    bool camera_ready = false;
+};
+
+// 每帧一步：requestAnimationFrame 驱动，dt 取墙钟（钳到 [0.5ms, 100ms]，
+// 标签页切回前台时不会因为累积的大间隔跳一大步）。
+void web_render_step(void* arg) {
+    WebLoopState* state = static_cast<WebLoopState*>(arg);
+    Window& window = *state->window;
+    window.poll_events();
+
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    float dt = std::chrono::duration<float>(now - last).count();
+    last = now;
+    dt = std::max(0.0005f, std::min(dt, 0.1f));
+
+    // Esc 在浏览器里只代表释放指针锁定，不结束循环（没有窗口可关）。
+    if (state->camera_ready) state->camera->update(window, dt);
+
+    GCore_BeginFrame(dt);
+    GRender_BeginFrame();
+    GRender_RenderWorld();
+    GRender_RenderGizmo();
+    GRender_EndFrame();
+    GCore_EndFrame();
+}
+#endif
+
 int main(int argc, char** argv) {
     // 排障用：stdout 默认是块缓冲，进程崩溃（尤其 D3D12 侧访问违规）时
     // printf 的路标会整块丢掉，只剩 GLOG 的行 —— 无法定位崩溃发生在哪个阶段。
@@ -850,20 +901,23 @@ int main(int argc, char** argv) {
     GRenderAPI api = GRYCE_RENDER_API_OPENGL;
     if (api_arg == "vulkan") api = GRYCE_RENDER_API_VULKAN;
     else if (api_arg == "dx12") api = GRYCE_RENDER_API_DX12;
+    else if (api_arg == "webgl") api = GRYCE_RENDER_API_WEBGL;
     else if (api_arg != "opengl" && !api_arg.empty()) {
-        std::fprintf(stderr, "[smoke] 未知后端 '%s'（用 opengl、vulkan 或 dx12）\n", api_arg.c_str());
+        std::fprintf(stderr, "[smoke] 未知后端 '%s'（用 opengl、vulkan、dx12 或 webgl）\n", api_arg.c_str());
         return 1;
     }
     const bool use_vulkan = (api == GRYCE_RENDER_API_VULKAN);
     const bool use_dx12   = (api == GRYCE_RENDER_API_DX12);
+    const bool use_webgl  = (api == GRYCE_RENDER_API_WEBGL);
     const bool use_opengl = (api == GRYCE_RENDER_API_OPENGL);
     const char* backend_name =
-        use_vulkan ? "vulkan" : use_dx12 ? "dx12" : "opengl";
+        use_vulkan ? "vulkan" : use_dx12 ? "dx12" : use_webgl ? "webgl" : "opengl";
     const int width = width_override > 0 ? width_override : cfg.width;
     const int height = height_override > 0 ? height_override : cfg.height;
     if (shot_path.empty()) {
         shot_path = use_vulkan ? "shot_vulkan.png"
                   : use_dx12   ? "shot_dx12.png"
+                  : use_webgl  ? "shot_webgl.png"
                                : "shot_opengl.png";
     }
 
@@ -876,9 +930,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // WebGL 归入 OpenGL 分支：Emscripten 的 GLFW 端口建的就是 WebGL context
     const WindowContextType ctx =
-        use_opengl ? WindowContextType::OpenGL : WindowContextType::NoApi;
+        (use_opengl || use_webgl) ? WindowContextType::OpenGL : WindowContextType::NoApi;
+#ifdef __EMSCRIPTEN__
+    // 浏览器用 set_main_loop 常驻循环，它会展开 main 的栈；栈上的 Window 析构
+    // 会销毁 canvas，所以这里放堆上（页面生命周期内不回收）。
+    Window& window = *new Window(cfg.title.c_str(), width, height, WindowMode::Windowed, ctx);
+#else
     Window window(cfg.title.c_str(), width, height, WindowMode::Windowed, ctx);
+#endif
     if (!window.is_valid()) {
         std::fprintf(stderr, "[smoke] failed to create window\n");
         Window::shutdown_sdk();
@@ -1009,7 +1070,11 @@ int main(int argc, char** argv) {
     }
 
     // 4) 交互模式：锁定鼠标、找到主相机
+#ifdef __EMSCRIPTEN__
+    FpsCamera& play_cam = *new FpsCamera();   // 跨 set_main_loop 的栈展开存活
+#else
     FpsCamera play_cam;
+#endif
     if (play_mode) {
         if (play_cam.init_from_entity(play_speed, play_sensitivity)) {
             // 光标锁定不在这里做：FpsCamera::update 每帧按"窗口有焦点 && 用户没主动
@@ -1061,6 +1126,26 @@ int main(int argc, char** argv) {
             std::printf("[smoke] 已进入 Play 模式（组件 on_update 生效）\n");
         }
     }
+
+#ifdef __EMSCRIPTEN__
+    // 浏览器默认常驻渲染：没有显式要求一次性跑帧（--frames / --bench /
+    // --play-frames）时进 requestAnimationFrame 循环，页面不会停在最后一帧。
+    // 无头验证仍然走下面的一次性路径，保证进程可终止。
+    if (!frames_explicit && bench_frames == 0 && play_frames == 0) {
+        bool camera_ready = play_cam.entity != 0;
+        if (!camera_ready) {
+            // 网页里不给相机控制就只是张静态图：默认接管主相机，
+            // 点击画面锁定鼠标后即可用鼠标转视角 + WASD 移动。
+            camera_ready = play_cam.init_from_entity(play_speed, play_sensitivity);
+            if (camera_ready) {
+                std::printf("[web] 交互模式：点击画面锁定鼠标，WASD 移动，Shift 加速，Esc 释放\n");
+            }
+        }
+        WebLoopState* state = new WebLoopState{&window, &play_cam, camera_ready};
+        emscripten_set_main_loop_arg(web_render_step, state, 0, 1);
+        return 0;
+    }
+#endif
 
     // 交互模式默认一直跑到用户退出；只有显式给了 --frames N 才在第 N 帧截图。
     const bool shot_wanted = play_mode ? (frames_explicit && frames > 0) : true;

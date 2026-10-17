@@ -1,3 +1,6 @@
+// ssr.cpp — 屏幕空间反射（SSR_RD）实现：渲染目标管理与分辨率缩放、四段全屏
+// pass（trace / 复合 / 模糊）的调度。目标创建属于 GPU 资源操作，一律经
+// run_on_render_thread 排到渲染线程执行。
 #include "render/renderer_rd/effects/ssr.h"
 #include "render/render_context.h"
 #include "render/texture.h"
@@ -220,7 +223,8 @@ void SSR_RD::render(RenderContext* ctx,
         // 目标创建是 GPU 资源操作：必须排到渲染线程执行（GL 在无 current context 的
         // 线程上 glCreateFramebuffers 返回 0，会静默失败并让 SSR 永久失效）。
         // 本帧跳过，下一帧尺寸已对齐即可正常渲染。
-        // 临时诊断：这一帧会整帧丢失 SSR（调用方若仍用原始 HDR 就会看到"金属退回纯 IBL"）。
+        // 这一帧跳过 SSR（目标重建中）：调用方若仍用原始 HDR，画面会短暂
+        // 退化为纯 IBL 镜面（"金属失去反射"）。
         {
             static int skip_idx = 0;
             GLOG_WARN("[ssr] skip frame call#={} (comp={}x{} viewport={}x{} dirty={})",
@@ -323,7 +327,7 @@ void SSR_RD::render(RenderContext* ctx,
         ctx->draw_mesh(fullscreen_mesh_, ssr_composite_shader_);
     } // ssr_composite
 
-    // ---- 调试探针（env GRYCE_DX12_PROBE_SSR=1 时生效；其余后端 no-op）----
+    // ---- 纹理探针（env GRYCE_DX12_PROBE_SSR=1 时生效；其余后端 no-op）----
     // 把 SSR 链的四张纹理拷回 CPU 输出内容统计，用于对比好/坏帧定位丢失段。
     // depth_in / normal_in 是 trace 的两个采样输入：若它们好坏帧一致而
     // trace_out 坏帧全零 → 问题在 trace 的 CBV/描述符绑定而非纹理内容。

@@ -1,3 +1,7 @@
+// entity_api.cpp — Gryce C ABI 的实体层实现：实体枚举与关系查询（数量、索引、
+// 名称、路径、父子/兄弟）、Transform 的本地读写访问器，以及 JSON / prefab 的
+// 导入导出。所有入口先经 GRYCE_API_GUARD 校验运行时状态，句柄统一由
+// EntityResolver 解析为 Entity* 后再访问组件。
 #include "api/entity_api.h"
 #include "api/api_guard.h"
 #include "runtime/engine_context.h"
@@ -148,20 +152,22 @@ int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale) {
     return 0;
 }
 
+// 世界变换查询：当前版本未实现（本地变换见上一节），统一返回 -1，
+// 调用方按"不支持"处理。
 int GEntity_GetWorldPosition(GEntityHandle entity, GVec3* out_pos) {
     GRYCE_API_GUARD();
     (void)entity; (void)out_pos;
-    return -1; // TODO
+    return -1;
 }
 int GEntity_GetWorldRotation(GEntityHandle entity, GQuat* out_rot) {
     GRYCE_API_GUARD();
     (void)entity; (void)out_rot;
-    return -1; // TODO
+    return -1;
 }
 int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale) {
     GRYCE_API_GUARD();
     (void)entity; (void)out_scale;
-    return -1; // TODO
+    return -1;
 }
 
 // --- Transform Setters ---

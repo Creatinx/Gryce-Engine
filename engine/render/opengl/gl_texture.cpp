@@ -1,3 +1,5 @@
+// gl_texture.cpp — GLTexture（ITexture 的 OpenGL 实现）：2D / 立方体纹理的
+// 创建与上传、完整 mip 链生成、sRGB 内部格式与各向异性过滤设置。
 #include "gl_texture.h"
 
 #include "gl_utils.h"
@@ -28,6 +30,16 @@ void clear_texture_slot_cache(GLuint texture_id) {
             g_bound_textures[i] = 0;
         }
     }
+}
+
+// 8bit 纹理的 sized 内部格式。srgb=true 时用 *_SRGB 变体：采样时硬件把
+// sRGB 编码的像素解码到线性空间（颜色贴图必须如此，否则中灰整体偏亮、画面发白）。
+// 1/2 通道是纯数据（掩码/字体图集），sRGB 对它们没有意义，保持线性。
+GLint sized_byte_internal_format(int channels, bool srgb) {
+    if (channels == 3) return srgb ? GL_SRGB8 : GL_RGB8;
+    if (channels == 4) return srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+    if (channels == 2) return GL_RG8;
+    return GL_R8;
 }
 
 } // namespace
@@ -118,6 +130,7 @@ GLFormatInfo to_gl_format(TextureFormat fmt) {
     case TextureFormat::RG32F:          return {GL_RG32F,           GL_RG,   GL_FLOAT, 2};
     case TextureFormat::RGB8:           return {GL_RGB8,            GL_RGB,  GL_UNSIGNED_BYTE, 3};
     case TextureFormat::RGBA8:          return {GL_RGBA8,           GL_RGBA, GL_UNSIGNED_BYTE, 4};
+    case TextureFormat::SRGB8_ALPHA8:   return {GL_SRGB8_ALPHA8,    GL_RGBA, GL_UNSIGNED_BYTE, 4};
     case TextureFormat::RGBA16F:        return {GL_RGBA16F,         GL_RGBA, GL_HALF_FLOAT,    4};
     case TextureFormat::RGBA32F:        return {GL_RGBA32F,         GL_RGBA, GL_FLOAT,         4};
     case TextureFormat::Depth16:        return {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, 1};
@@ -175,11 +188,14 @@ bool GLTexture::load_from_file(const std::string& path) {
 
     // glTextureStorage2D 的 internalFormat 必须是 sized format（GL_RGB8/RGBA8/R8）；
     // 传非 sized 的 GL_RGB/GL_RGBA/GL_RED 会触发 GL_INVALID_ENUM（仅 DSA 路径）。
-    GLint internal_format = (ch == 4) ? GL_RGBA8 : (ch == 3) ? GL_RGB8 : GL_R8;
+    GLint internal_format = sized_byte_internal_format(ch, srgb_);
     GLenum format = (ch == 4) ? GL_RGBA : (ch == 3) ? GL_RGB : GL_RED;
 
     if (dsa) {
-        glTextureStorage2D(texture_id_, 1, internal_format, w, h);
+        // ★ 不可变存储必须一次分配完整 mip 链，否则下一行 glGenerateTextureMipmap
+        //   无处可写（纹理只剩 level 0 + MIN_FILTER=GL_LINEAR_MIPMAP_LINEAR =
+        //   不完整纹理，采样退化）。详见 gl_full_mip_levels 的说明。
+        glTextureStorage2D(texture_id_, gl_full_mip_levels(w, h), internal_format, w, h);
         glTextureSubImage2D(texture_id_, 0, 0, 0, w, h, format, GL_UNSIGNED_BYTE, data);
         glGenerateTextureMipmap(texture_id_);
 
@@ -187,6 +203,7 @@ bool GLTexture::load_from_file(const std::string& path) {
         glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, true);
     } else {
         glTexImage2D(GL_TEXTURE_2D, 0, internal_format, w, h, 0, format, GL_UNSIGNED_BYTE, data);
         glGenerateMipmap(GL_TEXTURE_2D);
@@ -195,6 +212,7 @@ bool GLTexture::load_from_file(const std::string& path) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, false);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
@@ -234,11 +252,14 @@ bool GLTexture::load_from_memory(const void* data, size_t size) {
         glBindTexture(GL_TEXTURE_2D, texture_id_);
     }
 
-    GLint internal_format = (ch == 4) ? GL_RGBA : (ch == 3) ? GL_RGB : GL_RED;
+    // sized 内部格式：glTextureStorage2D 只接受 sized format（不可变存储），
+    // 传非 sized 的 GL_RGBA/GL_RGB/GL_RED 会静默触发 GL_INVALID_ENUM。
+    GLint internal_format = sized_byte_internal_format(ch, srgb_);
     GLenum format = (ch == 4) ? GL_RGBA : (ch == 3) ? GL_RGB : GL_RED;
 
     if (dsa) {
-        glTextureStorage2D(texture_id_, 1, internal_format, w, h);
+        // ★ 同 load_from_file：不可变存储必须一次分配完整 mip 链。
+        glTextureStorage2D(texture_id_, gl_full_mip_levels(w, h), internal_format, w, h);
         glTextureSubImage2D(texture_id_, 0, 0, 0, w, h, format, GL_UNSIGNED_BYTE, pixels);
         glGenerateTextureMipmap(texture_id_);
 
@@ -246,6 +267,7 @@ bool GLTexture::load_from_memory(const void* data, size_t size) {
         glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, true);
     } else {
         glTexImage2D(GL_TEXTURE_2D, 0, internal_format, w, h, 0, format, GL_UNSIGNED_BYTE, pixels);
         glGenerateMipmap(GL_TEXTURE_2D);
@@ -254,6 +276,7 @@ bool GLTexture::load_from_memory(const void* data, size_t size) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, false);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
@@ -333,7 +356,9 @@ bool GLTexture::upload_data(const void* data, int width, int height, int channel
     std::vector<unsigned char> upload_buffer;
     const void* upload_data = data;
     // glTextureStorage2D / glTexImage2D 的 internalFormat 必须是 sized format
-    GLint internal_format = (channels == 4) ? GL_RGBA8 : (channels == 3) ? GL_RGB8 : GL_RGBA8;
+    // 1/2 通道在上面已被展开成 RGBA，所以内部格式一律按 4 通道算。
+    GLint internal_format =
+        sized_byte_internal_format(channels >= 3 ? channels : 4, srgb_);
     GLenum format = (channels == 4) ? GL_RGBA : (channels == 3) ? GL_RGB : GL_RGBA;
 
     if (channels == 1 && data) {
@@ -372,23 +397,39 @@ bool GLTexture::upload_data(const void* data, int width, int height, int channel
         upload_data = upload_buffer.data();
     }
 
+    // ★ 必须生成完整 mip 链，与 Vulkan 对齐：vk_texture.cpp::create_image 对
+    //   「有数据 + TRANSFER_DST/TRANSFER_SRC + SAMPLED」的颜色纹理一律建整条
+    //   mip 链，GL 这条路径原来却是 MIN_FILTER=GL_LINEAR / MAX_LEVEL=0 ——
+    //   只剩 level 0。后果不是"更清晰"而是严重欠采样：摄影测量模型（贴图铺满
+    //   大地面、相机远近平米级尺度差）在远处把 2048² 贴图压到几十像素，无 mip
+    //   时高频细节全变成噪声，再经 MSAA resolve / 截图缩放平均后塌成一块糊，
+    //   看上去"贴图丢了"。实测城市场景 --debug 1（albedo 视图）GL 的 std 只有
+    //   VK 的 77%，肉眼是一片平滑色块 vs VK 的结构清晰。加 mip 后两者对齐。
+    const int mip_levels = gl_full_mip_levels(width, height);
+
     if (dsa) {
-        glTextureStorage2D(texture_id_, 1, internal_format, width, height);
+        glTextureStorage2D(texture_id_, mip_levels, internal_format, width, height);
         glTextureSubImage2D(texture_id_, 0, 0, 0, width, height, format, GL_UNSIGNED_BYTE, upload_data);
-        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        if (mip_levels > 1) glGenerateTextureMipmap(texture_id_);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MIN_FILTER,
+                            mip_levels > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
         glTextureParameteri(texture_id_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTextureParameteri(texture_id_, GL_TEXTURE_BASE_LEVEL, 0);
-        glTextureParameteri(texture_id_, GL_TEXTURE_MAX_LEVEL, 0);
+        glTextureParameteri(texture_id_, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, true);
     } else {
         glTexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0, format, GL_UNSIGNED_BYTE, upload_data);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        if (mip_levels > 1) glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        mip_levels > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, false);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
@@ -548,6 +589,7 @@ bool GLTexture::upload_cubemap_hdr_mips(const void* const* mip_faces, int mip_le
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
         glTextureParameteri(texture_id_, GL_TEXTURE_BASE_LEVEL, 0);
         glTextureParameteri(texture_id_, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_CUBE_MAP, true);
     } else {
         glGenTextures(1, &texture_id_);
         glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id_);
@@ -567,6 +609,7 @@ bool GLTexture::upload_cubemap_hdr_mips(const void* const* mip_faces, int mip_le
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_CUBE_MAP, false);
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
     }
 
@@ -795,6 +838,7 @@ bool GLTexture::create_compressed(TextureFormat format, int width, int height,
         glTextureParameteri(texture_id_, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glTextureParameteri(texture_id_, GL_TEXTURE_BASE_LEVEL, 0);
         glTextureParameteri(texture_id_, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, true);
     } else {
         glGenTextures(1, &texture_id_);
         glBindTexture(GL_TEXTURE_2D, texture_id_);
@@ -811,6 +855,7 @@ bool GLTexture::create_compressed(TextureFormat format, int width, int height,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, mip_levels - 1);
+        gl_apply_anisotropy(texture_id_, GL_TEXTURE_2D, false);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 

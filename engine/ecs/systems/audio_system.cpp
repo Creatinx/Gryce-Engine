@@ -1,5 +1,36 @@
 #include "ecs/systems/audio_system.h"
 
+#ifdef __EMSCRIPTEN__
+// ===========================================================================
+// WebGL（Emscripten）构建：Amplitude Audio SDK 以预编译 MinGW 静态库形式
+// 随仓库分发，无法为 wasm 链接，音频系统整体空转（静音模式）。API 表面与
+// 桌面完全一致。将来接入 Web 音频后端时删除本分支即可。
+// ===========================================================================
+#include "utils/glog/glog_lib.h"
+
+namespace gryce_engine::ecs {
+
+struct AudioSystem::Impl {};
+
+AudioSystem::AudioSystem() {
+    GLOG_WARN("AudioSystem: Amplitude unavailable in WebGL build; audio muted");
+}
+AudioSystem::~AudioSystem() = default;
+
+void AudioSystem::on_init(scene::Scene&) {}
+void AudioSystem::on_shutdown(scene::Scene&) {}
+void AudioSystem::on_update(scene::Scene&, float) {}
+
+bool AudioSystem::is_initialized() const { return false; }
+bool AudioSystem::load_sound_bank(const std::string&) { return false; }
+bool AudioSystem::play_event(const std::string&, const math::Vector3f&) { return false; }
+void AudioSystem::stop_event(const std::string&) {}
+void AudioSystem::set_master_gain(float) {}
+
+} // namespace gryce_engine::ecs
+
+#else  // !__EMSCRIPTEN__ —— 以下为桌面实现（Amplitude Audio SDK）
+
 #include <SparkyStudios/Audio/Amplitude/Amplitude.h>
 
 #include "components/audio_3d.h"
@@ -260,3 +291,5 @@ void AudioSystem::on_update(scene::Scene& scene, float dt) {
 }
 
 } // namespace gryce_engine::ecs
+
+#endif // __EMSCRIPTEN__

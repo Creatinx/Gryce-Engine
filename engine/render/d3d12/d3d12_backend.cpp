@@ -24,7 +24,7 @@ namespace gryce_engine::render::d3d12 {
 // native_window 是 GLFWwindow*（render_context.cpp:157 传的就是它）。
 // D3D12 需要真实 HWND —— GLFW 的 NoApi 窗口用 glfwGetWin32Window 取出。
 // 注意：这里不能把 void* 直接当 HWND 用，否则 CreateSwapChainForHwnd
-// 会返回 E_ACCESSDENIED (0x80070005) —— 排查时容易被误导成权限/子窗口问题。
+// 会返回 E_ACCESSDENIED (0x80070005)，容易被误判成权限/子窗口问题。
 HWND D3D12Backend::hwnd_from_native(void* native_window) {
     if (!native_window) return nullptr;
     auto* win = static_cast<GLFWwindow*>(native_window);
@@ -377,7 +377,7 @@ void D3D12Backend::begin_frame() {
     //   是 DEVICE_HUNG 的根因（详见 UploadRing 的说明）。
     upload_ring_.set_frame_slots(static_cast<uint32_t>(swapchain_.buffer_count()));
     upload_ring_.begin_slot(static_cast<uint32_t>(swapchain_.current_frame_index()));
-    // 调试：Ring 分配流水的帧标签（仅 GRYCE_DX12_PROBE_RING=1 时打日志）。
+    // Ring 分配流水的帧标签（仅 GRYCE_DX12_PROBE_RING=1 时打日志）。
     upload_ring_.set_frame_tag(frame_counter_);
 
     // HiZ 纹理→SSBO 的延迟重排：上一帧按 256 对齐行距拷进 READBACK 的暂存，
@@ -846,14 +846,14 @@ void D3D12Backend::end_frame() {
         finish_screenshot();
     }
 
-    // 调试探针回读（env 门控；无挂起探针时零成本）。
+    // 纹理探针回读（env 门控；无挂起探针时零成本）。
     probe_drain();
 
-    // ★ 调试用串行化（GRYCE_D3D12_SERIALIZE=1）：每帧结束等 GPU 全部跑完。
+    // ★ 串行化开关（GRYCE_D3D12_SERIALIZE=1）：每帧结束等 GPU 全部跑完。
     //   默认 3 帧在飞时 CPU 会跑到 GPU 前面好几帧，TDR 在 begin_frame 才被发现，
-    //   于是"检测到挂起的帧号"和"真正挂掉的那一帧"对不上，无法定位。串行化后
-    //   CPU 永远领先 GPU 0 帧，pass 轨迹的最后一条就是 GPU 真正卡住的位置。
-    //   仅调试用 —— 会彻底牺牲 CPU/GPU 并行度。
+    //   于是"检测到挂起的帧号"和"真正挂掉的那一帧"对不上。串行化后 CPU 永远
+    //   领先 GPU 0 帧，pass 轨迹的最后一条就是 GPU 真正卡住的位置。
+    //   代价是彻底牺牲 CPU/GPU 并行度，仅按需开启。
     if (gpu_serialize_) {
         swapchain_.wait_all();
         if (device_) {
@@ -1421,7 +1421,7 @@ void D3D12Backend::release_screenshot_staging() {
 }
 
 // ---------------------------------------------------------------------------
-// 调试探针（SSR 竞态排查）
+// 纹理探针（SSR 帧丢失定位）
 //
 // 背景：D3D12 上 SSR 偶发"整帧丢失"（合法序列、GPU 校验零报错、时序相关）。
 // 本探针在指定帧把 SSR 链上的纹理拷回 CPU，输出内容统计（均值 / 非零占比 /
@@ -1622,7 +1622,7 @@ bool D3D12Backend::capture_frame_rgba(std::vector<uint8_t>& out, int& width, int
     // 同步回读接口（非渲染线程帧内路径；引擎正式截图走 request_screenshot +
     // finish_screenshot 的两阶段异步路径）。这里用自建命令列表立刻拷贝：
     // 前提是**本帧命令已提交**（否则 back buffer 里没有本帧内容 —— 那正是这条
-    // 路径的固有局限，正式路径正是为绕开它而生）。用于调试/兼容调用。
+    // 路径的固有局限，正式路径正是为绕开它而生）。仅供兼容/回退调用。
     if (!initialized_ || !device_ || !queue_) return false;
 
     const uint32_t w = swapchain_.width();
@@ -2795,7 +2795,7 @@ RenderBackendCapabilities D3D12Backend::get_capabilities() const {
 // ---------------------------------------------------------------------------
 // GPU 分段计时（D3D12 时间戳查询）
 //
-// 为什么这套计时对当前调试特别重要：D3D12 在 frame 5 会 DEVICE_HUNG（TDR）。
+// 为什么需要这套计时：D3D12 在 frame 5 会 DEVICE_HUNG（TDR）。
 // TDR 是"GPU 某个 pass 执行超时（默认 2s）被驱动重置"，而 CPU 侧日志只能看到
 // 提交了哪些命令，看不到 GPU 真正卡在哪一段。时间戳查询可以在设备被移除后，
 // 把"最后一次成功推进到的时间戳"读出来 —— 那个段就是挂起点。

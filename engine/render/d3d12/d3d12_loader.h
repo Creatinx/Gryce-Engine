@@ -30,7 +30,7 @@ using PfnD3D12SerializeRootSignature = HRESULT(WINAPI*)(
     const D3D12_ROOT_SIGNATURE_DESC* root_signature_desc, D3D_ROOT_SIGNATURE_VERSION version,
     ID3DBlob** blob, ID3DBlob** error_blob);
 
-// D3D12GetDebugInterface 同样是 d3d12.dll 的自由函数（M5 排查用）。
+// D3D12GetDebugInterface 同样是 d3d12.dll 的自由函数（用于打开调试层）。
 // 拿到的 ID3D12Debug 用来在创建设备前打开调试层；调试层会逐条校验 API 调用并
 // 把违规记进 ID3D12InfoQueue —— 这是定位"设备被移除"最直接的手段：
 // 没有它只能看到一堆 0x887A0005（那全是**后果**，不是原因）。

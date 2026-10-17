@@ -103,6 +103,17 @@ GLFWwindow* Window::create_glfw_window(const std::string& title, int w, int h, W
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     }
 
+#ifdef __EMSCRIPTEN__
+    // Emscripten 的 GLFW 端口：显式请求 WebGL2（= GLES 3.0）context。
+    // 不设版本 hint 时端口可能给 WebGL1（没有 instancing / depth texture /
+    // UBO，等于不可用）。配合链接选项 -sMAX_WEBGL_VERSION=2 -sFULL_ES3。
+    // 桌面构建不进这段（GLFW_OPENGL_ES_API 在桌面会直接创建失败）。
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#endif
+
     GLFWmonitor* monitor = nullptr;
     int win_w = w;
     int win_h = h;
@@ -210,7 +221,9 @@ Window::Window(const std::string& title, int width, int height, WindowMode mode,
 
     // 无边框窗口边缘缩放边框（Win32 WndProc 子类化）。
     // GLFW 无边框窗口用 WS_POPUP（无 WS_THICKFRAME），不装这个就没有拖边缩放。
+#ifdef _WIN32
     install_resize_border();
+#endif
 }
 
 Window::~Window() {
@@ -219,7 +232,9 @@ Window::~Window() {
 
 void Window::destroy() {
     if (handle_) {
+#ifdef _WIN32
         remove_resize_border();
+#endif
         glfwDestroyWindow(handle_);
         GLOG_INFO("Window destroyed: '{}'", title_);
         handle_ = nullptr;
@@ -484,8 +499,8 @@ void Window::begin_caption_drag() {
 
 // 无边框窗口边缘缩放：子类化 WndProc，在 WM_NCHITTEST 返回缩放 hit-test 码。
 // 需要在窗口创建后（任何 GLFW 回调就绪后）调用；窗口销毁前调用 remove_resize_border() 还原。
-void Window::install_resize_border() {
 #ifdef _WIN32
+void Window::install_resize_border() {
     HWND hwnd = glfwGetWin32Window(handle_);
     if (!hwnd || original_wndproc_) return;
     win32_hwnd_ = hwnd;
@@ -493,11 +508,9 @@ void Window::install_resize_border() {
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&window_resize_wndproc)));
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
     GLOG_INFO("Window: resize border installed (frameless edge-resize)");
-#endif
 }
 
 void Window::remove_resize_border() {
-#ifdef _WIN32
     HWND hwnd = static_cast<HWND>(win32_hwnd_);
     if (hwnd && original_wndproc_) {
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(original_wndproc_));
@@ -505,8 +518,8 @@ void Window::remove_resize_border() {
         original_wndproc_ = nullptr;
         GLOG_INFO("Window: resize border removed");
     }
-#endif
 }
+#endif
 
 void Window::set_resize_callback(ResizeCallback cb) {
     resize_callback_ = std::move(cb);

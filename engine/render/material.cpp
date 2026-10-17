@@ -35,7 +35,51 @@ bool Material::apply_preset(const std::string& name) {
     sheen_tint = math::Vector3f(preset->sheen_tint[0], preset->sheen_tint[1],
                                 preset->sheen_tint[2]);
     anisotropy = preset->anisotropy;
+    albedo_overridden = true;
+    roughness_overridden = true;
+    metallic_overridden = true;
     return true;
+}
+
+void Material::copy_settings_from(const Material& src) {
+    name = src.name;
+    albedo_color = src.albedo_color;
+    roughness = src.roughness;
+    metallic = src.metallic;
+    ao = src.ao;
+    emissive_color = src.emissive_color;
+    opacity = src.opacity;
+    blend_mode = src.blend_mode;
+    two_sided = src.two_sided;
+    uv_scale = src.uv_scale;
+    uv_offset = src.uv_offset;
+    clearcoat = src.clearcoat;
+    clearcoat_roughness = src.clearcoat_roughness;
+    sheen = src.sheen;
+    sheen_tint = src.sheen_tint;
+    anisotropy = src.anisotropy;
+    anisotropy_rotation = src.anisotropy_rotation;
+    softness = src.softness;
+    drag_coefficient = src.drag_coefficient;
+    density = src.density;
+    preset_name = src.preset_name;
+    albedo_overridden = src.albedo_overridden;
+    roughness_overridden = src.roughness_overridden;
+    metallic_overridden = src.metallic_overridden;
+    // 贴图路径与 use 标志属于"派生数据"：多数情况下由各子网格自己的文件材质
+    // 补齐；只有父实体手工指过路径（非空）时才继承，避免把同一个路径套给所有子网格。
+    auto inherit_map = [](const std::string& src_path, std::string& dst_path, bool& dst_use) {
+        if (!src_path.empty()) {
+            dst_path = src_path;
+            dst_use = true;
+        }
+    };
+    inherit_map(src.albedo_map_path, albedo_map_path, use_albedo_map);
+    inherit_map(src.normal_map_path, normal_map_path, use_normal_map);
+    inherit_map(src.roughness_map_path, roughness_map_path, use_roughness_map);
+    inherit_map(src.metallic_map_path, metallic_map_path, use_metallic_map);
+    inherit_map(src.ao_map_path, ao_map_path, use_ao_map);
+    inherit_map(src.emissive_map_path, emissive_map_path, use_emissive_map);
 }
 
 int Material::preset_count() { return k_material_preset_count; }
@@ -90,8 +134,11 @@ void Material::deserialize(const nlohmann::json& in) {
     name = in.value("name", name);
     auto c = in.value("albedo_color", std::vector<float>{1.0f, 1.0f, 1.0f});
     if (c.size() >= 3) albedo_color = math::Vector3f(c[0], c[1], c[2]);
+    if (in.contains("albedo_color")) albedo_overridden = true;
     roughness = in.value("roughness", roughness);
+    if (in.contains("roughness")) roughness_overridden = true;
     metallic = in.value("metallic", metallic);
+    if (in.contains("metallic")) metallic_overridden = true;
     ao = in.value("ao", ao);
     auto e = in.value("emissive_color", std::vector<float>{0.0f, 0.0f, 0.0f});
     if (e.size() >= 3) emissive_color = math::Vector3f(e[0], e[1], e[2]);
@@ -178,7 +225,7 @@ static RHITextureHandle create_fallback_texture(RenderContext* ctx, TextureForma
     return tex;
 }
 
-RHITextureHandle load_texture_from_path(RenderContext* ctx, const std::string& path) {
+RHITextureHandle load_texture_from_path(RenderContext* ctx, const std::string& path, bool srgb) {
     if (path.empty() || !ctx) return RHITextureHandle{};
 
     // 1. 从资源管线获取 CPU 侧 TextureData（带缓存与引用计数）
@@ -195,6 +242,17 @@ RHITextureHandle load_texture_from_path(RenderContext* ctx, const std::string& p
     if (!tex.is_valid() || !tex_ptr) {
         unsigned char white_rgba[4] = {255, 255, 255, 255};
         return create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
+    }
+    if (srgb) {
+        if (tex_data->is_compressed) {
+            // 压缩格式目前没有 *_SRGB 变体（TextureFormat 里没有 BC*_SRGB），
+            // 只能按线性上传 —— 压缩过的颜色贴图会比未压缩的亮一档。
+            GLOG_WARN("Material: '{}' is compressed, sRGB decode not applied", path);
+        } else if (tex_data->is_float) {
+            GLOG_WARN("Material: '{}' is float, sRGB flag ignored", path);
+        } else {
+            tex_ptr->set_srgb(true);
+        }
     }
 
     if (tex_data->is_compressed) {
@@ -227,8 +285,8 @@ RHITextureHandle load_texture_from_path(RenderContext* ctx, const std::string& p
     return tex;
 }
 
-RHITextureHandle Material::load_texture(RenderContext* ctx, const std::string& path) {
-    return load_texture_from_path(ctx, path);
+RHITextureHandle Material::load_texture(RenderContext* ctx, const std::string& path, bool srgb) {
+    return load_texture_from_path(ctx, path, srgb);
 }
 
 void Material::upload_to_gpu(RenderContext* ctx) {
@@ -239,7 +297,9 @@ void Material::upload_to_gpu(RenderContext* ctx) {
     // 在没有纹理绑定的情况下被未定义读取。
     // fallback 格式与真实贴图格式保持一致，防止 NVIDIA 驱动因 sampler
     // 面对的纹理格式/通道数变化而频繁重新编译 shader。
-    albedo_map_ = load_texture(ctx, albedo_map_path);
+    // albedo / emissive 是 sRGB 颜色图，必须硬件解码到线性空间再参与光照；
+    // normal / roughness / metallic / ao 是数据图，保持线性。
+    albedo_map_ = load_texture(ctx, albedo_map_path, true);
     if (!albedo_map_.is_valid()) {
         unsigned char white_rgb[3] = {255, 255, 255};
         albedo_map_ = create_fallback_texture(ctx, TextureFormat::RGB8, white_rgb, sizeof(white_rgb));
@@ -270,7 +330,7 @@ void Material::upload_to_gpu(RenderContext* ctx) {
         ao_map_ = create_fallback_texture(ctx, TextureFormat::RGBA8, white_rgba, sizeof(white_rgba));
     }
 
-    emissive_map_ = load_texture(ctx, emissive_map_path);
+    emissive_map_ = load_texture(ctx, emissive_map_path, true);
     if (!emissive_map_.is_valid()) {
         unsigned char black_rgba[4] = {0, 0, 0, 255};
         emissive_map_ = create_fallback_texture(ctx, TextureFormat::RGBA8, black_rgba, sizeof(black_rgba));

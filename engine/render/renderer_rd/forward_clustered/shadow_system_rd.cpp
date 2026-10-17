@@ -322,7 +322,7 @@ void ShadowSystemRD::update(const math::Camera& camera,
             cascade_light_matrices_[i] = _compute_cascade_light_matrix(camera, i, current_light_dir_);
             light_matrices_.push_back(cascade_light_matrices_[i]);
 
-            // 打印级联光照矩阵的平移行（row 3 = 位移分量）用于调试
+            // 打印级联光照矩阵的平移行（row 3 = 位移分量），供核对阴影矩阵推导
             const auto& m = cascade_light_matrices_[i];
             GLOG_INFO("CSM cascade {} light matrix translation: ({:.3f}, {:.3f}, {:.3f})",
                       i, m(3, 0), m(3, 1), m(3, 2));

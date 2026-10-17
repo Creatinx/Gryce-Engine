@@ -10,6 +10,7 @@
 #include <thread>
 #include <typeindex>
 #include <unordered_map>
+#include <vector>
 
 namespace gryce_engine::assets {
 

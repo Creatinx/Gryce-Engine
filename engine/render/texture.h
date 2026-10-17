@@ -169,6 +169,17 @@ public:
         (void)data; (void)size;
         return false;
     }
+
+    // 颜色纹理标记：这张图按 sRGB 编码，采样时硬件解码到线性空间。
+    // 必须在 load_from_file / upload_data **之前**调用 —— 后端用 *_SRGB 内部
+    // 格式创建（GL_SRGB8 / VK_*_SRGB / DXGI_*_SRGB），mip 生成与过滤也在
+    // 线性空间完成。只对 albedo / emissive 这类颜色图成立；
+    // normal / roughness / metallic / ao 是数据图，绝不能开（开了等于给数值做 gamma）。
+    //
+    // 背景：渲染管线最后一步是 pow(1/2.2) 编码输出，材质贴图若不解码，中灰
+    // （sRGB 0.5）被当成线性 0.5（实际应是 0.21）—— 漫反射偏亮、饱和度偏低，
+    // 整片表面上像是"白塑料/金属"。
+    virtual void set_srgb(bool srgb) { (void)srgb; }
     virtual bool create_empty(int width, int height, int channels = 4) = 0;
     virtual bool upload_data(const void* data, int width, int height, int channels = 4) = 0;
     // 上传浮点（HDR）2D 纹理：data 指向 width×height×channels 个 float，

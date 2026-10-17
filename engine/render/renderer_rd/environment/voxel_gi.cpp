@@ -51,8 +51,7 @@ void VoxelGI_RD::destroy_voxels() {
 void VoxelGI_RD::inject_light(const math::Vector3f& position, const math::Vector3f& color,
                                float intensity, const math::Vector3f& direction) {
     if (!initialized_) return;
-    // TODO: 实现光照注入到体素纹理
-    // 使用计算 shader 将光照写入 voxel_tex_
+    // 光照注入尚未实现：计划用计算 shader 将光照写入 voxel_tex_。
 }
 
 } // namespace gryce_engine::render

@@ -84,7 +84,12 @@ public:
     // 无边框窗口拖动：将鼠标按下事件转换为系统标题栏拖动
     void begin_caption_drag();
     // 无边框窗口边缘缩放子类化：原始 WndProc（win32 专用，供 window.cpp 内 WndProc 使用）
+#ifdef _WIN32
     void* native_wndproc() const { return original_wndproc_; }
+#else
+    // 非 Win32 平台没有 WndProc 子类化概念，恒返回 nullptr（保持 API 表面一致）
+    void* native_wndproc() const { return nullptr; }
+#endif
 
     // 窗口大小变化回调
     using ResizeCallback = std::function<void(int width, int height)>;

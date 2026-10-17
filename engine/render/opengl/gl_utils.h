@@ -1,3 +1,6 @@
+// gl_utils.h — OpenGL 后端公共工具：GL 错误码转字符串与错误检查宏（仅调试
+// 构建生效）、RenderDoc / Nsight 的调试组标记、GL 调试输出回调，以及纹理
+// mip 链 / 各向异性过滤等 GL 辅助函数。
 #pragma once
 
 #include <algorithm>
@@ -110,7 +113,9 @@ inline void gl_debug_callback(GLenum source, GLenum type, GLuint id,
 }
 
 inline void gl_register_debug_callback() {
-#if defined(_DEBUG) || defined(DEBUG)
+// WebGL2 没有 GL_DEBUG_OUTPUT / glDebugMessageCallback（ES3.0 核心不含），
+// 整块跳过；Emscripten 的 GL 错误检查（GL_CHECK_ERROR）仍然有效。
+#if (defined(_DEBUG) || defined(DEBUG)) && !defined(__EMSCRIPTEN__)
     glEnable(GL_DEBUG_OUTPUT);
     glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
     glDebugMessageCallback(gl_debug_callback, nullptr);
@@ -139,6 +144,61 @@ inline bool gl_dsa_available() {
         }
     }
     return available;
+}
+
+// ---------------------------------------------------------------------------
+// 完整 mip 链级数 = floor(log2(max(w,h))) + 1
+//
+// glTextureStorage2D 建立的是「不可变存储」：levels 参数决定此后能存在多少级
+// mip。只传 1 的话，后面再调 glGenerateTextureMipmap 也无处可写 —— 纹理只有
+// level 0，而 MIN_FILTER 又是 GL_LINEAR_MIPMAP_LINEAR，纹理处于不完整状态，
+// 采样结果只能由驱动兜底。必须带上完整级数。
+// ---------------------------------------------------------------------------
+inline int gl_full_mip_levels(int width, int height) {
+    int dim = std::max(width, height);
+    if (dim <= 0) return 1;
+    int levels = 1;
+    while (dim > 1) {
+        dim >>= 1;
+        ++levels;
+    }
+    return levels;
+}
+
+// ---------------------------------------------------------------------------
+// 各向异性过滤（GL_EXT_texture_filter_anisotropic）
+//
+// Vulkan 后端对所有非深度纹理的采样器都开了 maxAnisotropy = 设备上限
+// （vk_texture.cpp 的多处 create sampler），GL 后端此前完全没设 —— 同一个
+// 场景在斜视地面、大面积 UV 拉伸处 GL 会明显更糊。
+//
+// 扩展与上限只探测一次；扩展缺失时静默跳过（不影响任何既有行为）。
+// ---------------------------------------------------------------------------
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
+#endif
+#ifndef GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#endif
+
+// target 仅在非 DSA 路径使用（DSA 用 glTextureParameterf 直接改纹理状态）。
+inline void gl_apply_anisotropy(GLuint texture_id, GLenum target, bool dsa) {
+    static bool checked = false;
+    static float max_aniso = 1.0f;
+    if (!checked) {
+        checked = true;
+        if (GLEW_EXT_texture_filter_anisotropic) {
+            GLfloat value = 1.0f;
+            glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &value);
+            if (value > 1.0f) max_aniso = value;
+        }
+    }
+    if (max_aniso <= 1.0f) return;
+    if (dsa) {
+        glTextureParameterf(texture_id, GL_TEXTURE_MAX_ANISOTROPY_EXT, max_aniso);
+    } else {
+        glTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, max_aniso);
+    }
 }
 
 } // namespace gryce_engine::render

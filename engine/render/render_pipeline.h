@@ -34,6 +34,7 @@ namespace components { class TrailRenderer; }
 namespace components { class InstancedMeshRenderer; }
 namespace components { class Terrain; }
 namespace components { class Billboard; }
+namespace components { class MeshRenderer; }
 namespace components { class TextMesh3D; }
 namespace components { class Skybox3D; }
 namespace components { class ReflectionProbe; }
@@ -216,6 +217,18 @@ public:
     void set_pcss_enabled(bool enabled) { pcss_enabled_ = enabled; }
     bool pcss_enabled() const { return pcss_enabled_; }
     void set_pcss_params(float light_size, float max_radius_texels, float tap_scale = 1.0f);
+
+    // 实际下发给 shader 的 PCSS 开关。
+    //
+    // blocker 搜索只为算一个量：penumbra 宽度，而它最终被 clamp 到
+    // [min_radius, max_radius]（min_radius 就是 PCF 的屏幕空间一致半径）。
+    // 当 light_size * blocker_scale < 1 时，要算出比 1 texel 更宽的半影，
+    // 必须让"接收面深度 > 1/(light_size*blocker_scale) 倍的遮挡面深度"，
+    // 在 CSM 里几乎只出现在近裁面附近 —— 换句话说 blocker 搜索算完也会被
+    // 丢给 min_radius，结果与 PCF 逐字节相同（实测 1080p meanDiff=0），
+    // 却白付 16 次深度采样（1080p 实测 2.1ms / 占 scene 24%）。
+    // 这种情况直接退回 PCF，并在第一次发生时打一条日志说明原因。
+    bool pcss_effectively_enabled();
 
     // -----------------------------------------------------------------------
     // HDR 分析视图：0 Final, 1 Albedo, 2 Normal, 3 Roughness, 4 Metallic,
@@ -671,6 +684,15 @@ private:
     std::vector<SkinnedDrawItem> skinned_opaque_items_;
     std::vector<SkinnedDrawItem> skinned_transparent_items_;
 
+    // 收集一台 MeshRenderer 的绘制项（空间分块 LOD 时一块一项）。
+    // 前向与延迟两条路径共用，避免两处逻辑漂移。
+    void append_mesh_renderer_items(components::MeshRenderer* mr, const math::Matrix4f& model,
+                                    const math::Vector3f& cam_pos, const Frustum& frustum,
+                                    std::vector<DrawItem>& opaque_items,
+                                    std::vector<DrawItem>& transparent_items,
+                                    std::vector<DrawItem>& viewmodel_items) const;
+
+
     // 连续相同材质跳过重复 bind（按 shader 分开缓存，每帧/每 pass 重置）
     const Material* last_bound_material_pbr_ = nullptr;
     const Material* last_bound_material_skinned_ = nullptr;
@@ -871,7 +893,7 @@ private:
     // PendingBatch（不进 instanced_items_，避免被 draw_instanced 重复绘制）。
     // 必须在 build_instanced_batches 之后调用 —— 那里会 clear pending_batches_。
     struct InstancedGpuCullItem {
-        components::InstancedMeshRenderer* owner = nullptr;  // 仅调试/统计用
+        components::InstancedMeshRenderer* owner = nullptr;  // 来源组件（统计/回查用，不参与渲染）
         PendingBatch batch;
     };
     std::vector<InstancedGpuCullItem> instanced_gpu_cull_items_;
@@ -1093,6 +1115,17 @@ private:
     std::vector<LodGroupItem> lod_group_items_;
 
     // -----------------------------------------------------------------------
+    // MeshRenderer 自动 LOD
+    //
+    // 每帧在阴影/主绘制之前跑一次：按相机位置把每个 MeshRenderer 的 LOD 级别
+    // 选定并写回组件（active_lod_level），需要时投递低模的 GPU 上传命令。
+    // 之后的阴影 pass、前向/延迟收集都只读 mr->draw_mesh_handle()，不再各自
+    // 判断级别 —— 先选后画，保证同一帧里阴影与颜色用的完全是同一级几何。
+    // 级别选择规则见 components::MeshRenderer::update_lod（误差反推距离）。
+    // -----------------------------------------------------------------------
+    void update_mesh_lods(scene::Scene& scene, RenderContext& ctx);
+
+    // -----------------------------------------------------------------------
     // LightProbeGroup（纯数据，接入间接光路径）
     // collect 每帧调用一次：从管线已缓存的 CPU 侧环境 IBL irradiance 采样出
     // 低频辐照度颜色，乘 intensity 并按探针体与相机的距离衰减，累加进
@@ -1288,10 +1321,9 @@ private:
     RHIShaderHandle contact_shadow_shader_;
     int cs_w_ = 0;
     int cs_h_ = 0;
-    // 临时置为 false：接触阴影在 tonemap 里对所有画面统一做一次乘积，
-    // 物体会在接地面周围压出一圈软暗渐变，形态与 SSAO 无关（开关 SSAO 都在），
-    // 需要用 A/B 对比确认它是否就是那个"阴影问题"。
-    // 确认完记得改回 true（或改成从 project.data 读，别长期写死）。
+    // 接触阴影默认关闭：该效果在 tonemap 里对全画面统一做一次乘积，会在接地面
+    // 周围压出一圈软暗渐变（形态与 SSAO 无关，且与 SSAO 开关无关）；这圈渐变
+    // 是否即目标"阴影问题"的成因尚待比对确认，后续可改为从 project.data 读取。
     bool contact_shadow_enabled_ = false;
     float contact_shadow_strength_ = 0.6f;
     float contact_shadow_radius_ = 0.5f;   // 世界单位

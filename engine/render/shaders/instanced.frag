@@ -655,7 +655,7 @@ void main() {
         vec3 prefiltered = textureLod(uPrefilterMap, R, roughness * 4.0).rgb;
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
-        vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+        vec3 specular = prefiltered * (F0 * brdf.x + brdf.y);
         ibl_specular = specular * ao * uIBLIntensity;
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);

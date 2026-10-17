@@ -999,9 +999,9 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
         auto* t = entity->get_component<components::Transform>();
         if (!t) return;
 
-        // 计算世界矩阵（简化：使用本地矩阵，TODO: 实际应从父级传播）
+        // 计算世界矩阵（简化：暂用本地矩阵，父级传播后续补齐）
         math::Matrix4f world = t->local_matrix();
-        math::Matrix4f prev_world = world; // TODO: 存储上一帧变换
+        math::Matrix4f prev_world = world; // 暂用当前矩阵充当上一帧（跨帧变换存储后续补齐）
         math::Vector3f world_pos = t->position;
 
         // 收集 MeshRenderer
@@ -1100,7 +1100,7 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
 uint32_t RenderForwardClustered::_compute_variant_key(const scene::Entity* entity, bool transparent) const {
     uint32_t key = SHADER_VARIANT_BASE;
     if (transparent) key |= SHADER_VARIANT_TRANSPARENT;
-    // TODO: 根据 entity 的材质/组件计算更多变体标志
+    // 变体标志当前只按透明/不透明区分（材质/组件级标志后续扩充）
     return key;
 }
 

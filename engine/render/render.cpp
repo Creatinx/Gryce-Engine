@@ -14,6 +14,10 @@ namespace gryce_engine::render {
 std::unique_ptr<IRenderBackend> create_render_backend(RenderAPI api) {
     switch (api) {
     case RenderAPI::OpenGL:
+    case RenderAPI::WebGL:
+        // WebGL 与桌面 OpenGL 共用同一实现：GLSL 同源、裁剪空间/深度方向
+        // 一致，差异收敛在 gl_webgl_shim.h（DSA）与 ES300 着色器转换，
+        // 全部由 #ifdef __EMSCRIPTEN__ 在编译期选择。
         return std::make_unique<GLBackend>();
     case RenderAPI::Vulkan:
 #ifdef GRYCE_HAS_VULKAN

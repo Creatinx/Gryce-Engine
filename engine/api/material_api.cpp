@@ -173,12 +173,15 @@ int GMaterial_SetField(GEntityHandle entity, uint64_t comp_type_hash,
 
     if (!in_floats || float_count < spec.float_count) return -1;
     switch (field) {
-        case GMAT_ALBEDO_COLOR:  m.albedo_color = {in_floats[0], in_floats[1], in_floats[2]}; break;
+        case GMAT_ALBEDO_COLOR:  m.albedo_color = {in_floats[0], in_floats[1], in_floats[2]};
+                                 m.albedo_overridden = true; break;
         case GMAT_EMISSIVE_COLOR:m.emissive_color = {in_floats[0], in_floats[1], in_floats[2]}; break;
         case GMAT_UV_SCALE:      m.uv_scale = {in_floats[0], in_floats[1]}; break;
         case GMAT_UV_OFFSET:     m.uv_offset = {in_floats[0], in_floats[1]}; break;
-        case GMAT_ROUGHNESS:     m.roughness = in_floats[0]; break;
-        case GMAT_METALLIC:      m.metallic = in_floats[0]; break;
+        case GMAT_ROUGHNESS:     m.roughness = in_floats[0];
+                                 m.roughness_overridden = true; break;
+        case GMAT_METALLIC:      m.metallic = in_floats[0];
+                                 m.metallic_overridden = true; break;
         case GMAT_AO:            m.ao = in_floats[0]; break;
         case GMAT_OPACITY:       m.opacity = in_floats[0]; break;
         case GMAT_BLEND_MODE:    m.blend_mode = in_floats[0] > 0.5f ? Material::BlendMode::Blend : Material::BlendMode::Opaque; break;

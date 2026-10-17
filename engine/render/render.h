@@ -1,3 +1,7 @@
+// render.h — 渲染后端抽象层（RHI）：IRenderBackend 接口与后端能力查询。
+// OpenGL / Vulkan / D3D12 三后端实现同一接口，上层（RenderContext /
+// RenderPipeline）只面向此接口编程；逐帧状态一律经 RenderContext 命令缓冲
+// 提交，主线程不得直接调用后端的变值接口。
 #pragma once
 
 #include <cstdint>
@@ -154,10 +158,11 @@ public:
     // 调用方须知：关闭后必须重新绑定 framebuffer 才能继续绘制。
     virtual void end_render_pass_for_transfer() {}
 
-    // ---- 调试探针（可选，默认空实现）----
+    // ---- 纹理探针（可选能力，默认空实现）----
     // 把指定纹理拷回 CPU 并输出统计信息（均值 / 非零占比 / 内容哈希），
-    // 用于定位"合法序列算出不同结果"类的间歇性画面问题（D3D12 SSR 竞态排查）。
-    // 仅调试用：实现方自行门控（环境变量），对正常路径零影响。
+    // 用于比对同一场景在不同后端、不同次运行下是否算出相同结果
+    //（间歇性画面差异的定位手段）。实现方自行门控（环境变量），对正常
+    // 渲染路径零影响。
     virtual void probe_texture(RHITextureHandle /*tex*/, const char* /*tag*/) {}
 
     // 指定后续间接绘制的"每实例属性流"（替代 mesh 自带的实例缓冲）。
@@ -273,13 +278,17 @@ public:
 
 // 渲染后端分层：
 //   Vulkan —— 默认后端（首选，全功能）
-//   OpenGL —— 兼容后端（旧硬件 / 调试用）
+//   OpenGL —— 兼容后端（旧硬件兼容 / 排障对照）
 //   DX11 / DX12 —— WinNative 预留，尚未实现（工厂返回 nullptr）
+//   WebGL —— Emscripten 构建专用：与 OpenGL 共用 GLBackend 实现，
+//            差异（DSA shim / GLES3 头 / ES300 着色器）全部关在
+//            #ifdef __EMSCRIPTEN__ 内，桌面构建零影响
 enum class RenderAPI {
     Vulkan,
     OpenGL,
     DX11,
-    DX12
+    DX12,
+    WebGL
 };
 
 // 根据 API 创建对应后端；DX11/DX12 为预留项，当前返回 nullptr。

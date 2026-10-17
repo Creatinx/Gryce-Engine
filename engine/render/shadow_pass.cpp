@@ -1,8 +1,12 @@
+// shadow_pass.cpp — 阴影子系统（RenderPipeline 的阴影部分）：级联阴影贴图的
+// 创建与缩放、PCSS 参数与半影下限判定、VSM 颜色目标与分离模糊、光源空间
+// 矩阵更新，以及 shadow pass 的开始/结束。
 #include "render_pipeline.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -137,11 +141,37 @@ void RenderPipeline::set_pcss_params(float light_size, float max_radius_texels, 
     sync_shadow_params_to_post_process();
 }
 
+bool RenderPipeline::pcss_effectively_enabled() {
+    if (!pcss_enabled_) return false;
+
+    // penumbra 能被算到的下限尺度：light_size * blocker_scale 对应
+    // "接收面深度是遮挡面 2 倍"时的半影宽度（texel）。小于 1 texel 时，
+    // blocker 搜索的结果必然被 shadow_filter_radius 的下限吃掉。
+    const float reach = pcss_light_size_ * pcss_tap_scale_;
+    if (reach >= 1.0f) return true;
+
+    // GRYCE_FORCE_PCSS=1：强制保留 blocker 搜索，用于对照验证"半影不足时
+    // 自动退回 PCF"这一退化行为的结果一致性。
+    static const bool force_pcss = std::getenv("GRYCE_FORCE_PCSS") != nullptr;
+    if (force_pcss) return true;
+
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        GLOG_INFO("PCSS: light_size({}) * blocker_scale({}) = {:.3f} < 1 texel —— 半影恒被 "
+                  "PCF 半径夹住，blocker 搜索不会改变结果，已自动退回 PCF（省 16 次深度采样）。"
+                  "要看接触硬化请把 pcss_light_size 提到 10~100。",
+                  pcss_light_size_, pcss_tap_scale_, reach);
+    }
+    return false;
+}
+
 
 // 把阴影相关设置同步进 PostProcessParams：前向渲染路径（demo 用的就是它）
 // 从 pp_params_ 里取 PCSS/级联 bias，不同步的话 API 设了也不会生效。
 void RenderPipeline::sync_shadow_params_to_post_process() {
-    pp_params_.pcss_enabled = pcss_enabled_ ? 1 : 0;
+    // 与主前向路径用同一判据：退化参数下 PCSS 与 PCF 结果相同，没有必要付 blocker 搜索
+    pp_params_.pcss_enabled = pcss_effectively_enabled() ? 1 : 0;
     pp_params_.pcss_light_size = pcss_light_size_;
     pp_params_.pcss_max_radius = pcss_max_radius_;
     pp_params_.pcss_blocker_scale = pcss_tap_scale_;

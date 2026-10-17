@@ -8,6 +8,29 @@ project(GryceEngineRenderer
 option(GRYCE_ENABLE_IMGUI "Enable ImGui editor overlay in GryceRenderer" ON)
 
 # ===========================================================================
+# WebGL（Emscripten/wasm）构建
+#
+# 检测到 EMSCRIPTEN 工具链时自动启用（无 emsdk 的机器上 CMake 根本不进
+# 这个分支，桌面构建零影响）。Web 目标下：
+#   * 三个引擎 SHARED DLL 改静态库，链成单一 wasm；
+#   * GLEW/opengl32/gdi32/winmm/MinGW 运行时全部不参与（WebGL2 用
+#     GLES3 头 + engine/render/opengl/gl_webgl_shim.h 的 DSA shim）；
+#   * GLFW 走 Emscripten 自带端口（-s USE_GLFW=3）；
+#   * Box2D/Jolt/Assimp/Amplitude 无法为 wasm 链接 → 物理/音频桩化 +
+#     首版 OBJ-only（内置 ObjLoader 零依赖）；
+#   * --api webgl 与桌面 OpenGL 共用 GLBackend（docs/webgl-backend-plan.md）。
+# ===========================================================================
+option(GRYCE_ENABLE_WEBGL "启用 WebGL（Emscripten）构建" OFF)
+if(EMSCRIPTEN)
+    set(GRYCE_ENABLE_WEBGL ON)
+endif()
+if(GRYCE_ENABLE_WEBGL AND NOT EMSCRIPTEN)
+    message(FATAL_ERROR
+        "GRYCE_ENABLE_WEBGL=ON 需要 Emscripten 工具链（emcmake cmake ...）。\n"
+        "桌面构建请不要开启该选项。")
+endif()
+
+# ===========================================================================
 # 依赖定位（可移植，不含任何机器专属绝对路径）
 # cmake/GryceDependencyPaths.cmake 按 GRYCE_DEP_PREFIX / MSYS2_ROOT+MSYSTEM /
 # MSYSTEM_PREFIX / 编译器路径 逐级推断候选前缀，写入 CMAKE_PREFIX_PATH。
@@ -51,7 +74,9 @@ endif()
 # 一致；需要跑在老于 Haswell 的机器上时用 -DGRYCE_ENABLE_X86_V3=OFF 关闭。
 # ===========================================================================
 option(GRYCE_ENABLE_X86_V3 "启用 x86-64-v3 目标 ISA（AVX2/FMA/BMI/F16C/LZCNT/POPCNT）" ON)
-if(GRYCE_ENABLE_X86_V3 AND NOT MSVC
+# wasm 目标不认 -mavx2 等 x86 标志（EMSCRIPTEN 下 CMAKE_SYSTEM_PROCESSOR
+# 也可能是 x86_64，必须显式排除）。
+if(GRYCE_ENABLE_X86_V3 AND NOT MSVC AND NOT EMSCRIPTEN
    AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|X64)$")
     add_compile_options(-mavx2 -mbmi -mpopcnt -mlzcnt -mf16c -mfma -mfpmath=sse)
 endif()
@@ -78,7 +103,16 @@ endif()
 # 找不到时按 GRYCE_DEP_FETCH 策略用 FetchContent 拉源码构建（默认 AUTO）。
 # 共享库语义：引擎 DLL 与可执行文件各自调用 GLFW，动态库由 OS 加载一次，
 # 故优先挑 DLL 的导入库（libglfw3.dll.a、libglfw3dll.a），而不是静态 libglfw3.a。
+#
+# Emscripten 例外：GLFW 由 Emscripten 端口提供（-s USE_GLFW=3，头文件在
+# 工具链系统 include 里），不 find_package、不 FetchContent。
 # ===========================================================================
+if(EMSCRIPTEN)
+    add_library(glfw INTERFACE)
+    target_link_options(glfw INTERFACE "-sUSE_GLFW=3")
+    message(STATUS "GLFW: Emscripten port (-s USE_GLFW=3)")
+else()
+
 if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
     find_path(GLFW3_INCLUDE_DIR GLFW/glfw3.h)
     set(_gryce_saved_lib_suffixes ${CMAKE_FIND_LIBRARY_SUFFIXES})
@@ -114,6 +148,8 @@ else()
     endif()
 endif()
 
+endif() # EMSCRIPTEN
+
 # ===========================================================================
 # 物理依赖：Box2D（2D 刚体）+ Jolt Physics（3D 刚体）
 # 两者都以 CMake 配置包形式安装（box2dConfig.cmake / JoltConfig.cmake），
@@ -121,7 +157,17 @@ endif()
 # 搜索路径来自 CMAKE_PREFIX_PATH（见 GryceDependencyPaths），无需写死前缀。
 # 配置包只导出 RELEASE 配置，Debug/RelWithDebInfo 构建经 MAP_IMPORTED_CONFIG
 # 回退到 RELEASE 导入库，避免 "configuration not found" 报错。
+#
+# Emscripten 例外：预编译的 MinGW 库无法为 wasm 链接。物理系统源码已
+# #ifdef __EMSCRIPTEN__ 桩化（engine/ecs/systems/physics_system_*.cpp），
+# 这里提供空的 INTERFACE 导入目标让链接行不变。
 # ===========================================================================
+if(EMSCRIPTEN)
+    add_library(box2d::box2d INTERFACE IMPORTED)
+    add_library(Jolt::Jolt INTERFACE IMPORTED)
+    message(STATUS "Box2D/Jolt: Emscripten build (physics stubbed out)")
+else()
+
 if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
     find_package(box2d QUIET CONFIG)
     find_package(Jolt QUIET CONFIG)
@@ -146,6 +192,8 @@ if(NOT TARGET Jolt::Jolt)
         message(FATAL_ERROR "Jolt Physics unavailable: neither a system package nor FetchContent succeeded")
     endif()
 endif()
+
+endif() # EMSCRIPTEN
 
 # 配置包只导出 RELEASE 配置：Debug/RelWithDebInfo 构建需要把导入库回退到
 # RELEASE，否则报 "configuration not found"。该属性只对 IMPORTED 目标有效，
@@ -176,7 +224,15 @@ endif()
 # 与上面几项的区别：Assimp 是**可选**依赖——缺了只是非 OBJ 格式导入不可用
 # （engine/assets/asset_manager.cpp 里由 GRYCE_HAS_ASSIMP 条件编译，OBJ 不受
 # 影响），所以这里不 FATAL_ERROR，只告警降级。
+#
+# Emscripten 例外：预编译 MinGW 库无法为 wasm 链接，且 FetchContent 拉
+# assimp 源码编译耗时/体积都不适合首版 → Web 首版 OBJ-only（内置 ObjLoader
+# 零依赖），assimp 源码构建列为后续可选项。
 # ===========================================================================
+if(EMSCRIPTEN)
+    message(STATUS "Assimp: Emscripten build (OBJ-only via built-in ObjLoader)")
+else()
+
 if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
     find_package(assimp QUIET CONFIG)
 endif()
@@ -207,12 +263,23 @@ else()
         "OBJ import via the built-in ObjLoader is unaffected.")
 endif()
 
+endif() # EMSCRIPTEN
+
 # ===========================================================================
 # 音频依赖：Amplitude Audio SDK（SparkyStudios）
 # 以预编译静态库形式随仓库分发（third_party/amplitude）：SDK 源码需 GCC16
 # 补丁且构建耗时，故引擎侧只消费头文件 + libAmplitude.a 及其两个私有依赖
 # （libflatbuffers.a / libsamplerate.a，静态库不会自动带入 PRIVATE 依赖）。
+#
+# Emscripten 例外：预编译 .a 无法为 wasm 链接。音频系统源码已
+# #ifdef __EMSCRIPTEN__ 桩化（静音模式，API 表面不变），这里给一个空的
+# INTERFACE 导入目标让链接行不变。
 # ===========================================================================
+if(EMSCRIPTEN)
+    add_library(amplitude INTERFACE IMPORTED)
+    message(STATUS "Amplitude: Emscripten build (audio stubbed out)")
+else()
+
 set(AMPLITUDE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/amplitude)
 if(NOT EXISTS ${AMPLITUDE_ROOT}/lib/libAmplitude.a)
     message(FATAL_ERROR "Amplitude SDK not vendored under third_party/amplitude")
@@ -240,10 +307,22 @@ if(WIN32)
     target_link_libraries(amplitude INTERFACE ole32 uuid winmm user32 advapi32)
 endif()
 
+endif() # EMSCRIPTEN
+
 # ===========================================================================
 # GLEW：OpenGL 扩展加载。优先用系统包，缺失时按 GRYCE_DEP_FETCH 拉源码构建。
 # 两种情况都统一暴露成 GLEW::GLEW 目标，engine/ 只消费这个目标。
+#
+# Emscripten 例外：WebGL2 用 GLES3/gl3.h（工具链自带）+ DSA shim
+# （engine/render/opengl/gl_webgl_shim.h，经 cmake/web/GL/glew.h 的
+# <GL/glew.h> 替身间接包含），不链接任何 GLEW 库。这里给空的 INTERFACE
+# 目标让 engine/ 的链接行不变。
 # ===========================================================================
+if(EMSCRIPTEN)
+    add_library(GLEW::GLEW INTERFACE IMPORTED)
+    message(STATUS "GLEW: Emscripten build (GLES3 headers + gl_webgl_shim.h)")
+else()
+
 if(NOT GRYCE_DEP_FETCH STREQUAL "ON")
     find_path(GLEW_INCLUDE_DIR GL/glew.h)
     find_library(GLEW_LIBRARY NAMES glew32 GLEW glew)
@@ -277,6 +356,8 @@ else()
     endif()
 endif()
 
+endif() # EMSCRIPTEN
+
 # GryceRenderSmoke.exe 的运行时输出目录。engine/ 子目录里引擎 DLL 的
 # POST_BUILD 拷贝命令需要它（那边无法引用尚未定义的 exe target，
 # add_custom_command(TARGET) 也不允许跨目录挂命令，拷贝只能挂在 DLL 自身）。
@@ -301,9 +382,70 @@ add_executable(GryceRenderSmoke test/renderer_smoke.cpp)
 target_include_directories(GryceRenderSmoke PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/engine
 )
+if(EMSCRIPTEN)
+    # Web 构建：默认工程改为 MEMFS 里的 webgl_demo（--preload-file 落到
+    # /webgl_demo，相对路径即可被 fopen 解析），避免把 93MB 的桌面
+    # demo_project（FBX 占 92MB）塞进 wasm 包。
+    target_compile_definitions(GryceRenderSmoke PRIVATE
+        GRYCE_DEMO_PROJECT_ROOT="webgl_demo"
+    )
+    # 输出 GryceRenderSmoke.html 而不是 .js：Emscripten 只有生成 html 输出时
+    # 才会应用 --shell-file（否则 warning "--shell-file ignored when not
+    # generating html output"，壳文件被静默丢弃，Module.print 捕获不到）。
+    set_target_properties(GryceRenderSmoke PROPERTIES SUFFIX ".html")
+    # Web 调试开关：ASSERTIONS 让 abort 带原因串，DISABLE_EXCEPTION_CATCHING=0
+    # 让 C++ 异常能穿到 JS 层看栈（引擎里 async_loader / 资源加载都有 try/catch，
+    # 默认配置下未捕获异常会直接 Aborted() 且无任何信息）。
+    # 发布构建可设 GRYCE_WEBGL_DEBUG=OFF 缩小体积。
+    option(GRYCE_WEBGL_DEBUG "Web 构建保留 abort 断言与异常信息" ON)
+    if(GRYCE_WEBGL_DEBUG)
+        target_compile_options(GryceRenderSmoke PRIVATE "-fexceptions")
+        target_link_options(GryceRenderSmoke PRIVATE
+            "-sASSERTIONS=1"
+            "-sDISABLE_EXCEPTION_CATCHING=0"
+            "-sSTACK_OVERFLOW_CHECK=1"
+        )
+    endif()
+    target_link_options(GryceRenderSmoke PRIVATE
+        "-sUSE_GLFW=3"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sMAX_WEBGL_VERSION=2"
+        "-sFULL_ES3"
+        "-sSTACK_SIZE=1MB"
+        "--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/test/webgl_demo@/webgl_demo"
+        # 引擎默认 shader 树。Web 上 exe_base_dir() 落到 current_path()='/'，
+        # 而 core_shaders::engine_shaders_dir() 的候选 #1 正是 '<base>/shaders'，
+        # 所以预载到 /shaders 即可被兜底命中（MEMFS 里就是普通文件，shader
+        # 热重载路径不受影响）。191 个文件 833K。
+        "--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/engine/render/shaders@/shaders"
+        "--shell-file=${CMAKE_CURRENT_SOURCE_DIR}/test/webgl_shell.html"
+        # 壳的截图外取要读 MEMFS（Module.FS）。Emscripten 6.x 对未导出的运行时
+        # 方法做了"访问即 abort"处理（Aborted('FS' was not exported...)），
+        # 不导出会让壳里的 Module.FS 读取把整个运行时杀掉。
+        "-sEXPORTED_RUNTIME_METHODS=FS"
+    )
+    # 资源打包是**链接期**行为：改/增 payload 里的文件若不触发重链，
+    # .data 就不会更新，表现为"改了场景却没生效"的灵异 bug。
+    # target_sources/HEADER_FILE_ONLY 只把文件挂到编译步，链接规则仍然只依赖
+    # .o 与 .a（见 build.ninja 的 LINK 语句），故改用 OBJECT_DEPENDS：把 payload
+    # 全部文件挂成 renderer_smoke.cpp 的附加依赖，payload 一变就重编该 .o，
+    # 进而必然重链、重新生成 .data。代价仅是一次单文件重编。
+    # CONFIGURE_DEPENDS 让 glob 在构建期重新扫描，新增文件无需手动 reconfigure。
+    #
+    # 想打"一个 html 双击即用"的单文件包（UE5 Web 导出形态）？不要改这里 ——
+    # 那是打包器的职责，见 GryceGC webpack（toolchain/src/commands/cmd_webpack.cpp）。
+    file(GLOB_RECURSE _gryce_webgl_payload CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/webgl_demo/*"
+        "${CMAKE_CURRENT_SOURCE_DIR}/engine/render/shaders/*"
+    )
+    set_source_files_properties(test/renderer_smoke.cpp PROPERTIES
+        OBJECT_DEPENDS "${_gryce_webgl_payload}"
+    )
+else()
 target_compile_definitions(GryceRenderSmoke PRIVATE
     GRYCE_DEMO_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/test/demo_project"
 )
+endif()
 target_link_libraries(GryceRenderSmoke PRIVATE
     GryceRenderer GryceCore GrycePlatform
 )
@@ -347,6 +489,10 @@ if(MINGW)
     unset(_gryce_rt_path CACHE)
 endif()
 
+# Web 构建没有 DLL 同步概念（静态链成单一 wasm），整块跳过；EMSCRIPTEN 下
+# box2d/Jolt/GLEW 还是空 INTERFACE 目标，$<TARGET_FILE:...> 无从解析。
+if(NOT EMSCRIPTEN)
+
 add_custom_target(GryceSyncRuntimeDlls ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:GryceRenderer>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
@@ -371,6 +517,7 @@ add_custom_target(GryceSyncRuntimeDlls ALL
 unset(_gryce_mingw_rt_cmds)
 unset(_gryce_assimp_sync_cmd)
 
+endif() # EMSCRIPTEN
 # ===========================================================================
 # 测试：CTest 只跑"纯计算正确性核对"，CI 要求全绿才算通过。
 #
@@ -383,15 +530,24 @@ unset(_gryce_assimp_sync_cmd)
 # 不通过（CI 里没有任何 continue-on-error / 跳过逻辑）。
 # 新增 suite 时同步往 GRYCE_MATH_TEST_SUITES 里加名字即可。
 # ===========================================================================
+# Web 构建跳过 CTest 与工具链：GryceMathTests 是桌面数值门禁（与 GPU 无关
+# 但也没必要为 wasm 编一份），GryceGC 是 Windows 命令行发布工具。
+if(NOT EMSCRIPTEN)
 include(CTest)
 
 if(BUILD_TESTING)
-    set(GRYCE_MATH_TEST_SUITES vector matrix quaternion camera ray)
+    # material 套件校验模型文件材质 → PBR 参数的推导规则（见 assets/material_rules.cpp）
+    # lod 套件校验自动 LOD 链的结构性保证（见 assets/mesh_lod.cpp）
+    set(GRYCE_MATH_TEST_SUITES vector matrix quaternion camera ray material lod)
 
     add_executable(GryceMathTests
         test/math_tests.cpp
         engine/math/math.cpp
         engine/math/camera.cpp
+        engine/assets/material_rules.cpp
+        engine/assets/mesh_lod.cpp
+        # mesh_lod 的日志走 glog（自包含，无引擎依赖，工具链同样单独链接它）
+        engine/utils/glog/glog_lib.cpp
     )
     target_include_directories(GryceMathTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
@@ -416,6 +572,8 @@ endif()
 # ===========================================================================
 option(GRYCE_BUILD_TOOLCHAIN "构建 GryceGC 命令行工具链" ON)
 
-if(GRYCE_BUILD_TOOLCHAIN)
+if(GRYCE_BUILD_TOOLCHAIN AND NOT EMSCRIPTEN)
     add_subdirectory(toolchain)
 endif()
+
+endif() # EMSCRIPTEN (CTest)

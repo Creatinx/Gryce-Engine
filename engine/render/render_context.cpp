@@ -1,3 +1,6 @@
+// render_context.cpp — 高层渲染上下文实现：组合 backend + 命令缓冲 + 渲染线程，
+// 主线程的渲染调用被打包成命令交由渲染线程按序执行；资源销毁走 PendingDestroy
+// 队列，按提交序号等待 in-flight 命令完成后再回收，避免误毁仍在使用的资源。
 #include "render_context.h"
 
 #include <cstdlib>
@@ -195,7 +198,7 @@ bool RenderContext::init(void* native_window, std::unique_ptr<IRenderBackend> ba
     }
 
     // 校验层开关必须在 instance 创建之前下发才生效。默认关闭（见头文件说明），
-    // 仅当显式设置环境变量时打开，供排查校验层报错使用。
+    // 可用 GRYCE_VULKAN_VALIDATION=1 显式打开，换取驱动校验层的逐条报错。
     bool want_validation = validation_enabled_;
     if (const char* env = std::getenv("GRYCE_VULKAN_VALIDATION")) {
         want_validation = (env[0] == '1' || env[0] == 't' || env[0] == 'T' ||

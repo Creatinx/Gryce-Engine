@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "assets/asset.h"
+#include "assets/material_rules.h"
 #include "math/math.h"
 
 namespace gryce_engine::assets {
@@ -32,11 +33,19 @@ struct MeshVertex {
 struct MeshMaterialData {
     bool valid = false;
 
+    // 文件里的材质名（随导入日志输出；空表示格式没给）
+    std::string name;
+    // 推导出的表面类型（金属/非金属/半透明/自发光），只用于日志与工具展示；
+    // 渲染行为由 metallic / roughness / opacity / emissive 决定。
+    SurfaceType surface_type = SurfaceType::Dielectric;
+
     math::Vector3f albedo_color = math::Vector3f::one();
     math::Vector3f emissive_color = math::Vector3f::zero();
     float opacity = 1.0f;
     float roughness = 0.5f;
     float metallic = 0.0f;
+    // 文件声明双面（布料/薄片/树叶卡片）。导入时与半透明一起推导。
+    bool two_sided = false;
 
     // 贴图路径（相对模型文件目录解析后的完整路径）
     std::string albedo_map;
@@ -62,6 +71,7 @@ struct MeshData : public Asset {
         return vertices.size() * sizeof(MeshVertex) +
                indices.size() * sizeof(uint32_t) +
                name.capacity() * sizeof(char) +
+               material.name.capacity() * sizeof(char) +
                material.albedo_map.capacity() * sizeof(char) +
                material.normal_map.capacity() * sizeof(char) +
                material.emissive_map.capacity() * sizeof(char) +

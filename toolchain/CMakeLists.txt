@@ -62,6 +62,8 @@ add_library(grycegc_core STATIC
     src/commands/cmd_bench.cpp
     src/commands/cmd_font.cpp
     src/commands/cmd_build.cpp
+    src/commands/cmd_webpack.cpp
+    src/core/web_pack.cpp
     # 引擎侧：共享密码学（GryceCore 与本工具共用）
     ${GRYCE_ENGINE_ROOT}/engine/utils/glog/glog_lib.cpp
     ${GRYCE_ENGINE_ROOT}/engine/utils/crypto/crc32.cpp
@@ -102,7 +104,7 @@ if(BUILD_TESTING)
     target_link_libraries(GryceGCTests PRIVATE grycegc_core)
     set_target_properties(GryceGCTests PROPERTIES OUTPUT_NAME "GryceGCTests")
 
-    set(_grycegc_suites cli crc32 pe aes smoke crypto pak meta package)
+    set(_grycegc_suites cli crc32 pe aes smoke crypto pak meta package webpack)
     foreach(s IN LISTS _grycegc_suites)
         add_test(NAME grycegc_${s}
                  COMMAND GryceGCTests --suite ${s}

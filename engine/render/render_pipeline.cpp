@@ -1,3 +1,7 @@
+// render_pipeline.cpp — 渲染管线实现：前向 / 延迟 / 聚类路径的场景渲染编排，
+// 阴影（级联 / PCSS / VSM）、IBL、屏幕空间效果（SSR / SSAO / SSIL）与后处理
+// 的帧内顺序，以及省电模式、动态分辨率等运行时画质开关。逐帧状态统一经
+// RenderContext 命令缓冲提交给渲染线程执行。
 #include "render_pipeline.h"
 
 #include <algorithm>
@@ -93,16 +97,70 @@ inline uint64_t mesh_handle_key(render::RHIMeshHandle h) {
 std::unordered_map<uint64_t, MeshBoundsCache> g_mesh_bounds_cache_by_handle;
 std::shared_mutex g_mesh_bounds_handle_mutex;
 
-// 由 AssetManager 按网格路径解析本地包围球（只在缓存未命中时调用）。
-bool resolve_local_mesh_bounds(const std::string& mesh_path, MeshBoundsCache& out) {
-    auto mesh = assets::AssetManager::instance().load_mesh(mesh_path);
-    if (!mesh || mesh->vertices.empty()) return false;
-    math::Vector3f lo = mesh->vertices[0].position;
-    math::Vector3f hi = lo;
-    for (const auto& v : mesh->vertices) {
-        lo = lo.min(v.position);
-        hi = hi.max(v.position);
+// ---------------------------------------------------------------------------
+// 带下标的 uniform 名（如 uLightColor[3]）——永久稳定存储
+//
+// ★ 为什么不能逐帧 snprintf 到栈上 char[]：
+//   RenderCommandTyped 的 uniform_name 只保存裸指针、不做拷贝（见
+//   render_commands.h 的说明：为省掉每帧数千次 std::string 构造），命令要等
+//   渲染线程消费时才按名去查 uniform。若在循环里复用同一个栈缓冲轮流传名，
+//   等执行时缓冲区里只剩最后一次写入的内容，于是整组 uniform 全部指向同一个
+//   名字。曾经的症状：upload_lights 里 6 个名字共用一个 char name[48]，执行时
+//   全部变成 "uLightParams[N-1]"，导致 uLightType/uLightPos/uLightDir/
+//   uLightColor/uLightIntensity 从未被设置、保持默认 0 →
+//     radiance = uLightColor[i] * uLightIntensity[i] = 0
+//   → 前向路径的 Lo 恒为 0，整个场景只剩 IBL/环境光；阴影、PCSS、级联全部
+//     "算了但不生效"（dbg 视图里 shadow_factor 有值，画面却毫无变化）。
+//
+//   这里做一次内部化（interning）：名字首次出现时插入 unordered_map，
+//   节点式容器保证 value 的存储地址永不失效，c_str() 因此终身有效；
+//   之后每帧只是哈希查找，不产生分配。
+// ---------------------------------------------------------------------------
+const char* stable_indexed_uniform_name(const char* format, int index) {
+    static std::mutex mutex;
+    static std::unordered_map<std::string, std::string> cache;
+
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), format, index);
+
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(buffer);
+    if (it == cache.end()) {
+        it = cache.emplace(buffer, buffer).first;
     }
+    return it->second.c_str();
+}
+
+// 由 AssetManager 按网格路径解析本地包围球（只在缓存未命中时调用）。
+// 优先复用已有缓存视图，避免同一份文件被导入两次：合并视图（LOD / 实例化路径
+// 常用）优先；没有时按逐子网格视图求并集 —— 多材质实体走的就是逐子网格视图，
+// 这一步命中装配层导入时已建立的缓存，零额外导入。
+bool resolve_local_mesh_bounds(const std::string& mesh_path, MeshBoundsCache& out) {
+    assets::AssetManager& manager = assets::AssetManager::instance();
+
+    std::vector<std::shared_ptr<const assets::MeshData>> meshes;
+    if (manager.has(mesh_path)) {
+        if (auto merged = manager.load_mesh(mesh_path)) meshes.push_back(std::move(merged));
+    }
+    if (meshes.empty()) {
+        meshes = manager.load_meshes(mesh_path);
+    }
+
+    bool any = false;
+    math::Vector3f lo{}, hi{};
+    for (const auto& mesh : meshes) {
+        if (!mesh) continue;
+        for (const auto& v : mesh->vertices) {
+            if (!any) {
+                lo = hi = v.position;
+                any = true;
+            } else {
+                lo = lo.min(v.position);
+                hi = hi.max(v.position);
+            }
+        }
+    }
+    if (!any) return false;
     out.center = (lo + hi) * 0.5f;
     out.radius = (hi - out.center).length();
     return true;
@@ -1105,6 +1163,52 @@ RenderPipeline::Frustum RenderPipeline::extract_frustum(const math::Matrix4f& vp
     return extract_cull_frustum(vp);
 }
 
+// 把一台 MeshRenderer 的绘制项追加到目标列表。
+// 空间分块 LOD 时一块一项（各自有自己的句柄/级别/包围球），否则一项一物体。
+void RenderPipeline::append_mesh_renderer_items(components::MeshRenderer* mr,
+                                                const math::Matrix4f& model,
+                                                const math::Vector3f& cam_pos,
+                                                const Frustum& frustum,
+                                                std::vector<DrawItem>& opaque_items,
+                                                std::vector<DrawItem>& transparent_items,
+                                                std::vector<DrawItem>& viewmodel_items) const {
+    const Material* mat = mr->material.get();
+    const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
+    auto push = [&](DrawItem&& item) {
+        if (!mr->depth_test) {
+            viewmodel_items.push_back(std::move(item));
+        } else if (transparent) {
+            transparent_items.push_back(std::move(item));
+        } else {
+            opaque_items.push_back(std::move(item));
+        }
+    };
+
+    const int count = mr->draw_mesh_count();
+    if (count <= 1) {
+        math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
+        DrawItem item{mr->draw_mesh_handle(), mat, model, (pos - cam_pos).length_sq()};
+        // 已切到低模的物体不参与跨 mesh 实例化合批：合批缓存里存的是原始网格的
+        // 去索引展开（见 build_instanced_batches），混进去会把低模又画回满细节。
+        if (mr->active_lod_level() == 0) item.mesh_path = mr->mesh_path;
+        push(std::move(item));
+        return;
+    }
+
+    // 分块：逐块剔除 + 逐块距离（透明排序更准，剔除粒度也更细）。
+    for (int i = 0; i < count; ++i) {
+        math::Vector3f center;
+        float radius = 0.0f;
+        mr->chunk_world_bounds(i, model, center, radius);
+        if (!frustum.contains_sphere(center, radius)) continue;
+        const render::RHIMeshHandle handle = mr->draw_mesh_handle_at(i);
+        if (!handle.is_valid()) continue;
+        DrawItem item{handle, mat, model, (center - cam_pos).length_sq()};
+        // mesh_path 留空 = 不参与实例化合批（同上：合批只认整模几何）
+        push(std::move(item));
+    }
+}
+
 bool RenderPipeline::is_inside_frustum(const Frustum& frustum, const math::Matrix4f& world_transform,
                                        const std::string& mesh_path) const {
     math::Vector3f center;
@@ -1986,6 +2090,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     const math::Matrix4f camera_vp = camera_->get_projection_matrix() * camera_->get_view_matrix();
     const Frustum camera_frustum = extract_frustum(camera_vp);
 
+    // ---- 自动 LOD 选级（必须先于阴影 pass 与任何绘制收集）----
+    // 级别由"几何误差 → 屏幕像素"反推的相机距离决定（见 MeshRenderer::update_lod）。
+    // 放在这里而不是各自的 collect 里：阴影 pass 在 collect 之前，若两边各算一次，
+    // 同一帧的阴影与颜色可能用不同级别的几何（自阴影会脱节）。
+    update_mesh_lods(scene, ctx);
+
+
     // ---- 粒子收集（每帧一次，必须先于任何用到粒子的 pass）----
     // 反射探针捕获在本帧更早发生，且它需要把粒子一起烘进图集（否则反射里
     // 看不到火焰这类发光特效）。所以收集点提前到探针捕获之前，绘制点仍留在
@@ -2232,7 +2343,11 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                         } else {
                             ctx.set_uniform_int(shadow_atlas_shader_, "uUseAlbedoMap", 0);
                         }
-                        ctx.draw_mesh(mr->gpu_mesh_handle(), shadow_atlas_shader_);
+                        // 分块 LOD：一块一画；阴影深度图看不出 2px 以内的几何误差
+                        const int shadow_draws = mr->draw_mesh_count();
+                        for (int di = 0; di < shadow_draws; ++di) {
+                            ctx.draw_mesh(mr->draw_mesh_handle_at(di), shadow_atlas_shader_);
+                        }
                     });
             }
             ctx.set_framebuffer(RHIFramebufferHandle{});
@@ -2273,7 +2388,12 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                         if (shadow_mode_ == ShadowMode::ESM) {
                             ctx.set_uniform_float(current_shadow, "uESMExponent", esm_exponent_);
                         }
-                        ctx.draw_mesh(mr->gpu_mesh_handle(), current_shadow);
+                        // 阴影走当前 LOD 级别：低模同时省掉阴影 pass 的几何开销
+                        // （深度图看不出 2px 以内的几何误差）。分块时一块一画。
+                        const int shadow_draws = mr->draw_mesh_count();
+                        for (int di = 0; di < shadow_draws; ++di) {
+                            ctx.draw_mesh(mr->draw_mesh_handle_at(di), current_shadow);
+                        }
                     });
                 end_shadow_pass(ctx);
             }
@@ -2322,19 +2442,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             }
             if (!is_inside_frustum(camera_frustum, model, mr->gpu_mesh_handle(),
                                        mr->mesh_path)) return;
-            const Material* mat = mr->material.get();
-            const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
-            math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
-            float dist_sq = (pos - cam_pos).length_sq();
-            DrawItem item{mr->gpu_mesh_handle(), mat, model, dist_sq};
-            item.mesh_path = mr->mesh_path;
-            if (!mr->depth_test) {
-                viewmodel_items.push_back(item);
-            } else if (transparent) {
-                transparent_items.push_back(item);
-            } else {
-                opaque_items.push_back(item);
-            }
+            append_mesh_renderer_items(mr, model, cam_pos, camera_frustum, opaque_items,
+                                       transparent_items, viewmodel_items);
         });
 
     // 蒙皮网格：skinned 管线可用且 palette 已就绪才绘制
@@ -2412,18 +2521,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                 }
                 if (!is_inside_frustum(camera_frustum, model, mr->gpu_mesh_handle(),
                                        mr->mesh_path)) return;
-                const Material* mat = mr->material.get();
-                const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
-                math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
-                float dist_sq = (pos - cam_pos).length_sq();
-                DrawItem item{mr->gpu_mesh_handle(), mat, model, dist_sq};
-                if (!mr->depth_test) {
-                    viewmodel_items.push_back(item);
-                } else if (transparent) {
-                    transparent_items.push_back(item);
-                } else {
-                    opaque_items.push_back(item);
-                }
+                append_mesh_renderer_items(mr, model, cam_pos, camera_frustum, opaque_items,
+                                           transparent_items, viewmodel_items);
             });
         // 蒙皮网格
         if (skinned_pbr_shader_.is_valid()) {
@@ -2755,7 +2854,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                     camera_->get_view_matrix(), camera_->position(),
                     pp_params_, viewport_width_, viewport_height_);
         if (ssr_.output_texture().is_valid()) hdr_color_ = ssr_.output_texture();
-            // 临时诊断（GRYCE_TRACE_HDR=1）：见 render_scene 里同名日志的说明。
+            // HDR 链路追踪（GRYCE_TRACE_HDR=1）：确认 SSR 输出已重指向为
+            // 后续 pass 的 HDR 源（说明见 render_scene 内同名日志）。
             if (std::getenv("GRYCE_TRACE_HDR")) {
                 static int trace_frame2 = 0;
                 ++trace_frame2;
@@ -3199,8 +3299,8 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
                         camera_->get_view_matrix(), camera_->position(),
                         pp_params_, viewport_width_, viewport_height_);
             if (ssr_.output_texture().is_valid()) hdr_color_ = ssr_.output_texture();
-            // 临时诊断（GRYCE_TRACE_HDR=1）：这一帧交给后续 pass（含 tonemap）的
-            // HDR 到底是哪个纹理。若坏帧里 hdr != ssr_out，说明重指向没生效。
+            // HDR 链路追踪（GRYCE_TRACE_HDR=1）：打印这一帧交给后续 pass
+            //（含 tonemap）的 HDR 纹理；若其不等于 ssr_out，说明重指向未生效。
             if (std::getenv("GRYCE_TRACE_HDR")) {
                 static int trace_frame = 0;
                 ++trace_frame;
@@ -3292,12 +3392,25 @@ void RenderPipeline::render_mesh_to_gbuffer(RHIMeshHandle mesh, const Material* 
         bind_gbuffer_tex(material->ao_texture(), TextureSlots::kPBRAO, "uAOMap");
         bind_gbuffer_tex(material->emissive_texture(), TextureSlots::kPBREmissive, "uEmissiveMap");
 
-        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap", material->albedo_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap", material->normal_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap", material->roughness_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap", material->metallic_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap", material->ao_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap", material->emissive_texture().is_valid() ? 1 : 0);
+        // 注意：upload_to_gpu() 会给每个槽位建一张 1x1 fallback 贴图，
+        // 所以 texture().is_valid() 恒为 true。这里必须和 Material::bind 用同一
+        // 判定口径（启用标志 + 路径非空），否则 gbuffer 会把 fallback 的白色
+        // 当成贴图内容：metallic=1 / roughness=1 / albedo=1，
+        // 延迟管线整场景变成"全金属 + 全粗糙"。
+        auto has_map = [](bool use, const std::string& path) { return use && !path.empty(); };
+
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap",
+                            has_map(material->use_albedo_map, material->albedo_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap",
+                            has_map(material->use_normal_map, material->normal_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap",
+                            has_map(material->use_roughness_map, material->roughness_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap",
+                            has_map(material->use_metallic_map, material->metallic_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap",
+                            has_map(material->use_ao_map, material->ao_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap",
+                            has_map(material->use_emissive_map, material->emissive_map_path) ? 1 : 0);
     } else {
         // Default material
         ctx.set_uniform_vec3(gbuffer_shader_, "uAlbedoColor", math::Vector3f(1.0f, 1.0f, 1.0f));
@@ -3365,12 +3478,25 @@ void RenderPipeline::render_skinned_mesh_to_gbuffer(RHIMeshHandle mesh, const Ma
         bind_gbuffer_tex(material->ao_texture(), TextureSlots::kPBRAO, "uAOMap");
         bind_gbuffer_tex(material->emissive_texture(), TextureSlots::kPBREmissive, "uEmissiveMap");
 
-        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap", material->albedo_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap", material->normal_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap", material->roughness_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap", material->metallic_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap", material->ao_texture().is_valid() ? 1 : 0);
-        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap", material->emissive_texture().is_valid() ? 1 : 0);
+        // 注意：upload_to_gpu() 会给每个槽位建一张 1x1 fallback 贴图，
+        // 所以 texture().is_valid() 恒为 true。这里必须和 Material::bind 用同一
+        // 判定口径（启用标志 + 路径非空），否则 gbuffer 会把 fallback 的白色
+        // 当成贴图内容：metallic=1 / roughness=1 / albedo=1，
+        // 延迟管线整场景变成"全金属 + 全粗糙"。
+        auto has_map = [](bool use, const std::string& path) { return use && !path.empty(); };
+
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAlbedoMap",
+                            has_map(material->use_albedo_map, material->albedo_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseNormalMap",
+                            has_map(material->use_normal_map, material->normal_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseRoughnessMap",
+                            has_map(material->use_roughness_map, material->roughness_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseMetallicMap",
+                            has_map(material->use_metallic_map, material->metallic_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseAOMap",
+                            has_map(material->use_ao_map, material->ao_map_path) ? 1 : 0);
+        ctx.set_uniform_int(gbuffer_shader_, "uUseEmissiveMap",
+                            has_map(material->use_emissive_map, material->emissive_map_path) ? 1 : 0);
     } else {
         ctx.set_uniform_vec3(gbuffer_shader_, "uAlbedoColor", math::Vector3f(1.0f, 1.0f, 1.0f));
         ctx.set_uniform_float(gbuffer_shader_, "uRoughness", 0.5f);
@@ -3505,7 +3631,7 @@ void RenderPipeline::bind_per_frame_uniforms(RenderContext& ctx, RHIShaderHandle
 
     // ---- CSM 级联参数 ----
     ctx.set_uniform_int(shader, "uCascadeCount", cascade_count_);
-    ctx.set_uniform_int(shader, "uPCSSEnabled", pcss_enabled_ ? 1 : 0);
+    ctx.set_uniform_int(shader, "uPCSSEnabled", pcss_effectively_enabled() ? 1 : 0);
     ctx.set_uniform_int(shader, "uDebugMode", debug_view_);
 
     // 分割边界：xyz = near, s1, s2, s3（w 未用）
@@ -3647,36 +3773,34 @@ void RenderPipeline::upload_lights(RenderContext& ctx, RHIShaderHandle shader) {
     ctx.set_uniform_int(shader, "uLightCount", count);
     ctx.set_uniform_int(shader, "uShadowLightIndex", shadow_light_index_);
 
-    char name[48];
+    // 名称必须用 stable_indexed_uniform_name 生成（不能用循环外复用的栈缓冲：
+    // 命令缓冲只存指针，见该函数上方说明）。
     for (int i = 0; i < count; ++i) {
         const Light& light = lights_[i];
 
-        std::snprintf(name, sizeof(name), "uLightType[%d]", i);
-        ctx.set_uniform_int(shader, name, static_cast<int>(light.type));
-
-        std::snprintf(name, sizeof(name), "uLightPos[%d]", i);
-        ctx.set_uniform_vec3(shader, name, light.position);
-
-        std::snprintf(name, sizeof(name), "uLightDir[%d]", i);
-        ctx.set_uniform_vec3(shader, name, light.direction);
-
-        std::snprintf(name, sizeof(name), "uLightColor[%d]", i);
-        ctx.set_uniform_vec3(shader, name, light.color);
+        ctx.set_uniform_int(shader, stable_indexed_uniform_name("uLightType[%d]", i),
+                            static_cast<int>(light.type));
+        ctx.set_uniform_vec3(shader, stable_indexed_uniform_name("uLightPos[%d]", i),
+                             light.position);
+        ctx.set_uniform_vec3(shader, stable_indexed_uniform_name("uLightDir[%d]", i),
+                             light.direction);
+        ctx.set_uniform_vec3(shader, stable_indexed_uniform_name("uLightColor[%d]", i),
+                             light.color);
 
         // 物理光照单位：点/聚光 lumen → candela（÷4π），方向光按 lux 直传
         float intensity = light.intensity;
         if (physical_light_units_ && light.type != LightType::Directional) {
             intensity = light.intensity / (4.0f * 3.14159265f);
         }
-        std::snprintf(name, sizeof(name), "uLightIntensity[%d]", i);
-        ctx.set_uniform_float(shader, name, intensity);
+        ctx.set_uniform_float(shader, stable_indexed_uniform_name("uLightIntensity[%d]", i),
+                              intensity);
 
         // x=range, y=cos(outer), z=cos(inner)
         const float outer = light.spot_angle * 3.14159265f / 180.0f;
         const float inner = light.spot_angle * (1.0f - light.spot_softness) * 3.14159265f / 180.0f;
-        std::snprintf(name, sizeof(name), "uLightParams[%d]", i);
-        ctx.set_uniform_vec4(shader, name,
-                             math::Vector4f(light.range, std::cos(outer), std::cos(inner), 0.0f));
+        ctx.set_uniform_vec4(
+            shader, stable_indexed_uniform_name("uLightParams[%d]", i),
+            math::Vector4f(light.range, std::cos(outer), std::cos(inner), 0.0f));
     }
 }
 
@@ -4028,6 +4152,10 @@ void RenderPipeline::end_hdr_forward_pass(RenderContext& ctx) {
             (std::strcmp(ctx_->backend()->api_name(), "D3D12") == 0 ||
              std::strcmp(ctx_->backend()->api_name(), "Vulkan") == 0)) {
             ctx.set_framebuffer(hdr_depth_only_fbo_);
+            // 切 FBO 后重设 viewport/scissor：Vulkan 的 scissor 是动态状态，且
+            //   set_viewport 会同步写 scissor；不重设就可能沿用其它 pass 的裁剪
+            //   矩形而把这张全屏 draw 裁掉（防御性修正，非本次 SSR 全黑的根因）。
+            ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
             ctx.clear_depth();
             ctx.set_shader(depth_resolve_shader_);
             // raw_depth：多样本深度贴图默认带 compare sampler，texelFetch 不需要
@@ -4036,6 +4164,12 @@ void RenderPipeline::end_hdr_forward_pass(RenderContext& ctx) {
                                       TextureSlots::kTonemapHDR, "uMsDepth");
             ctx.set_uniform_int(depth_resolve_shader_, "uMsDepth", TextureSlots::kTonemapHDR);
             ctx.set_uniform_int(depth_resolve_shader_, "uSamples", msaa_samples_);
+            // ★ SSR 全黑的真正根因在 Vulkan 侧：depth_resolve 是"后处理但要写深度"
+            //   的特例，而 Vulkan 的深度状态烘在管线里（后处理 shader 不走
+            //   apply_dynamic_state），这里 set_depth_test/write 对 Vulkan 是 no-op。
+            //   修法见 vk_shader.cpp::create_pipeline —— 为 depth_resolve 特判
+            //   depthTest=ALWAYS（该驱动在 depthTest=FALSE 时会连深度写入一起丢）+
+            //   depthWrite=TRUE。D3D12 的深度状态是真·动态状态，这两行即生效。
             ctx.set_depth_test(true);
             ctx.set_depth_write(true);
             ctx.set_cull_face(CullMode::None);
@@ -5270,6 +5404,37 @@ void RenderPipeline::append_terrain_items(const Frustum& frustum, const math::Ve
 }
 
 // ===========================================================================
+// MeshRenderer 自动 LOD 选级
+//
+// 距离口径：到世界包围球**最近点**的距离（length(center-cam) - radius）。
+// 用最近点而不是中心距离，是因为大物体（教堂/山体）贴近时中心距离可能是
+// 最近距离的 2~3 倍，按中心算会把近景误判成远景、整片切到低模。
+//
+// 阈值来源：每级 LOD 在生成时实测了"累计几何误差"（见 assets/mesh_lod.h），
+// 这里把它换算成屏幕像素：
+//     pixels = error * (height/2) / (distance * tan(fov/2))
+// 令 pixels == lod_pixel_error 即得该级的切换距离。分辨率、FOV、缩放随之自动
+// 适配：换 4K 屏或广角镜头都会自动更晚切低模，无需重新调参。
+// ===========================================================================
+void RenderPipeline::update_mesh_lods(scene::Scene& scene, RenderContext& ctx) {
+    if (!camera_) return;
+
+    float tan_half_fov = std::tan(math::to_radians(camera_->fov()) * 0.5f);
+    if (!(tan_half_fov > 1e-4f)) tan_half_fov = 1e-4f;
+    const math::Vector3f cam_pos = camera_->position();
+    const int viewport_h = viewport_height_;
+
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
+            if (!entity || !mr || !mr->enabled || mr->mesh_path.empty()) return;
+            // 未上传 level 0 的实体本帧还画不出东西，选级没有意义
+            if (!mr->gpu_mesh_handle().is_valid()) return;
+            mr->update_lod(&ctx, entity->world_transform(), cam_pos, tan_half_fov, viewport_h);
+        });
+}
+
+// ===========================================================================
 // LODGroup（多级细节网格，与 Terrain 同类的自包含发射网格）
 //
 // collect 每帧调用一次：用管线相机对每个启用组件算屏幕覆盖率并选择 LOD（滞回），
@@ -6296,11 +6461,11 @@ void RenderPipeline::bind_point_shadow_uniforms(RenderContext& ctx, RHIShaderHan
     int point_idx = 0;
     for (int i = 0; i < static_cast<int>(lights_.size()) && point_idx < k_max_point_shadows; ++i) {
         if (lights_[i].type != LightType::Point) continue;
-        char name[48];
-        std::snprintf(name, sizeof(name), "uPointLightPosWorld[%d]", point_idx);
-        ctx.set_uniform_vec3(shader, name, lights_[i].position);
-        std::snprintf(name, sizeof(name), "uPointLightRange[%d]", point_idx);
-        ctx.set_uniform_float(shader, name, lights_[i].range);
+        ctx.set_uniform_vec3(
+            shader, stable_indexed_uniform_name("uPointLightPosWorld[%d]", point_idx),
+            lights_[i].position);
+        ctx.set_uniform_float(shader, stable_indexed_uniform_name("uPointLightRange[%d]", point_idx),
+                              lights_[i].range);
         ++point_idx;
     }
 }

@@ -162,7 +162,7 @@ int GWindow_InitExternal(GWindowHandle hwnd, int w, int h) {
         return -1;
     }
 
-    // 诊断：确认嵌入窗口是否真的带有 OpenGL 上下文（GLFW 默认创建）。
+    // 记录嵌入窗口最终拿到的 OpenGL 上下文版本（GLFW 默认创建，这里做确认性日志）。
     GLOG_INFO("Embedded window client_api={} ctx={}.{}",
               glfwGetWindowAttrib(embedded, GLFW_CLIENT_API),
               glfwGetWindowAttrib(embedded, GLFW_CONTEXT_VERSION_MAJOR),
@@ -200,6 +200,7 @@ const char* gapi_name(GRenderAPI api) {
         case GRYCE_RENDER_API_VULKAN: return "vulkan";
         case GRYCE_RENDER_API_DX12:   return "dx12";
         case GRYCE_RENDER_API_DX11:   return "dx11";
+        case GRYCE_RENDER_API_WEBGL:  return "webgl";
         default:                      return "opengl";
     }
 }
@@ -209,9 +210,13 @@ const char* gapi_name(GRenderAPI api) {
 // GLFW_CLIENT_API = GLFW_NO_API and create their own swapchain on the native
 // window handle. (The old "non-Vulkan implies OpenGL" assumption made a DX12
 // request silently look for a GL context that was never created.)
-GLFWwindow* create_embedded_window(HWND parent, int w, int h, GRenderAPI api) {
+// parent_hwnd 是宿主原生窗口句柄（Win32 下为 HWND；Emscripten 无原生窗口
+// 概念，参数被忽略）。
+GLFWwindow* create_embedded_window(void* parent_hwnd, int w, int h, GRenderAPI api) {
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    if (api == GRYCE_RENDER_API_OPENGL) {
+    // WebGL 与 OpenGL 一样需要 GL context（Emscripten 的 GLFW 端口建的
+    // 就是 WebGL context），其余后端走 NoApi 自建 swapchain。
+    if (api == GRYCE_RENDER_API_OPENGL || api == GRYCE_RENDER_API_WEBGL) {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
     } else {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -220,8 +225,10 @@ GLFWwindow* create_embedded_window(HWND parent, int w, int h, GRenderAPI api) {
                                             "GryceEditorViewport", nullptr, nullptr);
     if (!embedded) return nullptr;
 
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
     HWND embedded_hwnd = glfwGetWin32Window(embedded);
-    if (embedded_hwnd && parent) {
+    if (embedded_hwnd && parent_hwnd) {
+        HWND parent = static_cast<HWND>(parent_hwnd);
         SetParent(embedded_hwnd, parent);
         LONG style = GetWindowLong(embedded_hwnd, GWL_STYLE);
         style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
@@ -232,6 +239,7 @@ GLFWwindow* create_embedded_window(HWND parent, int w, int h, GRenderAPI api) {
                      w > 0 ? w : 640, h > 0 ? h : 480,
                      SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW);
     }
+#endif
     return embedded;
 }
 
@@ -251,7 +259,7 @@ int GWindow_InitExternalEx(GWindowHandle hwnd, int w, int h, GRenderAPI api) {
     glfwSetErrorCallback(glfw_error_callback);
 
     GLFWwindow* embedded = create_embedded_window(
-        static_cast<HWND>(hwnd), w, h, api);
+        hwnd, w, h, api);
     if (!embedded) {
         GLOG_ERROR("GWindow_InitExternalEx: failed to create embedded GLFW window");
         Window::shutdown_sdk();
@@ -277,7 +285,7 @@ int GWindow_RecreateClientApi(GRenderAPI api) {
     }
 
     GLFWwindow* embedded = create_embedded_window(
-        static_cast<HWND>(g_platform.external_hwnd),
+        g_platform.external_hwnd,
         g_platform.ext_width, g_platform.ext_height, api);
     if (!embedded) {
         GLOG_ERROR("GWindow_RecreateClientApi: failed to recreate embedded window");

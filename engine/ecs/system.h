@@ -22,7 +22,7 @@ class ISystem {
 public:
     virtual ~ISystem() = default;
 
-    // System 名称，用于调试和查询
+    // System 名称（查询与日志标识）
     virtual const char* name() const = 0;
 
     // System 执行阶段（按顺序驱动）

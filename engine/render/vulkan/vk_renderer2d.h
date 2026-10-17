@@ -76,7 +76,7 @@ public:
     RHITextureHandle create_texture_from_data(const assets::TextureData* data) override;
     ITexture* resolve_texture(RHITextureHandle handle) const override;
 
-    // 调试用：在屏幕 (x,y) 处绘制字体图集预览
+    // 在屏幕 (x,y) 处绘制字体图集预览（核对图集内容与 UV 用）
     void draw_font_atlas_debug(float x, float y, float size);
 
 private:

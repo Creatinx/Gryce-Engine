@@ -24,16 +24,18 @@ layout(push_constant) uniform PushConstants {
     float bilateral_filter; // +116
     vec2 texel_size;        // +120
     float env_fallback;     // +128
-    float _pad_tail[3];     // +132
+    int probe_valid;        // +132（trace 用；composite 忽略，但必须占位保证偏移）
+    float debug_view;       // +136 SSR 调试视图模式
+    float _pad_tail[1];     // +140 补齐 16 字节
 } pc;
 
 void main() {
     vec4 scene = texture(uColorTex, vUV);
     vec4 ssr = texture(uSSRTex, vUV);
 
-    if (pc._pad_tail[0] > 0.5) {
-        if (pc._pad_tail[0] < 1.5) { FragColor = vec4(ssr.rgb, 1.0); return; }
-        if (pc._pad_tail[0] < 2.5) { FragColor = vec4(vec3(ssr.a), 1.0); return; }
+    if (pc.debug_view > 0.5) {
+        if (pc.debug_view < 1.5) { FragColor = vec4(ssr.rgb, 1.0); return; }
+        if (pc.debug_view < 2.5) { FragColor = vec4(vec3(ssr.a), 1.0); return; }
         FragColor = vec4(vec3(scene.a), 1.0);
         return;
     }

@@ -111,7 +111,7 @@ uniform mat4 uSpotLightSpace[4];
 uniform float uSpotShadowSize; // 阴影贴图宽度（正方形，用于 PCF texel 计算）
 
 // ---------------------------------------------------------------------------
-// 调试
+// 调试视图
 // ---------------------------------------------------------------------------
 uniform int uDebugMode; // 0 Final, 1 Albedo, 2 Normal, 3 Roughness,
                         // 4 Metallic, 5 Shadow, 6 Direct, 7 Indirect, 8 Cascade
@@ -521,7 +521,7 @@ void main() {
     vec3 emissive = uEmissiveColor * (uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
     // -----------------------------------------------------------------------
-    // 调试
+    // 调试视图输出
     // -----------------------------------------------------------------------
     if (uDebugMode == 1) { FragColor = vec4(albedo, 1.0); return; }
     if (uDebugMode == 2) { FragColor = vec4(N * 0.5 + 0.5, 1.0); return; }

@@ -62,7 +62,9 @@ build/GryceRenderSmoke.exe --api opengl --play
 - 音频：Amplitude Audio SDK（3D 空间音频、总线、事件）
 - 动画：骨骼、动画剪辑、姿态混合
 - 资源：`res:/` 虚拟路径、Pak / Gpack 打包、AES-GCM 加密、异步加载
-- 资产格式：OBJ、DDS、KTX、EXR、PNG/JPG 等
+- 资产格式：OBJ（含多材质 MTL）、FBX / glTF / DAE / PLY / STL / 3DS / Blend（Assimp）、DDS、KTX、EXR、PNG/JPG 等
+- 模型导入自动识别材质：内嵌 / 外链贴图自动解析（含大小写与缺失路径回退、内嵌贴图落盘、glTF ORM 打包贴图拆通道），按文件里的 PBR 因子或 spec-gloss 字段推导金属度 / 粗糙度，导出金属 / 非金属 / 半透明 / 自发光四种表面类型来驱动光照 —— 见 `docs/model-import.md`
+- 性能：`--bench` 分段 GPU 计时 + CPU 分相；导入期顶点焊接（去索引化网格 4x 压缩）、PCSS 退化参数自动退回 PCF、逐帧 uniform 告警去重 —— 量法与数据见 `docs/performance.md`
 
 ---
 

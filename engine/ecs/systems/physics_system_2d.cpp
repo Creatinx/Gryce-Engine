@@ -1,5 +1,40 @@
 #include "ecs/systems/physics_system_2d.h"
 
+#ifdef __EMSCRIPTEN__
+// ===========================================================================
+// WebGL（Emscripten）构建：Box2D 只有预编译的 MinGW 静态库，无法为 wasm
+// 链接，物理系统整体空转。Pimpl 让 API 表面与桌面完全一致（impl_ 为空
+// 结构），静态场景渲染不受影响。将来接入 Web 版 Box2D 时删除本分支即可。
+// ===========================================================================
+#include "utils/glog/glog_lib.h"
+
+namespace gryce_engine::ecs {
+
+struct PhysicsSystem2D::Impl {
+    math::Vector2f gravity{0.0f, 0.0f};
+};
+
+PhysicsSystem2D::PhysicsSystem2D() {
+    GLOG_WARN("PhysicsSystem2D: Box2D unavailable in WebGL build; physics disabled");
+}
+PhysicsSystem2D::~PhysicsSystem2D() = default;
+
+void PhysicsSystem2D::on_init(scene::Scene&) {}
+void PhysicsSystem2D::on_shutdown(scene::Scene&) {}
+void PhysicsSystem2D::on_update(scene::Scene&, float) {}
+void PhysicsSystem2D::set_gravity(const math::Vector2f& g) {
+    if (impl_) impl_->gravity = g;
+}
+math::Vector2f PhysicsSystem2D::get_gravity() const {
+    return impl_ ? impl_->gravity : math::Vector2f{0.0f, 0.0f};
+}
+void PhysicsSystem2D::apply_wind(scene::Scene&, float, float) {}
+void PhysicsSystem2D::apply_buoyancy(scene::Scene&, float, float) {}
+
+} // namespace gryce_engine::ecs
+
+#else  // !__EMSCRIPTEN__ —— 以下为桌面实现（Box2D v3）
+
 #include "components/physics_2d.h"
 #include "components/transform.h"
 #include "scene/entity.h"
@@ -484,3 +519,5 @@ void PhysicsSystem2D::apply_buoyancy(scene::Scene& scene, float dt, float ppm) {
 }
 
 } // namespace gryce_engine::ecs
+
+#endif // __EMSCRIPTEN__

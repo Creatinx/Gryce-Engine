@@ -428,8 +428,14 @@ void main() {
         // 按粗糙度选 mip，粗糙表面反射更糊、金属镜面更锐利。
         vec3 prefiltered = textureLod(uPrefilterMap, R, roughness * 4.0).rgb;
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
+        // ★ split-sum 的 LUT 已经把 Fresnel 积分掉了：spec = F0*A + B，
+        //   其中 A=(1-Fc)*G_vis 的均值、B=Fc*G_vis 的均值。
+        //   这里**不能**再用 fresnel_schlick(NdotV, F0) 去乘 A —— 掠射角 F→1，
+        //   粗糙表面（A≈0.5~0.9）的镜面权重会从 F0*A≈0.02 直接顶到 0.5+，
+        //   石墙/水泥在斜视角被算成镜面，整场景泛灰白、看着"像金属"。
+        //   F_ibl 只保留给下面的 kD 做漫反射能量扣减。
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
-        vec3 specular = prefiltered * (F_ibl * brdf.x + brdf.y);
+        vec3 specular = prefiltered * (F0 * brdf.x + brdf.y);
         ibl_specular = specular * ao * ubo.uIBLIntensity;
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);

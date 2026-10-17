@@ -271,6 +271,8 @@ bool VulkanShader::load_program(const std::string& name,
     set_post_process(post_process);
     set_skybox(skybox);
     contact_shadow_ = post_process && name == "contact_shadow";
+    // 深度 resolve：后处理里唯一需要写深度的管线（见头文件说明）。
+    depth_write_pp_ = post_process && name == "depth_resolve";
     // 推导特效 push 块与水性材质标志（决定 create_pipeline 的 vertex input /
     // push range / set_uniform_* 路由）。
     water_ = (name == "water");
@@ -904,10 +906,22 @@ bool VulkanShader::create_pipeline() {
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil{};
     depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth_stencil.depthTestEnable = post_process_ ? VK_FALSE : VK_TRUE;
+    // 深度 resolve（depth_write_pp_）是后处理里唯一的例外：它要把多样本深度逐样本
+    // 平均写回单样本 hdr_depth_，必须真正落盘 gl_FragDepth。这里有两个坑：
+    //  1) 动态深度状态对后处理无效 —— draw 分支只对非固定描述符集 shader 调
+    //     apply_dynamic_state，后处理 shader 的深度状态必须在建管线时烘死；
+    //  2) depthTestEnable 必须为 VK_TRUE（配 depthCompareOp = ALWAYS）。实测该
+    //     NVIDIA 驱动在 depthTestEnable=VK_FALSE 时会把深度写入一并丢掉（尽管规范
+    //     文本上 depthWriteEnable 独立于 depthTestEnable），于是 gl_FragDepth 从不
+    //     落盘 → MSAA 下 SSR/SSAO 读到清屏后的整片远平面。ALWAYS 等价于"不过测试、
+    //     全片元通过"，正是全屏 resolve 想要的语义。
+    depth_stencil.depthTestEnable = (post_process_ && !depth_write_pp_) ? VK_FALSE : VK_TRUE;
     // 天空盒深度恒为远平面：不写深度，LESS_OR_EQUAL 保证无动态状态扩展时也能通过
-    depth_stencil.depthWriteEnable = (post_process_ || skybox_) ? VK_FALSE : VK_TRUE;
-    depth_stencil.depthCompareOp = skybox_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
+    depth_stencil.depthWriteEnable =
+        depth_write_pp_ ? VK_TRUE : ((post_process_ || skybox_) ? VK_FALSE : VK_TRUE);
+    depth_stencil.depthCompareOp =
+        depth_write_pp_ ? VK_COMPARE_OP_ALWAYS
+                        : (skybox_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS);
 
     VkPipelineColorBlendAttachmentState blend_attach{};
     // 混合不是动态状态；Vulkan 必须在管线创建时定死。

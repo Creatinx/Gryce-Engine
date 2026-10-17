@@ -293,10 +293,10 @@ bool D3D12Shader::build_stage(const std::string& glsl_source, GlslVariant varian
         return false;
     }
 
-    // 调试开关：GRYCE_D3D12_DUMP_HLSL=<dir> 时把 SPIRV-Cross 生成的 HLSL 落盘。
-    // 整条 D3D12 着色器链是 GLSL→SPIR-V→HLSL→DXIL，中间那层 HLSL 是唯一能
-    // 直接核对"翻译层到底做了什么"的产物（Y 翻转 / 深度重映射 / 语义名 /
-    // cbuffer 偏移 / 寄存器号），排查渲染异常时先看它，比读汇编快得多。
+    // HLSL 落盘开关：GRYCE_D3D12_DUMP_HLSL=<dir> 时把 SPIRV-Cross 生成的 HLSL
+    // 写出。整条 D3D12 着色器链是 GLSL→SPIR-V→HLSL→DXIL，中间那层 HLSL 是唯一
+    // 能直接核对"翻译层到底做了什么"的产物（Y 翻转 / 深度重映射 / 语义名 /
+    // cbuffer 偏移 / 寄存器号），检查渲染异常时先看它，比读汇编快得多。
     // 默认关闭，零开销（只在设置了环境变量时才做文件 IO）。
     if (const char* dump_dir = std::getenv("GRYCE_D3D12_DUMP_HLSL")) {
         std::ofstream f(std::string(dump_dir) + "/" + debug_name_ + "_" +
@@ -821,7 +821,7 @@ ID3D12PipelineState* D3D12Shader::create_pso(const PsoKey& key) {
     HRESULT hr = device_->CreateGraphicsPipelineState(
         &pso, __uuidof(ID3D12PipelineState), reinterpret_cast<void**>(&out));
     if (FAILED(hr)) {
-        // 0x887A0005 = DXGI_ERROR_DEVICE_REMOVED。光看这个码排查不动，必须问设备
+        // 0x887A0005 = DXGI_ERROR_DEVICE_REMOVED。仅凭该码无法判断原因，必须问设备
         // "为什么被移除" —— 返回 DEVICE_HUNG(驱动等 GPU 超时) / INVALID_CALL(非法调用)
         // / DRIVER_INTERNAL_ERROR 等，能直接把方向指向记录期还是提交期。
         const HRESULT reason = device_ ? device_->GetDeviceRemovedReason() : S_OK;
@@ -1348,8 +1348,8 @@ bool D3D12Shader::commit_textures() {
     // 默认采样器：非比较过滤。
     // ★ ComparisonFunc 必须与 Filter 匹配，否则调试层对**每一次** CreateSampler
     //   都报一条 WARNING；本引擎每个 draw 都会重建整段采样器描述符，几百条警告
-    //   会把 ID3D12InfoQueue 的 1024 条环形缓冲**冲爆**，真正的错误被挤出去
-    //   （排查时吃过这个亏）。非比较过滤 → 用 NEVER 才是"意图明确"的写法。
+    //   会把 ID3D12InfoQueue 的 1024 条环形缓冲**冲爆**，真正的错误被挤出去。
+    //   非比较过滤 → 用 NEVER 才是"意图明确"的写法。
     D3D12_SAMPLER_DESC def_smp{};
     def_smp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     def_smp.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -1374,9 +1374,9 @@ bool D3D12Shader::commit_textures() {
         D3D12Texture* tex = bound_textures_[i].tex;
         if (!tex || !tex->is_valid()) continue;   // 未绑定 → 保留空描述符
 
-        // 调试开关 GRYCE_DX12_TRACE_BIND=1：打印 pbr 上"反射相关"采样器实际绑到的
-        // 纹理（仅在该采样器首次出现/换纹理时打一次）。排查"某几帧反射内容不对"
-        // 这类间歇问题时，对比好帧/坏帧的这张映射表最直接。
+        // 采样器绑定追踪（GRYCE_DX12_TRACE_BIND=1）：打印 pbr 上"反射相关"采样器
+        // 实际绑到的纹理（仅在该采样器首次出现/换纹理时打一次）。检查"某几帧反射
+        // 内容不对"这类间歇问题时，对比好帧/坏帧的这张映射表最直接。
         if (std::getenv("GRYCE_DX12_TRACE_BIND") && debug_name_ == "pbr") {
             static std::unordered_map<std::string, std::string> logged;
             const std::string& n = sampler_names_[i];
@@ -1432,8 +1432,8 @@ bool D3D12Shader::commit_textures() {
         // ★ ComparisonFunc 只在比较过滤（阴影采样）下有意义。D3D12 的调试层对
         //   "非比较过滤 + ComparisonFunc != NEVER" 每一次 CreateSampler 都报一条
         //   WARNING —— 本引擎每个 draw 都会重建采样器描述符，几百条警告会把
-        //   ID3D12InfoQueue 的 1024 条环形缓冲**冲爆**，把真正的错误挤出去
-        //   （排查时吃过这个亏）。所以按过滤类型给合规的值。
+    //   ID3D12InfoQueue 的 1024 条环形缓冲**冲爆**，把真正的错误挤出去。
+    //   所以按过滤类型给合规的值。
         sd.ComparisonFunc = want_comparison ? D3D12_COMPARISON_FUNC_LESS_EQUAL
                                             : D3D12_COMPARISON_FUNC_NEVER;
         sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 0.0f;
@@ -1449,7 +1449,7 @@ bool D3D12Shader::commit_textures() {
     // ★★ 本函数一共四条出口，**每一条**都必须做这两件事：把外部 SSBO 的 SRV
     //    写进刚建好的这段表，并把 current_srv_base_ 更新成本段的基址。
     //
-    //    漏掉的后果极具迷惑性（2026-10-10 实测，排查花了很久）：上面那个
+    //    漏掉的后果极具迷惑性（实测验证过）：上面那个
     //    "整段写 null 描述符"的循环会先把 DstModels（instanced.vert 的
     //    可见实例矩阵 SSBO）所在槽位写成空描述符，新建表这条出口若不补写，
     //    顶点着色器读实例矩阵就**恒为 0** → 所有实例退化到原点 → GPU 剔除
@@ -1514,7 +1514,7 @@ D3D12Shader::UniformCbv D3D12Shader::commit_uniforms() {
         *slots[i] = gpu;
     }
 
-    // 调试：GRYCE_DX12_TRACE_FRAME=<帧号> 时，把该帧内每次 pbr draw 的
+    // 帧追踪（GRYCE_DX12_TRACE_FRAME=<帧号>）：把该帧内每次 pbr draw 的
     // CBV 地址与 uModel 平移打出来（uModel 能唯一识别是哪个物体）。
     // 用途：判断"某个物体的 draw 拿到了别人的 uniform"这类逐 draw 状态串位。
     if (const char* want = std::getenv("GRYCE_DX12_TRACE_FRAME")) {
@@ -1534,7 +1534,7 @@ D3D12Shader::UniformCbv D3D12Shader::commit_uniforms() {
         }
     }
 
-    // 调试：GRYCE_DX12_PROBE_CBV=1 时，对名字含 GRYCE_DX12_PROBE_CBV_NAME
+    // CBV 探针（GRYCE_DX12_PROBE_CBV=1）：对名字含 GRYCE_DX12_PROBE_CBV_NAME
     // （默认 "ssr_trace"）的 shader 打出每次 commit 的 CBV 信息：
     // GPU 地址 / Ring 偏移 / 块大小 / 影子内存 FNV-1a 哈希 / 关键 uniform 解码值。
     // 用法（好/坏帧对比）：

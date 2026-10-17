@@ -1,3 +1,5 @@
+// gl_shader.cpp — GLShader（IShader 的 OpenGL 实现）：程序加载与变体解析、
+// uniform 位置缓存与按名设置、采样器 uniform 识别，以及缺失 uniform 的去重告警。
 #include "gl_shader.h"
 
 #include "gl_utils.h"
@@ -52,6 +54,188 @@ uint32_t to_gl_shader_stage(ShaderStage stage) {
     return GL_VERTEX_SHADER;
 }
 
+#ifdef __EMSCRIPTEN__
+// ---------------------------------------------------------------------------
+// GLSL 330 core -> GLSL ES 300（WebGL2）机械源码转换
+//
+// 实测引擎 GL 侧 107 个 shader：101 个 `#version 330 core` + 6 个
+// `#version 430 core`，且 gl_FragColor / texture2D / varying / attribute
+// **零处使用**。330/430 -> 300 es 的差异有四项可机械处理：
+//   1. 版本行改写（`#version 330 core` / `#version 430 core` ->
+//      `#version 300 es`；ESSL 要求它必须是第一行，所以原版本行及其之前的
+//      内容一律丢弃，见下）；
+//   2. 精度限定符注入（ES 300 的 fragment shader 没有 float/int 默认精度，
+//      不声明直接编译失败；sampler 默认 lowp 会毁掉 PBR 精度，显式 highp）；
+//   3. **uniform 初始化器剥离**：ESSL 3.00 不允许（ANGLE 报 "cannot
+//      initialize this type of qualifier"），桌面 GLSL 330 允许。引擎 78 处
+//      uniform 带初始化器（tonemap / TAA / SSR 一票开关量）。
+//   4. texture2D( -> texture(（防御性，引擎实测零使用）。
+// 语义真正不同的 shader（SSBO 版 instanced.vert / scene_pbr_ssbo.frag）
+// 不走本转换：前者由 webgl_instanced.vert 变体替代，后者在
+// scene_shader_forward_clustered.cpp 里路由到 scene_pbr。
+//
+// 转换在加载时于内存中进行，**不复制** 101 个 shader 文件。
+// ---------------------------------------------------------------------------
+
+// 去掉行内注释（// 与 /* */），返回纯代码部分。用于在 uniform 声明行里
+// 定位 '=' —— 否则 "// 0 = 顶点属性实例流" 这类注释会被误判成初始化器。
+std::string strip_line_comment(const std::string& line) {
+    std::size_t cut = std::string::npos;
+    const std::size_t line_comment = line.find("//");
+    const std::size_t block_begin = line.find("/*");
+    if (line_comment != std::string::npos) cut = line_comment;
+    if (block_begin != std::string::npos &&
+        (cut == std::string::npos || block_begin < cut)) {
+        cut = block_begin;
+    }
+    return cut == std::string::npos ? line : line.substr(0, cut);
+}
+
+// 剥离全局 uniform 声明的初始化器：
+//   uniform float uExposure = 1.0;   ->   uniform float uExposure;
+// 保留行尾注释不动。返回被剥离的 uniform 名列表（供告警）。
+//
+// 为什么不需要花括号深度跟踪：GLSL 里 `uniform` 不是合法的局部变量存储
+// 限定符，任何以 `uniform` 开头的行必然是全局 uniform 声明。
+std::vector<std::string> strip_uniform_initializers(std::string& src) {
+    std::vector<std::string> stripped;
+    std::string out;
+    out.reserve(src.size());
+
+    std::size_t pos = 0;
+    while (pos < src.size()) {
+        const std::size_t nl = src.find('\n', pos);
+        const std::size_t end = (nl == std::string::npos) ? src.size() : nl;
+        std::string line = src.substr(pos, end - pos);
+
+        const std::size_t first = line.find_first_not_of(" \t\r");
+        if (first != std::string::npos && line.compare(first, 8, "uniform ") == 0) {
+            const std::string code = strip_line_comment(line);
+            const std::size_t eq = code.find('=');
+            const std::size_t semi = code.rfind(';');
+            if (eq != std::string::npos && semi != std::string::npos && eq < semi) {
+                // 取名字（最后一个标识符，去掉数组下标）。decl 形如
+                // "uniform float uExposure "，尾部有 '=' 前的空格，先 trim。
+                std::string decl = code.substr(first, eq - first);
+                const std::size_t decl_end = decl.find_last_not_of(" \t\r");
+                if (decl_end != std::string::npos) decl.resize(decl_end + 1);
+                const std::size_t name_begin = decl.find_last_of(" \t");
+                std::string name = (name_begin == std::string::npos)
+                                       ? decl
+                                       : decl.substr(name_begin + 1);
+                const std::size_t bracket = name.find('[');
+                if (bracket != std::string::npos) name = name.substr(0, bracket);
+
+                const std::size_t slash = line.find("//");
+                const std::size_t block = line.find("/*");
+                std::size_t comment_at = std::string::npos;
+                if (slash != std::string::npos) comment_at = slash;
+                if (block != std::string::npos &&
+                    (comment_at == std::string::npos || block < comment_at)) {
+                    comment_at = block;
+                }
+                line = code.substr(0, eq) + ";" +
+                       (comment_at == std::string::npos ? std::string()
+                                                        : line.substr(comment_at));
+                stripped.push_back(name);
+            }
+        }
+
+        out += line;
+        if (nl != std::string::npos) out += '\n';
+        pos = (nl == std::string::npos) ? src.size() : nl + 1;
+    }
+
+    src.swap(out);
+    return stripped;
+}
+
+std::string to_glsl_es300(const std::string& src, ShaderStage stage) {
+    const std::string kPrecisionBlock =
+        "precision highp float;\n"
+        "precision highp int;\n"
+        "precision highp sampler2D;\n"
+        "precision highp samplerCube;\n"
+        "precision highp sampler2DShadow;\n"
+        "precision highp sampler2DArray;\n";
+
+    // 1) 版本行改写。ESSL 规范与 ANGLE 都要求 `#version` 位于**第一行**
+    //    （连前置注释都不允许，报 "#version directive must occur on the
+    //    first line of the shader"）。因此无条件把 `#version 300 es` 放到
+    //    输出最前面，原版本行及其之前的内容整段丢弃 —— 引擎 shader 那里
+    //    只可能是空白；非空白则告警（项目覆盖 shader 有许可证头时会触发，
+    //    丢弃不影响语义）。
+    std::string out = "#version 300 es\n";
+    out += kPrecisionBlock;
+
+    const std::size_t version_pos = src.find("#version");
+    if (version_pos == std::string::npos) {
+        out += src;
+    } else {
+        std::size_t line_end = src.find('\n', version_pos);
+        if (line_end == std::string::npos) line_end = src.size();
+        else line_end += 1; // 跳过换行本身
+
+        const std::string prefix = src.substr(0, version_pos);
+        const std::size_t non_ws = prefix.find_first_not_of(" \t\r\n");
+        if (non_ws != std::string::npos) {
+            // 注释头（/* 或 // 开头）静默丢弃；其他内容说明源文件结构异常。
+            const bool comment_header =
+                prefix.compare(non_ws, 2, "/*") == 0 || prefix.compare(non_ws, 2, "//") == 0;
+            if (!comment_header) {
+                GLOG_WARN("ES300 conversion: {} bytes of non-comment content precede "
+                          "#version and were dropped (ESSL requires #version on line 1)",
+                          non_ws);
+            }
+        }
+        out.append(src, line_end, src.size() - line_end);
+    }
+
+    // 2) uniform 初始化器剥离（ESSL 3.00 不支持）。
+    //    引擎所有 uniform 都由 CPU 侧每帧写入（RenderPipeline /
+    //    SceneShaderForwardClustered 的 uniform 缓存），剥离不改变行为。
+    //    仍逐条告警：项目覆盖 shader 若依赖 shader 侧默认值而 CPU 没设，
+    //    会在这里显形，而不是静默读成 0。
+    std::vector<std::string> stripped = strip_uniform_initializers(out);
+    if (!stripped.empty()) {
+        std::string names;
+        for (std::size_t i = 0; i < stripped.size(); ++i) {
+            if (i) names += ", ";
+            names += stripped[i];
+        }
+        GLOG_INFO("ES300 conversion: stripped {} uniform initializer(s) [{}] "
+                  "(ESSL 3.00 forbids them; CPU side must set these)",
+                  stripped.size(), names);
+    }
+
+    // 3) 防御性机械替换：引擎 shader 实测零使用，但项目覆盖 shader（用户
+    //    自带 shaders/ 目录）可能用到旧式写法。texture2D 在 ES 300 已移除。
+    if (src.find("texture2D(") != std::string::npos) {
+        GLOG_WARN("ES300 conversion: 'texture2D(' rewritten to 'texture(' "
+                  "(engine shaders do not use it; project override shader?)");
+    }
+    for (std::size_t p = out.find("texture2D("); p != std::string::npos;
+         p = out.find("texture2D(", p)) {
+        out.replace(p, 10, "texture(");
+        p += 8;
+    }
+
+    // 4) 桌面专有写法的显式告警（出现即说明该 shader 需要人工迁移，
+    //    不要等 WebGL 编译器的 cryptic 报错）。
+    auto warn_if_found = [&](const char* token, const char* hint) {
+        if (out.find(token) != std::string::npos) {
+            GLOG_WARN("ES300 conversion: '{}' found in shader source; {}", token, hint);
+        }
+    };
+    warn_if_found("gl_FragColor", "ES 300 uses user-declared out variables");
+    warn_if_found("varying ", "ES 300 uses in/out");
+    warn_if_found("attribute ", "ES 300 uses in");
+
+    (void)stage;
+    return out;
+}
+#endif // __EMSCRIPTEN__
+
 const char* stage_name(ShaderStage stage) {
     switch (stage) {
     case ShaderStage::Vertex:   return "Vertex";
@@ -76,7 +260,12 @@ uint32_t link_program(const std::string& vertex_src, const std::string& fragment
     int success = 0;
     for (const auto& stage : stages) {
         uint32_t shader = glCreateShader(to_gl_shader_stage(stage.stage));
+#ifdef __EMSCRIPTEN__
+        const std::string converted = to_glsl_es300(stage.source, stage.stage);
+        const char* src = converted.c_str();
+#else
         const char* src = stage.source.c_str();
+#endif
         glShaderSource(shader, 1, &src, nullptr);
         glCompileShader(shader);
 
@@ -119,7 +308,14 @@ uint32_t link_program(const std::string& vertex_src, const std::string& fragment
 // 顶点/片段；失败返回 0（热重载据此保留旧程序）。
 uint32_t link_compute_program(const std::string& compute_src) {
     uint32_t shader = glCreateShader(GL_COMPUTE_SHADER);
+#ifdef __EMSCRIPTEN__
+    // WebGL2 没有 compute shader：正常不会走到这里（supports_compute=false
+    // 时管线走 CPU 回退）。真走到就转换后交给编译器报明确的错。
+    const std::string converted = to_glsl_es300(compute_src, ShaderStage::Compute);
+    const char* src = converted.c_str();
+#else
     const char* src = compute_src.c_str();
+#endif
     glShaderSource(shader, 1, &src, nullptr);
     glCompileShader(shader);
 
@@ -180,7 +376,13 @@ bool GLShader::compile(const std::vector<ShaderStageDesc>& stages) {
     int success = 0;
     for (const auto& stage : stages) {
         uint32_t shader = glCreateShader(to_gl_shader_stage(stage.stage));
+#ifdef __EMSCRIPTEN__
+        // WebGL2：GLSL 330/430 core -> ES 300 运行时转换（见 to_glsl_es300）
+        const std::string converted = to_glsl_es300(stage.source, stage.stage);
+        const char* src = converted.c_str();
+#else
         const char* src = stage.source.c_str();
+#endif
         glShaderSource(shader, 1, &src, nullptr);
         glCompileShader(shader);
 
@@ -333,11 +535,22 @@ void GLShader::set_int(const std::string& name, int value) {
     set_int(name.c_str(), value);
 }
 
+void GLShader::warn_missing_uniform(const char* setter, const char* name) const {
+    // 同一 (setter, uniform) 只告警一次。前向 shader 每帧都会被写入一批只属于
+    // 延迟管线的 uniform，逐帧告警会同时拖慢 CPU 并淹没后续日志。
+    std::string key(setter);
+    key.push_back('|');
+    key.append(name);
+    if (!missing_uniform_warned_.insert(std::move(key)).second) return;
+    GLOG_WARN("{}: uniform '{}' not declared by this shader (ignored; warning shown once)",
+              setter, name);
+}
+
 void GLShader::set_int(const char* name, int value) {
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_int: uniform '{}' not found (location={})", name, loc);
+        warn_missing_uniform("GLShader::set_int", name);
         return;
     }
     // 采样器 uniform：写入的是「引擎槽位」，必须换算成真正绑定的纹理单元。
@@ -359,8 +572,7 @@ void GLShader::set_float(const char* name, float value) {
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_float: uniform '{}' not found (program={}, location={})",
-                  name, program_id_, loc);
+        warn_missing_uniform("GLShader::set_float", name);
         return;
     }
     glUniform1f(loc, value);
@@ -375,7 +587,7 @@ void GLShader::set_vec2(const char* name, const gryce_engine::math::Vector2f& va
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_vec2: uniform '{}' not found (location={})", name, loc);
+        warn_missing_uniform("GLShader::set_vec2", name);
         return;
     }
     glUniform2f(loc, value.x, value.y);
@@ -390,7 +602,7 @@ void GLShader::set_vec3(const char* name, const gryce_engine::math::Vector3f& va
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_vec3: uniform '{}' not found (location={})", name, loc);
+        warn_missing_uniform("GLShader::set_vec3", name);
         return;
     }
     glUniform3f(loc, value.x, value.y, value.z);
@@ -405,8 +617,7 @@ void GLShader::set_vec4(const char* name, const gryce_engine::math::Vector4f& va
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_vec4: uniform '{}' not found (program={}, location={})",
-                  name, program_id_, loc);
+        warn_missing_uniform("GLShader::set_vec4", name);
         return;
     }
     glUniform4f(loc, value.x, value.y, value.z, value.w);
@@ -421,8 +632,7 @@ void GLShader::set_mat4(const char* name, const gryce_engine::math::Matrix4f& va
     if (!name) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_mat4: uniform '{}' not found (program={}, location={})",
-                  name, program_id_, loc);
+        warn_missing_uniform("GLShader::set_mat4", name);
         return;
     }
     glUniformMatrix4fv(loc, 1, GL_FALSE, value.m);
@@ -434,7 +644,7 @@ void GLShader::set_mat4_array(const char* name, const gryce_engine::math::Matrix
     if (!name || !data || count == 0) return;
     int loc = get_uniform_location_cached(name);
     if (loc < 0) {
-        GLOG_WARN("GLShader::set_mat4_array: uniform '{}' not found (location={})", name, loc);
+        warn_missing_uniform("GLShader::set_mat4_array", name);
         return;
     }
     // Matrix4f::m 为连续 16 float（列主序），数组等价于连续 mat4 块
@@ -467,7 +677,14 @@ bool GLShader::load_program(const std::string& name,
                             bool /*skinned*/) {
     // 两级解析 + core 兜底：项目磁盘文件 → 已挂载 bundle → 引擎默认 shader 目录。
     // 这样空项目（无任何自定义 shader）也能拿到 core 全套默认 shader 开箱渲染。
-    ShaderSourceSet src = resolve_shader_source(name, shader_dir, RenderAPI::OpenGL);
+    // Web 构建下 GL 后端就是 WebGL 后端：解析器据此优先取 webgl_ 前缀变体
+    // （SSBO 等 ES3.0 缺失语义的替代实现，如 webgl_instanced.vert）。
+#ifdef __EMSCRIPTEN__
+    const RenderAPI resolve_api = RenderAPI::WebGL;
+#else
+    const RenderAPI resolve_api = RenderAPI::OpenGL;
+#endif
+    ShaderSourceSet src = resolve_shader_source(name, shader_dir, resolve_api);
     if (!src.valid()) {
         GLOG_ERROR("GLShader::load_program: failed to resolve '{}' in '{}' "
                    "(project disk/bundle/core engine dir)\n vert: '{}' frag: '{}'",
@@ -490,7 +707,12 @@ bool GLShader::load_program(const std::string& name,
 
 bool GLShader::load_compute(const std::string& name, const std::string& shader_dir) {
     // 与 load_program 同源解析（项目磁盘 → bundle → core 引擎目录），只是取 .comp 单阶段。
-    ShaderStageSource src = resolve_shader_stage_source(name, shader_dir, ".comp", RenderAPI::OpenGL);
+#ifdef __EMSCRIPTEN__
+    const RenderAPI resolve_api = RenderAPI::WebGL;
+#else
+    const RenderAPI resolve_api = RenderAPI::OpenGL;
+#endif
+    ShaderStageSource src = resolve_shader_stage_source(name, shader_dir, ".comp", resolve_api);
     if (!src.ok()) {
         GLOG_ERROR("GLShader::load_compute: failed to resolve '{}.comp' in '{}'", name, shader_dir);
         return false;

@@ -78,7 +78,7 @@ public:
         return has_component(entity, ComponentTypeID(typeid(T)));
     }
 
-    // 调试/统计
+    // 实体 / 池数量查询（统计与监控用）
     std::size_t entity_count() const { return entity_components_.size(); }
     std::size_t pool_count() const { return pools_.size(); }
 

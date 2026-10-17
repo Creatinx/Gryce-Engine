@@ -288,7 +288,7 @@ public:
     void set_external_buffer_srv(const char* block_name, ID3D12Resource* res, uint64_t size_bytes);
     // 每帧清空外部 SSBO 绑定（与 uniform/纹理绑定同生命周期）。
     void clear_external_buffer_srvs() { external_srv_.clear(); }
-    // 本 shader 反射出的 SSBO 块（块名 → 寄存器 / UAV 标志 / 步长），诊断用。
+    // 本 shader 反射出的 SSBO 块（块名 → 寄存器 / UAV 标志 / 步长），随反射日志输出供人工核对。
     const std::vector<SsboBinding>& ssbo_bindings() const { return ssbo_bindings_; }
 
     // 当前是否为 skybox 管线（深度 LESS_EQUAL、不写深度、不剔除）。

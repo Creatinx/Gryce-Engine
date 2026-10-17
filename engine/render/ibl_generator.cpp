@@ -263,20 +263,101 @@ void IBLGenerator::prefilter_radiance(const IBLData& src, IBLData& dst) {
     }
 }
 
+namespace {
+
+// Van der Corput 低差异序列（bit-reversal），配合 Hammersley 点集做重要性采样。
+inline float radical_inverse_vdc(uint32_t bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return static_cast<float>(bits) * 2.3283064365386963e-10f;  // / 2^32
+}
+
+// 单点 GGX split-sum 积分贡献：返回 {scale, bias}，对应 shader 里的
+// specular = prefiltered * (F0 * scale + bias)。
+// 关键点：结果**必须**随 NdotV 变化 —— 掠射角下 Fresnel 项才抬起来；
+// 只看粗糙度的近似会让所有表面平白多出一层天空反射（画面像金属）。
+inline void ggx_brdf_sample(float NdotV, float alpha, uint32_t i, uint32_t sample_count,
+                            float& out_scale, float& out_bias) {
+    const float xi1 = (static_cast<float>(i) + 0.5f) / static_cast<float>(sample_count);
+    const float xi2 = radical_inverse_vdc(i);
+
+    // 切线空间：N = +Z，V 落在 XZ 平面
+    const float Vx = std::sqrt(std::max(0.0f, 1.0f - NdotV * NdotV));
+    const float Vz = NdotV;
+
+    // GGX 半程向量重要性采样
+    const float phi = k_two_pi * xi1;
+    const float alpha2 = alpha * alpha;
+    const float cos_theta =
+        std::sqrt(std::max(0.0f, (1.0f - xi2) / (1.0f + (alpha2 - 1.0f) * xi2)));
+    const float sin_theta = std::sqrt(std::max(0.0f, 1.0f - cos_theta * cos_theta));
+    const float Hx = sin_theta * std::cos(phi);
+    const float Hy = sin_theta * std::sin(phi);
+    const float Hz = cos_theta;
+
+    const float VdotH = Vx * Hx + Vz * Hz;
+    if (VdotH <= 0.0f) return;
+
+    // L = reflect(-V, H)
+    const float Lx = 2.0f * VdotH * Hx - Vx;
+    const float Ly = 2.0f * VdotH * Hy;
+    const float Lz = 2.0f * VdotH * Hz - Vz;
+    const float NdotL = Lz;
+    if (NdotL <= 0.0f) return;
+
+    const float NdotH = Hz > 1.0f ? 1.0f : Hz;
+    if (NdotH <= 1.0e-5f) return;
+
+    // Smith 几何项（IBL 用 k = alpha / 2）
+    const float k = alpha * 0.5f;
+    const float gv = NdotV / (NdotV * (1.0f - k) + k);
+    const float gl = NdotL / (NdotL * (1.0f - k) + k);
+    const float g_vis = (gv * gl) * VdotH / (NdotH * NdotV);
+
+    const float one_minus_vh = 1.0f - VdotH;
+    const float fc = one_minus_vh * one_minus_vh * one_minus_vh * one_minus_vh * one_minus_vh;
+
+    out_scale = (1.0f - fc) * g_vis;
+    out_bias = fc * g_vis;
+}
+
+} // namespace
+
 void IBLGenerator::integrate_brdf(IBLData& dst, int size) {
-    dst.brdf_lut.resize(static_cast<size_t>(size) * size * 2);
+    if (size <= 0) return;
+    constexpr uint32_t k_sample_count = 256;
+
+    dst.brdf_lut.assign(static_cast<size_t>(size) * size * 2, 0.0f);
     for (int y = 0; y < size; ++y) {
-        float roughness = std::max(0.004f, static_cast<float>(y + 0.5f) / static_cast<float>(size));
+        const float roughness =
+            std::max(0.004f, static_cast<float>(y + 0.5f) / static_cast<float>(size));
+        const float alpha = roughness * roughness;
         for (int x = 0; x < size; ++x) {
-            float NdotV = static_cast<float>(x + 0.5f) / static_cast<float>(size);
-            // 解析近似 BRDF 积分（基于 Disney 的 split-sum 近似）
-            // 输出 scale (x) 和 bias (y)，供 shader 组合 Fresnel。
-            float r4 = roughness * roughness * roughness * roughness;
-            float scale = (-1.0f / (r4 + 4.0f) + 1.0f);
-            float bias = r4 / (r4 + 4.0f);
-            size_t idx = (static_cast<size_t>(y) * size + x) * 2;
-            dst.brdf_lut[idx + 0] = scale;
-            dst.brdf_lut[idx + 1] = bias;
+            const float NdotV =
+                std::max(1.0e-3f, static_cast<float>(x + 0.5f) / static_cast<float>(size));
+
+            float scale_sum = 0.0f;
+            float bias_sum = 0.0f;
+            for (uint32_t i = 0; i < k_sample_count; ++i) {
+                // ★ 初值必须是 0：ggx_brdf_sample 在 VdotH<=0 / NdotL<=0 时
+                //   提前 return，不写输出。若这里初值是 1.0，每个"射到半球外"
+                //   的样本都会被当成一次满额镜面加进 A 项 —— 粗糙表面
+                //   (r≈0.86) 的 A 因此从 0.52 被抬到 0.95（近 2 倍），
+                //   掠射角更夸张，全场景平白多一层天空色高光，看着像金属。
+                float s = 0.0f;
+                float b = 0.0f;
+                ggx_brdf_sample(NdotV, alpha, i, k_sample_count, s, b);
+                scale_sum += s;
+                bias_sum += b;
+            }
+
+            const size_t idx = (static_cast<size_t>(y) * size + x) * 2;
+            const float inv = 1.0f / static_cast<float>(k_sample_count);
+            dst.brdf_lut[idx + 0] = scale_sum * inv;
+            dst.brdf_lut[idx + 1] = bias_sum * inv;
         }
     }
 }

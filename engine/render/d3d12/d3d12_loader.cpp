@@ -39,9 +39,8 @@ bool init_loader(Loader& out) {
         GLOG_WARN("D3D12: D3D12SerializeRootSignature not found; shader/PSO creation unavailable");
     }
 
-    // 调试层入口（可选）：只在需要排查时用到，缺失完全不影响正常运行。
-    // 注意 D3D12GetDebugInterface 需要系统装了 "图形工具"（Graphics Tools）
-    // 可选功能；没装就返回 E_NOINTERFACE，此时静默降级即可。
+    // 调试层入口（可选）：需要系统安装"图形工具"（Graphics Tools）可选功能，
+    // 没装则返回 E_NOINTERFACE 并静默降级，缺失完全不影响正常运行。
     out.get_debug_interface = reinterpret_cast<PfnD3D12GetDebugInterface>(
         GetProcAddress(out.d3d12_dll, "D3D12GetDebugInterface"));
 

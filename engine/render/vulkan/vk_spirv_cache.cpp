@@ -1,3 +1,5 @@
+// vk_spirv_cache.cpp — Vulkan 侧 GLSL→SPIR-V 编译缓存：按（阶段 + 完整源码）
+// 作键的进程内缓存，重复加载同名同内容 shader 时直接复用，避免反复编译。
 #include "vk_spirv_cache.h"
 
 #include <cstdio>
@@ -21,7 +23,7 @@ SpirvCache& spirv_cache() {
 
 // 源码内容指纹（FNV-1a 64 位）。用内容而不是 mtime 判断缓存新鲜度：
 // 复制/还原文件、编辑器保留 mtime 等操作都会让 mtime 失真，导致"改了 shader
-// 却一直跑旧 SPIR-V"，这种问题极难排查，因此这里以内容为准。
+// 却一直跑旧 SPIR-V"，因此这里以内容为准。
 std::string source_fingerprint(const std::string& source) {
     uint64_t h = 1469598103934665603ull;
     for (unsigned char c : source) {

@@ -15,12 +15,15 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "math/camera.h"
 #include "math/math.h"
 #include "math/ray.h"
+#include "assets/material_rules.h"
+#include "assets/mesh_lod.h"
 
 using gryce_engine::math::Camera;
 using gryce_engine::math::Matrix4f;
@@ -966,6 +969,331 @@ TEST(ray, screen_ndc_to_ray) {
     const Vector4f back = view_proj * Vector4f(corner.at(20.0f), 1.0f);
     CHECK_NEAR(back.x / back.w, 1.0f, kLooseEps);
     CHECK_NEAR(back.y / back.w, 1.0f, kLooseEps);
+}
+
+// ===========================================================================
+// suite: material —— 模型文件材质 → PBR 参数的推导规则
+//
+// 这些规则决定"导入的模型看起来是什么材质"：粗糙度取哪个字段、金属度怎么
+// 从 spec-gloss 反推、什么时候走混合/双面。改动任何阈值都应先让这一组测试说话。
+// ===========================================================================
+TEST(material, shininess_to_roughness) {
+    namespace mr = gryce_engine::assets;
+    // r = (2/(n+2))^(1/4)
+    CHECK_NEAR(mr::shininess_to_roughness(2.0f), 0.84089642f, kEps);     // 3ds Max 默认
+    CHECK_NEAR(mr::shininess_to_roughness(98.0f), 0.3756224f, 1e-3f);    // MTL 常见 100
+    CHECK_NEAR(mr::shininess_to_roughness(998.0f), 0.2114f, 1e-3f);      // 抛光
+    CHECK_NEAR(mr::shininess_to_roughness(0.0f), 1.0f, kEps);            // Ns=0 → 极粗糙
+    CHECK_NEAR(mr::shininess_to_roughness(-5.0f), 1.0f, kEps);           // 非法值兜底
+    // 必须单调：高光指数越大越光滑，且结果落在 (0,1]
+    float prev = 1.1f;
+    for (float n = 1.0f; n < 5000.0f; n *= 1.7f) {
+        const float r = mr::shininess_to_roughness(n);
+        CHECK_TRUE(r > 0.0f && r <= 1.0f);
+        CHECK_TRUE(r < prev);
+        prev = r;
+    }
+}
+
+TEST(material, fbx_roughness_factor_wins_over_shininess) {
+    namespace mr = gryce_engine::assets;
+    // 3d66 摄影测量 FBX 的真实数据：diffuse 0.5 灰 + 2048² 基色贴图、
+    // shininess=2、roughnessFactor=0.8586、没有 metallicFactor。
+    mr::SurfaceInput in;
+    in.base_color = Vector3f(0.5f, 0.5f, 0.5f);
+    in.specular_color = Vector3f(0.9f, 0.9f, 0.9f);
+    in.has_specular = false;   // assimp 填的默认灰，不是文件里写的
+    in.has_base_color_map = true;
+    in.has_shininess = true;
+    in.shininess = 2.0f;
+    in.has_roughness = true;
+    in.roughness = 0.8586f;
+
+    const mr::SurfaceResult out = mr::resolve_surface(in);
+    CHECK_NEAR(out.roughness, 0.8586f, kEps);   // 用文件里的 PBR 因子，不是 shininess
+    CHECK_NEAR(out.metallic, 0.0f, kEps);
+    CHECK_TRUE(out.type == mr::SurfaceType::Dielectric);
+    CHECK_TRUE(!out.blend);
+    CHECK_TRUE(!out.two_sided);
+}
+
+TEST(material, shininess_used_when_no_roughness_factor) {
+    namespace mr = gryce_engine::assets;
+    mr::SurfaceInput in;
+    in.base_color = Vector3f(0.8f, 0.8f, 0.8f);
+    in.has_shininess = true;
+    in.shininess = 2.0f;
+    const mr::SurfaceResult out = mr::resolve_surface(in);
+    CHECK_NEAR(out.roughness, 0.8409f, 1e-3f);
+}
+
+TEST(material, spec_gloss_metal_inference) {
+    namespace mr = gryce_engine::assets;
+    // 金色镜面材质：Kd=0（金属没有漫反射）、Ks=(1,0.77,0.34)
+    mr::SurfaceInput gold;
+    gold.base_color = Vector3f(0.0f, 0.0f, 0.0f);
+    gold.specular_color = Vector3f(1.0f, 0.77f, 0.34f);
+    gold.has_specular = true;
+    gold.has_shininess = true;
+    gold.shininess = 200.0f;
+
+    const mr::SurfaceResult metal = mr::resolve_surface(gold);
+    CHECK_NEAR(metal.metallic, 0.7884f, 1e-3f);  // clamp(luminance(Ks))
+    CHECK_VEC3(metal.base_color, 1.0f, 0.77f, 0.34f, kEps);  // 金属 albedo = F0
+    CHECK_TRUE(metal.type == mr::SurfaceType::Metal);
+
+    // 有基色贴图时 diffuse 只是乘子，不能当依据 —— 否则扫描模型整体变金属
+    mr::SurfaceInput textured = gold;
+    textured.has_base_color_map = true;
+    CHECK_NEAR(mr::resolve_surface(textured).metallic, 0.0f, kEps);
+
+    // 电介质（灰白漫反射 + 白镜面）不该被判成金属
+    mr::SurfaceInput plaster;
+    plaster.base_color = Vector3f(0.8f, 0.8f, 0.78f);
+    plaster.specular_color = Vector3f(0.5f, 0.5f, 0.5f);
+    plaster.has_specular = true;
+    CHECK_NEAR(mr::resolve_surface(plaster).metallic, 0.0f, kEps);
+
+    // 镜面颜色没写（加载器默认值）时即使漫反射为黑也不猜金属
+    mr::SurfaceInput unknown;
+    unknown.base_color = Vector3f(0.0f, 0.0f, 0.0f);
+    unknown.has_specular = false;
+    CHECK_NEAR(mr::resolve_surface(unknown).metallic, 0.0f, kEps);
+}
+
+TEST(material, explicit_pbr_factors_win) {
+    namespace mr = gryce_engine::assets;
+    // glTF：baseColor 有贴图、metallicFactor=1、roughnessFactor=0.15
+    mr::SurfaceInput in;
+    in.base_color = Vector3f(1.0f, 1.0f, 1.0f);
+    in.has_base_color_map = true;
+    in.has_metallic = true;
+    in.metallic = 1.0f;
+    in.has_roughness = true;
+    in.roughness = 0.15f;
+    in.has_shininess = true;   // 同时存在时不得覆盖 PBR 因子
+    in.shininess = 900.0f;
+
+    const mr::SurfaceResult out = mr::resolve_surface(in);
+    CHECK_NEAR(out.metallic, 1.0f, kEps);
+    CHECK_NEAR(out.roughness, 0.15f, kEps);
+    CHECK_TRUE(out.type == mr::SurfaceType::Metal);
+    CHECK_VEC3(out.base_color, 1.0f, 1.0f, 1.0f, kEps);
+}
+
+TEST(material, opacity_and_two_sided) {
+    namespace mr = gryce_engine::assets;
+    mr::SurfaceInput glass;
+    glass.opacity = 0.35f;
+    glass.has_opacity = true;
+    const mr::SurfaceResult out = mr::resolve_surface(glass);
+    CHECK_TRUE(out.blend);
+    CHECK_TRUE(out.two_sided);   // 半透明一律双面，否则背面透不出来
+    CHECK_NEAR(out.opacity, 0.35f, kEps);
+    CHECK_TRUE(out.type == mr::SurfaceType::Transparent);
+
+    // 文件写 1.0：不触发混合（浮点噪声不该把整模型推进透明 pass）
+    mr::SurfaceInput opaque;
+    opaque.opacity = 0.9999f;
+    opaque.has_opacity = true;
+    CHECK_TRUE(!mr::resolve_surface(opaque).blend);
+
+    mr::SurfaceInput cloth;
+    cloth.two_sided = true;
+    CHECK_TRUE(mr::resolve_surface(cloth).two_sided);
+}
+
+TEST(material, emissive_surface) {
+    namespace mr = gryce_engine::assets;
+    mr::SurfaceInput lamp;
+    lamp.emissive = Vector3f(1.0f, 0.9f, 0.7f);
+    const mr::SurfaceResult out = mr::resolve_surface(lamp);
+    CHECK_TRUE(out.type == mr::SurfaceType::Emissive);
+    CHECK_VEC3(out.emissive, 1.0f, 0.9f, 0.7f, kEps);
+
+    // 极暗自发光不算"灯"
+    mr::SurfaceInput dim;
+    dim.base_color = Vector3f(1.0f, 1.0f, 1.0f);
+    dim.emissive = Vector3f(0.01f, 0.01f, 0.01f);
+    CHECK_TRUE(mr::resolve_surface(dim).type == mr::SurfaceType::Dielectric);
+}
+
+TEST(material, defaults_without_any_data) {
+    namespace mr = gryce_engine::assets;
+    mr::SurfaceInput empty;
+    const mr::SurfaceResult out = mr::resolve_surface(empty);
+    CHECK_NEAR(out.roughness, 0.5f, kEps);
+    CHECK_NEAR(out.metallic, 0.0f, kEps);
+    CHECK_NEAR(out.opacity, 1.0f, kEps);
+    CHECK_TRUE(!out.blend);
+    CHECK_TRUE(out.type == mr::SurfaceType::Dielectric);
+
+    // 只有基色贴图、什么参数都没给：按"扫描/贴图模型"给偏粗糙值，
+    // 避免整片高光把石头地面照成金属
+    mr::SurfaceInput textured;
+    textured.has_base_color_map = true;
+    CHECK_NEAR(mr::resolve_surface(textured).roughness, 0.8f, kEps);
+}
+
+// ===========================================================================
+// suite: lod —— 自动 LOD 链（assets/mesh_lod.cpp）
+//
+// 只核对"生成结果的结构性保证"，不核对视觉：
+//   - 三角数随级别单调下降、level 0 原样保留
+//   - 累计误差单调不减、level 0 误差为 0
+//   - 输出的索引全部有效、无退化三角形
+//   - 切换距离公式的量纲关系（误差翻倍 → 距离翻倍；像素预算翻倍 → 距离减半）
+// ===========================================================================
+namespace {
+
+// 生成一张波浪起伏的 N×N 网格（2*N*N 个三角形），法线朝 +Y。
+// 用波浪而不是平面：平面上聚类误差恒为 0，测不出误差推导。
+std::shared_ptr<gryce_engine::assets::MeshData> make_wavy_grid(int n, float extent, float amp) {
+    auto mesh = std::make_shared<gryce_engine::assets::MeshData>();
+    mesh->name = "wavy";
+    const int vn = n + 1;
+    mesh->vertices.reserve(static_cast<std::size_t>(vn) * vn);
+    for (int z = 0; z <= n; ++z) {
+        for (int x = 0; x <= n; ++x) {
+            const float fx = static_cast<float>(x) / static_cast<float>(n) - 0.5f;
+            const float fz = static_cast<float>(z) / static_cast<float>(n) - 0.5f;
+            gryce_engine::assets::MeshVertex v;
+            v.position = Vector3f(fx * extent,
+                                  amp * std::sin(fx * 12.0f) * std::cos(fz * 9.0f),
+                                  fz * extent);
+            v.normal = Vector3f(0.0f, 1.0f, 0.0f);
+            v.tangent = Vector3f(1.0f, 0.0f, 0.0f);
+            v.uv = Vector2f(static_cast<float>(x) / static_cast<float>(n),
+                            static_cast<float>(z) / static_cast<float>(n));
+            v.color = Vector3f(1.0f, 1.0f, 1.0f);
+            mesh->vertices.push_back(v);
+        }
+    }
+    for (int z = 0; z < n; ++z) {
+        for (int x = 0; x < n; ++x) {
+            const uint32_t i0 = static_cast<uint32_t>(z * vn + x);
+            const uint32_t i1 = i0 + 1;
+            const uint32_t i2 = i0 + static_cast<uint32_t>(vn);
+            const uint32_t i3 = i2 + 1;
+            mesh->indices.insert(mesh->indices.end(), {i0, i2, i1, i1, i2, i3});
+        }
+    }
+    return mesh;
+}
+
+}  // namespace
+
+TEST(lod, switch_distance_scales_with_error_and_budget) {
+    namespace la = gryce_engine::assets;
+    const float tan60 = std::tan(30.0f * 3.14159265358979f / 180.0f);
+
+    // 误差为 0（原始网格）：不需要任何距离就"够细"
+    CHECK_NEAR(la::lod_switch_distance(0.0f, tan60, 1080, 2.0f), 0.0f, kEps);
+
+    const float d1 = la::lod_switch_distance(0.1f, tan60, 1080, 2.0f);
+    CHECK_TRUE(d1 > 0.0f);
+    // 误差翻倍 → 距离翻倍（线性）
+    CHECK_NEAR(la::lod_switch_distance(0.2f, tan60, 1080, 2.0f), d1 * 2.0f, kLooseEps * d1);
+    // 像素预算翻倍（更能容忍误差）→ 距离减半
+    CHECK_NEAR(la::lod_switch_distance(0.1f, tan60, 1080, 4.0f), d1 * 0.5f, kLooseEps * d1);
+    // 分辨率翻倍（4K）→ 同样的误差占更多像素 → 距离翻倍
+    CHECK_NEAR(la::lod_switch_distance(0.1f, tan60, 2160, 2.0f), d1 * 2.0f, kLooseEps * d1);
+}
+
+TEST(lod, chain_structure_is_monotonic) {
+    namespace la = gryce_engine::assets;
+    auto base = make_wavy_grid(64, 20.0f, 1.2f);   // 8192 三角形
+    const std::size_t base_tris = base->indices.size() / 3;
+    CHECK_TRUE(base_tris == 8192);
+
+    la::LodBuildSettings settings;
+    settings.max_levels = 4;
+    settings.ratio_per_level = 0.5f;
+    settings.min_triangles = 64;
+
+    auto chain = la::build_lod_chain(base, settings, 0);
+    CHECK_TRUE(chain != nullptr);
+    if (!chain) return;
+
+    CHECK_TRUE(chain->level_count() >= 2);
+    CHECK_TRUE(chain->level_count() <= 4);
+    // level 0 必须是同一份网格（不是复制品）：省一份内存，也保证近处零差异
+    CHECK_TRUE(chain->levels[0].mesh.get() == base.get());
+    CHECK_TRUE(chain->levels[0].triangles == base_tris);
+    CHECK_NEAR(chain->levels[0].cumulative_error, 0.0f, kEps);
+
+    for (int k = 1; k < chain->level_count(); ++k) {
+        const auto& lv = chain->levels[k];
+        CHECK_TRUE(lv.mesh != nullptr);
+        // 三角数必须真的降下来（否则这一级没有意义）
+        CHECK_TRUE(lv.triangles < chain->levels[k - 1].triangles);
+        CHECK_TRUE(lv.triangles == lv.mesh->indices.size() / 3);
+        // 误差单调不减，且切换距离随误差增大
+        CHECK_TRUE(lv.cumulative_error >= chain->levels[k - 1].cumulative_error);
+        CHECK_TRUE(lv.reference_switch_distance >=
+                   chain->levels[k - 1].reference_switch_distance);
+        // 顶点数不超过三角数*3（聚类不可能造出多余顶点）
+        CHECK_TRUE(lv.mesh->vertices.size() <= lv.triangles * 3);
+
+        // 索引有效 + 无退化三角形
+        bool indices_ok = true;
+        for (std::size_t t = 0; t + 2 < lv.mesh->indices.size(); t += 3) {
+            const uint32_t a = lv.mesh->indices[t];
+            const uint32_t b = lv.mesh->indices[t + 1];
+            const uint32_t c = lv.mesh->indices[t + 2];
+            if (a >= lv.mesh->vertices.size() || b >= lv.mesh->vertices.size() ||
+                c >= lv.mesh->vertices.size() || a == b || b == c || a == c) {
+                indices_ok = false;
+                break;
+            }
+        }
+        CHECK_TRUE(indices_ok);
+        // 材质随级别沿用（LOD 不该丢贴图）
+        CHECK_TRUE(lv.mesh->material.albedo_map == base->material.albedo_map);
+    }
+}
+
+TEST(lod, tiny_mesh_skipped) {
+    namespace la = gryce_engine::assets;
+    // 一个三角形：没有可降级的余量，必须明确返回 nullptr（调用方据此走原路径）
+    auto tri = std::make_shared<gryce_engine::assets::MeshData>();
+    tri->name = "tri";
+    for (int i = 0; i < 3; ++i) {
+        gryce_engine::assets::MeshVertex v;
+        v.position = Vector3f(static_cast<float>(i), 0.0f, 0.0f);
+        v.normal = Vector3f(0.0f, 1.0f, 0.0f);
+        v.tangent = Vector3f(1.0f, 0.0f, 0.0f);
+        v.uv = Vector2f(0.0f, 0.0f);
+        v.color = Vector3f(1.0f, 1.0f, 1.0f);
+        tri->vertices.push_back(v);
+    }
+    tri->indices = {0, 1, 2};
+
+    la::LodBuildSettings settings;
+    settings.max_levels = 4;
+    CHECK_TRUE(la::build_lod_chain(tri, settings, 0) == nullptr);
+    // 空网格同样安全
+    auto empty = std::make_shared<gryce_engine::assets::MeshData>();
+    CHECK_TRUE(la::build_lod_chain(empty, settings, 0) == nullptr);
+    CHECK_TRUE(la::build_lod_chain(nullptr, settings, 0) == nullptr);
+}
+
+TEST(lod, planar_mesh_has_no_error) {
+    namespace la = gryce_engine::assets;
+    // 平面：所有顶点共面，聚类只能沿平面滑动 → 几何误差应远小于尺寸
+    auto plane = make_wavy_grid(48, 30.0f, 0.0f);
+    la::LodBuildSettings settings;
+    settings.max_levels = 3;
+    settings.min_triangles = 64;
+    auto chain = la::build_lod_chain(plane, settings, 0);
+    CHECK_TRUE(chain != nullptr);
+    if (!chain || chain->level_count() < 2) return;
+
+    const auto& lv = chain->levels[1];
+    // 平面尺寸 30：误差必须远小于半个对角线（否则说明聚类把顶点甩出了曲面）
+    CHECK_TRUE(lv.cumulative_error < 3.0f);
+    // 但也不该恒为 0：网格被简化后代表顶点确实挪了位置
+    CHECK_TRUE(chain->local_radius > 10.0f);
 }
 
 // ===========================================================================

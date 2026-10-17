@@ -102,9 +102,9 @@ public:
     // 否则又退回单分段覆写）。保留仅为过渡期编译通过。
     void reset() { begin_slot(0); }
 
-    // 调试用帧标签（backend 每帧 begin_frame 设置）：GRYCE_DX12_PROBE_RING=1 时
-    // 每次分配打一行，含帧号/段内偏移/大小/数据 FNV-1a 哈希。用于检测"同一段
-    // 内存在飞窗口内被跨帧复用"（环流水与 CBV 探针对照定位数据竞争）。
+    // 帧标签（backend 每帧 begin_frame 设置）：GRYCE_DX12_PROBE_RING=1 时
+    // 每次分配打一行，含帧号 / 段内偏移 / 大小 / 数据 FNV-1a 哈希，用于检测
+    // 同一段在在飞窗口内被跨帧复用。
     void set_frame_tag(uint64_t frame) { frame_tag_ = frame; }
 
     ID3D12Resource* resource() const { return resource_; }
@@ -123,7 +123,7 @@ private:
     size_t slot_base_ = 0;    // 当前 slot 分段起点
     size_t slot_capacity_ = 0;// 每个分段的容量 = capacity_ / frame_slots_
     uint32_t frame_slots_ = 3;
-    uint64_t frame_tag_ = 0;  // 调试：当前帧号（仅探针日志用）
+    uint64_t frame_tag_ = 0;  // 当前帧号（探针日志用）
 };
 
 } // namespace gryce_engine::render::d3d12

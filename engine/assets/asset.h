@@ -21,7 +21,7 @@ public:
     const std::string& path() const { return path_; }
     void set_path(const std::string& path) { path_ = path; }
 
-    // 当前引用计数（调试用）
+    // 当前 shared_ptr 引用计数（缓存驱逐与内存统计的依据）
     uint64_t ref_count() const {
         return static_cast<uint64_t>(shared_from_this().use_count());
     }

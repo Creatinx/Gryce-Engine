@@ -16,6 +16,7 @@
 #include "assets/asset_handle.h"
 #include "assets/async_loader.h"
 #include "assets/mesh_data.h"
+#include "assets/mesh_lod.h"
 #include "assets/skinned_mesh_data.h"
 #include "assets/texture_data.h"
 #include "resources/pak_bundle.h"
@@ -41,8 +42,34 @@ public:
 
     // 兼容旧 API：加载/获取网格资源。
     // 返回共享指针持有资源，避免 LRU 驱逐在调用方仍持有时释放内存。
-    std::shared_ptr<const MeshData> load_mesh(const std::string& path);
-    std::shared_ptr<const MeshData> load_mesh_shared(const std::string& path);
+    //
+    // submesh_index < 0：整体网格 —— 多子网格模型按"顶点重排 + 索引偏移"合并成
+    //   单一 MeshData，材质只取第一个有效材质（引擎 MeshRenderer 单网格单材质）。
+    // submesh_index >= 0：取模型文件里的第 N 个子网格，各自保留自己的材质与贴图
+    //   （多材质模型由装配层按子网格拆成多个实体，见 scene/multi_material_assembly.h）。
+    //   越界返回 nullptr。
+    std::shared_ptr<const MeshData> load_mesh(const std::string& path, int submesh_index = -1);
+    std::shared_ptr<const MeshData> load_mesh_shared(const std::string& path, int submesh_index = -1);
+
+    // 自动 LOD 链（见 assets/mesh_lod.h）。
+    // 首次调用时按默认设置生成并缓存（纯 CPU，1.4M 三角形 ~0.2s，只在首次命中时付一次），
+    // 之后按 (path, submesh) 直接返回缓存；levels[0] 就是 load_mesh 返回的同一份网格。
+    // 返回 nullptr 表示该网格不适合做 LOD（太小 / 生成失败 / GRYCE_NO_LOD=1）。
+    std::shared_ptr<const LodChain> load_mesh_lods(const std::string& path, int submesh_index = -1);
+    // 空间分块 LOD（见 ChunkedLod 注释）：把大模型切成若干块，每块各自一条链。
+    // 只有"大到值得分块"的网格才生成（默认 >= 120k 三角形，可用
+    // GRYCE_CHUNK_LOD_MIN_TRIS 覆盖）；返回 nullptr 表示该网格走逐物体 LOD。
+    // cells_per_axis <= 0 表示按目标块大小自动决定（choose_chunk_cells）。
+    std::shared_ptr<const ChunkedLod> load_mesh_chunk_lods(const std::string& path,
+                                                           int submesh_index = -1,
+                                                           int cells_per_axis = 0);
+    // 丢弃 LOD 链缓存（资源热重载 / unload 时自动调用）。
+    void clear_lod_cache();
+
+    // 逐子网格加载：返回模型文件里的每个子网格（各自带自己的材质），不做合并。
+    // 返回的元素与 load_mesh(path, i) 返回的是同一批对象（同一份缓存，不额外驻留）。
+    // 加载失败返回空 vector。
+    std::vector<std::shared_ptr<const MeshData>> load_meshes(const std::string& path);
 
     // 带骨骼/动画的模型（.gltf/.fbx，走 Assimp import_skinned）。
     // 返回缓存的共享指针；失败返回 nullptr。需要 GRYCE_HAS_ASSIMP。
@@ -113,8 +140,22 @@ private:
         std::filesystem::file_time_type source_mtime;
     };
 
+    // 网格逐子网格缓存：一个模型文件（FBX/GLB）里的每个子网格独立持有，
+    // 各自带自己的材质（合并视图见 assets_，按需构建）。
+    struct MeshGroupEntry {
+        std::vector<std::shared_ptr<MeshData>> meshes;
+        std::string source_path;
+        std::filesystem::file_time_type source_mtime;
+    };
+
     // 加载具体资源类型（特化实现）
     std::shared_ptr<MeshData> load_mesh_internal(const std::string& path);
+    // 逐子网格导入（未命中缓存则导入并写入 mesh_groups_）。调用方必须持有 mutex_。
+    std::vector<std::shared_ptr<MeshData>> load_mesh_group_unlocked(const std::string& path);
+    // 按扩展名选择导入器（OBJ 内置 / 其他 Assimp）。调用方必须持有 mutex_。
+    std::vector<MeshData> import_mesh_file(const std::string& path, const std::string& resolved);
+    // 解析网格源文件：磁盘优先，已挂载 bundle 内提取兜底。调用方必须持有 mutex_。
+    std::string resolve_mesh_source_unlocked(const std::string& path);
     std::shared_ptr<TextureData> load_texture_internal(const std::string& path);
     std::shared_ptr<SkinnedModelData> load_skinned_model_internal(const std::string& path);
 
@@ -123,6 +164,12 @@ private:
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, CacheEntry> assets_;
+    // 逐子网格视图（多材质模型按子网格拆分渲染时使用）
+    std::unordered_map<std::string, MeshGroupEntry> mesh_groups_;
+    // 自动 LOD 链缓存，键为 "path#submesh"（与 mesh_groups_ 分开存，
+    // 避免 LOD 生成逻辑侵入导入路径本身）
+    std::unordered_map<std::string, std::shared_ptr<const LodChain>> lod_chains_;
+    std::unordered_map<std::string, std::shared_ptr<const ChunkedLod>> chunk_lods_;
     // SkinnedModelData 不是 Asset 子类（值语义聚合），独立缓存
     std::unordered_map<std::string, std::shared_ptr<SkinnedModelData>> skinned_models_;
 

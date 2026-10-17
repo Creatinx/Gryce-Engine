@@ -15,6 +15,7 @@
 #include "core/packager.h"
 #include "core/pe_image.h"
 #include "core/dep_resolver.h"
+#include "core/web_pack.h"
 
 #include <algorithm>
 #include <cctype>
@@ -783,11 +784,167 @@ void run_package() {
     std::printf("[suite package] done\n");
 }
 
+// ---------------------------------------------------------------------------
+// webpack：Emscripten 多文件产物 → 单文件自包含 HTML
+// 用合成输入（不依赖真实构建树）覆盖全部路径与失败模式。
+// ---------------------------------------------------------------------------
+
+void run_webpack() {
+    using namespace grycegc;
+    std::printf("[suite webpack]\n");
+    namespace fs = std::filesystem;
+
+    const fs::path root = temp_dir() / "grycegc_test_webpack";
+    fs::remove_all(root);
+    mkdir_p(root);
+
+    // 合成一个 Emscripten 风格的多文件产物（js 里故意放 </script> 验证转义）
+    const fs::path in = root / "in";
+    mkdir_p(in);
+    const std::string html =
+        "<!doctype html><html><head><title>Fake</title></head><body>"
+        "<pre id=\"log\"></pre>"
+        "<script>var Module={print:function(t){}};</script>"
+        "<script async src=Fake.js></script>"
+        "</body></html>";
+    const std::string js =
+        "var wasmBinaryFile=\"Fake.wasm\";var x=\"</script>\";// tail comment";
+    const std::vector<uint8_t> wasm = {0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00};
+    const std::vector<uint8_t> data = {'A', 'B', 'C', 'D'};  // base64: QUJDRA==
+    auto write_vec = [](const fs::path& p, const std::vector<uint8_t>& v) {
+        write_binary(p, std::string(v.begin(), v.end()));
+    };
+    write_binary(in / "Fake.html", html);
+    write_binary(in / "Fake.js", js);
+    write_vec(in / "Fake.wasm", wasm);
+    write_vec(in / "Fake.data", data);
+
+    const fs::path out = root / "out" / "Fake.single.html";
+
+    // 1) 正常路径（显式指定全部输入）
+    {
+        WebPackOptions po;
+        po.build_dir = in;
+        po.name = "Fake";
+        po.output = out;
+        WebPacker packer(po);
+        const auto res = packer.run();
+        EXPECT(res.ok, res.error.empty() ? "webpack ok" : res.error.c_str());
+        EXPECT(res.js_inlined, "js inlined flag");
+        EXPECT(res.data_inlined, "data inlined flag");
+        EXPECT(fs::is_regular_file(out), "output file exists");
+        EXPECT(res.out_bytes > res.html_bytes + res.js_bytes, "output bigger than inputs");
+
+        const auto o = read_all(out);
+        const std::string s(o.begin(), o.end());
+        EXPECT(s.find("data:application/wasm;base64,") != std::string::npos,
+               "wasm data URL injected");
+        EXPECT(s.find("QUJDRA==") != std::string::npos, "data base64 injected");
+        EXPECT(s.find("M.getPreloadedPackage=function") != std::string::npos,
+               "getPreloadedPackage hook injected");
+        EXPECT(s.find("M.locateFile=function") != std::string::npos,
+               "locateFile hook injected");
+        EXPECT(s.find("src=Fake.js") == std::string::npos, "no external js reference");
+        EXPECT(s.find("<\\/script>") != std::string::npos, "</script> escaped");
+        EXPECT(s.find("</script>") != std::string::npos, "legit close tag kept");
+        EXPECT(s.find("var Module={print:function(t){}};") != std::string::npos,
+               "original shell script preserved");
+        EXPECT(s.find("Fake.wasm") != std::string::npos, "wasm name in hook");
+        EXPECT(s.find("Fake.data") != std::string::npos, "data name in hook");
+    }
+
+    // 2) 无 .data：只内联 wasm，不注入 getPreloadedPackage
+    {
+        const fs::path in2 = root / "in_nodata";
+        mkdir_p(in2);
+        write_binary(in2 / "Fake.html", html);
+        write_binary(in2 / "Fake.js", js);
+        write_vec(in2 / "Fake.wasm", wasm);
+        const fs::path out2 = root / "out_nodata.html";
+
+        WebPackOptions po;
+        po.build_dir = in2;
+        po.name = "Fake";
+        po.output = out2;
+        WebPacker packer(po);
+        const auto res = packer.run();
+        EXPECT(res.ok, "webpack without data ok");
+        EXPECT(!res.data_inlined, "data_inlined false when .data missing");
+        const auto o = read_all(out2);
+        const std::string s(o.begin(), o.end());
+        EXPECT(s.find("M.getPreloadedPackage=function") == std::string::npos,
+               "no getPreloadedPackage hook without .data");
+        EXPECT(s.find("data:application/wasm;base64,") != std::string::npos,
+               "wasm still inlined");
+    }
+
+    // 3) 失败模式：缺 html
+    {
+        WebPackOptions po;
+        po.build_dir = root / "nonexistent";
+        po.name = "Fake";
+        WebPacker packer(po);
+        const auto res = packer.run();
+        EXPECT(!res.ok, "missing html -> failure");
+        EXPECT(!res.error.empty(), "error message set");
+    }
+
+    // 4) 失败模式：html 里没有 js script 标签
+    {
+        const fs::path in3 = root / "in_notag";
+        mkdir_p(in3);
+        write_binary(in3 / "Fake.html", "<html><body>no script here</body></html>");
+        write_binary(in3 / "Fake.js", js);
+        write_vec(in3 / "Fake.wasm", wasm);
+        WebPackOptions po;
+        po.build_dir = in3;
+        po.name = "Fake";
+        WebPacker packer(po);
+        const auto res = packer.run();
+        EXPECT(!res.ok, "html without js tag -> failure");
+    }
+
+    // 5) 单文件路径覆盖（--html/--js/--wasm/--data/--output 各自独立）
+    {
+        const fs::path in4 = root / "in_split";
+        mkdir_p(in4);
+        const fs::path other = root / "other";
+        mkdir_p(other);
+        write_binary(in4 / "entry.html",
+                     "<!doctype html><html><body><script>var Module={};</script>"
+                     "<script async src=bundle.js></script></body></html>");
+        write_binary(other / "bundle.js", js);
+        write_vec(other / "bundle.wasm", wasm);
+        write_vec(other / "bundle.data", data);
+        const fs::path out4 = root / "out_split.html";
+
+        WebPackOptions po;
+        po.html = in4 / "entry.html";  // 与其余输入分开放，验证逐项覆盖
+        po.build_dir = in4;
+        po.name = "bundle";
+        po.js = other / "bundle.js";
+        po.wasm = other / "bundle.wasm";
+        po.data = other / "bundle.data";
+        po.output = out4;
+        WebPacker packer(po);
+        const auto res = packer.run();
+        EXPECT(res.ok, "split inputs ok");
+        const auto o = read_all(out4);
+        const std::string s(o.begin(), o.end());
+        EXPECT(s.find("data:application/wasm;base64,") != std::string::npos,
+               "split wasm inlined");
+        EXPECT(s.find("src=bundle.js") == std::string::npos, "split js inlined");
+    }
+
+    fs::remove_all(root);
+    std::printf("[suite webpack] done\n");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 3 || std::strcmp(argv[1], "--suite") != 0) {
-        std::fprintf(stderr, "usage: %s --suite <cli|crc32|pe|aes|smoke|crypto|pak|meta|package>\n",
+        std::fprintf(stderr, "usage: %s --suite <cli|crc32|pe|aes|smoke|crypto|pak|meta|package|webpack>\n",
                      argv[0]);
         return 2;
     }
@@ -801,6 +958,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(g_suite, "pak")) run_pak();
     else if (!std::strcmp(g_suite, "meta")) run_meta();
     else if (!std::strcmp(g_suite, "package")) run_package();
+    else if (!std::strcmp(g_suite, "webpack")) run_webpack();
     else {
         std::fprintf(stderr, "unknown suite: %s\n", g_suite);
         return 2;

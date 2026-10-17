@@ -1,3 +1,6 @@
+// render_forward_basic.cpp — 前向基础渲染路径：对 RenderPipeline 的薄封装，
+// 负责 init / shutdown 生命周期，并把 render_scene 连同相机与视口设置一起
+// 委托给管线，供上层 Renderer 直接调用。
 #include "render/render_forward_basic.h"
 #include "render/render_pipeline.h"
 #include "render/render_context.h"
@@ -37,9 +40,9 @@ void RenderForwardBasic::render_scene(RenderData& data) {
     pipeline_->set_camera(*data.camera);
     pipeline_->set_viewport(data.viewport_width, data.viewport_height);
 
-    // 委托给 RenderPipeline
+    // 委托给 RenderPipeline（当前传入空 RenderContext：render_scene 的签名
+    // 尚未带上上下文，属于已知待改进项）。
     pipeline_->render_scene(*data.scene, *static_cast<RenderContext*>(nullptr));
-    // TODO: 需要实际传递 RenderContext，当前 render_scene 签名需要改进
 }
 
 void RenderForwardBasic::set_viewport_output_enabled(bool enabled) {

@@ -224,11 +224,23 @@ std::string MemoryLogSink::make_timestamp() {
 
 // ---------------------------------------------------------------------------
 // AsyncLogger
+//
+// Emscripten 例外：无 -pthread 时 std::thread 构造抛 system_error，而这里是
+// GLog 单例的构造路径（GLog::GLog()），异常没人接 → 整个运行时 Aborted()。
+// Web 版退化为**同步直写**：log() 当场调内层后端，行为与桌面版的异步版在
+// "日志内容与顺序"上完全一致（单线程下本来就没有并发），只是调用方会被
+// 后端 I/O 阻塞 —— 对 ConsoleLogger（写 stdout）可忽略。
 // ---------------------------------------------------------------------------
 AsyncLogger::AsyncLogger(std::unique_ptr<ILogger> inner)
-    : inner_(std::move(inner)), worker_(&AsyncLogger::worker_main, this) {}
+    : inner_(std::move(inner))
+#ifndef __EMSCRIPTEN__
+    , worker_(&AsyncLogger::worker_main, this)
+#endif
+{
+}
 
 AsyncLogger::~AsyncLogger() {
+#ifndef __EMSCRIPTEN__
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stop_ = true;
@@ -237,6 +249,9 @@ AsyncLogger::~AsyncLogger() {
     if (worker_.joinable()) {
         worker_.join();
     }
+#else
+    if (inner_) inner_->flush();
+#endif
 }
 
 void AsyncLogger::log(LogLevel level, const std::string& message) {
@@ -244,26 +259,36 @@ void AsyncLogger::log(LogLevel level, const std::string& message) {
 }
 
 void AsyncLogger::log(LogLevel level, const std::string& message, std::source_location loc) {
+#ifndef __EMSCRIPTEN__
     {
         std::lock_guard<std::mutex> lock(mutex_);
         queue_.push_back(Item{level, message, loc});
         ++pending_;
     }
     cv_.notify_one();
+#else
+    // 同步直写：不加锁也安全（Web 单线程，无 worker 竞争）。
+    if (inner_) inner_->log(level, message, loc);
+#endif
 }
 
 void AsyncLogger::flush() {
+#ifndef __EMSCRIPTEN__
     // 等待队列排空，再 flush 内层后端
     std::unique_lock<std::mutex> lock(mutex_);
     drain_cv_.wait(lock, [&] { return pending_ == 0; });
     lock.unlock();
     if (inner_) inner_->flush();
+#else
+    if (inner_) inner_->flush();
+#endif
 }
 
 bool AsyncLogger::supports_color() const {
     return inner_ && inner_->supports_color();
 }
 
+#ifndef __EMSCRIPTEN__
 void AsyncLogger::worker_main() {
     for (;;) {
         std::deque<Item> batch;
@@ -283,6 +308,7 @@ void AsyncLogger::worker_main() {
         drain_cv_.notify_all();
     }
 }
+#endif // !__EMSCRIPTEN__
 
 // ---------------------------------------------------------------------------
 // GLog 单例

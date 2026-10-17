@@ -13,7 +13,13 @@ GLImGuiBackend::~GLImGuiBackend() {
 }
 
 bool GLImGuiBackend::init() {
+    // WebGL2 上 imgui 的 GL 后端以 IMGUI_IMPL_OPENGL_ES3 编译，GLSL 必须用
+    // ES 300 版本串（桌面是 "#version 130"）。
+#if defined(__EMSCRIPTEN__) && defined(IMGUI_IMPL_OPENGL_ES3)
+    if (!ImGui_ImplOpenGL3_Init("#version 300 es")) {
+#else
     if (!ImGui_ImplOpenGL3_Init("#version 130")) {
+#endif
         GLOG_ERROR("GLImGuiBackend: ImGui_ImplOpenGL3_Init failed");
         return false;
     }

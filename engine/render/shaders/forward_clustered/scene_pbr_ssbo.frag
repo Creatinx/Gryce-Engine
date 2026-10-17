@@ -123,7 +123,7 @@ uniform sampler2DShadow uSpotShadowMap2;
 uniform sampler2DShadow uSpotShadowMap3;
 uniform mat4 uSpotLightSpace[4];
 
-// 调试
+// 调试视图
 uniform int uDebugMode;
 
 const float PI = 3.14159265359;
@@ -518,7 +518,7 @@ void main() {
     vec3 emissive = uEmissiveColor * (uUseEmissiveMap > 0 ? texture(uEmissiveMap, uv).rgb : vec3(1.0));
 
     // -----------------------------------------------------------------------
-    // 调试模式
+    // 调试视图输出
     // -----------------------------------------------------------------------
     if (uDebugMode == 1) { FragColor = vec4(albedo, 1.0); return; }
     if (uDebugMode == 2) { FragColor = vec4(N * 0.5 + 0.5, 1.0); return; }

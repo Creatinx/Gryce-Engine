@@ -1,5 +1,38 @@
 #include "ecs/systems/physics_system_3d.h"
 
+#ifdef __EMSCRIPTEN__
+// ===========================================================================
+// WebGL（Emscripten）构建：Jolt Physics 只有预编译的 MinGW 共享库，无法为
+// wasm 链接，3D 物理系统整体空转。Pimpl 让 API 表面与桌面完全一致，
+// 静态场景渲染不受影响。将来接入 Web 版 Jolt 时删除本分支即可。
+// ===========================================================================
+#include "utils/glog/glog_lib.h"
+
+namespace gryce_engine::ecs {
+
+struct PhysicsSystem3D::Impl {
+    math::Vector3f gravity{0.0f, 0.0f, 0.0f};
+};
+
+PhysicsSystem3D::PhysicsSystem3D() {
+    GLOG_WARN("PhysicsSystem3D: Jolt unavailable in WebGL build; physics disabled");
+}
+PhysicsSystem3D::~PhysicsSystem3D() = default;
+
+void PhysicsSystem3D::on_init(scene::Scene&) {}
+void PhysicsSystem3D::on_shutdown(scene::Scene&) {}
+void PhysicsSystem3D::on_update(scene::Scene&, float) {}
+void PhysicsSystem3D::set_gravity(const math::Vector3f& g) {
+    if (impl_) impl_->gravity = g;
+}
+math::Vector3f PhysicsSystem3D::get_gravity3() const {
+    return impl_ ? impl_->gravity : math::Vector3f{0.0f, 0.0f, 0.0f};
+}
+
+} // namespace gryce_engine::ecs
+
+#else  // !__EMSCRIPTEN__ —— 以下为桌面实现（Jolt Physics）
+
 // Jolt 要求：Jolt/Jolt.h 必须是第一个被包含的 Jolt 头文件。
 #include <Jolt/Jolt.h>
 
@@ -381,3 +414,5 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
 }
 
 } // namespace gryce_engine::ecs
+
+#endif // __EMSCRIPTEN__

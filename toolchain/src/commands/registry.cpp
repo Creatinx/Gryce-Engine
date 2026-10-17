@@ -146,6 +146,21 @@ const std::vector<Command>& kTable() {
          "  --clean             构建前清空目录\n"
          "  --jobs N            并行度\n",
          &cmd_build},
+
+        {"webpack", "把 Emscripten 多文件 Web 产物打成一个自包含 HTML（file:// 双击即用）",
+         "用法: GryceGC webpack [options]\n"
+         "选项:\n"
+         "  --build-dir <dir>   构建目录（默认 build-webgl）\n"
+         "  --name <name>       应用基名 / Emscripten 输出前缀（默认 GryceRenderSmoke）\n"
+         "  --html <file>       入口 html（默认 <build-dir>/<name>.html）\n"
+         "  --js <file>         Emscripten JS（默认 <build-dir>/<name>.js）\n"
+         "  --wasm <file>       wasm（默认 <build-dir>/<name>.wasm）\n"
+         "  --data <file>       file packager 数据（默认 <build-dir>/<name>.data，可缺）\n"
+         "  --output <file>     输出单文件 html（默认 <build-dir>/<name>.single.html）\n"
+         "原理：内联 js，并经 Module.locateFile（.wasm → data: URL）与\n"
+         "      Module.getPreloadedPackage（.data → ArrayBuffer）消除运行时 fetch。\n"
+         "      链接后处理，不碰构建系统、不需要重新链接。\n",
+         &cmd_webpack},
     };
     return table;
 }

@@ -783,6 +783,34 @@ RenderBackendCapabilities GLBackend::get_capabilities() const {
     //   否则 glCheckFramebufferStatus 报 GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE。
     //   Vulkan/D3D12 允许混合（质量取 min），它们保持默认 false。
     caps.msaa_depth_must_match_samples = true;
+#ifdef __EMSCRIPTEN__
+    // WebGL2 能力集（docs/webgl-backend-plan.md 第 5 节）：
+    // * MSAA 首版关：sampler2DMS / 着色器内深度 resolve 在 ES3.0 不存在，
+    //   WEBGL_multisampled_render_to_texture 的 blit resolve 后续单独验证；
+    // * RGBA16F 渲染目标需 EXT_color_buffer_float 运行期探测，缺失则如实上报
+    //   false —— HDR 管线不可用时让上层明确报错，不做假降级；
+    // * vsync / busy-spin 由浏览器 rAF 管，引擎无从干预（set_swap_interval
+    //   在 Web 下空转）。
+    caps.supports_vsync_control = false;
+    caps.supports_gpu_busy_spin = false;
+    caps.max_msaa_color_samples = 1;
+    {
+        static bool checked = false;
+        static bool rgba16f = false;
+        if (!checked) {
+            checked = true;
+            const char* exts = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+            rgba16f = exts && std::strstr(exts, "EXT_color_buffer_float") != nullptr;
+            if (!rgba16f) {
+                GLOG_ERROR("WebGL2: EXT_color_buffer_float missing — "
+                           "RGBA16F HDR render targets unavailable");
+            } else {
+                GLOG_INFO("WebGL2: EXT_color_buffer_float available (RGBA16F OK)");
+            }
+        }
+        caps.supports_rgba16f = rgba16f;
+    }
+#endif
     return caps;
 }
 

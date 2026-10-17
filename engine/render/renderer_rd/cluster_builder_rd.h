@@ -66,7 +66,7 @@ public:
     // 获取已剔除的光源列表（用于 shader uniform 设置）
     const std::vector<LightData>& culled_lights() const { return culled_lights_; }
 
-    // 调试：获取指定像素位置的集群索引
+    // 获取指定像素位置的集群索引（核对剔除结果用）
     int cluster_index(int screen_x, int screen_y, float depth) const;
     int cluster_index(int tile_x, int tile_y, int slice_z) const;
 

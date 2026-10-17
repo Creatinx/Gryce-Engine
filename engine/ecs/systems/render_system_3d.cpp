@@ -36,7 +36,7 @@ void RenderSystem3D::on_render(scene::Scene& scene, render::RenderContext& ctx) 
         scene,
         [&](scene::Entity* /*entity*/, components::MeshRenderer* mr, components::Transform* /*transform*/) {
             if (!mr || !mr->enabled || mr->mesh_path.empty() || mr->gpu_mesh()) return;
-            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path);
+            auto data = assets::AssetManager::instance().load_mesh(mr->mesh_path, mr->submesh_index);
             if (data) {
                 pending.push_back({mr, data, &ctx, mr->alive_token()});
             }

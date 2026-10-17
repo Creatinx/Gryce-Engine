@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Gryce WebGL</title>
+<style>
+  html, body { margin: 0; background: #101012; color: #ddd; font: 12px/1.5 monospace; overflow: hidden; }
+  #canvas { display: block; width: 960px; height: 540px; background: #000; }
+  /* 日志与状态是给无头验证（--dump-dom 读 DOM 文本）用的，默认不出现在页面上；
+     URL 加 ?debug=1 才显示。CSS 隐藏不影响 dump-dom 读到文本。 */
+  #log { white-space: pre-wrap; padding: 8px; margin: 0; display: none; }
+  #status { padding: 4px 8px; font-weight: bold; display: none; }
+  body.debug #log, body.debug #status { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    padding: 6px 14px; border-radius: 14px; background: rgba(0,0,0,0.55);
+    color: #eee; letter-spacing: 0.5px; pointer-events: none;
+    transition: opacity 0.8s ease; opacity: 1;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="status">running…</div>
+<pre id="log"></pre>
+<div id="hint">点击画面锁定鼠标　WASD 移动　Shift 加速　Esc 释放</div>
+<script>
+// ?debug=1 时显示日志面板；其余情况页面只有画布。
+if (/(^|[?&])debug(=1|=|&|$)/.test(window.location.search)) {
+  document.body.className = 'debug';
+}
+
+// Module.print/printErr 把引擎 stdout/stderr 收进 DOM：无头 Chrome 的
+// --dump-dom 可直接读回完整冒烟日志（文本级断言，不依赖 console 捕获）。
+// 常驻交互模式下日志会一直累积，所以只保留最近一段，避免 DOM 无限膨胀。
+//
+// 命令行参数从 URL query 传入（Emscripten 的 main(argc, argv) 默认只有程序名）。
+// 约定：query 按 '&' 分段，每段含 '=' 的拆成两个参数，否则作为独立 flag。
+//   ?--api=webgl&--frames=10&--shot=shot.png
+//     -> argv = ["--api","webgl","--frames","10","--shot","shot.png"]
+// debug 是壳自己的开关，不进 argv。
+function appendLog(text) {
+  var el = document.getElementById('log');
+  if (!el) return;
+  el.textContent += text + '\n';
+  if (el.textContent.length > 60000) {
+    el.textContent = el.textContent.slice(-40000);
+  }
+}
+
+var Module = {
+  canvas: (function () { return document.getElementById('canvas'); })(),
+  arguments: (function () {
+    var q = window.location.search;
+    if (!q || q.length < 2) return [];
+    var out = [];
+    q.substring(1).split('&').forEach(function (tok) {
+      if (!tok) return;
+      if (tok === 'debug' || tok.indexOf('debug=') === 0) return;
+      var eq = tok.indexOf('=');
+      if (eq >= 0) {
+        out.push(decodeURIComponent(tok.substring(0, eq)));
+        out.push(decodeURIComponent(tok.substring(eq + 1)));
+      } else {
+        out.push(decodeURIComponent(tok));
+      }
+    });
+    return out;
+  })(),
+  print: function (text) {
+    console.log(text);
+    appendLog(text);
+  },
+  printErr: function (text) {
+    console.error(text);
+    appendLog('[stderr] ' + text);
+  },
+  onRuntimeInitialized: function () {
+    var el = document.getElementById('status');
+    if (el) el.textContent = 'runtime-ready argv=' + JSON.stringify(Module.arguments);
+  },
+};
+
+// 指针锁定必须由用户手势触发（浏览器安全策略），而 GLFW 的
+// CURSOR_DISABLED 是从帧循环里下发的，会被拒绝。这里在画布上补一次点击请求：
+// 锁定成功后引擎侧按 movementX/Y 累积的增量照常转视角。
+(function () {
+  var canvas = document.getElementById('canvas');
+  canvas.addEventListener('mousedown', function () {
+    if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
+      canvas.requestPointerLock();
+    }
+  });
+  var hint = document.getElementById('hint');
+  document.addEventListener('pointerlockchange', function () {
+    if (hint && document.pointerLockElement === canvas) hint.style.opacity = '0';
+  });
+  if (hint) setTimeout(function () { hint.style.opacity = '0'; }, 8000);
+})();
+</script>
+<script>
+// 截图外取：smoke 的 --shot 写进 MEMFS（CWD='/'，即 /shot_webgl.png）。
+// 轮询到文件后读成 base64 data URL 塞进 DOM —— --dump-dom 可直接拿回 PNG，
+// 用来验证 GLBackend::capture_frame_rgba + stbi_write_png 的整条回读链路。
+(function () {
+  var seen = {};
+  var timer = setInterval(function () {
+    var fs;
+    try { fs = Module.FS; } catch (e) { return; }   // 未导出时静默跳过，不杀运行时
+    if (!fs || !fs.readdir) return;
+    var names;
+    try { names = fs.readdir('/'); } catch (e) { return; }
+    for (var i = 0; i < names.length; ++i) {
+      var n = names[i];
+      if (!/\.(png|bmp)$/i.test(n) || seen[n]) continue;
+      seen[n] = true;
+      try {
+        var stat = fs.stat('/' + n);
+        if (!stat || !fs.isFile(stat.mode)) continue;
+        var buf = fs.readFile('/' + n);
+        var bin = '';
+        for (var j = 0; j < buf.length; ++j) bin += String.fromCharCode(buf[j]);
+        var url = 'data:image/png;base64,' + btoa(bin);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = n;
+        a.textContent = 'SHOT ' + n + ' (' + buf.length + ' bytes)';
+        // 追加的链接只在 ?debug=1 下可见：dump-dom 读 DOM 不受 display 影响，
+        // 但默认页面上不能出现把画布挤偏的额外元素。
+        a.style.display = document.body.className === 'debug' ? 'block' : 'none';
+        document.body.appendChild(a);
+      } catch (e2) {
+        console.error('screenshot extract failed for ' + n + ': ' + e2);
+      }
+    }
+  }, 500);
+})();
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
