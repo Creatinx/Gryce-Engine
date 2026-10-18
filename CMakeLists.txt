@@ -365,6 +365,13 @@ endif() # EMSCRIPTEN
 set(GRYCE_EXE_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
 
 # ===========================================================================
+# QuickJS 脚本引擎：third_party/quickjs 随仓库分发（MIT，GryceQuickJS 静态库）。
+# 必须在 engine/ 之前添加：engine/CMakeLists.txt 要把 GryceQuickJS 链进
+# GryceCore（沙箱口径见该处的 CMakeLists 头注释）。
+# ===========================================================================
+add_subdirectory(third_party/quickjs)
+
+# ===========================================================================
 # 渲染引擎本体：engine/ 下的 GryceCore.dll / GryceRenderer.dll / GrycePlatform.dll
 # （Vulkan SDK 由 engine/CMakeLists.txt 自行探测并设置 GRYCE_HAS_VULKAN）
 # ===========================================================================
@@ -559,6 +566,36 @@ if(BUILD_TESTING)
                  WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
         set_tests_properties(math_${suite} PROPERTIES
             LABELS "unit;math" TIMEOUT 60)
+    endforeach()
+
+    # 脚本系统（QuickJS）套件：值转换 / 生命周期 / 错误隔离 / 热重载。
+    # 与 math 测试同构——被测源码（engine/script + runtime + glog + resources
+    # 路径解析）直编进 exe，不链 GryceCore.dll，与 GPU/无头环境无关。
+    set(GRYCE_SCRIPT_TEST_SUITES value_convert lifecycle error_isolation hot_reload)
+
+    add_executable(GryceScriptTests
+        test/script_tests.cpp
+        engine/script/js_runtime.cpp
+        engine/script/js_bindings.cpp
+        engine/script/script_component.cpp
+        engine/runtime/engine_context.cpp
+        engine/utils/glog/glog_lib.cpp
+        engine/resources/resource_path.cpp
+        engine/resources/project.cpp
+    )
+    target_include_directories(GryceScriptTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json
+    )
+    target_link_libraries(GryceScriptTests PRIVATE GryceQuickJS)
+
+    foreach(suite IN LISTS GRYCE_SCRIPT_TEST_SUITES)
+        add_test(NAME script_${suite}
+                 COMMAND GryceScriptTests --suite ${suite}
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(script_${suite} PROPERTIES
+            LABELS "unit;script" TIMEOUT 60)
     endforeach()
 endif()
 

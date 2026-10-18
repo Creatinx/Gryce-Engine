@@ -5,10 +5,14 @@
 # Static library for embedding into GryceEngine UI script system.
 # Only core engine sources are compiled; the CLI tools (qjs.c, qjsc.c) and
 # test files are excluded.
+#
+# Sandbox scope: quickjs-libc.c is deliberately NOT compiled — it provides
+# the std/os modules (filesystem, process, time), which are out of scope for
+# game scripts. console.log/warn/error are bound by the engine to glog
+# (engine/script/js_bindings.cpp). See docs/zh/plans/quickjs-integration-plan.md.
 
 add_library(GryceQuickJS STATIC
     quickjs.c
-    quickjs-libc.c
     cutils.c
     dtoa.c
     libregexp.c

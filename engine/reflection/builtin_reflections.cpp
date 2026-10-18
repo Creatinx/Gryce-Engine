@@ -42,6 +42,9 @@
 #include "components/physics_3d.h"
 #include "components/audio_3d.h"
 
+// 脚本（QuickJS）
+#include "script/script_component.h"
+
 using namespace gryce_engine::components;
 
 // 嵌套命名空间组件引入短名，便于宏注册（宏会把 Class token 字符串化）
@@ -84,6 +87,9 @@ using NinePatchRect = gryce_engine::components::d2::NinePatchRect;
 using LightOccluder2D = gryce_engine::components::d2::LightOccluder2D;
 using Marker2D = gryce_engine::components::d2::Marker2D;
 using VisibilityNotifier2D = gryce_engine::components::d2::VisibilityNotifier2D;
+
+// 脚本（QuickJS）
+using ScriptComponent = gryce_engine::components::ScriptComponent;
 
 // 基类：enabled 对所有组件经继承链可见
 GRYCE_REFLECT_CLASS(Component, )
@@ -591,6 +597,16 @@ GRYCE_REFLECT_CLASS(AudioEmitter, Component)
     GRYCE_REFLECT_FIELD_RANGE(pitch, 0.01f, 4.0f)
     GRYCE_REFLECT_FIELD_RANGE(min_distance, 0.0f, 100000.0f)
     GRYCE_REFLECT_FIELD_RANGE(max_distance, 0.0f, 100000.0f)
+GRYCE_REFLECT_END()
+
+// ---------------------------------------------------------------------------
+// 脚本（QuickJS）
+// props 为 nlohmann::json（嵌套结构），按本文件既定口径不反射——编辑器侧
+// 的属性面板数据来自序列化字段本身（见 docs scripting.md）。
+// ---------------------------------------------------------------------------
+GRYCE_REFLECT_CLASS(ScriptComponent, Component)
+    GRYCE_REFLECT_FIELD(script_path)
+    GRYCE_REFLECT_FIELD_RANGE(reload_poll_interval, 0.0f, 60.0f)
 GRYCE_REFLECT_END()
 
 namespace gryce_engine::reflection {

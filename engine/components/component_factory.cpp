@@ -36,6 +36,9 @@
 #include "components/2d/misc_components.h"
 #include "components/common/system_components.h"
 
+// 脚本（QuickJS）
+#include "script/script_component.h"
+
 #include "reflection/reflection.h"
 #include "utils/glog/glog_lib.h"
 
@@ -207,6 +210,14 @@ void register_builtin_components() {
                           "音频监听者，通常挂在相机实体上。", k_cat_3d);
     factory.register_type("AudioEmitter", []() { return std::make_unique<AudioEmitter>(); },
                           "3D 音源发射器，按事件名触发 Amplitude 声音。", k_cat_3d);
+
+    // =====================================================================
+    // 脚本（QuickJS）
+    // =====================================================================
+    factory.register_type("Script", []() { return std::make_unique<ScriptComponent>(); },
+                          "JavaScript 脚本组件（QuickJS）：awake/start/update(dt)/destroy "
+                          "钩子，props 经 this.props 注入，支持热重载。",
+                          k_cat_other);
 }
 
 ComponentFactory& ComponentFactory::instance() {

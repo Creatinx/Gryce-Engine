@@ -2,7 +2,7 @@
 
 本目录为 Gryce Engine 的项目文档。英文版入口见 [docs/README.md](../README.md) 与 [docs/en/](../en/README.md)。
 
-文档按模块组织，覆盖架构、构建、渲染、资源导入、性能与工具链。历史设计规划（D3D12 与 WebGL 后端接入计划）归档在 [plans/](plans/)，仅保留中文原文。
+文档按模块组织，覆盖架构、构建、渲染、资源导入、性能与工具链。历史设计规划（D3D12、WebGL 后端接入计划与 QuickJS 脚本引擎接入计划）归档在 [plans/](plans/)，仅保留中文原文。
 
 | 模块 | 文档 | 内容 |
 | --- | --- | --- |
@@ -15,4 +15,5 @@
 | 性能 | [performance.md](performance.md) | 测量方法、耗时构成、已完成的优化 |
 | WebGL | [webgl-backend.md](webgl-backend.md) | Web 构建、shim 架构、平台差异与排错 |
 | 工具链 | [toolchain.md](toolchain.md) | GryceGC 命令面与发布流程 |
+| 脚本 | [scripting.md](scripting.md) | QuickJS 脚本组件、生命周期、engine.* API、沙箱、热重载 |
 | 测试 | [testing.md](testing.md) | CTest 门禁、用例清单、CI 配置 |

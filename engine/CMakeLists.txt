@@ -10,7 +10,8 @@
 #   GryceAudio    （静态音频模块，编译进 GryceCore）
 # 第三方由根 CMakeLists 提供：glfw、GLEW::GLEW、box2d::box2d、Jolt::Jolt、
 # amplitude（以上均为系统包优先、缺失时 FetchContent 拉源码构建）、
-# VulkanHeaders、third_party/nlohmann_json、third_party/quickjs(GryceQuickJS target)。
+# VulkanHeaders、third_party/nlohmann_json、third_party/quickjs（GryceQuickJS
+# 静态库，随仓库分发，链入 GryceCore，沙箱口径见 third_party/quickjs 头注释）。
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -109,6 +110,11 @@ target_sources(GryceCore
         ecs/component_store.cpp
         ecs/systems/animator_system.cpp
         ecs/systems/hierarchy_system.cpp
+        # 脚本引擎（QuickJS）
+        script/js_runtime.cpp
+        script/js_bindings.cpp
+        script/script_component.cpp
+        runtime/engine_context.cpp
         # 物理（Box2D 2D / Jolt 3D）
         ecs/systems/physics_system_2d.cpp
         ecs/systems/physics_system_3d.cpp
@@ -147,6 +153,10 @@ target_link_libraries(GryceCore PUBLIC Jolt::Jolt)
 
 # 音频：Amplitude Audio SDK（静态库，含 flatbuffers/samplerate 私有依赖，见根 CMake）
 target_link_libraries(GryceCore PUBLIC amplitude)
+
+# 脚本引擎：QuickJS（MIT，third_party/quickjs 随仓库分发）。仅引擎内部使用，
+# PRIVATE 链接；对外脚本能力经 ScriptComponent 与 engine.* 命名空间暴露。
+target_link_libraries(GryceCore PRIVATE GryceQuickJS)
 
 # 模型导入：Assimp（FBX/glTF/DAE/PLY/STL/3DS/Blend）。目标由根 CMakeLists
 # 统一准备（系统包或 FetchContent 源码）；缺失时整个块不生效，

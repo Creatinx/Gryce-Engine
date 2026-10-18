@@ -33,6 +33,7 @@ Directory layout under `engine/`:
 | `animation/` | Skeletons, animation clips, pose blending |
 | `platform/` | Window, input, cursor |
 | `runtime/` | Engine context, entity handle map, command buffer |
+| `script/` | QuickJS script runtime, `engine.*` bindings, `ScriptComponent` (see [scripting.md](scripting.md)) |
 | `utils/` | Logging (glog), frame limiter, crypto primitives |
 
 ## 3. ECS and Reflection

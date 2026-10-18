@@ -33,6 +33,7 @@
 | `animation/` | 骨骼、动画剪辑、姿态混合 |
 | `platform/` | 窗口、输入、光标 |
 | `runtime/` | 引擎上下文、实体句柄表、命令缓冲 |
+| `script/` | QuickJS 脚本运行时、`engine.*` 绑定、`ScriptComponent`（见 [scripting.md](scripting.md)） |
 | `utils/` | 日志（glog）、帧率限制、加解密原语 |
 
 ## 3. ECS 与反射

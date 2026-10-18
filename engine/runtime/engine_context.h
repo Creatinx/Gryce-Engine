@@ -49,8 +49,8 @@ enum InputEventKinds {
 };
 
 // A single input event queued this frame by process_command and drained by
-// ScriptSystem::on_update (before per-entity scheduling). a/b/c are the
-// positional args forwarded to the script's _input(type, a, b, c).
+// ScriptComponent::on_update (dispatched to each script's _input hook before
+// its update). a/b/c are the positional args forwarded to _input(type, a, b, c).
 struct InputEvent {
     int type = 0;
     int a = 0;
@@ -75,9 +75,16 @@ struct InputState {
     // 鼠标锁定状态（FPS 视角用；由 engine.input.mouse_locked 请求驱动）
     bool mouse_locked = false;
     // Input events queued this frame (filled by process_command, drained by
-    // ScriptSystem::on_update). Cleared each frame after dispatch.
+    // ScriptComponent::on_update). Cleared each frame after dispatch.
     std::vector<InputEvent> input_events;
 };
+
+// 输入状态独立全局（EngineContext::input 以引用指向它）。
+// 拆出动机：EngineContext 含 World / Scene 的 unique_ptr，其析构需要完整
+// 类型，定义只能留在 api/ 层；而脚本系统（engine/script）与单元测试只需要
+// 输入状态。拆出后这些使用方链接一个轻量 TU 即可，不必拖入整个 C API 层。
+// 既有 g_core_state.input.xxx 访问路径经引用成员保持不变。
+GRYCE_API extern InputState g_input_state;
 
 // ---------------------------------------------------------------------------
 // 引擎全局上下文
@@ -110,8 +117,8 @@ struct EngineContext {
     std::string scene_path_2d;
     std::string scene_path_3d;
 
-    // 输入状态
-    InputState input;
+    // 输入状态（引用指向独立全局 g_input_state，见其上方注释）
+    InputState& input = g_input_state;
 
     bool deferred_entity_list_changed = false;
     bool deferred_selection_changed = false;

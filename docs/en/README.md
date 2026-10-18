@@ -2,7 +2,7 @@
 
 This directory contains the project documentation for Gryce Engine. The Chinese edition is at [docs/zh/](../zh/README.md).
 
-Documents are organized by module and cover architecture, build, rendering, asset import, performance, and the toolchain. Historical design plans (the D3D12 and WebGL backend adoption plans) are archived under [docs/zh/plans/](../zh/plans/) and kept in Chinese only.
+Documents are organized by module and cover architecture, build, rendering, asset import, performance, and the toolchain. Historical design plans (the D3D12, WebGL, and QuickJS scripting adoption plans) are archived under [docs/zh/plans/](../zh/plans/) and kept in Chinese only.
 
 | Module | Document | Contents |
 | --- | --- | --- |
@@ -15,4 +15,5 @@ Documents are organized by module and cover architecture, build, rendering, asse
 | Performance | [performance.md](performance.md) | Measurement method, time breakdown, completed optimizations |
 | WebGL | [webgl-backend.md](webgl-backend.md) | Web build, shim architecture, platform differences, troubleshooting |
 | Toolchain | [toolchain.md](toolchain.md) | GryceGC command surface and release workflow |
+| Scripting | [scripting.md](scripting.md) | QuickJS script component, lifecycle, engine.* API, sandbox, hot reload |
 | Testing | [testing.md](testing.md) | CTest gate, test inventory, CI configuration |

@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 17 cases across two hosts.
+There are currently 21 cases across three hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -43,6 +43,17 @@ The tested sources (`engine/math/*.cpp`, `engine/assets/material_rules.cpp`, `en
 | `grycegc_meta` | `gryce.meta.json` / `project.data` metadata read/write |
 | `grycegc_package` | Release directory packaging and `verify` self-consistency |
 | `grycegc_webpack` | Single-file HTML packaging output structure |
+
+### 2.3 Scripting (`GryceScriptTests.exe`, 4 cases)
+
+The tested sources (`engine/script/*` + `runtime/engine_context` + glog + `res:/` path resolution) are compiled directly into the test executable, which links no engine DLL. Script source files are written under the system temp directory (`temp/gryce_script_tests/<suite>`), created and cleaned up by each suite. Case design is described in [scripting.md](scripting.md).
+
+| Case | Verifies |
+| --- | --- |
+| `script_value_convert` | C++ <-> JS value conversion: scalar round-trips, NaN / Infinity / out-of-range boundaries, Vector / Quaternion / Matrix4 (column-major) array forms, nested nlohmann::json round-trips, `engine.*` binding smoke |
+| `script_lifecycle` | awake / start / update / destroy hook order and timing, props injected as `this.props`, frame clock (frame starts at 1), `_input` dispatch before update and non-consuming |
+| `script_error_isolation` | Syntax-error load failure, execution stops after a runtime throw, infinite loops interrupted by the frame budget; component state flips correctly in all three cases without crashing |
+| `script_hot_reload` | File changes trigger recompilation with props preserved across reloads; late-appearing files load on the poll interval; `reload_now` forced reload and `set_script_path` switching (command-surface core) |
 
 ## 3. Execution Notes
 

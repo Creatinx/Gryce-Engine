@@ -131,6 +131,14 @@
             "blend_mode": 0,
             "two_sided": false
           }
+        },
+        {
+          "type": "Script",
+          "enabled": true,
+          "script": "res:/scripts/demo_spin.js",
+          "props": {
+            "speed": 1.6
+          }
         }
       ]
     },

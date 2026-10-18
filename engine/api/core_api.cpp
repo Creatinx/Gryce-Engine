@@ -17,6 +17,7 @@
 #include "scene/uuid.h"
 #include "reflection/reflection.h"
 #include "components/component_factory.h"
+#include "script/script_component.h"
 #include "resources/project.h"
 #include "resources/pak_bundle.h"
 #include "resources/gpack_bundle.h"
@@ -128,7 +129,10 @@ static size_t bounded_strlen(const char* s, size_t max_len) {
     return n;
 }
 
-// Definition of the global state (declared in runtime/engine_context.h)
+// Definition of the global state (declared in runtime/engine_context.h).
+// EngineContext 含 World / Scene 的 unique_ptr，析构需要完整类型，故定义
+// 留在本 TU（api/ 层，本就包含这些类型）；输入状态已拆到
+// runtime/engine_context.cpp 的 g_input_state，经 input 引用成员接入。
 EngineContext g_core_state;
 
 // Shared recursive mutex backing the GRYCE_API_GUARD() macro. A free function
@@ -538,6 +542,41 @@ static void process_command(const GCommand& cmd) {
             // 绝对位置恒为中心，不能走位置差；直接累加（BeginFrame 每帧清零）。
             g_core_state.input.mouse_delta_x += p->dx;
             g_core_state.input.mouse_delta_y += p->dy;
+            break;
+        }
+        // ---- GryceSRT 脚本命令面 ----
+        case ECMD_SET_SCRIPT: {
+            // payload: { entity, "res:/scripts/x.js" }；空串表示卸载。
+            struct Payload { GEntityHandle h; char script_path[120]; };
+            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
+            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->h);
+            if (e) {
+                const char* path = p->script_path;
+                const size_t n = bounded_strlen(path, sizeof(p->script_path));
+                for (const auto& comp : e->components()) {
+                    if (std::strcmp(comp->type(), "Script") != 0) continue;
+                    auto* sc = static_cast<components::ScriptComponent*>(comp.get());
+                    sc->set_script_path(std::string(path, n));
+                    g_core_state.deferred_entity_list_changed = true;
+                    break;
+                }
+            }
+            break;
+        }
+        case ECMD_RELOAD_SCRIPTS: {
+            // 无 payload：重载当前场景内所有脚本组件（编辑器"重新加载脚本"）。
+            Scene* s = g_core_state.world ? g_core_state.world->scene() : nullptr;
+            if (s) {
+                s->foreach([](Entity* e) {
+                    if (!e || !e->enabled) return;
+                    for (const auto& comp : e->components()) {
+                        if (comp->enabled && std::strcmp(comp->type(), "Script") == 0) {
+                            static_cast<components::ScriptComponent*>(comp.get())->reload_now();
+                        }
+                    }
+                });
+            }
             break;
         }
         default:
