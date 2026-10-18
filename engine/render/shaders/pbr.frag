@@ -17,15 +17,16 @@
 //   SDFGI / VoxelGI(1)     → 无 GI 间接光（默认本就关闭）
 //   点光源阴影(2)          → 点光不投影（demo 用平行光）
 // 宏由 gl_shader.cpp 的 ESSL300 转换注入，只在 __EMSCRIPTEN__ 构建里存在。
-#ifdef GRYCE_WEBGL_LOW_TEX_UNITS
-#define GRYCE_HAS_PCSS 0
-#define GRYCE_HAS_VSM 0
-#define GRYCE_HAS_GI 0
-#define GRYCE_HAS_POINT_SHADOW 0
-#else
+#ifndef GRYCE_HAS_PCSS
 #define GRYCE_HAS_PCSS 1
+#endif
+#ifndef GRYCE_HAS_VSM
 #define GRYCE_HAS_VSM 1
+#endif
+#ifndef GRYCE_HAS_GI
 #define GRYCE_HAS_GI 1
+#endif
+#ifndef GRYCE_HAS_POINT_SHADOW
 #define GRYCE_HAS_POINT_SHADOW 1
 #endif
 
@@ -273,12 +274,17 @@ int cascade_from_depth(float depth) {
 // Slope-Scaled Bias：按光线入射角动态调整，平面用最小值、陡坡用较大值
 float slope_bias(int cascade, vec3 normal, vec3 light_dir) {
     float base = (cascade < 3) ? uCascadeBias[cascade] : uCascadeBias.w;
-    // 下限 base*0.3：正面受光面 N·L≈1 走到最小分支。这个值必须足够大
-    // 才能盖过根部自遮挡（shadow acne / Peter-Panning 亮缝）。
-    // 接收端不做 normal-offset（见 cascade_shadow），自遮挡完全由这里的
-    // 深度 bias 负责，所以下限不能再降——降到 base*0.1 那一档（VK 侧当前
-    // 的值）就会在掠射面上出现自遮挡条纹。
-    float b = max(base * (1.0 - dot(normal, light_dir)), base * 0.3);
+    // 下限 base*0.3：正面受光面 N·L≈1 走到最小分支。接收端不做 normal-offset
+    // （见 cascade_shadow），自遮挡完全由这里的深度 bias 负责，所以下限不能太低。
+    //
+    // 末尾的 *2.0 是实测出来的：原值只够"勉强"盖住根部自遮挡，处在临界边的
+    // 像素会随 PCF 核的逐像素旋转角（interleaved gradient noise，4px 周期）
+    // 逐像素翻转，表现为平面/箱体面上铺满的斜条纹（阴影因子调试视图里最清楚，
+    // 成图上是细密纹理）。webgl_demo 方块场景 1x→2x 条纹消失，均值
+    // 138.6→140.1；demo_project（教堂 1920x1080）只有 0.15% 像素变化、
+    // 均值 92.1→92.2，接触阴影没有可见位移。其余接收端 shader（instanced /
+    // skinned_pbr / vulkan_* / deferred_lighting）用同一组参数，保证四后端一致。
+    float b = max(base * (1.0 - dot(normal, light_dir)), base * 0.3) * 2.0;
     return b;
 }
 

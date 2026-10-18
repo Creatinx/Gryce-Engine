@@ -4,12 +4,18 @@
 <meta charset="utf-8">
 <title>Gryce WebGL</title>
 <style>
-  html, body { margin: 0; background: #101012; color: #ddd; font: 12px/1.5 monospace; overflow: hidden; }
-  #canvas { display: block; width: 960px; height: 540px; background: #000; }
+  html, body { margin: 0; height: 100%; background: #101012; color: #ddd; font: 12px/1.5 monospace; overflow: hidden; }
+  /* 画布铺满整个页面。显示尺寸由这条 CSS 决定，渲染缓冲由平台层
+     （Window 建好后）同步成同一尺寸，否则浏览器只会把画面拉伸变形。 */
+  #canvas { display: block; width: 100%; height: 100%; background: #000; }
   /* 日志与状态是给无头验证（--dump-dom 读 DOM 文本）用的，默认不出现在页面上；
      URL 加 ?debug=1 才显示。CSS 隐藏不影响 dump-dom 读到文本。 */
-  #log { white-space: pre-wrap; padding: 8px; margin: 0; display: none; }
+  #log { white-space: pre-wrap; padding: 8px; margin: 0; display: none; overflow: auto; }
   #status { padding: 4px 8px; font-weight: bold; display: none; }
+  /* 调试模式：下半页让给日志面板，否则铺满的画布会把它整块挤出视口。 */
+  body.debug { display: flex; flex-direction: column; height: 100vh; }
+  body.debug #canvas { flex: 1 1 auto; width: 100%; height: auto; min-height: 0; }
+  body.debug #log { flex: 0 0 34vh; }
   body.debug #log, body.debug #status { display: block; }
   #hint {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
@@ -50,6 +56,12 @@ function appendLog(text) {
 
 var Module = {
   canvas: (function () { return document.getElementById('canvas'); })(),
+  // 渲染倍率：?rs=1.5 → 按 1.5 倍像素渲染再缩放到页面（高分屏更清晰、更吃性能）。
+  // 平台层建窗口时读这个值；默认 1 = CSS 像素，与页面 1:1。
+  gryceRenderScale: (function () {
+    var m = /[?&]rs=([0-9]+(?:\.[0-9]+)?)/.exec(window.location.search);
+    return m ? parseFloat(m[1]) : 1;
+  })(),
   arguments: (function () {
     var q = window.location.search;
     if (!q || q.length < 2) return [];
@@ -57,6 +69,7 @@ var Module = {
     q.substring(1).split('&').forEach(function (tok) {
       if (!tok) return;
       if (tok === 'debug' || tok.indexOf('debug=') === 0) return;
+      if (tok === 'rs' || tok.indexOf('rs=') === 0) return;
       var eq = tok.indexOf('=');
       if (eq >= 0) {
         out.push(decodeURIComponent(tok.substring(0, eq)));
@@ -81,19 +94,37 @@ var Module = {
   },
 };
 
-// 指针锁定必须由用户手势触发（浏览器安全策略），而 GLFW 的
-// CURSOR_DISABLED 是从帧循环里下发的，会被拒绝。这里在画布上补一次点击请求：
-// 锁定成功后引擎侧按 movementX/Y 累积的增量照常转视角。
+// 指针锁定必须由用户手势触发（浏览器安全策略），而引擎是在帧循环里发现
+// "窗口有焦点"就下发 GLFW_CURSOR_DISABLED 的，此时还没有手势 → 请求被拒。
+// 两层处理：
+//  1) 吞掉 requestPointerLock 的 rejected promise（否则控制台一片未捕获异常）；
+//  2) 由画布上的 mousedown 补一次（这是合法手势，真正生效的就是它）。
+// 鼠标位移不依赖这里：引擎从 movementX/Y 的累积里取增量。
 (function () {
   var canvas = document.getElementById('canvas');
-  canvas.addEventListener('mousedown', function () {
+  var proto = HTMLCanvasElement.prototype;
+  var raw_request = proto.requestPointerLock;
+  if (raw_request) {
+    proto.requestPointerLock = function () {
+      try {
+        var p = raw_request.apply(this, arguments);
+        if (p && typeof p.catch === 'function') p.catch(function () {});
+        return p;
+      } catch (e) {
+        return null;   // 无手势：等 mousedown
+      }
+    };
+  }
+  function requestLock() {
     if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
-      canvas.requestPointerLock();
+      try { canvas.requestPointerLock(); } catch (e) { /* 浏览器不支持则忽略 */ }
     }
-  });
+  }
+  canvas.addEventListener('mousedown', requestLock);
   var hint = document.getElementById('hint');
   document.addEventListener('pointerlockchange', function () {
-    if (hint && document.pointerLockElement === canvas) hint.style.opacity = '0';
+    var locked = document.pointerLockElement === canvas;
+    if (hint) hint.style.opacity = locked ? '0' : '1';
   });
   if (hint) setTimeout(function () { hint.style.opacity = '0'; }, 8000);
 })();

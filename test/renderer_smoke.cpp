@@ -26,6 +26,7 @@
 #include "api/scene_api.h"
 #include "api/entity_api.h"
 #include "api/component_api.h"
+#include "api/viewport_api.h"
 #include "platform/window.h"
 
 #include <nlohmann/json.hpp>
@@ -241,6 +242,24 @@ struct FpsCamera {
             return true;
         }
 
+        bool moved = false;
+#ifdef __EMSCRIPTEN__
+        // 浏览器里不能靠 GLFW 坐标差：pointer lock 期间客户端把光标位置钉死
+        // （clientX/Y 恒定），GLFW 拷进来的就是一个常数 → 视角纹丝不动；未锁定时
+        // 坐标又是"画布内绝对位置"，指针一碰画布边缘就停住。真实位移只有
+        // movementX/Y 有，壳侧已按画布事件攒好，这里整帧取走。
+        double mdx = 0.0;
+        double mdy = 0.0;
+        if (window.take_pointer_delta(mdx, mdy)) {
+            yaw_deg -= static_cast<float>(mdx) * sensitivity;    // 右移 → 右转
+            pitch_deg -= static_cast<float>(mdy) * sensitivity;  // 上移 → 抬头
+            pitch_deg = std::max(-89.0f, std::min(89.0f, pitch_deg));
+            moved = true;
+        }
+        // 基线照旧跟着实际位置走：解锁期间指针会飘到别处，重新锁定时不能跳。
+        window.get_cursor_pos(last_mx, last_my);
+        mouse_ready = true;
+#else
         int w = 0, h = 0;
         window.get_size(w, h);
         const double cx = w > 0 ? w * 0.5 : 0.0;
@@ -250,40 +269,27 @@ struct FpsCamera {
         window.get_cursor_pos(mx, my);
         if (!mouse_ready) {
             mouse_ready = true;
-#ifndef __EMSCRIPTEN__
             // 刚锁定的这一帧先把指针拉回中心，再以中心为基线（丢弃这一帧的增量）。
             last_mx = cx;
             last_my = cy;
             window.set_cursor_pos(cx, cy);
-#else
-            // 浏览器 pointer lock 下光标位置是累积量，没有"回中"这一步；
-            // 直接以当前实际位置为基线。
-            last_mx = mx;
-            last_my = my;
-#endif
             apply_movement(window, dt);
             return true;
         }
         const double dx = mx - last_mx;
         const double dy = my - last_my;
         // 立即回中：锁定模式下光标会被系统不断推走，回中可以避免越界与漂移
-#ifndef __EMSCRIPTEN__
         window.set_cursor_pos(cx, cy);
         last_mx = cx;
         last_my = cy;
-#else
-        // 同上：pointer lock 的位置只会单调累积，基线跟着实际位置走。
-        last_mx = mx;
-        last_my = my;
-#endif
 
-        bool moved = false;
         if (dx != 0.0 || dy != 0.0) {
             yaw_deg -= static_cast<float>(dx) * sensitivity;    // 右移 → 右转
             pitch_deg -= static_cast<float>(dy) * sensitivity;  // 上移 → 抬头
             pitch_deg = std::max(-89.0f, std::min(89.0f, pitch_deg));
             moved = true;
         }
+#endif
 
         if (apply_movement(window, dt)) moved = true;
 
@@ -912,17 +918,14 @@ int main(int argc, char** argv) {
     const bool use_opengl = (api == GRYCE_RENDER_API_OPENGL);
     const char* backend_name =
         use_vulkan ? "vulkan" : use_dx12 ? "dx12" : use_webgl ? "webgl" : "opengl";
-    const int width = width_override > 0 ? width_override : cfg.width;
-    const int height = height_override > 0 ? height_override : cfg.height;
+    int width = width_override > 0 ? width_override : cfg.width;
+    int height = height_override > 0 ? height_override : cfg.height;
     if (shot_path.empty()) {
         shot_path = use_vulkan ? "shot_vulkan.png"
                   : use_dx12   ? "shot_dx12.png"
                   : use_webgl  ? "shot_webgl.png"
                                : "shot_opengl.png";
     }
-
-    std::printf("[smoke] backend=%s frames=%d viewport=%dx%d sync=%d\n",
-                backend_name, frames, width, height, sync_mode ? 1 : 0);
 
     // 2) 平台 + Core（载入 <project>/project.data 与主场景）
     if (!Window::init_sdk()) {
@@ -945,6 +948,24 @@ int main(int argc, char** argv) {
         Window::shutdown_sdk();
         return 1;
     }
+
+#ifdef __EMSCRIPTEN__
+    // 平台层已把画布缓冲同步成页面尺寸（CSS 决定的显示尺寸），渲染分辨率
+    // 必须以实际缓冲为准，否则窗口尺寸与显示尺寸不一致 —— 画面被浏览器拉伸、
+    // 指针换算也会偏。
+    {
+        int fb_w = 0;
+        int fb_h = 0;
+        window.get_framebuffer_size(fb_w, fb_h);
+        if (fb_w > 0 && fb_h > 0) {
+            width = fb_w;
+            height = fb_h;
+        }
+    }
+#endif
+
+    std::printf("[smoke] backend=%s frames=%d viewport=%dx%d sync=%d\n",
+                backend_name, frames, width, height, sync_mode ? 1 : 0);
 
     GCoreInitDesc core_desc{};
     core_desc.version = sizeof(GCoreInitDesc);
@@ -987,6 +1008,15 @@ int main(int argc, char** argv) {
         Window::shutdown_sdk();
         return 1;
     }
+
+#ifdef __EMSCRIPTEN__
+    // 浏览器窗口缩放：平台层已同步好画布缓冲，这里跟进去重建渲染目标。
+    // 视口尺寸一变，HDR/G-Buffer/SSAO/SSR 等目标都要按新尺寸重建。
+    window.set_resize_callback([](int w, int h) {
+        std::printf("[web] viewport resize -> %dx%d\n", w, h);
+        GViewport_SetSize(w, h);
+    });
+#endif
 
     GRender_SetHDR(cfg.hdr);
     GRender_SetToneMapMode(cfg.tone_map_mode);

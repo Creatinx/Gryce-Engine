@@ -9,15 +9,16 @@
 // （画面只剩 ImGui）。SwiftShader 上报 32，所以软件光栅下不会暴露。
 // WebGL 下裁掉 PCSS 深度图 / VSM·ESM / GI / 点光阴影共 10 个采样器，
 // 详情与取舍见 pbr.frag 顶部同一段说明。
-#ifdef GRYCE_WEBGL_LOW_TEX_UNITS
-#define GRYCE_HAS_PCSS 0
-#define GRYCE_HAS_VSM 0
-#define GRYCE_HAS_GI 0
-#define GRYCE_HAS_POINT_SHADOW 0
-#else
+#ifndef GRYCE_HAS_PCSS
 #define GRYCE_HAS_PCSS 1
+#endif
+#ifndef GRYCE_HAS_VSM
 #define GRYCE_HAS_VSM 1
+#endif
+#ifndef GRYCE_HAS_GI
 #define GRYCE_HAS_GI 1
+#endif
+#ifndef GRYCE_HAS_POINT_SHADOW
 #define GRYCE_HAS_POINT_SHADOW 1
 #endif
 
@@ -263,12 +264,9 @@ int cascade_from_depth(float depth) {
 // Slope-Scaled Bias：按光线入射角动态调整，平面用最小值、陡坡用较大值
 float slope_bias(int cascade, vec3 normal, vec3 light_dir) {
     float base = (cascade < 3) ? uCascadeBias[cascade] : uCascadeBias.w;
-    // 下限 base*0.3：正面受光面 N·L≈1 走到最小分支。这个值必须足够大
-    // 才能盖过根部自遮挡（shadow acne / Peter-Panning 亮缝）。
-    // 接收端不做 normal-offset（见 cascade_shadow），自遮挡完全由这里的
-    // 深度 bias 负责，所以下限不能再降——降到 base*0.1 那一档（VK 侧当前
-    // 的值）就会在掠射面上出现自遮挡条纹。
-    float b = max(base * (1.0 - dot(normal, light_dir)), base * 0.3);
+    // 与 pbr.frag 的 slope_bias 保持一致（2x + 下限 base*0.3）：
+    // 统一的深度 bias 才能让四个后端的阴影位置/接触精度对齐。
+    float b = max(base * (1.0 - dot(normal, light_dir)), base * 0.3) * 2.0;
     return b;
 }
 

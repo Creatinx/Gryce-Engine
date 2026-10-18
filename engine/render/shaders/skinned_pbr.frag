@@ -7,9 +7,7 @@
 // 只有 16（ANGLE/D3D11），超了会链接失败 → 管线退化成只清屏（画面只剩
 // ImGui）。本文件 18 个采样器，WebGL 下裁掉 PCSS 的 4 张深度图退回 PCF。
 // 详见 pbr.frag 顶部同一段说明。
-#ifdef GRYCE_WEBGL_LOW_TEX_UNITS
-#define GRYCE_HAS_PCSS 0
-#else
+#ifndef GRYCE_HAS_PCSS
 #define GRYCE_HAS_PCSS 1
 #endif
 
@@ -216,7 +214,10 @@ int cascade_from_depth(float depth) {
 // Slope-Scaled Bias：按光线入射角动态调整，平面用最小值、陡坡用较大值
 float slope_bias(int cascade, vec3 normal, vec3 light_dir) {
     float base = (cascade < 3) ? uCascadeBias[cascade] : uCascadeBias.w;
-    return max(base * (1.0 - dot(normal, light_dir)), base * 0.1);
+    // 与 pbr.frag 的 slope_bias 保持一致（2x + 下限 base*0.3）：
+    // 统一的深度 bias 才能让四个后端的阴影位置/接触精度对齐。
+    float b = max(base * (1.0 - dot(normal, light_dir)), base * 0.3) * 2.0;
+    return b;
 }
 
 // 单个级联的 PCF（旋转 Poisson，radius 为 texel 单位）

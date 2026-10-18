@@ -7,6 +7,12 @@
 
 #include <GLFW/glfw3.h>
 
+#ifdef __EMSCRIPTEN__
+    #include <emscripten.h>
+    #include <emscripten/html5.h>
+    #include <algorithm>
+#endif
+
 #include "cursor.h"
 #ifdef _WIN32
     #define GLFW_EXPOSE_NATIVE_WIN32
@@ -63,6 +69,147 @@ static LRESULT CALLBACK window_resize_wndproc(HWND hwnd, UINT msg, WPARAM wParam
 }
 
 #endif // _WIN32
+
+#ifdef __EMSCRIPTEN__
+// ---------------------------------------------------------------------------
+// 浏览器视口：画布铺满页面
+//
+// Web 端没有"窗口"，页面就是窗口：壳用 CSS 把画布撑满视口
+// （width:100vw; height:100vh）。但 WebGL 的渲染缓冲（canvas.width/height）
+// 不会跟着 CSS 走 —— 浏览器只会把现有缓冲拉伸到 CSS 尺寸，结果是画面比例
+// 失真、且按 CSS 尺寸低清显示。所以窗口建好后要把缓冲同步成页面尺寸，并随
+// 浏览器窗口 resize 继续跟随。
+//
+// 指针坐标也依赖这一点：Emscripten 的 GLFW 用 canvas.width / CSS 宽度 折算
+// 鼠标位置，缓冲与 CSS 尺寸一致时该系数恰好是渲染倍率，指针落点才准。
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr double k_web_max_render_scale = 2.0;
+
+// 当前窗口句柄与 resize 合并定时器（见下方 web_on_page_resize）。
+GLFWwindow* web_window_handle = nullptr;
+long web_resize_timer = 0;
+
+// 渲染倍率：1 = CSS 像素（默认）。高分屏想换原生像素清晰度时，壳可以从
+// URL 的 ?rs= 填到 Module.gryceRenderScale（开销按像素面积增长）。
+EM_JS(double, gryce_web_render_scale, (), {
+    if (typeof Module === 'undefined' || typeof Module['gryceRenderScale'] !== 'number') return 1.0;
+    var s = Module['gryceRenderScale'];
+    return (s > 0.1 && s < 4.0) ? s : 1.0;
+});
+
+// ---------------------------------------------------------------------------
+// 鼠标位移（pointer lock）
+//
+// 两个只在浏览器里成立的坑叠在一起，合起来就是"网页里鼠标完全没反应"：
+//  1) Emscripten 的 GLFW 从不设置 GLFW_FOCUSED（libglfw.js 里没有接 focus/blur
+//     事件，属性默认 0），glfwGetWindowAttrib 恒返回"失焦" → 引擎的指针锁定
+//     策略（有焦点才锁）永远不触发。这个在 Window::has_focus() 里改问
+//     document.hasFocus()。
+//  2) 即便锁上了，pointer lock 期间浏览器把光标坐标钉死（clientX/Y 不再变化），
+//     真实位移只在 movementX/Y 里；而 libglfw.js 的 calculateMouseCoords 只拿
+//     clientX/Y 减画布偏移，glfwGetCursorPos 于是恒返回同一个值 → 视角转不动。
+//
+// 所以这里在 JS 侧自己攒 movementX/Y，由 Window::take_pointer_delta() 每帧取走。
+// ---------------------------------------------------------------------------
+EM_JS(void, gryce_install_pointer_delta, (), {
+    if (typeof Module === 'undefined' || Module['grycePointerDeltaInstalled']) return;
+    Module['grycePointerDeltaInstalled'] = true;
+    Module['grycePointerDx'] = 0;
+    Module['grycePointerDy'] = 0;
+    var canvas = Module['canvas'] || document.getElementById('canvas');
+    if (!canvas) return;
+    // 只收画布上的事件：调试模式下页面下半是日志面板，在日志上拖滚动条不该转视角。
+    // pointer lock 生效时鼠标事件的目标就是被锁定的画布，一条路径覆盖两种情况；
+    // 未锁定时浏览器照样按"上一次事件到这一次"算 movementX/Y，拖动同样有效。
+    canvas.addEventListener('mousemove', function (e) {
+        Module['grycePointerDx'] += (e.movementX || 0);
+        Module['grycePointerDy'] += (e.movementY || 0);
+    }, { passive: true });
+});
+
+EM_JS(double, gryce_take_pointer_dx, (), {
+    if (typeof Module === 'undefined') return 0.0;
+    var v = Module['grycePointerDx'] || 0.0;
+    Module['grycePointerDx'] = 0.0;
+    return v;
+});
+
+EM_JS(double, gryce_take_pointer_dy, (), {
+    if (typeof Module === 'undefined') return 0.0;
+    var v = Module['grycePointerDy'] || 0.0;
+    Module['grycePointerDy'] = 0.0;
+    return v;
+});
+
+// 页面级焦点：GLFW 属性拿不到（见上），只能问 document。
+EM_JS(int, gryce_web_document_focused, (), {
+    return (typeof document !== 'undefined' && document.hasFocus && document.hasFocus()) ? 1 : 0;
+});
+
+// 画布选择器：#canvas 与 Emscripten 默认壳一致；取不到 CSS 尺寸时退回标签名。
+const char* web_canvas_selector() {
+    static const char* cached = nullptr;
+    if (cached) return cached;
+    double w = 0.0;
+    double h = 0.0;
+    cached = (emscripten_get_element_css_size("#canvas", &w, &h) == EMSCRIPTEN_RESULT_SUCCESS)
+                 ? "#canvas"
+                 : "canvas";
+    return cached;
+}
+
+void web_fit_canvas_to_page() {
+    if (web_window_handle == nullptr) return;
+    const char* sel = web_canvas_selector();
+    double css_w = 0.0;
+    double css_h = 0.0;
+    const EMSCRIPTEN_RESULT r = emscripten_get_element_css_size(sel, &css_w, &css_h);
+    if (r != EMSCRIPTEN_RESULT_SUCCESS) {
+        GLOG_WARN("Window: canvas CSS size query failed ({}), keeping requested size",
+                  static_cast<int>(r));
+        return;
+    }
+    if (css_w < 1.0 || css_h < 1.0) {
+        GLOG_WARN("Window: canvas CSS size is {}x{}, page not laid out yet", css_w, css_h);
+        return;
+    }
+
+    const double scale = std::min(gryce_web_render_scale(), k_web_max_render_scale);
+    const int w = std::max(1, static_cast<int>(css_w * scale + 0.5));
+    const int h = std::max(1, static_cast<int>(css_h * scale + 0.5));
+    GLOG_INFO("Window: canvas css {}x{} → buffer {}x{} (scale {})", css_w, css_h, w, h, scale);
+    // 必须走 glfwSetWindowSize 而不是 emscripten_set_canvas_element_size：
+    // 后者只改 canvas.width/height，GLFW 侧记录的窗口尺寸（指针坐标换算的
+    // 基准）和 framebuffer 尺寸都不会更新，也不会触发 resize 回调。
+    glfwSetWindowSize(web_window_handle, w, h);
+}
+
+// 一次拖拽会连发几十个 resize 事件，而重建渲染目标是 GPU 资源操作，
+// 逐次执行会明显卡顿：合并成 80ms 后的单次同步。
+EM_BOOL web_on_page_resize(int, const EmscriptenUiEvent*, void*) {
+    if (web_resize_timer == 0) {
+        web_resize_timer = emscripten_set_timeout([](void*) {
+            web_resize_timer = 0;
+            web_fit_canvas_to_page();
+        }, 80, nullptr);
+    }
+    return EM_TRUE;
+}
+
+void web_track_page_size(GLFWwindow* handle) {
+    web_window_handle = handle;
+    static bool installed = false;
+    if (installed) return;
+    installed = true;
+    gryce_install_pointer_delta();
+    emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, false,
+                                   web_on_page_resize);
+}
+
+}  // namespace
+#endif // __EMSCRIPTEN__
 
 // ---------------------------------------------------------------------------
 // GLFW SDK 管理
@@ -218,6 +365,20 @@ Window::Window(const std::string& title, int width, int height, WindowMode mode,
 
     GLOG_INFO("Window created: '{}' ({}x{}), mode={}",
               title, width, height, static_cast<int>(mode));
+
+#ifdef __EMSCRIPTEN__
+    // 浏览器里"窗口"就是页面：缓冲先对齐到画布当前的显示尺寸，之后跟随 resize。
+    web_track_page_size(handle_);
+    web_fit_canvas_to_page();
+    {
+        int fb_w = 0;
+        int fb_h = 0;
+        glfwGetFramebufferSize(handle_, &fb_w, &fb_h);
+        width_ = fb_w;
+        height_ = fb_h;
+        GLOG_INFO("Window: canvas fitted to page ({}x{})", fb_w, fb_h);
+    }
+#endif
 
     // 无边框窗口边缘缩放边框（Win32 WndProc 子类化）。
     // GLFW 无边框窗口用 WS_POPUP（无 WS_THICKFRAME），不装这个就没有拖边缩放。
@@ -526,7 +687,13 @@ void Window::set_resize_callback(ResizeCallback cb) {
 }
 
 bool Window::has_focus() const {
+#ifdef __EMSCRIPTEN__
+    // Emscripten 的 GLFW 从不设置 GLFW_FOCUSED（没接 focus/blur 事件，属性恒为 0），
+    // 照搬桌面实现会让浏览器里永远判定"失焦"：指针锁定不下发、鼠标彻底失效。
+    return handle_ ? gryce_web_document_focused() != 0 : false;
+#else
     return handle_ ? glfwGetWindowAttrib(handle_, GLFW_FOCUSED) != 0 : false;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +710,24 @@ void Window::get_cursor_pos(double& x, double& y) const {
         x = 0.0;
         y = 0.0;
     }
+}
+
+bool Window::take_pointer_delta(double& dx, double& dy) {
+#ifdef __EMSCRIPTEN__
+    if (handle_ == nullptr) return false;
+    const double x = gryce_take_pointer_dx();
+    const double y = gryce_take_pointer_dy();
+    if (x == 0.0 && y == 0.0) return false;
+    dx = x;
+    dy = y;
+    return true;
+#else
+    // 桌面端指针位移直接由 get_cursor_pos 的绝对值差分得到（配合回中），
+    // 这里保持 API 表面一致但不参与计算。
+    (void)dx;
+    (void)dy;
+    return false;
+#endif
 }
 
 GLFWwindow* Window::native_handle() const {

@@ -176,8 +176,18 @@ std::string to_glsl_es300(const std::string& src, ShaderStage stage) {
     //      "FRAGMENT shader texture image units count exceeds
     //       MAX_TEXTURE_IMAGE_UNITS(16)"
     //    链接失败会让 RenderPipeline 退化成只清屏——画面只剩 ImGui。
-    //    注入这个宏让着色器按后端裁掉可降级特性（见各 .frag 里的说明）。
-    out += "#define GRYCE_WEBGL_LOW_TEX_UNITS 1\n";
+    //    这里把四个"可降级特性"开关按 0 注入，着色器据此裁掉对应采样器
+    //    （见各 .frag 的说明）。
+    //
+    //    注意注入的是 GRYCE_HAS_* 本身，不是"低纹理单元"标志再让 shader 分支：
+    //    D3D12 的 vulkanize 会把源码里所有 `#define NAME 值` 重放到文件开头
+    //    （不区分 #if 分支），同一名字出现 0/1 两个替换值就会让 shaderc 报
+    //    "Macro redefined; different substitutions"。所以每个宏全仓只允许有
+    //    一处定义，Web 侧的定义就在这里。
+    out += "#define GRYCE_HAS_PCSS 0\n";
+    out += "#define GRYCE_HAS_VSM 0\n";
+    out += "#define GRYCE_HAS_GI 0\n";
+    out += "#define GRYCE_HAS_POINT_SHADOW 0\n";
 
     const std::size_t version_pos = src.find("#version");
     if (version_pos == std::string::npos) {

@@ -101,6 +101,10 @@ public:
     // 输入
     bool get_key(int key) const;
     void get_cursor_pos(double& x, double& y) const;
+    // 指针位移增量（仅 Web 有真实数据）。浏览器 pointer lock 期间光标坐标被钉死，
+    // GLFW 只搬 clientX/Y，位移只能从 JS 侧的 movementX/Y 累积里取；取走即清零。
+    // 返回 false 表示这一帧没有位移（或非 Web 平台，调用方走 get_cursor_pos 差分）。
+    bool take_pointer_delta(double& dx, double& dy);
 
     // 原生句柄
     GLFWwindow* native_handle() const;

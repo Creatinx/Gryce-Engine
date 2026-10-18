@@ -182,7 +182,10 @@ int cascade_from_depth(float depth) {
 
 float slope_bias(int cascade, vec3 normal, vec3 light_dir) {
     float base = (cascade < 3) ? ubo.uCascadeBias[cascade] : ubo.uCascadeBias.w;
-    return max(base * (1.0 - dot(normal, light_dir)), base * 0.1);
+    // 与 pbr.frag 的 slope_bias 保持一致（2x + 下限 base*0.3）：
+    // 统一的深度 bias 才能让四个后端的阴影位置/接触精度对齐。
+    float b = max(base * (1.0 - dot(normal, light_dir)), base * 0.3) * 2.0;
+    return b;
 }
 
 float pcf_cascade(int cascade, vec3 proj_coords, float radius, float bias) {
