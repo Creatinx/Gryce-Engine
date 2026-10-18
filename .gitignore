@@ -77,3 +77,6 @@ toolchain/build/
 
 # WebGL（Emscripten）独立构建目录（emcmake 产物，换机重建）
 build-webgl/
+
+# CI 本地复现目录（与 .github/workflows/ci.yml 同参：Release + BUILD_TESTING）
+build-ci/
