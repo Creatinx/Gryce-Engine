@@ -79,4 +79,4 @@ toolchain/build/
 build-webgl/
 
 # CI 本地复现目录（与 .github/workflows/ci.yml 同参：Release + BUILD_TESTING）
-build-ci/
+build-ci*/
