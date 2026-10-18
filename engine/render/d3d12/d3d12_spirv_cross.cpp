@@ -1,6 +1,6 @@
 // d3d12_spirv_cross.cpp — SPIR-V → HLSL，基于 spirv-cross-c-shared.dll 运行时加载。
 //
-// 设计要点（与 vk_glsl_compiler.cpp 的 shaderc 加载策略保持一致）：
+// 设计要点（与 glsl_compiler.cpp 的 shaderc 加载策略保持一致）：
 //   * LoadLibrary/dlopen 运行时加载，不链 import lib → GryceRenderer.dll 对
 //     SPIRV-Cross 零依赖；GL/Vulkan-only 运行时无需该 DLL。
 //   * 加载失败 → spirv_to_hlsl 返回 false，调用方（D3D12Shader）降级；

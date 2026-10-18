@@ -25,7 +25,7 @@ struct SpirvStorageBinding {
 // 依赖。binding 号取自着色器里的 layout(binding = N)，保证 CPU 与 GPU 约定一致。
 //
 // 依赖前提：SPIR-V 必须带调试名（OpName）——glslang/shaderc 默认不生成，
-// vk_glsl_compiler 对 Compute 阶段强制打开 generate_debug_info。
+// glsl_compiler 对 Compute 阶段强制打开 generate_debug_info。
 // debug_names 为 false 时通常只能拿到 binding、拿不到块名。
 // storage_var_count 返回着色器里 StorageBuffer 变量的总数（即使名字解析失败），
 // 供调用方判断"是本来就没有 SSBO"还是"名字丢了"，前者应放弃加载而不是静默降级。

@@ -1,6 +1,6 @@
 #include "vk_shader.h"
 
-#include "vk_glsl_compiler.h"
+#include "render/glsl_compiler.h"
 #include "vk_spirv_cache.h"
 #include "render/mesh.h"
 #include "render/texture.h"

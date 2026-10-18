@@ -192,7 +192,7 @@ Vulkan（push 块）两条路径语义不变，仅调用线程从主线程变为
 | HWND 取得方式 | 是 | `glfwGetWin32Window()`，`platform_api.cpp:423-431` / `platform_api.cpp:172,210` 已在用 |
 | `RenderAPI` 枚举已有 DX11/DX12 位 | 是（工厂未接线） | `engine/render/render.h:233-238`，`create_render_backend` 对 DX11/DX12 返回 nullptr |
 | ImGui DX12 后端 | 是 已 vendored | `third_party/imgui/backends/imgui_impl_dx12.cpp` |
-| shaderc 动态加载先例 | 是 可照抄 | `engine/render/vulkan/vk_glsl_compiler.cpp`（运行时 `LoadLibrary` shaderc，缺失降级 `.spv`） |
+| shaderc 动态加载先例 | 是 可照抄 | `engine/render/glsl_compiler.cpp`（运行时 `LoadLibrary` shaderc，缺失降级 `.spv`） |
 | 管线层与后端解耦 | 是 | `render_pipeline.cpp` 里 GL 字样只在注释（7 处）；后处理 / IBL / material 里 0 处 |
 | 着色器规模 | 204 个 GLSL（98 vert / 105 frag / 1 comp） | `engine/render/shaders`；无 imageStore/imageLoad/subgroup，仅 1 处 atomicAdd |
 | **MinGW 的 DX 头** | 否 **一个都没有** | `ls include \| grep -ci "d3d\|dxgi"` = 0（CLion 自带 GCC 15.2.0） |

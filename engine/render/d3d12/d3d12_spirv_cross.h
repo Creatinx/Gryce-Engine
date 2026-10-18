@@ -6,7 +6,7 @@
 //
 // 这里负责中间那一跳。**不 vendor SPIRV-Cross 源码**，而是复用 Vulkan SDK
 // 自带的 spirv-cross-c-shared.dll 的 C API，走 LoadLibrary + GetProcAddress：
-//   * 与 shaderc（vk_glsl_compiler）、DXC（d3d12_dxc）完全同一模式，零链接期依赖；
+//   * 与 shaderc（glsl_compiler）、DXC（d3d12_dxc）完全同一模式，零链接期依赖；
 //   * GL-only 运行时不需要任何 SPIRV-Cross DLL（加载失败即降级）；
 //   * 免去把 200+ 个 SPIRV-Cross 源文件塞进 third_party 的维护负担。
 //

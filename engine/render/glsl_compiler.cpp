@@ -1,4 +1,4 @@
-// vk_glsl_compiler.cpp — GLSL → SPIR-V 运行时编译，基于 shaderc 动态加载。
+// glsl_compiler.cpp — GLSL → SPIR-V 运行时编译，基于 shaderc 动态加载。
 //
 // 设计要点：
 //   - 通过 LoadLibrary/dlopen 在运行时加载 shaderc_shared.dll / .so，而非链接期
@@ -10,7 +10,7 @@
 //   - 加载失败 / 不可用时返回 false，由调用方降级到 `.spv` 预编译产物，
 //     "首次运行才编译"是渐进增强而非硬依赖。
 
-#include "vk_glsl_compiler.h"
+#include "glsl_compiler.h"
 
 #include "utils/glog/glog_lib.h"
 

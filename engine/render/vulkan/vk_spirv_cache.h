@@ -1,6 +1,6 @@
 #pragma once
 
-#include "vk_glsl_compiler.h"
+#include "render/glsl_compiler.h"
 
 #include <cstdint>
 #include <string>

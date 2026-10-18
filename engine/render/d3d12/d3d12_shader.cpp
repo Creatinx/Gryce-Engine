@@ -65,7 +65,7 @@
 #include "render/mesh.h"
 #include "render/render.h"
 #include "render/shader_source_resolver.h"
-#include "render/vulkan/vk_glsl_compiler.h"
+#include "render/glsl_compiler.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::render::d3d12 {

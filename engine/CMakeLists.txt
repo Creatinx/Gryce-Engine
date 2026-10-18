@@ -255,7 +255,6 @@ if(Vulkan_FOUND)
             render/vulkan/vk_compute.cpp
             render/vulkan/vk_device.cpp
             render/vulkan/vk_framebuffer.cpp
-            render/vulkan/vk_glsl_compiler.cpp
             render/vulkan/vk_imgui_backend.cpp
             render/vulkan/vk_instance.cpp
             render/vulkan/vk_mesh.cpp
@@ -415,6 +414,18 @@ if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     else()
         message(STATUS "Gryce: D3D12 headers not found (mingw vendor or Windows SDK); backend disabled")
     endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# GLSL → SPIR-V 编译单元（render/glsl_compiler.cpp，shaderc 运行时动态加载）
+#
+# 该文件自身不依赖任何后端头文件，但 Vulkan 的 vk_spirv_cache 与 D3D12 的
+# vulkanize 链路都要调用 compile_glsl_to_spirv。它历史上放在 vulkan/ 下、
+# 只在 Vulkan_FOUND 时编入目标，导致无 Vulkan 的机器（CI 的 MSYS2 环境不装
+# Vulkan 包）启用 D3D12 时链接期缺符号。故改为"任一路径启用即编译"。
+# ---------------------------------------------------------------------------
+if(GRYCE_HAS_VULKAN OR GRYCE_HAS_D3D12)
+    target_sources(GryceRenderer PRIVATE render/glsl_compiler.cpp)
 endif()
 
 target_include_directories(GryceRenderer PUBLIC

@@ -14,7 +14,7 @@
 #include <string>
 
 #include "vk_device.h"
-#include "vk_glsl_compiler.h"
+#include "render/glsl_compiler.h"
 #include "vk_spirv_cache.h"
 #include "render/shader_source_resolver.h"
 #include "render/render.h"
