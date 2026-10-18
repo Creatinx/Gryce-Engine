@@ -1,7 +1,7 @@
 # WebGL 后端实施记录
 
 > 状态：**已完成**（2026-10-17）
-> 对应计划：`docs/webgl-backend-plan.md`（M0–M5 全部落地）
+> 对应计划：`plans/webgl-backend-plan.md`（M0–M5 全部落地）
 > 新增代码约 **1,900 行**（shim 734 + ES300 转换器 181 + 探针 237 + 壳 101 + shader 变体 61 + 各文件 `#ifdef __EMSCRIPTEN__` 内联块与 CMake 分支约 600），GL 后端 4,393 行**零重写**。
 
 ---
@@ -40,7 +40,7 @@ toolchain/build/GryceGC.exe webpack --build-dir build-webgl --name GryceRenderSm
 |---|---|---|
 | 产物 | `.html` + `.js` + `.wasm`(2.8M) + `.data`(639K) | **一个 ~5.1MB 的 `.html`** |
 | 资源打包 | `--preload-file`（独立 .data，运行时 fetch） | 链接后内联（运行时零网络请求） |
-| `file://` 双击直开 | ✗ CORS 拦 fetch（origin 'null'） | ✓ |
+| `file://` 双击直开 | 否（CORS 拦 fetch，origin 'null'） | 是 |
 | 需要 HTTP 服务器 | 是 | 否 |
 | 增量链接 | 快（只重链 wasm） | 快（打包是独立的链接后步骤） |
 | 体积 | 基准 | +33%（.wasm/.data base64 内联） |
@@ -53,14 +53,14 @@ packager。`.data` 不存在时自动跳过（仅内联 wasm）。渲染输出�
 
 ### 运行
 
-**单文件模式**：直接双击 `build-webgl/GryceRenderSmoke.single.html`，或命令行打开。
+**单文件模式**：直接双击 `dist/GryceRenderSmoke.single.html`，或命令行打开。
 参数照样经 URL query 传（`file://` URL 也支持 `?query`）：
 
 ```bash
 "/c/Program Files/Google/Chrome/Application/chrome.exe" --headless --no-sandbox --disable-gpu \
     --enable-unsafe-swiftshader --window-size=960,540 --virtual-time-budget=60000 \
     --screenshot="D:\\Gryce-Engine\\shot_webgl.png" \
-    "file:///D:/Gryce-Engine/build-webgl/GryceRenderSmoke.single.html?--api=webgl&--frames=8"
+    "file:///D:/Gryce-Engine/dist/GryceRenderSmoke.single.html?--api=webgl&--frames=8"
 ```
 
 **多文件模式**：必须走 HTTP（`file://` 下 Chrome 以 CORS 拦掉 `.wasm`/`.data` 的 fetch，报
@@ -112,6 +112,28 @@ web 构建进 `emscripten_set_main_loop_arg` 的 requestAnimationFrame 循环，
 **页面默认不显示日志**：`#log` / `#status` 与截图提取链接默认 `display:none`，URL 加
 `?debug=1` 才显示（`debug` 是壳自己的开关，不转发给 `main`）。CSS 隐藏不影响
 `--dump-dom` 读到日志文本，无头验证照旧。日志面板只保留最近约 60KB，常驻循环不会把 DOM 撑爆。
+调试模式下画布让出下半页（`body.debug` 是 flex 列），否则铺满的画布会把日志挤出视口。
+
+**画布铺满整个页面**：壳的 CSS 让 `#canvas` 撑满视口（`width:100%; height:100%`），
+渲染缓冲由平台层在窗口创建时同步成同一尺寸 —— 只改 CSS 的话浏览器只会把现有缓冲拉伸，
+画面比例失真且按 CSS 尺寸低清显示。口径：
+
+- `Window` 在 `__EMSCRIPTEN__` 下建完 GLFW 窗口后读 `emscripten_get_element_css_size`，
+  再用 **`glfwSetWindowSize`** 回写。不能用 `emscripten_set_canvas_element_size`：它只改
+  `canvas.width/height`，GLFW 侧记录的窗口尺寸（指针坐标换算基准）和 framebuffer 尺寸
+  都不更新、也不触发 resize 回调 —— 症状是 viewport 停在旧值、画面被拉伸。
+- 指针坐标依赖这次同步：GLFW 用 `canvas.width / CSS 宽度` 折算鼠标位置，两者一致时这个
+  系数就是渲染倍率，锁定鼠标后视角增量才准。
+- 浏览器 resize 事件合并 80ms 后同步一次（重建渲染目标是 GPU 资源操作，逐次执行明显卡）；
+  framebuffer 回调再交给 `GViewport_SetSize(w, h)` 重建 HDR / G-Buffer / SSAO / SSR / SSIL
+  目标，相机 aspect 每帧按 viewport 重算。
+- 渲染倍率 `?rs=<倍数>`（默认 1 = CSS 像素，上限 2）。高分屏想换原生像素清晰度时用，
+  开销按像素面积增长：1080p 下 rs=2 是 4 倍像素。
+- web 端 `--w/--h` 不再决定视口 —— 浏览器里没有"窗口尺寸"，画布尺寸由页面布局决定。
+
+分档验证（CDP `Emulation.setDeviceMetricsOverride` 动态改视口）：
+`1258×566 → 1600×900 → 800×600`，每次 `canvas` 的 CSS 尺寸、`canvas.width/height`、
+引擎 `viewport` 三者一致，`GL_INVALID_OPERATION` 计数 0，两次 resize 后画面比例正常。
 
 ---
 
@@ -209,8 +231,11 @@ shim 内部分四类，按「是否真可达」划分：
 **32**，所以一切"在无头软件光栅上正常、真机全黑"的现象都先怀疑这条）。GLSL 的采样器计数
 发生在**编译期**：声明并被引用就算占用一个单元，运行时 `if` 和常量折叠都省不掉。
 
-于是 pbr 系着色器按后端裁特性，宏 `GRYCE_WEBGL_LOW_TEX_UNITS` 由 `gl_shader.cpp` 的
-ESSL300 转换注入：
+于是 pbr 系着色器按后端裁特性：`gl_shader.cpp` 的 ESSL300 转换把四个 `GRYCE_HAS_*`
+开关按 0 注入（`GRYCE_HAS_PCSS / _VSM / _GI / _POINT_SHADOW`），shader 里用
+`#ifndef` 兜底成 1。注意必须是"一处 `#ifndef` 兜底"而不是 `#ifdef/#else` 两分支写法 ——
+D3D12 的 vulkanize 会重放所有 `#define`，两分支会让同名宏出现两个替换值，
+shaderc 报 `Macro redefined`（见排错表最后一行）。
 
 | 着色器 | 桌面 | WebGL | 裁掉的 |
 |---|---|---|---|
@@ -309,6 +334,11 @@ Box2D / Jolt / Amplitude（预编译 MinGW `.a` 无法为 wasm 链接）。Assim
 roughness/metallic 全等说明纹理上传、sRGB、mipmap、uniform 通路完全正确；shadow/direct/
 ambient/cascade 等说明 HDR、shadow atlas、PCF、IBL、tonemap 全对。
 
+> 上表是 `slope_bias` 调成 ×2 之前的快照。bias 只影响带阴影的三档（0 合成 / 5 阴影因子 /
+> 6 直接光），其余档位与后端无关、数值不变。调整后的合成基线：
+> 桌面 GL `(140.1,139.8,145.9)`、WebGL `(139.5,139.2,145.4)`（WebGL 视口是页内画布
+> 938×442，与桌面 960×540 不同，所以两者本来就差 0.6/255 量级）。
+
 ### 7.3 GPU 剔除 CPU 回退 A/B
 
 | 配置 | 结果 |
@@ -347,9 +377,9 @@ glossy / chrome / gold / plastic / rough / dark-metal + 12 个球）。渲染正
 |---|---|
 | 桌面 `ninja -C build` 全量 | 干净通过 |
 | CTest | **16/16 全绿** |
-| `--api opengl` 均值 | (92.1,87.3,85.2) —— 与历史基线一致 |
+| `--api opengl` 均值 | (92.3,87.6,85.3) —— bias ×2 后 +0.2（自遮挡条纹被消掉） |
 | `--api vulkan` 均值 | (94.3,89.2,85.8) —— 与历史基线一致 |
-| `--api dx12` 均值 | (94.3,89.2,85.9) —— 与历史基线一致 |
+| `--api dx12` 均值 | (94.6,89.4,86.1) —— bias ×2 后 +0.3；同时修掉了 `GRYCE_HAS_*` 宏重定义导致的 pbr 编译失败 |
 
 ---
 
@@ -385,5 +415,8 @@ glossy / chrome / gold / plastic / rough / dark-metal + 12 个球）。渲染正
 | `--shell-file ignored when not generating html output` | target 缺 `SUFFIX ".html"` |
 | `Aborted('FS' was not exported...)` | 壳读了 `Module.FS` 但没 `-sEXPORTED_RUNTIME_METHODS=FS`；**会在 main() 中途把运行时杀掉**，表现为日志只打了一两行 |
 | `WebGL2 shim: glTexParameterfv(GL_TEXTURE_BORDER_COLOR) is not available` | **预期行为**，border clamp 已按 §4 退化为 edge clamp |
-| **画面上只剩 ImGui、3D 全黑**，日志里 `FRAGMENT shader texture image units count exceeds MAX_TEXTURE_IMAGE_UNITS(16)` + `RenderPipeline: failed to load shader program 'pbr'` + `falling back to clear-only` | 采样器数量超限。桌面 GL 给 32 个片段纹理单元，**真实 GPU 的 WebGL2 只给 16**（ANGLE/D3D11），而 SwiftShader 上报 32 —— 所以软件光栅下永不暴露，真机必黑。pbr 系着色器原有 25 个采样器。修法：`gl_shader.cpp` 的 ESSL300 转换注入 `GRYCE_WEBGL_LOW_TEX_UNITS`，pbr/instanced/skinned_pbr 按它 `#ifdef` 裁掉 PCSS 原始深度(4)、VSM/ESM(4)、GI(1)、点光阴影(2)，25→14、18→14 |
+| **画面上只剩 ImGui、3D 全黑**，日志里 `FRAGMENT shader texture image units count exceeds MAX_TEXTURE_IMAGE_UNITS(16)` + `RenderPipeline: failed to load shader program 'pbr'` + `falling back to clear-only` | 采样器数量超限。桌面 GL 给 32 个片段纹理单元，**真实 GPU 的 WebGL2 只给 16**（ANGLE/D3D11），而 SwiftShader 上报 32 —— 所以软件光栅下永不暴露，真机必黑。pbr 系着色器原有 25 个采样器。修法：`gl_shader.cpp` 的 ESSL300 转换把 `GRYCE_HAS_PCSS/_VSM/_GI/_POINT_SHADOW` 注入为 0，pbr/instanced/skinned_pbr 据此裁掉 PCSS 原始深度(4)、VSM/ESM(4)、GI(1)、点光阴影(2)，25→14、18→14 |
 | 画面整屏**纯绿**（RGB 0,219,0）或花屏，日志里 `GL_INVALID_OPERATION: glDrawElements: Two textures of different types use the same sampler location` | 纹理单元槽位映射在 16 单元下塌缩：`gl_texture_unit_for_slot` 原来把 slot≥16 一律落到 unit 9，于是 emissive、级联 1..3、IBL 三张（samplerCube）、tonemap 的 HDR/bloom/LUT/曝光全挤在同一个单元，sampler2D 和 samplerCube 直接撞车 → 每个 draw 都被 WebGL 拒绝。修法：`gl_slot_map.h` 按 `max_units` 分档，16 单元走紧凑表（前向 14 个采样器落在 0..15，后处理复用 0..7，WebGL 已裁掉的采样器丢到 16+ 死区） |
+| **鼠标完全不转视角**（WASD 能走，指针锁定日志缺失或锁上了也没反应） | 两个叠加的浏览器语义：① Emscripten 的 GLFW **从不设置 `GLFW_FOCUSED`**（`libglfw.js` 没有接 focus/blur，属性恒 0），`glfwGetWindowAttrib` 永远返回"失焦"，引擎"有焦点才锁指针"的策略于是永不触发 —— `Window::has_focus()` 在 `__EMSCRIPTEN__` 下改问 `document.hasFocus()`；② pointer lock 期间浏览器把光标坐标**钉死**（`clientX/Y` 不再变化），而 `libglfw.js` 的 `calculateMouseCoords` 只搬 `clientX/Y`，`glfwGetCursorPos` 恒返回同一个值。真实位移只有 `movementX/Y` 有，壳在画布上自己攒增量，`Window::take_pointer_delta()` 每帧取走（`glfwSetCursorPos` 在 Emscripten 里是空实现，回中这条路本来就不存在） |
+| 物体表面/地面上铺满**细密斜条纹**（`--debug-view 5` 下最清楚，成图上是层纹理） | 阴影自遮挡（shadow acne）处在临界点：PCF 核按 `interleaved gradient noise`（4px 周期）逐像素旋转，刚好自遮挡的像素就按这个周期逐像素翻转成条纹。修法：`slope_bias()` 整体 ×2（下限 `base*0.3` 保留），pbr/instanced/skinned_pbr/vulkan_*/deferred_lighting 七份保持一致 |
+| D3D12 首运行 `shaderc failed: Macro redefined; different substitutions: GRYCE_HAS_PCSS` + `failed to load shader program 'pbr'` | D3D12 的 `d3d12_vulkanize` 会把源码里**所有** `#define NAME 值` 重放到文件开头（不区分 `#if` 分支）。用 `#ifdef X / #define F 0 / #else / #define F 1 / #endif` 这种两分支写法，重放后同名宏拿到两个替换值 → shaderc 直接报错，pbr 整个 stage 失败。规矩：**shader 里同一个宏全仓只允许有一处定义**，按分支变化的开关改成 `#ifndef F / #define F 1 / #endif`，0 值由后端前缀（如 `gl_shader.cpp` 的 ESSL 转换）注入 |

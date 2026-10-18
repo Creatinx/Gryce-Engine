@@ -2,10 +2,10 @@
 
 > 状态：**已完成**（2026-10-17 全量执行完毕，M0–M5 全部落地；M5 的 Firefox/Edge 交叉验证因本机未安装这两款浏览器未做）
 > 制定时间：2026-10-17
-> **实施记录与全部实测数据见 [`docs/webgl-backend.md`](webgl-backend.md)。**
+> **实施记录与全部实测数据见 [`../webgl-backend.md`](../webgl-backend.md)。**
 > 目标：新增第四个渲染后端 `--api webgl`，通过 Emscripten 把引擎编译成 WebAssembly，在浏览器里跑出与桌面 OpenGL 后端一致的画面。
 > 估算：**新增约 1,200–2,100 行**（shim + ES300 源码转换 + CMake 分支 + 少量 shader 变体 + 调试探针；明细见 3.7），单人 **10–16 个工作日**（碎片时间 2–3 周）。
-> 对比基准：现有 GL 后端共 **4,393 行**（`engine/render/opengl/`，实测 `wc -l`）被**整体复用、零重写**；D3D12 当年是新增 ~8,000 行（`docs/d3d12-backend-plan.md`）。
+> 对比基准：现有 GL 后端共 **4,393 行**（`engine/render/opengl/`，实测 `wc -l`）被**整体复用、零重写**；D3D12 当年是新增 ~8,000 行（`d3d12-backend-plan.md`）。
 
 ---
 
@@ -23,20 +23,20 @@
 
 | 前提 | 状态 | 证据 |
 |---|---|---|
-| `IRenderBackend` 抽象 + `RenderAPI` 枚举 + 工厂，新增后端有明确挂点 | ✅ | `engine/render/render.h:278-286`、`engine/render/render.cpp:14-39`（DX11/DX12 当初就是照此接入） |
-| `RenderBackendCapabilities` 支持声明式能力降级 | ✅ | `engine/render/render.h:26-52`（compute/indirect/MSAA/rgba16f 全是可选字段） |
-| compute 不可用时**已有 CPU 回退路径** | ✅ | `render.h:120-137` 注释明确"后端未实现时 `supports_compute_shaders()` 返回 false，调用方必须据此回退到 CPU 路径"；`--no-gpu-cull` 冒烟参数即回退入口 |
-| `sync_mode`（渲染线程内联执行）已存在 | ✅ | `engine/api/render_api.cpp:70,780,884`：`sync_mode=true` 时**不启动** RenderThread，命令在主线程内联执行 —— WebGL v1 直接复用，浏览器里 WebGL context 不跨线程 |
-| GL 着色器全部是现代 core profile 写法 | ✅ | `grep -rh "^#version" shaders/`：GL 侧 101 个 `#version 330 core` + 6 个 `#version 430 core`；**`gl_FragColor`/`texture2D`/`varying`/`attribute` 实测 0 处**（唯一误命中是 `hdr_copy.vert:5` 注释里的"varying"字样） |
-| GL 侧 SSBO 使用者极少 | ✅ | `grep -rl std430`（去掉 vulkan_ 变体）只有 3 个：`cull_instances.comp`、`forward_clustered/scene_pbr_ssbo.frag`、`instanced.vert` |
-| shader 源码解析已按 api 分支（有 vulkan_ 前缀先例） | ✅ | `engine/render/shader_source_resolver.cpp:93-132`：Vulkan 优先 `vulkan_{name}`，缺失回退基名 —— WebGL 照抄一套 `webgl_{name}` 即可 |
-| GLFW 有 Emscripten 官方端口 | ✅ | Emscripten `-s USE_GLFW=3`，平台层（`engine/platform/window.cpp`）预期零改动；窗口上下文走 `WindowContextType::OpenGL` 分支（WebGL context 由 GLFW 端口创建） |
-| C API 枚举 / 后端切换白名单需要同步加位 | ✅（待改） | `engine/api/types.h:24-29`（`GRYCE_RENDER_API_*`）、`engine/api/render_api.cpp:161-170`（`to_internal_api`）、`:1848`（`GRender_RequestBackend` 白名单只放行 GL/Vulkan）、`engine/api/platform_api.cpp:198-218`（`gapi_name` / `create_embedded_window`） |
-| 冒烟程序 `--api` 解析 | ✅（待改） | `test/renderer_smoke.cpp:849-868`（解析 + 截图命名）、`:879-881`（窗口 ctx 类型：GL 分支 / NoApi 分支） |
-| **emsdk 未安装** | ❌ | 本机无 `emcc`/`emcmake`（M0 第一件事；注意网络约束，见风险登记） |
-| **Amplitude 音频是预编译 MinGW `.a`** | ❌ | 根 `CMakeLists.txt:216-233` 明确"随仓库分发"，Emscripten（clang/wasm）无法链接 → Web 上音频需 stub |
-| **Box2D / Jolt 在 Windows 是 DLL 导入目标** | ⚠️ | `engine/CMakeLists.txt:132-133` 链的是系统共享库；Web 上要么 FetchContent 源码构建（两者均可移植），要么首版 stub |
-| **Assimp 同理** | ⚠️ | 首版最稳路径：只用内置 ObjLoader（零依赖）；assimp 源码构建放 M4 可选 |
+| `IRenderBackend` 抽象 + `RenderAPI` 枚举 + 工厂，新增后端有明确挂点 | 是 | `engine/render/render.h:278-286`、`engine/render/render.cpp:14-39`（DX11/DX12 当初就是照此接入） |
+| `RenderBackendCapabilities` 支持声明式能力降级 | 是 | `engine/render/render.h:26-52`（compute/indirect/MSAA/rgba16f 全是可选字段） |
+| compute 不可用时**已有 CPU 回退路径** | 是 | `render.h:120-137` 注释明确"后端未实现时 `supports_compute_shaders()` 返回 false，调用方必须据此回退到 CPU 路径"；`--no-gpu-cull` 冒烟参数即回退入口 |
+| `sync_mode`（渲染线程内联执行）已存在 | 是 | `engine/api/render_api.cpp:70,780,884`：`sync_mode=true` 时**不启动** RenderThread，命令在主线程内联执行 —— WebGL v1 直接复用，浏览器里 WebGL context 不跨线程 |
+| GL 着色器全部是现代 core profile 写法 | 是 | `grep -rh "^#version" shaders/`：GL 侧 101 个 `#version 330 core` + 6 个 `#version 430 core`；**`gl_FragColor`/`texture2D`/`varying`/`attribute` 实测 0 处**（唯一误命中是 `hdr_copy.vert:5` 注释里的"varying"字样） |
+| GL 侧 SSBO 使用者极少 | 是 | `grep -rl std430`（去掉 vulkan_ 变体）只有 3 个：`cull_instances.comp`、`forward_clustered/scene_pbr_ssbo.frag`、`instanced.vert` |
+| shader 源码解析已按 api 分支（有 vulkan_ 前缀先例） | 是 | `engine/render/shader_source_resolver.cpp:93-132`：Vulkan 优先 `vulkan_{name}`，缺失回退基名 —— WebGL 照抄一套 `webgl_{name}` 即可 |
+| GLFW 有 Emscripten 官方端口 | 是 | Emscripten `-s USE_GLFW=3`，平台层（`engine/platform/window.cpp`）预期零改动；窗口上下文走 `WindowContextType::OpenGL` 分支（WebGL context 由 GLFW 端口创建） |
+| C API 枚举 / 后端切换白名单需要同步加位 | 是（待改） | `engine/api/types.h:24-29`（`GRYCE_RENDER_API_*`）、`engine/api/render_api.cpp:161-170`（`to_internal_api`）、`:1848`（`GRender_RequestBackend` 白名单只放行 GL/Vulkan）、`engine/api/platform_api.cpp:198-218`（`gapi_name` / `create_embedded_window`） |
+| 冒烟程序 `--api` 解析 | 是（待改） | `test/renderer_smoke.cpp:849-868`（解析 + 截图命名）、`:879-881`（窗口 ctx 类型：GL 分支 / NoApi 分支） |
+| **emsdk 未安装** | 否 | 本机无 `emcc`/`emcmake`（M0 第一件事；注意网络约束，见风险登记） |
+| **Amplitude 音频是预编译 MinGW `.a`** | 否 | 根 `CMakeLists.txt:216-233` 明确"随仓库分发"，Emscripten（clang/wasm）无法链接 → Web 上音频需 stub |
+| **Box2D / Jolt 在 Windows 是 DLL 导入目标** | 需处理 | `engine/CMakeLists.txt:132-133` 链的是系统共享库；Web 上要么 FetchContent 源码构建（两者均可移植），要么首版 stub |
+| **Assimp 同理** | 需处理 | 首版最稳路径：只用内置 ObjLoader（零依赖）；assimp 源码构建放 M4 可选 |
 
 ---
 
@@ -228,17 +228,17 @@ endif()
 
 | 里程碑 | 内容 | 工作日 | 验证方式 | 状态 |
 |---|---|---|---|---|
-| **M0 环境探针** | 装 emsdk（注意网络约束）；独立最小程序：GLFW + WebGL2 清屏 + 画一个三角形；验证 `EXT_color_buffer_float`、DSA 行为、`--preload-file` MEMFS 读取 | 1–2 | 浏览器里看到三角形，console 无错 | ✅ 完成 |
-| **M1 构建链 + 后端骨架** | CMake `EMSCRIPTEN` 分支（DLL→静态、跳过 GLEW/opengl32）、GL 头替换、8 入口 DSA shim、GLEW 摘除、`--api webgl` 接线；`sync_mode` 强制开启 | 2–3 | `--api webgl` 出纯色窗口（截图人工确认） | ✅ 完成 |
-| **M2 着色器通路** | ES300 转换器 + shader 解析 api 分支；最小场景（一个 cube，pbr 最小集） | 2–3 | 浏览器看到有光照的立方体 | ✅ 完成 |
-| **M3 帧缓冲 / 纹理** | HDR RGBA16F（`EXT_color_buffer_float`）、shadow depth texture、skybox cube map、mipmap | 2 | 截图与 `--api opengl` 并排看趋势一致 | ✅ 完成 |
-| **M4 场景全链路** | demo_project 或 OBJ 小场景跑通 PBR + 阴影 atlas + IBL + 后处理链；GPU 剔除 CPU 回退 A/B；assimp 源码构建（可选） | 3–5 | `--no-gpu-cull` A/B 差异在噪声地板；`--debug 1..8` 逐档核对 | ✅ 完成 |
-| **M5 UI / 截图 / 降级清单** | ImGui ES3 后端（或默认关）、`capture_frame_rgba`、能力降级矩阵全量验证、Firefox 交叉验证 | 1–2 | UI 显示正常；截图文件正确；三浏览器均可加载 | ⚠️ 部分完成 |
+| **M0 环境探针** | 装 emsdk（注意网络约束）；独立最小程序：GLFW + WebGL2 清屏 + 画一个三角形；验证 `EXT_color_buffer_float`、DSA 行为、`--preload-file` MEMFS 读取 | 1–2 | 浏览器里看到三角形，console 无错 | 已完成 |
+| **M1 构建链 + 后端骨架** | CMake `EMSCRIPTEN` 分支（DLL→静态、跳过 GLEW/opengl32）、GL 头替换、8 入口 DSA shim、GLEW 摘除、`--api webgl` 接线；`sync_mode` 强制开启 | 2–3 | `--api webgl` 出纯色窗口（截图人工确认） | 已完成 |
+| **M2 着色器通路** | ES300 转换器 + shader 解析 api 分支；最小场景（一个 cube，pbr 最小集） | 2–3 | 浏览器看到有光照的立方体 | 已完成 |
+| **M3 帧缓冲 / 纹理** | HDR RGBA16F（`EXT_color_buffer_float`）、shadow depth texture、skybox cube map、mipmap | 2 | 截图与 `--api opengl` 并排看趋势一致 | 已完成 |
+| **M4 场景全链路** | demo_project 或 OBJ 小场景跑通 PBR + 阴影 atlas + IBL + 后处理链；GPU 剔除 CPU 回退 A/B；assimp 源码构建（可选） | 3–5 | `--no-gpu-cull` A/B 差异在噪声地板；`--debug 1..8` 逐档核对 | 已完成 |
+| **M5 UI / 截图 / 降级清单** | ImGui ES3 后端（或默认关）、`capture_frame_rgba`、能力降级矩阵全量验证、Firefox 交叉验证 | 1–2 | UI 显示正常；截图文件正确；三浏览器均可加载 | 部分完成 |
 | **合计** | | **10–16** | | |
 
 **统一验证方式**：`GryceRenderSmoke.exe --api webgl --shot shot_webgl.png`（Emscripten 产物为 `GryceRenderSmoke.html`，用本地 HTTP 服务器打开，参数经 URL query 传入 `Module.arguments`）。**不进 CTest**（与 D3D12 同一约定），CI 只验证"Emscripten 能编译 + 链接"。
 
-> **实施记录与全部实测数据见 `docs/webgl-backend.md`。**
+> **实施记录与全部实测数据见 `../webgl-backend.md`。**
 >
 > M5 未完成项：**Firefox / Edge 交叉验证** —— 本机两款浏览器均未安装，全部验证走 Chrome
 > headless（SwiftShader 软件渲染）。真机 GPU、Assimp、物理/音频源码构建、ImGui 中文字体

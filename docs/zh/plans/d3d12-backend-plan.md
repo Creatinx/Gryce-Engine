@@ -187,18 +187,18 @@ Vulkan（push 块）两条路径语义不变，仅调用线程从主线程变为
 
 | 前提 | 状态 | 证据 |
 |---|---|---|
-| GLFW 无 OpenGL 上下文的窗口模式**已存在** | ✅ 已有 | `engine/platform/window.h:25-27` `WindowContextType::NoApi`；`window.cpp:95-97` 置 `GLFW_CLIENT_API = GLFW_NO_API` |
-| 后端拿到的 `native_window` 是 `GLFWwindow*` | ✅ | `render_context.cpp:157` → `vk_backend.cpp:87` `static_cast<GLFWwindow*>(native_window)` |
-| HWND 取得方式 | ✅ | `glfwGetWin32Window()`，`platform_api.cpp:423-431` / `platform_api.cpp:172,210` 已在用 |
-| `RenderAPI` 枚举已有 DX11/DX12 位 | ✅（工厂未接线） | `engine/render/render.h:233-238`，`create_render_backend` 对 DX11/DX12 返回 nullptr |
-| ImGui DX12 后端 | ✅ 已 vendored | `third_party/imgui/backends/imgui_impl_dx12.cpp` |
-| shaderc 动态加载先例 | ✅ 可照抄 | `engine/render/vulkan/vk_glsl_compiler.cpp`（运行时 `LoadLibrary` shaderc，缺失降级 `.spv`） |
-| 管线层与后端解耦 | ✅ | `render_pipeline.cpp` 里 GL 字样只在注释（7 处）；后处理 / IBL / material 里 0 处 |
+| GLFW 无 OpenGL 上下文的窗口模式**已存在** | 是 已有 | `engine/platform/window.h:25-27` `WindowContextType::NoApi`；`window.cpp:95-97` 置 `GLFW_CLIENT_API = GLFW_NO_API` |
+| 后端拿到的 `native_window` 是 `GLFWwindow*` | 是 | `render_context.cpp:157` → `vk_backend.cpp:87` `static_cast<GLFWwindow*>(native_window)` |
+| HWND 取得方式 | 是 | `glfwGetWin32Window()`，`platform_api.cpp:423-431` / `platform_api.cpp:172,210` 已在用 |
+| `RenderAPI` 枚举已有 DX11/DX12 位 | 是（工厂未接线） | `engine/render/render.h:233-238`，`create_render_backend` 对 DX11/DX12 返回 nullptr |
+| ImGui DX12 后端 | 是 已 vendored | `third_party/imgui/backends/imgui_impl_dx12.cpp` |
+| shaderc 动态加载先例 | 是 可照抄 | `engine/render/vulkan/vk_glsl_compiler.cpp`（运行时 `LoadLibrary` shaderc，缺失降级 `.spv`） |
+| 管线层与后端解耦 | 是 | `render_pipeline.cpp` 里 GL 字样只在注释（7 处）；后处理 / IBL / material 里 0 处 |
 | 着色器规模 | 204 个 GLSL（98 vert / 105 frag / 1 comp） | `engine/render/shaders`；无 imageStore/imageLoad/subgroup，仅 1 处 atomicAdd |
-| **MinGW 的 DX 头** | ❌ **一个都没有** | `ls include \| grep -ci "d3d\|dxgi"` = 0（CLion 自带 GCC 15.2.0） |
-| **Windows SDK** | ❌ **未安装** | `C:\Program Files (x86)\Windows Kits` 不存在 |
-| `__uuidof` 在 MinGW 下 | ⚠️ 需特殊处理 | 实测：GCC 忽略 `__declspec(uuid)`，直接用会链接失败；特化 MinGW 的 `__mingw_uuidof<T>()` 后取值正确 |
-| 其它依赖 | ✅ 不受影响 | GLFW/GLEW/Box2D/Jolt 走 FetchContent（`cmake-build-debug/_deps` 已有缓存），不需要 MSYS2 |
+| **MinGW 的 DX 头** | 否 **一个都没有** | `ls include \| grep -ci "d3d\|dxgi"` = 0（CLion 自带 GCC 15.2.0） |
+| **Windows SDK** | 否 **未安装** | `C:\Program Files (x86)\Windows Kits` 不存在 |
+| `__uuidof` 在 MinGW 下 | 需特殊处理 | 实测：GCC 忽略 `__declspec(uuid)`，直接用会链接失败；特化 MinGW 的 `__mingw_uuidof<T>()` 后取值正确 |
+| 其它依赖 | 是 不受影响 | GLFW/GLEW/Box2D/Jolt 走 FetchContent（`cmake-build-debug/_deps` 已有缓存），不需要 MSYS2 |
 
 ---
 
@@ -213,7 +213,7 @@ D3D11 能省掉资源屏障、根签名、描述符堆，工作量约为 D3D12 �
 代价：需要自己声明用到的 COM 接口方法（从 SDK 头读签名，自己写调用），因此**仍需要 SDK 头作为编译期依赖**（见 2.3）。
 
 ### 2.3 Windows SDK 头：构建期可选探测，不入仓
-SDK 头有微软许可，不适合 vendor 进 MIT 仓库。采用与 Vulkan 相同的模式：
+SDK 头有微软许可，不适合 vendor 进 AGPL 仓库。采用与 Vulkan 相同的模式：
 
 - `engine/CMakeLists.txt` 里 `find_path(D3D12_INCLUDE_DIR d3d12.h HINTS "$ENV{WindowsSdkDir}Include/...")` + 探测 `dxgi1_6.h`
 - 命中 → `set(GRYCE_HAS_D3D12 TRUE)` 并编译后端；未命中 → 静默关闭（与 `GRYCE_HAS_VULKAN` 同一套写法，`engine/CMakeLists.txt:216-220`）

@@ -3,7 +3,7 @@
 //
 // 目的：用一条最小但完整的链路证明「CLion MinGW(GCC) 编译 + 运行时动态加载
 // d3d12.dll/dxgi.dll」可以编出并运行真实的 D3D12 程序。这是 D3D12 后端
-// （docs/d3d12-backend-plan.md 的 M0）的最大风险点，此探针通过后剩余工作是工程量。
+// （docs/zh/plans/d3d12-backend-plan.md 的 M0）的最大风险点，此探针通过后剩余工作是工程量。
 //
 // 实测结论（2026-10-06，修正了此前"MinGW 无 DX 头"的误判）：
 //   * CLion MinGW 的 **target 头目录**（x86_64-w64-mingw32/include，不是顶层

@@ -18,7 +18,7 @@ option(GRYCE_ENABLE_IMGUI "Enable ImGui editor overlay in GryceRenderer" ON)
 #   * GLFW 走 Emscripten 自带端口（-s USE_GLFW=3）；
 #   * Box2D/Jolt/Assimp/Amplitude 无法为 wasm 链接 → 物理/音频桩化 +
 #     首版 OBJ-only（内置 ObjLoader 零依赖）；
-#   * --api webgl 与桌面 OpenGL 共用 GLBackend（docs/webgl-backend-plan.md）。
+#   * --api webgl 与桌面 OpenGL 共用 GLBackend（docs/zh/webgl-backend.md）。
 # ===========================================================================
 option(GRYCE_ENABLE_WEBGL "启用 WebGL（Emscripten）构建" OFF)
 if(EMSCRIPTEN)

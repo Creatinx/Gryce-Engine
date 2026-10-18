@@ -784,7 +784,7 @@ RenderBackendCapabilities GLBackend::get_capabilities() const {
     //   Vulkan/D3D12 允许混合（质量取 min），它们保持默认 false。
     caps.msaa_depth_must_match_samples = true;
 #ifdef __EMSCRIPTEN__
-    // WebGL2 能力集（docs/webgl-backend-plan.md 第 5 节）：
+    // WebGL2 能力集（docs/zh/webgl-backend.md 第 4 节）：
     // * MSAA 首版关：sampler2DMS / 着色器内深度 resolve 在 ES3.0 不存在，
     //   WEBGL_multisampled_render_to_texture 的 blit resolve 后续单独验证；
     // * RGBA16F 渲染目标需 EXT_color_buffer_float 运行期探测，缺失则如实上报
