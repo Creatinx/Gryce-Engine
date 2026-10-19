@@ -197,7 +197,7 @@ build/GryceRenderSmoke.exe --api opengl
 
 | 参数 | 说明 |
 | --- | --- |
-| `--api opengl\|vulkan\|dx12\|webgl` | 选择渲染后端 |
+| `--api opengl\|vulkan\|dx12` | 选择渲染后端 （WebGL只能通过打包使用）|
 | `--project <dir>` / `--scene <res:/...>` | 指定工程根与入口场景 |
 | `--frames N` | 驱动 N 帧后退出（交互模式下表示第 N 帧截图） |
 | `--shot <png>` / `--resolution WxH` | 截图输出路径与视口尺寸 |
