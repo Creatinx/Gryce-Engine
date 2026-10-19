@@ -15,6 +15,7 @@ Documents are organized by module and cover architecture, build, rendering, asse
 | Performance | [performance.md](performance.md) | Measurement method, time breakdown, completed optimizations |
 | WebGL | [webgl-backend.md](webgl-backend.md) | Web build, shim architecture, platform differences, troubleshooting |
 | Toolchain | [toolchain.md](toolchain.md) | GryceGC command surface and release workflow |
-| Scripting | [scripting.md](scripting.md) | QuickJS script component, lifecycle, engine.* API, sandbox, hot reload |
-| Application entry | [app-entry.md](app-entry.md) | `GryceApp` host + `main.js` entry, window/scene API, native extension ABI |
+| Scripting | [scripting.md](scripting.md) | QuickJS script component: serialized fields, lifecycle hooks, base engine.* API, value conventions, sandbox, hot reload |
+| Application entry | [app-entry.md](app-entry.md) | `GryceApp` host + `main.js` entry: startup order, hooks, window/scene/entity/app API, command line |
+| Native extensions | [extension.md](extension.md) | Complete `extension.cpp` ABI reference: loading, per-field virtual table semantics, value channel, build and distribution, troubleshooting |
 | Testing | [testing.md](testing.md) | CTest gate, test inventory, CI configuration |

@@ -96,7 +96,7 @@ Vulkan SDK 为可选项：装好 LunarG SDK 后 `VULKAN_SDK` 环境变量会指�
 | `GryceRenderer.dll` | 渲染管线与 OpenGL / Vulkan / D3D12 后端 |
 | `GrycePlatform.dll` | 窗口、输入、光标 |
 | `GryceRenderSmoke.exe` | 渲染演示台（人工运行，非 CTest 用例） |
-| `GryceApp.exe` | 应用运行时（`--project <dir>` 启动，入口 `res:/main.js`）；同目录的 `GryceDemoExtension.dll` 是扩展 ABI 样例 |
+| `GryceApp.exe` | 应用运行时（`--project <dir>` 启动，入口 `res:/main.js`，见 [app-entry.md](app-entry.md)）；同目录的 `GryceDemoExtension.dll` 是扩展 ABI 样例（见 [extension.md](extension.md)） |
 | `GryceMathTests.exe` | 数学与资源规则测试宿主，仅 `BUILD_TESTING=ON` 时构建 |
 | `GryceGC.exe` | 工具链可执行文件，仅 `GRYCE_BUILD_TOOLCHAIN=ON` 时构建 |
 

@@ -34,7 +34,7 @@ Directory layout under `engine/`:
 | `animation/` | Skeletons, animation clips, pose blending |
 | `platform/` | Window, input, cursor |
 | `runtime/` | Engine context, entity handle map, command buffer |
-| `script/` | QuickJS runtime, `engine.*` bindings, `ScriptComponent`, the `ScriptApplication` entry script, extension loading (see [scripting.md](scripting.md) / [app-entry.md](app-entry.md)) |
+| `script/` | QuickJS runtime, `engine.*` bindings, `ScriptComponent`, the `ScriptApplication` entry script, extension loading (see [scripting.md](scripting.md) / [app-entry.md](app-entry.md) / [extension.md](extension.md)) |
 | `app/` | Generic application host `app_host` plus the template `main` (`GryceApp.exe`) |
 | `utils/` | Logging (glog), frame limiter, crypto primitives |
 

@@ -25,12 +25,12 @@ English documentation: [docs/README.md](docs/README.md)（英文入口）。
 | 渲染性能 | [docs/zh/performance.md](docs/zh/performance.md) | [docs/en/performance.md](docs/en/performance.md) |
 | WebGL 后端 | [docs/zh/webgl-backend.md](docs/zh/webgl-backend.md) | [docs/en/webgl-backend.md](docs/en/webgl-backend.md) |
 | GryceGC 工具链 | [docs/zh/toolchain.md](docs/zh/toolchain.md) | [docs/en/toolchain.md](docs/en/toolchain.md) |
-| 脚本系统（QuickJS） | [docs/zh/scripting.md](docs/zh/scripting.md) | [docs/en/scripting.md](docs/en/scripting.md) |
-| 应用入口（GryceApp + main.js + 扩展） | [docs/zh/app-entry.md](docs/zh/app-entry.md) | [docs/en/app-entry.md](docs/en/app-entry.md) |
+| 脚本系统（QuickJS 组件） | [docs/zh/scripting.md](docs/zh/scripting.md) | [docs/en/scripting.md](docs/en/scripting.md) |
+| 应用入口（GryceApp + main.js） | [docs/zh/app-entry.md](docs/zh/app-entry.md) | [docs/en/app-entry.md](docs/en/app-entry.md) |
+| 原生扩展（extension.cpp / ABI） | [docs/zh/extension.md](docs/zh/extension.md) | [docs/en/extension.md](docs/en/extension.md) |
 | 测试与 CI | [docs/zh/testing.md](docs/zh/testing.md) | [docs/en/testing.md](docs/en/testing.md) |
 | 文档总索引 | [docs/zh/README.md](docs/zh/README.md) | [docs/en/README.md](docs/en/README.md) |
 
-历史设计规划（D3D12 与 WebGL 后端接入计划）归档在 [docs/zh/plans/](docs/zh/plans/)，仅保留中文。
 
 ---
 
@@ -231,7 +231,7 @@ build/GryceApp.exe --project test/demo_project --api opengl
 build/GryceApp.exe --project test/demo_project --frames 60 --shot shot.png --api vulkan
 ```
 
-完整参数、API 面与扩展 ABI 见 [docs/zh/app-entry.md](docs/zh/app-entry.md)。
+完整参数与 API 面见 [docs/zh/app-entry.md](docs/zh/app-entry.md)，扩展 ABI 与用法见 [docs/zh/extension.md](docs/zh/extension.md)。
 
 示例：以 Vulkan 后端进入 Play 模式并在第 120 帧截图。
 
