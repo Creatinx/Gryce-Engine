@@ -19,7 +19,7 @@
 | 入口脚本 | `<project>/main.js`，默认 `res:/main.js` | 是，项目逻辑全在这里 |
 | 原生扩展 | `<project>/extension.cpp` → `extension.dll` | 可选 |
 
-因此项目目录里不再需要 `main.cpp`：窗口、场景、相机、退出条件都由 `main.js` 调 `engine.*` 决定。
+因此项目目录里不再需要 `main.cpp`：窗口、场景、相机、退出条件都由 `main.js` 调 `engine.*` 决定。新建项目用 `GryceGC new <dir>` 生成这套骨架（见 [toolchain.md](toolchain.md)）。
 
 与 `ScriptComponent` 的分工：组件挂在实体上、随场景生命周期启停；入口脚本属于进程本身，一个进程一个，负责"整个应用"。
 

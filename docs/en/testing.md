@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 22 cases across three hosts.
+There are currently 23 cases across three hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -29,7 +29,7 @@ The tested sources (`engine/math/*.cpp`, `engine/assets/material_rules.cpp`, `en
 | `math_material` | Derivation rules from model-file materials to PBR parameters (`assets/material_rules.cpp`, see [model-import.md](model-import.md)) |
 | `math_lod` | Structural guarantees of the automatic LOD chain (`assets/mesh_lod.cpp`, see [lod.md](lod.md)) |
 
-### 2.2 Toolchain (`GryceGCTests.exe`, 10 cases)
+### 2.2 Toolchain (`GryceGCTests.exe`, 11 cases)
 
 | Case | Verifies |
 | --- | --- |
@@ -43,6 +43,7 @@ The tested sources (`engine/math/*.cpp`, `engine/assets/material_rules.cpp`, `en
 | `grycegc_meta` | `gryce.meta.json` / `project.data` metadata read/write |
 | `grycegc_package` | Release directory packaging and `verify` self-consistency |
 | `grycegc_webpack` | Single-file HTML packaging output structure |
+| `grycegc_new` | Project scaffolding: file list, `project.data` / scene JSON validity, cube OBJ vertices and normals, non-empty directory rejection and `--force` behaviour |
 
 ### 2.3 Scripting (`GryceScriptTests.exe`, 5 cases)
 

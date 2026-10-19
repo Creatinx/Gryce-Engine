@@ -219,11 +219,20 @@ build/GryceRenderSmoke.exe --api opengl
 
 `GryceApp` 是"项目只写 JavaScript"的运行时：宿主固定，窗口、场景、相机、退出都由 `main.js` 调 `engine.*` 决定，项目目录不再需要自己的 `main.cpp`。
 
+新建项目用工具链生成骨架（`main.js` + `project.data` + 场景 + 立方体模型 + README）：
+
+```bash
+GryceGC new MyGame --extension     # --extension 同时给 extension.cpp 模板
+build/GryceApp.exe --project MyGame
+```
+
+演示工程 `test/demo_project/main.js` 会建窗口、载入主场景、接管相机（鼠标转视角、WASD 移动、Esc 退出）：
+
 ```bash
 build/GryceApp.exe --project test/demo_project --api opengl
 ```
 
-演示工程的 `test/demo_project/main.js` 会建窗口、载入主场景、接管相机（鼠标转视角、WASD 移动、Esc 退出）。引擎里已经实现、但脚本层还没开放的能力，用 `extension.cpp` 包成 `engine.*` 接口即可（扩展是接口层，不是业务层；样例 `test/demo_project/extension.cpp` 补了 `engine.entity.toJson` / `engine.entity.path` / `engine.scene.pick`）。
+引擎里已经实现、但脚本层还没开放的能力，用 `extension.cpp` 包成 `engine.*` 接口即可（扩展是接口层，不是业务层；样例 `test/demo_project/extension.cpp` 补了 `engine.entity.toJson` / `engine.entity.path` / `engine.scene.pick`）。
 
 无窗口验证与截图：
 
@@ -245,7 +254,7 @@ Web 端参数经 URL query 传入（`?--api=webgl&--frames=8`），画布尺寸�
 
 ## 测试
 
-CI 的通过条件只有一条：`ctest` 里的用例全部通过。当前 17 条用例：`GryceMathTests` 承载 7 条数学与资源规则数值核对（vector / matrix / quaternion / camera / ray / material / lod），`GryceGCTests` 承载 10 条工具链用例。`grycegc_*` 用例本地并行会互相干扰，全量验证请 `ctest --test-dir build -j1`。
+CI 的通过条件只有一条：`ctest` 里的用例全部通过。当前 23 条用例：`GryceMathTests` 承载 7 条数学与资源规则数值核对（vector / matrix / quaternion / camera / ray / material / lod），`GryceGCTests` 承载 11 条工具链用例，`GryceScriptTests` 承载 5 条脚本用例。`grycegc_*` 用例本地并行会互相干扰，全量验证请 `ctest --test-dir build -j1`。
 
 ```bash
 cmake --build build --parallel

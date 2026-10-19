@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -940,11 +942,141 @@ void run_webpack() {
     std::printf("[suite webpack] done\n");
 }
 
+// ---------------------------------------------------------------------------
+// new：项目骨架生成
+// ---------------------------------------------------------------------------
+void run_new() {
+    using namespace grycegc;
+    std::printf("[suite new]\n");
+    namespace fs = std::filesystem;
+    const fs::path root = temp_dir() / "grycegc_test_new";
+    fs::remove_all(root);
+    mkdir_p(root);
+
+    auto read_text = [](const fs::path& p) {
+        auto bytes = read_all(p);
+        return std::string(bytes.begin(), bytes.end());
+    };
+    auto count_prefix = [](const std::string& text, const std::string& prefix) {
+        int n = 0;
+        std::size_t pos = 0;
+        while (pos < text.size()) {
+            std::size_t end = text.find('\n', pos);
+            if (end == std::string::npos) end = text.size();
+            if (text.compare(pos, prefix.size(), prefix) == 0) ++n;
+            pos = end + 1;
+        }
+        return n;
+    };
+
+    // 1) 空目录 + 默认参数：文件名与内容
+    const fs::path p1 = root / "DemoOne";
+    {
+        Options o;
+        o.positionals = {p1.string()};
+        EXPECT(cmd_new(o) == 0, "new into empty dir");
+    }
+    EXPECT(fs::exists(p1 / "main.js"), "main.js created");
+    EXPECT(fs::exists(p1 / "project.data"), "project.data created");
+    EXPECT(fs::exists(p1 / "scenes" / "main.gesc"), "scene created");
+    EXPECT(fs::exists(p1 / "models" / "cube.obj"), "cube obj created");
+    EXPECT(fs::exists(p1 / "README.md"), "readme created");
+    EXPECT(!fs::exists(p1 / "extension.cpp"), "no extension without flag");
+
+    {
+        auto j = nlohmann::json::parse(read_text(p1 / "project.data"), nullptr, false);
+        EXPECT(!j.is_discarded(), "project.data parses");
+        EXPECT(!j.is_discarded() && j["name"] == "DemoOne", "name defaults to dir name");
+        EXPECT(!j.is_discarded() && j["render_api"] == "opengl", "api defaults to opengl");
+        EXPECT(!j.is_discarded() && j["window"]["width"] == 1280, "default width 1280");
+    }
+    {
+        auto j = nlohmann::json::parse(read_text(p1 / "scenes" / "main.gesc"), nullptr, false);
+        EXPECT(!j.is_discarded(), "scene parses");
+        EXPECT(!j.is_discarded() && j["entities"].size() == 4, "scene has 4 entities");
+        EXPECT(!j.is_discarded() && j["entities"][0]["name"] == "MainCamera", "camera first");
+    }
+    {
+        const std::string obj = read_text(p1 / "models" / "cube.obj");
+        EXPECT(count_prefix(obj, "v ") == 24, "cube has 24 vertices");
+        EXPECT(count_prefix(obj, "vt ") == 24, "cube has 24 uvs");
+        EXPECT(count_prefix(obj, "vn ") == 24, "cube has 24 normals");
+        EXPECT(count_prefix(obj, "f ") == 6, "cube has 6 quad faces");
+        EXPECT(obj.find("//") == std::string::npos, "faces use v/vt/vn triples");
+    }
+    {
+        const std::string js = read_text(p1 / "main.js");
+        EXPECT(js.find("__PROJECT_NAME__") == std::string::npos, "placeholder substituted");
+        EXPECT(js.find("'DemoOne'") != std::string::npos, "project name in main.js");
+        EXPECT(js.find("export function on_start") != std::string::npos, "lifecycle hooks present");
+    }
+
+    // 2) 非空目录：默认拒绝，--force 覆盖同名文件并保留其它文件
+    {
+        write_binary(p1 / "keep.txt", std::string("keep"));
+        Options o;
+        o.positionals = {p1.string()};
+        EXPECT(cmd_new(o) != 0, "non-empty dir rejected");
+        write_binary(p1 / "main.js", std::string("// user edit"));
+
+        Options f;
+        f.positionals = {p1.string()};
+        f.flags.insert("force");
+        EXPECT(cmd_new(f) == 0, "force allows non-empty dir");
+        EXPECT(read_text(p1 / "main.js") != "// user edit", "force overwrites main.js");
+        EXPECT(fs::exists(p1 / "keep.txt"), "force keeps unrelated files");
+    }
+
+    // 3) 选项：name / 尺寸 / 后端 / --extension
+    const fs::path p2 = root / "SubDir";
+    {
+        Options o;
+        o.positionals = {p2.string()};
+        o.single["name"] = "My Game";
+        o.single["width"] = "1600";
+        o.single["height"] = "900";
+        o.single["api"] = "vulkan";
+        o.flags.insert("extension");
+        EXPECT(cmd_new(o) == 0, "new with options");
+    }
+    {
+        auto j = nlohmann::json::parse(read_text(p2 / "project.data"), nullptr, false);
+        EXPECT(!j.is_discarded() && j["name"] == "My Game", "explicit name");
+        EXPECT(!j.is_discarded() && j["render_api"] == "vulkan", "explicit api");
+        EXPECT(!j.is_discarded() && j["window"]["width"] == 1600, "explicit width");
+        EXPECT(!j.is_discarded() && j["window"]["height"] == 900, "explicit height");
+    }
+    EXPECT(fs::exists(p2 / "extension.cpp"), "extension.cpp generated");
+    {
+        const std::string js = read_text(p2 / "main.js");
+        EXPECT(js.find("width: 1600") != std::string::npos, "window width in main.js");
+        EXPECT(js.find("height: 900") != std::string::npos, "window height in main.js");
+    }
+    {
+        const std::string ext = read_text(p2 / "extension.cpp");
+        EXPECT(ext.find("GRYCE_EXTENSION_ENTRY") != std::string::npos, "extension entry present");
+        EXPECT(ext.find("GEntity_GetPath") != std::string::npos, "extension adapter present");
+    }
+
+    // 4) 非法后端被拒绝，且不留下半成品目录
+    {
+        const fs::path p3 = root / "BadApi";
+        Options o;
+        o.positionals = {p3.string()};
+        o.single["api"] = "metal";
+        EXPECT(cmd_new(o) != 0, "unknown api rejected");
+        EXPECT(!fs::exists(p3 / "main.js"), "no files written on invalid api");
+    }
+
+    fs::remove_all(root);
+    std::printf("[suite new] done\n");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 3 || std::strcmp(argv[1], "--suite") != 0) {
-        std::fprintf(stderr, "usage: %s --suite <cli|crc32|pe|aes|smoke|crypto|pak|meta|package|webpack>\n",
+        std::fprintf(stderr, "usage: %s --suite <cli|crc32|pe|aes|smoke|crypto|pak|meta|package|webpack|new>\n",
                      argv[0]);
         return 2;
     }
@@ -959,6 +1091,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(g_suite, "meta")) run_meta();
     else if (!std::strcmp(g_suite, "package")) run_package();
     else if (!std::strcmp(g_suite, "webpack")) run_webpack();
+    else if (!std::strcmp(g_suite, "new")) run_new();
     else {
         std::fprintf(stderr, "unknown suite: %s\n", g_suite);
         return 2;

@@ -10,6 +10,7 @@ int cmd_version(const Options&);
 int cmd_help(const Options&);
 int cmd_deps(const Options&);
 int cmd_verify(const Options&);
+int cmd_new(const Options&);
 
 // 以下将在后续 milestone 实现（M2–M5），提前声明以便注册表统一调度
 int cmd_package(const Options&);

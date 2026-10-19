@@ -20,6 +20,7 @@ Run `GryceGC help <command>` for full parameters.
 | --- | --- |
 | `version` | Print the GryceGC version |
 | `help` | Show help (running GryceGC with no arguments is equivalent to `help`) |
+| `new` | Scaffold a project (`main.js` + `project.data` + scene + cube model) |
 | `deps` | List the full DLL dependency closure of an exe (categorized as core / dependency) |
 | `verify` | Verify release package self-consistency (all imported DLLs resolvable inside the package) |
 | `package` | Package an offline-runnable release directory (exe + core DLL side by side + `dll/` + `demo_project` + launcher + README) |
@@ -35,7 +36,33 @@ Run `GryceGC help <command>` for full parameters.
 | `build` | cmake configure + build wrapper |
 | `webpack` | Pack a multi-file Emscripten web build into one self-contained HTML file |
 
-## 3. Typical Release Workflow
+## 3. Creating a Project (`new`)
+
+```bash
+GryceGC new MyGame                        # directory name becomes the project name
+GryceGC new MyGame --name "My Game" --api vulkan --extension
+GryceGC new . --force                     # fill in place: overwrite listed files, keep others
+```
+
+Output:
+
+| File | Purpose |
+| --- | --- |
+| `main.js` | Entry script: create window, load scene, fly camera, Esc to quit |
+| `project.data` | Project config: window size, default backend, render switches |
+| `scenes/main.gesc` | Scene (`.gesc` v2 is plain JSON): camera / directional light / cube / ground |
+| `models/cube.obj` | Procedurally generated unit cube; no repository assets required |
+| `README.md` | Run and package commands |
+| `extension.cpp` | Only with `--extension`: native extension template |
+
+Notes:
+
+- The project needs no `main.cpp` of its own; the host is fixed and `main.js` decides behaviour (see [app-entry.md](app-entry.md)).
+- Shaders are not copied: when `res:/shaders` is missing the engine falls back to its built-in directory (both GL sources and Vulkan `.spv` resolve). Copy `engine/render/shaders` into the project only when customising.
+- A non-empty target directory is rejected by default; `--force` overwrites only the generated files and leaves everything else alone.
+- Afterwards `build/GryceApp.exe --project <dir>` runs it (build `GryceApp` first).
+
+## 4. Typical Release Workflow
 
 ```bash
 GryceGC package --build-dir build --verify
@@ -43,7 +70,7 @@ GryceGC copyright --package dist/GryceEngine --holder "Your Name" --license AGPL
 GryceGC run --package dist/GryceEngine -- --frames 120 --shot out.png
 ```
 
-## 4. Single-File Web Distribution (`webpack`)
+## 5. Single-File Web Distribution (`webpack`)
 
 CMake's web build only produces multiple files (`.html` + `.js` + `.wasm` + `.data`). For the "one html, double-click to run" form, use the packager as a post-link step; it does not touch the build system and does not re-link:
 
@@ -54,6 +81,6 @@ toolchain/build/GryceGC.exe webpack --build-dir build-webgl --name GryceRenderSm
 
 Implementation (`toolchain/src/core/web_pack.cpp`): inline Emscripten's `.js` into the html shell, then eliminate remaining network requests via two public runtime hooks: `Module.locateFile` (returns a base64 data URL for `.wasm`) and `Module.getPreloadedPackage` (hands `.data` to the file packager directly as an ArrayBuffer). Render output is byte-identical to the multi-file HTTP build. Detailed comparison and constraints are in [webgl-backend.md](webgl-backend.md) section 1.
 
-## 5. Testing
+## 6. Testing
 
 The `grycegc_*` CTest cases cover the command surface and the correctness of crypto and packaging; the inventory is in [testing.md](testing.md).

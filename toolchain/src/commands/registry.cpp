@@ -19,6 +19,19 @@ const std::vector<Command>& kTable() {
          "无参数打印总览；带子命令名打印该命令详情。\n",
          &cmd_help},
 
+        {"new", "创建项目骨架（main.js + project.data + 场景 + 立方体模型）",
+         "用法: GryceGC new <dir> [options]\n"
+         "选项:\n"
+         "  --name <name>       项目显示名（默认取目录名）\n"
+         "  --width <px>        默认窗口宽（默认 1280）\n"
+         "  --height <px>       默认窗口高（默认 720）\n"
+         "  --api <api>         默认渲染后端 opengl|vulkan|dx12（默认 opengl）\n"
+         "  --extension         同时生成 extension.cpp 模板\n"
+         "  --force             目标目录非空也继续（覆盖同名文件，保留其它文件）\n"
+         "产物: main.js / project.data / scenes/main.gesc / models/cube.obj / README.md\n"
+         "      项目不需要自己的 main.cpp；着色器由引擎内置目录兜底。\n",
+         &cmd_new},
+
         {"deps", "列出可执行文件的完整 DLL 依赖闭包（按 core / 依赖分类）",
          "用法: GryceGC deps [options]\n"
          "选项:\n"

@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 22 条用例，分三个宿主。
+当前共 23 条用例，分三个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -29,7 +29,7 @@ ctest --test-dir build --output-on-failure
 | `math_material` | 模型文件材质到 PBR 参数的推导规则（`assets/material_rules.cpp`，见 [model-import.md](model-import.md)） |
 | `math_lod` | 自动 LOD 链的结构性保证（`assets/mesh_lod.cpp`，见 [lod.md](lod.md)） |
 
-### 2.2 工具链（`GryceGCTests.exe`，10 条）
+### 2.2 工具链（`GryceGCTests.exe`，11 条）
 
 | 用例 | 核对内容 |
 | --- | --- |
@@ -43,6 +43,7 @@ ctest --test-dir build --output-on-failure
 | `grycegc_meta` | `gryce.meta.json` / `project.data` 元数据读写 |
 | `grycegc_package` | 发布目录打包与 `verify` 自洽性 |
 | `grycegc_webpack` | 单文件 HTML 打包输出结构 |
+| `grycegc_new` | 项目骨架生成：文件清单、`project.data` / 场景 JSON 合法性、立方体 OBJ 顶点法线、非空目录拒绝与 `--force` 行为 |
 
 ### 2.3 脚本系统（`GryceScriptTests.exe`，5 条）
 

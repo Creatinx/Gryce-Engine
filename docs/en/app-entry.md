@@ -19,7 +19,7 @@ Related documents:
 | Entry script | `<project>/main.js`, default `res:/main.js` | Yes; all project logic lives here |
 | Native extension | `<project>/extension.cpp` → `extension.dll` | Optional |
 
-A project directory therefore no longer needs its own `main.cpp`: windows, scenes, cameras, and exit conditions are all decided by `main.js` calling `engine.*`.
+A project directory therefore no longer needs its own `main.cpp`: windows, scenes, cameras, and exit conditions are all decided by `main.js` calling `engine.*`. Scaffold a new project with `GryceGC new <dir>` (see [toolchain.md](toolchain.md)).
 
 Division of labour with `ScriptComponent`: components live on entities and start/stop with the scene; the entry script belongs to the process itself, one per process, and owns "the whole application".
 
