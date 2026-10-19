@@ -15,6 +15,7 @@
 | 性能 | [performance.md](performance.md) | 测量方法、耗时构成、已完成的优化 |
 | WebGL | [webgl-backend.md](webgl-backend.md) | Web 构建、shim 架构、平台差异与排错 |
 | 工具链 | [toolchain.md](toolchain.md) | GryceGC 命令面与发布流程 |
-| 脚本 | [scripting.md](scripting.md) | QuickJS 脚本组件、生命周期、engine.* API、沙箱、热重载 |
-| 应用入口 | [app-entry.md](app-entry.md) | `GryceApp` 宿主 + `main.js` 入口、窗口/场景 API、原生扩展 ABI |
+| 脚本 | [scripting.md](scripting.md) | QuickJS 脚本组件：挂载字段、生命周期钩子、基础 engine.* API、值约定、沙箱、热重载 |
+| 应用入口 | [app-entry.md](app-entry.md) | `GryceApp` 宿主 + `main.js` 入口：启动顺序、钩子、窗口/场景/实体/应用 API、命令行 |
+| 原生扩展 | [extension.md](extension.md) | `extension.cpp` 完整 ABI 参考：加载机制、虚表逐字段语义、值通道、编译分发、排错 |
 | 测试 | [testing.md](testing.md) | CTest 门禁、用例清单、CI 配置 |

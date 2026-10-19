@@ -34,7 +34,7 @@
 | `animation/` | 骨骼、动画剪辑、姿态混合 |
 | `platform/` | 窗口、输入、光标 |
 | `runtime/` | 引擎上下文、实体句柄表、命令缓冲 |
-| `script/` | QuickJS 运行时、`engine.*` 绑定、`ScriptComponent`、入口脚本 `ScriptApplication`、扩展装载（见 [scripting.md](scripting.md) / [app-entry.md](app-entry.md)） |
+| `script/` | QuickJS 运行时、`engine.*` 绑定、`ScriptComponent`、入口脚本 `ScriptApplication`、扩展装载（见 [scripting.md](scripting.md) / [app-entry.md](app-entry.md) / [extension.md](extension.md)） |
 | `app/` | 通用应用宿主 `app_host` 与模板 `main`（`GryceApp.exe`） |
 | `utils/` | 日志（glog）、帧率限制、加解密原语 |
 

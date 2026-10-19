@@ -54,7 +54,7 @@ ctest --test-dir build --output-on-failure
 | `script_lifecycle` | awake / start / update / destroy 钩子顺序与时机，props 注入 `this.props`，帧时钟（frame 从 1 起算），`_input` 事件派发先于 update 且不消费 |
 | `script_error_isolation` | 语法错误装载失败、运行期抛错后停止执行、死循环被帧预算中断；三种情况下组件状态翻转正确、引擎不崩 |
 | `script_hot_reload` | 文件变更触发重编译且 props 跨重载保留；文件延迟出现时按轮询周期装载成功；`reload_now` 强制重载与 `set_script_path` 换脚本（命令面内核） |
-| `script_app_entry` | 入口脚本（`main.js`）的 `on_start` / `on_update` / `on_destroy` 派发、热重载换模块（mtime + 大小判据）、扩展 ABI 的 `add_function` 注册与标量往返（见 [app-entry.md](app-entry.md)） |
+| `script_app_entry` | 入口脚本（`main.js`）的 `on_start` / `on_update` / `on_destroy` 派发、热重载换模块（mtime + 大小判据）、扩展 ABI 的 `add_function` 注册与标量往返（见 [app-entry.md](app-entry.md) / [extension.md](extension.md)） |
 
 ## 3. 执行注意
 
