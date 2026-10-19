@@ -460,6 +460,41 @@ if(WIN32)
     target_link_libraries(GryceRenderSmoke PRIVATE opengl32 gdi32)
 endif()
 
+# ===========================================================================
+# 应用运行时：GryceApp.exe
+#
+# 这是给"项目只写 main.js"的形态准备的宿主：窗口、场景、退出都由脚本调
+# engine.* 决定，engine/app/app_main.cpp 只是几行模板 main。项目目录因此
+# 不需要自己的 main.cpp；要原生扩展时编一个 extension.dll 放项目根即可
+# （ABI 见 engine/api/extension_api.h）。
+#
+# GryceRenderSmoke 保留为渲染回归/基准台，两者互不替代。
+# Web 构建暂不提供 GryceApp（wasm 侧仍是 smoke 的常驻循环 + 预载 payload）。
+# ===========================================================================
+if(NOT EMSCRIPTEN)
+    add_library(GryceAppHost STATIC engine/app/app_host.cpp)
+    target_include_directories(GryceAppHost PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    # PUBLIC：exe 只链 GryceAppHost，也要拿到引擎各 DLL 的导入库与头文件路径
+    target_link_libraries(GryceAppHost PUBLIC GryceRenderer GryceCore GrycePlatform)
+    if(WIN32)
+        target_link_libraries(GryceAppHost PUBLIC opengl32 gdi32)
+    endif()
+
+    add_executable(GryceApp engine/app/app_main.cpp)
+    target_link_libraries(GryceApp PRIVATE GryceAppHost)
+
+    # 扩展样例：只包含 engine/api/extension_api.h，不链接任何引擎库——这正是
+    # 扩展 ABI 的验收点（动态库侧没有引擎符号表也能注册函数）。
+    add_library(GryceDemoExtension SHARED test/demo_project/extension.cpp)
+    target_include_directories(GryceDemoExtension PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    set_target_properties(GryceDemoExtension PROPERTIES
+        PREFIX "" OUTPUT_NAME "GryceDemoExtension")
+endif()
+
 # 引擎 DLL 同步到 exe 目录。
 # 注意：这个 ALL 目标不能替代 POST_BUILD 拷贝 —— 它只在（全量）构建时执行，
 # 日常 `cmake --build . --target GryceRenderer` 单独构建引擎库时不会触发，
@@ -568,16 +603,18 @@ if(BUILD_TESTING)
             LABELS "unit;math" TIMEOUT 60)
     endforeach()
 
-    # 脚本系统（QuickJS）套件：值转换 / 生命周期 / 错误隔离 / 热重载。
+    # 脚本系统（QuickJS）套件：值转换 / 生命周期 / 错误隔离 / 热重载 / 应用入口。
     # 与 math 测试同构——被测源码（engine/script + runtime + glog + resources
     # 路径解析）直编进 exe，不链 GryceCore.dll，与 GPU/无头环境无关。
-    set(GRYCE_SCRIPT_TEST_SUITES value_convert lifecycle error_isolation hot_reload)
+    set(GRYCE_SCRIPT_TEST_SUITES value_convert lifecycle error_isolation hot_reload app_entry)
 
     add_executable(GryceScriptTests
         test/script_tests.cpp
         engine/script/js_runtime.cpp
         engine/script/js_bindings.cpp
         engine/script/script_component.cpp
+        engine/script/script_app.cpp
+        engine/script/extension_host.cpp
         engine/runtime/engine_context.cpp
         engine/utils/glog/glog_lib.cpp
         engine/resources/resource_path.cpp

@@ -1,6 +1,6 @@
 # Gryce Engine Documentation
 
-Gryce Engine is a C++26 game engine for Windows, built around a reflection-driven ECS and a renderer with four backends (OpenGL / Vulkan / D3D12 / WebGL). The main line of development is the renderer: scene serialization, the resource system, 2D/3D physics, audio, and animation are in place, with a runnable demo host `GryceRenderSmoke`.
+Gryce Engine is a C++26 game engine for Windows, built around a reflection-driven ECS and a renderer with four backends (OpenGL / Vulkan / D3D12 / WebGL). The main line of development is the renderer: scene serialization, the resource system, 2D/3D physics, audio, and animation are in place, with two hosts: `GryceRenderSmoke` (renderer harness/demo) and `GryceApp` (runtime whose project entry is `main.js`).
 
 - Chinese documentation: [docs/zh/](zh/README.md)
 - English documentation: [docs/en/](en/README.md)
@@ -19,6 +19,7 @@ Gryce Engine is a C++26 game engine for Windows, built around a reflection-drive
 | WebGL | [zh/webgl-backend.md](zh/webgl-backend.md) | [en/webgl-backend.md](en/webgl-backend.md) |
 | Toolchain | [zh/toolchain.md](zh/toolchain.md) | [en/toolchain.md](en/toolchain.md) |
 | Scripting | [zh/scripting.md](zh/scripting.md) | [en/scripting.md](en/scripting.md) |
+| Application entry | [zh/app-entry.md](zh/app-entry.md) | [en/app-entry.md](en/app-entry.md) |
 | Testing | [zh/testing.md](zh/testing.md) | [en/testing.md](en/testing.md) |
 
 Historical design plans (the D3D12, WebGL, and QuickJS scripting adoption plans) are archived under [zh/plans/](zh/plans/) and kept in Chinese only.

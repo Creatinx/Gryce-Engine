@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml)
 
-面向 Windows 的 C++26 游戏引擎，核心为带反射系统的 ECS 架构与四后端（OpenGL / Vulkan / D3D12 / WebGL）渲染器。已打通场景序列化、资源系统、2D/3D 物理、音频与动画，附带可直接运行的演示程序 `GryceRenderSmoke`。
+面向 Windows 的 C++26 游戏引擎，核心为带反射系统的 ECS 架构与四后端（OpenGL / Vulkan / D3D12 / WebGL）渲染器。已打通场景序列化、资源系统、2D/3D 物理、音频与动画，附带两个可直接运行的宿主：渲染演示台 `GryceRenderSmoke`，以及"项目只写 main.js"的运行时 `GryceApp`。
 
 平台与工具链：Windows 为主目标。构建脚本不含任何机器专属绝对路径，依赖前缀由 `cmake/GryceDependencyPaths.cmake` 从环境变量与编译器路径自动推断。已验证可直接用于 MSYS2 UCRT64、CLion / JetBrains 自带 MinGW、vcpkg 及任意自定义前缀；缺依赖时 `FetchContent` 自动拉源码兜底，拉不到会自动换镜像。
 
@@ -25,6 +25,8 @@ English documentation: [docs/README.md](docs/README.md)（英文入口）。
 | 渲染性能 | [docs/zh/performance.md](docs/zh/performance.md) | [docs/en/performance.md](docs/en/performance.md) |
 | WebGL 后端 | [docs/zh/webgl-backend.md](docs/zh/webgl-backend.md) | [docs/en/webgl-backend.md](docs/en/webgl-backend.md) |
 | GryceGC 工具链 | [docs/zh/toolchain.md](docs/zh/toolchain.md) | [docs/en/toolchain.md](docs/en/toolchain.md) |
+| 脚本系统（QuickJS） | [docs/zh/scripting.md](docs/zh/scripting.md) | [docs/en/scripting.md](docs/en/scripting.md) |
+| 应用入口（GryceApp + main.js + 扩展） | [docs/zh/app-entry.md](docs/zh/app-entry.md) | [docs/en/app-entry.md](docs/en/app-entry.md) |
 | 测试与 CI | [docs/zh/testing.md](docs/zh/testing.md) | [docs/en/testing.md](docs/en/testing.md) |
 | 文档总索引 | [docs/zh/README.md](docs/zh/README.md) | [docs/en/README.md](docs/en/README.md) |
 
@@ -122,13 +124,15 @@ Gryce-Engine/
 │   ├── assets/                      模型 / 图像加载、材质推导、LOD、顶点优化、异步加载
 │   ├── resources/                   工程、资源路径、Pak / Gpack、加密
 │   ├── animation/                   骨骼、剪辑、姿态
+│   ├── script/                      QuickJS 运行时 / 绑定 / 脚本组件 / 入口脚本 / 扩展装载
+│   ├── app/                         通用应用宿主与模板 main（GryceApp.exe）
 │   ├── platform/                    窗口、输入、光标
 │   └── utils/                       日志、帧率限制等
 ├── docs/                            项目文档（zh / en 双语文档与历史规划）
 ├── test/
 │   ├── math_tests.cpp               数学与资源规则测试（CTest 门禁之一）
 │   ├── renderer_smoke.cpp           演示宿主源码（GryceRenderSmoke.exe，不参与 CTest）
-│   └── demo_project/                演示工程（project.data + 场景 / 模型 / 着色器）
+│   └── demo_project/                演示工程（project.data + 场景 / 模型 / 着色器 + main.js）
 ├── third_party/                     仓库内置第三方依赖（Amplitude、imgui、stb ...）
 ├── toolchain/
 │   └── grycegc/                     GryceGC 命令行工具链（C++23，替代原 Python 脚本）
@@ -175,7 +179,7 @@ cmake --build build --parallel
 | `GRYCE_ENABLE_LTO` | `OFF` | 非 Debug 构建的进程间优化 |
 | `GRYCE_ENABLE_X86_V3` | `ON` | x86-64-v3 目标 ISA（AVX2 / FMA / BMI / F16C / LZCNT / POPCNT） |
 
-构建产物：`GryceCore.dll`（抽象层 + 场景 / ECS / 组件 / 反射 / 资源 + 物理音频）、`GryceRenderer.dll`（渲染管线与后端）、`GrycePlatform.dll`（窗口输入）、`GryceRenderSmoke.exe`（演示宿主）、`GryceMathTests.exe` 与 `GryceGC.exe`。构建后 `GryceSyncRuntimeDlls` 会把引擎 DLL、第三方运行库与 MinGW 运行时复制到 exe 同目录，脱离 MSYS2 终端也能运行。
+构建产物：`GryceCore.dll`（抽象层 + 场景 / ECS / 组件 / 反射 / 资源 + 物理音频）、`GryceRenderer.dll`（渲染管线与后端）、`GrycePlatform.dll`（窗口输入）、`GryceRenderSmoke.exe`（渲染演示台）、`GryceApp.exe`（main.js 运行时）、`GryceMathTests.exe` 与 `GryceGC.exe`。构建后 `GryceSyncRuntimeDlls` 会把引擎 DLL、第三方运行库与 MinGW 运行时复制到 exe 同目录，脱离 MSYS2 终端也能运行。
 
 Web 构建（Emscripten）走独立 `build-webgl/`，产物可经 `GryceGC webpack` 打成单文件 HTML，详见 [docs/zh/webgl-backend.md](docs/zh/webgl-backend.md)。
 
@@ -208,6 +212,26 @@ build/GryceRenderSmoke.exe --api opengl
 | `--bench N` | 分段 GPU 计时 + CPU 分相 |
 | `--list` | 打印场景实体、相机、光源与网格统计 |
 | `--help` | 查看完整参数列表 |
+
+---
+
+## 运行脚本入口（GryceApp）
+
+`GryceApp` 是"项目只写 JavaScript"的运行时：宿主固定，窗口、场景、相机、退出都由 `main.js` 调 `engine.*` 决定，项目目录不再需要自己的 `main.cpp`。
+
+```bash
+build/GryceApp.exe --project test/demo_project --api opengl
+```
+
+演示工程的 `test/demo_project/main.js` 会建窗口、载入主场景、接管相机（鼠标转视角、WASD 移动、Esc 退出）。需要引擎没有的能力时，编一个 `extension.dll` 放到项目根即可给 `engine.*` 增补命名空间（样例 `test/demo_project/extension.cpp` → `engine.game.*`）。
+
+无窗口验证与截图：
+
+```bash
+build/GryceApp.exe --project test/demo_project --frames 60 --shot shot.png --api vulkan
+```
+
+完整参数、API 面与扩展 ABI 见 [docs/zh/app-entry.md](docs/zh/app-entry.md)。
 
 示例：以 Vulkan 后端进入 Play 模式并在第 120 帧截图。
 

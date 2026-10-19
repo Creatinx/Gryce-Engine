@@ -95,7 +95,8 @@ Other common variables: `GRYCE_DEP_FETCH`, `GRYCE_DEP_PREFIX`, `GRYCE_DEP_GIT_BA
 | `GryceCore.dll` | Abstraction layer + scene / ECS / components / reflection / resources / render abstraction + physics and audio |
 | `GryceRenderer.dll` | Render pipeline and OpenGL / Vulkan / D3D12 backends |
 | `GrycePlatform.dll` | Window, input, cursor |
-| `GryceRenderSmoke.exe` | Demo host (manual runs, not a CTest case) |
+| `GryceRenderSmoke.exe` | Renderer harness (manual runs, not a CTest case) |
+| `GryceApp.exe` | Application runtime (started with `--project <dir>`, entry `res:/main.js`); `GryceDemoExtension.dll` next to it is the extension ABI sample |
 | `GryceMathTests.exe` | Math and resource-rule test host, built only with `BUILD_TESTING=ON` |
 | `GryceGC.exe` | Toolchain executable, built only with `GRYCE_BUILD_TOOLCHAIN=ON` |
 

@@ -301,23 +301,34 @@ int GWindow_RecreateClientApi(GRenderAPI api) {
 }
 
 int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
+    return GWindow_CreateEx(title, w, h, mode, GRYCE_RENDER_API_OPENGL);
+}
+
+int GWindow_CreateEx(const char* title, int w, int h, GWindowMode mode, GRenderAPI api) {
     GRYCE_API_GUARD();
     if (g_platform.mode != PlatformState::Mode::None) {
-        GLOG_WARN("GWindow_Create: platform already initialized, shutting down first");
+        GLOG_WARN("GWindow_CreateEx: platform already initialized, shutting down first");
         GWindow_Destroy();
     }
 
     if (!Window::init_sdk()) {
-        GLOG_ERROR("GWindow_Create: GLFW init failed");
+        GLOG_ERROR("GWindow_CreateEx: GLFW init failed");
         return -1;
     }
 
     glfwSetErrorCallback(glfw_error_callback);
 
+    // 只有 OpenGL / WebGL 需要 GLFW 提供的 GL context；Vulkan 与 D3D12 用
+    // GLFW_NO_API 在原生窗口句柄上自建 swapchain。
+    const WindowContextType ctx =
+        (api == GRYCE_RENDER_API_OPENGL || api == GRYCE_RENDER_API_WEBGL)
+            ? WindowContextType::OpenGL
+            : WindowContextType::NoApi;
+
     g_platform.window = std::make_unique<Window>(
-        title ? title : "Gryce Engine", w, h, to_internal_mode(mode));
+        title ? title : "Gryce Engine", w, h, to_internal_mode(mode), ctx);
     if (!g_platform.window->is_valid()) {
-        GLOG_ERROR("GWindow_Create: failed to create window");
+        GLOG_ERROR("GWindow_CreateEx: failed to create window");
         Window::shutdown_sdk();
         return -1;
     }
@@ -335,7 +346,8 @@ int GWindow_Create(const char* title, int w, int h, GWindowMode mode) {
         }
     });
 
-    GLOG_INFO("Platform: GLFW window created '{}' ({}x{})", title ? title : "Gryce Engine", w, h);
+    GLOG_INFO("Platform: GLFW window created '{}' ({}x{}, api={})",
+              title ? title : "Gryce Engine", w, h, gapi_name(api));
     return 0;
 }
 

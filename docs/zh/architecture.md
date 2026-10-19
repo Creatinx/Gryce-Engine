@@ -11,7 +11,8 @@
 | `GryceCore.dll` | 抽象层、场景 / ECS / 组件 / 反射 / 资源 / 渲染抽象、物理与音频 |
 | `GryceRenderer.dll` | 渲染管线与各后端（OpenGL / Vulkan / D3D12） |
 | `GrycePlatform.dll` | 窗口、输入、光标 |
-| `GryceRenderSmoke.exe` | 演示宿主，人工运行，不参与 CTest |
+| `GryceRenderSmoke.exe` | 渲染演示台，人工运行，不参与 CTest |
+| `GryceApp.exe` | 应用运行时：固定宿主 + 项目 `main.js` 入口（见 [app-entry.md](app-entry.md)） |
 
 对外能力经 `engine/api/` 的 C API 暴露，引擎以 DLL 形式被集成。API 按域拆分：`core` / `entity` / `scene` / `component` / `render` / `material` / `asset` / `animator` / `input` / `platform` / `window` / `viewport` / `script`。句柄经 `runtime/entity_handle_map.h` 管理，跨边界只传稳定句柄与 POD。
 
@@ -33,7 +34,8 @@
 | `animation/` | 骨骼、动画剪辑、姿态混合 |
 | `platform/` | 窗口、输入、光标 |
 | `runtime/` | 引擎上下文、实体句柄表、命令缓冲 |
-| `script/` | QuickJS 脚本运行时、`engine.*` 绑定、`ScriptComponent`（见 [scripting.md](scripting.md)） |
+| `script/` | QuickJS 运行时、`engine.*` 绑定、`ScriptComponent`、入口脚本 `ScriptApplication`、扩展装载（见 [scripting.md](scripting.md) / [app-entry.md](app-entry.md)） |
+| `app/` | 通用应用宿主 `app_host` 与模板 `main`（`GryceApp.exe`） |
 | `utils/` | 日志（glog）、帧率限制、加解密原语 |
 
 ## 3. ECS 与反射

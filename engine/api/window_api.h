@@ -28,6 +28,11 @@ GRYCE_PLATFORM_API int  GWindow_InitExternal(GWindowHandle hwnd, int w, int h);
 GRYCE_PLATFORM_API int  GWindow_InitExternalEx(GWindowHandle hwnd, int w, int h, GRenderAPI api);
 GRYCE_PLATFORM_API int  GWindow_RecreateClientApi(GRenderAPI api);
 GRYCE_PLATFORM_API int  GWindow_Create(const char* title, int w, int h, GWindowMode mode);
+// 指定渲染后端的窗口创建：OpenGL/WebGL 建 GL context，Vulkan/D3D12 用
+// GLFW_NO_API（自建 swapchain）。GWindow_Create 等价于 api=OPENGL 的版本。
+// 脚本入口（engine.window.create）走这条：项目用哪个后端由 main.js 决定。
+GRYCE_PLATFORM_API int  GWindow_CreateEx(const char* title, int w, int h, GWindowMode mode,
+                                         GRenderAPI api);
 GRYCE_PLATFORM_API void GWindow_Destroy(void);
 GRYCE_PLATFORM_API bool GWindow_IsValid(void);
 

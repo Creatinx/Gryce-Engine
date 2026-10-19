@@ -114,6 +114,9 @@ target_sources(GryceCore
         script/js_runtime.cpp
         script/js_bindings.cpp
         script/script_component.cpp
+        script/script_app.cpp
+        script/js_app_bindings.cpp
+        script/extension_host.cpp
         runtime/engine_context.cpp
         # 物理（Box2D 2D / Jolt 3D）
         ecs/systems/physics_system_2d.cpp
@@ -140,6 +143,9 @@ target_include_directories(GryceCore PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/stb
     ${CMAKE_SOURCE_DIR}/third_party/tinyexr
     ${CMAKE_SOURCE_DIR}/third_party/nlohmann_json
+    # script/*.h 把 JSContext / JSValue 暴露在公开签名里，使用方（宿主、
+    # 单元测试）需要头文件路径；GryceQuickJS 本体仍是 PRIVATE 链接。
+    ${CMAKE_SOURCE_DIR}/third_party/quickjs
 )
 
 # GryceAudio 编译进 Core

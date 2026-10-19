@@ -26,6 +26,8 @@
 #include "script/js_bindings.h"
 #include "script/js_runtime.h"
 #include "script/js_value.h"
+#include "script/extension_host.h"
+#include "script/script_app.h"
 #include "script/script_component.h"
 #include "resources/project.h"
 #include "runtime/engine_context.h"
@@ -634,6 +636,136 @@ TEST(hot_reload, set_script_path_switches) {
     if (calls.size() == 1) CHECK_TRUE(calls[0] == "b:4");
 
     comp->on_destroy();
+}
+
+// ===========================================================================
+// suite: app_entry — 入口脚本（main.js）与原生扩展 ABI
+// ===========================================================================
+int read_global_int(JSContext* ctx, const char* name) {
+    if (!ctx) return -1;
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue v = JS_GetPropertyStr(ctx, global, name);
+    int32_t out = -1;
+    gryce_engine::script::from_js(ctx, v, out);
+    JS_FreeValue(ctx, v);
+    JS_FreeValue(ctx, global);
+    return out;
+}
+
+TEST(app_entry, lifecycle_hooks) {
+    TempProject tmp("app_entry_lifecycle");
+    tmp.write("main.js",
+              "globalThis.__calls = [];\n"
+              "export function on_start() { __calls.push('start'); }\n"
+              "export function on_update(dt) { __calls.push('update:' + dt.toFixed(2)); }\n"
+              "export function on_destroy() { __calls.push('destroy'); }\n");
+
+    gryce_engine::script::ScriptApplication app;
+    app.reload_poll_interval = 0.0f;   // 本用例不测热重载
+    std::string err;
+    CHECK_TRUE(app.load("res:/main.js", &err));
+    CHECK_TRUE(app.loaded());
+    CHECK_TRUE(app.context() != nullptr);
+
+    JSContext* ctx = app.context();
+    app.start();
+    auto calls = read_calls(ctx);
+    CHECK_TRUE(calls.size() == 1);
+    if (calls.size() == 1) CHECK_TRUE(calls[0] == "start");
+
+    app.tick(0.5f);
+    calls = read_calls(ctx);
+    CHECK_TRUE(calls.size() == 2);
+    if (calls.size() == 2) CHECK_TRUE(calls[1] == "update:0.50");
+
+    app.shutdown();
+    CHECK_TRUE(!app.loaded());
+    CHECK_TRUE(app.context() == nullptr);
+}
+
+TEST(app_entry, hot_reload_swaps_module) {
+    TempProject tmp("app_entry_reload");
+    tmp.write("main.js",
+              "globalThis.__v = 1;\n"
+              "export function on_update() { globalThis.__v = 1; }\n");
+
+    gryce_engine::script::ScriptApplication app;
+    app.reload_poll_interval = 0.01f;   // 轮询周期压到最短，两帧内即可命中
+    std::string err;
+    CHECK_TRUE(app.load("res:/main.js", &err));
+    app.start();
+    app.tick(0.02f);
+    CHECK_TRUE(read_global_int(app.context(), "__v") == 1);
+
+    // 内容长度不同：即使文件系统写入时间粒度较大，大小判据也能命中
+    //（同长度 + 同一 mtime tick 的改动无法被双判据发现，见 docs 排错表）。
+    tmp.write("main.js",
+              "// v2\n"
+              "globalThis.__v = 2;\n"
+              "export function on_update() { globalThis.__v = 2; }\n");
+    app.tick(0.02f);
+    CHECK_TRUE(app.loaded());
+    CHECK_TRUE(read_global_int(app.context(), "__v") == 2);
+
+    app.tick(0.02f);
+    CHECK_TRUE(read_global_int(app.context(), "__v") == 2);
+    app.shutdown();
+}
+
+namespace {
+GryceExtensionApi* g_test_ext_api = nullptr;
+
+GJsValue test_ext_ping(void*, GJsValue, int, const GJsValue*) {
+    return g_test_ext_api->ret_number(g_test_ext_api->js_ctx, 42.0);
+}
+
+GJsValue test_ext_greet(void*, GJsValue, int argc, const GJsValue* argv) {
+    char name[32] = {};
+    if (argc < 1 || g_test_ext_api->arg_string(g_test_ext_api->js_ctx, argv[0], name,
+                                               static_cast<int>(sizeof(name))) < 0) {
+        return g_test_ext_api->throw_error(g_test_ext_api->js_ctx, "greet(name)");
+    }
+    const std::string msg = std::string("hello ") + name;
+    return g_test_ext_api->ret_string(g_test_ext_api->js_ctx, msg.c_str());
+}
+} // namespace
+
+TEST(app_entry, extension_add_function) {
+    auto& rt = ScriptRuntime::instance();
+    JSContext* ctx = rt.create_context();
+    CHECK_TRUE(ctx != nullptr);
+    if (!ctx) return;
+
+    StubHost host;
+    gryce_engine::script::install_engine_bindings(ctx, &host);
+
+    GryceExtensionApi api = gryce_engine::script::make_extension_api(ctx);
+    CHECK_TRUE(api.version == GRYCE_EXTENSION_VERSION);
+    g_test_ext_api = &api;
+    api.add_function(api.js_ctx, "game", "ping", &test_ext_ping, 0);
+    api.add_function(api.js_ctx, "game", "greet", &test_ext_greet, 1);
+
+    JSValue mod = rt.eval_module(ctx,
+                                 "export const p = engine.game.ping();\n"
+                                 "export const g = engine.game.greet('gryce');\n",
+                                 "extension_test");
+    CHECK_FALSE(JS_IsException(mod));
+
+    JSValue p = JS_GetPropertyStr(ctx, mod, "p");
+    double pv = 0.0;
+    CHECK_TRUE(gryce_engine::script::from_js(ctx, p, pv));
+    CHECK_TRUE(pv == 42.0);
+    JS_FreeValue(ctx, p);
+
+    JSValue g = JS_GetPropertyStr(ctx, mod, "g");
+    std::string gs;
+    CHECK_TRUE(gryce_engine::script::from_js(ctx, g, gs));
+    CHECK_TRUE(gs == "hello gryce");
+    JS_FreeValue(ctx, g);
+
+    JS_FreeValue(ctx, mod);
+    g_test_ext_api = nullptr;
+    rt.destroy_context(ctx);
 }
 
 } // namespace

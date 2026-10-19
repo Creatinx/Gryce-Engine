@@ -1,0 +1,471 @@
+// ===========================================================================
+// engine/app/app_host.cpp
+// 通用应用宿主实现。设计口径见 app_host.h。
+//
+// 启动顺序（与 renderer_smoke 的差异都集中在"窗口由脚本决定"这一条）：
+//   GCore_Init（不自动载场景） -> Play 模式 -> main.js -> 循环
+//   main.js 里 engine.window.create() 才建 GLFW 窗口并 GRender_Init，
+//   所以纯逻辑脚本可以完全无窗口运行（CI 里跑逻辑验证很方便）。
+// ===========================================================================
+
+#include "app/app_host.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+#include <nlohmann/json.hpp>
+
+#include "api/core_api.h"
+#include "api/entity_api.h"
+#include "api/input_api.h"
+#include "api/render_api.h"
+#include "api/scene_api.h"
+#include "api/types.h"
+#include "api/window_api.h"
+#include "script/extension_host.h"
+#include "script/js_app_bindings.h"
+#include "script/script_app.h"
+#include "utils/glog/glog_lib.h"
+
+namespace gryce_engine::app {
+
+namespace {
+
+using script::AppHostServices;
+using script::ScriptApplication;
+using script::WindowOptions;
+
+// ---------------------------------------------------------------------------
+// project.data（与 renderer_smoke 同口径；只保留运行时真正用到的字段）
+// ---------------------------------------------------------------------------
+struct ProjectConfig {
+    std::string title = "Gryce";
+    int width = 1280;
+    int height = 720;
+    std::string render_api = "opengl";
+    bool hdr = true;
+    int tone_map_mode = 1;
+    float exposure = 1.0f;
+    bool shadow_enabled = true;
+    int shadow_map_size = 2048;
+    float ambient[3] = {0.2f, 0.22f, 0.26f};
+    float ibl_intensity = 1.0f;
+    bool default_environment = false;
+    bool ssao_enabled = false;
+    bool ssr_enabled = false;
+    bool ssil_enabled = false;
+    float ssr_max_steps = 64.0f;
+    float ssr_max_roughness = 0.6f;
+    float ssr_thickness = 0.1f;
+    float ssr_bilateral = 0.5f;
+    float ssr_env_fallback = 1.0f;
+    float ssr_resolution_scale = 1.0f;
+    bool pcss_enabled = false;
+    float pcss_light_size = 0.06f;
+    float pcss_max_radius = 12.0f;
+    bool loaded = false;
+};
+
+std::string trim(std::string s) {
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return {};
+    const size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
+ProjectConfig load_project_config(const std::string& project_root) {
+    ProjectConfig c;
+    std::ifstream in(std::filesystem::path(project_root) / "project.data");
+    if (!in) return c;
+    try {
+        nlohmann::json j;
+        in >> j;
+        if (j.contains("name") && j["name"].is_string()) c.title = j["name"].get<std::string>();
+        if (j.contains("window") && j["window"].is_object()) {
+            c.width = j["window"].value("width", c.width);
+            c.height = j["window"].value("height", c.height);
+            if (j["window"].contains("title") && j["window"]["title"].is_string()) {
+                c.title = j["window"]["title"].get<std::string>();
+            }
+        }
+        c.render_api = trim(j.value("render_api", c.render_api));
+        c.hdr = j.value("hdr", c.hdr);
+        c.tone_map_mode = j.value("tone_map_mode", c.tone_map_mode);
+        c.exposure = j.value("exposure", c.exposure);
+        c.shadow_enabled = j.value("shadow_enabled", c.shadow_enabled);
+        c.shadow_map_size = j.value("shadow_map_size", c.shadow_map_size);
+        c.ambient[0] = j.value("ambient_r", c.ambient[0]);
+        c.ambient[1] = j.value("ambient_g", c.ambient[1]);
+        c.ambient[2] = j.value("ambient_b", c.ambient[2]);
+        c.ibl_intensity = j.value("ibl_intensity", c.ibl_intensity);
+        c.default_environment = j.value("default_environment", c.default_environment);
+        c.ssao_enabled = j.value("ssao_enabled", c.ssao_enabled);
+        c.ssr_enabled = j.value("ssr_enabled", c.ssr_enabled);
+        c.ssil_enabled = j.value("ssil_enabled", c.ssil_enabled);
+        c.ssr_max_steps = j.value("ssr_max_steps", c.ssr_max_steps);
+        c.ssr_max_roughness = j.value("ssr_max_roughness", c.ssr_max_roughness);
+        c.ssr_thickness = j.value("ssr_thickness", c.ssr_thickness);
+        c.ssr_bilateral = j.value("ssr_bilateral_filter", c.ssr_bilateral);
+        c.ssr_env_fallback = j.value("ssr_env_fallback", c.ssr_env_fallback);
+        c.ssr_resolution_scale = j.value("ssr_resolution_scale", c.ssr_resolution_scale);
+        c.pcss_enabled = j.value("pcss_enabled", c.pcss_enabled);
+        c.pcss_light_size = j.value("pcss_light_size", c.pcss_light_size);
+        c.pcss_max_radius = j.value("pcss_max_radius", c.pcss_max_radius);
+        c.loaded = true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[app] project.data parse failed: %s\n", e.what());
+        c.loaded = false;
+    }
+    return c;
+}
+
+GRenderAPI parse_api(const std::string& name, bool* ok) {
+    *ok = true;
+    if (name == "vulkan") return GRYCE_RENDER_API_VULKAN;
+    if (name == "dx12") return GRYCE_RENDER_API_DX12;
+    if (name == "webgl") return GRYCE_RENDER_API_WEBGL;
+    if (name == "opengl" || name.empty()) return GRYCE_RENDER_API_OPENGL;
+    *ok = false;
+    return GRYCE_RENDER_API_OPENGL;
+}
+
+const char* api_name(GRenderAPI api) {
+    switch (api) {
+        case GRYCE_RENDER_API_VULKAN: return "vulkan";
+        case GRYCE_RENDER_API_DX12: return "dx12";
+        case GRYCE_RENDER_API_WEBGL: return "webgl";
+        default: return "opengl";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 宿主服务：绑定层通过它建窗、载场景、退出
+// ---------------------------------------------------------------------------
+class HostServices final : public AppHostServices {
+public:
+    ProjectConfig cfg;
+    std::string api_override;   // 命令行 --api
+    bool show_fps = false;
+    bool debug_ui = false;
+    bool quit_requested = false;
+    int shot_flush_frames = 0;
+
+    bool create_window(const WindowOptions& opts) override {
+        if (window_valid()) return true;
+
+        const std::string want = !opts.api.empty() ? opts.api
+                               : !api_override.empty() ? api_override
+                                                       : cfg.render_api;
+        bool ok = true;
+        const GRenderAPI api = parse_api(want, &ok);
+        if (!ok) {
+            GLOG_ERROR("[app] unknown render api '{}'", want);
+            return false;
+        }
+
+        // 渲染器里"init 前生效"的项
+        GRender_SetShadowMapSize(cfg.shadow_map_size);
+        GRender_SetVSync(opts.vsync);
+        GRender_SetFPSOverlay(show_fps);
+        // 运行时默认不挂 ImGui 调试面板（那是冒烟台/编辑器的东西）
+        GRender_SetDebugUI(debug_ui);
+
+        if (GWindow_CreateEx(opts.title.c_str(), opts.width, opts.height,
+                             GWINDOW_MODE_WINDOWED, api) != 0) {
+            GLOG_ERROR("[app] GWindow_CreateEx failed");
+            return false;
+        }
+
+        GRenderInitDesc desc{};
+        desc.version = sizeof(GRenderInitDesc);
+        desc.native_window = GWindow_GetRenderHandle();
+        desc.api = api;
+        desc.viewport_w = opts.width;
+        desc.viewport_h = opts.height;
+        desc.sync_mode = false;
+        if (GRender_Init(&desc) != 0) {
+            GLOG_ERROR("[app] GRender_Init failed ({})", api_name(api));
+            GWindow_Destroy();
+            return false;
+        }
+
+        renderer_ = true;
+        apply_render_settings();
+
+        GLOG_INFO("[app] window ready: '{}' {}x{} backend={}", opts.title, opts.width, opts.height,
+                  api_name(api));
+        return true;
+    }
+
+    void destroy_window() override {
+        if (renderer_) {
+            GRender_Shutdown();
+            renderer_ = false;
+        }
+        if (window_valid()) GWindow_Destroy();
+    }
+
+    bool window_valid() const override { return GWindow_IsValid(); }
+
+    void window_size(int* out_w, int* out_h) override {
+        int w = 0;
+        int h = 0;
+        GWindow_GetFramebufferSize(&w, &h);
+        if (out_w) *out_w = w;
+        if (out_h) *out_h = h;
+    }
+
+    void set_cursor_locked(bool locked) override { GInput_SetMouseLocked(locked); }
+
+    bool load_scene(const std::string& path) override {
+        return GScene_Load(path.c_str()) == 0;
+    }
+
+    std::string current_scene() override {
+        char buf[512] = {};
+        if (GScene_GetCurrentPath(buf, static_cast<int>(sizeof(buf))) != 0) return {};
+        return buf;
+    }
+
+    void request_quit() override { quit_requested = true; }
+
+    bool has_renderer() const override { return renderer_; }
+
+    float fps() override { return renderer_ ? GRender_GetFPS() : 0.0f; }
+
+    bool screenshot(const std::string& path) override {
+        if (!renderer_) return false;
+        if (GRender_SaveScreenshot(path.c_str()) != 0) return false;
+        shot_flush_frames = 4;   // 渲染线程要到后续帧才真正写盘
+        return true;
+    }
+
+private:
+    void apply_render_settings() {
+        GRender_SetHDR(cfg.hdr);
+        GRender_SetToneMapMode(cfg.tone_map_mode);
+        GRender_SetExposure(cfg.exposure);
+        GRender_SetShadowEnabled(cfg.shadow_enabled);
+        GRender_SetAmbient(cfg.ambient[0], cfg.ambient[1], cfg.ambient[2]);
+        GRender_SetIBLIntensity(cfg.ibl_intensity);
+        GRender_SetDefaultEnvironment(cfg.default_environment);
+        GRender_SetSSRParams(cfg.ssr_max_steps, cfg.ssr_max_roughness, cfg.ssr_thickness,
+                             cfg.ssr_bilateral);
+        GRender_SetSSREnvFallback(cfg.ssr_env_fallback);
+        GRender_SetSSRResolutionScale(cfg.ssr_resolution_scale);
+        GRender_SetPCSSEnabled(cfg.pcss_enabled);
+        GRender_SetPCSSParams(cfg.pcss_light_size, cfg.pcss_max_radius, 1.0f);
+        GRender_SetSSAO(cfg.ssao_enabled);
+        GRender_SetSSR(cfg.ssr_enabled);
+        GRender_SetSSIL(cfg.ssil_enabled);
+    }
+
+    bool renderer_ = false;
+};
+
+struct AppOptions {
+    std::string project_root;
+    std::string entry = "res:/main.js";
+    std::string api;          // 空 = project.data
+    std::string extension;    // 空 = <project>/extension.dll（存在才加载）
+    std::string shot;         // --shot：跑满帧数后截图
+    int width = 0;            // 0 = project.data
+    int height = 0;
+    int max_frames = 0;       // 0 = 一直跑
+    bool no_extension = false;
+    bool show_fps = false;
+    bool debug_ui = false;
+};
+
+void print_usage() {
+    std::printf(
+        "GryceApp — Gryce 运行时（项目入口是 main.js）\n"
+        "  --project <dir>      项目根（默认当前目录；res:/ 由此解析）\n"
+        "  --entry <path>       入口脚本（默认 res:/main.js）\n"
+        "  --api <name>         渲染后端：opengl|vulkan|dx12（默认取 project.data）\n"
+        "  --w / --h <px>       窗口尺寸覆盖（默认取 project.data）\n"
+        "  --frames <N>         跑满 N 帧后退出（无窗口时用于逻辑验证；0=不限）\n"
+        "  --shot <png>         跑满帧数后截图再退出（隐含 --frames 60）\n"
+        "  --extension <path>   指定原生扩展动态库（默认 <project>/extension.dll）\n"
+        "  --no-extension       不加载任何扩展\n"
+        "  --fps                左上角 FPS 叠加（默认关）\n"
+        "  --debug-ui           启用渲染器 ImGui 调试面板（默认关）\n"
+        "  --help               显示本帮助\n");
+}
+
+} // namespace
+
+int run(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+
+    AppOptions opts;
+    opts.project_root = std::filesystem::current_path().string();
+
+    for (int i = 1; i < argc; ++i) {
+        const char* a = argv[i];
+        auto need_value = [&](const char* flag) -> const char* {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "[app] %s 缺少参数\n", flag);
+                std::exit(1);
+            }
+            return argv[++i];
+        };
+        if (std::strcmp(a, "--project") == 0) opts.project_root = need_value(a);
+        else if (std::strcmp(a, "--entry") == 0) opts.entry = need_value(a);
+        else if (std::strcmp(a, "--api") == 0) opts.api = need_value(a);
+        else if (std::strcmp(a, "--w") == 0) opts.width = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--h") == 0) opts.height = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--frames") == 0) opts.max_frames = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--shot") == 0) opts.shot = need_value(a);
+        else if (std::strcmp(a, "--extension") == 0) opts.extension = need_value(a);
+        else if (std::strcmp(a, "--no-extension") == 0) opts.no_extension = true;
+        else if (std::strcmp(a, "--fps") == 0) opts.show_fps = true;
+        else if (std::strcmp(a, "--debug-ui") == 0) opts.debug_ui = true;
+        else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
+            print_usage();
+            return 0;
+        } else {
+            std::fprintf(stderr, "[app] 未知参数: %s\n", a);
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (!opts.shot.empty() && opts.max_frames <= 0) opts.max_frames = 60;
+
+    HostServices host;
+    host.cfg = load_project_config(opts.project_root);
+    host.show_fps = opts.show_fps;
+    host.debug_ui = opts.debug_ui;
+    if (!opts.api.empty()) host.api_override = opts.api;
+
+    std::printf("[app] project='%s' entry='%s' api=%s\n", opts.project_root.c_str(),
+                opts.entry.c_str(),
+                !opts.api.empty() ? opts.api.c_str()
+                                  : host.cfg.render_api.empty() ? "opengl"
+                                                                : host.cfg.render_api.c_str());
+
+    GCoreInitDesc core_desc{};
+    core_desc.version = sizeof(GCoreInitDesc);
+    core_desc.project_root = opts.project_root.c_str();
+    core_desc.enable_reflection = true;
+    // 场景由 main.js 决定：engine.scene.load(...)，宿主不自动载主场景。
+    GCore_SetAutoLoadMainScene(false);
+    if (GCore_Init(&core_desc) != 0) {
+        std::fprintf(stderr, "[app] GCore_Init failed\n");
+        return 1;
+    }
+
+    // 运行时语义：直接进 Play 模式，组件 on_update（动画/物理/脚本组件）生效。
+    {
+        GCommand cmd{};
+        cmd.type = ECMD_PLAY_MODE;
+        GCore_PushCommand(&cmd);
+    }
+
+    // 扩展路径：显式指定 > <project>/extension.dll；不存在则跳过。
+    std::string ext_path = opts.extension;
+    if (ext_path.empty() && !opts.no_extension) {
+#if defined(_WIN32)
+        const char* kExtName = "extension.dll";
+#else
+        const char* kExtName = "extension.so";
+#endif
+        const std::filesystem::path candidate =
+            std::filesystem::path(opts.project_root) / kExtName;
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec)) ext_path = candidate.string();
+    }
+
+    ScriptApplication app_script;
+    app_script.on_context_created = [&](JSContext* ctx) {
+        script::install_app_bindings(ctx, &app_script, &host);
+        if (!ext_path.empty()) {
+            std::string err;
+            if (!script::load_extension_library(ctx, ext_path, &err)) {
+                GLOG_ERROR("[app] extension load failed: {}", err);
+            }
+        }
+    };
+
+    std::string err;
+    if (!app_script.load(opts.entry, &err)) {
+        std::fprintf(stderr, "[app] entry load failed: %s\n", err.c_str());
+        GCore_Shutdown();
+        return 1;
+    }
+    app_script.start();
+
+    const auto start_time = std::chrono::steady_clock::now();
+    auto last_time = start_time;
+    int frames = 0;
+    bool shot_taken = false;
+
+    while (true) {
+        if (GWindow_IsValid()) {
+            GWindow_PollEvents();
+            // 平台输入 -> 命令队列；没有这一步 engine.input.* 永远是空状态。
+            GInput_SyncToCore();
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration<float>(now - last_time).count();
+        last_time = now;
+        dt = std::max(0.0005f, std::min(dt, 0.1f));
+
+        GCore_BeginFrame(dt);
+        app_script.tick(dt);
+
+        if (host.has_renderer()) {
+            GRender_BeginFrame();
+            GRender_RenderWorld();
+            GRender_RenderGizmo();
+            GRender_EndFrame();
+        }
+        GCore_EndFrame();
+        ++frames;
+
+        if (host.shot_flush_frames > 0) --host.shot_flush_frames;
+
+        if (GWindow_IsValid() && GWindow_ShouldClose()) host.request_quit();
+
+        // --shot：跑满帧数后请求截图，等渲染线程写盘后再退出。
+        if (!opts.shot.empty() && !shot_taken && opts.max_frames > 0 &&
+            frames >= opts.max_frames) {
+            shot_taken = true;
+            if (!host.screenshot(opts.shot)) {
+                std::fprintf(stderr, "[app] screenshot request failed: %s\n", opts.shot.c_str());
+            }
+        }
+
+        const bool frames_done = opts.max_frames > 0 && frames >= opts.max_frames;
+        if (host.quit_requested && host.shot_flush_frames == 0) break;
+        if (frames_done && (opts.shot.empty() || shot_taken) &&
+            host.shot_flush_frames == 0) {
+            break;
+        }
+    }
+
+    const auto elapsed = std::chrono::duration<float>(
+        std::chrono::steady_clock::now() - start_time).count();
+    app_script.shutdown();
+    GInput_SetMouseLocked(false);
+
+    // 顺序不能反：先拆场景（World 持有 GPU 资源句柄），再拆渲染器。
+    GCore_Shutdown();
+    if (host.has_renderer()) host.destroy_window();
+
+    std::printf("[app] exit: frames=%d elapsed=%.2fs avg_fps=%.1f\n", frames,
+                static_cast<double>(elapsed),
+                elapsed > 0.0f ? static_cast<double>(frames) / elapsed : 0.0);
+    return 0;
+}
+
+} // namespace gryce_engine::app

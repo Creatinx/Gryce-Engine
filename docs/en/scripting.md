@@ -1,6 +1,6 @@
 # Scripting (QuickJS)
 
-This document describes the engine's JavaScript scripting capability: the `ScriptComponent` model, lifecycle, the `engine.*` API, sandbox constraints, hot reload, and tests. The corresponding plan is [`plans/quickjs-integration-plan.md`](plans/quickjs-integration-plan.md).
+This document describes the engine's JavaScript scripting capability: the `ScriptComponent` model, lifecycle, the `engine.*` API, sandbox constraints, hot reload, and tests. The corresponding plan is [`plans/quickjs-integration-plan.md`](plans/quickjs-integration-plan.md). For the project-level entry script (`main.js`) and native extensions see [app-entry.md](app-entry.md).
 
 ## 1. Components
 

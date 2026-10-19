@@ -11,7 +11,8 @@ The engine is organized as three dynamic libraries plus a demo host, all under t
 | `GryceCore.dll` | Abstraction layer, scene / ECS / components / reflection / resources / render abstraction, physics and audio |
 | `GryceRenderer.dll` | Render pipeline and backends (OpenGL / Vulkan / D3D12) |
 | `GrycePlatform.dll` | Window, input, cursor |
-| `GryceRenderSmoke.exe` | Demo host, run manually, not part of CTest |
+| `GryceRenderSmoke.exe` | Renderer harness, run manually, not part of CTest |
+| `GryceApp.exe` | Application runtime: fixed host with a project `main.js` entry (see [app-entry.md](app-entry.md)) |
 
 Engine capabilities are exposed through the C API in `engine/api/`, consumed as a DLL. The API is split by domain: `core` / `entity` / `scene` / `component` / `render` / `material` / `asset` / `animator` / `input` / `platform` / `window` / `viewport` / `script`. Handles are managed via `runtime/entity_handle_map.h`; only stable handles and POD cross the boundary.
 
@@ -33,7 +34,8 @@ Directory layout under `engine/`:
 | `animation/` | Skeletons, animation clips, pose blending |
 | `platform/` | Window, input, cursor |
 | `runtime/` | Engine context, entity handle map, command buffer |
-| `script/` | QuickJS script runtime, `engine.*` bindings, `ScriptComponent` (see [scripting.md](scripting.md)) |
+| `script/` | QuickJS runtime, `engine.*` bindings, `ScriptComponent`, the `ScriptApplication` entry script, extension loading (see [scripting.md](scripting.md) / [app-entry.md](app-entry.md)) |
+| `app/` | Generic application host `app_host` plus the template `main` (`GryceApp.exe`) |
 | `utils/` | Logging (glog), frame limiter, crypto primitives |
 
 ## 3. ECS and Reflection

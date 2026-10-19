@@ -16,4 +16,5 @@ Documents are organized by module and cover architecture, build, rendering, asse
 | WebGL | [webgl-backend.md](webgl-backend.md) | Web build, shim architecture, platform differences, troubleshooting |
 | Toolchain | [toolchain.md](toolchain.md) | GryceGC command surface and release workflow |
 | Scripting | [scripting.md](scripting.md) | QuickJS script component, lifecycle, engine.* API, sandbox, hot reload |
+| Application entry | [app-entry.md](app-entry.md) | `GryceApp` host + `main.js` entry, window/scene API, native extension ABI |
 | Testing | [testing.md](testing.md) | CTest gate, test inventory, CI configuration |

@@ -1,6 +1,6 @@
 # 脚本系统（QuickJS）
 
-本文描述引擎的 JavaScript 脚本能力：`ScriptComponent` 组件模型、生命周期、`engine.*` API、沙箱约束、热重载与测试。对应计划见 [`plans/quickjs-integration-plan.md`](plans/quickjs-integration-plan.md)。
+本文描述引擎的 JavaScript 脚本能力：`ScriptComponent` 组件模型、生命周期、`engine.*` API、沙箱约束、热重载与测试。对应计划见 [`plans/quickjs-integration-plan.md`](plans/quickjs-integration-plan.md)。入口脚本（项目级的 `main.js`）与原生扩展见 [app-entry.md](app-entry.md)。
 
 ## 1. 组成
 
