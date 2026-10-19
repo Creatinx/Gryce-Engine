@@ -199,7 +199,8 @@
 
 扩展是可选能力，用法全文见 [extension.md](extension.md)。要点：
 
-- 动态库导出 `gryce_register_extension`，只依赖 `engine/api/extension_api.h`（纯 C），不链接引擎库。
+- 扩展是**接口层**：把引擎已实现、但脚本层还没开放的能力包成 `engine.*` 接口；业务逻辑仍写在 `main.js`。
+- 动态库导出 `gryce_register_extension`；虚表来自 `engine/api/extension_api.h`（纯 C，只负责 JS 值通道）。调引擎能力时 include `engine/api/*.h` 并链接引擎导入库。
 - 加载发生在 `main.js` 求值之前，所以顶层代码即可调用扩展接口。
 - `engine.<命名空间>.<函数>`；值通道只有标量，结构体走 JSON 字符串。
 - 只在桌面构建可用；Web 构建没有动态库加载。
@@ -211,9 +212,9 @@
 
 ```js
 export function on_start() {
-    // 可选扩展：先探测再调用
-    if (engine.game && typeof engine.game.version === 'function') {
-        engine.log.info('ext: ' + engine.game.version());
+    // 可选扩展：先探测再调用（缺扩展时脚本照常运行）
+    if (typeof engine.ext === 'object' && typeof engine.ext.info === 'function') {
+        engine.log.info('ext: ' + engine.ext.info());
     }
 
     if (!engine.window.create({ title: 'Gryce Demo', width: 1280, height: 720 })) {

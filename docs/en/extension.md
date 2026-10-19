@@ -1,20 +1,43 @@
 # Native Extensions (extension.cpp)
 
-This document is the complete usage and ABI reference for native extensions: how to add `engine.*` interfaces to `main.js` from C/C++, the exact semantics of every ABI field, value passing rules, build and distribution, and known pitfalls.
+This document is the complete usage and ABI reference for native extensions: how to expose capabilities the engine **already implements but the script layer has not opened yet** as `engine.*` interfaces, the exact semantics of every ABI field, value passing rules, build and distribution, and known pitfalls.
 
 Extensions target the **entry script** ([app-entry.md](app-entry.md)). Component-level scripts ([scripting.md](scripting.md)) do not load extensions: they are instantiated inside arbitrary processes where no matching shared library is guaranteed to exist.
 
 ## 1. Scope
 
+An extension is not a hook for writing game logic in C++. It is an **interface layer**: engine C APIs that are implemented but not yet exposed to the script layer (`engine.*`) get wrapped into JS functions on the project side. The typical case is engine capability that already works but whose public JS binding lags behind — the underlying function exists in `engine/api/`, yet scripts cannot reach it.
+
 | Need | Right place |
 | --- | --- |
 | Level logic, camera control, UI flow, parameter tweaking | `main.js` |
+| Engine C APIs implemented but not exposed to JS (picking, serialisation, prefabs, hierarchy paths, ...) | extension |
 | Project-private formats, platform APIs, third-party SDKs | extension |
-| Performance-sensitive loops (per-point math, batch geometry) | extension |
-| Engine internals not yet exposed | add an engine API first; extension v1 only reaches JS |
+| Performance-sensitive pure computation (per-point math, batch geometry) | extension |
 | Changing the render pipeline, asset import, or ECS behaviour | change the engine, not the extension |
 
-The extension boundary is the **JS bridge**: it registers functions, reads scalar arguments, returns scalars, throws, and logs. It does not hold engine objects and cannot obtain scene or renderer handles.
+The test is simple: **anything expressible as a direct `GXxx_Yyy()` call belongs in an extension; anything that needs if/else to describe game rules belongs in `main.js`.**
+
+### What an extension can reach
+
+Extensions run inside the host process, so they can `#include` the engine's C interface headers and link the engine import library to call `GRYCE_*_API` functions directly:
+
+| Header | Typical capability |
+| --- | --- |
+| `api/entity_api.h` | parent/child/sibling traversal, world and local transforms, `GEntity_ExportJson` / `GEntity_ImportJson`, prefab save and instantiation |
+| `api/scene_api.h` | load/save/new scene, `GScene_PickScreen` / `GScene_PickRay` picking, scene modes |
+| `api/core_api.h` | command buffer, play state, callbacks for selection and scene loading |
+| `api/asset_api.h`, `api/component_api.h`, `api/animator_api.h`, `api/physics_api.h` | assets, components, animation, physics |
+
+The callable surface is whatever is exported under `engine/api/`. **Do not include internal engine C++ headers** (`scene/entity.h`, `render/render_pipeline.h`, ...): that binds the extension to one particular build's C++ ABI and forces a rebuild whenever the engine changes.
+
+### What it should not do
+
+- Do not reimplement what the engine already has. Call it; the extension only converts arguments and builds return values.
+- Do not own game state. State lives in `main.js`; extension statics are for caches only (for example the function-table pointer).
+- Do not replace the JS bindings. Once a capability stabilises it belongs in `engine/script/js_app_bindings.cpp`; the extension is the transitional layer.
+
+The virtual table is only the **JS value channel** (read scalars, build scalar/string returns, throw, log). Engine capability never goes through it — it is called directly through the linked C ABI.
 
 ## 2. Loading
 
@@ -39,35 +62,78 @@ GRYCE_EXTENSION_ENTRY {
 
 The extension's own statics (counters, handles, caches) are **not** reset by re-registration; they are process-level, consistent with a singleton.
 
-## 3. Minimal Working Example
+## 3. Example: exposing existing engine capability as JS interfaces
 
-`extension.cpp` (the repository sample is `test/demo_project/extension.cpp`):
+The repository sample `test/demo_project/extension.cpp` exposes three functions that **the engine already implements and the JS bindings do not**:
+
+| Extension interface | Engine implementation | Notes |
+| --- | --- | --- |
+| `engine.entity.toJson(handle)` | `GEntity_ExportJson` | Serialises an entity subtree to JSON (the JS side only exposes the import direction, `engine.entity.spawn(json)`) |
+| `engine.entity.path(handle)` | `GEntity_GetPath` | Hierarchy path such as `Root/Child/Leaf` |
+| `engine.scene.pick(sx, sy, w, h[, cameraId])` | `GScene_PickScreen` | Unprojects a screen point and intersects; returns an entity handle, 0 for a miss |
 
 ```cpp
 #include "api/extension_api.h"
 
-#include <string>
+#include "api/entity_api.h"
+#include "api/scene_api.h"
+
+#include <vector>
 
 namespace {
 
 GryceExtensionApi* g_api = nullptr;   // refreshed on registration, valid for the process
 
-GJsValue js_add(void*, GJsValue, int argc, const GJsValue* argv) {
-    double a = 0.0;
-    double b = 0.0;
-    if (argc < 2 || !g_api->arg_number(g_api->js_ctx, argv[0], &a) ||
-        !g_api->arg_number(g_api->js_ctx, argv[1], &b)) {
-        return g_api->throw_error(g_api->js_ctx, "engine.game.add(a, b) expects two numbers");
-    }
-    return g_api->ret_number(g_api->js_ctx, a + b);
+GJsValue fail(const char* message) {
+    return g_api->throw_error(g_api->js_ctx, message);
 }
 
-GJsValue js_greet(void*, GJsValue, int argc, const GJsValue* argv) {
-    char name[64] = {};
-    if (argc < 1 || g_api->arg_string(g_api->js_ctx, argv[0], name, sizeof(name)) < 0) {
-        return g_api->throw_error(g_api->js_ctx, "engine.game.greet(name) expects a string");
+// On the JS side a handle is the integer returned by entity.id() (an int in the engine).
+bool read_handle(const GJsValue* argv, int argc, int index, GEntityHandle* out) {
+    if (!out || argc <= index) return false;
+    double v = 0.0;
+    if (!g_api->arg_number(g_api->js_ctx, argv[index], &v)) return false;
+    if (!(v >= 1.0) || v > 2147483647.0) return false;   // also rejects NaN
+    *out = static_cast<GEntityHandle>(v);
+    return true;
+}
+
+GJsValue js_entity_path(void*, GJsValue, int argc, const GJsValue* argv) {
+    GEntityHandle h = 0;
+    if (!read_handle(argv, argc, 0, &h)) return fail("engine.entity.path(handle) expects entity.id()");
+    char path[1024] = {};
+    if (GEntity_GetPath(h, path, static_cast<int>(sizeof(path))) < 0) {
+        return fail("engine.entity.path: invalid handle");
     }
-    return g_api->ret_string(g_api->js_ctx, (std::string("hello, ") + name).c_str());
+    return g_api->ret_string(g_api->js_ctx, path);
+}
+
+GJsValue js_entity_to_json(void*, GJsValue, int argc, const GJsValue* argv) {
+    GEntityHandle h = 0;
+    if (!read_handle(argv, argc, 0, &h)) return fail("engine.entity.toJson(handle) expects entity.id()");
+    std::vector<char> buf(64 * 1024);
+    if (GEntity_ExportJson(h, buf.data(), static_cast<int>(buf.size())) < 0) {
+        return fail("engine.entity.toJson: invalid handle, or subtree exceeds 64 KiB");
+    }
+    return g_api->ret_string(g_api->js_ctx, buf.data());
+}
+
+GJsValue js_scene_pick(void*, GJsValue, int argc, const GJsValue* argv) {
+    if (argc < 4) return fail("engine.scene.pick(sx, sy, width, height[, cameraId]) expects 4 arguments");
+    double v[4] = {};
+    for (int i = 0; i < 4; ++i) {
+        if (!g_api->arg_number(g_api->js_ctx, argv[i], &v[i])) {
+            return fail("engine.scene.pick: sx, sy, width and height must be numbers");
+        }
+    }
+    GEntityHandle camera = 0;
+    if (argc >= 5 && !read_handle(argv, argc, 4, &camera)) {
+        return fail("engine.scene.pick: cameraId must be entity.id() or omitted");
+    }
+    const GEntityHandle hit = GScene_PickScreen(
+        static_cast<float>(v[0]), static_cast<float>(v[1]),
+        static_cast<int>(v[2]), static_cast<int>(v[3]), camera);
+    return g_api->ret_number(g_api->js_ctx, static_cast<double>(hit));   // 0 = miss
 }
 
 } // namespace
@@ -75,19 +141,24 @@ GJsValue js_greet(void*, GJsValue, int argc, const GJsValue* argv) {
 GRYCE_EXTENSION_ENTRY {
     if (!api || api->version != GRYCE_EXTENSION_VERSION) return;
     g_api = api;
-    api->add_function(api->js_ctx, "game", "add", &js_add, 2);
-    api->add_function(api->js_ctx, "game", "greet", &js_greet, 1);
+    api->add_function(api->js_ctx, "entity", "toJson", &js_entity_to_json, 1);
+    api->add_function(api->js_ctx, "entity", "path", &js_entity_path, 1);
+    api->add_function(api->js_ctx, "scene", "pick", &js_scene_pick, 4);
 }
 ```
 
-On the `main.js` side, probe optional capabilities so the same script runs without the extension:
+Namespaces may reuse objects the bindings already created (`entity`, `scene`), so scripts cannot tell the difference:
 
 ```js
 export function on_start() {
-    if (typeof engine.game === 'object' && typeof engine.game.add === 'function') {
-        engine.log.info('1+2=' + engine.game.add(1, 2));
-    } else {
-        engine.log.warn('extension not loaded, running without it');
+    // ...create the window, load the scene, grab the camera...
+    if (typeof engine.entity.path === 'function') {
+        engine.log.info('camera path=' + engine.entity.path(camera.id()));
+    }
+    if (typeof engine.scene.pick === 'function') {
+        const size = engine.window.size();
+        const hit = engine.scene.pick(size[0] / 2, size[1] / 2, size[0], size[1], camera.id());
+        engine.log.info('pick center -> ' + (hit > 0 ? engine.entity.path(hit) : '(miss)'));
     }
 }
 ```
@@ -95,8 +166,9 @@ export function on_start() {
 Build and run:
 
 ```bash
-# Header path only, no engine link
-g++ -shared -O2 test/demo_project/extension.cpp -I engine -o test/demo_project/extension.dll
+# Calling engine capability needs the import library; headers only need <engine>/engine
+g++ -shared -O2 test/demo_project/extension.cpp -I engine -L build -lGryceCore \
+    -o test/demo_project/extension.dll
 
 # Or use the repository sample target (output goes to the build directory)
 cmake --build build --target GryceDemoExtension
@@ -105,9 +177,11 @@ cmake --build build --target GryceDemoExtension
 build/GryceApp.exe --project test/demo_project --extension build/GryceDemoExtension.dll
 ```
 
+An extension may also link nothing at all and register purely computational functions through the vtable; the ABI allows it. That shape moves game logic into C++ and should only be used when the engine genuinely lacks the capability — anything mappable to an engine C API takes the adapter form above.
+
 ## 4. ABI Reference
 
-Header: `engine/api/extension_api.h`. Pure C, `extern "C"` exports, no QuickJS includes, no link against engine libraries.
+Header: `engine/api/extension_api.h`. Pure C, `extern "C"` exports, no QuickJS includes, so the table itself is independent of the engine's compile flags and C++ runtime. The table carries only the JS value channel; to call engine capability, include `engine/api/*.h` and link the engine import library as described in Section 1.
 
 ### 4.1 Entry Point and Register Function
 
@@ -178,7 +252,7 @@ Target resolution in `add_function` (`engine_namespace` in `extension_host.cpp`)
 2. `engine[ns]` is an object → use it, so existing namespaces such as `engine.entity` and `engine.input` can be extended.
 3. `engine[ns]` is missing or a non-object → a new empty object is created and **overwrites** it.
 
-Registering the same name twice means the later registration wins; extensions install after the app bindings, so an extension *can* shadow an engine interface — avoid that. Use your own namespace (`engine.game`, `engine.mytool`) for isolation.
+Registering the same name twice means the later registration wins; extensions install after the app bindings, so an extension *can* shadow an engine interface — avoid that. Use your own namespace (such as `engine.mytool`) for isolation; prefer aligning with an existing engine namespace (for example `engine.entity.path`) when it fits.
 
 On the JS side these are plain functions; `this` is the caller object, delivered as the first parameter `this_val` (by value).
 
@@ -207,22 +281,23 @@ On the JS side these are plain functions; `this` is the caller object, delivered
 | `main.js` throws and stops dispatching | Extension functions are no longer called; the library stays loaded |
 | Process exit | No unload hook is called; static destructors run at process teardown under the loader. Do not rely on destructors for cleanup |
 
-Extension state is **process-level** and does not reset on scene load or `main.js` reload. Initialise lazily inside functions, or expose an explicit `engine.game.reset()` for JS to call.
+Extension state is **process-level** and does not reset on scene load or `main.js` reload. Initialise lazily inside functions, or expose an explicit `engine.mytool.reset()` for JS to call.
 
-Contrast with script components: each entity's component context is separate and extensions do not participate, so `engine.game` is `undefined` in component scripts.
+Contrast with script components: each entity's component context is separate and extensions do not participate, so extension interfaces such as `engine.mytool` are `undefined` in component scripts.
 
 ## 7. Building and Distribution
 
 | Approach | Command |
 | --- | --- |
-| MinGW / GCC (same shape on Linux) | `g++ -shared -O2 extension.cpp -I <engine> -o extension.dll` |
-| MSVC | `cl /nologo /LD /O2 /I <engine> extension.cpp /Fe:extension.dll` |
+| MinGW / GCC (same shape on Linux) | `g++ -shared -O2 extension.cpp -I <engine> -L <build> -lGryceCore -o extension.dll` |
+| MSVC | `cl /nologo /LD /O2 /I <engine> extension.cpp /link /LIBPATH:<build> GryceCore.lib /Fe:extension.dll` |
 | Repository sample target | `cmake --build build --target GryceDemoExtension` |
 
 Notes:
 
-- Only one include path (`<engine>/engine`) is needed; no `GryceCore` link and no QuickJS headers.
+- Include path (`<engine>/engine`) plus the engine import library when the extension calls `GRYCE_*_API` functions. QuickJS headers are never needed.
 - Cross-compiler: only C types and PODs cross by value — no C++ classes, STL containers, exceptions, or RTTI — so there is no C++ ABI coupling; on the same platform and architecture, extensions built by MSVC and MinGW can both be loaded by the host. The repository has only verified the MinGW toolchain so far; if mixing compilers and something misbehaves, check calling conventions and aggregate passing first.
+- The extension and the host must come from the **same engine build**; mixing import libraries across builds links, but the runtime layout may differ.
 - Bitness must match the host. Mixing Debug/Release is fine (no C++ runtime boundary is crossed), but never pass `new`-allocated memory across the boundary — whoever allocates frees.
 - Ship it as `<project>/extension.dll`; the packager copies the project directory, and the host loads by absolute path, so the extension's position relative to the host DLLs does not matter.
 
@@ -238,18 +313,20 @@ Notes:
 - **Unsupported on the Web build**: no dynamic library loading in wasm; `load_extension_library` returns an error (`extensions are not supported on the Web build`), and `GryceApp` is not part of the Web build at all.
 - Only scalar channels are exposed; structs go through JSON, so weigh the cost of calling with large objects at high frequency.
 - Cannot register modules, extend JS syntax, or wrap existing functions (same-name registration only overwrites).
-- Extensions cannot see scene or renderer objects; when engine capability is needed, add a C API on the engine side and expose it through the virtual table.
+- The virtual table carries no engine handle operations: an extension receives JS values only. To touch entities or scenes, call the linked C API (`GEntity_*` / `GScene_*`); never try to smuggle engine C++ objects through a `GJsValue`.
 - The internal function table is append-only: every `main.js` reload appends one entry per `add_function`. Functionally harmless but a slow growth under frequent reloads; keep registration to a few functions where rapid reloading matters.
 
 ## 10. Troubleshooting
 
 | Symptom | Cause | Action |
 | --- | --- | --- |
-| `engine.game` is `undefined` | Library not loaded (wrong path / missing `--extension`), entry name is not `gryce_register_extension`, or the version guard returned early | Check `[app] extension load failed` and registration logs; verify the export name |
+| Extension interfaces (such as `engine.mytool`) are `undefined` | Library not loaded (wrong path / missing `--extension`), entry name is not `gryce_register_extension`, or the version guard returned early | Check `[app] extension load failed` and registration logs; verify the export name |
 | Loader reports a missing entry | C++ name mangling (no `extern "C"`) or `GRYCE_EXTENSION_ENTRY` not used | Define the entry with the macro |
 | First call works, crash after editing `main.js` | Cached old `api` / `js_ctx` and did not refresh on registration | Overwrite the cached pointer in the registration entry |
 | Exit code 139 / 0xC0000005 after a call | A `GJsValue` or `argv` pointer kept across calls, or an `api` pointer from a stack-local table | Copy contents by value only; never construct your own `GryceExtensionApi` |
 | `arg_string` receives `"[object Object]"` | An object was passed instead of a string | `JSON.stringify` on the JS side, or change the contract |
 | `arg_number` returns 0 for something numeric | `undefined` / `null` was passed, or the object cannot `ToNumber` | Check `typeof` first; supply defaults on the JS side |
 | Returned strings are truncated or garbled | Buffer too small and truncated mid UTF-8 sequence, or non-UTF-8 passed to `ret_string` | Enlarge the buffer; always use UTF-8 |
-| `engine.app.*` is unavailable inside the extension | Extensions can only register functions, not read engine state | Pass the needed data as arguments from `main.js` |
+| `engine.app.*` is unavailable inside the extension | Extensions only register functions; they cannot see the JS object graph | Pass the needed data as arguments from `main.js`; read engine-side state through the C API |
+| Linker: `undefined reference to GEntity_*` | The engine import library is not linked | `target_link_libraries(<ext> PRIVATE GryceCore)`, or `-L <build> -lGryceCore` |
+| Loads, then crashes on call although the symbols exist | Import library from a different engine build | Rebuild the extension against the same engine build as the host |

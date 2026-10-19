@@ -1,11 +1,16 @@
 // ===========================================================================
 // engine/api/extension_api.h
-// 原生扩展 ABI：项目用自己的 extension.cpp（编成动态库）给 main.js 增补
-// engine.xxx 接口，不需要重新编译引擎，也不需要把项目代码塞进 main.cpp。
+// 原生扩展 ABI：项目用自己的 extension.cpp（编成动态库）把引擎已实现、但脚本
+// 层还没开放的能力暴露成 main.js 里的 engine.xxx 接口，不需要重新编译引擎，
+// 也不需要把项目代码塞进 main.cpp。
+//
+// 定位：扩展是接口层。业务逻辑（关卡、相机、UI 流程）写在 main.js；扩展只做
+// 「取参数 → 调引擎 C API → 造返回值」。引擎能力不经本表，扩展直接 include
+// engine/api/*.h 并链接引擎导入库调用；本表只负责 JS 值通道（标量参数、
+// 返回值、抛错、日志），因此纯 C、不含 QuickJS 头，不与引擎 C++ ABI 耦合。
 //
 // 形态：宿主启动时 dlopen <project>/extension.dll（Linux: .so），取
-// "gryce_register_extension" 入口，把一张函数表传进去。扩展只依赖本头
-// （纯 C，不含 QuickJS 头），因此不与引擎的 C++ ABI / 编译选项耦合。
+// "gryce_register_extension" 入口，把一张函数表传进去。
 //
 // 值的表示：GJsValue 是 JSValue 的不透明镜像（16 字节，按值传），只能用
 // api 里的 arg_* / ret_* 构造和读取，不要自己拆。

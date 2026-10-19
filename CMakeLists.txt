@@ -485,12 +485,15 @@ if(NOT EMSCRIPTEN)
     add_executable(GryceApp engine/app/app_main.cpp)
     target_link_libraries(GryceApp PRIVATE GryceAppHost)
 
-    # 扩展样例：只包含 engine/api/extension_api.h，不链接任何引擎库——这正是
-    # 扩展 ABI 的验收点（动态库侧没有引擎符号表也能注册函数）。
+    # 扩展样例：把引擎已实现、脚本层未开放的 C API 包成 JS 接口，因此链接
+    # GryceCore 的导入库（只走 engine/api/*.h 的 C ABI，不碰 C++ 内部类型）。
+    # ABI 本身不要求链接引擎——只做纯 JS 桥的扩展仍可零依赖构建，但那种写法
+    # 等于把业务逻辑搬进 C++，不符合扩展的定位。
     add_library(GryceDemoExtension SHARED test/demo_project/extension.cpp)
     target_include_directories(GryceDemoExtension PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
     )
+    target_link_libraries(GryceDemoExtension PRIVATE GryceCore)
     set_target_properties(GryceDemoExtension PROPERTIES
         PREFIX "" OUTPUT_NAME "GryceDemoExtension")
 endif()

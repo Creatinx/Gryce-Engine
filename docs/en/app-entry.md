@@ -199,7 +199,8 @@ Unknown arguments print the usage and exit with code 1.
 
 Extensions are optional; see [extension.md](extension.md) for the full reference. Key points:
 
-- The shared library exports `gryce_register_extension` and depends only on `engine/api/extension_api.h` (pure C), with no engine link.
+- An extension is an **interface layer**: it wraps engine capability that is implemented but not yet exposed to scripts into `engine.*` interfaces. Game logic still lives in `main.js`.
+- The shared library exports `gryce_register_extension`; the virtual table comes from `engine/api/extension_api.h` (pure C, JS value channel only). To call engine capability, include `engine/api/*.h` and link the engine import library.
 - Loading happens before `main.js` is evaluated, so top-level code can call extension interfaces.
 - Interfaces appear as `engine.<namespace>.<function>`; the value channel is scalar-only, structs travel as JSON strings.
 - Desktop builds only; the Web build has no dynamic library loading.
@@ -211,9 +212,9 @@ Skeleton of `test/demo_project/main.js`, usable as a starting point:
 
 ```js
 export function on_start() {
-    // Optional extension: probe before calling
-    if (engine.game && typeof engine.game.version === 'function') {
-        engine.log.info('ext: ' + engine.game.version());
+    // Optional extension: probe before calling (the script runs without it)
+    if (typeof engine.ext === 'object' && typeof engine.ext.info === 'function') {
+        engine.log.info('ext: ' + engine.ext.info());
     }
 
     if (!engine.window.create({ title: 'Gryce Demo', width: 1280, height: 720 })) {

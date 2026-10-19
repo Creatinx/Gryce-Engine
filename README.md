@@ -223,7 +223,7 @@ build/GryceRenderSmoke.exe --api opengl
 build/GryceApp.exe --project test/demo_project --api opengl
 ```
 
-演示工程的 `test/demo_project/main.js` 会建窗口、载入主场景、接管相机（鼠标转视角、WASD 移动、Esc 退出）。需要引擎没有的能力时，编一个 `extension.dll` 放到项目根即可给 `engine.*` 增补命名空间（样例 `test/demo_project/extension.cpp` → `engine.game.*`）。
+演示工程的 `test/demo_project/main.js` 会建窗口、载入主场景、接管相机（鼠标转视角、WASD 移动、Esc 退出）。引擎里已经实现、但脚本层还没开放的能力，用 `extension.cpp` 包成 `engine.*` 接口即可（扩展是接口层，不是业务层；样例 `test/demo_project/extension.cpp` 补了 `engine.entity.toJson` / `engine.entity.path` / `engine.scene.pick`）。
 
 无窗口验证与截图：
 

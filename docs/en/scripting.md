@@ -8,7 +8,7 @@ The other two forms:
 | --- | --- | --- |
 | `ScriptComponent` | Entity-level, starts and stops with the scene | this document |
 | `main.js` entry script | Process-level, one per process; window, scene, main loop | [app-entry.md](app-entry.md) |
-| `extension.cpp` native extension | Adds native interfaces to the entry script | [extension.md](extension.md) |
+| `extension.cpp` native extension | Exposes engine capability that scripts cannot reach yet to the entry script | [extension.md](extension.md) |
 
 All three share one `JSRuntime` and the base bindings (`engine.log` / `time` / `input` / `entity`). What differs is the available API surface: component scripts have no window, scene, or app-control interfaces.
 

@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `ScriptComponent` | 实体级，随场景生命周期启停 | 本文 |
 | `main.js` 入口脚本 | 进程级，一个进程一个，建窗/载场景/主循环 | [app-entry.md](app-entry.md) |
-| `extension.cpp` 原生扩展 | 给入口脚本增补原生接口 | [extension.md](extension.md) |
+| `extension.cpp` 原生扩展 | 把引擎已实现、脚本未开放的接口暴露给入口脚本 | [extension.md](extension.md) |
 
 三者共用同一套 `JSRuntime` 与基础绑定（`engine.log` / `time` / `input` / `entity`），差异在可用 API 面：组件脚本不提供窗口、场景与应用控制接口。
 
