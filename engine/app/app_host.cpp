@@ -69,6 +69,11 @@ struct ProjectConfig {
     bool pcss_enabled = false;
     float pcss_light_size = 0.06f;
     float pcss_max_radius = 12.0f;
+    // 启动态：true = 进 Play（运行时语义，组件 on_update 生效）；
+    // false = 停在编辑态（编辑器语义，撤销栈才记账）。
+    // Play 态下 undo_capture 直接跳过，所以编辑器项目必须显式关掉它，
+    // 否则所有编辑都进不了历史，撤销按钮永远是灰的。
+    bool start_in_play = true;
     bool loaded = false;
 };
 
@@ -117,6 +122,7 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.pcss_enabled = j.value("pcss_enabled", c.pcss_enabled);
         c.pcss_light_size = j.value("pcss_light_size", c.pcss_light_size);
         c.pcss_max_radius = j.value("pcss_max_radius", c.pcss_max_radius);
+        c.start_in_play = j.value("start_in_play", c.start_in_play);
         c.loaded = true;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[app] project.data parse failed: %s\n", e.what());
@@ -281,6 +287,7 @@ struct AppOptions {
     bool no_extension = false;
     bool show_fps = false;
     bool debug_ui = false;
+    bool edit_mode = false;   // --edit-mode：强制停在编辑态（覆盖 project.data）
 };
 
 void print_usage() {
@@ -296,6 +303,8 @@ void print_usage() {
         "  --no-extension       不加载任何扩展\n"
         "  --fps                左上角 FPS 叠加（默认关）\n"
         "  --debug-ui           启用渲染器 ImGui 调试面板（默认关）\n"
+        "  --edit-mode          停在编辑态（不进 Play、不跑组件 update、撤销栈记账），\n"
+        "                       覆盖 project.data 的 start_in_play\n"
         "  --help               显示本帮助\n");
 }
 
@@ -328,6 +337,7 @@ int run(int argc, char** argv) {
         else if (std::strcmp(a, "--no-extension") == 0) opts.no_extension = true;
         else if (std::strcmp(a, "--fps") == 0) opts.show_fps = true;
         else if (std::strcmp(a, "--debug-ui") == 0) opts.debug_ui = true;
+        else if (std::strcmp(a, "--edit-mode") == 0) opts.edit_mode = true;
         else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             print_usage();
             return 0;
@@ -363,11 +373,16 @@ int run(int argc, char** argv) {
         return 1;
     }
 
-    // 运行时语义：直接进 Play 模式，组件 on_update（动画/物理/脚本组件）生效。
+    // 启动态：默认进 Play（运行时语义，组件 on_update 生效）。
+    // 编辑器项目在 project.data 里写 "start_in_play": false，或用 --edit-mode：
+    // Play 态下引擎的 undo_capture 会跳过（播放期间的改动本来就不该进历史），
+    // 所以编辑器必须停在编辑态，否则撤销/脏标记全部失效。
     {
+        const bool start_in_play = !opts.edit_mode && host.cfg.start_in_play;
         GCommand cmd{};
-        cmd.type = ECMD_PLAY_MODE;
+        cmd.type = start_in_play ? ECMD_PLAY_MODE : ECMD_STOP_MODE;
         GCore_PushCommand(&cmd);
+        std::printf("[app] start mode: %s\n", start_in_play ? "play" : "edit");
     }
 
     // 扩展路径：显式指定 > <project>/extension.dll；不存在则跳过。

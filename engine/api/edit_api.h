@@ -72,6 +72,17 @@ typedef struct {
     GVec3         scale;
 } GCmdSetTransform;
 
+// ECMD_TRANSLATE_ENTITY（局部空间增量平移）
+//
+// 为什么不复用 GCmdSetTransform：那个是**绝对值**，而且缺省分量在入队时就用
+// "当前值"补齐。同一帧里先 setPosition 再 translate 时，第二条命令入队读到的
+// 还是旧位置，算出来的绝对值会把第一条覆盖掉（最终只生效一次）。
+// 增量命令在**执行时**才读当前值，同帧多条可以正确叠加。
+typedef struct {
+    GEntityHandle handle;
+    GVec3         delta;
+} GCmdTranslateEntity;
+
 // ECMD_SET_PROPERTY：value 按反射字段的原始字节写入（float/int/bool/向量），
 // 字符串字段写入以 '\0' 结尾的字节序列。
 typedef struct {
@@ -124,6 +135,7 @@ static_assert(sizeof(GCmdCreateEntity)    <= 256, "payload exceeds GCMD_PAYLOAD_
 static_assert(sizeof(GCmdRenameEntity)    <= 256, "payload exceeds GCMD_PAYLOAD_SIZE");
 static_assert(sizeof(GCmdReparentEntity)  <= 256, "payload exceeds GCMD_PAYLOAD_SIZE");
 static_assert(sizeof(GCmdSetTransform)    <= 256, "payload exceeds GCMD_PAYLOAD_SIZE");
+static_assert(sizeof(GCmdTranslateEntity) <= 256, "payload exceeds GCMD_PAYLOAD_SIZE");
 static_assert(sizeof(GCmdSetProperty)     <= 256, "payload exceeds GCMD_PAYLOAD_SIZE");
 static_assert(sizeof(GCmdAddComponent)    <= 256, "payload exceeds GCMD_PAYLOAD_SIZE");
 static_assert(sizeof(GCmdRemoveComponent) <= 256, "payload exceeds GCMD_PAYLOAD_SIZE");
@@ -149,6 +161,10 @@ GRYCE_EDIT_API int GEdit_SetTransform(GEntityHandle entity,
                                       const GVec3* position,
                                       const GQuat* rotation,
                                       const GVec3* scale);
+
+// 局部空间增量平移。执行时才读当前位置，因此同一帧内连续调用可以叠加；
+// 需要在同一帧里"先设绝对位置再微调"的场合必须用这条，不能两次 SetTransform。
+GRYCE_EDIT_API int GEdit_TranslateEntity(GEntityHandle entity, const GVec3* delta);
 
 // ---------------------------------------------------------------------------
 // 组件属性

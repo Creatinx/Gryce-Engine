@@ -191,9 +191,16 @@
 | `--no-extension` | 关闭默认路径查找（显式 `--extension` 仍生效） |
 | `--fps` | 左上角 FPS 叠加（默认关） |
 | `--debug-ui` | 渲染器 ImGui 调试面板（默认关；运行时默认不挂，`GryceRenderSmoke` 才是冒烟台） |
+| `--edit-mode` | 停在编辑态（不进 Play、不跑组件 update、撤销栈记账），覆盖 `project.data` 的 `start_in_play` |
 | `--help` / `-h` | 打印用法并退出 |
 
 未知参数会打印用法并以退出码 1 结束。
+
+**启动态**：默认进 Play（运行时语义，组件 `on_update` 生效）。编辑器类宿主在
+`project.data` 里写 `"start_in_play": false` 或加 `--edit-mode`；Play 态下引擎的
+撤销快照会被跳过，编辑器不关它就会出现"编辑生效但撤销永远不可用"
+（详见 [editor-api.md](editor-api.md) 第 2 节）。启动时会打印一行
+`[app] start mode: play|edit` 便于确认。
 
 ## 7. 原生扩展
 

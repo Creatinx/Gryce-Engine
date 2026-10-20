@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 28 条用例，分五个宿主。
+当前共 29 条用例，分六个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -77,6 +77,14 @@ ctest --test-dir build --output-on-failure
 | `editor_edit` | 10 个 payload 结构体不超 256 字节、非法参数被拒（返回 0）、创建后自动选中、改名、`SetTransform` 的缺省分量补齐语义（见 [editor-api.md](editor-api.md) 第 1 节） |
 | `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
 | `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
+
+### 2.6 编辑器自检（`editor_selftest`，1 条）
+
+唯一**跑完整宿主**的用例：启动 `GryceApp --project editor/project --entry res:/selftest.js --frames 45`，脚本里 50 条断言覆盖扩展加载、视口尺寸 / 相机、Gizmo 拖拽、场景层级树、检视面板 JSON、资产扫描与侧车、选择集、快捷键冲突检测，以及创建 / 变换 / 撤销 / 重做 / 销毁的完整编辑回路。需要窗口与 OpenGL 上下文，因此不进单元门禁，只作为集成用例。
+
+判定靠输出里的 `SELFTEST PASS`：宿主退出码不反映脚本结论（脚本断言失败不会让进程崩溃），所以用 `PASS_REGULAR_EXPRESSION` 而非 `WILL_FAIL`。扩展 DLL 缺失时 `add_test` 整条不注册，用例不会假绿成"零断言通过"。
+
+脚本按帧推进而不是同步读回：`GEdit_*` 只入队，值要到下一帧 `GCore_BeginFrame` 才落地，同一帧读回必是旧值（见 [editor-api.md](editor-api.md) 第 1 节）。
 
 ## 3. 执行注意
 

@@ -29,6 +29,7 @@ English documentation: [docs/README.md](docs/README.md)（英文入口）。
 | 应用入口（GryceApp + main.js） | [docs/zh/app-entry.md](docs/zh/app-entry.md) | [docs/en/app-entry.md](docs/en/app-entry.md) |
 | 原生扩展（extension.cpp / ABI） | [docs/zh/extension.md](docs/zh/extension.md) | [docs/en/extension.md](docs/en/extension.md) |
 | 编辑器接口（命令/撤销/视口/Gizmo） | [docs/zh/editor-api.md](docs/zh/editor-api.md) | [docs/en/editor-api.md](docs/en/editor-api.md) |
+| 编辑器（完整项目 + 扩展） | [editor/README.md](editor/README.md) | [editor/README.md](editor/README.md) |
 | 测试与 CI | [docs/zh/testing.md](docs/zh/testing.md) | [docs/en/testing.md](docs/en/testing.md) |
 | 文档总索引 | [docs/zh/README.md](docs/zh/README.md) | [docs/en/README.md](docs/en/README.md) |
 

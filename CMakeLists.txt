@@ -496,6 +496,13 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(GryceDemoExtension PRIVATE GryceCore)
     set_target_properties(GryceDemoExtension PROPERTIES
         PREFIX "" OUTPUT_NAME "GryceDemoExtension")
+
+    # 编辑器本体（editor/）：project/ 是完整项目，ext/ 是功能拓展。
+    # 拓展编成 extension.dll 后落到 editor/project/，宿主自动加载。
+    option(GRYCE_BUILD_EDITOR "Build the editor project and its extension" ON)
+    if(GRYCE_BUILD_EDITOR)
+        add_subdirectory(editor/ext)
+    endif()
 endif()
 
 # 引擎 DLL 同步到 exe 目录。
@@ -683,6 +690,25 @@ if(BUILD_TESTING)
         set_tests_properties(editor_${suite} PROPERTIES
             LABELS "unit;editor" TIMEOUT 120)
     endforeach()
+
+    # 编辑器整机自检：真起窗口、真加载扩展、真走命令队列。
+    #
+    # 上面几条 unit 套件测的是引擎侧接口，这一条测的是"扩展有没有被宿主加载、
+    # JS 桥有没有把参数传对、命令有没有在下一帧生效"——这三件事只有跑起来才知道。
+    #
+    # 判定靠输出里的 SELFTEST PASS（宿主退出码不反映脚本结论），所以用
+    # PASS_REGULAR_EXPRESSION 而不是 WILL_FAIL。
+    if(TARGET GryceApp AND TARGET GryceEditorExtension)
+        add_test(NAME editor_selftest
+                 COMMAND $<TARGET_FILE:GryceApp>
+                         --project ${CMAKE_CURRENT_SOURCE_DIR}/editor/project
+                         --entry res:/selftest.js
+                         --frames 45
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(editor_selftest PROPERTIES
+            LABELS "integration;editor" TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "SELFTEST PASS")
+    endif()
 endif()
 
 # ===========================================================================

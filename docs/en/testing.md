@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 28 cases across five hosts.
+There are currently 29 cases across six hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -78,6 +78,14 @@ Observations are made by comparing scene-JSON bytes rather than entity counts: `
 | `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
 | `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
+### 2.6 Editor self-test (`editor_selftest`, 1 case)
+
+The only case that **runs a full host**: it launches `GryceApp --project editor/project --entry res:/selftest.js --frames 45`, and the script's 50 assertions cover extension loading, viewport size / camera, gizmo drag, the scene hierarchy tree, inspector JSON, asset scanning and sidecars, the selection set, shortcut conflict detection, and the full create / transform / undo / redo / destroy edit loop. It needs a window and an OpenGL context, so it is an integration case rather than a unit gate.
+
+The verdict comes from `SELFTEST PASS` in the output: the host exit code does not reflect script conclusions (a failed assertion does not crash the process), hence `PASS_REGULAR_EXPRESSION` instead of `WILL_FAIL`. When the extension DLL is missing the whole `add_test` is skipped, so the case can never fake a green "zero assertions passed".
+
+The script advances frame by frame instead of reading back synchronously: `GEdit_*` only enqueues, and the value lands on the next `GCore_BeginFrame`, so a same-frame read always returns the old value (see [editor-api.md](editor-api.md) section 1).
+
 ## 3. Execution Notes
 
 `grycegc_*` cases interfere with each other when run in parallel (shared temporary directories and process-level state), so run the full suite serially for local verification:
@@ -91,6 +99,7 @@ On CI the cases are registered individually and scheduled by the runner, so this
 ## 4. Adding Cases
 
 - Math / resource-rule suites: add the name to `GRYCE_MATH_TEST_SUITES` in the root `CMakeLists.txt`; it is registered as a CTest case automatically.
+- Asset / editor suites: add the name to `GRYCE_ASSET_TEST_SUITES` / `GRYCE_EDITOR_TEST_SUITES` respectively. Editor cases must respect the two return conventions (enqueue returns 1/0, queries and scene operations return 0/-1); getting it wrong turns every assertion into a silent always-true pass.
 - Toolchain suites: add the name to `_grycegc_suites` in `toolchain/CMakeLists.txt`.
 
 ## 5. History: Pixel-Comparison Cases Removed

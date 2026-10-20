@@ -60,6 +60,28 @@ GRYCE_CORE_API int  GAsset_WriteMeta(const char* asset_path, const GAssetMetaInf
 // 源文件指纹与侧车记录不一致时为 1 —— 编辑器据此提示"资源已变更，是否重新导入"。
 GRYCE_CORE_API int  GAsset_IsMetaStale(const char* asset_path);
 
+// ---------------------------------------------------------------------------
+// 目录列举
+//
+// 资产浏览器、打包清单、热更校验都需要"某个目录底下有哪些资产"，逐个路径去
+// 试 GAsset_Load 既慢又区分不出"文件不存在"和"格式不支持"。本接口只做文件
+// 系统遍历，不加载任何数据。
+//
+// dir 接受 res:/ 形式（按项目根解析）或真实路径。recursive 非 0 时递归子目录。
+// 输出 JSON（UTF-8，单行）：
+//   {"dir":"res:/models","count":2,"truncated":0,"items":[
+//     {"path":"res:/models/cube.obj","name":"cube.obj","ext":"obj",
+//      "size":1234,"guid":"...","has_meta":1,"stale":0,"kind":"mesh"}]}
+//
+// 返回值：写入 out_buf 的字节数（不含结尾 0）。缓冲不足时返回**所需**长度
+// （大于 buf_size，调用方据此扩容重试），失败返回 -1。
+// kind 取值：mesh / texture / audio / scene / script / shader / other，
+// 由扩展名推断，只用于列表分组，不代表能否成功导入。
+// 结果按 path 字典序排列，保证同一目录每次列举顺序一致（界面不抖动）。
+// ---------------------------------------------------------------------------
+GRYCE_CORE_API int GAsset_ScanDirectory(const char* dir, int recursive,
+                                        char* out_buf, int buf_size);
+
 #ifdef __cplusplus
 }
 #endif

@@ -59,6 +59,10 @@ Thumbs.db
 # 场景里一个网格都画不出来。这里对该目录显式放行。
 !test/demo_project/models/*.obj
 
+# 同理：editor/project 是能直接 GryceApp 跑起来的完整项目，参考几何必须入库，
+# 否则克隆后 main.gesc 引用的 res:/models/cube.obj 缺失。
+!editor/project/models/*.obj
+
 # ---- 大型第三方演示模型（不入库）----
 # demo_project/models 下的 3d66 城市模型（~92MB FBX）仅供本机验证 SSR/SSAO
 # 与默认场景用，体积远超仓库合理范畴，禁止提交（历史里删不掉）。

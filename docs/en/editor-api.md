@@ -24,6 +24,7 @@ GEdit_SetTransform(handle, &pos, NULL, NULL);
 | `ECMD_REPARENT_ENTITY` | `GEdit_ReparentEntity(e, parent)` | Safe reparent; never destroys the moved entity |
 | `ECMD_SELECT_ENTITY` | `GEdit_SelectEntity(e)` | Fires `OnEntitySelected` |
 | `ECMD_SET_TRANSFORM` | `GEdit_SetTransform(e, pos, rot, scale)` | `NULL` components keep their **current** value; an all-zero `rot` means "keep rotation" |
+| `ECMD_TRANSLATE_ENTITY` | `GEdit_TranslateEntity(e, delta)` | Local-space delta; the current value is read **at execution time**, so several can stack in one frame |
 | `ECMD_SET_PROPERTY` | `GEdit_SetProperty(e, type_hash, name, value, size)` | `value` is the raw reflected field bytes |
 | `ECMD_ADD_COMPONENT` | `GEdit_AddComponent(e, type_name)` | Fully qualified type name |
 | `ECMD_REMOVE_COMPONENT` | `GEdit_RemoveComponent(e, type_hash)` | |
@@ -35,6 +36,26 @@ GEdit_SetTransform(handle, &pos, NULL, NULL);
 | `ECMD_STEP_FRAME` | `GEdit_StepFrame(frames)` | Advances frames while playing and paused |
 
 String fields are fixed-size arrays; over-long input is truncated and always `'\0'`-terminated.
+
+### Several transforms in one frame must use the delta variant
+
+`GEdit_SetTransform` fills its omitted components with the *current* value **at queue time**.
+So calling `SetTransform(pos1)` and then translating in the same frame reads the old position
+for the second call, produces an absolute value, and silently overwrites the first one — only
+one of the two edits survives.
+
+```c
+// Wrong: the final position is old + delta, pos1 is lost
+GEdit_SetTransform(e, &pos1, NULL, NULL);
+GEdit_TranslateEntity(e, &delta);       // would be wrong if done as SetTransform(old + delta)
+
+// Right: the delta command reads the position when it executes, so both apply in order
+GEdit_SetTransform(e, &pos1, NULL, NULL);
+GEdit_TranslateEntity(e, &delta);       // => pos1 + delta
+```
+
+Two Inspector fields edited back to back, or a gizmo drag followed by a snap correction,
+both hit this.
 
 ### Two return conventions — do not mix them
 
@@ -65,6 +86,10 @@ Semantics:
 
 * A snapshot is captured before every **mutating** command; inside `BeginEdit` only one snapshot is taken and pushed on `EndEdit`.
 * The stack freezes in Play mode — runtime physics/animation changes do not belong in edit history.
+  **The host defaults to runtime semantics (enters Play on startup)**, so an editor project
+  must set `"start_in_play": false` in `project.data` or pass `--edit-mode`; forgetting this
+  shows up as "edits apply, but undo is always greyed out and the scene never turns dirty"
+  (see [app-entry.md](app-entry.md) section 6).
 * `GScene_Load`, `GScene_New` and `cmd_load_scene` all clear the history: snapshots hold UUIDs that do not exist in the new scene.
 * Default depth 64; the oldest entries are dropped first.
 
@@ -181,6 +206,28 @@ Implementation notes:
 * Read-only directories and assets inside `.gpack` bundles are not written to (in-memory result only) — a normal degradation.
 * Scaling and up-axis conversion live in `apply_import_options`, shared by the built-in OBJ loader and the Assimp path so OBJ and FBX do not end up misaligned in the same project.
 * `GRYCE_NO_ASSET_META=1` disables the whole feature (runtime-only builds, read-only asset folders).
+
+### Directory listing (`GAsset_ScanDirectory`)
+
+The asset browser needs to list a folder, but so do packaging manifests, hot-update validation and
+CI asset checks — which makes this an engine capability rather than an editor private:
+
+```c
+char buf[8192];
+int n = GAsset_ScanDirectory("res:/models", /*recursive=*/0, buf, sizeof(buf));
+if (n >= (int)sizeof(buf)) {            // too small: n is the required length, retry bigger
+    std::vector<char> big(n + 1);
+    GAsset_ScanDirectory("res:/models", 0, big.data(), n + 1);
+}
+```
+
+Output is single-line JSON: `{"dir","count","truncated","items":[{"path","name","ext","size","guid","has_meta","stale","kind"}]}`.
+
+* Filesystem walk only; **nothing is loaded** — probing each path with `GAsset_Load` is both slow and unable to tell "missing" from "unsupported format".
+* `.meta` sidecars are not assets and are skipped.
+* Results are sorted by `path`, so repeated listings of the same folder keep the same order (no UI jitter).
+* `kind` (mesh / texture / audio / scene / script / shader / other) is a grouping hint only; it does not mean the file can be imported.
+* Return value: bytes written; when the buffer is too small it returns the **required** length (greater than `buf_size`); -1 on failure.
 
 ## 8. Known limits
 

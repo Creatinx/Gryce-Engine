@@ -24,6 +24,7 @@ GEdit_SetTransform(handle, &pos, NULL, NULL);
 | `ECMD_REPARENT_ENTITY` | `GEdit_ReparentEntity(e, parent)` | 安全重挂，不会销毁被挂实体 |
 | `ECMD_SELECT_ENTITY` | `GEdit_SelectEntity(e)` | 触发 `OnEntitySelected` 回调 |
 | `ECMD_SET_TRANSFORM` | `GEdit_SetTransform(e, pos, rot, scale)` | 传 `NULL` 的分量**用当前值补齐**；`rot` 全 0 视为保持原旋转 |
+| `ECMD_TRANSLATE_ENTITY` | `GEdit_TranslateEntity(e, delta)` | 局部增量平移，**执行时**才读当前值，同帧多条可叠加 |
 | `ECMD_SET_PROPERTY` | `GEdit_SetProperty(e, type_hash, name, value, size)` | `value` 是反射字段的原始字节 |
 | `ECMD_ADD_COMPONENT` | `GEdit_AddComponent(e, type_name)` | 类型全名 |
 | `ECMD_REMOVE_COMPONENT` | `GEdit_RemoveComponent(e, type_hash)` | |
@@ -35,6 +36,24 @@ GEdit_SetTransform(handle, &pos, NULL, NULL);
 | `ECMD_STEP_FRAME` | `GEdit_StepFrame(frames)` | 仅在 Play 且暂停时前进指定帧数 |
 
 字符串字段一律定长数组，超长截断并保证 `'\0'` 结尾。
+
+### 同一帧多条变换必须用增量版
+
+`GEdit_SetTransform` 在**入队时**就用当前值补齐缺省分量，所以同一帧里先
+`SetTransform(pos1)` 再 `Translate(delta)` 时，第二条读到的还是旧位置，算出的
+绝对值会把第一条覆盖掉——最终只生效一次，而且看不出错。
+
+```c
+// 错：最终位置是 old + delta，pos1 丢了
+GEdit_SetTransform(e, &pos1, NULL, NULL);
+GEdit_TranslateEntity(e, &delta);        // 若这里改成 SetTransform(old+delta) 就错了
+
+// 对：增量命令在执行时才读位置，两条都在下一帧按顺序叠加
+GEdit_SetTransform(e, &pos1, NULL, NULL);
+GEdit_TranslateEntity(e, &delta);        // ⇒ pos1 + delta
+```
+
+Inspector 连续改两个数值框、Gizmo 拖拽后紧跟一次吸附修正，都会踩这个坑。
 
 ### 返回值约定（两种，别混用）
 
@@ -65,6 +84,9 @@ GCore_EndEdit();
 
 * 每条**变更类**命令执行前自动抓快照，`BeginEdit` 期间只抓一次（结束点入栈）。
 * Play 模式下撤销栈冻结：播放期的物理/动画改动本来就不该进编辑历史。
+  **宿主默认是运行时语义**（启动即进 Play），所以编辑器项目必须在 `project.data`
+  里写 `"start_in_play": false`，或启动时加 `--edit-mode`；忘了这一步的表现是
+  "所有编辑都能生效，但撤销按钮永远灰的、脏标记永远干净"（见 [app-entry.md](app-entry.md) 第 6 节）。
 * `GScene_Load` / `GScene_New` / `cmd_load_scene` 都会清空历史——旧快照里的 UUID 在新场景里不存在，留着只会"撤销出一堆幽灵实体"。
 * 栈深默认 64，超出从最早一端丢弃。
 
@@ -181,6 +203,27 @@ GAsset_IsMetaStale("res:/models/wall.fbx");         // 源文件被替换后提�
 * 目录只读或资产来自 `.gpack` 时不写盘（只返回内存结果），属于正常降级。
 * 缩放与上轴由 `apply_import_options` 统一处理，内置 OBJ 加载器与 Assimp 路径共用同一份实现——同一工程里 OBJ 与 FBX 才不会错位。
 * `GRYCE_NO_ASSET_META=1` 全局关闭（纯运行时构建、只读资源目录）。
+
+### 目录列举（`GAsset_ScanDirectory`）
+
+资产浏览器要列目录，但打包清单、热更校验、CI 资源检查同样需要，所以这是引擎能力而不是编辑器私货：
+
+```c
+char buf[8192];
+int n = GAsset_ScanDirectory("res:/models", /*recursive=*/0, buf, sizeof(buf));
+if (n >= (int)sizeof(buf)) {            // 缓冲不够：n 是所需长度，扩容重来
+    std::vector<char> big(n + 1);
+    GAsset_ScanDirectory("res:/models", 0, big.data(), n + 1);
+}
+```
+
+输出单行 JSON：`{"dir","count","truncated","items":[{"path","name","ext","size","guid","has_meta","stale","kind"}]}`。
+
+* 只做文件系统遍历，**不加载**任何数据——逐个路径试 `GAsset_Load` 既慢又区分不出"文件不存在"和"格式不支持"。
+* `.meta` 侧车不算资产，自动排除。
+* 结果按 `path` 字典序，保证同一目录每次列举顺序一致（界面不抖动）。
+* `kind`（mesh / texture / audio / scene / script / shader / other）只用于列表分组，不代表能否成功导入。
+* 返回值语义：写入字节数；缓冲不足时返回**所需**长度（大于 `buf_size`），失败 -1。
 
 ## 8. 已知边界
 

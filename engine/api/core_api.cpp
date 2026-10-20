@@ -411,6 +411,7 @@ bool is_mutating_command(GCommandType t) {
         case ECMD_RENAME_ENTITY:
         case ECMD_REPARENT_ENTITY:
         case ECMD_SET_TRANSFORM:
+        case ECMD_TRANSLATE_ENTITY:
         case ECMD_SET_PROPERTY:
         case ECMD_ADD_COMPONENT:
         case ECMD_REMOVE_COMPONENT:
@@ -581,6 +582,19 @@ static void process_command(const GCommand& cmd) {
                 t->scale.x = p->scale.x;
                 t->scale.y = p->scale.y;
                 t->scale.z = p->scale.z;
+                e->mark_dirty();
+            }
+            break;
+        }
+        case ECMD_TRANSLATE_ENTITY: {
+            const auto* p = reinterpret_cast<const GCmdTranslateEntity*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
+            if (e && e->transform()) {
+                // 在执行时才取当前位置：入队时取会让同一帧的多条增量互相覆盖。
+                auto* t = e->transform();
+                t->position.x += p->delta.x;
+                t->position.y += p->delta.y;
+                t->position.z += p->delta.z;
                 e->mark_dirty();
             }
             break;
@@ -1151,6 +1165,18 @@ int GEdit_SetTransform(GEntityHandle entity, const GVec3* position,
     p.rotation = zero_rot ? GQuat{t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w}
                           : *rotation;
     return push_edit(ECMD_SET_TRANSFORM, &p, sizeof(p));
+}
+
+int GEdit_TranslateEntity(GEntityHandle entity, const GVec3* delta) {
+    if (!delta) return 0;
+    // 只校验句柄存在，不读当前值：增量在 process_command 里执行时才叠加，
+    // 这样同一帧内"先 SetTransform 再 Translate"两条命令不会互相吃掉。
+    gryce_engine::scene::Entity* e = gryce_core::EntityResolver::resolve(entity);
+    if (!e || !e->transform()) return 0;
+    GCmdTranslateEntity p{};
+    p.handle = entity;
+    p.delta = *delta;
+    return push_edit(ECMD_TRANSLATE_ENTITY, &p, sizeof(p));
 }
 
 int GEdit_SetProperty(GEntityHandle entity, uint64_t type_hash, const char* prop_name,
