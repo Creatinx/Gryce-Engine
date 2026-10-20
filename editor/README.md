@@ -49,9 +49,14 @@ ext/
 ├── command/           实现：GEdit_* 封装、历史分组、待确认创建
 ├── view/              实现：视口状态、显示模式、Gizmo 交互状态机
 ├── asset/             实现：资产扫描、侧车读写、导入设置
-├── panel/             实现：层级树 / 属性 / 资产 / 统计的面板数据模型
-└── input/             实现：快捷键表与每帧轮询
+├── panel/             实现：层级树 / 属性 / 资产 / 统计的面板数据模型（model / json 两层）
+├── input/             实现：快捷键表与每帧轮询
+└── ui/                实现：界面绘制与意图队列（唯一调 GUi_* 的地方）
 ```
+
+`ui/` 只做两件事：在引擎的 UI 回调里把 `panel/` 的数据画出来，并把用户操作
+记成意图（`ui/intent.h`）。它不 include `imgui.h`，只用 `engine/api/ui_api.h`
+的 C 接口，因此不会被 ImGui 版本绑死。
 
 ---
 
@@ -74,6 +79,10 @@ ext 是**声明**，不是"什么东西都往这塞"。新增一项能力时按�
 | --- | --- | --- |
 | `GAsset_ScanDirectory` | `engine/api/asset_api.h` | 资产浏览器要列目录，但打包清单、热更校验、CI 资源检查同样要；写完一次，所有人能用 |
 | `GEdit_TranslateEntity` | `engine/api/edit_api.h` | 增量平移不是"编辑器想要"，而是 `GEdit_SetTransform` 的通用缺陷：它在**入队时**用当前值补齐缺省分量，同一帧"先 SetTransform 再累加位移"会互相覆盖。任何做拖拽 / 动画 / 程序化位移的宿主都会踩到 |
+| `GUi_*`（约 60 个控件） | `engine/api/ui_api.h` | 引擎已经内置 ImGui 并持有上下文，但对外只有 `GRender_SetUICallback` 一个口子：宿主想画界面就得自己 include `imgui.h` 并链到引擎 DLL 里的**另一份**上下文（表现是"画了但屏幕上什么都没有"）。把控件包成 C 接口是任何工具型宿主的刚需 |
+| `GAsset_ScanDirectoryEach` | `engine/api/asset_api.h` | 访客式遍历。UI 自己画资产列表时再去解析自己刚生成的 JSON 是纯浪费（几千条时每秒解析一遍明显掉帧），而且解析失败的表现是"列表空白" |
+| `GViewport_SetScreenOrigin` | `engine/api/viewport_api.h` | Gizmo 画在 ImGui 的**绝对**坐标系里，而视口贴图只知道自己的 vw×vh。把 3D 视口贴进任意面板的宿主都必须告知原点，否则 gizmo 会画在"窗口左上角"的位置 |
+| `GViewport_SetEditorTransform` | `engine/api/viewport_api.h` | 用四元数设朝向。yaw/pitch 是"某套约定"下的参数，宿主与引擎的正负号一旦不一致，画面与拾取就差 90 度或上下颠倒，且两边都能自圆其说。四元数是朝向本身，没有约定问题 |
 
 已经具备、无需再补的（此前几次迭代补齐的）：编辑命令面 `GEdit_*`、撤销栈
 `GCore_Undo/Redo/BeginEdit`、视口纹理 `GRender_GetViewportTexture`、双视口
@@ -124,8 +133,9 @@ ext 是**声明**，不是"什么东西都往这塞"。新增一项能力时按�
 | 视口 | `editor.view.*` | 转调引擎 | `GRender_*` / `GViewport_*` |
 | Gizmo | `editor.gizmo.*` | 转调引擎 + ext 状态机 | 命中/绘制/换算都在引擎；手势状态与单帧夹取是 ext |
 | 资产 | `editor.asset.*` | 转调引擎 | 目录列举走 `GAsset_ScanDirectory` |
-| 面板 | `editor.panel.*` | ext 实现 | 产出 JSON 给 UI 层 |
+| 面板 | `editor.panel.*` | ext 实现 | 数据模型（结构体）+ JSON 序列化，两个消费者共用一份真相 |
 | 快捷键 | `editor.shortcut.*` | ext 实现 | 声明式绑定 |
+| 界面 | `editor.ui_*` | ext 实现 | 绘制走 `GUi_*`；能改状态的只有 `ui_state` / 开关，逐控件驱动 UI 不开放给脚本 |
 
 ---
 
@@ -172,8 +182,13 @@ build/GryceApp.exe --project editor/project --frames 60
 
 ## 6. 边界
 
-- **ext 不画 UI**。它产出面板**数据**（JSON），画由宿主或后续 UI 层负责。
-  这样 ext 不需要 include `imgui.h`，也不会被 ImGui 版本绑死。
+- **界面绘制与命令下发分离**。`ui/` 在引擎的 UI 回调里画（回调运行在渲染器
+  的锁内），因此回调内只允许 `GUi_*` 与读面板模型：任何 `GEdit_*` /
+  `GScene_*` / `GCore_*` 都会死锁。要改状态一律入队意图
+  （`ui/intent.h`），由下一帧的 `tick` 在锁外执行。界面操作因此有一帧延迟，
+  这是刻意的取舍。
+- **ext 不 include `imgui.h`**，只用 `engine/api/ui_api.h`。这样换 ImGui 版本
+  不用动 ext，也不会出现"扩展链到自己那份空上下文、画了但什么都不显示"。
 - **ext 不注册帧回调**。所有"每帧"的工作由 `main.js` 显式调
   `engine.editor.tick(dt)` 驱动，顺序可控、可重入、CI 里能确定性地跑。
 - **ext 不做线程**。引擎的 `GCore_BeginFrame`、`GRender_*` 都在主线程，扩展
@@ -187,5 +202,5 @@ build/GryceApp.exe --project editor/project --frames 60
 
 ---
 
-相关文档：[编辑器接口](../docs/zh/editor-api.md)、[原生扩展](../docs/zh/extension.md)、
-[应用入口与脚本](../docs/zh/app-entry.md)。
+相关文档：[编辑器接口](../docs/zh/editor-api.md)、[内置界面](../docs/zh/ui-api.md)、
+[原生扩展](../docs/zh/extension.md)、[应用入口与脚本](../docs/zh/app-entry.md)。

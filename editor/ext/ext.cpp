@@ -13,6 +13,7 @@
 #include "input/shortcuts.h"
 #include "panel/panel.h"
 #include "session/session.h"
+#include "ui/ui.h"
 #include "view/gizmo.h"
 #include "view/viewport.h"
 
@@ -55,11 +56,16 @@ void init() {
     asset::reset();
     panel::reset();
     shortcuts::reset();
+    // UI 最后初始化：它要在引擎创建窗口之前把回调注册上去，引擎据此决定
+    // 是否接管 ImGui。前面几个模块的 reset 与 UI 无关，放在前面便于阅读。
+    ui::init();
     for (auto& s : g_scratch) s.clear();
     g_scratch_cursor = 0;
 }
 
 void shutdown() {
+    // 先摘掉 UI 回调：回调里会读面板模型，模型析构之后再来一帧就会读到空。
+    ui::shutdown();
     // 拖到一半退出（Alt-F4）时引擎侧还开着分组，不收尾会让快照永久合并。
     if (gizmo::dragging()) gizmo::end_drag();
     commands::abort_edit();
@@ -74,6 +80,9 @@ void tick(float dt) {
     session::tick(dt);
     view::tick();
     panel::tick();
+    // UI 放在最后：它这一帧执行意图、消费鼠标、重建面板数据，用的都是上面
+    // 几个模块刚校正过的状态。
+    ui::tick(dt);
 }
 
 const char* version() { return "editor-ext 1.0 (gryce)"; }
@@ -128,7 +137,7 @@ int delete_selection() { return commands::delete_selection(); }
 
 GEntityHandle pick(float sx, float sy) {
     // 用视口相机自己发射射线，不走 GScene_PickScreen：后者用的是场景里的
-    // Camera 实体，而编辑器视口的朝向来自 GViewport_SetEditorCamera，
+    // Camera 实体，而编辑器视口的朝向来自 GViewport_SetEditorTransform，
     // 两者可以完全无关。用错相机的表现是"点左边选中右边"，很难查出原因。
     GVec3 origin{};
     GVec3 dir{};
@@ -311,5 +320,15 @@ int shortcut_bind(const char* name, int key, int mods) {
 }
 
 const char* shortcut_poll_json() { return hold(shortcuts::poll_json()); }
+
+// ===========================================================================
+// 界面
+// ===========================================================================
+
+int ui_available() { return ui::available(); }
+int ui_set_enabled(int enabled) { return ui::set_enabled(enabled); }
+int ui_frame_count() { return ui::frame_count(); }
+int ui_pointer_in_view() { return ui::pointer_in_view(); }
+const char* ui_state_json() { return hold(ui::state_json()); }
 
 } // namespace gryce::editor

@@ -125,7 +125,7 @@ int delete_selection();
 // 屏幕坐标拾取（视口左上角为原点）。未命中返回 0。
 // @owner wrapper  —— view::screen_ray + GScene_PickRay
 //   刻意不用 GScene_PickScreen：那个接口打的是场景里的 Camera 实体，而编辑器
-//   视口的朝向来自 GViewport_SetEditorCamera，两者可以完全无关，用错的表现是
+//   视口的朝向来自 GViewport_SetEditorTransform，两者可以完全无关，用错的表现是
 //   "点左边选中右边"。
 GEntityHandle pick(float sx, float sy);
 
@@ -367,6 +367,38 @@ int shortcut_bind(const char* name, int key, int mods);
 // 本帧触发的动作名数组：["undo","translate"]。没有触发返回 "[]"。
 // @owner ext
 const char* shortcut_poll_json();
+
+// ===========================================================================
+// 界面
+//
+// 界面不是"给脚本用的能力"，而是编辑器自己的实现（ui/ 目录）：它只读面板
+// 数据模型、只入队意图。脚本能问的只有三件事 —— 界面开着没有、宿主到底
+// 画了没有、当前状态是什么。逐控件驱动 UI 没有意义，也不该给脚本这个权力。
+// ===========================================================================
+
+// 界面是否可用：引擎接管了 ImGui 且回调已注册。关掉 ImGui 的构建里为 0。
+// @owner ext
+int ui_available();
+
+// 开关界面。关掉时会把引擎的 UI 回调一并摘掉（省掉每帧的 ImGui 开销）。
+// @owner ext
+int ui_set_enabled(int enabled);
+
+// 回调被调用的帧数 / 其中真的画进 ImGui 的帧数。测试用它们确认"宿主确实
+// 在渲染界面"，而不是只看注册成功。
+// @owner ext
+int ui_frame_count();
+
+// 指针是否在视口矩形内。脚本侧的右键转视角只在视口内生效，否则在层级树
+// 上右键也会把相机转走。
+// @owner ext
+int ui_pointer_in_view();
+
+// {"ok":1,"enabled":1,"hasImGui":1,"frames":120,"draws":118,
+//  "viewportTex":"...","viewWidth":900,"viewHeight":640,
+//  "dragging":0,"gizmoOperation":0,"gizmoSpace":0,"displayMode":"Shaded"}
+// @owner ext
+const char* ui_state_json();
 
 } // namespace gryce::editor
 

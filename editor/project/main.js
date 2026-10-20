@@ -39,6 +39,7 @@ const cam = {
 };
 
 let editor = null;      // engine.editor，扩展缺失时为 null
+let uiOn = false;       // 界面接管了视口：鼠标交互交给 ext 的 UI，JS 不再插手
 let viewW = WINDOW_W;
 let viewH = WINDOW_H;
 let dragAxis = -1;      // 正在拖拽的 Gizmo 轴，-1 表示空闲
@@ -126,10 +127,15 @@ export function on_start() {
 }
 
 function setup_editor() {
-    // 离屏视口：场景写进纹理，窗口留给 UI 层。UI 还没接上时窗口是空的，
-    // 这是编辑器预览的正常形态，不是渲染失败。
+    // 离屏视口：场景写进纹理，窗口留给 UI 层。
     editor.view_enableOutput(true);
     editor.view_setSize(viewW, viewH);
+
+    // 界面打开时，视口内的鼠标（拾取 / Gizmo 拖拽）由 ext 的 UI 自己处理：
+    // 它拿得到视口矩形，能用视口内坐标发射射线。JS 这边只知道窗口坐标，
+    // 两边都处理会各选中一次、拖拽量翻倍。
+    uiOn = editor.ui_available() === true;
+    engine.log.info('editor: ui ' + (uiOn ? 'active' : 'off (headless)'));
 
     // 默认平移工具、世界空间 —— 与多数 DCC 的初始状态一致。
     editor.gizmo_enable(true);
@@ -163,7 +169,9 @@ export function on_destroy() {
 export function on_update(dt) {
     if (editor) {
         handle_shortcuts();
-        handle_mouse();
+        // 界面接管视口时不碰鼠标：拾取与 Gizmo 拖拽在 ext 的 UI 里，
+        // 用的是视口内坐标（见 setup_editor 的说明）。
+        if (!uiOn) handle_mouse();
     }
     navigate(dt);
 
@@ -257,14 +265,14 @@ function toggle_wireframe() {
 }
 
 // ---------------------------------------------------------------------------
-// 鼠标：左键 = Gizmo 拖拽 / 拾取，右键 = 转视角，中键 = 平移
+// 鼠标（仅在界面未接管视口时走这条路径：无 ImGui 的构建 / 关掉界面的情况）
+// 左键 = Gizmo 拖拽 / 拾取，右键 = 转视角（见 navigate）
 // ---------------------------------------------------------------------------
 
 function handle_mouse() {
     const mx = engine.input.mouse_x();
     const my = engine.input.mouse_y();
     const left = engine.input.mouse_button(MOUSE_LEFT);
-    const right = engine.input.mouse_button(MOUSE_RIGHT);
 
     // 左键按下的那一帧先问 Gizmo 命中哪个轴，命中就进拖拽，否则做拾取。
     // 顺序不能反：先拾取会把"点在 gizmo 轴上"当成点到了物体表面，
@@ -294,10 +302,6 @@ function handle_mouse() {
         // JS 只搬数字，避免同一套换算在两处出现。
         editor.gizmo_drag(d[0] + d[1]);
     }
-
-    // 右键转视角：编辑器不锁指针（要能点界面），所以用按住拖拽而不是指针锁定。
-    if (right && !navDrag && dragAxis < 0) navDrag = true;
-    if (!right && navDrag) navDrag = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +310,14 @@ function handle_mouse() {
 
 function navigate(dt) {
     const held = (code) => engine.input.key_down(code);
+
+    // 右键转视角。界面打开时只在指针位于视口内才启动 —— 否则在层级树、
+    // 检视器上右键也会把相机转走。启动之后不再判位置：拖到视口外也继续转，
+    // 中途中断会让视角停在半路上。
+    const right = engine.input.mouse_button(MOUSE_RIGHT);
+    const overView = !uiOn || (editor && editor.ui_pointerInView() === true);
+    if (right && overView && dragAxis < 0) navDrag = true;
+    if (!right) navDrag = false;
 
     if (navDrag) {
         const d = engine.input.mouse_delta();

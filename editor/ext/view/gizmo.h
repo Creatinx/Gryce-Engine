@@ -21,6 +21,11 @@ void reset();
 int enable(int enabled);
 int set_mode(int operation, int space);
 
+// 当前模式。UI 每帧都要画"哪个高亮"，而 GRender_GetGizmo* 会加锁，
+// 在 UI 回调里调用会死锁，所以这里记一份。
+int operation();
+int space();
+
 // {"operation":0,"space":0,"enabled":1,"axis":-1,"dragging":0,"axisName":"-"}
 std::string mode_json();
 

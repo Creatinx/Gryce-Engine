@@ -23,8 +23,11 @@ namespace gryce::editor::view {
 // 与视口无关）。所以这里存一份副本，供 screen_ray 使用。
 struct EditorCamera {
     float pos[3] = {0.0f, 2.0f, 6.0f};
-    float yaw = 0.0f;      // 度，绕 Y 轴
-    float pitch = -12.0f;  // 度，绕局部 X 轴
+    // 朝向只存四元数：媒体层的 ray 与引擎的相机都由它推导，不存在
+    // "yaw/pitch 约定不一致"这类问题（见 viewport.cpp 的说明）。
+    float quat[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // x, y, z, w
+    float yaw = 0.0f;      // 度，绕 Y 轴（只用于外部展示/回读）
+    float pitch = -12.0f;  // 度，绕局部 X 轴（负 = 向下看）
     float fov = 55.0f;     // 垂直视场角
     bool valid = false;
 };
@@ -33,6 +36,9 @@ void reset();
 
 int enable_output(int enabled);
 int set_size(int w, int h);
+// 视口贴图在窗口里的左上角。界面把 3D 视口贴在自己的面板里时必须每帧同步，
+// 否则引擎画的 Gizmo 会停在"视口贴着窗口左上角"的位置。
+int set_screen_origin(float x, float y);
 void set_editor_camera(float x, float y, float z, float yaw_deg, float pitch_deg,
                        float fov_deg);
 

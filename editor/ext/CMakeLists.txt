@@ -23,8 +23,13 @@ set(GRYCE_EDITOR_EXT_SOURCES
     view/gizmo.cpp
 
     asset/asset_index.cpp
+    panel/model.cpp
     panel/panel.cpp
     input/shortcuts.cpp
+
+    ui/ui.cpp
+    ui/draw.cpp
+    ui/intent.cpp
 )
 
 add_library(GryceEditorExtension SHARED ${GRYCE_EDITOR_EXT_SOURCES})

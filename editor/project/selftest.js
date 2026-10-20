@@ -290,6 +290,36 @@ export function on_update(dt) {
     }
 
     if (phase === 10) {
+        // 界面：宿主必须真的把回调跑起来。只看面板 JSON 有数据是不够的 ——
+        // 那证明不了"引擎接管了 ImGui"，也证明不了绘制没崩。
+        check('ui.available', E.ui_available() === true);
+        check('ui.frames', E.ui_frameCount() > 0, 'frames=' + E.ui_frameCount());
+
+        const ui = JSON.parse(E.ui_state());
+        check('ui.state', ui.ok === 1 && ui.enabled === true && ui.hasImGui === true,
+              'enabled=' + ui.enabled + ' hasImGui=' + ui.hasImGui);
+        check('ui.drew', ui.draws > 0, 'draws=' + ui.draws);
+        // 视口矩形由绘制侧写回，tick 据此设渲染目标尺寸；为 0 说明界面
+        // 从没画出过视口图片（贴图 id 拿不到或布局塌了）。
+        check('ui.viewport', ui.viewWidth > 0 && ui.viewHeight > 0,
+              ui.viewWidth + 'x' + ui.viewHeight);
+        check('ui.viewportTex', ui.viewportTex !== 0, 'tex=' + ui.viewportTex);
+        check('ui.pointerInView', typeof ui.pointerInView === 'boolean');
+        phase = 11;
+        return;
+    }
+
+    if (phase === 11) {
+        // 模型层：UI 与 JSON 读同一份数据，校验界面依赖的字段都在。
+        const tree = JSON.parse(E.panel_hierarchy());
+        check('ui.hierarchy.depth', tree.roots.length > 0 && tree.roots[0].depth === 0 &&
+              typeof tree.roots[0].children === 'object');
+        const assets = JSON.parse(E.panel_assets('res:/models'));
+        // count 与 items 必须一致：两者不是同一次遍历算出来的，对不上说明
+        // 模型和序列化走了岔路。
+        check('ui.assets.count', assets.count === assets.items.length && assets.count >= 1,
+              'count=' + assets.count + ' items=' + assets.items.length);
+        check('ui.inspector', JSON.parse(E.panel_inspector(handleOf('Cube'))).ok === 1);
         finish();
     }
 }

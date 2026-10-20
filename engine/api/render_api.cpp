@@ -4,6 +4,7 @@
 // 帧级状态集中在文件内的 g_renderer，跨线程访问一律走 g_renderer.mutex。
 #include "api/render_api.h"
 #include "api/api_guard.h"
+#include "api/ui_api_internal.h"
 #include "api/viewport_api.h"
 #include "api/core_api.h"
 #include "api/edit_api.h"
@@ -89,6 +90,10 @@ struct RendererState {
     // 编辑器相机：非 Game 模式直接使用这些参数，不依赖场景实体
     math::Camera editor_camera;
     bool editor_camera_valid = false;
+    // 视口在窗口里的屏幕原点。Gizmo 画在 ImGui 的绝对坐标系里，需要它才能
+    // 与"贴在某一块面板里的视口贴图"对齐。
+    float viewport_origin_x = 0.0f;
+    float viewport_origin_y = 0.0f;
     std::string display_mode = "Shaded";
     // 线框显示：每帧下发给管线（管线可能晚于 SetDisplayMode 创建，见
     // render_world_internal 里的 set_wireframe）。
@@ -541,8 +546,10 @@ bool screen_project(const math::Matrix4f& view, const math::Matrix4f& proj,
     if (clip.w <= 1e-5f) return false;   // 在相机背后的点不投影
     const float ndc_x = clip.x / clip.w;
     const float ndc_y = clip.y / clip.w;
-    out->x = (ndc_x * 0.5f + 0.5f) * static_cast<float>(vw);
-    out->y = (0.5f - ndc_y * 0.5f) * static_cast<float>(vh);
+    // 加上视口在窗口里的原点：ImGui 的 draw list 用的是窗口绝对坐标，
+    // 而 vw/vh 只是视口内部的尺寸。原点为 0 时与旧行为一致。
+    out->x = (ndc_x * 0.5f + 0.5f) * static_cast<float>(vw) + g_renderer.viewport_origin_x;
+    out->y = (0.5f - ndc_y * 0.5f) * static_cast<float>(vh) + g_renderer.viewport_origin_y;
     return true;
 }
 
@@ -812,7 +819,10 @@ static void debug_ui_submit_locked() {
         // draw list 里，因此和场景一起提交、一起被截图。
         // 约束同调试面板：本函数运行在 g_renderer.mutex 已持有的路径上，
         // 回调内不得再调用 GRender_* / GCore_* 这类会加锁的公开 API。
+        // 回调内能用的只有 api/ui_api.h 的 GUi_*（纯绘制，不碰引擎状态）。
+        gryce_ui::enter_callback();
         g_renderer.ui_callback(g_renderer.ui_callback_user);
+        gryce_ui::leave_callback();
     }
     // Gizmo 最后画：用 foreground draw list，盖在视口图像与各面板之上。
 #ifdef GRYCE_HAS_IMGUI
@@ -2469,8 +2479,53 @@ void GViewport_SetEditorCamera(float pos_x, float pos_y, float pos_z,
     g_renderer.editor_camera_valid = true;
 }
 
-void GGameView_SetSize(int w, int h) {
+void GViewport_SetEditorTransform(float pos_x, float pos_y, float pos_z,
+                                  float qx, float qy, float qz, float qw,
+                                  float fov, float near_plane, float far_plane) {
     GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+
+    // 与 build_scene_camera 完全同一套推导：把 -Z 用四元数转到世界空间，
+    // 再反解 yaw/pitch 交给 math::Camera。这样"场景相机"与"编辑器相机"
+    // 走的是同一条换算路径，不会再出现两套约定打架。
+    math::Quaternionf q(qx, qy, qz, qw);
+    const float len_sq = qx * qx + qy * qy + qz * qz + qw * qw;
+    if (!(len_sq > 1e-8f)) {
+        // 退化四元数：保留位置，朝向退回默认（朝 -Z），而不是让相机变成 NaN。
+        q = math::Quaternionf(0.0f, 0.0f, 0.0f, 1.0f);
+    } else {
+        q = q.normalized();
+    }
+
+    math::Vector3f fwd = q.rotate_vector(math::Vector3f(0.0f, 0.0f, -1.0f));
+    if (fwd.length_sq() < 1e-6f) fwd = math::Vector3f(0.0f, 0.0f, -1.0f);
+    fwd = fwd.normalized();
+
+    g_renderer.editor_camera.set_position(math::Vector3f(pos_x, pos_y, pos_z));
+    g_renderer.editor_camera.set_yaw(std::atan2(fwd.z, fwd.x) * kRadToDeg);
+    g_renderer.editor_camera.set_pitch(
+        std::asin(math::clamp(fwd.y, -1.0f, 1.0f)) * kRadToDeg);
+    g_renderer.editor_camera.set_fov(fov);
+    g_renderer.editor_camera.set_near_far(near_plane, far_plane);
+    g_renderer.editor_camera_valid = true;
+}
+
+void GViewport_SetScreenOrigin(float x, float y) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    // 非有限值会让 Gizmo 整体飞到屏幕外，而日志里什么都看不出来。
+    g_renderer.viewport_origin_x = std::isfinite(x) ? x : 0.0f;
+    g_renderer.viewport_origin_y = std::isfinite(y) ? y : 0.0f;
+}
+
+void GViewport_GetScreenOrigin(float* out_x, float* out_y) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (out_x) *out_x = g_renderer.viewport_origin_x;
+    if (out_y) *out_y = g_renderer.viewport_origin_y;
+}
+
+void GGameView_SetSize(int w, int h) {    GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.gameview_w = w > 0 ? w : 1;
     g_renderer.gameview_h = h > 0 ? h : 1;

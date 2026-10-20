@@ -4,6 +4,8 @@ This page collects the interfaces between an **external editor process** and the
 
 Nothing here needs new low-level engine work: this page documents **capabilities that are already in place**.
 
+Widgets (`GUi_*`) have their own page: [ui-api.md](ui-api.md).
+
 ## 1. Edit commands (`api/edit_api.h`)
 
 Every edit goes through one channel: `GCore_PushCommand` → command buffer → consumed inside `GCore_BeginFrame` (up to 512 commands and a 4 ms budget per frame; anything left over is requeued for the next frame). The editor therefore never mutates the scene directly.
@@ -113,6 +115,28 @@ GRender_SetUICallback(my_draw_ui, user_ptr);
 GRender_HasImGui();          /* is a usable context actually available */
 ```
 
+Inside the callback you cannot call `GRender_*` (the lock is held); what you can use is `GUi_*` from `api/ui_api.h`, see [ui-api.md](ui-api.md).
+
+### Editor camera: pass a quaternion, not yaw/pitch
+
+```c
+GViewport_SetEditorCamera(px, py, pz, yaw_deg, pitch_deg, fov, near, far);
+GViewport_SetEditorTransform(px, py, pz, qx, qy, qz, qw, fov, near, far);   /* preferred */
+```
+
+`SetEditorCamera` follows the engine's `math::Camera` convention: `forward = (cos yaw, sin pitch, sin yaw)`. Editors usually assume `forward = (-sin yaw, sin pitch, -cos yaw)`. Both are self-consistent, and passing one into the other offsets the image and the picking ray by 90° — which is nearly impossible to tell apart from "the pitch sign is flipped" on a single screenshot.
+
+`GViewport_SetEditorTransform` takes a quaternion whose **rotation is applied to the camera's default -Z**, exactly the same derivation as the scene `Camera` component and `build_scene_camera`. A host that computes its picking ray from the same quaternion is guaranteed to match what is rendered, with no conversion formula to get wrong.
+
+```c
+/* Editor construction order: yaw first, then pitch */
+Quat q = quat_mul(quat_axis_angle(0, 1, 0, yaw), quat_axis_angle(1, 0, 0, pitch));
+GViewport_SetEditorTransform(pos, q.x, q.y, q.z, q.w, fov, 0.1f, 1000.0f);
+
+/* Picking ray: rotate -Z by the same q, do not recompute from yaw/pitch */
+Vec3 forward = rotate_by_quat(q, { 0, 0, -1 });
+```
+
 ## 4. Dual viewports (SceneView / GameView)
 
 Both views share a single HDR / MSAA / post-process chain — the scene is rendered once and `tonemap` picks the destination via `set_game_view_active`. The upside is not duplicating the chain; the cost is that **GameView resolution follows SceneView** (a mismatch is rejected and logged).
@@ -155,6 +179,29 @@ GRender_DrawGizmoOverlay();         /* auto-called by EndFrame when the engine o
 Route the resulting delta through `GCore_BeginEdit` + `GEdit_SetTransform` instead of touching `Transform` directly, otherwise the undo stack never sees the change.
 
 Pick radius is 9 px, axis length 92 px; axes are red/green/blue, with the hovered or dragged axis highlighted in yellow.
+
+### Set the screen origin whenever the viewport is not the whole window
+
+The gizmo draws on ImGui's foreground draw list, which uses **window-absolute** coordinates, while the viewport texture only knows its own `vw × vh`. `screen_project` therefore maps NDC into `[0,vw] × [0,vh]` — with a panel layout, the gizmo lands in the window's top-left corner, floating above the hierarchy tree.
+
+```c
+GViewport_SetSize((int)w, (int)h);   /* viewport interior: the NDC-to-pixel divisor */
+GViewport_SetScreenOrigin(x, y);     /* viewport's top-left in the window: pixel offset */
+GViewport_GetScreenOrigin(&x, &y);
+```
+
+Contract:
+
+| Entry point | Coordinate space |
+| --- | --- |
+| `GRender_GizmoHitTest(mx, my)` | **window-absolute** (once an origin is set) |
+| `GRender_BeginDrag` / `GRender_Drag(mx, my)` | same |
+| `GScene_PickRay(ox, oy, ...)` and editor-side `screen_ray` | **viewport-local** = `mouse_abs - origin` |
+
+The default origin is `(0,0)`, which means "viewport covers the window" and reproduces the old behaviour exactly — intentional, so plain 3D demos need no changes.
+
+Sync the origin every frame in `tick` from the **actual drawn rect** (`GUi_LastItemRect`), not from the requested size: on window resize the two differ by a pixel or two, the gizmo drifts, and the symptom is "picking error grows toward the bottom-right".
+
 
 ## 6. Display modes
 
@@ -229,9 +276,30 @@ Output is single-line JSON: `{"dir","count","truncated","items":[{"path","name",
 * `kind` (mesh / texture / audio / scene / script / shader / other) is a grouping hint only; it does not mean the file can be imported.
 * Return value: bytes written; when the buffer is too small it returns the **required** length (greater than `buf_size`); -1 on failure.
 
+### Visitor form (`GAsset_ScanDirectoryEach`)
+
+The asset panel needs both JSON (script side, `panel_assets_json()`) and direct structs (the UI needs them every frame; parsing a string you just generated is slow and adds a "parse failed → empty list" failure mode). Both versions share one implementation, so traversal order, exclusion rules and sidecar fields are identical:
+
+```c
+typedef struct GAssetEntry {
+    const char* path;  const char* name;  const char* ext;
+    const char* kind;  const char* guid;
+    unsigned long long size;
+    int has_meta;      int stale;
+} GAssetEntry;
+
+/* Return non-zero to stop early; the function returns the number visited */
+int cb(void* user, const GAssetEntry* e) { /* push to vector */ return 1; }
+GAsset_ScanDirectoryEach("res:/models", /*recursive=*/0, cb, &my_vector);
+```
+
+The string pointers in `GAssetEntry` are **only valid during the callback** (they point into the walk's scratch buffer); copy anything you keep. This avoids one heap allocation per entry, which matters noticeably with thousands of files.
+
 ## 8. Known limits
 
 * Undo is a whole-scene snapshot: per-step cost grows with scene size (hundreds of microseconds on the 1.4 M triangle demo scene), so do not set the depth very high.
 * GameView resolution follows SceneView; independent resolutions would require duplicating the entire HDR chain.
 * Wireframe is OpenGL-desktop only; other backends report unsupported.
 * The gizmo draws axes and gauges only — no multi-selection merge and no snapping (the editor rounds values before calling `GEdit_SetTransform`).
+* `screen_project` does perspective projection plus the origin offset only; it knows nothing about ImGui clip rects, so a scrolled or partially occluded viewport still projects outside its rect and relies on the clip rect to hide it.
+* The widget layer (`GUi_*`) is covered in [ui-api.md](ui-api.md): no docking, a single dark theme, and non-ASCII glyphs depend on the font atlas the engine loaded.

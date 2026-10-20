@@ -18,5 +18,6 @@ Documents are organized by module and cover architecture, build, rendering, asse
 | Scripting | [scripting.md](scripting.md) | QuickJS script component: serialized fields, lifecycle hooks, base engine.* API, value conventions, sandbox, hot reload |
 | Application entry | [app-entry.md](app-entry.md) | `GryceApp` host + `main.js` entry: startup order, hooks, window/scene/entity/app API, command line |
 | Native extensions | [extension.md](extension.md) | Complete `extension.cpp` ABI reference: loading, per-field virtual table semantics, value channel, build and distribution, troubleshooting |
-| Editor API | [editor-api.md](editor-api.md) | Edit commands, undo/redo, viewport output and the ImGui bridge, dual viewports, gizmo, display modes, asset sidecar files |
+| Editor API | [editor-api.md](editor-api.md) | Edit commands, undo/redo, viewport output and the editor camera, dual viewports, gizmo and screen origin, display modes, asset sidecars and directory walking |
+| Built-in UI | [ui-api.md](ui-api.md) | The `GUi_*` surface: ImGui ownership across the DLL boundary, the two gates, the forbidden-call list and intent queue, viewport rect and coordinates, undo grouping, input yielding |
 | Testing | [testing.md](testing.md) | CTest gate, test inventory, CI configuration |

@@ -4,6 +4,8 @@
 
 引擎侧不再需要为编辑器新增底层能力：本文件描述的是**已经就绪**的前置条件。
 
+界面控件（`GUi_*`）单独一篇：[ui-api.md](ui-api.md)。
+
 ## 1. 编辑命令面（`api/edit_api.h`）
 
 所有编辑操作走同一条通道：`GCore_PushCommand` → 命令缓冲 → `GCore_BeginFrame` 内统一消费（每帧上限 512 条、4 ms 预算，未处理的下帧重入队）。编辑器因此不需要（也不应该）直接改场景。
@@ -110,6 +112,28 @@ GRender_SetUICallback(my_draw_ui, user_ptr);
 GRender_HasImGui();          // 引擎当前是否真的持有可用上下文
 ```
 
+回调内不能调 `GRender_*`（锁已持有），能用的是 `api/ui_api.h` 的 `GUi_*`，详见 [ui-api.md](ui-api.md)。
+
+### 编辑器相机：传四元数，别传 yaw/pitch
+
+```c
+GViewport_SetEditorCamera(px, py, pz, yaw_deg, pitch_deg, fov, near, far);
+GViewport_SetEditorTransform(px, py, pz, qx, qy, qz, qw, fov, near, far);   // 推荐
+```
+
+`SetEditorCamera` 的语义是引擎 `math::Camera` 的约定：`forward = (cos yaw, sin pitch, sin yaw)`。而编辑器常用的约定是 `forward = (-sin yaw, sin pitch, -cos yaw)`——两者都能自圆其说，直传的结果是画面与拾取一起偏 90 度，且"偏 90 度"和"pitch 符号反了"在单张截图上几乎分辨不出来。
+
+`GViewport_SetEditorTransform` 用四元数，**旋转作用在相机默认朝向 -Z 上**（与场景 `Camera` 组件、与 `build_scene_camera` 完全同一条推导）。宿主用同一个四元数算拾取射线，就必然与渲染一致，不存在换算式。
+
+```c
+// 编辑器里的构造顺序：先偏航后俯仰
+Quat q = quat_mul(quat_axis_angle(0, 1, 0, yaw), quat_axis_angle(1, 0, 0, pitch));
+GViewport_SetEditorTransform(pos, q.x, q.y, q.z, q.w, fov, 0.1f, 1000.0f);
+
+// 拾取射线用同一个 q 旋转 -Z，不要再从 yaw/pitch 反算
+Vec3 forward = rotate_by_quat(q, { 0, 0, -1 });
+```
+
 ## 4. 双视口（SceneView / GameView）
 
 两张画面共用同一条 HDR / MSAA / 后处理链——场景只渲染一次，`tonemap` 时按 `set_game_view_active` 决定写哪份目标。收益是不必再把整条链复制一份，代价是 **GameView 的内部分辨率跟随 SceneView**（尺寸不一致会被拒绝并记日志）。
@@ -152,6 +176,29 @@ GRender_DrawGizmoOverlay();         // 引擎接管 ImGui 时由 EndFrame 自动
 拖拽增量最终应经 `GCore_BeginEdit` + `GEdit_SetTransform` 落到场景（而不是直接改 Transform），否则撤销栈看不到这次修改。
 
 命中半径 9 px、轴长 92 px；轴色红/绿/蓝，悬停与拖拽中的轴高亮为黄。
+
+### 视口不是全窗口时必须设屏幕原点
+
+Gizmo 画在 ImGui 的前景 draw list 上，那是**窗口绝对坐标**；而视口贴图只知道自己是 `vw × vh`。所以 `screen_project` 默认把 NDC 映射到 `[0,vw] × [0,vh]`——视口贴着面板左上角时，gizmo 会画在窗口左上角、浮在层级树上面。
+
+```c
+GViewport_SetSize((int)w, (int)h);   // 视口内部尺寸：NDC → 像素的除数
+GViewport_SetScreenOrigin(x, y);     // 视口在窗口里的左上角：像素偏移
+GViewport_GetScreenOrigin(&x, &y);
+```
+
+契约：
+
+| 接口 | 入参坐标系 |
+| --- | --- |
+| `GRender_GizmoHitTest(mx, my)` | **窗口绝对坐标**（设过原点后） |
+| `GRender_BeginDrag` / `GRender_Drag(mx, my)` | 同上 |
+| `GScene_PickRay(ox, oy, ...)` / 编辑器自算的 `screen_ray` | **视口内坐标** = `mouse_abs - origin` |
+
+不设原点时原点为 `(0,0)`，等价于"视口铺满窗口"，与旧行为完全一致——这是有意的默认值，纯 3D 演示程序不用改代码。
+
+原点应在每帧 `tick` 里按**实际绘制矩形**同步（`GUi_LastItemRect`），不要用请求的尺寸：窗口缩放时请求值和实际值会差一两个像素，gizmo 会缓慢漂移，表现为"鼠标越靠右下，拾取偏得越多"。
+
 
 ## 6. 显示模式
 
@@ -225,9 +272,30 @@ if (n >= (int)sizeof(buf)) {            // 缓冲不够：n 是所需长度，�
 * `kind`（mesh / texture / audio / scene / script / shader / other）只用于列表分组，不代表能否成功导入。
 * 返回值语义：写入字节数；缓冲不足时返回**所需**长度（大于 `buf_size`），失败 -1。
 
+### 访客式遍历（`GAsset_ScanDirectoryEach`）
+
+资产面板既要用 JSON（脚本侧、`panel_assets_json()`），又要直接读结构体（UI 每帧都要用，解析自己刚生成的字符串既慢又多一种"解析失败 → 列表空白"的失败模式）。两个版本共用同一份实现，遍历顺序、排除规则、侧车字段完全一致：
+
+```c
+typedef struct GAssetEntry {
+    const char* path;  const char* name;  const char* ext;
+    const char* kind;  const char* guid;
+    unsigned long long size;
+    int has_meta;      int stale;
+} GAssetEntry;
+
+// visitor 返回非 0 则提前中止；函数返回访问到的条目数
+int cb(void* user, const GAssetEntry* e) { /* push to vector */ return 1; }
+GAsset_ScanDirectoryEach("res:/models", /*recursive=*/0, cb, &my_vector);
+```
+
+`GAssetEntry` 里的字符串指针**只在回调期间有效**（指向遍历用的临时缓冲），要留存必须自己拷。这是为了避免每个条目都做一次堆分配——目录里几千个文件时差别明显。
+
 ## 8. 已知边界
 
 * 撤销是整场快照：单步开销随场景规模增长（demo 场景 1.4 M 三角形约几百微秒），栈深不要开太大。
 * GameView 分辨率跟随 SceneView，需要独立分辨率就得复制整条 HDR 链。
 * 线框仅 OpenGL 桌面可用；其余后端如实回报不支持。
 * Gizmo 只画轴与量具，不做多选合并、不做吸附（吸附由编辑器在 `GEdit_SetTransform` 前自行取整）。
+* `screen_project` 只做透视投影 + 原点偏移，不认识 ImGui 的裁剪矩形：视口被滚动或部分遮住时，gizmo 仍会画在矩形外，裁剪靠 ImGui 的 clip rect 兜。
+* 界面本身（`GUi_*`）见 [ui-api.md](ui-api.md)：无 docking、单套暗色主题、中文字形依赖引擎已加载的字体图集。

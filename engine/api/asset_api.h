@@ -82,6 +82,32 @@ GRYCE_CORE_API int  GAsset_IsMetaStale(const char* asset_path);
 GRYCE_CORE_API int GAsset_ScanDirectory(const char* dir, int recursive,
                                         char* out_buf, int buf_size);
 
+// 访客式遍历：同样的目录、同样的顺序（path 字典序）、同样的排除规则，
+// 但把每个条目直接交给回调，不经过 JSON。
+//
+// 为什么两种都有：JSON 版是给脚本 / 外部宿主用的（跨进程、跨语言都方便），
+// 而 UI 自己画列表时再去解析自己刚生成的 JSON 是纯浪费 —— 资产几千条时
+// 每秒解析一遍明显掉帧，而且解析失败的表现是"列表空白"，很难查。
+//
+// 回调里拿到的指针只在本次调用期间有效（指向内部临时对象），需要留就自己拷。
+// 回调返回 0 表示中止遍历（例如列表已经填满、用户已经切目录）。
+// 返回值：访问到的条目数；目录不存在返回 -1。
+typedef struct GAssetEntry {
+    const char*    path;     // res:/ 形式（不在项目根下时为绝对路径）
+    const char*    name;     // 文件名含扩展名
+    const char*    ext;      // 小写，含点（".obj"）
+    const char*    kind;     // mesh / texture / audio / scene / script / shader / other
+    const char*    guid;     // 侧车里的 guid，没有侧车时为空串
+    unsigned long long size; // 字节数，取不到时为 0
+    int            has_meta;
+    int            stale;
+} GAssetEntry;
+
+typedef int (*GAssetVisitor)(void* user, const GAssetEntry* entry);
+
+GRYCE_CORE_API int GAsset_ScanDirectoryEach(const char* dir, int recursive,
+                                            GAssetVisitor visitor, void* user);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,6 +16,11 @@ int g_axis = -1;
 bool g_dragging = false;
 float g_accumulated = 0.0f;   // 本次拖拽累计像素，UI 显示"拖了多远"
 
+// 与引擎保持一致的模式副本（默认值与 GRender 的默认值相同）。
+// UI 回调里要靠它画高亮，而 GRender_GetGizmo* 会加锁。
+int g_operation = 0;
+int g_space = 0;
+
 const char* axis_name(int axis) {
     switch (axis) {
         case 0: return "X";
@@ -32,6 +37,8 @@ void reset() {
     g_axis = -1;
     g_dragging = false;
     g_accumulated = 0.0f;
+    g_operation = 0;
+    g_space = 0;
 }
 
 int enable(int enabled) {
@@ -44,8 +51,13 @@ int set_mode(int operation, int space) {
     if (operation < 0 || operation > 2) return 0;
     if (space < 0 || space > 1) return 0;
     GRender_SetGizmoMode(operation, space);
+    g_operation = operation;
+    g_space = space;
     return 1;
 }
+
+int operation() { return g_operation; }
+int space() { return g_space; }
 
 std::string mode_json() {
     Json j;

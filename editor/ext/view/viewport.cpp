@@ -58,6 +58,20 @@ Vec3 normalize(Vec3 v) {
     return len > 1e-6f ? Vec3{v.x / len, v.y / len, v.z / len} : Vec3{0.0f, 0.0f, 0.0f};
 }
 
+// v' = v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
+// 与 main.js 的 rotate() 是同一个公式：脚本侧算相机基向量、ext 侧算拾取射线，
+// 两边必须给出同一个方向。
+Vec3 rotate_by_quat(const float q[4], Vec3 v) {
+    const float cx = q[1] * v.z - q[2] * v.y + q[3] * v.x;
+    const float cy = q[2] * v.x - q[0] * v.z + q[3] * v.y;
+    const float cz = q[0] * v.y - q[1] * v.x + q[3] * v.z;
+    return Vec3{
+        v.x + 2.0f * (q[1] * cz - q[2] * cy),
+        v.y + 2.0f * (q[2] * cx - q[0] * cz),
+        v.z + 2.0f * (q[0] * cy - q[1] * cx),
+    };
+}
+
 constexpr float kDeg2Rad = 3.14159265358979323846f / 180.0f;
 
 } // namespace
@@ -100,6 +114,14 @@ int set_size(int w, int h) {
     return 1;
 }
 
+int set_screen_origin(float x, float y) {
+    // Gizmo 画在 ImGui 的绝对坐标系里，必须知道视口贴在窗口的哪个位置，
+    // 否则会画在"窗口左上角"（旧行为：视口铺满窗口）而点不中也画不对。
+    if (!std::isfinite(x) || !std::isfinite(y)) return 0;
+    GViewport_SetScreenOrigin(x, y);
+    return 1;
+}
+
 void set_editor_camera(float x, float y, float z, float yaw_deg, float pitch_deg,
                        float fov_deg) {
     // NaN / Inf 会让相机的视图矩阵整个失效，画面直接空白，而日志里什么都看不到。
@@ -111,13 +133,42 @@ void set_editor_camera(float x, float y, float z, float yaw_deg, float pitch_deg
     // fov 夹在 (1, 179)：0 度会让投影矩阵退化，179 以上同样。
     const float fov = fov_deg < 1.0f ? 1.0f : (fov_deg > 179.0f ? 179.0f : fov_deg);
     const float pitch = pitch_deg < -89.0f ? -89.0f : (pitch_deg > 89.0f ? 89.0f : pitch_deg);
-    GViewport_SetEditorCamera(x, y, z, yaw_deg, pitch, fov, 0.05f, 5000.0f);
+
+    // 朝向只经四元数传给引擎：先绕 Y 转 yaw、再绕局部 X 转 pitch。
+    // 这条路径与 main.js 的 view_quat 是同一个乘法顺序，也与 screen_ray 用的
+    // 是同一份数据 —— 之前用 yaw/pitch 直传时，引擎与 ext 各有一套正负号，
+    // 表现为"画面是水平的、射线却在低头"，点哪都选不中。
+    const float hy = yaw_deg * 0.5f * kDeg2Rad;
+    const float hp = pitch * 0.5f * kDeg2Rad;
+    const float cy = std::cos(hy), sy = std::sin(hy);
+    const float cp = std::cos(hp), sp = std::sin(hp);
+
+    // q = qy ⊗ qp，其中 qy = (0, sy, 0, cy)、qp = (sp, 0, 0, cp)。
+    float q[4];
+    q[0] = cy * sp;    // x
+    q[1] = sy * cp;    // y
+    q[2] = -sy * sp;   // z
+    q[3] = cy * cp;    // w
+    // 归一化：两个单位四元数相乘本应仍是单位四元数，浮点误差会累积。
+    const float len = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (len > 1e-6f) {
+        for (int i = 0; i < 4; ++i) q[i] /= len;
+    } else {
+        q[0] = q[1] = q[2] = 0.0f;
+        q[3] = 1.0f;
+    }
+
+    GViewport_SetEditorTransform(x, y, z, q[0], q[1], q[2], q[3], fov, 0.05f, 5000.0f);
 
     // 存一份给 screen_ray 用：引擎只写不读，而拾取必须用视口相机的朝向，
     // 不能用场景里被编辑的 Camera 实体（那是内容，朝向由用户随意摆）。
     g_camera.pos[0] = x;
     g_camera.pos[1] = y;
     g_camera.pos[2] = z;
+    g_camera.quat[0] = q[0];
+    g_camera.quat[1] = q[1];
+    g_camera.quat[2] = q[2];
+    g_camera.quat[3] = q[3];
     g_camera.yaw = yaw_deg;
     g_camera.pitch = pitch;
     g_camera.fov = fov;
@@ -130,18 +181,14 @@ int screen_ray(float sx, float sy, GVec3* out_origin, GVec3* out_dir) {
     if (!g_camera.valid || !out_origin || !out_dir) return 0;
     if (g_requested_w <= 0 || g_requested_h <= 0) return 0;
 
-    const float yaw = g_camera.yaw * kDeg2Rad;
-    const float pitch = g_camera.pitch * kDeg2Rad;
-    const float cp = std::cos(pitch);
-    const float sp = std::sin(pitch);
-
-    // 与 main.js 的 view_quat 是同一套约定：先绕 Y 转 yaw，再绕局部 X 转 pitch。
-    // 两条路径必须算出同一个朝向，否则"看到的位置"与"点到的位置"会差一截。
-    const Vec3 forward{-std::sin(yaw) * cp, sp, -std::cos(yaw) * cp};
+    // 用相机四元数把默认朝向 (-Z) 转到世界空间 —— 与引擎渲染用的是同一个
+    // 四元数，所以"看到的方向"与"算出的射线"天然一致，不需要任何约定换算。
+    const Vec3 z_axis{0.0f, 0.0f, -1.0f};
+    const Vec3 forward = rotate_by_quat(g_camera.quat, z_axis);
     const Vec3 world_up{0.0f, 1.0f, 0.0f};
     Vec3 right = normalize(cross(forward, world_up));
     if (dot(right, right) < 0.5f) {
-        // 正俯视时 forward 与 world_up 平行，叉积退化。此时"右"方向取 +X。
+        // 正俯视/正仰视时 forward 与 world_up 平行，叉积退化。此时"右"取 +X。
         right = Vec3{1.0f, 0.0f, 0.0f};
     }
     const Vec3 up = normalize(cross(right, forward));

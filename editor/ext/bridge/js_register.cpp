@@ -586,6 +586,43 @@ FN(js_shortcut_poll) {
     return ret_str(gryce::editor::shortcut_poll_json());
 }
 
+// ---------------------------------------------------------------------------
+// 界面
+// ---------------------------------------------------------------------------
+
+FN(js_ui_available) {
+    (void)argc;
+    (void)argv;
+    // 返回布尔而不是 1/0：JS 侧写 `if (E.ui_available())` 时两者都能用，
+    // 但 `=== true` 只有布尔成立（面板那边的教训，见 README 第 6 节）。
+    return ret_bool(gryce::editor::ui_available());
+}
+
+FN(js_ui_set_enabled) {
+    Args a = args_of(argc, argv);
+    bool on = true;
+    if (argc > 0) a.boolean(0, &on);
+    return ret_bool(gryce::editor::ui_set_enabled(on ? 1 : 0));
+}
+
+FN(js_ui_frame_count) {
+    (void)argc;
+    (void)argv;
+    return ret_num(static_cast<double>(gryce::editor::ui_frame_count()));
+}
+
+FN(js_ui_pointer_in_view) {
+    (void)argc;
+    (void)argv;
+    return ret_bool(gryce::editor::ui_pointer_in_view());
+}
+
+FN(js_ui_state) {
+    (void)argc;
+    (void)argv;
+    return ret_str(gryce::editor::ui_state_json());
+}
+
 } // namespace
 
 // ===========================================================================
@@ -687,4 +724,11 @@ GRYCE_EXTENSION_ENTRY {
     // 快捷键
     bind("shortcut_bind", &js_shortcut_bind, 3);
     bind("shortcut_poll", &js_shortcut_poll, 0);
+
+    // 界面
+    bind("ui_available", &js_ui_available, 0);
+    bind("ui_setEnabled", &js_ui_set_enabled, 1);
+    bind("ui_frameCount", &js_ui_frame_count, 0);
+    bind("ui_pointerInView", &js_ui_pointer_in_view, 0);
+    bind("ui_state", &js_ui_state, 0);
 }

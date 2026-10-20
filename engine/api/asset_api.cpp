@@ -179,8 +179,88 @@ struct ScanEntry {
     std::string logical;    // res:/ 形式（不在项目根下时退回绝对路径）
     std::string name;
     std::string ext;        // 小写，含点
+    std::string guid;       // 侧车里的 guid，没有侧车时为空
     std::uintmax_t size = 0;
+    int has_meta = 0;
+    int stale = 0;
 };
+
+// 收集目录条目（JSON 版与访客版共用）。返回 false 表示目录不存在。
+// logical_dir 会被规整（去尾部斜杠）；entries 已按 logical 字典序排好。
+bool collect_scan_entries(const char* dir, int recursive, std::string* out_logical_dir,
+                          std::vector<ScanEntry>* entries) {
+    if (!dir || !dir[0]) return false;
+
+    // 结尾斜杠先去掉：res:/models 与 res:/models/ 应当列出同一批条目，
+    // 否则拼接出来的逻辑路径会出现双斜杠，界面上两条路径指向同一个文件。
+    std::string logical_dir = dir;
+    while (logical_dir.size() > 1 &&
+           (logical_dir.back() == '/' || logical_dir.back() == '\\')) {
+        logical_dir.pop_back();
+    }
+
+    const bool is_res = gryce_engine::resources::ResourcePath::is_resource_path(logical_dir);
+    const std::string resolved =
+        is_res ? gryce_engine::resources::ResourcePath::resolve(logical_dir) : logical_dir;
+
+    std::error_code ec;
+    if (!fs::is_directory(resolved, ec)) return false;
+
+    auto collect = [&](const fs::path& p) {
+        const std::string name = p.filename().string();
+        if (is_meta_file(name)) return;   // 侧车不是资产
+
+        ScanEntry e;
+        e.name = name;
+        e.ext = file_extension(name.c_str());
+        e.absolute = p.string();
+        std::error_code sec;
+        const auto sz = fs::file_size(p, sec);
+        e.size = sec ? 0 : static_cast<std::uintmax_t>(sz);
+
+        if (is_res) {
+            // 相对项目根的子路径，统一成正斜杠，与 res:/ 的书写风格一致。
+            std::error_code rec;
+            const fs::path rel = fs::relative(p, resolved, rec);
+            std::string rel_str = rec ? name : rel.generic_string();
+            e.logical = logical_dir + "/" + rel_str;
+        } else {
+            e.logical = p.generic_string();
+        }
+
+        gryce_engine::assets::AssetMeta meta;
+        if (gryce_engine::assets::read_asset_meta(e.absolute, meta)) {
+            e.has_meta = 1;
+            e.guid = meta.guid;
+            e.stale = gryce_engine::assets::asset_meta_is_stale(e.absolute, meta) ? 1 : 0;
+        }
+        entries->push_back(std::move(e));
+    };
+
+    if (recursive) {
+        // 目录项顺序由文件系统决定；递归时先收集再整体排序，避免子目录
+        // 之间的顺序随机。
+        for (fs::recursive_directory_iterator it(resolved, ec), end; it != end;
+             it.increment(ec)) {
+            if (ec) break;
+            std::error_code tec;
+            if (!it->is_regular_file(tec) || tec) continue;
+            collect(it->path());
+        }
+    } else {
+        for (fs::directory_iterator it(resolved, ec), end; it != end; it.increment(ec)) {
+            if (ec) break;
+            std::error_code tec;
+            if (!it->is_regular_file(tec) || tec) continue;
+            collect(it->path());
+        }
+    }
+
+    std::sort(entries->begin(), entries->end(),
+              [](const ScanEntry& a, const ScanEntry& b) { return a.logical < b.logical; });
+    *out_logical_dir = std::move(logical_dir);
+    return true;
+}
 
 } // namespace
 
@@ -284,68 +364,10 @@ int GAsset_IsMetaStale(const char* asset_path) {
 
 int GAsset_ScanDirectory(const char* dir, int recursive, char* out_buf, int buf_size) {
     GRYCE_API_GUARD();
-    if (!dir || !dir[0]) return -1;
 
-    // 结尾斜杠先去掉：res:/models 与 res:/models/ 应当列出同一批条目，
-    // 否则拼接出来的逻辑路径会出现双斜杠，界面上两条路径指向同一个文件。
-    std::string logical_dir = dir;
-    while (logical_dir.size() > 1 &&
-           (logical_dir.back() == '/' || logical_dir.back() == '\\')) {
-        logical_dir.pop_back();
-    }
-
-    const bool is_res = gryce_engine::resources::ResourcePath::is_resource_path(logical_dir);
-    const std::string resolved =
-        is_res ? gryce_engine::resources::ResourcePath::resolve(logical_dir) : logical_dir;
-
-    std::error_code ec;
-    if (!fs::is_directory(resolved, ec)) return -1;
-
+    std::string logical_dir;
     std::vector<ScanEntry> entries;
-    auto collect = [&](const fs::path& p) {
-        const std::string name = p.filename().string();
-        if (is_meta_file(name)) return;   // 侧车不是资产
-
-        ScanEntry e;
-        e.name = name;
-        e.ext = file_extension(name.c_str());
-        std::error_code sec;
-        const auto sz = fs::file_size(p, sec);
-        e.size = sec ? 0 : static_cast<std::uintmax_t>(sz);
-
-        if (is_res) {
-            // 相对项目根的子路径，统一成正斜杠，与 res:/ 的书写风格一致。
-            std::error_code rec;
-            const fs::path rel = fs::relative(p, resolved, rec);
-            std::string rel_str = rec ? name : rel.generic_string();
-            e.logical = logical_dir + "/" + rel_str;
-        } else {
-            e.logical = p.generic_string();
-        }
-        entries.push_back(std::move(e));
-    };
-
-    if (recursive) {
-        // 目录项顺序由文件系统决定；递归时先收集再整体排序，避免子目录
-        // 之间的顺序随机。
-        for (fs::recursive_directory_iterator it(resolved, ec), end; it != end;
-             it.increment(ec)) {
-            if (ec) break;
-            std::error_code tec;
-            if (!it->is_regular_file(tec) || tec) continue;
-            collect(it->path());
-        }
-    } else {
-        for (fs::directory_iterator it(resolved, ec), end; it != end; it.increment(ec)) {
-            if (ec) break;
-            std::error_code tec;
-            if (!it->is_regular_file(tec) || tec) continue;
-            collect(it->path());
-        }
-    }
-
-    std::sort(entries.begin(), entries.end(),
-              [](const ScanEntry& a, const ScanEntry& b) { return a.logical < b.logical; });
+    if (!collect_scan_entries(dir, recursive, &logical_dir, &entries)) return -1;
 
     // items 先整体生成；header 里的 truncated 要在知道 buf_size 之后才能定，
     // 但 "0" 和 "1" 都是一字节，两版长度相同，因此长度可以提前算准。
@@ -353,16 +375,6 @@ int GAsset_ScanDirectory(const char* dir, int recursive, char* out_buf, int buf_
     for (std::size_t i = 0; i < entries.size(); ++i) {
         const ScanEntry& e = entries[i];
         if (i) items += ',';
-
-        std::string guid;
-        int has_meta = 0;
-        int stale = 0;
-        gryce_engine::assets::AssetMeta meta;
-        if (gryce_engine::assets::read_asset_meta(e.absolute, meta)) {
-            has_meta = 1;
-            guid = meta.guid;
-            stale = gryce_engine::assets::asset_meta_is_stale(e.absolute, meta) ? 1 : 0;
-        }
 
         items += "{\"path\":\"";
         items += json_escape(e.logical);
@@ -373,11 +385,11 @@ int GAsset_ScanDirectory(const char* dir, int recursive, char* out_buf, int buf_
         items += "\",\"size\":";
         items += std::to_string(e.size);
         items += ",\"guid\":\"";
-        items += json_escape(guid);
+        items += json_escape(e.guid);
         items += "\",\"has_meta\":";
-        items += std::to_string(has_meta);
+        items += std::to_string(e.has_meta);
         items += ",\"stale\":";
-        items += std::to_string(stale);
+        items += std::to_string(e.stale);
         items += ",\"kind\":\"";
         items += asset_kind(e.ext);
         items += "\"}";
@@ -407,6 +419,32 @@ int GAsset_ScanDirectory(const char* dir, int recursive, char* out_buf, int buf_
     std::memcpy(out_buf, json.c_str(), cap);
     out_buf[cap] = '\0';
     return needed;
+}
+
+int GAsset_ScanDirectoryEach(const char* dir, int recursive,
+                             GAssetVisitor visitor, void* user) {
+    GRYCE_API_GUARD();
+    if (!visitor) return -1;
+
+    std::string logical_dir;
+    std::vector<ScanEntry> entries;
+    if (!collect_scan_entries(dir, recursive, &logical_dir, &entries)) return -1;
+
+    int visited = 0;
+    for (const ScanEntry& e : entries) {
+        GAssetEntry out{};
+        out.path = e.logical.c_str();
+        out.name = e.name.c_str();
+        out.ext = e.ext.c_str();
+        out.kind = asset_kind(e.ext);
+        out.guid = e.guid.c_str();
+        out.size = static_cast<unsigned long long>(e.size);
+        out.has_meta = e.has_meta;
+        out.stale = e.stale;
+        ++visited;
+        if (visitor(user, &out) == 0) break;   // 调用方要求中止
+    }
+    return visited;
 }
 
 } // extern "C"

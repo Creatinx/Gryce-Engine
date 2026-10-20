@@ -190,6 +190,7 @@ target_compile_definitions(GryceRenderer PUBLIC GRYCE_BUILD_SHARED)
 target_sources(GryceRenderer
     PRIVATE
         api/render_api.cpp
+        api/ui_api.cpp
         render/render.cpp
         render/renderer2d_impl.cpp
         render/core_shaders.cpp

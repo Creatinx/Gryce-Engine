@@ -12,6 +12,7 @@
 #define GRYCE_EDITOR_PANEL_H
 
 #include "api/types.h"
+#include "panel/model.h"
 
 #include <cstdint>
 #include <string>

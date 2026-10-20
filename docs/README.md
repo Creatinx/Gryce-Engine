@@ -21,6 +21,8 @@ Gryce Engine is a C++26 game engine for Windows, built around a reflection-drive
 | Scripting | [zh/scripting.md](zh/scripting.md) | [en/scripting.md](en/scripting.md) |
 | Application entry | [zh/app-entry.md](zh/app-entry.md) | [en/app-entry.md](en/app-entry.md) |
 | Native extensions | [zh/extension.md](zh/extension.md) | [en/extension.md](en/extension.md) |
+| Editor API | [zh/editor-api.md](zh/editor-api.md) | [en/editor-api.md](en/editor-api.md) |
+| Built-in UI | [zh/ui-api.md](zh/ui-api.md) | [en/ui-api.md](en/ui-api.md) |
 | Testing | [zh/testing.md](zh/testing.md) | [en/testing.md](en/testing.md) |
 
 Historical design plans (the D3D12, WebGL, and QuickJS scripting adoption plans) are archived under [zh/plans/](zh/plans/) and kept in Chinese only.

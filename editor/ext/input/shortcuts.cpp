@@ -4,6 +4,8 @@
 
 #include "input/shortcuts.h"
 
+#include "ui/ui.h"
+
 #include "api/input_api.h"
 
 #include "common/json_writer.h"
@@ -64,6 +66,10 @@ int bind(const char* name, int key, int mods) {
 }
 
 std::string poll_json() {
+    // 界面正在吃键盘（输入框聚焦）时一律不派发：否则在名字输入框里打
+    // "Wire" 会顺手中途切走移动/旋转/缩放三个工具。
+    if (ui::wants_keyboard()) return "[]";
+
     Json j;
     j.begin_array();
     for (const auto& b : g_bindings) {

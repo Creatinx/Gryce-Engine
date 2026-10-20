@@ -36,8 +36,10 @@ ext 补编辑器语义；`ext` 表示纯编辑器概念。`ext.h` 里不出现�
   连续创建两个实体时只有最后一个能确认句柄（引擎"创建即选中"只保留最后一次）。
   `command/commands.cpp` 里用 pending 队列 + 4 帧过期兜底，事件里会给
   `create_unconfirmed`。
-- **视口相机只写不读**。引擎的 `GViewport_SetEditorCamera` 没有对应的 Get，
-  所以 `view/viewport.cpp` 自己存了一份副本用于 `screen_ray`（拾取必须用视口
-  相机的朝向，不能用场景里被编辑的 Camera 实体）。
+- **视口相机只写不读**。引擎的 `GViewport_SetEditorTransform` 没有对应的 Get，
+  所以 `view/viewport.cpp` 自己存了一份副本（位置 + 四元数）用于 `screen_ray`
+  ——拾取必须用视口相机的朝向，不能用场景里被编辑的 Camera 实体。存四元数而
+  不是 yaw/pitch 是刻意的：射线用同一个四元数旋转 -Z，与渲染侧完全同一条推导，
+  不存在"两套约定各自自圆其说"的问题。
 - **线框只有 OpenGL 桌面版**。`view_displayModeSupported("Wireframe")` 会如实
   返回，切换前应当先问。
