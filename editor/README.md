@@ -83,6 +83,8 @@ ext 是**声明**，不是"什么东西都往这塞"。新增一项能力时按�
 | `GAsset_ScanDirectoryEach` | `engine/api/asset_api.h` | 访客式遍历。UI 自己画资产列表时再去解析自己刚生成的 JSON 是纯浪费（几千条时每秒解析一遍明显掉帧），而且解析失败的表现是"列表空白" |
 | `GViewport_SetScreenOrigin` | `engine/api/viewport_api.h` | Gizmo 画在 ImGui 的**绝对**坐标系里，而视口贴图只知道自己的 vw×vh。把 3D 视口贴进任意面板的宿主都必须告知原点，否则 gizmo 会画在"窗口左上角"的位置 |
 | `GViewport_SetEditorTransform` | `engine/api/viewport_api.h` | 用四元数设朝向。yaw/pitch 是"某套约定"下的参数，宿主与引擎的正负号一旦不一致，画面与拾取就差 90 度或上下颠倒，且两边都能自圆其说。四元数是朝向本身，没有约定问题 |
+| `GUi_*` 拖放六件套 + `GUi_GetModifiers` | `engine/api/ui_api.h` | 层级树要能拖着重挂、按 Shift 加选，而 ImGui 的拖放与修饰键状态都在它自己的上下文里。不开放这两个能力，宿主就只能"点一下换一个选中" |
+| `GUi_CalcTextWidth` | `engine/api/ui_api.h` | ImGui 把标签画在控件右边，`SetNextItemWidth(-1)` 会把标签挤出面板。要算"标签占多宽"只能问字体，而字体在引擎里 |
 
 已经具备、无需再补的（此前几次迭代补齐的）：编辑命令面 `GEdit_*`、撤销栈
 `GCore_Undo/Redo/BeginEdit`、视口纹理 `GRender_GetViewportTexture`、双视口
@@ -199,6 +201,24 @@ build/GryceApp.exe --project editor/project --frames 60
   "改完立刻读"的接口都要接受这一点，见 `command/commands.h` 里 pending 的处
   理方式；同一帧内多条变换必须用增量版 `GEdit_TranslateEntity`，否则后一条会
   把前一条覆盖掉。
+- **拖拽控件要自己存一份值**。异步的副作用：`DragFloat` 若每帧都从面板模型
+  重新初始化，拖拽中拿到的永远是上一帧的旧值，手感是"拖一下弹回去"。
+  `DrawState` 里的 `pos_buf` / `prop_buf` 就是干这个的，只在"换了目标"或
+  `GUi_IsAnyItemActive()` 为假时才从模型同步。
+- **标签与控件要分摊宽度**。ImGui 把标签画在控件右边，`SetNextItemWidth(-1)`
+  会让控件吃满整行、标签被挤出面板。带可见标签的控件一律用
+  `item_width_for(label)`（内部按 `GUi_CalcTextWidth` 扣宽），只有 `"##name"`
+  这种无标签控件才用 `-1`。
+- **组件增删只走 `GEdit_AddComponent` / `RemoveComponent`**。内部组件
+  （`Transform` / `ParentComponent` / `ChildrenComponent` / `PrefabInstance`）
+  在 `model.cpp` 的 `is_internal_type()` 里被排除：不列进 Add 菜单、不给删除
+  按钮。引擎不会拒绝删它们，删完那个实体就没位置了，所以这条挡在编辑器侧。
+- **重挂要两边都判环**。引擎的 `cmd_reparent_entity` 会静默拒绝成环，
+  `commands::reparent` 在入队前再上溯一遍父链、拒掉并记 `reparent_rejected`
+  事件——引擎那层是静默的，不自己判就变成"拖过去什么都没发生"。
+- **哈希过 JS 必须走字符串**。64 位 `std::hash` 经 JSON 数字只剩 53 位精度，
+  读回去是个不同的值，表现是"类型查得到、属性写不进去"。面板 JSON 里的
+  `hash` 字段输出为十进制字符串，桥接层的 `Args::u64` 字符串优先，正好接上。
 
 ---
 

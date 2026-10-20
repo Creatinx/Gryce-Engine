@@ -307,6 +307,18 @@ static void cmd_rename_entity(GEntityHandle h, const char* new_name) {
     }
 }
 
+// node 本身是否等于 ancestor，或挂在 ancestor 的子树里。
+// 重挂前必须查：`Entity::add_child` 不做防环，把父节点挂到自己的子孙上会
+// 构造出 A -> B -> A 的**所有权环**（两边的 children_ 互相持有），之后任何
+// 一次 foreach / 序列化都会无限递归，析构时又是悬空指针。编辑器把节点拖到
+// 自己的子节点上就会触发，全靠这一道检查兜住。
+static bool is_in_subtree_of(const Entity* node, const Entity* ancestor) {
+    for (const Entity* p = node; p; p = p->parent()) {
+        if (p == ancestor) return true;
+    }
+    return false;
+}
+
 static void cmd_reparent_entity(GEntityHandle h, GEntityHandle new_parent) {
     Entity* e = EntityResolver::resolve(h);
     if (!e) return;
@@ -314,6 +326,9 @@ static void cmd_reparent_entity(GEntityHandle h, GEntityHandle new_parent) {
     if (!s) return;
     Entity* parent = (new_parent == 0) ? nullptr : EntityResolver::resolve(new_parent);
     if (parent == e || e->parent() == parent) return; // 自挂 / 原地重挂
+    // 成环：目标是自己的子孙。静默拒绝而不是"尽力重挂"——挂上去之后场景
+    // 立刻不可遍历，比什么都不做糟得多。
+    if (parent && is_in_subtree_of(parent, e)) return;
     if (!e->parent()) return;
     // 安全重挂：detach_child 转移所有权后再 add_child / add_root_entity，
     // 不能走 set_parent（remove_child 会销毁被挂实体）。

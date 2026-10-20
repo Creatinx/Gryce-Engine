@@ -185,6 +185,11 @@ int set_property_bool(GEntityHandle handle, uint64_t type_hash,
     return commands::set_property_bool(handle, type_hash, prop, value);
 }
 
+int set_property_vec(GEntityHandle handle, uint64_t type_hash,
+                     const char* prop, const float* values, int count) {
+    return commands::set_property_vec(handle, type_hash, prop, values, count);
+}
+
 int add_component(GEntityHandle handle, const char* type_name) {
     return commands::add_component(handle, type_name);
 }

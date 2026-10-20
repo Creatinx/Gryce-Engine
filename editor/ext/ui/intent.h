@@ -33,7 +33,8 @@ enum IntentKind : int {
     // 变换
     kSetPosition, kSetRotation, kSetScale,
     // 组件
-    kSetPropertyNumber, kSetPropertyBool, kRemoveComponent, kAddComponent,
+    kSetPropertyNumber, kSetPropertyBool, kSetPropertyVec,
+    kRemoveComponent, kAddComponent,
     // 资产
     kImportAsset,
     // 文档 / 历史 / 播放
@@ -54,6 +55,7 @@ struct Intent {
     float f2 = 0.0f;
     float f3 = 1.0f;
     double number = 0.0;
+    float vec[4] = {0.0f, 0.0f, 0.0f, 0.0f};   // 向量类属性（flag 存分量数）
     int flag = 0;
     std::string a;              // 名字 / 属性名 / 路径 / 显示模式 / 分组标签
     std::string b;              // 组件类型名

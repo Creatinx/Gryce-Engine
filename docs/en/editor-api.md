@@ -23,7 +23,7 @@ GEdit_SetTransform(handle, &pos, NULL, NULL);
 | `ECMD_CREATE_ENTITY` | `GEdit_CreateEntity(name, parent)` | Creates and **selects** the entity (`GEntity_GetSelected` returns it) |
 | `ECMD_DESTROY_ENTITY` | `GEdit_DestroyEntity(e)` | Destroys the whole subtree |
 | `ECMD_RENAME_ENTITY` | `GEdit_RenameEntity(e, name)` | |
-| `ECMD_REPARENT_ENTITY` | `GEdit_ReparentEntity(e, parent)` | Safe reparent; never destroys the moved entity |
+| `ECMD_REPARENT_ENTITY` | `GEdit_ReparentEntity(e, parent)` | Safe reparent; never destroys the moved entity; **rejects cycles** |
 | `ECMD_SELECT_ENTITY` | `GEdit_SelectEntity(e)` | Fires `OnEntitySelected` |
 | `ECMD_SET_TRANSFORM` | `GEdit_SetTransform(e, pos, rot, scale)` | `NULL` components keep their **current** value; an all-zero `rot` means "keep rotation" |
 | `ECMD_TRANSLATE_ENTITY` | `GEdit_TranslateEntity(e, delta)` | Local-space delta; the current value is read **at execution time**, so several can stack in one frame |
@@ -58,6 +58,12 @@ GEdit_TranslateEntity(e, &delta);       // => pos1 + delta
 
 Two Inspector fields edited back to back, or a gizmo drag followed by a snap correction,
 both hit this.
+
+### Reparent is rejected silently
+
+`GEdit_ReparentEntity` silently refuses three cases: self-parenting (`parent == e`), a no-op (the target is already the parent), and **cycles** (the target lives in the entity's own subtree). The first two are idempotence shortcuts; the third is mandatory — `Entity::add_child` has no cycle guard, and parenting a node under its own descendant builds an `A → B → A` **ownership cycle**. Any later traversal or serialization recurses forever and destruction leaves dangling pointers.
+
+Because the refusal is silent, **the editor must check on its own side** to give feedback: walk `GEntity_GetParent` upwards, and on a hit return 0 plus record an event. Otherwise the user drags a node and nothing happens, with no explanation.
 
 ### Two return conventions — do not mix them
 

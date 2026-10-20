@@ -80,7 +80,7 @@ ctest --test-dir build --output-on-failure
 
 ### 2.6 编辑器自检（`editor_selftest`，1 条）
 
-唯一**跑完整宿主**的用例：启动 `GryceApp --project editor/project --entry res:/selftest.js --frames 45`，脚本里 60 条断言覆盖扩展加载、视口尺寸 / 相机、Gizmo 拖拽、场景层级树、检视面板 JSON、资产扫描与侧车、选择集、快捷键冲突检测、创建 / 变换 / 撤销 / 重做 / 销毁的完整编辑回路，以及界面层（UI 回调真的被宿主调用、视口贴图 id 有效、面板数据与 JSON 一致）。需要窗口与 OpenGL 上下文，因此不进单元门禁，只作为集成用例。
+唯一**跑完整宿主**的用例：启动 `GryceApp --project editor/project --entry res:/selftest.js --frames 80`，脚本里 79 条断言覆盖扩展加载、视口尺寸 / 相机、Gizmo 拖拽、场景层级树、检视面板 JSON、资产扫描与侧车、选择集、快捷键冲突检测、创建 / 变换 / 撤销 / 重做 / 销毁的完整编辑回路、界面层（UI 回调真的被宿主调用、视口贴图 id 有效、面板数据与 JSON 一致），以及组件增删与向量属性写入（加一个组件后它从 Add 菜单消失、删掉后回到菜单；`setPropertyVec` 写入可回读、分量数不符被拒）和重挂（生效、成环被拒、自挂被拒）。需要窗口与 OpenGL 上下文，因此不进单元门禁，只作为集成用例。
 
 判定靠输出里的 `SELFTEST PASS`：宿主退出码不反映脚本结论（脚本断言失败不会让进程崩溃），所以用 `PASS_REGULAR_EXPRESSION` 而非 `WILL_FAIL`。扩展 DLL 缺失时 `add_test` 整条不注册，用例不会假绿成"零断言通过"。
 

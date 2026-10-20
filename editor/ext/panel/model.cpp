@@ -37,6 +37,23 @@ std::string g_asset_dir = "res:/models";
 double g_asset_stamp_ms = 0.0;
 bool g_asset_dirty = true;
 
+std::vector<ComponentTypeInfo> g_component_types;
+bool g_component_types_dirty = true;
+
+// 引擎内部维护的组件：它们记的是实体自身的结构（自己是谁、父是谁、子有谁、
+// 是不是预制体实例）。挂第二个没有意义，删掉之后层级与序列化立刻对不上，
+// 而引擎本身不会拒绝（它只按类型名创建）。
+//
+// 排除列表写死在编辑器里、而不是问引擎，是因为"能不能删"是编辑器的产品决策，
+// 不是引擎的性质：引擎当然允许删 Transform，只是删完那个实体就不可用了。
+bool is_internal_type(const char* short_name) {
+    if (!short_name) return true;
+    return std::strcmp(short_name, "Transform") == 0 ||
+           std::strcmp(short_name, "ParentComponent") == 0 ||
+           std::strcmp(short_name, "ChildrenComponent") == 0 ||
+           std::strcmp(short_name, "PrefabInstance") == 0;
+}
+
 double now_ms() {
     using clock = std::chrono::steady_clock;
     return std::chrono::duration<double, std::milli>(clock::now().time_since_epoch()).count();
@@ -168,7 +185,52 @@ int collect_asset(void* user, const GAssetEntry* entry) {
     return 1;
 }
 
+void ensure_component_types() {
+    if (!g_component_types_dirty) return;
+    g_component_types_dirty = false;
+    g_component_types.clear();
+
+    const int n = GComponent_GetRegisteredTypeCount();
+    g_component_types.reserve(static_cast<std::size_t>(n > 0 ? n : 0));
+    for (int i = 0; i < n; ++i) {
+        ComponentTypeInfo info;
+        char name[64] = {};
+        if (GComponent_GetRegisteredTypeInfo(i, &info.hash, name,
+                                             static_cast<int>(sizeof(name))) != 0) {
+            continue;
+        }
+        info.name = name;
+        info.short_name = short_component_name(name);
+        if (is_internal_type(info.short_name.c_str())) continue;
+
+        char category[32] = {};
+        if (GComponent_GetRegisteredTypeCategory(i, category,
+                                                 static_cast<int>(sizeof(category))) == 0) {
+            info.category = category;
+        } else {
+            info.category = "Other";
+        }
+        g_component_types.push_back(std::move(info));
+    }
+
+    // 菜单按分类分组显示，同一分类内按名字排，保证每次打开的位置一致。
+    std::sort(g_component_types.begin(), g_component_types.end(),
+              [](const ComponentTypeInfo& a, const ComponentTypeInfo& b) {
+                  if (a.category != b.category) return a.category < b.category;
+                  return a.short_name < b.short_name;
+              });
+}
+
 } // namespace
+
+const std::vector<ComponentTypeInfo>& component_types() {
+    ensure_component_types();
+    return g_component_types;
+}
+
+void invalidate_component_types() {
+    g_component_types_dirty = true;
+}
 
 void rebuild_hierarchy() {
     g_hierarchy.clear();
@@ -247,6 +309,7 @@ void rebuild_inspector(GEntityHandle handle) {
         comp.qualified_name = type_name;
         comp.name = short_component_name(type_name);
         comp.hash = hash;
+        comp.removable = !is_internal_type(comp.name.c_str());
 
         const int prop_count = GComponent_GetPropertyCount(handle, hash);
         comp.properties.reserve(static_cast<std::size_t>(prop_count > 0 ? prop_count : 0));
@@ -264,6 +327,26 @@ void rebuild_inspector(GEntityHandle handle) {
             comp.properties.push_back(std::move(value));
         }
         g_inspector.components.push_back(std::move(comp));
+    }
+
+    // Add Component 的候选：全部可挂载类型减去已经挂上的。
+    //
+    // 比对用**短名**而不是哈希：GComponent_GetTypeHashAt 给的是全名
+    // （gryce_engine::components::MeshRenderer）的哈希，注册表给的是
+    // 注册名（MeshRenderer）的哈希，两者根本不是同一个数。而菜单里显示的
+    // 就是短名，按短名比能保证"显示的名字"与"判定是否已挂"永远一致。
+    ensure_component_types();
+    g_inspector.available_components.clear();
+    g_inspector.available_components.reserve(g_component_types.size());
+    for (const ComponentTypeInfo& info : g_component_types) {
+        bool attached = false;
+        for (const ComponentData& comp : g_inspector.components) {
+            if (comp.name == info.short_name) {
+                attached = true;
+                break;
+            }
+        }
+        if (!attached) g_inspector.available_components.push_back(info);
     }
 }
 

@@ -84,21 +84,81 @@ GUi_BeginMenuBar(); GUi_BeginMenu(label); GUi_MenuItem(label, shortcut, enabled)
 | --- | --- |
 | Text | `GUi_Text` / `GUi_TextColored(color, text)` / `GUi_LabelText` / `GUi_Separator` / `GUi_Spacing` / `GUi_SameLine(spacing)` |
 | Buttons | `GUi_Button` / `GUi_ButtonSize` / `GUi_SmallButton` / `GUi_Selectable(label, selected)` / `GUi_SetItemAllowOverlap` |
-| Values | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat3` / `GUi_DragFloat4` |
+| Values | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` |
 | Text input | `GUi_InputText` / `GUi_SetKeyboardFocusHere` / `GUi_IsItemDeactivatedAfterEdit` |
 | Enums | `GUi_Combo(label, current, items, count)` |
 | Trees | `GUi_TreeNode(label, default_open)` + `GUi_TreePop` / `GUi_CollapsingHeader` |
 | Images | `GUi_Image(tex, w, h)` |
-| Popups | `GUi_OpenPopupOnItemClick` / `GUi_OpenPopup` / `GUi_BeginPopup` / `GUi_EndPopup` |
-| Layout | `GUi_SetCursorPos` / `GUi_GetCursorPos` / `GUi_GetContentAvail` / `GUi_SetNextItemWidth` / `GUi_GetTextLineHeight` / `GUi_GetFrameHeight` |
+| Popups | `GUi_OpenPopupOnItemClick` / `GUi_OpenPopup` / `GUi_BeginPopup` / `GUi_EndPopup` / `GUi_CloseCurrentPopup` |
+| Drag and drop | `GUi_BeginDragDropSource` / `GUi_SetDragDropPayloadString` / `GUi_EndDragDropSource` / `GUi_BeginDragDropTarget` / `GUi_AcceptDragDropPayloadString` / `GUi_EndDragDropTarget` |
+| Layout | `GUi_SetCursorPos` / `GUi_GetCursorPos` / `GUi_GetContentAvail` / `GUi_SetNextItemWidth` / `GUi_GetTextLineHeight` / `GUi_GetFrameHeight` / `GUi_CalcTextWidth` |
 | Hit testing | `GUi_LastItemRect` / `GUi_IsItemHovered` / `GUi_IsItemClicked` / `GUi_IsItemActive` / `GUi_IsAnyItemActive` |
-| Mouse | `GUi_MousePos` / `GUi_MouseDeltaX` / `GUi_MouseDeltaY` / `GUi_IsMouseDown` / `GUi_IsMouseClicked` / `GUi_IsMouseReleased` |
+| Mouse | `GUi_MousePos` / `GUi_MouseDeltaX` / `GUi_MouseDeltaY` / `GUi_IsMouseDown` / `GUi_IsMouseClicked` / `GUi_IsMouseReleased` / `GUi_GetModifiers` |
 | Capture | `GUi_WantCaptureMouse` / `GUi_WantCaptureKeyboard` |
 | Style | `GUi_PushTextStyle(kind)` / `GUi_PopTextStyle` |
 
 Return convention: `int` widgets return 1 when clicked / edited this frame, 0 otherwise. In-place pointer arguments (`float*`, `char*`, `int*`) already hold the new value when 1 is returned.
 
 `GUi_Selectable` is for "whole row clickable and shows a selected state" (hierarchy tree, asset list). A row that also needs a context menu must call `GUi_SetItemAllowOverlap()` right after it, otherwise clicks get stolen by the neighbouring row's hit rect.
+
+### Splitting width between label and widget
+
+ImGui draws the label to the **right** of the widget. So `GUi_SetNextItemWidth(-1)` makes the widget eat the whole row and pushes the label outside the panel (leaving half a character on screen). Subtract the label width with `GUi_CalcTextWidth`:
+
+```c
+float avail = 0.0f, unused = 0.0f;
+GUi_GetContentAvail(&avail, &unused);
+float reserve = GUi_CalcTextWidth("Position") + 14.0f;
+if (reserve > avail * 0.6f) reserve = avail * 0.6f;   /* long labels get 60% at most */
+GUi_SetNextItemWidth(-reserve);
+GUi_DragFloat3("Position", v, 0.02f);
+```
+
+Only widgets without a visible label (`"##name"`) should use `-1`.
+
+### Drag and drop
+
+Payloads are strings only. Everything an editor needs to move around (entity handles, asset paths) already has a textual form, and text buys two things: no memory-layout dependency across the DLL boundary, and a tooltip that actually shows the content while dragging.
+
+```c
+/* Source: right after the item */
+if (GUi_BeginDragDropSource()) {
+    char id[24];
+    std::snprintf(id, sizeof(id), "%lld", (long long)handle);
+    GUi_SetDragDropPayloadString("GRYCE_ENTITY", id);
+    GUi_EndDragDropSource();
+}
+
+/* Target: also "the previous item" */
+if (GUi_BeginDragDropTarget()) {
+    char buf[24];
+    int r = GUi_AcceptDragDropPayloadString("GRYCE_ENTITY", buf, sizeof(buf));
+    if (r == GUI_DRAG_DELIVER) { /* released, buf is valid */ }
+    GUi_EndDragDropTarget();
+}
+```
+
+`GUi_AcceptDragDropPayloadString` returns three states, and the distinction matters:
+
+| Value | Meaning | Typical use |
+| --- | --- | --- |
+| `GUI_DRAG_NONE` | No matching payload hovering | Do nothing |
+| `GUI_DRAG_PREVIEW` | Hovering, not released yet | Draw highlight, change hint text |
+| `GUI_DRAG_DELIVER` | Released this frame, `out_buf` filled | Perform the action |
+
+Acting only on `DELIVER` is enough for correctness; `PREVIEW` exists so the target can say "you can drop here" while hovering. The mouse button is always the left button — ImGui has no switch for dragging with another one.
+
+### Modifiers
+
+```c
+const int mods = GUi_GetModifiers();      /* GUI_MOD_CTRL / SHIFT / ALT / SUPER */
+if (mods & GUI_MOD_SHIFT)  ...            /* add to selection */
+else if (mods & GUI_MOD_CTRL) ...         /* toggle */
+else ...                                   /* replace selection */
+```
+
+The hierarchy tree uses this to distinguish replace / add / toggle, matching what most editors do.
+
 
 ## 5. The viewport image and coordinates
 
@@ -154,6 +214,20 @@ if (GUi_IsAnyItemActive()) {
 
 While `GUi_IsAnyItemActive()` is true you must **not** close the group — closing it means the next drag opens a fresh one and a single drag becomes dozens of steps. Note it also returns true while a text field has focus, so "typing a new name" collapses into one step too, which is what you want.
 
+### Drag widgets must keep their own copy of the value
+
+The engine only sees a change on the **next** frame (writes go through the command queue). If you re-initialise a `DragFloat` from the panel model every frame, the value snaps back to the previous frame's number while dragging — the feel is "drag, and it bounces back".
+
+```c
+/* Sync only when the target changed or nothing is being edited */
+if (changed_target || !GUi_IsAnyItemActive()) {
+    buf[0] = model_value;
+}
+if (GUi_DragFloat("Speed", buf, 0.01f)) { push(Intent{...}); }
+```
+
+The buffer must survive across frames (keep it in the panel state struct), not be a stack local.
+
 ## 8. Sharing input with the host
 
 When the UI eats mouse/keyboard, host navigation and shortcuts must yield:
@@ -171,6 +245,7 @@ Missing the keyboard guard looks like: renaming an entity, pressing `W` starts t
 ## 9. Known limits
 
 * No docking, no multi-window docking, no `ImPlot` or node-editor style add-ons — add a new `GUi_*` function for those instead of pulling ImGui into the extension.
+* Drag/drop payloads are a single string: no multi-selection dragging, no custom payload types, and no cross-process or cross-window dragging.
 * One dark theme plus semantic text colours (`GUI_TEXT_*`). To restyle, change the engine's `debug_imgui` style; do not hardcode colours in callers.
 * `GUi_Image` takes no custom UVs or border tinting; the viewport shows the full texture.
 * Non-ASCII text depends on the font atlas the engine loaded; missing glyphs render as boxes rather than crashing.

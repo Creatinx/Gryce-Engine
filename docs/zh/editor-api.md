@@ -23,7 +23,7 @@ GEdit_SetTransform(handle, &pos, NULL, NULL);
 | `ECMD_CREATE_ENTITY` | `GEdit_CreateEntity(name, parent)` | 创建并**自动选中**（`GEntity_GetSelected` 可取到新句柄） |
 | `ECMD_DESTROY_ENTITY` | `GEdit_DestroyEntity(e)` | 连子树一起销毁 |
 | `ECMD_RENAME_ENTITY` | `GEdit_RenameEntity(e, name)` | |
-| `ECMD_REPARENT_ENTITY` | `GEdit_ReparentEntity(e, parent)` | 安全重挂，不会销毁被挂实体 |
+| `ECMD_REPARENT_ENTITY` | `GEdit_ReparentEntity(e, parent)` | 安全重挂，不会销毁被挂实体；**拒绝成环** |
 | `ECMD_SELECT_ENTITY` | `GEdit_SelectEntity(e)` | 触发 `OnEntitySelected` 回调 |
 | `ECMD_SET_TRANSFORM` | `GEdit_SetTransform(e, pos, rot, scale)` | 传 `NULL` 的分量**用当前值补齐**；`rot` 全 0 视为保持原旋转 |
 | `ECMD_TRANSLATE_ENTITY` | `GEdit_TranslateEntity(e, delta)` | 局部增量平移，**执行时**才读当前值，同帧多条可叠加 |
@@ -56,6 +56,12 @@ GEdit_TranslateEntity(e, &delta);        // ⇒ pos1 + delta
 ```
 
 Inspector 连续改两个数值框、Gizmo 拖拽后紧跟一次吸附修正，都会踩这个坑。
+
+### 重挂会被拒绝，且不报错
+
+`GEdit_ReparentEntity` 静默拒绝三类请求：自挂（parent == e）、原地重挂（parent 已经是当前父节点）、**成环**（parent 在自己的子树里）。前两类是幂等优化，第三类是必需的——`Entity::add_child` 不做防环，把父节点挂到自己的子孙上会构造出 `A → B → A` 的所有权环，之后任何遍历、序列化都会无限递归，析构时又是悬空指针。
+
+因为是静默拒绝，**编辑器要在自己这一侧再判一次**才能给出反馈：沿 `GEntity_GetParent` 上溯，命中就返回 0 并记一条事件，不要等引擎吞掉之后让用户看到"拖过去什么都没发生"。
 
 ### 返回值约定（两种，别混用）
 

@@ -14,6 +14,7 @@
 #include "api/ui_api_internal.h"
 
 #include <cstddef>
+#include <cstring>
 
 #ifdef GRYCE_HAS_IMGUI
 #include <imgui.h>
@@ -301,6 +302,16 @@ int GUi_DragFloat(const char* label, float* inout_value, float speed) {
 #endif
 }
 
+int GUi_DragFloat2(const char* label, float v[2], float speed) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready() || !v) return 0;
+    return ImGui::DragFloat2(label ? label : "", v, speed) ? 1 : 0;
+#else
+    (void)label; (void)v; (void)speed;
+    return 0;
+#endif
+}
+
 int GUi_DragFloat3(const char* label, float v[3], float speed) {
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
@@ -317,6 +328,16 @@ int GUi_DragFloat4(const char* label, float v[4], float speed) {
     return ImGui::DragFloat4(label ? label : "", v, speed) ? 1 : 0;
 #else
     (void)label; (void)v; (void)speed;
+    return 0;
+#endif
+}
+
+int GUi_ColorEdit4(const char* label, float v[4]) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready() || !v) return 0;
+    return ImGui::ColorEdit4(label ? label : "", v, ImGuiColorEditFlags_Float) ? 1 : 0;
+#else
+    (void)label; (void)v;
     return 0;
 #endif
 }
@@ -457,6 +478,83 @@ void GUi_EndPopup(void) {
 #endif
 }
 
+void GUi_CloseCurrentPopup(void) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return;
+    ImGui::CloseCurrentPopup();
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// 拖放
+// ---------------------------------------------------------------------------
+
+int GUi_BeginDragDropSource(void) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return 0;
+    // SourceAllowNullID：图标的条目（比如只带 ##id 的 Selectable）也要能拖。
+    return ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID) ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+int GUi_SetDragDropPayloadString(const char* type, const char* text) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready() || !type || !type[0]) return 0;
+    const char* src = text ? text : "";
+    // 连结尾的 '\0' 一起送，接收端拿到的就是一段合法的 C 字符串。
+    return ImGui::SetDragDropPayload(type, src, std::strlen(src) + 1) ? 1 : 0;
+#else
+    (void)type; (void)text;
+    return 0;
+#endif
+}
+
+void GUi_EndDragDropSource(void) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return;
+    ImGui::EndDragDropSource();
+#endif
+}
+
+int GUi_BeginDragDropTarget(void) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return 0;
+    return ImGui::BeginDragDropTarget() ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+int GUi_AcceptDragDropPayloadString(const char* type, char* out_buf, int buf_size) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready() || !type || !type[0]) return GUI_DRAG_NONE;
+    // AcceptBeforeDelivery：悬停期间也返回 payload（但 IsDelivery 为假），
+    // 这样目标能每帧画高亮，而真正的投放只发生一次。
+    const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(
+        type, ImGuiDragDropFlags_AcceptBeforeDelivery);
+    if (!payload) return GUI_DRAG_NONE;
+    if (!payload->IsDelivery()) return GUI_DRAG_PREVIEW;
+    if (out_buf && buf_size > 0 && payload->Data && payload->DataSize > 0) {
+        const char* src = static_cast<const char*>(payload->Data);
+        std::strncpy(out_buf, src, static_cast<std::size_t>(buf_size) - 1);
+        out_buf[buf_size - 1] = '\0';
+    }
+    return GUI_DRAG_DELIVER;
+#else
+    (void)type; (void)out_buf; (void)buf_size;
+    return GUI_DRAG_NONE;
+#endif
+}
+
+void GUi_EndDragDropTarget(void) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return;
+    ImGui::EndDragDropTarget();
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // 布局 / 命中查询
 // ---------------------------------------------------------------------------
@@ -519,6 +617,16 @@ float GUi_GetFrameHeight(void) {
 #endif
 }
 
+float GUi_CalcTextWidth(const char* text) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready() || !text) return 0.0f;
+    return ImGui::CalcTextSize(text).x;
+#else
+    (void)text;
+    return 0.0f;
+#endif
+}
+
 void GUi_LastItemRect(float* out_x, float* out_y, float* out_w, float* out_h) {
     if (out_x) *out_x = 0.0f;
     if (out_y) *out_y = 0.0f;
@@ -567,6 +675,21 @@ int GUi_IsAnyItemActive(void) {
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsAnyItemActive() ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+int GUi_GetModifiers(void) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return 0;
+    const ImGuiIO& io = ImGui::GetIO();
+    int mods = 0;
+    if (io.KeyCtrl)  mods |= GUI_MOD_CTRL;
+    if (io.KeyShift) mods |= GUI_MOD_SHIFT;
+    if (io.KeyAlt)   mods |= GUI_MOD_ALT;
+    if (io.KeySuper) mods |= GUI_MOD_SUPER;
+    return mods;
 #else
     return 0;
 #endif

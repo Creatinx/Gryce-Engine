@@ -17,6 +17,7 @@
 #include "common/json_writer.h"
 
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 namespace gryce::editor::panel {
@@ -27,6 +28,14 @@ namespace {
 // 每次重算一遍层级树既浪费又会让两次结果不一致（枚举期间有实体被删）。
 bool g_hierarchy_cached = false;
 std::string g_hierarchy_json;
+
+// 64 位哈希写成十进制文本。JSON 数字是 IEEE-754 double，超过 2^53 的值
+// 经 JS 的 JSON.parse 就变成了另一个数；字符串形式桥接层能精确读回。
+std::string hash_text(uint64_t hash) {
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(hash));
+    return std::string(buf);
+}
 
 void write_node(Json& j, const HierarchyNode& node) {
     j.begin_object();
@@ -154,7 +163,11 @@ std::string inspector_json(GEntityHandle handle) {
         j.begin_object();
         j.kv("name", comp.name);
         j.kv("qualifiedName", comp.qualified_name);
-        j.kv("hash", static_cast<unsigned long long>(comp.hash));
+        // 哈希走**十进制字符串**：64 位值经 JSON 数字再被 JS 解析只剩 53 位
+        // 精度，读回去是个不同的数，表现为"类型查得到、属性写不进去"。
+        // 桥接层（js_args 的 u64）字符串优先，传回去正好。
+        j.kv("hash", hash_text(comp.hash));
+        j.kv("removable", comp.removable);
         j.key("properties");
         j.begin_array();
         for (const PropertyValue& p : comp.properties) write_property(j, p);
@@ -162,6 +175,21 @@ std::string inspector_json(GEntityHandle handle) {
         j.end_object();
     }
     j.end_array();
+
+    // 还能挂哪些组件。UI 用它做 Add Component 菜单，测试用它确认
+    // "删掉一个组件之后它重新出现在候选里"。
+    j.key("availableComponents");
+    j.begin_array();
+    for (const ComponentTypeInfo& info : in.available_components) {
+        j.begin_object();
+        j.kv("name", info.name);
+        j.kv("shortName", info.short_name);
+        j.kv("category", info.category);
+        j.kv("hash", hash_text(info.hash));
+        j.end_object();
+    }
+    j.end_array();
+
     j.end_object();
     return j.str();
 }

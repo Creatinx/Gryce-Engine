@@ -29,6 +29,9 @@ let failures = 0;
 let created = 0;
 let entitiesBefore = 0;
 let savedPos = [0, 0, 0];
+let cube = 0;
+let ground = 0;
+let lightHash = '';
 
 function check(name, ok, detail) {
     ++checks;
@@ -320,6 +323,103 @@ export function on_update(dt) {
         check('ui.assets.count', assets.count === assets.items.length && assets.count >= 1,
               'count=' + assets.count + ' items=' + assets.items.length);
         check('ui.inspector', JSON.parse(E.panel_inspector(handleOf('Cube'))).ok === 1);
+        phase = 12;
+        return;
+    }
+
+    if (phase === 12) {
+        // 组件增删的"命令面"：加一个 Light 到 Cube 上。
+        cube = handleOf('Cube');
+        ground = handleOf('Ground');
+        const ins = JSON.parse(E.panel_inspector(cube));
+        check('comp.inspector', ins.ok === 1 && ins.components.length > 0,
+              'components=' + (ins.components ? ins.components.length : -1));
+
+        // 引擎内部维护的类型不得出现在 Add 菜单里（挂了没有意义，
+        // Transform 挂两个更是灾难）。Cube 上并没有 Transform 组件 ——
+        // 位置存在 Entity 自身，反射表里那条注册只服务于反序列化。
+        const mesh = ins.components.find(function (c) { return c.name === 'MeshRenderer'; });
+        check('comp.removable', mesh !== undefined && mesh.removable === true,
+              mesh ? 'removable=' + mesh.removable : 'no MeshRenderer');
+        // 哈希必须是可精确往返的字符串：64 位值经 JSON 数字只剩 53 位精度，
+        // 读回去是个不同的数，表现是"类型查得到、属性写不进去"。
+        check('comp.hashIsString', mesh !== undefined && typeof mesh.hash === 'string',
+              mesh ? typeof mesh.hash : 'no MeshRenderer');
+
+        const availNames = ins.availableComponents.map(function (c) { return c.shortName; });
+        check('comp.available', availNames.length > 0, 'available=' + availNames.length);
+        check('comp.internalExcluded',
+              availNames.indexOf('Transform') < 0 &&
+              availNames.indexOf('ParentComponent') < 0 &&
+              availNames.indexOf('ChildrenComponent') < 0,
+              'internal bookkeeping types must not be addable');
+
+        check('comp.add', E.addComponent(cube, 'Light') === true);
+        phase = 13;
+        return;
+    }
+
+    if (phase === 13) {
+        const ins = JSON.parse(E.panel_inspector(cube));
+        const names = ins.components.map(function (c) { return c.name; });
+        check('comp.added', names.indexOf('Light') >= 0, names.join(','));
+        // 加进去的类型必须同时从候选里消失，否则菜单会允许重复添加。
+        const avail = ins.availableComponents.map(function (c) { return c.shortName; });
+        check('comp.addedRemovedFromMenu', avail.indexOf('Light') < 0,
+              'available=' + avail.length);
+
+        // 向量属性写入：Light.direction 是 vec3，有确定答案。
+        const light = ins.components.find(function (c) { return c.name === 'Light'; });
+        check('comp.lightFound', light !== undefined);
+        lightHash = light ? light.hash : '';
+        check('prop.vec',
+              E.setPropertyVec(cube, lightHash, 'direction', 0.25, -1, 0.5) === true);
+        phase = 14;
+        return;
+    }
+
+    if (phase === 14) {
+        const ins = JSON.parse(E.panel_inspector(cube));
+        const light = ins.components.find(function (c) { return c.name === 'Light'; });
+        let dir = null;
+        if (light) {
+            for (let i = 0; i < light.properties.length; ++i) {
+                if (light.properties[i].name === 'direction') dir = light.properties[i].value;
+            }
+        }
+        check('prop.vecApplied',
+              dir !== null && near(dir[0], 0.25) && near(dir[1], -1) && near(dir[2], 0.5),
+              dir ? dir.join(',') : 'null');
+        // 分量数与字段类型不符时必须拒绝，不能写一半。
+        check('prop.vecReject',
+              E.setPropertyVec(cube, lightHash, 'direction', 1, 2) === false);
+
+        // 重挂：把 Cube 挂到 Ground 下。
+        check('reparent', E.reparent(cube, ground) === true);
+        phase = 15;
+        return;
+    }
+
+    if (phase === 15) {
+        const ins = JSON.parse(E.panel_inspector(cube));
+        check('reparent.applied', ins.parent === ground, 'parent=' + ins.parent);
+
+        // 成环必须被拒：把父节点挂到自己的子节点下会让场景不可遍历。
+        check('reparent.cycleReject', E.reparent(ground, cube) === false);
+        check('reparent.selfReject', E.reparent(cube, cube) === false);
+
+        // 组件删除：删掉刚才加的 Light，它应当回到候选里。
+        check('comp.remove', E.removeComponent(cube, lightHash) === true);
+        phase = 16;
+        return;
+    }
+
+    if (phase === 16) {
+        const ins = JSON.parse(E.panel_inspector(cube));
+        const names = ins.components.map(function (c) { return c.name; });
+        check('comp.removed', names.indexOf('Light') < 0, names.join(','));
+        const avail = ins.availableComponents.map(function (c) { return c.shortName; });
+        check('comp.backInMenu', avail.indexOf('Light') >= 0, 'available=' + avail.length);
         finish();
     }
 }

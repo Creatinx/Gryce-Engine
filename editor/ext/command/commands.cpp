@@ -167,9 +167,13 @@ int reparent(GEntityHandle handle, GEntityHandle parent) {
     if (parent < 0) return 0;
     if (parent > 0) {
         if (!session::handle_alive(parent)) return 0;
-        // 挂到自己的子树下会造出环，场景序列化会无限递归。引擎侧不拦，
-        // 拦在这里 —— 这是编辑器唯一能拦住的地方。
-        if (parent == handle || is_descendant_of(parent, handle)) return 0;
+        // 挂到自己的子树下会造出环，场景序列化会无限递归。引擎侧也拦
+        // （core_api.cpp 的 cmd_reparent_entity），这里拦是为了**能给出反馈**：
+        // 引擎只是静默忽略，界面就变成"拖过去什么都没发生"。
+        if (parent == handle || is_descendant_of(parent, handle)) {
+            push_event("reparent_rejected");
+            return 0;
+        }
     }
     return GEdit_ReparentEntity(handle, parent);
 }
@@ -260,6 +264,44 @@ int set_property_number(GEntityHandle handle, uint64_t type_hash,
 int set_property_bool(GEntityHandle handle, uint64_t type_hash,
                       const char* prop, int value) {
     return set_property_number(handle, type_hash, prop, value != 0 ? 1.0 : 0.0);
+}
+
+int set_property_vec(GEntityHandle handle, uint64_t type_hash,
+                     const char* prop, const float* values, int count) {
+    if (handle <= 0 || type_hash == 0 || !prop || !prop[0]) return 0;
+    if (!values || count <= 0 || count > 4) return 0;
+    if (!session::handle_alive(handle)) return 0;
+    for (int i = 0; i < count; ++i) {
+        if (!std::isfinite(values[i])) return 0;
+    }
+
+    // 反射字段按原始字节写入（GCmdSetProperty::value 给 128 字节，向量最长的
+    // 四元数只占 16），所以这里要做的是"按字段的真实类型摆好内存"：
+    // vec3i 是三个 int32，其余都是 float。摆错类型的表现是数值离谱地大
+    // （float 位模式当 int 读）或干脆是 0，界面上看不出来源。
+    const int type = property_type_of(handle, type_hash, prop);
+    int expected = 0;
+    switch (type) {
+        case 5: expected = 2; break;   // vec2
+        case 6: expected = 3; break;   // vec3
+        case 7: expected = 3; break;   // vec3i
+        case 8: expected = 4; break;   // vec4
+        case 9: expected = 4; break;   // quat
+        case 10: expected = 4; break;  // color
+        default: return 0;             // 标量 / 字符串不走这里
+    }
+    if (expected != count) return 0;
+
+    if (type == 7) {
+        int32_t iv[3] = {};
+        for (int i = 0; i < 3; ++i) iv[i] = static_cast<int32_t>(std::llround(values[i]));
+        return GEdit_SetProperty(handle, type_hash, prop, iv, sizeof(iv));
+    }
+
+    float fv[4] = {};
+    for (int i = 0; i < count; ++i) fv[i] = values[i];
+    return GEdit_SetProperty(handle, type_hash, prop, fv,
+                             static_cast<int>(sizeof(float) * static_cast<std::size_t>(count)));
 }
 
 int add_component(GEntityHandle handle, const char* type_name) {

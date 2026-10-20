@@ -84,21 +84,81 @@ GUi_BeginMenuBar(); GUi_BeginMenu(label); GUi_MenuItem(label, shortcut, enabled)
 | --- | --- |
 | 文本 | `GUi_Text` / `GUi_TextColored(color, text)` / `GUi_LabelText` / `GUi_Separator` / `GUi_Spacing` / `GUi_SameLine(spacing)` |
 | 按钮 | `GUi_Button` / `GUi_ButtonSize` / `GUi_SmallButton` / `GUi_Selectable(label, selected)` / `GUi_SetItemAllowOverlap` |
-| 数值 | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat3` / `GUi_DragFloat4` |
+| 数值 | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` |
 | 文本输入 | `GUi_InputText` / `GUi_SetKeyboardFocusHere` / `GUi_IsItemDeactivatedAfterEdit` |
 | 枚举 | `GUi_Combo(label, current, items, count)` |
 | 树 | `GUi_TreeNode(label, default_open)` + `GUi_TreePop` / `GUi_CollapsingHeader` |
 | 图片 | `GUi_Image(tex, w, h)` |
-| 弹出 | `GUi_OpenPopupOnItemClick` / `GUi_OpenPopup` / `GUi_BeginPopup` / `GUi_EndPopup` |
-| 布局 | `GUi_SetCursorPos` / `GUi_GetCursorPos` / `GUi_GetContentAvail` / `GUi_SetNextItemWidth` / `GUi_GetTextLineHeight` / `GUi_GetFrameHeight` |
+| 弹出 | `GUi_OpenPopupOnItemClick` / `GUi_OpenPopup` / `GUi_BeginPopup` / `GUi_EndPopup` / `GUi_CloseCurrentPopup` |
+| 拖放 | `GUi_BeginDragDropSource` / `GUi_SetDragDropPayloadString` / `GUi_EndDragDropSource` / `GUi_BeginDragDropTarget` / `GUi_AcceptDragDropPayloadString` / `GUi_EndDragDropTarget` |
+| 布局 | `GUi_SetCursorPos` / `GUi_GetCursorPos` / `GUi_GetContentAvail` / `GUi_SetNextItemWidth` / `GUi_GetTextLineHeight` / `GUi_GetFrameHeight` / `GUi_CalcTextWidth` |
 | 命中 | `GUi_LastItemRect` / `GUi_IsItemHovered` / `GUi_IsItemClicked` / `GUi_IsItemActive` / `GUi_IsAnyItemActive` |
-| 鼠标 | `GUi_MousePos` / `GUi_MouseDeltaX` / `GUi_MouseDeltaY` / `GUi_IsMouseDown` / `GUi_IsMouseClicked` / `GUi_IsMouseReleased` |
+| 鼠标 | `GUi_MousePos` / `GUi_MouseDeltaX` / `GUi_MouseDeltaY` / `GUi_IsMouseDown` / `GUi_IsMouseClicked` / `GUi_IsMouseReleased` / `GUi_GetModifiers` |
 | 捕获 | `GUi_WantCaptureMouse` / `GUi_WantCaptureKeyboard` |
 | 样式 | `GUi_PushTextStyle(kind)` / `GUi_PopTextStyle` |
 
 返回值统一：`int` 型控件返回 1 = 本帧被点击 / 值被改过，0 = 没动。就地更新的指针参数（`float*`、`char*`、`int*`）在返回 1 时已经写好新值。
 
 `GUi_Selectable` 用在"整行可点且要显示选中态"的地方（层级树、资产列表）。带右键菜单的行必须紧跟着调 `GUi_SetItemAllowOverlap()`，否则点击会被相邻条目的命中矩形抢走。
+
+### 标签与控件的宽度分摊
+
+ImGui 的标签画在控件**右边**。所以 `GUi_SetNextItemWidth(-1)` 会让控件吃满整行、把标签挤到面板外面（截图上只剩半个字）。正确写法是用 `GUi_CalcTextWidth` 扣掉标签宽度：
+
+```c
+float avail = 0.0f, unused = 0.0f;
+GUi_GetContentAvail(&avail, &unused);
+float reserve = GUi_CalcTextWidth("Position") + 14.0f;
+if (reserve > avail * 0.6f) reserve = avail * 0.6f;   // 长标签最多占六成
+GUi_SetNextItemWidth(-reserve);
+GUi_DragFloat3("Position", v, 0.02f);
+```
+
+不带可见标签的控件（`"##name"`）才该用 `-1`。
+
+### 拖放
+
+payload 只支持字符串。编辑器要传的东西（实体句柄、资产路径）本来就有文本形式，走文本换来两件事：跨 DLL 不依赖任何内存布局，调试时 tooltip 里也能直接看到内容。
+
+```c
+// 源：紧跟在条目之后
+if (GUi_BeginDragDropSource()) {
+    char id[24];
+    std::snprintf(id, sizeof(id), "%lld", (long long)handle);
+    GUi_SetDragDropPayloadString("GRYCE_ENTITY", id);
+    GUi_EndDragDropSource();
+}
+
+// 目标：同样是"上一个条目"
+if (GUi_BeginDragDropTarget()) {
+    char buf[24];
+    int r = GUi_AcceptDragDropPayloadString("GRYCE_ENTITY", buf, sizeof(buf));
+    if (r == GUI_DRAG_DELIVER) { /* 松手了，buf 有效 */ }
+    GUi_EndDragDropTarget();
+}
+```
+
+`GUi_AcceptDragDropPayloadString` 返回三种状态，区分它们不是多余的：
+
+| 返回值 | 含义 | 典型用途 |
+| --- | --- | --- |
+| `GUI_DRAG_NONE` | 没有匹配的 payload 悬停 | 什么都不做 |
+| `GUI_DRAG_PREVIEW` | 悬停中，尚未松手 | 画高亮、改提示文字 |
+| `GUI_DRAG_DELIVER` | 本帧松手交付，`out_buf` 已写入 | 执行真正的操作 |
+
+只认 `DELIVER` 就够用了；区分 `PREVIEW` 是为了在悬停期间给出"这里能放"的反馈。鼠标键固定为左键，ImGui 没有"用其它键拖"的开关。
+
+### 修饰键
+
+```c
+const int mods = GUi_GetModifiers();      // GUI_MOD_CTRL / SHIFT / ALT / SUPER
+if (mods & GUI_MOD_SHIFT)  ...            // 加选
+else if (mods & GUI_MOD_CTRL) ...         // 切换
+else ...                                   // 替换
+```
+
+层级树用它区分"替换选择 / 加选 / 切换"，和大多数编辑器一致。
+
 
 ## 5. 视口图片与坐标
 
@@ -154,6 +214,20 @@ if (GUi_IsAnyItemActive()) {
 
 `GUi_IsAnyItemActive()` 为真时**不能**收分组——收了之后下一次拖拽会另起一步，一次拖拽被切成几十步。注意它在输入框里也返回真（输入框聚焦算活动态），所以"打字改名字"同样会合并成一步，这正是想要的。
 
+### 拖拽控件必须自己存一份值
+
+引擎里的值要**下一帧**才反映修改（写入走命令队列）。如果每帧都拿面板模型里的值去初始化 `DragFloat`，拖拽过程中被拉回去的永远是上一帧的旧值，手感是"拖一下弹回去"。
+
+```c
+// 只在"换了目标"或"没有控件在活动态"时从模型同步
+if (changed_target || !GUi_IsAnyItemActive()) {
+    buf[0] = model_value;
+}
+if (GUi_DragFloat("Speed", buf, 0.01f)) { push(Intent{...}); }
+```
+
+缓冲要跨帧存活（放在面板状态结构里），不能是栈上的局部变量。
+
 ## 8. 与宿主输入的分工
 
 UI 吃掉鼠标/键盘时，宿主的场景导航与快捷键必须让路：
@@ -171,6 +245,7 @@ if (GUi_WantCaptureKeyboard()) return;   // 不派发任何快捷键
 ## 9. 已知边界
 
 * 无 docking、无多窗口停靠、无 `ImPlot`/节点编辑器一类扩展——需要的话加成 `GUi_*` 的新函数，不要在扩展里引 ImGui。
+* 拖放 payload 只支持单个字符串，没有多选拖拽、没有自定义 payload 类型（跨进程/跨窗口拖拽也不支持）。
 * 主题只有一套暗色 + 语义文本色（`GUI_TEXT_*`）。要换主题改引擎内 `debug_imgui` 的 style，不要在调用方硬编码颜色。
 * `GUi_Image` 不接受自定义 UV / 边框着色，视口只显示完整纹理。
 * 中文等非 ASCII 文本依赖引擎加载的字体图集；字体缺失时显示为方块，不会崩。

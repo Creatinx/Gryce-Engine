@@ -289,6 +289,33 @@ FN(js_set_property_bool) {
     return ret_bool(gryce::editor::set_property_bool(h, hash, prop.c_str(), value ? 1 : 0));
 }
 
+FN(js_set_property_vec) {
+    // 分量个数从实参个数推出来（4 个固定参数之后的都是分量）。ABI 没有数组，
+    // 也不想为"传一个 vec3"再造一套编码，所以直接靠可变实参表达。
+    Args a = args_of(argc, argv);
+    GEntityHandle h = 0;
+    uint64_t hash = 0;
+    std::string prop;
+    if (!want_handle(a, 0, &h, "editor.setPropertyVec")
+        || !a.u64(1, &hash) || !a.str(2, &prop)) {
+        return fail("editor.setPropertyVec(handle, typeHash, propName, x, [y, z, w]) "
+                    "expects (id, hash, string, number...)");
+    }
+    const int count = argc - 3;
+    if (count < 2 || count > 4) {
+        return fail("editor.setPropertyVec needs 2 to 4 components");
+    }
+    float v[4] = {0, 0, 0, 0};
+    for (int i = 0; i < count; ++i) {
+        double d = 0.0;
+        if (!a.number(3 + i, &d)) {
+            return fail("editor.setPropertyVec components must be numbers");
+        }
+        v[i] = static_cast<float>(d);
+    }
+    return ret_bool(gryce::editor::set_property_vec(h, hash, prop.c_str(), v, count));
+}
+
 FN(js_add_component) {
     Args a = args_of(argc, argv);
     GEntityHandle h = 0;
@@ -675,6 +702,9 @@ GRYCE_EXTENSION_ENTRY {
     bind("translate", &js_translate, 4);
     bind("setProperty", &js_set_property_number, 4);
     bind("setPropertyBool", &js_set_property_bool, 4);
+    // 第三个参数只是 JS 侧 f.length 的提示值（不影响可变实参），按最长的
+    // 四分量形式写 7，读的人一眼知道最多接几个。
+    bind("setPropertyVec", &js_set_property_vec, 7);
     bind("addComponent", &js_add_component, 2);
     bind("removeComponent", &js_remove_component, 2);
     bind("setMaterial", &js_set_material, 7);

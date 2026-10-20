@@ -48,7 +48,20 @@ struct ComponentData {
     std::string name;            // 短名（MeshRenderer）
     std::string qualified_name;  // 引擎注册名（gryce_engine::components::MeshRenderer）
     uint64_t hash = 0;
+    // 引擎内部维护的组件（Transform / ParentComponent / ChildrenComponent /
+    // PrefabInstance）不能删：它们记的是实体自身的结构，删掉之后层级、
+    // 序列化都对不上，而引擎不会拒绝。
+    bool removable = true;
     std::vector<PropertyValue> properties;
+};
+
+// 可以挂到实体上的组件类型（"Add Component" 菜单的候选）。
+// 已经从注册表里剔掉了内部组件，见 model.cpp 的 is_internal_type()。
+struct ComponentTypeInfo {
+    uint64_t hash = 0;
+    std::string name;         // 注册名
+    std::string short_name;   // 去掉命名空间后的短名
+    std::string category;     // "Node3D" / "Node2D" / "Other"
 };
 
 struct HierarchyNode {
@@ -67,6 +80,8 @@ struct InspectorData {
     float rotation[4] = {0, 0, 0, 1};
     float scale[3] = {1, 1, 1};
     std::vector<ComponentData> components;
+    // 还没挂到这个实体上的组件类型（已按分类分组前的扁平列表）。
+    std::vector<ComponentTypeInfo> available_components;
 };
 
 struct AssetItem {
@@ -117,6 +132,13 @@ const std::vector<HierarchyNode>& hierarchy();
 const InspectorData& inspector();
 const AssetList& assets();
 const StatsData& stats();
+
+// 全部可挂载的组件类型（已剔除内部组件）。注册表在进程内只建一次，
+// 这里再缓存一层是因为 rebuild_inspector 每帧都要按它算"还差哪些没挂"。
+const std::vector<ComponentTypeInfo>& component_types();
+// 插件在运行中注册了新组件时调用。目前没有热注册的路径，留着是为了
+// 避免以后有人在 rebuild 里无条件扫注册表（66 个类型 × 每帧 = 白扫）。
+void invalidate_component_types();
 
 // 当前资产目录（UI 顶部的路径输入框）。
 const char* asset_dir();

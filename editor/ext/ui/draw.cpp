@@ -24,6 +24,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -42,6 +43,7 @@ using panel::stats;
 using panel::AssetItem;
 using panel::AssetList;
 using panel::ComponentData;
+using panel::ComponentTypeInfo;
 using panel::HierarchyNode;
 using panel::InspectorData;
 using panel::PropertyValue;
@@ -69,6 +71,10 @@ constexpr float kIndentStep = 13.0f;
 const char* const kDisplayModes[] = {"Shaded", "Wireframe"};
 const char* const kGizmoNames[] = {"Move", "Rotate", "Scale"};
 const char* const kSpaceNames[] = {"World", "Local"};
+
+// 拖放 payload 的类型名。跨窗口拖拽时 ImGui 用它配对源与目标，写成宏常量
+// 而不是散落的字面量，免得某处拼错之后表现为"拖了没反应"。
+constexpr const char* kEntityPayload = "GRYCE_ENTITY";
 
 // ---------------------------------------------------------------------------
 // 旋转：界面上用欧拉角（人看得懂），引擎里存四元数。
@@ -145,6 +151,20 @@ void toolbar_gap() {
     GUi_SameLine(0);
     GUi_TextColored(GUI_TEXT_DIM, "|");
     GUi_SameLine(0);
+}
+
+// "标签在左、控件在右"的一行。控件宽度必须扣掉标签宽度，否则 SetNextItemWidth(-1)
+// 会让控件吃满整行，标签被挤到面板外面（截图上只剩一个字）。
+// 标签特别长时最多占六成宽度，剩下的留给控件，至少还能拖。
+void item_width_for(const char* label) {
+    float avail = 0.0f;
+    float unused = 0.0f;
+    GUi_GetContentAvail(&avail, &unused);
+    float reserve = GUi_CalcTextWidth(label) + 14.0f;
+    const float cap = avail * 0.6f;
+    if (reserve > cap) reserve = cap;
+    if (reserve < 8.0f) reserve = 8.0f;
+    GUi_SetNextItemWidth(-reserve);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +297,7 @@ void draw_toolbar(DrawState& st) {
 // ---------------------------------------------------------------------------
 
 void draw_nodes(DrawState& st, const std::vector<HierarchyNode>& nodes,
-                GEntityHandle selected) {
+                const session::Selection& sel) {
     for (const HierarchyNode& node : nodes) {
         float cx = 0.0f;
         float cy = 0.0f;
@@ -318,8 +338,43 @@ void draw_nodes(DrawState& st, const std::vector<HierarchyNode>& nodes,
             char label[192];
             std::snprintf(label, sizeof(label), "%s##h%lld", node.name.c_str(),
                           static_cast<long long>(node.handle));
-            if (GUi_Selectable(label, node.handle == selected)) {
-                push_select(kSelect, node.handle);
+            // 选中态看的是整个选择集，不只是主选中：多选之后树里要能同时
+            // 亮起多行，否则用户不知道"删除"会删掉什么。
+            if (GUi_Selectable(label, sel.contains(node.handle))) {
+                const int mods = GUi_GetModifiers();
+                if ((mods & GUI_MOD_SHIFT) != 0) {
+                    push_select(kSelectAdd, node.handle);
+                } else if ((mods & GUI_MOD_CTRL) != 0) {
+                    push_select(kSelectToggle, node.handle);
+                } else {
+                    push_select(kSelect, node.handle);
+                }
+            }
+
+            // 拖放源：拖到别的节点上就是重挂。payload 用句柄的十进制文本，
+            // 跨 DLL 不依赖任何内存布局，调试时 tooltip 里也能直接看到。
+            if (GUi_BeginDragDropSource()) {
+                char payload[24];
+                std::snprintf(payload, sizeof(payload), "%lld",
+                              static_cast<long long>(node.handle));
+                GUi_SetDragDropPayloadString(kEntityPayload, payload);
+                GUi_EndDragDropSource();
+            }
+
+            // 拖放目标：接手别人的句柄，挂到自己下面。
+            // 防环不在这里做 —— 界面只知道"树长什么样"，判断祖先关系要问
+            // 引擎，而回调里不能问。命令层会拒并以 reparent_rejected 事件回报。
+            if (GUi_BeginDragDropTarget()) {
+                char payload[24] = {};
+                if (GUi_AcceptDragDropPayloadString(kEntityPayload, payload,
+                                                    static_cast<int>(sizeof(payload))) ==
+                    GUI_DRAG_DELIVER) {
+                    Intent it = make(kReparent);
+                    it.handle = static_cast<GEntityHandle>(std::atoll(payload));
+                    it.other = node.handle;
+                    push(it);
+                }
+                GUi_EndDragDropTarget();
             }
 
             char popup[48];
@@ -344,6 +399,15 @@ void draw_nodes(DrawState& st, const std::vector<HierarchyNode>& nodes,
                     // 视角调整在 JS 侧做（它持有相机状态），这里只请求选中。
                     push_select(kSelect, node.handle);
                 }
+                // 拖放只能"挂到某个节点下"，这个菜单补齐另一半：把子节点
+                // 提回根级。没有拖放目标放在空白处是因为 ImGui 的目标必须
+                // 绑定到一个条目上，凭空造一块空白区反而会吃掉滚动。
+                if (GUi_MenuItem("Move to Root", nullptr, node.depth > 0)) {
+                    Intent it = make(kReparent);
+                    it.handle = node.handle;
+                    it.other = 0;
+                    push(it);
+                }
                 GUi_Separator();
                 if (GUi_MenuItem("Delete", "Del", 1)) {
                     Intent it = make(kDestroy);
@@ -354,7 +418,7 @@ void draw_nodes(DrawState& st, const std::vector<HierarchyNode>& nodes,
             }
         }
 
-        if (has_children && open) draw_nodes(st, node.children, selected);
+        if (has_children && open) draw_nodes(st, node.children, sel);
     }
 }
 
@@ -362,8 +426,8 @@ void draw_hierarchy(DrawState& st) {
     GUi_TextColored(GUI_TEXT_DIM, "Hierarchy");
     GUi_Separator();
 
-    const GEntityHandle selected = session::selection().primary;
-    draw_nodes(st, hierarchy(), selected);
+    const session::Selection& sel = session::selection();
+    draw_nodes(st, hierarchy(), sel);
 
     if (hierarchy().empty()) {
         GUi_TextColored(GUI_TEXT_DIM, "(empty scene)");
@@ -373,6 +437,210 @@ void draw_hierarchy(DrawState& st) {
 // ---------------------------------------------------------------------------
 // 检视器
 // ---------------------------------------------------------------------------
+
+// 属性控件的本地副本。理由和 pos_buf 那一组完全相同：写入要下一帧才回到
+// 模型，拖拽中若每帧都拿模型的（旧）值喂控件，值会被拉回去，手感是
+// "拖一下弹回去"。只留一格 —— ImGui 同一时刻只可能有一个控件是活动态。
+float* prop_buf_sync(DrawState& st, GEntityHandle handle, uint64_t hash,
+                     const PropertyValue& p) {
+    const bool same = st.prop_handle == handle && st.prop_hash == hash &&
+                      st.prop_count == p.count &&
+                      std::strcmp(st.prop_name, p.name.c_str()) == 0;
+    if (!same || !GUi_IsAnyItemActive()) {
+        st.prop_handle = handle;
+        st.prop_hash = hash;
+        st.prop_count = p.count;
+        std::snprintf(st.prop_name, sizeof(st.prop_name), "%s", p.name.c_str());
+        for (int i = 0; i < 4; ++i) st.prop_buf[i] = p.vec[i];
+        // 标量走 number，向量走 vec。两条都写上，读的人不必再判类型。
+        st.prop_buf[0] = static_cast<float>(p.number);
+        if (p.count > 0) st.prop_buf[0] = p.vec[0];
+    }
+    return st.prop_buf;
+}
+
+void push_prop_number(GEntityHandle handle, uint64_t hash,
+                      const std::string& name, double value) {
+    Intent it = make(kSetPropertyNumber);
+    it.handle = handle;
+    it.hash = hash;
+    it.a = name;
+    it.number = value;
+    push(it);
+}
+
+void push_prop_vec(GEntityHandle handle, uint64_t hash, const std::string& name,
+                   const float* v, int count) {
+    Intent it = make(kSetPropertyVec);
+    it.handle = handle;
+    it.hash = hash;
+    it.a = name;
+    it.flag = count;
+    for (int i = 0; i < 4; ++i) it.vec[i] = (i < count) ? v[i] : 0.0f;
+    push(it);
+}
+
+// 只读属性的一行。不用 GUi_LabelText：它把值画在左、标签右对齐到行尾，
+// 读起来是"路径 …… 字段名"，看一眼分不清哪个是值。
+void read_only_line(const char* label, const char* value) {
+    char line[384];
+    std::snprintf(line, sizeof(line), "%s  =  %s", label ? label : "",
+                  value ? value : "");
+    GUi_Text(line);
+}
+
+void draw_property(DrawState& st, GEntityHandle handle, uint64_t hash,
+                   const PropertyValue& p) {
+    switch (p.type) {
+        case kFloat:
+        case kDouble: {
+            // double 也走 float 缓冲：组件里 double 字段极少，而界面精度
+            // 只到小数点后三位，丢掉的位数用户本来就看不见。
+            float* b = prop_buf_sync(st, handle, hash, p);
+            item_width_for(p.name.c_str());
+            if (GUi_DragFloat(p.name.c_str(), b, 0.01f)) {
+                ensure_edit_open(st, "property");
+                push_prop_number(handle, hash, p.name, static_cast<double>(b[0]));
+            }
+            break;
+        }
+        case kInt: {
+            float* b = prop_buf_sync(st, handle, hash, p);
+            item_width_for(p.name.c_str());
+            if (GUi_DragFloat(p.name.c_str(), b, 1.0f)) {
+                ensure_edit_open(st, "property");
+                push_prop_number(handle, hash, p.name,
+                                 static_cast<double>(std::llround(b[0])));
+            }
+            break;
+        }
+        case kBool: {
+            int v = p.boolean ? 1 : 0;
+            if (GUi_Checkbox(p.name.c_str(), &v)) {
+                Intent it = make(kSetPropertyBool);
+                it.handle = handle;
+                it.hash = hash;
+                it.a = p.name;
+                it.flag = v;
+                push(it);
+            }
+            break;
+        }
+        case kString:
+            // 只读。字符串字段几乎都是资源路径（网格、贴图、脚本），写错一个
+            // 字符就是"物体消失"且没有任何地方会报错；等有一条带校验的
+            // 资产选择器再说，不先给一个能随便敲的输入框。
+            read_only_line(p.name.c_str(), p.text.c_str());
+            break;
+        case kVec2: {
+            float* b = prop_buf_sync(st, handle, hash, p);
+            item_width_for(p.name.c_str());
+            if (GUi_DragFloat2(p.name.c_str(), b, 0.01f)) {
+                ensure_edit_open(st, "property");
+                push_prop_vec(handle, hash, p.name, b, 2);
+            }
+            break;
+        }
+        case kVec3:
+        case kVec3i: {
+            float* b = prop_buf_sync(st, handle, hash, p);
+            item_width_for(p.name.c_str());
+            // vec3i 不在这里取整：取整会让拖动变成"跳格"，一格一格蹦。
+            // 取整交给命令层（set_property_vec 写 int32 时再四舍五入）。
+            if (GUi_DragFloat3(p.name.c_str(), b, p.type == kVec3i ? 0.1f : 0.01f)) {
+                ensure_edit_open(st, "property");
+                push_prop_vec(handle, hash, p.name, b, 3);
+            }
+            break;
+        }
+        case kVec4: {
+            float* b = prop_buf_sync(st, handle, hash, p);
+            item_width_for(p.name.c_str());
+            if (GUi_DragFloat4(p.name.c_str(), b, 0.01f)) {
+                ensure_edit_open(st, "property");
+                push_prop_vec(handle, hash, p.name, b, 4);
+            }
+            break;
+        }
+        case kColor: {
+            float* b = prop_buf_sync(st, handle, hash, p);
+            item_width_for(p.name.c_str());
+            if (GUi_ColorEdit4(p.name.c_str(), b)) {
+                ensure_edit_open(st, "property");
+                push_prop_vec(handle, hash, p.name, b, 4);
+            }
+            break;
+        }
+        case kQuat: {
+            // 四元数只读。手拖四个分量几乎必然离开单位球面，引擎不归一化，
+            // 结果是物体被剪切变形 —— 要转向请用 Transform 的欧拉角。
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "%.3f %.3f %.3f %.3f",
+                          static_cast<double>(p.vec[0]), static_cast<double>(p.vec[1]),
+                          static_cast<double>(p.vec[2]), static_cast<double>(p.vec[3]));
+            read_only_line(p.name.c_str(), buf);
+            break;
+        }
+        default:
+            read_only_line(p.name.c_str(), "-");
+            break;
+    }
+}
+
+std::string ascii_lower(const char* s) {
+    std::string out = s ? s : "";
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
+// Add Component。不能用下拉框：注册表里有 66 个类型，平铺成一列根本翻不动，
+// 所以做成"弹窗 + 过滤框 + 按分类分组"。
+void draw_add_component(DrawState& st, const InspectorData& in) {
+    if (in.available_components.empty()) {
+        const bool none_at_all = in.components.empty();
+        GUi_TextColored(GUI_TEXT_DIM,
+                        none_at_all ? "(no component types)" : "(all types attached)");
+        return;
+    }
+
+    if (GUi_Button("+ Add Component")) {
+        GUi_OpenPopup("Add Component##add_comp");
+        st.comp_filter[0] = '\0';   // 每次打开从空过滤开始
+    }
+    if (!GUi_BeginPopup("Add Component##add_comp")) return;
+
+    GUi_SetNextItemWidth(-1.0f);
+    GUi_InputText("##filter", st.comp_filter, static_cast<int>(sizeof(st.comp_filter)));
+    GUi_Separator();
+
+    const std::string filter = ascii_lower(st.comp_filter);
+    std::string category;
+    int shown = 0;
+    for (const ComponentTypeInfo& info : in.available_components) {
+        if (!filter.empty() &&
+            ascii_lower(info.short_name.c_str()).find(filter) == std::string::npos) {
+            continue;
+        }
+        if (info.category != category) {
+            category = info.category;
+            GUi_TextColored(GUI_TEXT_DIM, category.c_str());
+        }
+        if (GUi_Selectable(info.short_name.c_str(), 0)) {
+            Intent it = make(kAddComponent);
+            it.handle = in.handle;
+            // 注册名（可能是带命名空间的全名）：引擎按它查组件工厂。
+            it.b = info.name;
+            push(it);
+            GUi_CloseCurrentPopup();
+        }
+        ++shown;
+    }
+    if (shown == 0) GUi_TextColored(GUI_TEXT_DIM, "(no match)");
+
+    GUi_EndPopup();
+}
 
 void draw_inspector(DrawState& st) {
     GUi_TextColored(GUI_TEXT_DIM, "Inspector");
@@ -414,7 +682,7 @@ void draw_inspector(DrawState& st) {
     GUi_Separator();
     GUi_TextColored(GUI_TEXT_DIM, "Transform");
 
-    GUi_SetNextItemWidth(-1.0f);
+    item_width_for("Position");
     if (GUi_DragFloat3("Position", st.pos_buf, 0.02f)) {
         ensure_edit_open(st, "transform");
         Intent it = make(kSetPosition);
@@ -425,7 +693,7 @@ void draw_inspector(DrawState& st) {
         push(it);
     }
 
-    GUi_SetNextItemWidth(-1.0f);
+    item_width_for("Rotation");
     if (GUi_DragFloat3("Rotation", st.euler_buf, 0.5f)) {
         ensure_edit_open(st, "transform");
         float q[4] = {0, 0, 0, 1};
@@ -439,7 +707,7 @@ void draw_inspector(DrawState& st) {
         push(it);
     }
 
-    GUi_SetNextItemWidth(-1.0f);
+    item_width_for("Scale");
     if (GUi_DragFloat3("Scale", st.scale_buf, 0.02f)) {
         // 引擎拒收 0 缩放（奇异矩阵会让整棵子树的法线变成 NaN），
         // 界面上直接夹住，避免"拖到 0 就消失"这种莫名其妙的故障。
@@ -460,83 +728,30 @@ void draw_inspector(DrawState& st) {
     GUi_Separator();
 
     for (const ComponentData& comp : in.components) {
+        // 删除按钮放在折叠头**左侧**。放右侧看起来更常规，但 C 接口没有
+        // "按剩余宽度画折叠头"的能力（CollapsingHeader 总是占满整行），
+        // SameLine 上去的按钮会被挤出面板右边缘，点不到。
+        if (comp.removable) {
+            char rm[48];
+            std::snprintf(rm, sizeof(rm), "-##rm%llu",
+                          static_cast<unsigned long long>(comp.hash));
+            if (GUi_SmallButton(rm)) {
+                Intent it = make(kRemoveComponent);
+                it.handle = in.handle;
+                it.hash = comp.hash;
+                push(it);
+            }
+            GUi_SameLine(0);
+        }
         if (!GUi_CollapsingHeader(comp.name.c_str(), 1)) continue;
 
         for (const PropertyValue& p : comp.properties) {
-            // 标量 / 布尔可编辑，其余只读：GEdit_SetProperty 只接受单个数值，
-            // 想改 vec3 得走另一条命令面（暂未提供），这里如实显示而不是
-            // 给一个拖了没反应的控件。
-            switch (p.type) {
-                case kFloat:
-                case kDouble: {
-                    float v = static_cast<float>(p.number);
-                    GUi_SetNextItemWidth(-1.0f);
-                    if (GUi_DragFloat(p.name.c_str(), &v, 0.01f)) {
-                        ensure_edit_open(st, "property");
-                        Intent it = make(kSetPropertyNumber);
-                        it.handle = in.handle;
-                        it.hash = comp.hash;
-                        it.a = p.name;
-                        it.number = static_cast<double>(v);
-                        push(it);
-                    }
-                    break;
-                }
-                case kInt: {
-                    float v = static_cast<float>(p.number);
-                    GUi_SetNextItemWidth(-1.0f);
-                    if (GUi_DragFloat(p.name.c_str(), &v, 1.0f)) {
-                        ensure_edit_open(st, "property");
-                        Intent it = make(kSetPropertyNumber);
-                        it.handle = in.handle;
-                        it.hash = comp.hash;
-                        it.a = p.name;
-                        it.number = static_cast<double>(std::llround(v));
-                        push(it);
-                    }
-                    break;
-                }
-                case kBool: {
-                    int v = p.boolean ? 1 : 0;
-                    if (GUi_Checkbox(p.name.c_str(), &v)) {
-                        Intent it = make(kSetPropertyBool);
-                        it.handle = in.handle;
-                        it.hash = comp.hash;
-                        it.a = p.name;
-                        it.flag = v;
-                        push(it);
-                    }
-                    break;
-                }
-                case kString:
-                    GUi_LabelText(p.name.c_str(), p.text.c_str());
-                    break;
-                case kVec2:
-                case kVec3:
-                case kVec3i:
-                case kVec4:
-                case kQuat:
-                case kColor: {
-                    char buf[160] = {};
-                    int used = 0;
-                    for (int i = 0; i < p.count && used < static_cast<int>(sizeof(buf)) - 1; ++i) {
-                        const int n = std::snprintf(buf + used,
-                                                    sizeof(buf) - static_cast<std::size_t>(used),
-                                                    i ? " %.3f" : "%.3f",
-                                                    static_cast<double>(p.vec[i]));
-                        if (n <= 0) break;
-                        used += n;
-                    }
-                    GUi_LabelText(p.name.c_str(), buf);
-                    break;
-                }
-                default:
-                    GUi_LabelText(p.name.c_str(), "-");
-                    break;
-            }
+            draw_property(st, in.handle, comp.hash, p);
         }
         GUi_Separator();
     }
+
+    draw_add_component(st, in);
 }
 
 // ---------------------------------------------------------------------------

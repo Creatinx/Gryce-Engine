@@ -703,7 +703,7 @@ if(BUILD_TESTING)
                  COMMAND $<TARGET_FILE:GryceApp>
                          --project ${CMAKE_CURRENT_SOURCE_DIR}/editor/project
                          --entry res:/selftest.js
-                         --frames 45
+                         --frames 80
                  WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
         set_tests_properties(editor_selftest PROPERTIES
             LABELS "integration;editor" TIMEOUT 180

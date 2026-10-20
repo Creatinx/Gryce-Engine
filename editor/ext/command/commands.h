@@ -47,6 +47,10 @@ int set_property_number(GEntityHandle handle, uint64_t type_hash,
                         const char* prop, double value);
 int set_property_bool(GEntityHandle handle, uint64_t type_hash,
                       const char* prop, int value);
+// 向量 / 四元数 / 颜色。count 必须等于字段的有效分量数（vec2=2，其余=3 或 4），
+// 与实际字段类型不符时返回 0，不写一半。
+int set_property_vec(GEntityHandle handle, uint64_t type_hash,
+                     const char* prop, const float* values, int count);
 
 int add_component(GEntityHandle handle, const char* type_name);
 int remove_component(GEntityHandle handle, uint64_t type_hash);

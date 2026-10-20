@@ -86,6 +86,18 @@ struct DrawState {
     float pos_buf[3] = {0, 0, 0};
     float euler_buf[3] = {0, 0, 0};
     float scale_buf[3] = {1, 1, 1};
+
+    // 当前正在编辑的那个组件属性的本地副本。理由同 transform_buf：
+    // 写入要下一帧才回到模型，不缓存的话拖拽时值会被旧值拉回去。
+    // 只留一格 —— ImGui 同一时刻只可能有一个控件处于活动态。
+    GEntityHandle prop_handle = 0;
+    uint64_t prop_hash = 0;
+    char prop_name[64] = {};
+    int prop_count = 0;
+    float prop_buf[4] = {0, 0, 0, 0};
+
+    // "Add Component" 弹窗里的过滤框。
+    char comp_filter[64] = {};
 };
 
 DrawState& state();

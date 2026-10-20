@@ -182,6 +182,13 @@ int set_property_number(GEntityHandle handle, uint64_t type_hash,
 int set_property_bool(GEntityHandle handle, uint64_t type_hash,
                       const char* prop, int value);
 
+// 向量 / 四元数 / 颜色属性。count 必须等于字段的有效分量数
+// （vec2=2、vec3/vec3i=3、vec4/quat/color=4），与字段类型不符时返回 0，
+// 不会只写一半留下"改了但没变"的状态。
+// @owner wrapper
+int set_property_vec(GEntityHandle handle, uint64_t type_hash,
+                     const char* prop, const float* values, int count);
+
 // 组件增删。type_name 用引擎注册表里的名字（"Light" / "Camera" / ...）。
 // remove 用 type_hash（名字已经拿到过就没必要再查一次表）。
 // @owner wrapper
