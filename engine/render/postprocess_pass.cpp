@@ -607,6 +607,45 @@ bool RenderPipeline::create_viewport_target(RenderContext* ctx) {
         GLOG_ERROR("RenderPipeline: viewport framebuffer incomplete");
         return false;
     }
+
+    // 双视口：GameView 的独立颜色目标。失败只降级（两个面板共用一份纹理），
+    // 不影响 SceneView 本身。
+    if (!create_game_view_target(ctx)) {
+        GLOG_WARN("RenderPipeline: game view target unavailable, "
+                  "GameView will share the SceneView texture");
+        if (gameview_color_.is_valid()) ctx->destroy_texture(gameview_color_);
+        if (gameview_fbo_.is_valid()) ctx->destroy_framebuffer(gameview_fbo_);
+        gameview_color_ = RHITextureHandle{};
+        gameview_fbo_ = RHIFramebufferHandle{};
+    }
+    return true;
+}
+
+bool RenderPipeline::create_game_view_target(RenderContext* ctx) {
+    // 与 SceneView 完全同格式、同尺寸：tonemap 管线是按目标 FBO 的附件格式
+    // 建立的（Vulkan 下 render pass 必须兼容），格式一旦不同就是 UB。
+    gameview_color_ = ctx->create_texture();
+    ITexture* color_ptr = ctx->texture(gameview_color_);
+    if (!gameview_color_.is_valid() || !color_ptr ||
+        !color_ptr->create(TextureFormat::RGBA8, viewport_width_, viewport_height_, nullptr)) {
+        return false;
+    }
+    color_ptr->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    color_ptr->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    gameview_fbo_ = ctx->create_framebuffer();
+    IFramebuffer* fbo_ptr = ctx->framebuffer(gameview_fbo_);
+    if (!gameview_fbo_.is_valid() || !fbo_ptr ||
+        !fbo_ptr->create(viewport_width_, viewport_height_)) {
+        return false;
+    }
+    fbo_ptr->attach_color_texture(color_ptr);
+    if (!fbo_ptr->is_complete()) {
+        GLOG_ERROR("RenderPipeline: game view framebuffer incomplete");
+        return false;
+    }
+    gameview_width_ = viewport_width_;
+    gameview_height_ = viewport_height_;
     return true;
 }
 
@@ -614,6 +653,22 @@ bool RenderPipeline::create_viewport_target(RenderContext* ctx) {
 ITexture* RenderPipeline::viewport_color_texture() const {
     if (!ctx_ || !viewport_color_.is_valid()) return nullptr;
     return ctx_->texture(viewport_color_);
+}
+
+
+ITexture* RenderPipeline::game_view_color_texture() const {
+    if (!ctx_ || !gameview_color_.is_valid()) return nullptr;
+    return ctx_->texture(gameview_color_);
+}
+
+
+void RenderPipeline::resize_game_view(int width, int height) {
+    // GameView 与 SceneView 共用同一条 HDR/MSAA/后处理链，无法单独选分辨率
+    // （那需要复制整条链）。尺寸不同就明确拒绝，而不是假装接受后在面板上
+    // 显示一张尺寸不符的图。
+    if (width == viewport_width_ && height == viewport_height_) return;
+    GLOG_INFO("RenderPipeline: GameView shares SceneView targets; request {}x{} "
+              "ignored (actual {}x{})", width, height, viewport_width_, viewport_height_);
 }
 
 
@@ -640,8 +695,16 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
 
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
-    const bool to_viewport = viewport_output_enabled_ && viewport_fbo_.is_valid();
-    ctx.set_framebuffer(to_viewport ? viewport_fbo_ : RHIFramebufferHandle{});
+    // SceneView / GameView 各自一份目标，由 set_game_view_active() 选择。
+    RHIFramebufferHandle tonemap_target{};
+    if (viewport_output_enabled_) {
+        if (game_view_active_ && gameview_fbo_.is_valid()) {
+            tonemap_target = gameview_fbo_;
+        } else if (viewport_fbo_.is_valid()) {
+            tonemap_target = viewport_fbo_;
+        }
+    }
+    ctx.set_framebuffer(tonemap_target);
     ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
     ctx.set_depth_test(false);
     ctx.set_cull_face(CullMode::None);

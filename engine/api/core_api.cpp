@@ -1,5 +1,6 @@
 #include "api/core_api.h"
 #include "api/scene_api.h"
+#include "api/edit_api.h"
 #include "api/api_guard.h"
 #include "runtime/engine_context.h"
 
@@ -17,6 +18,7 @@
 #include "scene/uuid.h"
 #include "reflection/reflection.h"
 #include "components/component_factory.h"
+#include "components/mesh_renderer.h"
 #include "script/script_component.h"
 #include "resources/project.h"
 #include "resources/pak_bundle.h"
@@ -241,10 +243,14 @@ static void cmd_load_scene(const char* path) {
     g_core_state.current_scene_path = path;
     g_core_state.entity_map.rebuild(g_core_state.world->scene());
     g_core_state.selected_entity = 0;
+    // 换文档：上一份场景的历史不该作用到新场景上（快照里的 UUID 对不上）。
+    GCore_ClearUndoHistory();
     g_core_state.deferred_entity_list_changed = true;
     g_core_state.deferred_scene_loaded = true;
     utils::GLog::instance().info("[Core] Scene loaded: {}", path);
 }
+
+static void cmd_select_entity(GEntityHandle h);   // 定义在下方，新建实体要复用
 
 static void cmd_create_entity(const char* name, GEntityHandle parent_handle) {
     Scene* s = g_core_state.world ? g_core_state.world->scene() : nullptr;
@@ -260,8 +266,11 @@ static void cmd_create_entity(const char* name, GEntityHandle parent_handle) {
         }
     }
     if (!e) e = s->create_entity(name && name[0] ? name : "Entity");
-    g_core_state.entity_map.alloc(e->uuid());
+    const GEntityHandle new_handle = g_core_state.entity_map.alloc(e->uuid());
     g_core_state.deferred_entity_list_changed = true;
+    // 新建即选中：编辑器的通用行为（"建完就能直接改属性"），也让 GEdit_CreateEntity
+    // 的调用方能在命令消费后用 GEntity_GetSelected 拿到新实体句柄。
+    if (new_handle != 0) cmd_select_entity(new_handle);
 }
 
 static void cmd_destroy_entity(GEntityHandle h) {
@@ -319,7 +328,106 @@ static void cmd_reparent_entity(GEntityHandle h, GEntityHandle new_parent) {
     g_core_state.deferred_entity_list_changed = true;
 }
 
+// ============================================================================
+// Undo / Redo（快照式）
+//
+// 变更类命令执行**前**抓一份整场 JSON。撤销 = 反序列化上一份并替换场景。
+// 用整场快照而不是增量：序列化路径已被存档复用、正确性有测试兜底，且恢复后
+// 实体句柄按 UUID 保留（EntityHandleMap::rebuild），编辑器的选择与面板目标
+// 不会因为一次撤销全部失效。
+// ============================================================================
+namespace {
+
+struct UndoEntry {
+    std::string label;
+    std::string json;
+};
+
+struct UndoState {
+    std::vector<UndoEntry> undo;
+    std::vector<UndoEntry> redo;
+    int limit = 64;
+    bool group_open = false;
+    std::string group_base;
+    std::string group_label;
+};
+
+UndoState& undo_state() {
+    static UndoState st;
+    return st;
+}
+
+std::string capture_scene_json() {
+    Scene* s = gryce_core::g_core_state.world ? gryce_core::g_core_state.world->scene() : nullptr;
+    if (!s) return std::string();
+    try {
+        return SceneSerializer::serialize(*s).dump();
+    } catch (const std::exception& e) {
+        utils::GLog::instance().warn("[Core] undo snapshot failed: {}", e.what());
+        return std::string();
+    }
+}
+
+// 记录命令执行**前**的状态。分组打开期间由 GCore_BeginEdit 统一抓取。
+void undo_capture(const char* label) {
+    UndoState& st = undo_state();
+    if (st.limit <= 0 || st.group_open) return;
+    if (gryce_core::g_core_state.play_mode) return;
+    std::string json = capture_scene_json();
+    if (json.empty()) return;
+    st.undo.push_back({label ? label : "edit", std::move(json)});
+    while (static_cast<int>(st.undo.size()) > st.limit) st.undo.erase(st.undo.begin());
+    st.redo.clear();
+}
+
+bool restore_scene_json(const std::string& json) {
+    auto& st = gryce_core::g_core_state;
+    if (json.empty() || !st.world) return false;
+    try {
+        auto scene = SceneSerializer::deserialize(nlohmann::json::parse(json));
+        if (!scene) return false;
+        st.world->attach_scene(std::move(scene));
+        st.entity_map.rebuild(st.world->scene());
+        // 回到"删除前"时同一句柄依然有效（UUID 保留）；回到"创建前"时该实体
+        // 已不存在，必须清掉选择，否则属性面板会拿着悬空句柄。
+        if (st.selected_entity != 0 && !EntityResolver::resolve(st.selected_entity)) {
+            st.selected_entity = 0;
+            st.deferred_selection_changed = true;
+            fire_callback_entity_deselected();
+        }
+        st.deferred_entity_list_changed = true;
+        return true;
+    } catch (const std::exception& e) {
+        utils::GLog::instance().warn("[Core] undo restore failed: {}", e.what());
+        return false;
+    }
+}
+
+// 命令是否属于"改变场景内容"（决定要不要抓快照）。
+bool is_mutating_command(GCommandType t) {
+    switch (t) {
+        case ECMD_CREATE_ENTITY:
+        case ECMD_DESTROY_ENTITY:
+        case ECMD_RENAME_ENTITY:
+        case ECMD_REPARENT_ENTITY:
+        case ECMD_SET_TRANSFORM:
+        case ECMD_SET_PROPERTY:
+        case ECMD_ADD_COMPONENT:
+        case ECMD_REMOVE_COMPONENT:
+        case ECMD_SET_MATERIAL:
+        case ECMD_IMPORT_ASSET:
+            return true;
+        default:
+            return false;
+    }
+}
+
+} // namespace
+
 static void process_command(const GCommand& cmd) {
+    // 撤销快照要在命令生效**之前**抓，所以放在 switch 之前统一处理；
+    // 分组打开时 undo_capture 自己跳过（由 BeginEdit/EndEdit 负责）。
+    if (is_mutating_command(cmd.type)) undo_capture("edit");
     switch (cmd.type) {
         case ECMD_LOAD_SCENE: {
             // path 用 ={} 零初始化，strncpy 最多写 [0,255]，path[255] 恒为 '\0'；
@@ -330,9 +438,7 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_CREATE_ENTITY: {
-            struct Payload { char name[128]; GEntityHandle parent; };
-            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
-            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
+            const auto* p = reinterpret_cast<const GCmdCreateEntity*>(cmd.payload);
             cmd_create_entity(p->name, p->parent);
             break;
         }
@@ -347,15 +453,13 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_RENAME_ENTITY: {
-            struct Payload { GEntityHandle h; char name[128]; };
-            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            cmd_rename_entity(p->h, p->name);
+            const auto* p = reinterpret_cast<const GCmdRenameEntity*>(cmd.payload);
+            cmd_rename_entity(p->handle, p->name);
             break;
         }
         case ECMD_REPARENT_ENTITY: {
-            struct Payload { GEntityHandle h; GEntityHandle parent; };
-            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            cmd_reparent_entity(p->h, p->parent);
+            const auto* p = reinterpret_cast<const GCmdReparentEntity*>(cmd.payload);
+            cmd_reparent_entity(p->handle, p->parent);
             break;
         }
         case ECMD_PLAY_MODE: {
@@ -407,10 +511,8 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_ADD_COMPONENT: {
-            struct Payload { GEntityHandle h; char type_name[128]; };
-            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
-            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            Entity* e = EntityResolver::resolve(p->h);
+            const auto* p = reinterpret_cast<const GCmdAddComponent*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
             if (e) {
                 auto comp = gryce_engine::components::ComponentFactory::instance().create(p->type_name);
                 if (comp) {
@@ -421,10 +523,8 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_REMOVE_COMPONENT: {
-            struct Payload { GEntityHandle h; uint64_t type_hash; };
-            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
-            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            Entity* e = EntityResolver::resolve(p->h);
+            const auto* p = reinterpret_cast<const GCmdRemoveComponent*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
             if (e) {
                 for (const auto& comp : e->components()) {
                     std::string type_name = get_component_type_name(comp.get());
@@ -438,10 +538,8 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_SET_PROPERTY: {
-            struct Payload { GEntityHandle h; uint64_t type_hash; char prop_name[64]; uint8_t value[128]; };
-            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
-            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            Entity* e = EntityResolver::resolve(p->h);
+            const auto* p = reinterpret_cast<const GCmdSetProperty*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
             if (e) {
                 for (const auto& comp : e->components()) {
                     std::string type_name = get_component_type_name(comp.get());
@@ -469,15 +567,20 @@ static void process_command(const GCommand& cmd) {
             break;
         }
         case ECMD_SET_TRANSFORM: {
-            struct Payload { GEntityHandle h; GVec3 pos; GQuat rot; GVec3 scale; };
-            static_assert(sizeof(Payload) <= GCMD_PAYLOAD_SIZE, "payload too big");
-            const auto* p = reinterpret_cast<const Payload*>(cmd.payload);
-            Entity* e = EntityResolver::resolve(p->h);
+            const auto* p = reinterpret_cast<const GCmdSetTransform*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
             if (e && e->transform()) {
                 auto* t = e->transform();
-                t->position.x = p->pos.x; t->position.y = p->pos.y; t->position.z = p->pos.z;
-                t->rotation.x = p->rot.x; t->rotation.y = p->rot.y; t->rotation.z = p->rot.z; t->rotation.w = p->rot.w;
-                t->scale.x = p->scale.x; t->scale.y = p->scale.y; t->scale.z = p->scale.z;
+                t->position.x = p->position.x;
+                t->position.y = p->position.y;
+                t->position.z = p->position.z;
+                t->rotation.x = p->rotation.x;
+                t->rotation.y = p->rotation.y;
+                t->rotation.z = p->rotation.z;
+                t->rotation.w = p->rotation.w;
+                t->scale.x = p->scale.x;
+                t->scale.y = p->scale.y;
+                t->scale.z = p->scale.z;
                 e->mark_dirty();
             }
             break;
@@ -544,6 +647,94 @@ static void process_command(const GCommand& cmd) {
             g_core_state.input.mouse_delta_y += p->dy;
             break;
         }
+        // ---- 场景存档 / 单帧步进 / 资产导入 / 材质 ----
+        case ECMD_SAVE_SCENE: {
+            char path[256] = {};
+            std::strncpy(path, reinterpret_cast<const char*>(cmd.payload), 255);
+            Scene* s = g_core_state.world ? g_core_state.world->scene() : nullptr;
+            if (!s || path[0] == '\0') break;
+            if (SceneSerializer::save_to_file(*s, path)) {
+                g_core_state.current_scene_path = path;
+                if (g_core_state.scene_mode == 0) g_core_state.scene_path_2d = path;
+                else g_core_state.scene_path_3d = path;
+                utils::GLog::instance().info("[Core] Scene saved: {}", path);
+            } else {
+                utils::GLog::instance().warn("[Core] Scene save failed: {}", path);
+            }
+            break;
+        }
+        case ECMD_STEP_FRAME: {
+            // 暂停态下的逐帧前进；帧数在 GCore_BeginFrame 里一拍一帧地消费。
+            const int frames = *reinterpret_cast<const int*>(cmd.payload);
+            g_core_state.step_frames = frames > 0 ? frames : 1;
+            break;
+        }
+        case ECMD_IMPORT_ASSET: {
+            char path[256] = {};
+            std::strncpy(path, reinterpret_cast<const char*>(cmd.payload), 255);
+            Scene* s = g_core_state.world ? g_core_state.world->scene() : nullptr;
+            if (!s || path[0] == '\0') break;
+            // 导入 = 在场景根下建一个指向该模型的实体。资源的真正解析仍由
+            // MeshRenderer 首次绘制时的 AssetManager 完成，这里只落场景节点，
+            // 保证"拖进来就有东西、能被撤销"。
+            std::string stem = std::filesystem::path(path).stem().string();
+            Entity* e = s->create_entity(stem.empty() ? "Imported" : stem);
+            if (!e) break;
+            g_core_state.entity_map.alloc(e->uuid());
+            auto created = components::ComponentFactory::instance().create("MeshRenderer");
+            if (created) {
+                e->add_component(std::move(created));
+                for (const auto& comp : e->components()) {
+                    if (std::strcmp(comp->type(), "MeshRenderer") == 0) {
+                        static_cast<components::MeshRenderer*>(comp.get())->mesh_path = path;
+                        break;
+                    }
+                }
+                e->mark_dirty();
+            }
+            g_core_state.deferred_entity_list_changed = true;
+            g_core_state.selected_entity = g_core_state.entity_map.lookup(e->uuid());
+            g_core_state.deferred_selection_changed = true;
+            utils::GLog::instance().info("[Core] Asset imported as entity: {}", path);
+            break;
+        }
+        case ECMD_SET_MATERIAL: {
+            const auto* p = reinterpret_cast<const GCmdSetMaterial*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
+            if (!e) break;
+            components::MeshRenderer* mr = nullptr;
+            for (const auto& comp : e->components()) {
+                if (auto* c = dynamic_cast<components::MeshRenderer*>(comp.get())) {
+                    mr = c;
+                    break;
+                }
+            }
+            if (!mr) {
+                auto created = components::ComponentFactory::instance().create("MeshRenderer");
+                if (!created) break;
+                auto* raw = created.get();
+                e->add_component(std::move(created));
+                mr = static_cast<components::MeshRenderer*>(raw);
+            }
+            if (p->mesh_path[0] != '\0') mr->mesh_path = p->mesh_path;
+            render::Material* mat = mr->ensure_material();
+            if (mat) {
+                mat->set_albedo(math::Vector3f(p->albedo[0], p->albedo[1], p->albedo[2]));
+                mat->set_roughness(p->roughness);
+                mat->set_metallic(p->metallic);
+            }
+            e->mark_dirty();
+            break;
+        }
+        case ECMD_SET_RENDER_TARGET: {
+            // core 不能反向调 renderer 的 API：只登记请求，渲染侧在帧起点取走。
+            const auto* p = reinterpret_cast<const GCmdSetRenderTarget*>(cmd.payload);
+            if (p->target >= 0 && p->target < 2 && p->width > 0 && p->height > 0) {
+                g_core_state.target_request_w[p->target] = p->width;
+                g_core_state.target_request_h[p->target] = p->height;
+            }
+            break;
+        }
         // ---- GryceSRT 脚本命令面 ----
         case ECMD_SET_SCRIPT: {
             // payload: { entity, "res:/scripts/x.js" }；空串表示卸载。
@@ -585,6 +776,34 @@ static void process_command(const GCommand& cmd) {
 }
 
 } // namespace gryce_core
+
+// ============================================================================
+// 编辑命令的入队辅助
+// ============================================================================
+namespace {
+
+// 定长字符串拷贝：超长截断并保证 '\0' 结尾（payload 里的 name/path 字段都是定长）。
+void edit_copy_str(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    std::strncpy(dst, src, cap - 1);
+    dst[cap - 1] = '\0';
+}
+
+int push_edit(GCommandType type, const void* payload, size_t size) {
+    GCommand cmd{};
+    cmd.type = type;
+    if (payload && size > 0) {
+        if (size > GCMD_PAYLOAD_SIZE) size = GCMD_PAYLOAD_SIZE;
+        std::memcpy(cmd.payload, payload, size);
+    }
+    return GCore_PushCommand(&cmd) == 0 ? 1 : 0;
+}
+
+} // namespace
 
 // ============================================================================
 // C API Implementation
@@ -719,8 +938,14 @@ void GCore_BeginFrame(float dt) {
     if (gryce_core::g_core_state.play_mode) {
         if (!gryce_core::g_core_state.paused) {
             gryce_core::g_core_state.world->update(dt);
+        } else if (gryce_core::g_core_state.step_frames > 0) {
+            // 单帧步进：暂停态下按固定步长前进，一帧一拍。
+            gryce_core::g_core_state.world->update(1.0f / 60.0f);
+            --gryce_core::g_core_state.step_frames;
         }
         // 暂停时不驱动任何系统。
+    } else {
+        gryce_core::g_core_state.step_frames = 0;
     }
 }
 
@@ -770,6 +995,241 @@ int GCore_GetDroppedCmdCount(void) {
 
 bool GCore_IsPlaying(void) { return gryce_core::g_core_state.play_mode; }
 bool GCore_IsPaused(void) { return gryce_core::g_core_state.paused; }
+
+// ---------------------------------------------------------------------------
+// 撤销 / 重做
+// ---------------------------------------------------------------------------
+int GCore_Undo(void) {
+    GRYCE_API_GUARD();
+    auto& st = gryce_core::g_core_state;
+    if (!st.initialized || !st.world) return 0;
+    // 分组还开着时先收口：拖拽中途按 Ctrl+Z 不应该把"半个拖拽"当成一步。
+    GCore_EndEdit();
+    auto& u = gryce_core::undo_state();
+    if (u.undo.empty()) return 0;
+    std::string current = gryce_core::capture_scene_json();
+    gryce_core::UndoEntry entry = std::move(u.undo.back());
+    u.undo.pop_back();
+    if (!gryce_core::restore_scene_json(entry.json)) {
+        u.undo.push_back(std::move(entry));
+        return 0;
+    }
+    u.redo.push_back({entry.label, std::move(current)});
+    while (static_cast<int>(u.redo.size()) > u.limit) u.redo.erase(u.redo.begin());
+    return 1;
+}
+
+int GCore_Redo(void) {
+    GRYCE_API_GUARD();
+    auto& st = gryce_core::g_core_state;
+    if (!st.initialized || !st.world) return 0;
+    GCore_EndEdit();
+    auto& u = gryce_core::undo_state();
+    if (u.redo.empty()) return 0;
+    std::string current = gryce_core::capture_scene_json();
+    gryce_core::UndoEntry entry = std::move(u.redo.back());
+    u.redo.pop_back();
+    if (!gryce_core::restore_scene_json(entry.json)) {
+        u.redo.push_back(std::move(entry));
+        return 0;
+    }
+    u.undo.push_back({entry.label, std::move(current)});
+    while (static_cast<int>(u.undo.size()) > u.limit) u.undo.erase(u.undo.begin());
+    return 1;
+}
+
+int GCore_GetUndoCount(void) {
+    return static_cast<int>(gryce_core::undo_state().undo.size());
+}
+
+int GCore_GetRedoCount(void) {
+    return static_cast<int>(gryce_core::undo_state().redo.size());
+}
+
+void GCore_ClearUndoHistory(void) {
+    GRYCE_API_GUARD();
+    auto& u = gryce_core::undo_state();
+    u.undo.clear();
+    u.redo.clear();
+    u.group_open = false;
+    u.group_base.clear();
+}
+
+void GCore_SetUndoLimit(int limit) {
+    GRYCE_API_GUARD();
+    auto& u = gryce_core::undo_state();
+    u.limit = limit < 0 ? 0 : limit;
+    while (static_cast<int>(u.undo.size()) > u.limit) u.undo.erase(u.undo.begin());
+    while (static_cast<int>(u.redo.size()) > u.limit) u.redo.erase(u.redo.begin());
+}
+
+void GCore_BeginEdit(const char* label) {
+    GRYCE_API_GUARD();
+    auto& u = gryce_core::undo_state();
+    if (u.group_open) return;   // 嵌套只认最外层，内层不重复抓快照
+    u.group_base = gryce_core::capture_scene_json();
+    u.group_label = (label && label[0]) ? label : "edit";
+    u.group_open = true;
+}
+
+void GCore_EndEdit(void) {
+    GRYCE_API_GUARD();
+    auto& u = gryce_core::undo_state();
+    if (!u.group_open) return;
+    u.group_open = false;
+    if (u.limit <= 0 || gryce_core::g_core_state.play_mode || u.group_base.empty()) {
+        u.group_base.clear();
+        return;
+    }
+    u.undo.push_back({u.group_label, std::move(u.group_base)});
+    u.group_base.clear();
+    while (static_cast<int>(u.undo.size()) > u.limit) u.undo.erase(u.undo.begin());
+    u.redo.clear();
+}
+
+int GCore_TakeRenderTargetRequest(int target, int* out_w, int* out_h) {
+    GRYCE_API_GUARD();
+    if (target < 0 || target > 1) return 0;
+    auto& st = gryce_core::g_core_state;
+    if (st.target_request_w[target] <= 0) return 0;
+    if (out_w) *out_w = st.target_request_w[target];
+    if (out_h) *out_h = st.target_request_h[target];
+    st.target_request_w[target] = -1;
+    st.target_request_h[target] = -1;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// 编辑命令面（edit_api.h）
+//
+// 全部只是把语义参数装进 payload 再入队；真正的执行在 process_command。
+// 这样编辑器不需要知道 payload 布局，也不需要在两个地方维护同一份结构体。
+// ---------------------------------------------------------------------------
+int GEdit_CreateEntity(const char* name, GEntityHandle parent) {
+    GCmdCreateEntity p{};
+    edit_copy_str(p.name, sizeof(p.name), name);
+    p.parent = parent;
+    return push_edit(ECMD_CREATE_ENTITY, &p, sizeof(p));
+}
+
+int GEdit_DestroyEntity(GEntityHandle entity) {
+    return push_edit(ECMD_DESTROY_ENTITY, &entity, sizeof(entity));
+}
+
+int GEdit_RenameEntity(GEntityHandle entity, const char* name) {
+    GCmdRenameEntity p{};
+    p.handle = entity;
+    edit_copy_str(p.name, sizeof(p.name), name);
+    return push_edit(ECMD_RENAME_ENTITY, &p, sizeof(p));
+}
+
+int GEdit_ReparentEntity(GEntityHandle entity, GEntityHandle parent) {
+    GCmdReparentEntity p{};
+    p.handle = entity;
+    p.parent = parent;
+    return push_edit(ECMD_REPARENT_ENTITY, &p, sizeof(p));
+}
+
+int GEdit_SelectEntity(GEntityHandle entity) {
+    return push_edit(ECMD_SELECT_ENTITY, &entity, sizeof(entity));
+}
+
+int GEdit_SetTransform(GEntityHandle entity, const GVec3* position,
+                       const GQuat* rotation, const GVec3* scale) {
+    gryce_engine::scene::Entity* e = gryce_core::EntityResolver::resolve(entity);
+    if (!e || !e->transform()) return 0;
+    const auto* t = e->transform();
+    GCmdSetTransform p{};
+    p.handle = entity;
+    // 缺省分量用当前值补齐：Inspector 的单个数值框、Gizmo 的单轴拖拽都只带
+    // 一个分量，剩下的必须原样保留，否则一拖就把另外两轴清零。
+    p.position = position ? *position
+                          : GVec3{t->position.x, t->position.y, t->position.z};
+    p.scale = scale ? *scale : GVec3{t->scale.x, t->scale.y, t->scale.z};
+    const bool zero_rot = !rotation || (rotation->x == 0.0f && rotation->y == 0.0f &&
+                                        rotation->z == 0.0f && rotation->w == 0.0f);
+    p.rotation = zero_rot ? GQuat{t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w}
+                          : *rotation;
+    return push_edit(ECMD_SET_TRANSFORM, &p, sizeof(p));
+}
+
+int GEdit_SetProperty(GEntityHandle entity, uint64_t type_hash, const char* prop_name,
+                      const void* value, int value_size) {
+    if (!prop_name || prop_name[0] == '\0') return 0;
+    GCmdSetProperty p{};
+    p.handle = entity;
+    p.type_hash = type_hash;
+    edit_copy_str(p.prop_name, sizeof(p.prop_name), prop_name);
+    if (value && value_size > 0) {
+        if (value_size > static_cast<int>(sizeof(p.value))) return 0;   // 超长字段不支持
+        std::memcpy(p.value, value, static_cast<size_t>(value_size));
+    }
+    return push_edit(ECMD_SET_PROPERTY, &p, sizeof(p));
+}
+
+int GEdit_AddComponent(GEntityHandle entity, const char* type_name) {
+    if (!type_name || type_name[0] == '\0') return 0;
+    GCmdAddComponent p{};
+    p.handle = entity;
+    edit_copy_str(p.type_name, sizeof(p.type_name), type_name);
+    return push_edit(ECMD_ADD_COMPONENT, &p, sizeof(p));
+}
+
+int GEdit_RemoveComponent(GEntityHandle entity, uint64_t type_hash) {
+    GCmdRemoveComponent p{};
+    p.handle = entity;
+    p.type_hash = type_hash;
+    return push_edit(ECMD_REMOVE_COMPONENT, &p, sizeof(p));
+}
+
+int GEdit_SetMaterial(GEntityHandle entity, const char* mesh_path,
+                      float r, float g, float b, float roughness, float metallic) {
+    GCmdSetMaterial p{};
+    p.handle = entity;
+    edit_copy_str(p.mesh_path, sizeof(p.mesh_path), mesh_path);
+    p.albedo[0] = r;
+    p.albedo[1] = g;
+    p.albedo[2] = b;
+    p.roughness = roughness;
+    p.metallic = metallic;
+    return push_edit(ECMD_SET_MATERIAL, &p, sizeof(p));
+}
+
+int GEdit_SetRenderTargetSize(int target, int width, int height) {
+    if (width <= 0 || height <= 0) return 0;
+    GCmdSetRenderTarget p{};
+    p.target = target;
+    p.width = width;
+    p.height = height;
+    return push_edit(ECMD_SET_RENDER_TARGET, &p, sizeof(p));
+}
+
+int GEdit_SaveScene(const char* path) {
+    char buf[256] = {};
+    edit_copy_str(buf, sizeof(buf), path);
+    return push_edit(ECMD_SAVE_SCENE, buf, sizeof(buf));
+}
+
+int GEdit_ImportAsset(const char* path) {
+    char buf[256] = {};
+    edit_copy_str(buf, sizeof(buf), path);
+    return push_edit(ECMD_IMPORT_ASSET, buf, sizeof(buf));
+}
+
+int GEdit_SetPlayMode(int mode) {
+    const bool playing = gryce_core::g_core_state.play_mode;
+    switch (mode) {
+        case 0: return playing ? push_edit(ECMD_STOP_MODE, nullptr, 0) : 1;
+        case 1: return playing ? 1 : push_edit(ECMD_PLAY_MODE, nullptr, 0);
+        case 2: return playing ? push_edit(ECMD_PAUSE_MODE, nullptr, 0) : 0;
+        default: return 0;
+    }
+}
+
+int GEdit_StepFrame(int frames) {
+    const int n = frames > 0 ? frames : 1;
+    return push_edit(ECMD_STEP_FRAME, &n, sizeof(n));
+}
 
 void GCore_SetCallback_UserData(void* user_data) {
     GRYCE_API_GUARD();

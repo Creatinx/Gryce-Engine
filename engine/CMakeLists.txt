@@ -65,6 +65,8 @@ target_sources(GryceCore
         resources/aes_gcm.cpp
         resources/resource_loader.cpp
         assets/asset_manager.cpp
+        assets/asset_meta.cpp
+        assets/import_options.cpp
         assets/async_loader.cpp
         assets/material_rules.cpp
         assets/obj_loader.cpp

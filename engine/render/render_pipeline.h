@@ -548,6 +548,34 @@ public:
     // 视口输出纹理的 RHI 句柄（供 SubViewport 等运行时功能注入 2D 组件）
     RHITextureHandle viewport_color_handle() const { return viewport_color_; }
 
+    // -----------------------------------------------------------------------
+    // 双视口：SceneView 与 GameView 各有一份离屏颜色目标，可以同屏显示。
+    //
+    // 两份目标共用同一条 HDR/MSAA/后处理链 —— 场景只渲染一次，tonemap 时
+    // 按 set_game_view_active() 选写入哪一份。这意味着 GameView 的内部分辨率
+    // 跟随 SceneView（不同分辨率需要复制整条 HDR 链，代价远大于收益）。
+    // -----------------------------------------------------------------------
+    ITexture* game_view_color_texture() const;
+    RHITextureHandle game_view_color_handle() const { return gameview_color_; }
+    // 下一次 render_scene 的 tonemap 写 SceneView 还是 GameView。
+    void set_game_view_active(bool active) { game_view_active_ = active; }
+    bool game_view_active() const { return game_view_active_; }
+    // 请求 GameView 尺寸（与视口输出同尺寸，见上）。返回是否接受。
+    void resize_game_view(int width, int height);
+    int game_view_width() const { return gameview_width_; }
+    int game_view_height() const { return gameview_height_; }
+
+    // -----------------------------------------------------------------------
+    // 线框显示（编辑器 Viewport 的 Wireframe 模式）。
+    //
+    // 只作用于几何 pass（GBuffer / 主前向 pass），不作用于全屏后处理：后处理
+    // 的四边形式全屏三角形一经线框化整屏就只剩两条对角线。真正下推是
+    // IRenderBackend::set_polygon_mode，仅 OpenGL/WebGL 之外的后端为空实现，
+    // 由 GRender_IsDisplayModeSupported() 如实回报。
+    // -----------------------------------------------------------------------
+    void set_wireframe(bool enabled) { wireframe_ = enabled; }
+    bool wireframe() const { return wireframe_; }
+
     // 重建 HDR / 视口渲染目标（编辑器 Viewport 面板尺寸变化时调用）。
     // 线程约束：调用前必须 pause_render_thread()，调用后 resume_render_thread()。
     // Vulkan 后端重建后需要配合 hot_reload() 让 pipeline 重新绑定 render pass。
@@ -1428,10 +1456,19 @@ private:
     bool viewport_output_enabled_ = false;
     RHITextureHandle viewport_color_;
     RHIFramebufferHandle viewport_fbo_;
+    // 双视口：GameView 的独立颜色目标（与 SceneView 同尺寸、同格式）
+    RHITextureHandle gameview_color_;
+    RHIFramebufferHandle gameview_fbo_;
+    bool game_view_active_ = false;
+    int gameview_width_ = 1280;
+    int gameview_height_ = 720;
+    // 线框显示：只包裹几何 pass，见 set_wireframe 的说明
+    bool wireframe_ = false;
     IImGuiBackend* imgui_backend_ = nullptr;
 
     bool create_hdr_target(RenderContext* ctx);
     bool create_viewport_target(RenderContext* ctx);
+    bool create_game_view_target(RenderContext* ctx);
     bool create_fullscreen_mesh(RenderContext* ctx);
     bool create_gbuffer_targets(RenderContext* ctx);
     void destroy_gbuffer_targets();

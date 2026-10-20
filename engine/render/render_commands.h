@@ -59,6 +59,7 @@ enum class RenderCommandType : uint8_t {
     SetBlendFunc,
     SetBlendEquation,
     SetCullFace,
+    SetPolygonMode,
     Clear,
     ClearDepth,
     BindFramebuffer,
@@ -106,6 +107,7 @@ struct RenderCommandTyped {
         struct { BlendFactor src; BlendFactor dst; } blend_func;
         BlendEquation blend_equation;
         struct { CullMode mode; } cull_face;
+        struct { int mode; } polygon_mode;   // 0 = 填充，1 = 线框
         struct { bool enabled; int iterations; } gpu_busy_spin;
         struct { uint32_t gx, gy, gz; } compute_grid;
         int swap_interval;
@@ -221,6 +223,13 @@ struct RenderCommandTyped {
         RenderCommandTyped cmd;
         cmd.type = RenderCommandType::SetCullFace;
         cmd.cull_face = {mode};
+        return cmd;
+    }
+
+    static RenderCommandTyped make_set_polygon_mode(int mode) {
+        RenderCommandTyped cmd;
+        cmd.type = RenderCommandType::SetPolygonMode;
+        cmd.polygon_mode = {mode};
         return cmd;
     }
 

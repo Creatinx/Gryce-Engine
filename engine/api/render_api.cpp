@@ -6,8 +6,11 @@
 #include "api/api_guard.h"
 #include "api/viewport_api.h"
 #include "api/core_api.h"
+#include "api/edit_api.h"
+#include "api/entity_api.h"
 #include "api/window_api.h"
 #include "runtime/engine_context.h"
+#include "scene/entity.h"
 
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
@@ -87,7 +90,13 @@ struct RendererState {
     math::Camera editor_camera;
     bool editor_camera_valid = false;
     std::string display_mode = "Shaded";
+    // 线框显示：每帧下发给管线（管线可能晚于 SetDisplayMode 创建，见
+    // render_world_internal 里的 set_wireframe）。
+    bool wireframe = false;
     bool scene_2d_only = false;
+    // 离屏视口输出（编辑器必须开）。init 之前只记录期望值，由 GRender_Init
+    // 在 pipeline->init 之前下发 —— tonemap 管线按目标 FBO 的 render pass 建立。
+    bool viewport_output_requested = false;
 
     // Project Settings（渲染质量）—— 持久化值，GRender_Init 时应用到管线
     bool  hdr_enabled = true;
@@ -126,6 +135,10 @@ struct RendererState {
     bool  debug_window_open = true; // 调试窗口显示中（窗口内勾选 / F1 切换）
     bool  debug_imgui_ready = false;   // 引擎已接管 ImGui（叠加与窗口都可用）
     std::unique_ptr<render::ImGuiRenderer> debug_imgui;   // 引擎接管的 ImGui
+    // 宿主（编辑器）的每帧 UI 回调：引擎接管 ImGui 时在 NewFrame/Render 之间调用。
+    // 与 debug_ui_enabled 相互独立 —— 编辑器可以关掉调试叠加、只用自己的界面。
+    void (*ui_callback)(void*) = nullptr;
+    void* ui_callback_user = nullptr;
     // 引擎自己那个 ImGui 上下文的裸指针：绘制前后显式切进/切出。
     // （ImGui 的"当前上下文"是最后创建/设置的那个；宿主若在引擎之后又
     //   CreateContext（编辑器就可能这样），NewFrame/Render 会打到宿主的上下文上，
@@ -147,6 +160,13 @@ struct RendererState {
     bool  ssil_enabled = false;
     // Scene View 网格线：编辑器辅助显示，默认关闭，由编辑器显式开启。
     bool  grid_enabled = false;
+    // ---- 变换 Gizmo ----
+    // operation: 0 = 平移，1 = 旋转，2 = 缩放；space: 0 = 世界，1 = 局部
+    int   gizmo_operation = 0;
+    int   gizmo_space = 0;
+    bool  gizmo_enabled = false;
+    int   gizmo_hover_axis = -1;
+    int   gizmo_active_axis = -1;
     float ssr_max_steps = 64.0f;
     float ssr_max_roughness = 0.6f;
     float ssr_thickness = 0.01f;
@@ -156,6 +176,22 @@ struct RendererState {
 };
 
 static RendererState g_renderer;
+
+// 应用场景视口尺寸（**调用方必须已持有 g_renderer.mutex**）。
+// 目标重建是 GPU 资源操作，必须排到渲染线程执行 —— 在主线程直接建 FBO 会
+// 因为拿不到 GL context 而静默失败。
+static void apply_viewport_size_locked(int w, int h) {
+    g_renderer.viewport_w = w > 0 ? w : 1;
+    g_renderer.viewport_h = h > 0 ? h : 1;
+    if (g_renderer.pipeline && g_renderer.pipeline->is_valid() && g_renderer.ctx) {
+        RenderPipeline* pipeline = g_renderer.pipeline.get();
+        const int pw = g_renderer.viewport_w;
+        const int ph = g_renderer.viewport_h;
+        g_renderer.ctx->run_on_render_thread([pipeline, pw, ph]() {
+            pipeline->resize_render_targets(pw, ph);
+        });
+    }
+}
 
 #ifdef _WIN32
 // 锁帧时把系统定时器粒度提到 1ms（见 GRender_EndFrame 的说明），shutdown 时配平。
@@ -444,6 +480,300 @@ static void debug_ui_build_panels_locked() {
 
 #endif  // GRYCE_HAS_IMGUI
 
+// Gizmo 需要"当前视角相机"，它的两个构造函数定义在文件更靠后的位置
+// （渲染主路径旁），这里先声明。
+static scene::Entity* find_main_camera_entity(scene::Scene& scn);
+static bool build_scene_camera(scene::Entity* entity, int viewport_w, int viewport_h,
+                               math::Camera& out);
+
+// ===========================================================================
+// 变换 Gizmo（编辑器操作手柄）
+//
+// 设计取舍：用 ImGui 的 foreground draw list 在屏幕空间画，而不是往 3D 管线里
+// 塞线段。原因有三：
+//   * 三后端零成本 —— 不用为 GL/Vulkan/D3D12 各写一套线段渲染与深度状态；
+//   * Gizmo 本来就该盖在物体之上（Unity 也是这么做的），不需要深度遮挡；
+//   * 引擎已经接管了 ImGui（GRender_SetUICallback），屏幕空间绘制不需要新的
+//     渲染目标。
+// 代价是没有透视正确的线宽，但 gizmo 的视觉语义是"手柄"，恒定像素宽度反而
+// 更符合操作预期。
+// ===========================================================================
+#ifdef GRYCE_HAS_IMGUI
+namespace {
+
+constexpr float kGizmoAxisColor[3][4] = {
+    {0.92f, 0.26f, 0.26f, 1.0f},   // X：红
+    {0.34f, 0.80f, 0.32f, 1.0f},   // Y：绿
+    {0.28f, 0.55f, 0.96f, 1.0f},   // Z：蓝
+};
+constexpr float kGizmoHotColor[4] = {1.0f, 0.85f, 0.25f, 1.0f};
+constexpr float kGizmoPickRadius = 9.0f;    // 命中半径（像素）
+constexpr float kGizmoScreenLength = 92.0f; // 轴长（像素）
+
+struct GizmoContext {
+    math::Matrix4f view;
+    math::Matrix4f proj;
+    math::Vector3f origin;
+    math::Vector3f axis[3];
+    float pixels_per_unit = 1.0f;
+    float length = 1.0f;
+    int vw = 0;
+    int vh = 0;
+};
+
+math::Vector3f matrix_translation(const math::Matrix4f& m) {
+    return math::Vector3f(m.m[12], m.m[13], m.m[14]);
+}
+
+// 取矩阵第 i 列的旋转方向（去掉缩放）
+math::Vector3f matrix_axis(const math::Matrix4f& m, int i) {
+    math::Vector3f v(m.m[i * 4 + 0], m.m[i * 4 + 1], m.m[i * 4 + 2]);
+    const float len = v.length();
+    if (len < 1e-6f) {
+        return math::Vector3f(i == 0 ? 1.0f : 0.0f, i == 1 ? 1.0f : 0.0f, i == 2 ? 1.0f : 0.0f);
+    }
+    return v / len;
+}
+
+bool screen_project(const math::Matrix4f& view, const math::Matrix4f& proj,
+                    const math::Vector3f& world, int vw, int vh, ImVec2* out) {
+    const math::Vector4f clip = proj * (view * math::Vector4f(world, 1.0f));
+    if (clip.w <= 1e-5f) return false;   // 在相机背后的点不投影
+    const float ndc_x = clip.x / clip.w;
+    const float ndc_y = clip.y / clip.w;
+    out->x = (ndc_x * 0.5f + 0.5f) * static_cast<float>(vw);
+    out->y = (0.5f - ndc_y * 0.5f) * static_cast<float>(vh);
+    return true;
+}
+
+float point_segment_distance(const ImVec2& p, const ImVec2& a, const ImVec2& b) {
+    const float vx = b.x - a.x;
+    const float vy = b.y - a.y;
+    const float wx = p.x - a.x;
+    const float wy = p.y - a.y;
+    const float len2 = vx * vx + vy * vy;
+    float t = len2 > 1e-6f ? (wx * vx + wy * vy) / len2 : 0.0f;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float dx = wx - vx * t;
+    const float dy = wy - vy * t;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+// 准备绘制/拾取所需的全部几何：相机、轴方向、像素比例。
+bool gizmo_prepare(GizmoContext& g) {
+    auto* e = gryce_core::EntityResolver::resolve(GEntity_GetSelected());
+    if (!e) return false;
+    if (g_renderer.viewport_w <= 0 || g_renderer.viewport_h <= 0) return false;
+
+    math::Camera cam;
+    if (g_renderer.editor_camera_valid) {
+        cam = g_renderer.editor_camera;
+    } else {
+        World* world = get_world();
+        scene::Entity* cam_e =
+            (world && world->scene()) ? find_main_camera_entity(*world->scene()) : nullptr;
+        if (!cam_e || !build_scene_camera(cam_e, g_renderer.viewport_w,
+                                          g_renderer.viewport_h, cam)) {
+            return false;
+        }
+    }
+    g.vw = g_renderer.viewport_w;
+    g.vh = g_renderer.viewport_h;
+    cam.set_aspect(static_cast<float>(g.vw) / static_cast<float>(g.vh));
+
+    const math::Matrix4f world_m = e->world_transform();
+    g.origin = matrix_translation(world_m);
+    if (g_renderer.gizmo_space == 1) {
+        for (int i = 0; i < 3; ++i) g.axis[i] = matrix_axis(world_m, i);
+    } else {
+        g.axis[0] = math::Vector3f(1.0f, 0.0f, 0.0f);
+        g.axis[1] = math::Vector3f(0.0f, 1.0f, 0.0f);
+        g.axis[2] = math::Vector3f(0.0f, 0.0f, 1.0f);
+    }
+
+    g.view = cam.get_view_matrix();
+    g.proj = cam.get_projection_matrix();
+
+    // 像素/世界单位：用透视投影在该深度处的比例，使 gizmo 的屏幕尺寸恒定。
+    const float dist = (g.origin - cam.position()).length();
+    const float half_fov = math::clamp(cam.fov(), 1.0f, 179.0f) * 0.5f * 3.14159265358979f / 180.0f;
+    const float tan_half = std::tan(half_fov);
+    if (tan_half < 1e-5f) return false;
+    g.pixels_per_unit = (static_cast<float>(g.vh) * 0.5f) / (tan_half * (dist > 0.01f ? dist : 0.01f));
+    if (g.pixels_per_unit < 1e-4f) return false;
+    g.length = kGizmoScreenLength / g.pixels_per_unit;
+    return true;
+}
+
+void gizmo_draw_translate(ImDrawList* dl, const GizmoContext& g, int hot) {
+    ImVec2 o;
+    if (!screen_project(g.view, g.proj, g.origin, g.vw, g.vh, &o)) return;
+    for (int i = 0; i < 3; ++i) {
+        ImVec2 tip;
+        if (!screen_project(g.view, g.proj, g.origin + g.axis[i] * g.length, g.vw, g.vh, &tip)) continue;
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+            ImVec4(kGizmoAxisColor[i][0], kGizmoAxisColor[i][1], kGizmoAxisColor[i][2], 1.0f));
+        const ImU32 draw_col = (hot == i) ? ImGui::ColorConvertFloat4ToU32(
+            ImVec4(kGizmoHotColor[0], kGizmoHotColor[1], kGizmoHotColor[2], 1.0f)) : col;
+        dl->AddLine(o, tip, col, 2.0f);
+        // 箭头：沿轴屏幕方向画一个三角形
+        float dx = tip.x - o.x;
+        float dy = tip.y - o.y;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 1e-3f) continue;
+        dx /= len;
+        dy /= len;
+        const float a = 9.0f;
+        const float w = 4.0f;
+        const ImVec2 p1(tip.x - dx * a - dy * w, tip.y - dy * a + dx * w);
+        const ImVec2 p2(tip.x - dx * a + dy * w, tip.y - dy * a - dx * w);
+        dl->AddTriangleFilled(tip, p1, p2, draw_col);
+    }
+    dl->AddCircleFilled(o, 4.0f, IM_COL32(230, 230, 230, 220));
+}
+
+void gizmo_draw_rotate(ImDrawList* dl, const GizmoContext& g, int hot) {
+    // 每个轴的圆在垂直于该轴的平面内。投影后逐段画折线；跳到相机背后的段
+    // （投影失败）自然断开，不做假的连线。
+    math::Vector3f tangent[3];
+    tangent[0] = math::Vector3f(0.0f, 1.0f, 0.0f);
+    tangent[1] = math::Vector3f(0.0f, 0.0f, 1.0f);
+    tangent[2] = math::Vector3f(1.0f, 0.0f, 0.0f);
+    constexpr int kSegments = 48;
+    for (int i = 0; i < 3; ++i) {
+        ImVec2 pts[kSegments];
+        bool ok[kSegments] = {};
+        const math::Vector3f bitangent = g.axis[i].cross(tangent[i]).normalized();
+        for (int k = 0; k < kSegments; ++k) {
+            const float a = (static_cast<float>(k) / static_cast<float>(kSegments)) * 6.28318530718f;
+            const math::Vector3f p =
+                g.origin + (tangent[i] * std::cos(a) + bitangent * std::sin(a)) * g.length;
+            ok[k] = screen_project(g.view, g.proj, p, g.vw, g.vh, &pts[k]);
+        }
+        const bool is_hot = (hot == i);
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+            is_hot ? ImVec4(kGizmoHotColor[0], kGizmoHotColor[1], kGizmoHotColor[2], 1.0f)
+                   : ImVec4(kGizmoAxisColor[i][0], kGizmoAxisColor[i][1], kGizmoAxisColor[i][2], 1.0f));
+        for (int k = 0; k < kSegments; ++k) {
+            const int n = (k + 1) % kSegments;
+            if (!ok[k] || !ok[n]) continue;
+            dl->AddLine(pts[k], pts[n], col, is_hot ? 3.0f : 2.0f);
+        }
+    }
+}
+
+void gizmo_draw_scale(ImDrawList* dl, const GizmoContext& g, int hot) {
+    ImVec2 o;
+    if (!screen_project(g.view, g.proj, g.origin, g.vw, g.vh, &o)) return;
+    for (int i = 0; i < 3; ++i) {
+        ImVec2 tip;
+        if (!screen_project(g.view, g.proj, g.origin + g.axis[i] * g.length, g.vw, g.vh, &tip)) continue;
+        const bool is_hot = (hot == i);
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+            is_hot ? ImVec4(kGizmoHotColor[0], kGizmoHotColor[1], kGizmoHotColor[2], 1.0f)
+                   : ImVec4(kGizmoAxisColor[i][0], kGizmoAxisColor[i][1], kGizmoAxisColor[i][2], 1.0f));
+        dl->AddLine(o, tip, col, is_hot ? 3.0f : 2.0f);
+        dl->AddRectFilled(ImVec2(tip.x - 4.0f, tip.y - 4.0f), ImVec2(tip.x + 4.0f, tip.y + 4.0f), col);
+    }
+    // 中心方块 = 等比缩放
+    const bool center_hot = (hot == 3);
+    const ImU32 center_col = ImGui::ColorConvertFloat4ToU32(
+        center_hot ? ImVec4(kGizmoHotColor[0], kGizmoHotColor[1], kGizmoHotColor[2], 1.0f)
+                   : ImVec4(0.92f, 0.92f, 0.92f, 1.0f));
+    dl->AddRectFilled(ImVec2(o.x - 5.0f, o.y - 5.0f), ImVec2(o.x + 5.0f, o.y + 5.0f), center_col);
+}
+
+int gizmo_hit_test(const GizmoContext& g, float sx, float sy) {
+    const ImVec2 mouse(sx, sy);
+    // 操作轴与 Gizmo 中心重合时先判中心（等比缩放）
+    ImVec2 o;
+    if (screen_project(g.view, g.proj, g.origin, g.vw, g.vh, &o)) {
+        if (g_renderer.gizmo_operation == 2) {
+            const float dc = std::sqrt((mouse.x - o.x) * (mouse.x - o.x) + (mouse.y - o.y) * (mouse.y - o.y));
+            if (dc <= 8.0f) return 3;
+        }
+    }
+    int best = -1;
+    float best_dist = kGizmoPickRadius;
+    if (g_renderer.gizmo_operation == 1) {
+        math::Vector3f tangent[3];
+        tangent[0] = math::Vector3f(0.0f, 1.0f, 0.0f);
+        tangent[1] = math::Vector3f(0.0f, 0.0f, 1.0f);
+        tangent[2] = math::Vector3f(1.0f, 0.0f, 0.0f);
+        constexpr int kSegments = 48;
+        for (int i = 0; i < 3; ++i) {
+            ImVec2 pts[kSegments];
+            bool ok[kSegments] = {};
+            const math::Vector3f bitangent = g.axis[i].cross(tangent[i]).normalized();
+            for (int k = 0; k < kSegments; ++k) {
+                const float a = (static_cast<float>(k) / static_cast<float>(kSegments)) * 6.28318530718f;
+                const math::Vector3f p =
+                    g.origin + (tangent[i] * std::cos(a) + bitangent * std::sin(a)) * g.length;
+                ok[k] = screen_project(g.view, g.proj, p, g.vw, g.vh, &pts[k]);
+            }
+            for (int k = 0; k < kSegments; ++k) {
+                const int n = (k + 1) % kSegments;
+                if (!ok[k] || !ok[n]) continue;
+                const float d = point_segment_distance(mouse, pts[k], pts[n]);
+                if (d < best_dist) {
+                    best_dist = d;
+                    best = i;
+                }
+            }
+        }
+        return best;
+    }
+    if (!screen_project(g.view, g.proj, g.origin, g.vw, g.vh, &o)) return -1;
+    for (int i = 0; i < 3; ++i) {
+        ImVec2 tip;
+        if (!screen_project(g.view, g.proj, g.origin + g.axis[i] * g.length, g.vw, g.vh, &tip)) continue;
+        const float d = point_segment_distance(mouse, o, tip);
+        if (d < best_dist) {
+            best_dist = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+// 把世界空间的平移增量换算成实体局部平移增量（父级旋转/缩放要抵消掉）。
+math::Vector3f world_delta_to_local(scene::Entity* e, const math::Vector3f& world_delta) {
+    if (!e) return world_delta;
+    scene::Entity* parent = e->parent();
+    if (!parent) return world_delta;
+    return parent->world_transform().inverse().transform_vector(world_delta);
+}
+
+// 把世界空间旋转换算成局部旋转（父级旋转要抵消掉）。
+math::Quaternionf world_rot_to_local(scene::Entity* e, const math::Quaternionf& world_rot) {
+    if (!e) return world_rot;
+    scene::Entity* parent = e->parent();
+    if (!parent) return world_rot;
+    const math::Quaternionf parent_rot = math::Quaternionf::from_rotation_matrix(parent->world_transform());
+    return (parent_rot.conjugate() * world_rot).normalized();
+}
+
+} // namespace
+#endif  // GRYCE_HAS_IMGUI（Gizmo 几何辅助）
+
+#ifdef GRYCE_HAS_IMGUI
+// 假定 g_renderer.mutex 已被持有（帧收尾路径与公开 API 都走这里）。
+// 定义位置在 debug_ui_submit_locked 之前，因此不需要额外的前置声明。
+static void gizmo_draw_locked() {
+    if (!g_renderer.gizmo_enabled) return;
+    if (!ImGui::GetCurrentContext()) return;
+    GizmoContext g;
+    if (!gizmo_prepare(g)) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    if (!dl) return;
+    switch (g_renderer.gizmo_operation) {
+        case 1: gizmo_draw_rotate(dl, g, g_renderer.gizmo_hover_axis); break;
+        case 2: gizmo_draw_scale(dl, g, g_renderer.gizmo_hover_axis); break;
+        default: gizmo_draw_translate(dl, g, g_renderer.gizmo_hover_axis); break;
+    }
+}
+#endif
+
 // 引擎接管 ImGui 时的每帧收尾：NewFrame → 画面板 → Render → 把 draw data
 // 以命令形式推入本帧命令缓冲。必须在 GRender_EndFrame 内、且 **g_renderer.mutex
 // 已持有**时调用（它读 g_renderer 状态，并会 push_command）。
@@ -466,7 +796,7 @@ static void debug_ui_submit_locked() {
         ctx_switch.armed = true;
     }
 
-    if (!g_renderer.debug_ui_enabled) {
+    if (!g_renderer.debug_ui_enabled && !g_renderer.ui_callback) {
         // 关闭时仍然走一遍 NewFrame/Render（空帧），避免上一帧的同步 future 永远不结束。
         g_renderer.debug_imgui->begin_frame();
         g_renderer.debug_imgui->end_frame([](ImDrawData*, std::shared_ptr<std::promise<void>> done) {
@@ -476,7 +806,18 @@ static void debug_ui_submit_locked() {
     }
 
     g_renderer.debug_imgui->begin_frame();
-    debug_ui_build_panels_locked();
+    if (g_renderer.debug_ui_enabled) debug_ui_build_panels_locked();
+    if (g_renderer.ui_callback) {
+        // 宿主（编辑器）的界面：与引擎调试面板共用同一个 ImGui 帧，画在同一个
+        // draw list 里，因此和场景一起提交、一起被截图。
+        // 约束同调试面板：本函数运行在 g_renderer.mutex 已持有的路径上，
+        // 回调内不得再调用 GRender_* / GCore_* 这类会加锁的公开 API。
+        g_renderer.ui_callback(g_renderer.ui_callback_user);
+    }
+    // Gizmo 最后画：用 foreground draw list，盖在视口图像与各面板之上。
+#ifdef GRYCE_HAS_IMGUI
+    gizmo_draw_locked();
+#endif
 
     render::IImGuiBackend* ui_backend = g_renderer.debug_imgui->backend();
     render::ImGuiRenderer* renderer = g_renderer.debug_imgui.get();
@@ -841,6 +1182,8 @@ int GRender_Init(const GRenderInitDesc* desc) {
     // 两者都决定 init 时创建的 GPU 目标形态）
     g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
     g_renderer.pipeline->set_msaa_samples(g_renderer.msaa_samples);
+    // 离屏视口输出也必须在 init 之前：tonemap 的 render pass 与目标 FBO 绑定。
+    g_renderer.pipeline->set_viewport_output_enabled(g_renderer.viewport_output_requested);
     if (!g_renderer.pipeline->init(g_renderer.ctx.get(), "res:/shaders")) {
         GLOG_WARN("GRender_Init: RenderPipeline init failed (shaders may be missing), falling back to clear-only");
         g_renderer.pipeline.reset();
@@ -869,7 +1212,10 @@ int GRender_Init(const GRenderInitDesc* desc) {
     // 叠加 + F1 调试窗口）。必须在渲染线程启动**之前**完成 —— ImGui 后端会建
     // 自己的 PSO/SRV 堆与字体纹理，放到渲染线程跑起来之后再建容易和首帧抢资源。
 #ifdef GRYCE_HAS_IMGUI
-    if (g_renderer.debug_ui_enabled && desc->native_window && ImGui::GetCurrentContext() == nullptr) {
+    // 需要 ImGui 的两种情况：引擎自带调试叠加，或宿主注册了 UI 回调（编辑器）。
+    // 宿主已自建上下文（编辑器自管 ImGui）时一律让出，绝不再建第二个。
+    const bool want_imgui = g_renderer.debug_ui_enabled || g_renderer.ui_callback != nullptr;
+    if (want_imgui && desc->native_window && ImGui::GetCurrentContext() == nullptr) {
         auto imgui_backend = g_renderer.ctx->backend()
                                  ? g_renderer.ctx->backend()->create_imgui_backend()
                                  : nullptr;
@@ -1009,11 +1355,32 @@ void GRender_BeginFrame(void) {
             GLOG_ERROR("GRender: pipeline hot reload failed");
         }
     }
+    // 编辑器经命令面请求的离屏尺寸：core 只登记请求（它不能反向调用本模块），
+    // 在这里取走并应用。
+    int req_w = 0;
+    int req_h = 0;
+    if (GCore_TakeRenderTargetRequest(0, &req_w, &req_h) &&
+        (req_w != g_renderer.viewport_w || req_h != g_renderer.viewport_h)) {
+        apply_viewport_size_locked(req_w, req_h);
+    }
+    if (GCore_TakeRenderTargetRequest(1, &req_w, &req_h)) {
+        g_renderer.gameview_w = req_w > 0 ? req_w : 1;
+        g_renderer.gameview_h = req_h > 0 ? req_h : 1;
+        if (g_renderer.pipeline) {
+            g_renderer.pipeline->resize_game_view(g_renderer.gameview_w, g_renderer.gameview_h);
+            if (g_renderer.pipeline->game_view_color_handle().is_valid()) {
+                g_renderer.gameview_w = g_renderer.pipeline->game_view_width();
+                g_renderer.gameview_h = g_renderer.pipeline->game_view_height();
+            }
+        }
+    }
     // Async mode: render thread handles begin_frame
 }
 
 // Renders the current world through the pipeline (shared by SceneView / GameView).
-static void render_world_internal(GEntityHandle camera_override = 0) {
+// to_game_view = true 时 tonemap 写入 GameView 的独立目标（见
+// RenderPipeline::set_game_view_active）。
+static void render_world_internal(GEntityHandle camera_override = 0, bool to_game_view = false) {
     if (!g_renderer.ctx || !g_renderer.ctx->is_initialized()) return;
 
     auto* world = get_world();
@@ -1102,7 +1469,12 @@ static void render_world_internal(GEntityHandle camera_override = 0) {
         std::vector<RenderPipeline::Light> lights;
         collect_scene_lights(*world->scene(), lights);
         g_renderer.pipeline->set_lights(lights);
+        // 目标选择必须在 render_scene 之前下发：tonemap 按这个标志决定写哪份 FBO。
+        g_renderer.pipeline->set_game_view_active(to_game_view);
+        // 线框状态每帧下发：管线可能晚于 GRender_SetDisplayMode 创建。
+        g_renderer.pipeline->set_wireframe(g_renderer.wireframe);
         g_renderer.pipeline->render_scene(*world->scene(), *g_renderer.ctx);
+        g_renderer.pipeline->set_game_view_active(false);
 
         // 2D 覆盖层：在 3D 场景（tonemap 到默认帧缓冲）之上绘制 2D 组件
         //（Sprite2D / Label / ColorRect / TileMap 等，按 CanvasLayer 分层）。
@@ -1120,18 +1492,189 @@ void GRender_RenderWorld(void) {
     render_world_internal();
 }
 
+void GRender_SetGizmoEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.gizmo_enabled = enabled;
+    if (!enabled) {
+        g_renderer.gizmo_hover_axis = -1;
+        g_renderer.gizmo_active_axis = -1;
+    }
+}
+
+bool GRender_IsGizmoEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.gizmo_enabled;
+}
+
+void GRender_SetGizmoMode(int operation, int space) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (operation >= 0 && operation <= 2) g_renderer.gizmo_operation = operation;
+    if (space >= 0 && space <= 1) g_renderer.gizmo_space = space;
+}
+
+int GRender_GetGizmoOperation(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.gizmo_operation;
+}
+
+int GRender_GetGizmoSpace(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.gizmo_space;
+}
+
+int GRender_GizmoHitTest(float sx, float sy) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+#ifdef GRYCE_HAS_IMGUI
+    if (!g_renderer.gizmo_enabled) return -1;
+    GizmoContext g;
+    if (!gizmo_prepare(g)) return -1;
+    const int axis = gizmo_hit_test(g, sx, sy);
+    g_renderer.gizmo_hover_axis = axis;
+    return axis;
+#else
+    (void)sx;
+    (void)sy;
+    return -1;
+#endif
+}
+
+void GRender_GizmoBeginDrag(int axis) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.gizmo_active_axis = axis;
+    // 整段拖拽算一步撤销：拖拽期间的每帧 SetTransform 不再各自入栈。
+    GCore_BeginEdit("gizmo");
+}
+
+int GRender_GizmoDrag(float delta_px) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.gizmo_active_axis < 0) return 0;
+    auto* e = gryce_core::EntityResolver::resolve(GEntity_GetSelected());
+    if (!e || !e->transform()) return 0;
+
+    const int axis = g_renderer.gizmo_active_axis;
+    const auto* t = e->transform();
+    const GEntityHandle handle = GEntity_GetSelected();
+
+    math::Vector3f axis_dir(axis == 0 ? 1.0f : 0.0f,
+                            axis == 1 ? 1.0f : 0.0f,
+                            axis == 2 ? 1.0f : 0.0f);
+    float px_per_unit = 1.0f;
+#ifdef GRYCE_HAS_IMGUI
+    // 轴方向的屏幕长度决定"每世界单位多少像素"：斜视时同一像素对应的世界
+    // 位移更长，用投影实测值才能保持手感一致。
+    {
+        GizmoContext g;
+        if (gizmo_prepare(g)) {
+            axis_dir = g.axis[axis < 3 ? axis : 0];
+            ImVec2 a;
+            ImVec2 b;
+            if (screen_project(g.view, g.proj, g.origin, g.vw, g.vh, &a) &&
+                screen_project(g.view, g.proj, g.origin + axis_dir, g.vw, g.vh, &b)) {
+                const float d = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+                if (d > 0.5f) px_per_unit = d;
+            }
+        }
+    }
+#endif
+
+    if (g_renderer.gizmo_operation == 0) {
+        const math::Vector3f world_delta = axis_dir * (delta_px / px_per_unit);
+        const math::Vector3f local_delta = world_delta_to_local(e, world_delta);
+        const GVec3 pos{t->position.x + local_delta.x,
+                        t->position.y + local_delta.y,
+                        t->position.z + local_delta.z};
+        GEdit_SetTransform(handle, &pos, nullptr, nullptr);
+        return 1;
+    }
+
+    if (g_renderer.gizmo_operation == 1) {
+        // 旋转：像素 → 弧度，绕该轴累加
+        const float angle = delta_px * 0.01f;
+        const math::Quaternionf q = math::Quaternionf::from_axis_angle(axis_dir, angle);
+        const math::Quaternionf cur_local(t->rotation.x, t->rotation.y, t->rotation.z, t->rotation.w);
+        const math::Quaternionf world_cur =
+            e->parent() ? (math::Quaternionf::from_rotation_matrix(e->parent()->world_transform()) * cur_local)
+                        : cur_local;
+        const math::Quaternionf next_local = world_rot_to_local(e, q * world_cur);
+        const GQuat rot{next_local.x, next_local.y, next_local.z, next_local.w};
+        GEdit_SetTransform(handle, nullptr, &rot, nullptr);
+        return 1;
+    }
+
+    // 缩放：单轴加减（axis 3 = 等比）
+    const float step = delta_px * 0.01f;
+    GVec3 scale{t->scale.x, t->scale.y, t->scale.z};
+    if (axis >= 3) {
+        scale.x += step;
+        scale.y += step;
+        scale.z += step;
+    } else if (axis == 0) {
+        scale.x += step;
+    } else if (axis == 1) {
+        scale.y += step;
+    } else {
+        scale.z += step;
+    }
+    scale.x = math::clamp(scale.x, 0.001f, 1.0e6f);
+    scale.y = math::clamp(scale.y, 0.001f, 1.0e6f);
+    scale.z = math::clamp(scale.z, 0.001f, 1.0e6f);
+    GEdit_SetTransform(handle, nullptr, nullptr, &scale);
+    return 1;
+}
+
+void GRender_GizmoEndDrag(void) {
+    GRYCE_API_GUARD();
+    GCore_EndEdit();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.gizmo_active_axis = -1;
+}
+
+void GRender_DrawGizmoOverlay(void) {
+    GRYCE_API_GUARD();
+#ifdef GRYCE_HAS_IMGUI
+    std::lock_guard lock(g_renderer.mutex);
+    gizmo_draw_locked();
+#endif
+}
+
 void GRender_RenderGizmo(void) {
     GRYCE_API_GUARD();
-    // Gizmo 渲染入口：当前为空实现（操作 Gizmo 与视口工具栏尚未接入），
-    // 保留 ABI 占位，调用方无需判空。
+    // 实际绘制发生在 ImGui 帧里（GRender_DrawGizmoOverlay，引擎接管 ImGui 时
+    // 由 GRender_EndFrame 自动调用）。这里只做一次可绘制性检查，保证调用方
+    // 的帧序（BeginFrame → RenderWorld → RenderGizmo → EndFrame）语义不变。
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.gizmo_enabled) return;
+    if (!g_renderer.initialized) return;
 }
 
 void GRender_RenderGameView(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
-    // 相机已独立（gameview_camera 优先）；FBO/纹理仍与 SceneView 共用，
-    // GRender_GetGameViewTexture() 返回视口纹理。独立 FBO 留待双管线改造。
-    render_world_internal(g_renderer.gameview_camera);
+    // GameView 用 GameView 相机（未设置则回退场景主相机），tonemap 写独立的
+    // game view 目标 —— 因此 SceneView 与 GameView 可以同屏显示两张不同的画面。
+    render_world_internal(g_renderer.gameview_camera, /*to_game_view=*/true);
+}
+
+// 显示模式字符串比较（大小写不敏感）：编辑器 UI 传进来的可能是 "Wireframe"
+// 也可能是 "wireframe"，早期示例里还有全大写的写法。
+static bool display_mode_is(const char* mode, const char* expected) {
+    if (!mode || !expected) return false;
+    while (*mode && *expected) {
+        char a = *mode++;
+        char b = *expected++;
+        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return *mode == '\0' && *expected == '\0';
 }
 
 void GRender_SetDisplayMode(const char* mode) {
@@ -1139,9 +1682,26 @@ void GRender_SetDisplayMode(const char* mode) {
     std::lock_guard lock(g_renderer.mutex);
     if (!mode || mode[0] == '\0') return;
     g_renderer.display_mode = mode;
-    GLOG_INFO("GRender_SetDisplayMode: {}", g_renderer.display_mode);
-    // 线框等显示模式当前只记录状态并写日志：下推到后端/管线的真正线框
-    // 渲染尚未接入，UI 侧已接线，设置可即时查询。
+    // 只有 Wireframe 有真正的下推路径（glPolygonMode）。其它模式名只作为
+    // 状态记录保留，UI 侧应先用 GRender_IsDisplayModeSupported 判断。
+    g_renderer.wireframe = display_mode_is(mode, "wireframe");
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->set_wireframe(g_renderer.wireframe);
+    }
+    GLOG_INFO("GRender_SetDisplayMode: {} (wireframe={})", g_renderer.display_mode,
+              g_renderer.wireframe ? 1 : 0);
+}
+
+int GRender_IsDisplayModeSupported(const char* mode) {
+    GRYCE_API_GUARD();
+    if (!mode || mode[0] == '\0') return 0;
+    std::lock_guard lock(g_renderer.mutex);
+    if (display_mode_is(mode, "shaded")) return 1;
+    if (display_mode_is(mode, "wireframe")) {
+        auto* backend = g_renderer.ctx ? g_renderer.ctx->backend() : nullptr;
+        return (backend && backend->supports_polygon_mode()) ? 1 : 0;
+    }
+    return 0;
 }
 
 void GRender_EndFrame(void) {
@@ -1658,6 +2218,48 @@ void GRender_DrawDebugPanel(void) {
 #endif
 }
 
+void GRender_SetUICallback(void (*callback)(void* user), void* user) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ui_callback = callback;
+    g_renderer.ui_callback_user = user;
+}
+
+bool GRender_HasImGui(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.debug_imgui != nullptr;
+}
+
+uint64_t GRender_GetImGuiTextureId(GTextureHandle texture) {
+    GRYCE_API_GUARD();
+#ifndef GRYCE_HAS_IMGUI
+    (void)texture;
+    return 0;
+#else
+    if (!texture) return 0;
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.debug_imgui) return 0;
+    auto* backend = g_renderer.debug_imgui->backend();
+    if (!backend) return 0;
+    // 契约：GTextureHandle 就是 ITexture*（见 GRender_GetViewportTexture）。
+    return backend->imgui_texture_id(static_cast<render::ITexture*>(texture));
+#endif
+}
+
+void GRender_InvalidateImGuiTexture(GTextureHandle texture) {
+    GRYCE_API_GUARD();
+#ifndef GRYCE_HAS_IMGUI
+    (void)texture;
+#else
+    if (!texture) return;
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.debug_imgui) return;
+    auto* backend = g_renderer.debug_imgui->backend();
+    if (backend) backend->invalidate_texture(static_cast<render::ITexture*>(texture));
+#endif
+}
+
 void GRender_SetSSRDebugView(int mode) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
@@ -1706,9 +2308,14 @@ GTextureHandle GRender_GetViewportTexture(void) {
 
 GTextureHandle GRender_GetGameViewTexture(void) {
     GRYCE_API_GUARD();
-    // 运行模式（PlayMode）下 GameView 尚无独立 FBO：返回与 SceneView 共用的
-    // 视口纹理，与 GRender_RenderGameView 画的目标一致。
-    return GRender_GetViewportTexture();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.pipeline || !g_renderer.pipeline->is_valid()) return nullptr;
+    if (auto* tex = g_renderer.pipeline->game_view_color_texture()) {
+        return static_cast<GTextureHandle>(tex);
+    }
+    // 独立目标创建失败时的降级：与 SceneView 共用纹理（此时 RenderGameView
+    // 的画面就是 SceneView 的，编辑器据此判断是否拿到了独立视口）。
+    return static_cast<GTextureHandle>(g_renderer.pipeline->viewport_color_texture());
 }
 
 int GRender_GetViewportSize(int* out_w, int* out_h) {
@@ -1724,6 +2331,12 @@ int GRender_GetGameViewSize(int* out_w, int* out_h) {
     GRYCE_API_GUARD();
     if (!out_w || !out_h) return -1;
     std::lock_guard lock(g_renderer.mutex);
+    // 有独立目标时报真实尺寸（与 SceneView 同尺寸），否则回退到请求值。
+    if (g_renderer.pipeline && g_renderer.pipeline->game_view_color_handle().is_valid()) {
+        *out_w = g_renderer.pipeline->game_view_width();
+        *out_h = g_renderer.pipeline->game_view_height();
+        return 0;
+    }
     *out_w = g_renderer.gameview_w;
     *out_h = g_renderer.gameview_h;
     return 0;
@@ -1803,16 +2416,26 @@ int GRender_SaveScreenshot(const char* path) {
 void GViewport_SetSize(int w, int h) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
-    g_renderer.viewport_w = w > 0 ? w : 1;
-    g_renderer.viewport_h = h > 0 ? h : 1;
-    if (g_renderer.pipeline && g_renderer.pipeline->is_valid()) {
-        // 目标重建是 GPU 资源操作，必须在渲染线程（持有 GL context）执行；
-        // 否则 GL 上 glCreateFramebuffers 返回 0，目标静默创建失败。
-        RenderPipeline* pipeline = g_renderer.pipeline.get();
-        const int w = g_renderer.viewport_w;
-        const int h = g_renderer.viewport_h;
-        g_renderer.ctx->run_on_render_thread([pipeline, w, h]() { pipeline->resize_render_targets(w, h); });
-    }
+    apply_viewport_size_locked(w, h);
+}
+
+void GRender_SetViewportOutput(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.viewport_output_requested == enabled) return;
+    g_renderer.viewport_output_requested = enabled;
+    if (!g_renderer.pipeline) return;   // init 之前只记录期望值
+    g_renderer.pipeline->set_viewport_output_enabled(enabled);
+    // 目标 FBO 的 render pass 与 tonemap 管线绑定，切换必然要重建管线；
+    // 交给 BeginFrame 的 hot reload 路径，避免在这里直接动 GPU 资源。
+    g_renderer.pipeline_reload_pending = true;
+}
+
+bool GRender_IsViewportOutputEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) return g_renderer.pipeline->viewport_output_enabled();
+    return g_renderer.viewport_output_requested;
 }
 
 void GViewport_GetSize(int* out_w, int* out_h) {
@@ -1851,6 +2474,15 @@ void GGameView_SetSize(int w, int h) {
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.gameview_w = w > 0 ? w : 1;
     g_renderer.gameview_h = h > 0 ? h : 1;
+    // 双视口共用同一条 HDR 链（见 RenderPipeline::resize_game_view），
+    // 尺寸与视口不同时会被明确拒绝并记日志。
+    if (g_renderer.pipeline) {
+        g_renderer.pipeline->resize_game_view(g_renderer.gameview_w, g_renderer.gameview_h);
+        if (g_renderer.pipeline->game_view_color_handle().is_valid()) {
+            g_renderer.gameview_w = g_renderer.pipeline->game_view_width();
+            g_renderer.gameview_h = g_renderer.pipeline->game_view_height();
+        }
+    }
 }
 
 void GGameView_GetSize(int* out_w, int* out_h) {

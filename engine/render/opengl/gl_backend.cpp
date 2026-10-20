@@ -506,6 +506,26 @@ void GLBackend::set_cull_face(CullMode mode) {
     state_cache_valid_ = true;
 }
 
+void GLBackend::set_polygon_mode(int mode) {
+    // GL 直接用 glPolygonMode 切换；WebGL2 没有 glPolygonMode（ES 无此入口），
+    // 所以 WebGL 构建下这里是 no-op —— 编辑器面板会显示"不支持"。
+#ifdef __EMSCRIPTEN__
+    (void)mode;
+#else
+    if (polygon_mode_ == mode) return;
+    polygon_mode_ = mode;
+    glPolygonMode(GL_FRONT_AND_BACK, mode ? GL_LINE : GL_FILL);
+#endif
+}
+
+bool GLBackend::supports_polygon_mode() const {
+#ifdef __EMSCRIPTEN__
+    return false;   // WebGL2（GLES3）没有 polygonMode 入口
+#else
+    return true;
+#endif
+}
+
 void GLBackend::draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) {
     IMesh* m = this->mesh(mesh);
     IShader* s = this->shader(shader);

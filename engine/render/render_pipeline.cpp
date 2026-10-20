@@ -786,6 +786,14 @@ void RenderPipeline::shutdown() {
         ctx_->destroy_texture(viewport_color_);
         viewport_color_ = RHITextureHandle{};
     }
+    if (gameview_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(gameview_fbo_);
+        gameview_fbo_ = RHIFramebufferHandle{};
+    }
+    if (gameview_color_.is_valid()) {
+        ctx_->destroy_texture(gameview_color_);
+        gameview_color_ = RHITextureHandle{};
+    }
     if (owns_shaders_ && tonemap_shader_.is_valid()) {
         ctx_->destroy_shader(tonemap_shader_);
         tonemap_shader_ = RHIShaderHandle{};
@@ -2490,6 +2498,9 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     if (deferred_enabled_ && hdr_enabled_) {
         // Deferred Rendering Path
         // 2a. GBuffer pass: render scene to MRT
+        // 线框只包裹几何阶段：紧随其后的 Deferred Lighting 是全屏后处理，
+        // 线框化会让整屏只剩两条对角线。
+        ctx.set_polygon_mode(wireframe_ ? 1 : 0);
         begin_gbuffer_pass(ctx);
         render_skybox(ctx);
         render_grid(ctx);
@@ -2559,6 +2570,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             render_skinned_mesh_to_gbuffer(item.mesh, item.material, item.model, item.palette, ctx);
         }
         end_gbuffer_pass(ctx);
+        ctx.set_polygon_mode(0);   // 恢复填充，后续全屏 pass 不能用线框
 
         // 2b. Deferred Lighting Pass: full-screen quad, read GBuffer, write HDR
         begin_deferred_lighting_pass(ctx);
@@ -2712,11 +2724,14 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         render_tonemap(ctx);
     } else if (hdr_enabled_) {
         begin_hdr_forward_pass(ctx);
+        // 线框只覆盖几何阶段，结束点见下方 end_hdr_forward_pass 前的复位。
+        ctx.set_polygon_mode(wireframe_ ? 1 : 0);
         // GPU 计时：主 pass（skybox + 网格线 + 不透明/透明物体）整段。
         // 与其它区间保持平铺：结束点必须落在下一个 pass 切换处（见下方 end）。
         ctx.gpu_profile_begin("scene");
     } else {
         begin_forward_pass(ctx);
+        ctx.set_polygon_mode(wireframe_ ? 1 : 0);
         ctx.gpu_profile_begin("scene");
     }
 
@@ -2802,6 +2817,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     }
 
     if (hdr_enabled_) {
+        ctx.set_polygon_mode(0);   // 几何阶段结束，恢复填充（后处理不能用线框）
         end_hdr_forward_pass(ctx);
         ctx.gpu_profile_end();   // scene
 
@@ -2914,6 +2930,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         // 7. Tone mapping pass to backbuffer
         render_tonemap(ctx);
     } else {
+        ctx.set_polygon_mode(0);   // 非 HDR 前向路径的几何阶段同样在此结束
         end_forward_pass(ctx);
     }
 
@@ -3980,12 +3997,20 @@ bool RenderPipeline::resize_render_targets_impl(int width, int height) {
     if (viewport_output_enabled_) {
         RHITextureHandle old_color = viewport_color_;
         RHIFramebufferHandle old_fbo = viewport_fbo_;
+        RHITextureHandle old_gv_color = gameview_color_;
+        RHIFramebufferHandle old_gv_fbo = gameview_fbo_;
         viewport_color_ = RHITextureHandle{};
         viewport_fbo_ = RHIFramebufferHandle{};
+        gameview_color_ = RHITextureHandle{};
+        gameview_fbo_ = RHIFramebufferHandle{};
 
         // 先 invalidate 旧的 ImGui descriptor set 缓存，避免视口面板显示已销毁纹理
         if (imgui_backend_ && old_color.is_valid()) {
             ITexture* old_tex = ctx_->texture(old_color);
+            if (old_tex) imgui_backend_->invalidate_texture(old_tex);
+        }
+        if (imgui_backend_ && old_gv_color.is_valid()) {
+            ITexture* old_tex = ctx_->texture(old_gv_color);
             if (old_tex) imgui_backend_->invalidate_texture(old_tex);
         }
 
@@ -3993,12 +4018,18 @@ bool RenderPipeline::resize_render_targets_impl(int width, int height) {
             GLOG_ERROR("RenderPipeline: resize viewport target failed ({}x{})", width, height);
             if (viewport_color_.is_valid()) ctx_->destroy_texture(viewport_color_);
             if (viewport_fbo_.is_valid()) ctx_->destroy_framebuffer(viewport_fbo_);
+            if (gameview_color_.is_valid()) ctx_->destroy_texture(gameview_color_);
+            if (gameview_fbo_.is_valid()) ctx_->destroy_framebuffer(gameview_fbo_);
             viewport_color_ = old_color;
             viewport_fbo_ = old_fbo;
+            gameview_color_ = old_gv_color;
+            gameview_fbo_ = old_gv_fbo;
             return false;
         }
         if (old_color.is_valid()) ctx_->destroy_texture(old_color);
         if (old_fbo.is_valid()) ctx_->destroy_framebuffer(old_fbo);
+        if (old_gv_color.is_valid()) ctx_->destroy_texture(old_gv_color);
+        if (old_gv_fbo.is_valid()) ctx_->destroy_framebuffer(old_gv_fbo);
     }
 
     // Bloom 目标：调用方保证渲染线程已暂停（pending 销毁已排空），直接重建

@@ -166,6 +166,8 @@ public:
     // 混合因子（配合 set_blend(true) 使用；SSR 合成用 One/One 做加法混合）
     void set_blend_func(BlendFactor src, BlendFactor dst);
     void set_cull_face(CullMode mode);
+    // 线框显示：0 = 填充，1 = 线框（仅 GL/WebGL 后端生效）
+    void set_polygon_mode(int mode);
     void set_framebuffer(RHIFramebufferHandle fb);
     // MSAA 解析（主 HDR 目标启用多样本时，场景 pass 结束后调用）。
     // 把 src（多样本）的颜色附件解析到 dst（单样本）；两端均非多样本时

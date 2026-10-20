@@ -51,6 +51,9 @@ void execute_typed_command(IRenderBackend* backend, const RenderCommandTyped& cm
         case RenderCommandType::SetCullFace:
             backend->set_cull_face(cmd.cull_face.mode);
             break;
+        case RenderCommandType::SetPolygonMode:
+            backend->set_polygon_mode(cmd.polygon_mode.mode);
+            break;
         case RenderCommandType::BindFramebuffer:
             backend->bind_framebuffer(cmd.framebuffer);
             break;
@@ -816,6 +819,11 @@ void RenderContext::set_blend_func(BlendFactor src, BlendFactor dst) {
 void RenderContext::set_cull_face(CullMode mode) {
     if (!cmd_buffer_) return;
     cmd_buffer_->push_typed(RenderCommandTyped::make_set_cull_face(mode));
+}
+
+void RenderContext::set_polygon_mode(int mode) {
+    if (!cmd_buffer_) return;
+    cmd_buffer_->push_typed(RenderCommandTyped::make_set_polygon_mode(mode));
 }
 
 void RenderContext::set_framebuffer(RHIFramebufferHandle fb) {

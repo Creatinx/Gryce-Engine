@@ -1,5 +1,6 @@
 #include "api/scene_api.h"
 #include "api/api_guard.h"
+#include "api/core_api.h"   // GCore_ClearUndoHistory（换文档必须清空编辑历史）
 #include "runtime/engine_context.h"
 
 #include "scene/scene_serializer.h"
@@ -152,6 +153,9 @@ int GScene_Load(const char* path) {
     else gc::g_core_state.scene_path_3d = path;
     gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
     gc::g_core_state.selected_entity = 0;
+    // 换文档：上一份场景的撤销快照里是别的 UUID，作用到新场景会"撤销出一堆
+    // 不存在的实体"。与 cmd_load_scene 的处理保持一致。
+    GCore_ClearUndoHistory();
     gc::g_core_state.deferred_entity_list_changed = true;
     gc::g_core_state.deferred_scene_loaded = true;
     return 0;
@@ -195,6 +199,8 @@ int GScene_New(void) {
     else gc::g_core_state.scene_path_3d = default_path;
     gc::g_core_state.entity_map.rebuild(gc::g_core_state.world->scene());
     gc::g_core_state.selected_entity = 0;
+    // 新建文档同样是一次"换文档"，编辑历史必须清空。
+    GCore_ClearUndoHistory();
     gc::g_core_state.deferred_entity_list_changed = true;
     return 0;
 }

@@ -40,6 +40,36 @@ GRYCE_RENDERER_API bool GRender_IsInitialized(void);
 GRYCE_RENDERER_API void GRender_BeginFrame(void);
 GRYCE_RENDERER_API void GRender_RenderWorld(void);
 GRYCE_RENDERER_API void GRender_RenderGizmo(void);
+
+// ---------------------------------------------------------------------------
+// 变换 Gizmo（编辑器操作手柄）
+//
+//   手柄作用于当前选中实体（GCore 的选择状态），屏幕空间绘制：引擎接管 ImGui
+//   时由 GRender_EndFrame 自动画在最上层；宿主自持 ImGui 时在自己的
+//   NewFrame/Render 之间调用 GRender_DrawGizmoOverlay()。
+//
+//   交互流程（全部在视口面板内完成）：
+//     axis = GRender_GizmoHitTest(sx, sy);   // 悬停高亮，-1 表示未命中
+//     if (按下左键 && axis >= 0) GRender_GizmoBeginDrag(axis);
+//     if (拖拽中) GRender_GizmoDrag(沿轴屏幕增量像素);
+//     if (松开左键) GRender_GizmoEndDrag();  // 整段拖拽记一步撤销
+//
+//   修改通过编辑命令面下发（edit_api.h），因此撤销/重做与 Inspector 一致。
+// ---------------------------------------------------------------------------
+GRYCE_RENDERER_API void GRender_SetGizmoEnabled(bool enabled);
+GRYCE_RENDERER_API bool GRender_IsGizmoEnabled(void);
+// operation: 0 = 平移，1 = 旋转，2 = 缩放；space: 0 = 世界，1 = 局部
+GRYCE_RENDERER_API void GRender_SetGizmoMode(int operation, int space);
+GRYCE_RENDERER_API int  GRender_GetGizmoOperation(void);
+GRYCE_RENDERER_API int  GRender_GetGizmoSpace(void);
+// 命中测试：0/1/2 = X/Y/Z 轴，3 = 缩放的中心手柄，-1 = 未命中。
+GRYCE_RENDERER_API int  GRender_GizmoHitTest(float sx, float sy);
+GRYCE_RENDERER_API void GRender_GizmoBeginDrag(int axis);
+// delta_px 是鼠标沿该轴屏幕方向的位移（像素）；返回 1 表示已下发修改。
+GRYCE_RENDERER_API int  GRender_GizmoDrag(float delta_px);
+GRYCE_RENDERER_API void GRender_GizmoEndDrag(void);
+// 宿主自持 ImGui 时手动调用（须处于 NewFrame() 与 Render() 之间）。
+GRYCE_RENDERER_API void GRender_DrawGizmoOverlay(void);
 GRYCE_RENDERER_API void GRender_RenderGameView(void);
 GRYCE_RENDERER_API void GRender_EndFrame(void);
 
@@ -47,6 +77,16 @@ GRYCE_RENDERER_API GTextureHandle GRender_GetViewportTexture(void);
 GRYCE_RENDERER_API GTextureHandle GRender_GetGameViewTexture(void);
 GRYCE_RENDERER_API int            GRender_GetViewportSize(int* out_w, int* out_h);
 GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h);
+
+// 离屏视口输出：开启后 tonemap 结果写入引擎持有的纹理（默认 framebuffer 只画
+// ImGui 叠加），编辑器用 GRender_GetViewportTexture / GetGameViewTexture 取纹理
+// 画到面板里。关闭时引擎直接把画面输出到窗口（独立游戏用这条路径）。
+//
+// 运行期切换会触发一次管线热重载（tonemap 的 render pass 与目标 FBO 绑定，
+// Vulkan 下不重建就是 UB），有一两帧的卡顿 —— 编辑器应在 GRender_Init 之前
+// 一次性打开。
+GRYCE_RENDERER_API void GRender_SetViewportOutput(bool enabled);
+GRYCE_RENDERER_API bool GRender_IsViewportOutputEnabled(void);
 
 GRYCE_RENDERER_API void  GRender_SetVSync(bool enabled);
 
@@ -89,6 +129,35 @@ GRYCE_RENDERER_API void  GRender_SetDebugUI(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsDebugUIActive(void);
 // 在宿主自持 ImGui 上下文时调用（须处于 ImGui::NewFrame() 与 ImGui::Render() 之间）。
 GRYCE_RENDERER_API void  GRender_DrawDebugPanel(void);
+
+// ---------------------------------------------------------------------------
+// 编辑器 UI 托管
+//
+//   引擎在以下两种情况下接管 ImGui（CreateContext + 三后端渲染后端都由引擎持有）：
+//     1) GRender_SetDebugUI(true) —— 引擎自带的调试叠加/窗口；
+//     2) 设置了 UI 回调（GRender_SetUICallback）—— 编辑器把自己的界面画进来。
+//   若宿主在 GRender_Init 之前已经 CreateContext，引擎一律让出，不用这两条路径。
+//
+//   回调在 GRender_EndFrame 内、渲染线程提交本帧之前被调用，处于 ImGui 的
+//   NewFrame() 与 Render() 之间：宿主可以直接用 imgui.h 的 API 画窗口，
+//   画出来的内容与场景一起提交、一起被截图。
+//
+//   约束：回调运行在持锁的帧收尾路径上（g_renderer.mutex 已持有），
+//   回调内不得再调用 GRender_* / GCore_* 这类会加锁的公开 API —— 与引擎自己的
+//   调试面板是同一条约束；需要改渲染状态时通过命令缓冲（edit_api.h）下发。
+// ---------------------------------------------------------------------------
+GRYCE_RENDERER_API void GRender_SetUICallback(void (*callback)(void* user), void* user);
+GRYCE_RENDERER_API bool GRender_HasImGui(void);
+
+// 把引擎纹理（视口/游戏视口/贴图预览）转换成 ImGui 可用的纹理 ID
+// （ImTextureID 的整数值），供 ImGui::Image / ImageButton 采样。
+// OpenGL 返回 GL 纹理名，Vulkan 返回缓存的 VkDescriptorSet，D3D12 返回 SRV
+// 句柄；返回 0 表示当前后端不可用或引擎没有接管 ImGui。
+GRYCE_RENDERER_API uint64_t GRender_GetImGuiTextureId(GTextureHandle texture);
+
+// 让引擎丢弃该纹理的 ImGui 侧缓存（纹理被销毁或重建后必须调用，
+// 否则 ImGui 会继续引用已经释放的描述符）。
+GRYCE_RENDERER_API void GRender_InvalidateImGuiTexture(GTextureHandle texture);
 
 // 电源 / 省电模式：未插电（电池）时自动进入，极致压缩每帧工作以稳定高帧率。
 // 默认 auto 开启；forced 可手动强制开(true)/关(false)。插电时行为不变（零回归）。
@@ -161,6 +230,11 @@ GRYCE_RENDERER_API int   GRender_GPUProfilingSupported(void);
 GRYCE_RENDERER_API void  GRender_DumpGPUProfiling(void);
 GRYCE_RENDERER_API int   GRender_SaveScreenshot(const char* path);
 GRYCE_RENDERER_API void GRender_SetDisplayMode(const char* mode);
+// 查询某个显示模式在当前后端是否真的能渲染（1 = 支持）。
+// 目前只有 "Shaded" 与 "Wireframe" 被认可；"Wireframe" 仅在能把线框下推到
+// 硬件的后端（OpenGL 桌面版）返回 1，WebGL/Vulkan/D3D12 返回 0。
+// 编辑器应据此禁用选项，而不是让用户点了什么都不发生。
+GRYCE_RENDERER_API int  GRender_IsDisplayModeSupported(const char* mode);
 
 // 2D 场景编辑器模式：GRender_RenderWorld 只渲染 2D 画布
 //（清屏 + 2D 覆盖层，不跑 3D 管线）。false = 3D 场景 + 2D 覆盖。

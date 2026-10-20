@@ -637,6 +637,52 @@ if(BUILD_TESTING)
         set_tests_properties(script_${suite} PROPERTIES
             LABELS "unit;script" TIMEOUT 60)
     endforeach()
+
+    # 资产侧车文件（<asset>.meta）与导入设置套件：编辑器靠 guid 维持资产引用，
+    # 靠侧车里的缩放/上轴/材质开关复现导入结果。同样只编被测源码，不链 DLL。
+    set(GRYCE_ASSET_TEST_SUITES meta import_options)
+
+    add_executable(GryceAssetTests
+        test/asset_tests.cpp
+        engine/assets/asset_meta.cpp
+        engine/assets/import_options.cpp
+        engine/utils/glog/glog_lib.cpp
+    )
+    target_include_directories(GryceAssetTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json
+    )
+
+    foreach(suite IN LISTS GRYCE_ASSET_TEST_SUITES)
+        add_test(NAME asset_${suite}
+                 COMMAND GryceAssetTests --suite ${suite}
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(asset_${suite} PROPERTIES
+            LABELS "unit;asset" TIMEOUT 60)
+    endforeach()
+
+    # 编辑器前置能力（编辑命令面 / 撤销重做 / 场景存档往返）。
+    # 这一个必须链 GryceCore.dll —— 命令消费与序列化都在 core 内部，没有可
+    # 剥离的纯计算内核；但这些路径都不碰 GPU，因此 CI 仍不需要显卡。
+    set(GRYCE_EDITOR_TEST_SUITES edit undo scene)
+
+    add_executable(GryceEditorTests test/editor_tests.cpp)
+    target_include_directories(GryceEditorTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    target_compile_definitions(GryceEditorTests PRIVATE
+        GRYCE_TEST_PROJECT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/demo_project"
+    )
+    target_link_libraries(GryceEditorTests PRIVATE GryceCore)
+
+    foreach(suite IN LISTS GRYCE_EDITOR_TEST_SUITES)
+        add_test(NAME editor_${suite}
+                 COMMAND GryceEditorTests --suite ${suite}
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(editor_${suite} PROPERTIES
+            LABELS "unit;editor" TIMEOUT 120)
+    endforeach()
 endif()
 
 # ===========================================================================

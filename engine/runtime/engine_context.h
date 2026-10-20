@@ -126,6 +126,16 @@ struct EngineContext {
 
     // Console: number of MemoryLogSink entries already delivered to the editor
     size_t log_delivered_count = 0;
+
+    // ------------------------------------------------------------------
+    // 编辑器 -> 渲染侧的跨 DLL 请求（core 不能反向调用 GryceRenderer 的 API，
+    // 所以这里只存请求，由渲染侧在 GRender_BeginFrame 里取走并应用）
+    // ------------------------------------------------------------------
+    // 单帧步进：Play 且暂停时由 GCore_BeginFrame 逐帧消费。
+    int step_frames = 0;
+    // 离屏目标尺寸请求：0 = 场景视口，1 = 游戏视口；-1 表示无请求。
+    int target_request_w[2] = {-1, -1};
+    int target_request_h[2] = {-1, -1};
 };
 
 // Defined in core_api.cpp

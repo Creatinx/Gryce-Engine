@@ -117,6 +117,16 @@ public:
     virtual void set_blend_equation(BlendEquation mode) { (void)mode; }
     virtual void set_cull_face(CullMode mode) = 0;
 
+    // 多边形模式（线框显示）。只有 OpenGL/WebGL 后端实现：Vulkan 需要
+    // VK_EXT_extended_dynamic_state3 的 dynamic polygonMode，D3D12 需要为每个
+    // 着色器准备 wireframe 版 PSO。不支持的后端保持默认空实现（命令被丢弃），
+    // 由 GRender_IsDisplayModeSupported 如实回报。
+    virtual void set_polygon_mode(int mode) { (void)mode; }
+    // 后端是否真的能把线框下推到硬件。GL 桌面版为真；WebGL 没有 polygonMode，
+    // Vulkan/D3D12 未实现，一律为假 —— 编辑器据此禁用 Wireframe 选项而不是
+    // 让用户点了个什么都不发生的开关。
+    virtual bool supports_polygon_mode() const { return false; }
+
     // 绘制（使用 RHI 句柄）
     virtual void draw_mesh(RHIMeshHandle mesh, RHIShaderHandle shader) = 0;
     virtual void draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) = 0;

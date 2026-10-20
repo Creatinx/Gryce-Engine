@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 23 条用例，分三个宿主。
+当前共 28 条用例，分五个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -57,6 +57,27 @@ ctest --test-dir build --output-on-failure
 | `script_hot_reload` | 文件变更触发重编译且 props 跨重载保留；文件延迟出现时按轮询周期装载成功；`reload_now` 强制重载与 `set_script_path` 换脚本（命令面内核） |
 | `script_app_entry` | 入口脚本（`main.js`）的 `on_start` / `on_update` / `on_destroy` 派发、热重载换模块（mtime + 大小判据）、扩展 ABI 的 `add_function` 注册与标量往返（见 [app-entry.md](app-entry.md) / [extension.md](extension.md)） |
 
+### 2.4 资产侧车文件（`GryceAssetTests.exe`，2 条）
+
+被测源码（`engine/assets/asset_meta.cpp`、`engine/assets/import_options.cpp`、glog）直编进测试可执行文件，不链接引擎 DLL；用例在系统临时目录里自建 / 自清工程，不写仓库。
+
+| 用例 | 核对内容 |
+| --- | --- |
+| `asset_meta` | 侧车读写往返、缺失时生成稳定 guid（32 位十六进制、512 次不重复）、缺失字段取默认值、坏 JSON 按缺失处理、非法设置回退但保留 guid、源文件指纹过期判定、源文件不存在时不写盘 |
+| `asset_import_options` | 缩放、Z-up / X-up 上轴转换（顶点 / 法线 / 切线一起转）、材质开关、粗糙度倍率钳制、非法缩放被忽略（见 [editor-api.md](editor-api.md) 第 7 节） |
+
+### 2.5 编辑器接口（`GryceEditorTests.exe`，3 条）
+
+这是唯一**链接 `GryceCore.dll`** 的单元套件：命令消费、撤销栈、场景序列化都在 core 内部，没有可剥离的纯计算内核。这些路径不碰 GPU / 窗口（`GCore_Init` 只建 World 与场景），CI 上仍不需要显卡。
+
+观测手段是"场景存档 JSON 逐字节比较"而不是实体计数：`GEntity_GetCount` 只统计有父节点的实体，拿它当断言依据会得到假阳性。
+
+| 用例 | 核对内容 |
+| --- | --- |
+| `editor_edit` | 10 个 payload 结构体不超 256 字节、非法参数被拒（返回 0）、创建后自动选中、改名、`SetTransform` 的缺省分量补齐语义（见 [editor-api.md](editor-api.md) 第 1 节） |
+| `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
+| `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
+
 ## 3. 执行注意
 
 `grycegc_*` 用例并行执行会互相干扰（共享临时目录与进程级状态），本地全量验证请串行跑：
@@ -70,6 +91,7 @@ CI 上各用例独立注册、由 runner 调度，不受此限。
 ## 4. 新增用例
 
 - 数学 / 资源规则套件：在根 `CMakeLists.txt` 的 `GRYCE_MATH_TEST_SUITES` 里加名字，自动注册成一条 CTest。
+- 资产 / 编辑器套件：分别在 `GRYCE_ASSET_TEST_SUITES`、`GRYCE_EDITOR_TEST_SUITES` 里加名字。新增编辑器用例时注意两种返回约定（入队 1/0、查询与场景操作 0/-1），写错会让断言永远为真的假绿。
 - 工具链套件：在 `toolchain/CMakeLists.txt` 的 `_grycegc_suites` 里加名字。
 
 ## 5. 历史：像素比对用例已删除

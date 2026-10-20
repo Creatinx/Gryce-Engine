@@ -6,6 +6,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/texture.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -505,6 +506,11 @@ const aiScene* read_scene(Assimp::Importer& importer, const std::string& path) {
 } // namespace
 
 std::vector<MeshData> AssimpImporter::import(const std::string& path) const {
+    return import(path, ImportOptions{});
+}
+
+std::vector<MeshData> AssimpImporter::import(const std::string& path,
+                                             const ImportOptions& options) const {
     std::vector<MeshData> result;
 
     Assimp::Importer importer;
@@ -518,10 +524,12 @@ std::vector<MeshData> AssimpImporter::import(const std::string& path) const {
     std::unordered_map<unsigned int, std::string> embedded_cache;
     process_node(scene->mRootNode, scene, dir_of(path), embedded_cache, result);
 
+    apply_import_options(result, options);
+
     std::size_t total_vertices = 0;
     for (const auto& m : result) total_vertices += m.vertices.size();
-    GLOG_INFO("AssimpImporter: loaded '{}' ({} meshes, {} total vertices)",
-              path, result.size(), total_vertices);
+    GLOG_INFO("AssimpImporter: loaded '{}' ({} meshes, {} total vertices, scale={}, up_axis={})",
+              path, result.size(), total_vertices, options.global_scale, options.up_axis);
     return result;
 }
 

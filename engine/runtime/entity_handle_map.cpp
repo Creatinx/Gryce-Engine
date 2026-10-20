@@ -33,9 +33,30 @@ void EntityHandleMap::clear() {
 
 void EntityHandleMap::rebuild(gryce_engine::scene::Scene* scene) {
     if (!scene) return;
-    clear();
-    scene->foreach([this](gryce_engine::scene::Entity* e) {
-        if (e) alloc(e->uuid());
+    // 保留既有映射：同一 UUID 在重建前后沿用原句柄。撤销/重做恢复场景、
+    // 场景热重载都会走 rebuild，若一律重新发号，编辑器持有的句柄（选择、
+    // 展开状态、属性面板当前目标）会在每次撤销后整片失效。
+    // next_handle_ 不重置，因此新实体拿到的一定是未用过的号，不会与
+    // 保留句柄撞车。
+    std::unordered_map<gryce_engine::scene::UUID, int,
+                       std::hash<gryce_engine::scene::UUID>> preserved;
+    {
+        std::unique_lock lock(mutex_);
+        preserved = std::move(uuid_to_handle_);
+        handle_to_uuid_.clear();
+        uuid_to_handle_.clear();
+    }
+    scene->foreach([&](gryce_engine::scene::Entity* e) {
+        if (!e) return;
+        const gryce_engine::scene::UUID uuid = e->uuid();
+        auto it = preserved.find(uuid);
+        if (it != preserved.end()) {
+            std::unique_lock lock(mutex_);
+            handle_to_uuid_[it->second] = uuid;
+            uuid_to_handle_[uuid] = it->second;
+        } else {
+            alloc(uuid);
+        }
     });
 }
 

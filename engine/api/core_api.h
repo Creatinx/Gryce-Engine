@@ -64,6 +64,34 @@ GRYCE_CORE_API void GCore_RegisterCallback_OnMouseLock(GOnMouseLock cb);
 GRYCE_CORE_API int GCore_GetLogMessages(char* out_buf, int buf_size);
 
 // ---------------------------------------------------------------------------
+// 撤销 / 重做（快照式）
+//
+// 每条变更类命令（创建/删除/改名/改父/改变换/改属性/加删组件/改材质/导入）
+// 在执行前抓一份场景 JSON 快照入栈；撤销就是把上一份快照反序列化回来。
+// 之所以用整场快照而不是增量 diff：场景序列化本来就要写盘、正确性已被存档
+// 路径覆盖，且恢复后实体句柄按 UUID 保留（见 EntityHandleMap::rebuild），
+// 编辑器持有的选择与面板状态不需要重建。
+//
+//   * Play 模式下撤销栈冻结（播放期的物理/动画改动本来就不入编辑历史）。
+//   * 拖拽类连续编辑用 BeginEdit/EndEdit 包起来，整段只算一步。
+//   * 栈深默认 64 步，可用 SetUndoLimit 调整（0 表示禁用记录）。
+// ---------------------------------------------------------------------------
+GRYCE_CORE_API int  GCore_Undo(void);              // 1 = 执行了撤销，0 = 无可撤销
+GRYCE_CORE_API int  GCore_Redo(void);              // 1 = 执行了重做，0 = 无可重做
+GRYCE_CORE_API int  GCore_GetUndoCount(void);
+GRYCE_CORE_API int  GCore_GetRedoCount(void);
+GRYCE_CORE_API void GCore_ClearUndoHistory(void);
+GRYCE_CORE_API void GCore_SetUndoLimit(int limit);
+// 连续编辑分组：BeginEdit 抓快照，EndEdit 提交为一步（期间的单条命令不再入栈）。
+GRYCE_CORE_API void GCore_BeginEdit(const char* label);
+GRYCE_CORE_API void GCore_EndEdit(void);
+
+// 渲染侧取走编辑器的离屏目标尺寸请求（core 不能反向调用 GryceRenderer 的
+// GViewport_SetSize，只能由渲染侧在帧起点轮询）。target: 0 = 场景，1 = 游戏。
+// 返回 1 表示取到一组新尺寸（取走后即清除）。
+GRYCE_CORE_API int GCore_TakeRenderTargetRequest(int target, int* out_w, int* out_h);
+
+// ---------------------------------------------------------------------------
 // GPack resource packaging (used by GryceGC; format shared with GPackReader).
 // ---------------------------------------------------------------------------
 typedef void* GPackHandle;

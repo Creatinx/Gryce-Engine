@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "export.h"
+#include "assets/import_options.h"
 #include "assets/mesh_data.h"
 #include "assets/skinned_mesh_data.h"
 
@@ -16,7 +17,8 @@ namespace gryce_engine::assets {
 class GRYCE_API AssimpImporter {
 public:
     std::vector<MeshData> import(const std::string& path) const;
-
+    // 带导入设置的版本：缩放 / 上轴 / 材质开关 / 粗糙度倍率。
+    std::vector<MeshData> import(const std::string& path, const ImportOptions& options) const;
     // 骨骼动画导入：在常规网格提取之外，额外解析
     // skeleton（node 层级 + aiBone offset matrix）、
     // 顶点骨骼权重（aiBone/aiVertexWeight，top-4 截断 + 归一化）、

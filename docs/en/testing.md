@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 23 cases across three hosts.
+There are currently 28 cases across five hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -56,6 +56,27 @@ The tested sources (`engine/script/*` + `runtime/engine_context` + glog + `res:/
 | `script_error_isolation` | Syntax-error load failure, execution stops after a runtime throw, infinite loops interrupted by the frame budget; component state flips correctly in all three cases without crashing |
 | `script_hot_reload` | File changes trigger recompilation with props preserved across reloads; late-appearing files load on the poll interval; `reload_now` forced reload and `set_script_path` switching (command-surface core) |
 | `script_app_entry` | Entry script (`main.js`) dispatch of `on_start` / `on_update` / `on_destroy`, hot-reload module swapping (mtime + size), and extension ABI `add_function` registration with scalar round-trips (see [app-entry.md](app-entry.md) / [extension.md](extension.md)) |
+
+### 2.4 Asset sidecar files (`GryceAssetTests.exe`, 2 cases)
+
+The sources under test (`engine/assets/asset_meta.cpp`, `engine/assets/import_options.cpp`, glog) are compiled straight into the test executable with no engine DLL; cases build and clean their own scratch project under the system temp directory and never write into the repository.
+
+| Case | Coverage |
+| --- | --- |
+| `asset_meta` | Sidecar read/write round-trip, guid generation when missing (32 hex chars, no collision across 512 draws), defaults for missing fields, malformed JSON treated as absent, invalid settings falling back while keeping the guid, source-fingerprint staleness, no file written for a nonexistent source |
+| `asset_import_options` | Scaling, Z-up / X-up conversion (positions, normals and tangents together), material switch, roughness multiplier clamping, invalid scale ignored (see [editor-api.md](editor-api.md) section 7) |
+
+### 2.5 Editor API (`GryceEditorTests.exe`, 3 cases)
+
+The only unit suite that **links `GryceCore.dll`**: command consumption, the undo stack and scene serialization all live inside core, so there is no pure-compute core to strip out. None of these paths touch GPU or window state (`GCore_Init` only builds a World and a scene), so CI still needs no graphics card.
+
+Observations are made by comparing scene-JSON bytes rather than entity counts: `GEntity_GetCount` only counts entities that have a parent, so asserting on it yields false positives.
+
+| Case | Coverage |
+| --- | --- |
+| `editor_edit` | All 10 payload structs fit in 256 bytes, invalid arguments rejected (return 0), create auto-selects, rename, and the "missing components keep current value" semantics of `SetTransform` (see [editor-api.md](editor-api.md) section 1) |
+| `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
+| `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
 ## 3. Execution Notes
 

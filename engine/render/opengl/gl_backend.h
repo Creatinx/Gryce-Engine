@@ -55,6 +55,8 @@ public:
     void set_blend_func(BlendFactor src_factor, BlendFactor dst_factor) override;
     void set_blend_equation(BlendEquation mode) override;
     void set_cull_face(CullMode mode) override;
+    void set_polygon_mode(int mode) override;
+    bool supports_polygon_mode() const override;
     void bind_framebuffer(RHIFramebufferHandle fb) override;
     void resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHandle dst) override;
     void unbind_framebuffer() override;
@@ -161,6 +163,9 @@ public:
     bool depth_write_enabled_ = true;
     bool blend_enabled_ = false;
     CullMode cull_face_mode_ = CullMode::Back;
+    // 多边形光栅模式缓存：0 = 填充，1 = 线框。glPolygonMode 是全局状态且不受
+    // 帧末状态失效影响（只在后端自身切换），所以单独缓存即可。
+    int polygon_mode_ = 0;
     BlendFactor blend_src_ = BlendFactor::One;
     BlendFactor blend_dst_ = BlendFactor::Zero;
     BlendEquation blend_equation_ = BlendEquation::Add;

@@ -24,6 +24,7 @@
 #include "api/render_api.h"
 #include "api/core_api.h"
 #include "api/scene_api.h"
+#include "api/edit_api.h"   // --editor-preview 的选中/Gizmo 预览路径
 #include "api/entity_api.h"
 #include "api/component_api.h"
 #include "api/viewport_api.h"
@@ -526,6 +527,7 @@ void print_usage() {
         "  --fps / --no-fps       左上角白色 FPS 叠加（默认开）\n"
         "  --fps-limit <N>        软件锁帧：帧率上限 N（0 = 不限制；与 --vsync 互补）\n"
         "  --no-debug-ui          不画调试 UI（左上角读数 + ImGui 调试窗口）\n"
+        "  --editor-preview       走编辑器预览路径：离屏视口输出 + 双视口 + Gizmo 命中测试\n"
         "  --bench [N]            开启 GPU 分段计时，跑 N 帧（默认 240）后打印每 pass 平均 GPU 时间\n"
         "  --ssr / --no-ssr       覆盖屏幕空间反射开关（A/B 对照用）\n"
         "  --ssao / --no-ssao     覆盖屏幕空间环境光遮蔽开关\n"
@@ -764,6 +766,11 @@ int main(int argc, char** argv) {
     bool fps_overlay = true;   // 左上角白色 FPS，默认开
     int  fps_limit = -1;       // --fps-limit N（<0 表示不设置，保持默认 0 = 不限速）
     bool debug_ui_enabled = true;   // --no-debug-ui 关闭调试 UI
+    // --editor-preview：编辑器前置能力的运行时冒烟。开启后 tonemap 写离屏视口目标
+    // 而不是默认帧缓冲（窗口本身会是黑的，这是编辑器预览的正常形态），并额外
+    // 渲染一次 GameView、跑一次 Gizmo 命中测试。
+    bool editor_preview = false;
+    bool preview_ok = true;
     // -1 = 不干预（用引擎默认）；0/1 = 强制关/开。用于 A/B 对照优化开销。
     int gpu_cull_override = -1;
     int occlusion_override = -1;
@@ -827,6 +834,7 @@ int main(int argc, char** argv) {
         // --no-debug-ui：完全不画调试 UI（关掉左上角读数与 ImGui 调试窗口），
         // 用于"纯画面"截图比对（UI 会让两张图必然不同）。
         else if (std::strcmp(a, "--no-debug-ui") == 0) debug_ui_enabled = false;
+        else if (std::strcmp(a, "--editor-preview") == 0) editor_preview = true;
         else if (std::strcmp(a, "--ssr-debug") == 0) ssr_debug_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--resolution") == 0) {
             // --resolution 1920x1080 等价于 --w 1920 --h 1080
@@ -987,6 +995,8 @@ int main(int argc, char** argv) {
     // 调试 UI 也属于"init 前生效"：引擎在 GRender_Init 里决定要不要接管 ImGui，
     // --no-debug-ui 必须在那之前告知，否则 ImGui 照旧会初始化（只是不画面板）。
     if (!debug_ui_enabled) GRender_SetDebugUI(false);
+    // 离屏视口输出同理：管线在 init 时按目标 FBO 建立 tonemap 的 render pass。
+    if (editor_preview) GRender_SetViewportOutput(true);
 
     GRenderInitDesc desc{};
     desc.version = sizeof(GRenderInitDesc);
@@ -1064,6 +1074,17 @@ int main(int argc, char** argv) {
     GRender_SetSSAO(cfg.ssao_enabled);
     GRender_SetSSR(cfg.ssr_enabled);
     GRender_SetSSIL(cfg.ssil_enabled);
+    if (editor_preview) {
+        // Gizmo 需要选中实体才有东西可画：用屏幕中心拾取一个，
+        // 拾取不到也不影响其余检查（命中测试会如实返回 -1）。
+        const GEntityHandle picked = GScene_PickScreen(
+            static_cast<float>(cfg.width) * 0.5f, static_cast<float>(cfg.height) * 0.5f,
+            cfg.width, cfg.height, 0);
+        if (picked != 0) GEdit_SelectEntity(picked);
+        GRender_SetGizmoEnabled(true);
+        std::printf("[smoke] editor preview: picked entity %d, gizmo enabled\n",
+                    static_cast<int>(picked));
+    }
     std::printf("[smoke] screen-space: ssao=%d ssr=%d ssil=%d "
                 "(ssr steps=%.0f max_rough=%.2f thickness=%.3f bilateral=%.2f)\n",
                 cfg.ssao_enabled ? 1 : 0, cfg.ssr_enabled ? 1 : 0, cfg.ssil_enabled ? 1 : 0,
@@ -1226,6 +1247,9 @@ int main(int argc, char** argv) {
         GRender_BeginFrame();
         const auto t2 = std::chrono::steady_clock::now();
         GRender_RenderWorld();
+        // 编辑器预览：SceneView 之后再把 GameView 渲进它自己的颜色目标。两张图
+        // 共用同一条 HDR 链，所以这里只是多一次 tonemap，不是重画一遍场景。
+        if (editor_preview) GRender_RenderGameView();
         const auto t3 = std::chrono::steady_clock::now();
         GRender_RenderGizmo();
         const auto t4 = std::chrono::steady_clock::now();
@@ -1329,6 +1353,24 @@ int main(int argc, char** argv) {
     // 帧率/帧时间读数：锁帧、VSync 这类"锁帧技术"的效果就靠这两个数验证
     // （--fps-limit 30 时这里应该稳定在 30 左右）。
     // 必须在 GRender_Shutdown() **之前**取 —— 渲染器销毁后统计就清零了。
+    // 编辑器预览的可见证据：纹理句柄非空说明离屏目标建成了；GameView 句柄
+    // 与 SceneView 不同说明双视口是两份目标，而不是回退共用一份。
+    if (editor_preview) {
+        GTextureHandle vp_tex = GRender_GetViewportTexture();
+        GTextureHandle gv_tex = GRender_GetGameViewTexture();
+        const int axis = GRender_GizmoHitTest(static_cast<float>(cfg.width) * 0.5f,
+                                              static_cast<float>(cfg.height) * 0.5f);
+        std::printf("[smoke] editor preview: viewport_tex=%p gameview_tex=%p "
+                    "distinct=%d viewport_output=%d gizmo_hit=%d\n",
+                    static_cast<void*>(vp_tex), static_cast<void*>(gv_tex),
+                    (vp_tex && gv_tex && vp_tex != gv_tex) ? 1 : 0,
+                    GRender_IsViewportOutputEnabled() ? 1 : 0, axis);
+        if (!vp_tex) {
+            std::fprintf(stderr, "[smoke] 离屏视口纹理未创建（--editor-preview 失败）\n");
+            preview_ok = false;
+        }
+    }
+
     const float final_fps = GRender_GetFPS();
     const float final_frame_ms = GRender_GetFrameTimeMs();
     const int   final_limit = GRender_GetFrameRateLimit();
@@ -1364,6 +1406,12 @@ int main(int argc, char** argv) {
 
     // 场景里有网格却只画出单一色块（清屏色 + 极少量覆盖），说明 RenderPipeline
     // 没生效。实测：正常渲染覆盖 ≈62%，管线退化到只清屏时 ≈9%。
+    if (editor_preview) {
+        // 离屏预览下 tonemap 写的是视口纹理，窗口本身只有清屏色 —— 像素占比
+        // 判定在这里没有意义，改由上面的 viewport_tex 检查承担。
+        std::printf("[smoke] OK: 编辑器预览路径（画面在离屏视口纹理里，窗口为空属正常）\n");
+        return preview_ok ? 0 : 2;
+    }
     if (scene.meshes > 0 && img.non_dominant_ratio < 0.20) {
         std::fprintf(stderr,
                      "[smoke] 场景有 %d 个 MeshRenderer，但画面只有 %.2f%% 非背景像素，"

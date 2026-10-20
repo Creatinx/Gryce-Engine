@@ -11,9 +11,8 @@
 #include "assets/compressed_image.h"
 #include "assets/dds_loader.h"
 #include "assets/ktx_loader.h"
-#ifdef GRYCE_HAS_ASSIMP
-#include "assets/assimp_importer.h"
-#endif
+#include "assets/asset_meta.h"
+#include "assets/assimp_importer.h"   // ImportOptions / apply_import_options（OBJ 路径也要用）
 #include "resources/resource_path.h"
 #include "resources/project.h"
 #include "utils/glog/glog_lib.h"
@@ -176,16 +175,44 @@ std::string AssetManager::resolve_mesh_source_unlocked(const std::string& path) 
     return resolved;
 }
 
+// 侧车文件（<asset>.meta）→ 导入设置。**只读不创建**：加载资产不应该在用户
+// 工程里凭空生文件（运行时跑一遍就撒一地 .meta 是不可接受的副作用）。侧车由
+// 显式导入（GAsset_Import / GAsset_EnsureMeta）创建。
+// GRYCE_NO_ASSET_META=1 可关闭（纯运行时构建、只读资源目录等场景）。
+static ImportOptions import_options_for(const std::string& path, const std::string& resolved) {
+    static const bool disabled = std::getenv("GRYCE_NO_ASSET_META") != nullptr;
+    if (disabled) return ImportOptions{};
+
+    AssetMeta meta;
+    // 侧车挂在**源文件**旁边（resolved 可能是资源包解包出来的临时文件）。
+    if (!read_asset_meta(resolved.empty() ? path : resolved, meta)) {
+        return ImportOptions{};
+    }
+    ImportOptions options;
+    options.global_scale = meta.scale;
+    options.up_axis = meta.up_axis;
+    options.import_materials = meta.import_materials;
+    options.roughness_scale = meta.roughness_scale;
+    GLOG_INFO("AssetManager: import settings for '{}': guid={} scale={} up_axis={} "
+              "materials={} roughness_scale={}",
+              path, meta.guid, meta.scale, meta.up_axis,
+              meta.import_materials ? 1 : 0, meta.roughness_scale);
+    return options;
+}
+
 std::vector<MeshData> AssetManager::import_mesh_file(const std::string& path,
                                                      const std::string& resolved) {
+    const ImportOptions options = import_options_for(path, resolved);
     // OBJ 用内置加载器（快、UV 朝向可控）；其他格式走 Assimp
     if (ends_with_ci(resolved, ".obj")) {
         ObjLoader loader;
-        return loader.load(resolved);
+        std::vector<MeshData> meshes = loader.load(resolved);
+        apply_import_options(meshes, options);
+        return meshes;
     }
 #ifdef GRYCE_HAS_ASSIMP
     AssimpImporter importer;
-    return importer.import(resolved);
+    return importer.import(resolved, options);
 #else
     GLOG_ERROR("AssetManager: non-OBJ formats require Assimp ({})", path);
     return {};
