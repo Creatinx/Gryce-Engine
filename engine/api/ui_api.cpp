@@ -25,6 +25,12 @@ namespace {
 bool g_in_frame = false;
 
 #ifdef GRYCE_HAS_IMGUI
+// 本后端的纹理是否需要翻 V 才与 ImGui 的 uv 约定一致（见 ui_api_internal.h）。
+// 默认 false = D3D12 / Vulkan 约定。render_api.cpp 在建好 ImGui 后端后会覆盖。
+bool g_texture_v_flip = false;
+#endif
+
+#ifdef GRYCE_HAS_IMGUI
 inline bool ready() { return g_in_frame && ImGui::GetCurrentContext() != nullptr; }
 
 ImGuiWindowFlags to_window_flags(int flags) {
@@ -61,6 +67,14 @@ namespace gryce_ui {
 
 void enter_callback() { g_in_frame = true; }
 void leave_callback() { g_in_frame = false; }
+
+void set_texture_v_flip(bool flip) {
+#ifdef GRYCE_HAS_IMGUI
+    g_texture_v_flip = flip;
+#else
+    (void)flip;
+#endif
+}
 
 } // namespace gryce_ui
 
@@ -430,7 +444,13 @@ int GUi_CollapsingHeader(const char* label, int default_open) {
 void GUi_Image(uint64_t tex, float w, float h) {
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
-    ImGui::Image(static_cast<ImTextureID>(tex), ImVec2(w, h));
+    // 必须显式给 uv，不能用 Image() 的默认值：这版 ImGui 的默认是
+    // (0,0)-(1,1)（"第一行在 v=0"，字体图集按这个约定上传），而 OpenGL 的
+    // 渲染目标纹理第一行是图像的**下**边 —— 用默认值会把视口画面上下颠倒。
+    // 详见 IImGuiBackend::texture_needs_v_flip 的注释。
+    const ImVec2 uv0 = g_texture_v_flip ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+    const ImVec2 uv1 = g_texture_v_flip ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+    ImGui::Image(static_cast<ImTextureID>(tex), ImVec2(w, h), uv0, uv1);
 #else
     (void)tex; (void)w; (void)h;
 #endif

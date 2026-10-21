@@ -219,6 +219,11 @@ build/GryceApp.exe --project editor/project --frames 60
 - **哈希过 JS 必须走字符串**。64 位 `std::hash` 经 JSON 数字只剩 53 位精度，
   读回去是个不同的值，表现是"类型查得到、属性写不进去"。面板 JSON 里的
   `hash` 字段输出为十进制字符串，桥接层的 `Args::u64` 字符串优先，正好接上。
+- **视口画面上下颠倒不是相机问题**。OpenGL 渲染目标纹理的第一行是图像的
+  **下**边，ImGui 的 `Image()` 默认 uv 认为第一行在上，采样反了就天地颠倒。
+  引擎按后端自动决定翻不翻 V（`IImGuiBackend::texture_needs_v_flip()`），
+  ext 侧不用管、也不能自己传 uv。症状识别：画面反了但面板文字与图标正常
+  —— 文字走字体图集，与渲染目标纹理无关。
 
 ---
 

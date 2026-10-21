@@ -47,6 +47,19 @@ public:
         return 0;
     }
 
+    // 采样本后端纹理时是否需要翻转 V。
+    //
+    // ImGui 的 Image() 默认 uv 是 (0,0)-(1,1)，即"图像数据的第一行在 v=0"
+    // ——它自己的字体图集就是按这个约定上传的（后端不做翻转）。但不同后端的
+    // "第一行"含义不同：
+    //   OpenGL  渲染目标纹理的第一行是图像的**下**边（GL 原点在左下），
+    //           文件贴图在 load_from_file 里也被翻成 bottom-up；
+    //   D3D12 / Vulkan  资源的第一行就是图像的**上**边。
+    // 所以只有 OpenGL 需要翻。漏了这个的症状是"编辑器视口里场景上下颠倒"：
+    // 地面跑到天上、立方体的受光顶面显示在底边，而面板文字与图标一切正常
+    // （文字走字体图集，与渲染目标纹理无关）。
+    virtual bool texture_needs_v_flip() const { return false; }
+
     // 使指定纹理的 ImGui 缓存失效（如纹理被销毁/重建后）。
     virtual void invalidate_texture(ITexture* texture) { (void)texture; }
 

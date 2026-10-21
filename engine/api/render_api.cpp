@@ -1230,6 +1230,9 @@ int GRender_Init(const GRenderInitDesc* desc) {
                                  ? g_renderer.ctx->backend()->create_imgui_backend()
                                  : nullptr;
         if (imgui_backend) {
+            // 采样约定必须在**移动**之前问出来：之后 imgui_backend 已归
+            // ImGuiRenderer 所有。GUi_Image 靠这个标志决定要不要翻 V。
+            gryce_ui::set_texture_v_flip(imgui_backend->texture_needs_v_flip());
             auto renderer = std::make_unique<render::ImGuiRenderer>();
             auto* glfw_window = static_cast<GLFWwindow*>(desc->native_window);
             if (renderer->init(glfw_window, std::move(imgui_backend))) {

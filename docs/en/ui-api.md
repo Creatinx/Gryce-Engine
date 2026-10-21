@@ -184,6 +184,19 @@ GViewport_SetSize((int)w, (int)h);  /* divisor for viewport-local coords */
 
 Also call `GRender_InvalidateImGuiTexture(tex)` on resize: the old `ImTextureID` points at a released texture once the target is rebuilt.
 
+### Texture orientation
+
+`GUi_Image` decides on its own whether to flip V, and callers **must not** pass UVs themselves (the API does not accept them). The reason is that "the first row of the texture" means different things per backend:
+
+| Backend | First row of a render target | Flip V |
+|---|---|---|
+| OpenGL | the image's **bottom** row (GL origin is bottom-left) | yes |
+| D3D12 / Vulkan | the image's **top** row | no |
+
+ImGui's `Image()` defaults to UV `(0,0)-(1,1)`, meaning "row 0 of the data is at v=0". A GL render target's row 0 is the bottom row, so sampling it as-is turns the picture upside down — the symptom is the ground flying into the sky and the lit top face of a cube appearing along its bottom edge, while all panel text and icons look perfectly normal (glyphs come from the font atlas, which has nothing to do with render targets).
+
+So "the picture is inverted but the text is fine" is almost always this, never the camera or the projection. The engine marks the current backend with `IImGuiBackend::texture_needs_v_flip()` and caches it right after `GRender_Init` builds the ImGui backend; drawing only reads the cached flag — UI callbacks run with the renderer lock held, so asking the renderer from inside a callback would deadlock on a second lock.
+
 ## 6. Layout convention
 
 `ui_api.h` deliberately offers **no docking**. The editor uses one main window with fixed partitions:

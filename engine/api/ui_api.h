@@ -180,6 +180,10 @@ GRYCE_UI_API int   GUi_CollapsingHeader(const char* label, int default_open);
 
 // tex 是 GRender_GetImGuiTextureId 的返回值。回调内不能调 GRender_*，
 // 所以这个 ID 要在回调外（tick）取好再传进来。
+//
+// 上下方向由引擎按后端自动处理（OpenGL 的渲染目标第一行是图像下边，需要翻 V；
+// D3D12 / Vulkan 不翻），调用方不用也不该自己传 UV —— 传了就等于替引擎做了
+// 一件它已经做过的事，GL 下会翻两次。
 GRYCE_UI_API void  GUi_Image(uint64_t tex, float w, float h);
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,14 @@ namespace gryce_ui {
 void enter_callback();
 void leave_callback();
 
+// 由 render_api.cpp 在 ImGui 后端建好后告知：本后端的纹理第一行是图像的
+// 下边（OpenGL）还是上边（D3D12 / Vulkan）。GUi_Image 据此决定要不要翻 V。
+//
+// 为什么在这里缓存而不是让 GUi_Image 直接问渲染器：UI 回调运行在
+// g_renderer.mutex 已持有的路径上，回调内调任何 GRender_* 都会二次加锁
+// 而死锁。建后端时写一次、绘制时只读，是唯一安全的做法。
+void set_texture_v_flip(bool flip);
+
 } // namespace gryce_ui
 
 #endif // GRYCE_UI_API_INTERNAL_H
