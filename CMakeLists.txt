@@ -497,11 +497,15 @@ if(NOT EMSCRIPTEN)
     set_target_properties(GryceDemoExtension PROPERTIES
         PREFIX "" OUTPUT_NAME "GryceDemoExtension")
 
-    # 编辑器本体（editor/）：project/ 是完整项目，ext/ 是功能拓展。
-    # 拓展编成 extension.dll 后落到 editor/project/，宿主自动加载。
-    option(GRYCE_BUILD_EDITOR "Build the editor project and its extension" ON)
+    # 编辑器（editor/）：一块编排两个产物 —— GryceEditor.exe（项目根烧进
+    # 二进制的专用宿主入口）与 extension.dll（编成后落到 editor/project/，
+    # 宿主启动时自动加载）。详见 editor/CMakeLists.txt。
+    #
+    # 从 editor/ext 改成 editor：新增的 exe 需要 GRYCE_EXE_OUTPUT_DIR 与
+    # GryceAppHost，而"直接子目录"会隐含"editor/ext 是编辑器唯一的子目录"。
+    option(GRYCE_BUILD_EDITOR "Build the editor host, project and extension" ON)
     if(GRYCE_BUILD_EDITOR)
-        add_subdirectory(editor/ext)
+        add_subdirectory(editor)
     endif()
 endif()
 

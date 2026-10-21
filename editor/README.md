@@ -144,19 +144,31 @@ ext 是**声明**，不是"什么东西都往这塞"。新增一项能力时按�
 ## 4. 跑起来
 
 ```bash
-# 1. 引擎（首次或改了引擎代码）
+# 1. 配置（首次）
 cmake -S . -B build
-cmake --build build --target GryceApp
 
-# 2. 扩展（拷到项目目录，宿主默认加载 <project>/extension.dll）
-cmake --build build --target GryceEditorExtension
+# 2. 构建编辑器宿主 + 扩展（一条命令即可）
+#    GryceEditor 显式 add_dependencies(GryceEditorExtension)，所以不会
+#    出现"exe 能启动但界面完全没有"的静默降级。
+cmake --build build --target GryceEditor
 
-# 3. 启动
-build/GryceApp.exe --project editor/project
+# 3. 启动（项目根已烧进二进制，无需参数）
+build/GryceEditor.exe
 
 # 无窗口跑 N 帧做逻辑验证（CI 用这条）
-build/GryceApp.exe --project editor/project --frames 60
+build/GryceEditor.exe --frames 60
+
+# 指到别的工程副本（对比两个工程、跑被复制的场景）
+build/GryceEditor.exe --project D:/somewhere/else
 ```
+
+`GryceEditor` 是本项目的专用入口：`--project` 默认值由 CMake 在配置时写死成
+`editor/project` 的绝对路径。传了 `--project` 就以后者为准（宿主按顺序解析，
+后出现的同名参数覆盖先出现的）。
+
+`GryceApp` 仍在，是**通用**宿主入口：任意项目都能用它跑，例如
+`GryceApp --project test/demo_project`。两者共用同一个
+`gryce_engine::app::run`，窗口 / 场景 / 退出行为完全一致，只差默认项目根。
 
 扩展缺失时不会崩：`engine.editor` 是 `undefined`，`main.js` 走降级分支（只跑
 相机导航），日志里给一条 warn。这条路径必须一直可用——否则扩展一编译失败，
@@ -177,8 +189,8 @@ build/GryceApp.exe --project editor/project --frames 60
 3. **写实现**：进对应子目录，不在 `ext.cpp` 里堆逻辑（它是装配层）。
 4. **接 JS**：在 `bridge/js_register.cpp` 挂到 `engine.editor.*`，参数用
    `bridge/js_args.h` 的读取函数，错误统一 `throw_error`。
-5. **验证**：`GryceApp --project editor/project --frames 60` 能跑通，日志无
-   error；涉及引擎改动的，同时补 `ctest` 用例。
+5. **验证**：`GryceEditor.exe --frames 60` 能跑通，日志无 error；涉及引擎
+   改动的，同时补 `ctest` 用例。
 
 ---
 

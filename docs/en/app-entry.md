@@ -289,6 +289,8 @@ build/GryceApp.exe --project <dir> --entry res:/logic.js --frames 30
 
 `ctest -R script_app_entry` covers entry-script hook dispatch, module swap on hot reload, and extension `add_function` registration without a GPU or window.
 
+`--project` can be omitted when the host carries its own project root. `editor/` is exactly such a host: `GryceEditor.exe` bakes the absolute path of `editor/project` into a macro generated at configure time, so `build/GryceEditor.exe` is equivalent to `build/GryceApp.exe --project editor/project`. Both executables share the same `gryce_engine::app::run` and take identical arguments; only the `--project` default differs, and an explicit `--project` still wins.
+
 ## 10. Limits
 
 - **The Web build has no `GryceApp`**: the wasm side still runs `GryceRenderSmoke`'s resident loop with a preloaded payload, and extensions are unavailable.

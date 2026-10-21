@@ -290,10 +290,18 @@ struct AppOptions {
     bool edit_mode = false;   // --edit-mode：强制停在编辑态（覆盖 project.data）
 };
 
-void print_usage() {
+// 用法文本里的程序名取自 argv[0]：现在有两个宿主（GryceApp 通用入口、
+// GryceEditor 编辑器专用入口），写死一个名字会让另一个的 --help 显示
+// 别人的名字。
+void print_usage(const char* argv0) {
+    const std::string exe = argv0
+        ? std::filesystem::path(argv0).filename().string()
+        : std::string("GryceApp");
     std::printf(
-        "GryceApp — Gryce 运行时（项目入口是 main.js）\n"
-        "  --project <dir>      项目根（默认当前目录；res:/ 由此解析）\n"
+        "%s — Gryce 运行时（项目入口是 main.js）\n"
+        // 不写死"默认当前目录"：编辑器宿主是把项目根作为参数前置进来的，
+        // 这里的缺省值随宿主而变。
+        "  --project <dir>      项目根（缺省用宿主内置值或当前目录；res:/ 由此解析）\n"
         "  --entry <path>       入口脚本（默认 res:/main.js）\n"
         "  --api <name>         渲染后端：opengl|vulkan|dx12（默认取 project.data）\n"
         "  --w / --h <px>       窗口尺寸覆盖（默认取 project.data）\n"
@@ -305,7 +313,8 @@ void print_usage() {
         "  --debug-ui           启用渲染器 ImGui 调试面板（默认关）\n"
         "  --edit-mode          停在编辑态（不进 Play、不跑组件 update、撤销栈记账），\n"
         "                       覆盖 project.data 的 start_in_play\n"
-        "  --help               显示本帮助\n");
+        "  --help               显示本帮助\n",
+        exe.c_str());
 }
 
 } // namespace
@@ -339,11 +348,11 @@ int run(int argc, char** argv) {
         else if (std::strcmp(a, "--debug-ui") == 0) opts.debug_ui = true;
         else if (std::strcmp(a, "--edit-mode") == 0) opts.edit_mode = true;
         else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
-            print_usage();
+            print_usage(argv[0]);
             return 0;
         } else {
             std::fprintf(stderr, "[app] 未知参数: %s\n", a);
-            print_usage();
+            print_usage(argv[0]);
             return 1;
         }
     }

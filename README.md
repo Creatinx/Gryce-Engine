@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml)
 
-面向 Windows 的 C++26 游戏引擎，核心为带反射系统的 ECS 架构与四后端（OpenGL / Vulkan / D3D12 / WebGL）渲染器。已打通场景序列化、资源系统、2D/3D 物理、音频与动画，附带两个可直接运行的宿主：渲染演示台 `GryceRenderSmoke`，以及"项目只写 main.js"的运行时 `GryceApp`。
+面向 Windows 的 C++26 游戏引擎，核心为带反射系统的 ECS 架构与四后端（OpenGL / Vulkan / D3D12 / WebGL）渲染器。已打通场景序列化、资源系统、2D/3D 物理、音频与动画，附带三个可直接运行的宿主：渲染演示台 `GryceRenderSmoke`、"项目只写 main.js"的运行时 `GryceApp`，以及零参数启动的编辑器 `GryceEditor`。
 
 平台与工具链：Windows 为主目标。构建脚本不含任何机器专属绝对路径，依赖前缀由 `cmake/GryceDependencyPaths.cmake` 从环境变量与编译器路径自动推断。已验证可直接用于 MSYS2 UCRT64、CLion / JetBrains 自带 MinGW、vcpkg 及任意自定义前缀；缺依赖时 `FetchContent` 自动拉源码兜底，拉不到会自动换镜像。
 
@@ -132,6 +132,7 @@ Gryce-Engine/
 │   ├── platform/                    窗口、输入、光标
 │   └── utils/                       日志、帧率限制等
 ├── docs/                            项目文档（zh / en 双语文档与历史规划）
+├── editor/                          编辑器：专用宿主入口（GryceEditor.exe）+ 完整项目 + 原生扩展
 ├── test/
 │   ├── math_tests.cpp               数学与资源规则测试（CTest 门禁之一）
 │   ├── renderer_smoke.cpp           演示宿主源码（GryceRenderSmoke.exe，不参与 CTest）
@@ -182,7 +183,7 @@ cmake --build build --parallel
 | `GRYCE_ENABLE_LTO` | `OFF` | 非 Debug 构建的进程间优化 |
 | `GRYCE_ENABLE_X86_V3` | `ON` | x86-64-v3 目标 ISA（AVX2 / FMA / BMI / F16C / LZCNT / POPCNT） |
 
-构建产物：`GryceCore.dll`（抽象层 + 场景 / ECS / 组件 / 反射 / 资源 + 物理音频）、`GryceRenderer.dll`（渲染管线与后端）、`GrycePlatform.dll`（窗口输入）、`GryceRenderSmoke.exe`（渲染演示台）、`GryceApp.exe`（main.js 运行时）、`GryceMathTests.exe` 与 `GryceGC.exe`。构建后 `GryceSyncRuntimeDlls` 会把引擎 DLL、第三方运行库与 MinGW 运行时复制到 exe 同目录，脱离 MSYS2 终端也能运行。
+构建产物：`GryceCore.dll`（抽象层 + 场景 / ECS / 组件 / 反射 / 资源 + 物理音频）、`GryceRenderer.dll`（渲染管线与后端）、`GrycePlatform.dll`（窗口输入）、`GryceRenderSmoke.exe`（渲染演示台）、`GryceApp.exe`（main.js 运行时）、`GryceEditor.exe`（编辑器，项目根内置）、`GryceMathTests.exe` 与 `GryceGC.exe`。构建后 `GryceSyncRuntimeDlls` 会把引擎 DLL、第三方运行库与 MinGW 运行时复制到 exe 同目录，脱离 MSYS2 终端也能运行。
 
 Web 构建（Emscripten）走独立 `build-webgl/`，产物可经 `GryceGC webpack` 打成单文件 HTML，详见 [docs/zh/webgl-backend.md](docs/zh/webgl-backend.md)。
 
@@ -244,6 +245,15 @@ build/GryceApp.exe --project test/demo_project --frames 60 --shot shot.png --api
 ```
 
 完整参数与 API 面见 [docs/zh/app-entry.md](docs/zh/app-entry.md)，扩展 ABI 与用法见 [docs/zh/extension.md](docs/zh/extension.md)。
+
+编辑器是同一套宿主机制的一个具体项目：项目根 `editor/project` 由 CMake 在配置时写进 `GryceEditor.exe`，所以启动不需要任何参数，扩展也随构建落到项目目录。
+
+```bash
+cmake --build build --target GryceEditor
+build/GryceEditor.exe                    # 等价于 GryceApp --project editor/project
+```
+
+两个宿主共用同一个 `gryce_engine::app::run`，只差默认项目根：`GryceApp` 是通用入口（任意项目都能跑），`GryceEditor` 是本项目的专用入口。详见 [editor/README.md](editor/README.md)。
 
 示例：以 Vulkan 后端进入 Play 模式并在第 120 帧截图。
 
