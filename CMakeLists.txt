@@ -496,17 +496,6 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(GryceDemoExtension PRIVATE GryceCore)
     set_target_properties(GryceDemoExtension PROPERTIES
         PREFIX "" OUTPUT_NAME "GryceDemoExtension")
-
-    # 编辑器（editor/）：一块编排两个产物 —— GryceEditor.exe（项目根烧进
-    # 二进制的专用宿主入口）与 extension.dll（编成后落到 editor/project/，
-    # 宿主启动时自动加载）。详见 editor/CMakeLists.txt。
-    #
-    # 从 editor/ext 改成 editor：新增的 exe 需要 GRYCE_EXE_OUTPUT_DIR 与
-    # GryceAppHost，而"直接子目录"会隐含"editor/ext 是编辑器唯一的子目录"。
-    option(GRYCE_BUILD_EDITOR "Build the editor host, project and extension" ON)
-    if(GRYCE_BUILD_EDITOR)
-        add_subdirectory(editor)
-    endif()
 endif()
 
 # 引擎 DLL 同步到 exe 目录。
@@ -673,6 +662,31 @@ if(BUILD_TESTING)
             LABELS "unit;asset" TIMEOUT 60)
     endforeach()
 
+    # UI 操作队列：UI 操作进队列、按策略受控执行（见 api/ui_op_queue.h）。
+    # 与 math/script/asset 同构——被测源码（api/ui_op_queue.cpp + api/ui_api.cpp）
+    # 直编进 exe，不链 GryceRenderer.dll，也不定义 GRYCE_HAS_IMGUI：
+    # 同时验证"关掉 ImGui 的构建里队列照样能用"。GRYCE_RENDERER_BUILDING 让
+    # 导出宏变成 dllexport，静态 exe 内自链接（否则 dllimport 会去找 __imp_ 符号）。
+    set(GRYCE_UI_TEST_SUITES queue abi)
+
+    add_executable(GryceUiTests
+        test/ui_tests.cpp
+        engine/api/ui_op_queue.cpp
+        engine/api/ui_api.cpp
+    )
+    target_include_directories(GryceUiTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    target_compile_definitions(GryceUiTests PRIVATE GRYCE_RENDERER_BUILDING)
+
+    foreach(suite IN LISTS GRYCE_UI_TEST_SUITES)
+        add_test(NAME ui_${suite}
+                 COMMAND GryceUiTests --suite ${suite}
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(ui_${suite} PROPERTIES
+            LABELS "unit;ui" TIMEOUT 60)
+    endforeach()
+
     # 编辑器前置能力（编辑命令面 / 撤销重做 / 场景存档往返）。
     # 这一个必须链 GryceCore.dll —— 命令消费与序列化都在 core 内部，没有可
     # 剥离的纯计算内核；但这些路径都不碰 GPU，因此 CI 仍不需要显卡。
@@ -694,25 +708,6 @@ if(BUILD_TESTING)
         set_tests_properties(editor_${suite} PROPERTIES
             LABELS "unit;editor" TIMEOUT 120)
     endforeach()
-
-    # 编辑器整机自检：真起窗口、真加载扩展、真走命令队列。
-    #
-    # 上面几条 unit 套件测的是引擎侧接口，这一条测的是"扩展有没有被宿主加载、
-    # JS 桥有没有把参数传对、命令有没有在下一帧生效"——这三件事只有跑起来才知道。
-    #
-    # 判定靠输出里的 SELFTEST PASS（宿主退出码不反映脚本结论），所以用
-    # PASS_REGULAR_EXPRESSION 而不是 WILL_FAIL。
-    if(TARGET GryceApp AND TARGET GryceEditorExtension)
-        add_test(NAME editor_selftest
-                 COMMAND $<TARGET_FILE:GryceApp>
-                         --project ${CMAKE_CURRENT_SOURCE_DIR}/editor/project
-                         --entry res:/selftest.js
-                         --frames 80
-                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-        set_tests_properties(editor_selftest PROPERTIES
-            LABELS "integration;editor" TIMEOUT 180
-            PASS_REGULAR_EXPRESSION "SELFTEST PASS")
-    endif()
 endif()
 
 # ===========================================================================

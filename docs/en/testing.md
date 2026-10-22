@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 29 cases across six hosts.
+There are currently 30 cases across six hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -78,13 +78,15 @@ Observations are made by comparing scene-JSON bytes rather than entity counts: `
 | `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
 | `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
-### 2.6 Editor self-test (`editor_selftest`, 1 case)
+### 2.6 UI op queue (`GryceUiTests.exe`, 2 cases)
 
-The only case that **runs a full host**: it launches `GryceApp --project editor/project --entry res:/selftest.js --frames 80`, and the script's 79 assertions cover extension loading, viewport size / camera, gizmo drag, the scene hierarchy tree, inspector JSON, asset scanning and sidecars, the selection set, shortcut conflict detection, the full create / transform / undo / redo / destroy edit loop, the UI layer (the host really invokes the UI callback, the viewport texture id is valid, panel data matches the JSON), component add/remove (an added type disappears from the Add menu and returns after removal) with vector property writes (`setPropertyVec` round-trips, a component-count mismatch is rejected), and reparent (applied, cycle rejected, self-parent rejected). It needs a window and an OpenGL context, so it is an integration case rather than a unit gate.
+The sources under test (`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp`) are compiled straight into the test executable with no engine DLL, and **without `GRYCE_HAS_IMGUI`** — which also verifies that the queue works in builds with ImGui disabled (headless hosts take that path too). `GRYCE_RENDERER_BUILDING` turns the export macros into dllexport so the static exe links against itself.
 
-The verdict comes from `SELFTEST PASS` in the output: the host exit code does not reflect script conclusions (a failed assertion does not crash the process), hence `PASS_REGULAR_EXPRESSION` instead of `WILL_FAIL`. When the extension DLL is missing the whole `add_test` is skipped, so the case can never fake a green "zero assertions passed".
+The `queue` suite covers the OpQueue itself: FIFO order and seq, in-place coalescing (position and seq untouched), same key with a different type does not merge, discrete ops never merge, a full queue evicts only the oldest coalescing op, a full queue of discrete ops rejects the push and counts it, drain budget, drain interval (the first drain is exempt, an empty drain does not consume the interval), `clear` keeps cumulative stats, the same key after a drain is a new entry, and bad arguments leave the queue untouched.
 
-The script advances frame by frame instead of reading back synchronously: `GEdit_*` only enqueues, and the value lands on the next `GCore_BeginFrame`, so a same-frame read always returns the old value (see [editor-api.md](editor-api.md) section 1).
+The `abi` suite covers the C layer: field round-trip with engine-assigned seq, coalescing and discrete ops through the ABI, policy get/set, interval throttling, `GUi_ClearOps`, stats queries tolerating nullptr, bad arguments rejected, and a request beyond capacity capped at capacity. The ABI acts on the process-wide singleton, so cases isolate leftover interval state by clearing and advancing a few frames.
+
+Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5.
 
 ## 3. Execution Notes
 
@@ -99,7 +101,7 @@ On CI the cases are registered individually and scheduled by the runner, so this
 ## 4. Adding Cases
 
 - Math / resource-rule suites: add the name to `GRYCE_MATH_TEST_SUITES` in the root `CMakeLists.txt`; it is registered as a CTest case automatically.
-- Asset / editor suites: add the name to `GRYCE_ASSET_TEST_SUITES` / `GRYCE_EDITOR_TEST_SUITES` respectively. Editor cases must respect the two return conventions (enqueue returns 1/0, queries and scene operations return 0/-1); getting it wrong turns every assertion into a silent always-true pass.
+- Asset / editor / UI suites: add the name to `GRYCE_ASSET_TEST_SUITES` / `GRYCE_EDITOR_TEST_SUITES` / `GRYCE_UI_TEST_SUITES` respectively. Editor cases must respect the two return conventions (enqueue returns 1/0, queries and scene operations return 0/-1); getting it wrong turns every assertion into a silent always-true pass.
 - Toolchain suites: add the name to `_grycegc_suites` in `toolchain/CMakeLists.txt`.
 
 ## 5. History: Pixel-Comparison Cases Removed

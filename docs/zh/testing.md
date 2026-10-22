@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 29 条用例，分六个宿主。
+当前共 30 条用例，分六个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -78,13 +78,15 @@ ctest --test-dir build --output-on-failure
 | `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
 | `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
 
-### 2.6 编辑器自检（`editor_selftest`，1 条）
+### 2.6 UI 操作队列（`GryceUiTests.exe`，2 条）
 
-唯一**跑完整宿主**的用例：启动 `GryceApp --project editor/project --entry res:/selftest.js --frames 80`，脚本里 79 条断言覆盖扩展加载、视口尺寸 / 相机、Gizmo 拖拽、场景层级树、检视面板 JSON、资产扫描与侧车、选择集、快捷键冲突检测、创建 / 变换 / 撤销 / 重做 / 销毁的完整编辑回路、界面层（UI 回调真的被宿主调用、视口贴图 id 有效、面板数据与 JSON 一致），以及组件增删与向量属性写入（加一个组件后它从 Add 菜单消失、删掉后回到菜单；`setPropertyVec` 写入可回读、分量数不符被拒）和重挂（生效、成环被拒、自挂被拒）。需要窗口与 OpenGL 上下文，因此不进单元门禁，只作为集成用例。
+被测源码（`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp`）直编进测试可执行文件，不链 GryceRenderer.dll；且**不定义 `GRYCE_HAS_IMGUI`**——同时验证"关掉 ImGui 的构建里队列照样能用"（无窗口宿主也走这条路）。`GRYCE_RENDERER_BUILDING` 让导出宏变成 dllexport，静态 exe 内自链接。
 
-判定靠输出里的 `SELFTEST PASS`：宿主退出码不反映脚本结论（脚本断言失败不会让进程崩溃），所以用 `PASS_REGULAR_EXPRESSION` 而非 `WILL_FAIL`。扩展 DLL 缺失时 `add_test` 整条不注册，用例不会假绿成"零断言通过"。
+`queue` 套件测 OpQueue 本体：FIFO 顺序与 seq、同键就地合并（位置与 seq 不动）、同 key 不同 type 不合并、离散项绝不合并、满队只逐最旧可合并项、满队全是离散项时拒绝入队并计数、排出预算、排出间隔（首次不受限、空排不消耗间隔）、`clear` 不清累计统计、排出后同键是新的一条、坏参数不动队列。
 
-脚本按帧推进而不是同步读回：`GEdit_*` 只入队，值要到下一帧 `GCore_BeginFrame` 才落地，同一帧读回必是旧值（见 [editor-api.md](editor-api.md) 第 1 节）。
+`abi` 套件测 C 接口层：字段往返与 seq 由引擎填写、经 ABI 的合并与离散、策略读写、间隔节流、`GUi_ClearOps`、统计与查询容忍 nullptr、坏参数拒绝、请求超过容量时按容量封顶。ABI 作用在进程内唯一队列上，用例之间靠"清空 + 推进若干帧"隔离残留的间隔状态。
+
+队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节。
 
 ## 3. 执行注意
 
@@ -99,7 +101,7 @@ CI 上各用例独立注册、由 runner 调度，不受此限。
 ## 4. 新增用例
 
 - 数学 / 资源规则套件：在根 `CMakeLists.txt` 的 `GRYCE_MATH_TEST_SUITES` 里加名字，自动注册成一条 CTest。
-- 资产 / 编辑器套件：分别在 `GRYCE_ASSET_TEST_SUITES`、`GRYCE_EDITOR_TEST_SUITES` 里加名字。新增编辑器用例时注意两种返回约定（入队 1/0、查询与场景操作 0/-1），写错会让断言永远为真的假绿。
+- 资产 / 编辑器 / UI 套件：分别在 `GRYCE_ASSET_TEST_SUITES`、`GRYCE_EDITOR_TEST_SUITES`、`GRYCE_UI_TEST_SUITES` 里加名字。新增编辑器用例时注意两种返回约定（入队 1/0、查询与场景操作 0/-1），写错会让断言永远为真的假绿。
 - 工具链套件：在 `toolchain/CMakeLists.txt` 的 `_grycegc_suites` 里加名字。
 
 ## 5. 历史：像素比对用例已删除

@@ -51,7 +51,7 @@ In one sentence: **inside the callback you only draw; the only permitted output 
 
 ### Intent queue
 
-How the editor does it (`editor/ext/ui/intent.h`):
+How the editor extension does it: the intent queue is a small vector of plain structs, and the next frame's `tick` calls `flush()` outside the lock:
 
 ```cpp
 /* Inside the callback (draw.cpp) */
@@ -199,7 +199,7 @@ So "the picture is inverted but the text is fine" is almost always this, never t
 
 ## 6. Layout convention
 
-`ui_api.h` deliberately offers **no docking**. The editor uses one main window with fixed partitions:
+`ui_api.h` deliberately offers **no docking**. Tool-style interfaces that need several panels use one main window with fixed partitions:
 
 ```
 menu bar
@@ -208,7 +208,7 @@ toolbar
 └──────────────── asset list / stats 168 px ───────────────────┘
 ```
 
-Docking state is persisted in `imgui.ini` and drifts with user drags, which makes screenshot comparison and `editor_selftest` unreproducible. Fixed partitions also guarantee the viewport has a deterministic rect at any window size, which is what makes assertions possible.
+Docking state is persisted in `imgui.ini` and drifts with user drags, which makes screenshot comparison and script assertions unreproducible. Fixed partitions also guarantee the viewport has a deterministic rect at any window size, which is what makes assertions possible.
 
 ## 7. Continuous edits and undo grouping
 
@@ -240,6 +240,39 @@ if (GUi_DragFloat("Speed", buf, 0.01f)) { push(Intent{...}); }
 ```
 
 The buffer must survive across frames (keep it in the panel state struct), not be a stack local.
+
+## 7.5 The op queue and controlled execution
+
+UI does not need the renderer's frame rate, so "the UI wants to change engine state" is never executed on the spot: the callback only enqueues, and the host drains under a policy outside the lock.
+
+```c
+/* Inside the callback (lock held, plain data only) */
+GUiOp op = { 0 };
+op.type = UI_OP_SET_TRANSFORM;
+op.key  = entity_handle;      /* same (type,key) keeps only the newest value */
+op.vec[0] = x; op.vec[1] = y; op.vec[2] = z;
+GUi_PushOp(&op);              /* called every frame while dragging; collapses to one */
+
+/* Host tick (outside the lock) — only drained ops may become GEdit_* / GCore_* */
+GUiOp out[32];
+int n = GUi_DrainOps(out, 32);
+for (int i = 0; i < n; ++i) apply(out[i]);   /* apply() may call engine APIs freely */
+```
+
+**Coalescing**: `key == 0` is a discrete op (click, create, delete) and never merges; `key != 0` is a continuous edit (a transform being dragged) and keeps only the newest value while queued — a thirty-frame drag leaves one entry, i.e. one undo step. Merging is an **in-place overwrite**: FIFO position and `seq` stay put.
+
+**Controlled execution** comes from the policy (`GUi_SetOpPolicy`):
+
+| Parameter | Meaning |
+| --- | --- |
+| `max_per_drain` | Cap per drain; `<=0` = unlimited. UI ops land in batches instead of tracking the frame rate |
+| `min_frames_between_drain` | Minimum frames between drains; `<=0` = every advanced frame may drain. The frame clock is advanced by `GUi_AdvanceOpFrame()` (the render layer calls it every frame; hosts with their own loop call it themselves) |
+
+**Full-queue semantics**: capacity is fixed at 256. When full, only the **oldest coalescing op** is evicted (a drag re-pushes the same key every frame, so losing an intermediate value loses nothing final); discrete ops are never evicted, and if nothing is evictable the push is rejected and returns 0 (counted in `stats.rejected`) — "the consumer is not draining" must be visible, never silently swallowed. Read the counters with `GUi_GetOpQueueStats`; `evicted` / `rejected` / `throttled` exist for exactly this diagnosis.
+
+**UI frame throttling** (`GRender_SetUiFrameInterval(n)`) is the other half of the same idea: the ImGui frame (callback plus gizmo) is rebuilt every `n`th render frame, and in-between frames simply redraw a deep copy of the last draw data — the UI stays on screen, its contents just update at the interval, and input is sampled at the same rate. `n <= 1` is the default (rebuild every frame). The demo host exposes it as `--ui-interval N`.
+
+Verified end to end with the demo host: at `--frames 30 --ui-interval 3` the screenshot lands on frame 30, a cached-redraw frame, and its statistics are byte-identical to the every-frame-build run (and clearly different from the no-UI run) — the throttled frame draws exactly what a rebuilt frame draws.
 
 ## 8. Sharing input with the host
 

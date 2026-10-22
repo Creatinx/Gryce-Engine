@@ -527,6 +527,7 @@ void print_usage() {
         "  --fps / --no-fps       左上角白色 FPS 叠加（默认开）\n"
         "  --fps-limit <N>        软件锁帧：帧率上限 N（0 = 不限制；与 --vsync 互补）\n"
         "  --no-debug-ui          不画调试 UI（左上角读数 + ImGui 调试窗口）\n"
+        "  --ui-interval <N>      UI 帧节流：调试面板每 N 个渲染帧才构建一次（默认 1）\n"
         "  --editor-preview       走编辑器预览路径：离屏视口输出 + 双视口 + Gizmo 命中测试\n"
         "  --bench [N]            开启 GPU 分段计时，跑 N 帧（默认 240）后打印每 pass 平均 GPU 时间\n"
         "  --ssr / --no-ssr       覆盖屏幕空间反射开关（A/B 对照用）\n"
@@ -764,6 +765,7 @@ int main(int argc, char** argv) {
     int debug_view_override = -1;
     int pcss_override = -1;
     bool fps_overlay = true;   // 左上角白色 FPS，默认开
+    int  ui_interval_override = 0;   // --ui-interval N，<=0 不干预（默认每帧构建 UI）
     int  fps_limit = -1;       // --fps-limit N（<0 表示不设置，保持默认 0 = 不限速）
     bool debug_ui_enabled = true;   // --no-debug-ui 关闭调试 UI
     // --editor-preview：编辑器前置能力的运行时冒烟。开启后 tonemap 写离屏视口目标
@@ -834,6 +836,10 @@ int main(int argc, char** argv) {
         // --no-debug-ui：完全不画调试 UI（关掉左上角读数与 ImGui 调试窗口），
         // 用于"纯画面"截图比对（UI 会让两张图必然不同）。
         else if (std::strcmp(a, "--no-debug-ui") == 0) debug_ui_enabled = false;
+        // --ui-interval N：UI 帧节流，调试面板每 N 个渲染帧才构建一次
+        // （中间的帧重绘上一份 draw data）。N<=1 = 每帧构建（默认）。
+        else if (std::strcmp(a, "--ui-interval") == 0)
+            ui_interval_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--editor-preview") == 0) editor_preview = true;
         else if (std::strcmp(a, "--ssr-debug") == 0) ssr_debug_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--resolution") == 0) {
@@ -1061,6 +1067,12 @@ int main(int argc, char** argv) {
     GRender_SetPCSSParams(cfg.pcss_light_size, cfg.pcss_max_radius, 1.0f);
     // 左上角白色 FPS（默认开；--no-fps 关闭）
     GRender_SetFPSOverlay(fps_overlay);
+    // UI 帧节流（--ui-interval N）：调试面板每 N 个渲染帧才重新构建一次，
+    // 中间的帧重绘上一份 draw data。默认 1 = 每帧构建。
+    if (ui_interval_override > 0) {
+        GRender_SetUiFrameInterval(ui_interval_override);
+        std::printf("[smoke] ui frame interval = %d\n", ui_interval_override);
+    }
     if (!debug_ui_enabled) GRender_SetDebugUI(false);
     if (fps_limit >= 0) {
         GRender_SetFrameRateLimit(fps_limit);

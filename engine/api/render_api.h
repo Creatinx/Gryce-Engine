@@ -149,6 +149,17 @@ GRYCE_RENDERER_API void  GRender_DrawDebugPanel(void);
 GRYCE_RENDERER_API void GRender_SetUICallback(void (*callback)(void* user), void* user);
 GRYCE_RENDERER_API bool GRender_HasImGui(void);
 
+// UI 帧节流：每 frames 个渲染帧才真正构建一次 ImGui 帧（跑宿主回调与
+// gizmo），中间的帧直接重绘上一次的 draw data。frames <= 1 = 每帧都构建
+// （默认）。UI 的刷新率不需要跟渲染帧率一样高——面板读数慢半拍看不出来，
+// 省下的是每帧的 NewFrame/控件求值/gizmo 命中测试。
+//
+// 注意只影响"构建"，不影响"绘制"：非 UI 帧仍会重绘上一份 draw data，
+// 所以 UI 一直在屏幕上，只是内容按间隔更新。输入也按同一间隔采样，
+// 对工具型界面（点击 / 拖拽）足够。
+GRYCE_RENDERER_API void GRender_SetUiFrameInterval(int frames);
+GRYCE_RENDERER_API int  GRender_GetUiFrameInterval(void);
+
 // 把引擎纹理（视口/游戏视口/贴图预览）转换成 ImGui 可用的纹理 ID
 // （ImTextureID 的整数值），供 ImGui::Image / ImageButton 采样。
 // OpenGL 返回 GL 纹理名，Vulkan 返回缓存的 VkDescriptorSet，D3D12 返回 SRV

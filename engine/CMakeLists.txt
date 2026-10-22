@@ -191,6 +191,7 @@ target_sources(GryceRenderer
     PRIVATE
         api/render_api.cpp
         api/ui_api.cpp
+        api/ui_op_queue.cpp
         render/render.cpp
         render/renderer2d_impl.cpp
         render/core_shaders.cpp

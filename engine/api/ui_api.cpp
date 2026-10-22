@@ -12,6 +12,8 @@
 
 #include "api/ui_api.h"
 #include "api/ui_api_internal.h"
+#include "api/ui_op_queue.h"
+#include "api/ui_op_queue_internal.h"
 
 #include <cstddef>
 #include <cstring>
@@ -77,6 +79,90 @@ void set_texture_v_flip(bool flip) {
 }
 
 } // namespace gryce_ui
+
+// ---------------------------------------------------------------------------
+// 操作队列的 C ABI（与 ImGui 无关：关掉 ImGui 的构建里同样要能入队/排出，
+// 否则无窗口宿主连"UI 操作受控执行"这件事本身都做不到）
+// ---------------------------------------------------------------------------
+namespace {
+
+gryce_ui::Op to_op(const GUiOp* op) {
+    gryce_ui::Op out;
+    if (!op) return out;
+    out.type = op->type;
+    out.key  = op->key;
+    out.arg  = op->arg;
+    for (int i = 0; i < 4; ++i) out.vec[i] = op->vec[i];
+    return out;
+}
+
+void from_op(const gryce_ui::Op& in, GUiOp* out) {
+    if (!out) return;
+    out->type = in.type;
+    out->key  = in.key;
+    out->arg  = in.arg;
+    for (int i = 0; i < 4; ++i) out->vec[i] = in.vec[i];
+    out->seq  = in.seq;
+}
+
+} // namespace
+
+extern "C" {
+
+int GUi_PushOp(const GUiOp* op) {
+    if (!op) return 0;
+    return gryce_ui::op_queue().push(to_op(op)) ? 1 : 0;
+}
+
+int GUi_DrainOps(GUiOp* out, int max) {
+    if (!out || max <= 0) return 0;
+    // 先取上限，避免为一次排出分配超过调用方请求的空间
+    const int cap = max < gryce_ui::OpQueue::kCapacity ? max : gryce_ui::OpQueue::kCapacity;
+    gryce_ui::Op buffer[gryce_ui::OpQueue::kCapacity];
+    const int n = gryce_ui::op_queue().drain(buffer, cap);
+    for (int i = 0; i < n; ++i) from_op(buffer[i], &out[i]);
+    return n;
+}
+
+void GUi_SetOpPolicy(int max_per_drain, int min_frames_between_drain) {
+    gryce_ui::OpQueue::Policy p;
+    p.max_per_drain = max_per_drain;
+    p.min_frames_between_drain = min_frames_between_drain;
+    gryce_ui::op_queue().set_policy(p);
+}
+
+void GUi_GetOpPolicy(int* out_max_per_drain, int* out_min_frames_between_drain) {
+    const gryce_ui::OpQueue::Policy p = gryce_ui::op_queue().policy();
+    if (out_max_per_drain) *out_max_per_drain = p.max_per_drain;
+    if (out_min_frames_between_drain) *out_min_frames_between_drain = p.min_frames_between_drain;
+}
+
+void GUi_GetOpQueueStats(int* out_pending,
+                         uint64_t* out_pushed,
+                         uint64_t* out_coalesced,
+                         uint64_t* out_drained,
+                         uint64_t* out_evicted,
+                         uint64_t* out_rejected,
+                         uint64_t* out_throttled) {
+    const gryce_ui::OpQueue::Stats s = gryce_ui::op_queue().stats();
+    if (out_pending)   *out_pending   = s.pending;
+    if (out_pushed)    *out_pushed    = s.pushed;
+    if (out_coalesced) *out_coalesced = s.coalesced;
+    if (out_drained)   *out_drained   = s.drained;
+    if (out_evicted)   *out_evicted   = s.evicted;
+    if (out_rejected)  *out_rejected  = s.rejected;
+    if (out_throttled) *out_throttled = s.throttled;
+}
+
+void GUi_ClearOps(void) {
+    gryce_ui::op_queue().clear();
+}
+
+void GUi_AdvanceOpFrame(void) {
+    gryce_ui::op_queue().advance_frame();
+}
+
+} // extern "C"
 
 extern "C" {
 

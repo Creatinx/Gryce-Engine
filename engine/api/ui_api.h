@@ -18,9 +18,9 @@
 //   * 本文件所有函数在回调外调用都安全地返回 0 / 无操作（不会崩，也不会
 //     往任何地方画东西），便于宿主在无窗口环境（CI）里跑同一份代码。
 //
-// 布局约定：本接口不提供 dock。编辑器用"一整块主窗口 + 固定分区"的布局，
-// 理由见 editor/README.md：docking 会让布局随 imgui.ini 漂移，截图比对和
-// 集成测试就不可复现了。
+// 布局约定：本接口不提供 dock。工具型界面用"一整块主窗口 + 固定分区"，
+// 理由见 docs/zh/ui-api.md：docking 会让布局随 imgui.ini 漂移，截图比对和
+// 脚本断言就不可复现了。
 // ===========================================================================
 
 #ifndef GRYCE_UI_API_H
@@ -92,6 +92,63 @@ enum {
     GUI_DRAG_PREVIEW = 1,   // 有匹配的 payload 悬停，尚未松手
     GUI_DRAG_DELIVER = 2,   // 本帧松手交付，out_buf 已写入
 };
+
+// ---------------------------------------------------------------------------
+// 操作队列（UI → 引擎的受控执行通道）
+//
+// UI 的刷新率不需要跟渲染帧率一样高，所以"UI 想改引擎状态"不当场执行：
+// 回调内只入队（纯数据，永远安全），宿主在锁外按策略受控排出。
+//
+// 为什么需要它而不是在回调里直接调 GEdit_*：
+//   * 回调运行在渲染器锁已持有的路径上，当场调引擎 API 会二次加锁死锁；
+//   * 拖拽每帧都产生"设变换"，不合并会把一次拖拽变成几十步撤销；
+//   * UI 操作批量落地（有预算、有间隔）正好匹配 UI 的低刷新率。
+//
+// 队列不认识语义：type / key / arg / vec 全部由调用方定义，引擎只保证
+// FIFO 顺序、同键合并、预算与统计。key == 0 表示离散操作（按钮点击这类
+// 丢了就丢了的语义不存在，绝不合并）；key != 0 表示同 (type,key) 只保留
+// 最新值——排队期间连续改动天然塌缩成一条。
+// ---------------------------------------------------------------------------
+
+// 一条待执行的 UI 操作。seq 由引擎填写（入队序号，合并不改变），调用方勿改。
+typedef struct GUiOp {
+    uint32_t type;                          // 调用方自定义的操作码
+    uint32_t key;                           // 合并键；0 = 离散操作
+    int64_t  arg;                           // 整数参数（句柄 / 枚举 / 布尔）
+    float    vec[4];                        // 浮点参数（变换 / 颜色 / 范围）
+    uint64_t seq;                           // 入队序号（引擎填）
+} GUiOp;
+
+// 入队（回调内调用安全）。返回 1 = 已入队或已合并；0 = 队列满且没有可逐出的
+// 旧项（待处理的全是离散操作，一条都不能丢）——调用方应能看见这个失败，
+// 而不是被静默吞掉。
+GRYCE_UI_API int   GUi_PushOp(const GUiOp* op);
+
+// 排出至多 max 条到 out，返回实际条数。0 = 队列空或未到策略允许的时机
+// （后者计入 stats.throttled）。必须在锁外调用——排出来的操作要转成
+// GEdit_* / GCore_* 落地，那些调用在回调内是禁止的。
+GRYCE_UI_API int   GUi_DrainOps(GUiOp* out, int max);
+
+// 执行策略。max_per_drain <= 0 = 单次不限制；min_frames_between_drain <= 0 =
+// 每个推进过的帧都可排。首次排出不受间隔限制。
+GRYCE_UI_API void  GUi_SetOpPolicy(int max_per_drain, int min_frames_between_drain);
+GRYCE_UI_API void  GUi_GetOpPolicy(int* out_max_per_drain, int* out_min_frames_between_drain);
+
+// 统计快照（任一参数可为 nullptr）。pending 之外都是累计值。
+GRYCE_UI_API void  GUi_GetOpQueueStats(int* out_pending,
+                                       uint64_t* out_pushed,
+                                       uint64_t* out_coalesced,
+                                       uint64_t* out_drained,
+                                       uint64_t* out_evicted,
+                                       uint64_t* out_rejected,
+                                       uint64_t* out_throttled);
+
+// 清空待处理操作（换文档 / 重置界面时用；不清累计统计）。
+GRYCE_UI_API void  GUi_ClearOps(void);
+
+// 帧计数推进：渲染层每渲染帧调一次，排出间隔以它为基准。自持帧循环的
+// 宿主（无窗口 CI）也需要调它，否则带间隔的策略永远不放行。
+GRYCE_UI_API void  GUi_AdvanceOpFrame(void);
 
 // ---------------------------------------------------------------------------
 // 帧与状态

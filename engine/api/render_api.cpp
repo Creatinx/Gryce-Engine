@@ -5,6 +5,7 @@
 #include "api/render_api.h"
 #include "api/api_guard.h"
 #include "api/ui_api_internal.h"
+#include "api/ui_op_queue_internal.h"
 #include "api/viewport_api.h"
 #include "api/core_api.h"
 #include "api/edit_api.h"
@@ -149,6 +150,17 @@ struct RendererState {
     //   CreateContext（编辑器就可能这样），NewFrame/Render 会打到宿主的上下文上，
     //   两边 UI 都会错乱 —— 所以引擎每次都显式 SetCurrentContext 自己的那个。）
     ImGuiContext* debug_imgui_ctx = nullptr;
+    // ---- UI 帧节流 ----
+    // UI 刷新率不需要跟渲染帧率一样高：每 ui_frame_interval 个渲染帧才真正
+    // 构建一次 ImGui 帧（跑宿主回调与 gizmo），中间的帧直接重绘上一次构建
+    // 出的 draw data 深拷贝。<=1 表示每帧都构建（默认）。
+    int        ui_frame_interval = 1;
+    uint64_t   ui_frame_counter = 0;   // 渲染帧计数，debug_ui_submit_locked 每次 +1
+#ifdef GRYCE_HAS_IMGUI
+    // 上一次 UI 帧构建出的 draw data 深拷贝（深拷贝自带 CmdLists 与纹理
+    // 引用，异步渲染线程持有也安全）。非 UI 帧重绘它即可，省掉整帧控件求值。
+    std::shared_ptr<ImDrawData> ui_cached_draw;
+#endif
     // 给"UI 绘制命令"用的存活标志（shared_ptr 让命令持有它）：
     // 关闭时先 pause 渲染线程、再置 false —— 之后即使有一条命令被主线程 drain
     // 出来执行，也不会去碰已经销毁的 ImGui 后端。
@@ -785,6 +797,10 @@ static void gizmo_draw_locked() {
 // 以命令形式推入本帧命令缓冲。必须在 GRender_EndFrame 内、且 **g_renderer.mutex
 // 已持有**时调用（它读 g_renderer 状态，并会 push_command）。
 static void debug_ui_submit_locked() {
+    // 帧计数与 UI 操作队列的帧基准在 ImGui 之外推进：关掉 ImGui 的构建里
+    // 队列照样要能用（无窗口宿主也走这条路），间隔策略以同一把尺子计量。
+    ++g_renderer.ui_frame_counter;
+    gryce_ui::op_queue().advance_frame();
 #ifdef GRYCE_HAS_IMGUI
     if (!g_renderer.debug_imgui || !g_renderer.ctx) return;
     // ★ 显式切到引擎自己的 ImGui 上下文再 NewFrame/Render：宿主（编辑器）可能在
@@ -805,9 +821,28 @@ static void debug_ui_submit_locked() {
 
     if (!g_renderer.debug_ui_enabled && !g_renderer.ui_callback) {
         // 关闭时仍然走一遍 NewFrame/Render（空帧），避免上一帧的同步 future 永远不结束。
+        // 这条路径不节流：它本来就要跑，且空帧会把缓存一起清掉（不会残留旧界面）。
         g_renderer.debug_imgui->begin_frame();
         g_renderer.debug_imgui->end_frame([](ImDrawData*, std::shared_ptr<std::promise<void>> done) {
             if (done) done->set_value();
+        });
+        return;
+    }
+
+    // UI 帧节流：未到构建点时重绘上一次的 draw data 深拷贝——UI 一直在屏幕上，
+    // 只是不重新求值控件。首帧（缓存为空）与间隔为 1 时走下面的构建路径。
+    const uint64_t interval =
+        g_renderer.ui_frame_interval > 1 ? static_cast<uint64_t>(g_renderer.ui_frame_interval) : 1;
+    const bool build_due = interval <= 1 || (g_renderer.ui_frame_counter % interval) == 1;
+    if (!build_due && g_renderer.ui_cached_draw) {
+        std::shared_ptr<ImDrawData> clone = g_renderer.ui_cached_draw;
+        render::IImGuiBackend* ui_backend = g_renderer.debug_imgui->backend();
+        render::RenderContext* ctx = g_renderer.ctx.get();
+        std::shared_ptr<bool> alive = g_renderer.debug_ui_alive;
+        ctx->push_command([clone, ui_backend, alive](IRenderBackend*) {
+            if (alive && *alive && ui_backend && clone) {
+                ui_backend->render_draw_data(clone.get());
+            }
         });
         return;
     }
@@ -838,6 +873,9 @@ static void debug_ui_submit_locked() {
         // draw_data 只在回调期间有效；异步渲染线程要用就必须先深拷贝
         // （ImGuiRenderer::clone_draw_data 会连同 CmdList / 纹理列表一起复制）。
         std::shared_ptr<ImDrawData> clone = renderer->clone_draw_data(draw_data);
+        // 留一份给非 UI 帧重绘（见上面的节流分支）。static 的 g_renderer
+        // 不需要捕获；本 lambda 在持锁的收尾路径上同步执行，写它没有竞争。
+        g_renderer.ui_cached_draw = clone;
         ctx->push_command([clone, ui_backend, done, alive](IRenderBackend*) {
             // 这里运行在渲染线程：用后端的 ImGui 后端把 draw data 画进**本帧**
             // 已经绑定的渲染目标（因此排在场景之后，截图里也有 UI）。
@@ -2236,6 +2274,21 @@ void GRender_SetUICallback(void (*callback)(void* user), void* user) {
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.ui_callback = callback;
     g_renderer.ui_callback_user = user;
+}
+
+void GRender_SetUiFrameInterval(int frames) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    // <=1 归一成 1（每帧构建）；间隔必须为正，否则取模会除零。
+    g_renderer.ui_frame_interval = frames > 1 ? frames : 1;
+    // 重置计数：让下一帧立即成为构建帧，避免改了间隔后还要空等一个周期。
+    g_renderer.ui_frame_counter = 0;
+}
+
+int GRender_GetUiFrameInterval(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.ui_frame_interval;
 }
 
 bool GRender_HasImGui(void) {

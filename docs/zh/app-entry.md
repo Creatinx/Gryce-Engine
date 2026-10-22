@@ -289,8 +289,6 @@ build/GryceApp.exe --project <dir> --entry res:/logic.js --frames 30
 
 `ctest -R script_app_entry` 覆盖入口脚本的钩子派发、热重载换模块与扩展 `add_function` 注册，不依赖 GPU 与窗口。
 
-`--project` 可以省略：项目根由宿主自带时就不用传。`editor/` 就是这样一个宿主 —— `GryceEditor.exe` 把 `editor/project` 的绝对路径写在配置期生成的宏里，`build/GryceEditor.exe` 等价于 `build/GryceApp.exe --project editor/project`。两个 exe 共用同一个 `gryce_engine::app::run`，命令行参数完全一致，只是 `--project` 的缺省值不同（且显式传入时以传入的为准）。
-
 ## 10. 限制
 
 - **Web 构建不提供 `GryceApp`**：wasm 侧仍是 `GryceRenderSmoke` 的常驻循环 + 预载 payload，扩展也不可用。
