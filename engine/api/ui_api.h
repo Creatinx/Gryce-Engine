@@ -151,6 +151,149 @@ GRYCE_UI_API void  GUi_ClearOps(void);
 GRYCE_UI_API void  GUi_AdvanceOpFrame(void);
 
 // ---------------------------------------------------------------------------
+// 稳定 id 与跨帧控件状态
+//
+// ImGui 不保存控件的**值**（滑块读数、复选框勾选、输入框内容都由调用方持
+// 有缓冲）。忘持缓冲的症状是"拖一下弹回去"：控件显示的值每帧被外部旧值
+// 覆盖。引擎把这部分状态收过来：按稳定 id 索引、跨帧存活，调用方的模式
+// 变成"取 → 画 → 写回"，缓冲不再属于任何一个栈帧。
+//
+//   uint64_t id = GUi_MakeId("Opacity", entity_uuid);
+//   float v = 0.5f; GUi_StateGetFloat(id, &v);
+//   if (GUi_SliderFloat("Opacity", &v, 0, 1, "%.2f")) GUi_StateSetFloat(id, v);
+//
+// id 的稳定性来自 (label, seed)：同一个逻辑控件传同样的一对，跨帧同一个
+// id。seed 取面板 / 实体 / 资产的身份（UUID、句柄、路径哈希）；全局控件
+// 用 0。哈希冲突不处置（64 位在千级控件上概率可忽略，真冲突肉眼可辨）。
+// ---------------------------------------------------------------------------
+
+// label 与 seed 合成 64 位稳定 id。恒非 0（0 是状态存储的空槽标记）。
+GRYCE_UI_API uint64_t GUi_MakeId(const char* label, uint64_t seed);
+
+// 帧推进：渲染层每帧自动调；自持帧循环的宿主手动调。帧号同时是状态老化
+// 的时间基准（超过 ~900 帧未被引用的条目会被回收，可见控件每帧都在引用）。
+GRYCE_UI_API void  GUi_StateBeginFrame(uint32_t frame);
+
+// 读：返回 1 = 该 id 有状态（*out 已写入）；0 = 没有（*out 不被触碰）。
+// 写：不存在则新建（标量清零、文本清空）。
+GRYCE_UI_API int   GUi_StateGetFloat(uint64_t id, float* out);
+GRYCE_UI_API int   GUi_StateGetInt(uint64_t id, int* out);
+GRYCE_UI_API int   GUi_StateGetBool(uint64_t id, int* out);
+GRYCE_UI_API int   GUi_StateGetVec4(uint64_t id, float out[4]);
+// 文本：至多拷贝 cap-1 字符。返回实际长度（不含结尾 '\0'），0 = 没有状态。
+GRYCE_UI_API int   GUi_StateGetText(uint64_t id, char* out, int cap);
+GRYCE_UI_API void  GUi_StateSetFloat(uint64_t id, float v);
+GRYCE_UI_API void  GUi_StateSetInt(uint64_t id, int v);
+GRYCE_UI_API void  GUi_StateSetBool(uint64_t id, int v);
+GRYCE_UI_API void  GUi_StateSetVec4(uint64_t id, const float v[4]);
+GRYCE_UI_API void  GUi_StateSetText(uint64_t id, const char* s);
+
+// 当前持有状态的控件数（调试 / 测试用：验证状态没有无限膨胀）。
+GRYCE_UI_API int   GUi_StateCount(void);
+GRYCE_UI_API void  GUi_StateClear(void);
+
+// ---------------------------------------------------------------------------
+// 布局系统（确定性矩形计算）
+//
+// 服务"需要精确矩形"的场景：视口分区、gizmo 原点、属性行对齐。控件照旧
+// 用上面的 GUi_* 画，画在哪由布局栈算。纯函数：相同调用序列 → 相同矩形，
+// 与窗口 / ImGui / GPU 无关，因此"任意窗口尺寸下视口拿到确定矩形"可直接
+// 单测（见 docs/zh/ui-api.md）。
+//
+// 注意不要对同一区域混用 ImGui 自动排版（GUi_BeginWindow 自带）与本布局栈。
+// ---------------------------------------------------------------------------
+
+typedef struct GRUiRect {
+    float x, y, w, h;   // 绝对坐标，左上角原点，逻辑像素
+} GRUiRect;
+
+// 重置到视口根区域（一帧开头调一次）。
+GRYCE_UI_API void  GUi_LayoutReset(const GRUiRect* viewport);
+GRYCE_UI_API void  GUi_LayoutBeginPanel(const GRUiRect* area, float pad);
+GRYCE_UI_API void  GUi_LayoutEndPanel(void);
+GRYCE_UI_API int   GUi_LayoutDepth(void);
+// 当前面板内容区（已扣内边距）与剩余高度。
+GRYCE_UI_API void  GUi_LayoutContentRect(GRUiRect* out);
+GRYCE_UI_API float GUi_LayoutAvailHeight(void);
+
+// 行布局。begin_row 会先结束尚未 end_row 的行（防忘）；end_row 把光标
+// 下移 行高 + 间距。cell 的 w <= 0 = 填满本行剩余宽度，h <= 0 = 用行高。
+GRYCE_UI_API void  GUi_LayoutBeginRow(float height);
+GRYCE_UI_API void  GUi_LayoutEndRow(void);
+GRYCE_UI_API int   GUi_LayoutCell(float w, float h, GRUiRect* out);   // 1 = 成功
+GRYCE_UI_API void  GUi_LayoutSpace(float px);
+// 水平缩进：作用于下一次 begin_row 的行首（树形层级每层一级）。
+GRYCE_UI_API void  GUi_LayoutIndent(float px);
+
+// ---------------------------------------------------------------------------
+// 主题（样式 token）
+//
+// 颜色按语义命名、度量按用途命名；调用方只引用 token，不引用色值。
+// apply() 把整张表一次性推成 ImGui Style（帧外调；无 ImGui 构建为 no-op）。
+// 语义文本色（GUI_TEXT_DIM / OK / WARN / ERROR / ACCENT）同样取自本表。
+// ---------------------------------------------------------------------------
+
+enum {
+    GUI_THEME_PRESET_DARK  = 0,
+    GUI_THEME_PRESET_LIGHT = 1,
+};
+
+enum {
+    GUI_THEME_COLOR_WINDOW_BG = 0,
+    GUI_THEME_COLOR_CHILD_BG,
+    GUI_THEME_COLOR_BORDER,
+    GUI_THEME_COLOR_TEXT,
+    GUI_THEME_COLOR_TEXT_DIM,
+    GUI_THEME_COLOR_ACCENT,
+    GUI_THEME_COLOR_ACCENT_HOVER,
+    GUI_THEME_COLOR_ACCENT_ACTIVE,
+    GUI_THEME_COLOR_BUTTON,
+    GUI_THEME_COLOR_BUTTON_HOVER,
+    GUI_THEME_COLOR_BUTTON_ACTIVE,
+    GUI_THEME_COLOR_HEADER,
+    GUI_THEME_COLOR_HEADER_HOVER,
+    GUI_THEME_COLOR_SELECTION,
+    GUI_THEME_COLOR_OK,
+    GUI_THEME_COLOR_WARN,
+    GUI_THEME_COLOR_ERROR,
+    GUI_THEME_COLOR_COUNT,
+};
+
+enum {
+    GUI_THEME_METRIC_PAD_X = 0,     // 控件水平内边距
+    GUI_THEME_METRIC_PAD_Y,         // 控件垂直内边距
+    GUI_THEME_METRIC_ROW_H,         // 标准行高
+    GUI_THEME_METRIC_ITEM_SPACING,  // 行 / 单元格间距
+    GUI_THEME_METRIC_INDENT,        // 树形每级缩进
+    GUI_THEME_METRIC_BORDER_W,      // 边框宽度
+    GUI_THEME_METRIC_COUNT,
+};
+
+GRYCE_UI_API void     GUi_ThemeSetPreset(int preset);
+GRYCE_UI_API uint32_t GUi_ThemeColor(int token);        // 0xRRGGBBAA
+GRYCE_UI_API void     GUi_ThemeSetColor(int token, uint32_t rgba);
+GRYCE_UI_API float    GUi_ThemeMetric(int token);
+GRYCE_UI_API void     GUi_ThemeApply(void);
+
+// ---------------------------------------------------------------------------
+// 输入门控与快捷键
+//
+// 引擎策略：派发任何快捷键之前先问 UI 要不要这个键盘。编辑器真实踩过
+// "输入框里打 Wire 把工具切走"——各自判断就会各自漏，所以这是所有宿主的
+// 唯一入口。快捷键表在注册期报冲突，不等用户按下去才发现两个功能抢一个键。
+// ---------------------------------------------------------------------------
+
+// UI 正吃着键盘时为 0（不要派发快捷键）。UI 没在跑时为 1。
+GRYCE_UI_API int   GUi_ShouldDispatchShortcut(void);
+
+// 注册 / 查询。mods 取 GUI_MOD_* 位或。add 返回 1 = 成功，0 = 冲突或表满；
+// find 返回命令号，没有返回 -1。key 是宿主键码（GLFW_KEY_* 这类），本层
+// 不认识语义，只做精确匹配。
+GRYCE_UI_API int   GUi_ShortcutAdd(uint32_t key, uint32_t mods, int command);
+GRYCE_UI_API int   GUi_ShortcutFind(uint32_t key, uint32_t mods);
+GRYCE_UI_API void  GUi_ShortcutClear(void);
+
+// ---------------------------------------------------------------------------
 // 帧与状态
 // ---------------------------------------------------------------------------
 

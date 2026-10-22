@@ -14,6 +14,11 @@
 #include "api/ui_api_internal.h"
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
+#include "ui/ui_id.h"
+#include "ui/ui_input.h"
+#include "ui/ui_layout.h"
+#include "ui/ui_state.h"
+#include "ui/ui_theme.h"
 
 #include <cstddef>
 #include <cstring>
@@ -48,16 +53,29 @@ ImGuiWindowFlags to_window_flags(int flags) {
     return out;
 }
 
-// 语义色。值取自引擎暗色主题附近，但不暴露 ImGuiCol_*，改主题不影响调用方。
+// 语义文本色取自主题 token（ui_theme.h）：换主题时这些颜色一起换，
+// 不再有散落在控件实现里的硬编码色值。无 ImGui 时同样可算（token 是纯数据）。
 ImVec4 text_color(int kind) {
+    using gryce_ui::THEME_COLOR_ACCENT;
+    using gryce_ui::THEME_COLOR_ERROR;
+    using gryce_ui::THEME_COLOR_OK;
+    using gryce_ui::THEME_COLOR_TEXT;
+    using gryce_ui::THEME_COLOR_TEXT_DIM;
+    using gryce_ui::THEME_COLOR_WARN;
+    int token = THEME_COLOR_TEXT;
     switch (kind) {
-        case GUI_TEXT_DIM:    return ImVec4(0.62f, 0.64f, 0.68f, 1.0f);
-        case GUI_TEXT_OK:     return ImVec4(0.45f, 0.82f, 0.52f, 1.0f);
-        case GUI_TEXT_WARN:   return ImVec4(0.95f, 0.78f, 0.36f, 1.0f);
-        case GUI_TEXT_ERROR:  return ImVec4(0.94f, 0.45f, 0.42f, 1.0f);
-        case GUI_TEXT_ACCENT: return ImVec4(0.42f, 0.72f, 0.98f, 1.0f);
-        default:              return ImVec4(0.90f, 0.91f, 0.93f, 1.0f);
+        case GUI_TEXT_DIM:    token = THEME_COLOR_TEXT_DIM;  break;
+        case GUI_TEXT_OK:     token = THEME_COLOR_OK;       break;
+        case GUI_TEXT_WARN:   token = THEME_COLOR_WARN;     break;
+        case GUI_TEXT_ERROR:  token = THEME_COLOR_ERROR;    break;
+        case GUI_TEXT_ACCENT: token = THEME_COLOR_ACCENT;   break;
+        default:              token = THEME_COLOR_TEXT;     break;
     }
+    const uint32_t c = gryce_ui::color(token);
+    return ImVec4(static_cast<float>((c >> 24) & 0xFF) / 255.0f,
+                  static_cast<float>((c >> 16) & 0xFF) / 255.0f,
+                  static_cast<float>((c >> 8) & 0xFF) / 255.0f,
+                  static_cast<float>(c & 0xFF) / 255.0f);
 }
 #else
 inline bool ready() { return false; }
@@ -76,6 +94,22 @@ void set_texture_v_flip(bool flip) {
 #else
     (void)flip;
 #endif
+}
+
+// 进程内唯一实例。函数局部 static：首次调用时初始化，C++11 起线程安全。
+StateStore& state() {
+    static StateStore s;
+    return s;
+}
+
+Layout& layout() {
+    static Layout l;
+    return l;
+}
+
+ShortcutTable& shortcuts() {
+    static ShortcutTable t;
+    return t;
 }
 
 } // namespace gryce_ui
@@ -896,6 +930,174 @@ void GUi_PopTextStyle(void) {
     if (!ready()) return;
     ImGui::PopStyleColor();
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// 稳定 id / 状态 / 布局 / 主题 / 输入（全部与 ImGui 无关：关掉 ImGui 的
+// 构建里模型层照常工作，只有"画"这一步不存在）
+// ---------------------------------------------------------------------------
+
+// C 头里的 token 编号与 ui_theme.h 的枚举必须逐一对上：两边各写一份是
+// 漂移的经典来源，用静态断言钉死。
+static_assert(GUI_THEME_COLOR_WINDOW_BG == static_cast<int>(gryce_ui::THEME_COLOR_WINDOW_BG),
+              "theme color token mismatch");
+static_assert(GUI_THEME_COLOR_COUNT == static_cast<int>(gryce_ui::THEME_COLOR_COUNT),
+              "theme color token count mismatch");
+static_assert(GUI_THEME_METRIC_ROW_H == static_cast<int>(gryce_ui::THEME_METRIC_ROW_H),
+              "theme metric token mismatch");
+static_assert(GUI_THEME_METRIC_COUNT == static_cast<int>(gryce_ui::THEME_METRIC_COUNT),
+              "theme metric token count mismatch");
+
+uint64_t GUi_MakeId(const char* label, uint64_t seed) {
+    return gryce_ui::hash_label(label, seed);
+}
+
+void GUi_StateBeginFrame(uint32_t frame) {
+    gryce_ui::state().begin_frame(frame);
+}
+
+int GUi_StateGetFloat(uint64_t id, float* out) {
+    const gryce_ui::StateEntry* e = gryce_ui::state().find(id);
+    if (!e || !out) return 0;
+    *out = e->f;
+    return 1;
+}
+
+int GUi_StateGetInt(uint64_t id, int* out) {
+    const gryce_ui::StateEntry* e = gryce_ui::state().find(id);
+    if (!e || !out) return 0;
+    *out = static_cast<int>(e->i);
+    return 1;
+}
+
+int GUi_StateGetBool(uint64_t id, int* out) {
+    const gryce_ui::StateEntry* e = gryce_ui::state().find(id);
+    if (!e || !out) return 0;
+    *out = e->b ? 1 : 0;
+    return 1;
+}
+
+int GUi_StateGetVec4(uint64_t id, float out[4]) {
+    const gryce_ui::StateEntry* e = gryce_ui::state().find(id);
+    if (!e || !out) return 0;
+    for (int i = 0; i < 4; ++i) out[i] = e->vec[i];
+    return 1;
+}
+
+int GUi_StateGetText(uint64_t id, char* out, int cap) {
+    if (!out || cap <= 0) return 0;
+    const size_t n = gryce_ui::state().get_text(id, out, static_cast<size_t>(cap));
+    return n > 0 ? 1 : 0;
+}
+
+void GUi_StateSetFloat(uint64_t id, float v) { gryce_ui::state().set_float(id, v); }
+void GUi_StateSetInt(uint64_t id, int v) { gryce_ui::state().set_int(id, v); }
+void GUi_StateSetBool(uint64_t id, int v) { gryce_ui::state().set_bool(id, v != 0); }
+
+void GUi_StateSetVec4(uint64_t id, const float v[4]) {
+    gryce_ui::state().set_vec4(id, v);
+}
+
+void GUi_StateSetText(uint64_t id, const char* s) {
+    gryce_ui::state().set_text(id, s);
+}
+
+int GUi_StateCount(void) {
+    return static_cast<int>(gryce_ui::state().size());
+}
+
+void GUi_StateClear(void) {
+    gryce_ui::state().clear();
+}
+
+void GUi_LayoutReset(const GRUiRect* viewport) {
+    if (!viewport) return;
+    gryce_ui::Rect r{viewport->x, viewport->y, viewport->w, viewport->h};
+    gryce_ui::layout().reset(r);
+}
+
+void GUi_LayoutBeginPanel(const GRUiRect* area, float pad) {
+    if (!area) return;
+    gryce_ui::Rect r{area->x, area->y, area->w, area->h};
+    gryce_ui::layout().begin_panel(r, pad);
+}
+
+void GUi_LayoutEndPanel(void) {
+    gryce_ui::layout().end_panel();
+}
+
+int GUi_LayoutDepth(void) {
+    return gryce_ui::layout().depth();
+}
+
+void GUi_LayoutContentRect(GRUiRect* out) {
+    if (!out) return;
+    const gryce_ui::Rect r = gryce_ui::layout().content();
+    out->x = r.x; out->y = r.y; out->w = r.w; out->h = r.h;
+}
+
+float GUi_LayoutAvailHeight(void) {
+    return gryce_ui::layout().avail_height();
+}
+
+void GUi_LayoutBeginRow(float height) {
+    gryce_ui::layout().begin_row(height);
+}
+
+void GUi_LayoutEndRow(void) {
+    gryce_ui::layout().end_row();
+}
+
+int GUi_LayoutCell(float w, float h, GRUiRect* out) {
+    const gryce_ui::Rect r = gryce_ui::layout().cell(w, h);
+    if (out) {
+        out->x = r.x; out->y = r.y; out->w = r.w; out->h = r.h;
+    }
+    return 1;
+}
+
+void GUi_LayoutSpace(float px) {
+    gryce_ui::layout().space(px);
+}
+
+void GUi_LayoutIndent(float px) {
+    gryce_ui::layout().indent(px);
+}
+
+void GUi_ThemeSetPreset(int preset) {
+    gryce_ui::set_preset(preset);
+}
+
+uint32_t GUi_ThemeColor(int token) {
+    return gryce_ui::color(token);
+}
+
+void GUi_ThemeSetColor(int token, uint32_t rgba) {
+    gryce_ui::set_color(token, rgba);
+}
+
+float GUi_ThemeMetric(int token) {
+    return gryce_ui::metric(token);
+}
+
+void GUi_ThemeApply(void) {
+    gryce_ui::apply();
+}
+
+int GUi_ShouldDispatchShortcut(void) {
+    return gryce_ui::should_dispatch_shortcut() ? 1 : 0;
+}
+
+int GUi_ShortcutAdd(uint32_t key, uint32_t mods, int command) {
+    return gryce_ui::shortcuts().add(key, mods, command);
+}
+
+int GUi_ShortcutFind(uint32_t key, uint32_t mods) {
+    return gryce_ui::shortcuts().find(key, mods);
+}
+
+void GUi_ShortcutClear(void) {
+    gryce_ui::shortcuts().clear();
 }
 
 } // extern "C"

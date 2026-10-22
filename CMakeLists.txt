@@ -461,6 +461,27 @@ if(WIN32)
 endif()
 
 # ===========================================================================
+# UI 系统演示：GryceUiSmoke.exe
+#
+# 与 GryceRenderSmoke 的分工：那个演示渲染管线，这个演示引擎的 UI 子系统
+# （engine/ui 模型层 + api/ui_api.h 的 C 面）——跨帧控件状态、确定性布局、
+# 主题 token、操作队列受控执行、快捷键门控。截图可复现，适合做 UI 层回归。
+# ===========================================================================
+add_executable(GryceUiSmoke test/ui_smoke.cpp)
+target_include_directories(GryceUiSmoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine
+)
+target_compile_definitions(GryceUiSmoke PRIVATE
+    GRYCE_DEMO_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/test/demo_project"
+)
+target_link_libraries(GryceUiSmoke PRIVATE
+    GryceRenderer GryceCore GrycePlatform
+)
+if(WIN32)
+    target_link_libraries(GryceUiSmoke PRIVATE opengl32 gdi32)
+endif()
+
+# ===========================================================================
 # 应用运行时：GryceApp.exe
 #
 # 这是给"项目只写 main.js"的形态准备的宿主：窗口、场景、退出都由脚本调
@@ -662,20 +683,27 @@ if(BUILD_TESTING)
             LABELS "unit;asset" TIMEOUT 60)
     endforeach()
 
-    # UI 操作队列：UI 操作进队列、按策略受控执行（见 api/ui_op_queue.h）。
-    # 与 math/script/asset 同构——被测源码（api/ui_op_queue.cpp + api/ui_api.cpp）
-    # 直编进 exe，不链 GryceRenderer.dll，也不定义 GRYCE_HAS_IMGUI：
-    # 同时验证"关掉 ImGui 的构建里队列照样能用"。GRYCE_RENDERER_BUILDING 让
-    # 导出宏变成 dllexport，静态 exe 内自链接（否则 dllimport 会去找 __imp_ 符号）。
-    set(GRYCE_UI_TEST_SUITES queue abi)
+    # UI 系统：操作队列 + 模型层（跨帧状态 / 布局 / 主题 / 输入 / 视图模型）。
+    # 与 math/script/asset 同构——被测源码直编进 exe，不链 GryceRenderer.dll，
+    # 也不定义 GRYCE_HAS_IMGUI：同时验证"关掉 ImGui 的构建里 UI 模型层照常
+    # 工作"（无窗口宿主也走这条路）。GRYCE_RENDERER_BUILDING 让导出宏变成
+    # dllexport，静态 exe 内自链接（否则 dllimport 会去找 __imp_ 符号）。
+    # ui_snapshot.cpp 用 nlohmann/json（头文件库，与 GryceRenderer 同一份）。
+    set(GRYCE_UI_TEST_SUITES queue abi state layout theme input snapshot)
 
     add_executable(GryceUiTests
         test/ui_tests.cpp
         engine/api/ui_op_queue.cpp
         engine/api/ui_api.cpp
+        engine/ui/ui_state.cpp
+        engine/ui/ui_layout.cpp
+        engine/ui/ui_theme.cpp
+        engine/ui/ui_input.cpp
+        engine/ui/ui_snapshot.cpp
     )
     target_include_directories(GryceUiTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json
     )
     target_compile_definitions(GryceUiTests PRIVATE GRYCE_RENDERER_BUILDING)
 

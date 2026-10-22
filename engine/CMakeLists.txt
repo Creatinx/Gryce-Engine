@@ -192,6 +192,11 @@ target_sources(GryceRenderer
         api/render_api.cpp
         api/ui_api.cpp
         api/ui_op_queue.cpp
+        ui/ui_state.cpp
+        ui/ui_layout.cpp
+        ui/ui_theme.cpp
+        ui/ui_input.cpp
+        ui/ui_snapshot.cpp
         render/render.cpp
         render/renderer2d_impl.cpp
         render/core_shaders.cpp

@@ -274,6 +274,41 @@ for (int i = 0; i < n; ++i) apply(out[i]);   /* apply() may call engine APIs fre
 
 Verified end to end with the demo host: at `--frames 30 --ui-interval 3` the screenshot lands on frame 30, a cached-redraw frame, and its statistics are byte-identical to the every-frame-build run (and clearly different from the no-UI run) — the throttled frame draws exactly what a rebuilt frame draws.
 
+## 7.6 The model layer (`engine/ui/`) and the demo host
+
+`GUi_*` are **draw primitives**; everything that has nothing to do with "where it draws or how it looks" — cross-frame state, rectangle math, styling, input gating — lives in `engine/ui/` as **pure logic with no ImGui dependency**. The same sources compile in headless CI and in builds with ImGui disabled.
+
+| File | Responsibility | Key rules |
+| --- | --- | --- |
+| `ui_id.h` | `(label, seed)` → 64-bit stable id | Never 0 (0 marks an empty state slot); collisions are not handled |
+| `ui_state.h` | Cross-frame widget state store (open addressing + linear probing, deletion by backward shift) | The frame number doubles as the aging clock; entries unreferenced for more than `kMaxAgeFrames` (~900) are reclaimed. Under UI throttling a visible widget is referenced every build frame, so it is never falsely aged out |
+| `ui_layout.h` | Deterministic layout stack: same call sequence → same rects | `end_row` advances by `max(row height, tallest cell)` — an explicit `cell(0, 30)` must not be covered by the next row; never mix with ImGui auto-layout on the same region |
+| `ui_theme.h` | Style tokens (semantic colors, purpose-named metrics) | `apply()` is a no-op without an ImGui context; switching themes = `GUi_ThemeSetPreset` + `GUi_ThemeApply` |
+| `ui_input.h` | Input gating and the shortcut table | Modifiers must match exactly; conflicts are reported at registration time, not when the user presses the key |
+| `ui_snapshot.h` | Panel view model (serializable pure data) | 64-bit ids go through JSON as **decimal strings** (`JSON.parse` has 53-bit precision); reads are tolerant — missing fields default, bad rows are skipped |
+
+The C surface is already open in `ui_api.h`: `GUi_MakeId` / `GUi_State*` / `GUi_Layout*` / `GUi_Theme*` / `GUi_ShouldDispatchShortcut` / `GUi_Shortcut*`. The usage pattern:
+
+```c
+uint64_t id = GUi_MakeId("Opacity", entity_uuid);   // same id across frames
+float v = 0.5f;
+GUi_StateGetFloat(id, &v);                           // read (default if absent)
+if (GUi_SliderFloat("Opacity", &v, 0, 1, "%.2f")) {  // draw
+    GUi_StateSetFloat(id, v);                        // write back (engine-owned, not a stack buffer)
+}
+```
+
+`GryceUiSmoke.exe` (`test/ui_smoke.cpp`) is the end-to-end demo for all of this. It is not part of the gate and needs a window:
+
+```bash
+build/GryceUiSmoke.exe                    # dark theme, draws one demo panel
+build/GryceUiSmoke.exe --theme light      # the light variant of the same token table
+build/GryceUiSmoke.exe --ops-burst 200    # push 200 ops: coalesced≈99, drained=101 in the stats
+build/GryceUiSmoke.exe --ui-interval 3    # throttled screenshot is byte-identical to per-frame builds (same md5)
+```
+
+`--ops-burst` pushes half discrete (`key=0`) and half continuous (`key=1`) ops: the continuous ones coalesce into a single entry (only the last value lands) while the discrete ones land in per-frame batches — the full closed loop of "low UI refresh rate, controlled execution".
+
 ## 8. Sharing input with the host
 
 When the UI eats mouse/keyboard, host navigation and shortcuts must yield:

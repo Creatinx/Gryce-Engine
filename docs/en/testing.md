@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 30 cases across six hosts.
+There are currently 35 cases across six hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -78,15 +78,19 @@ Observations are made by comparing scene-JSON bytes rather than entity counts: `
 | `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
 | `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
-### 2.6 UI op queue (`GryceUiTests.exe`, 2 cases)
+### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 7 cases)
 
-The sources under test (`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp`) are compiled straight into the test executable with no engine DLL, and **without `GRYCE_HAS_IMGUI`** — which also verifies that the queue works in builds with ImGui disabled (headless hosts take that path too). `GRYCE_RENDERER_BUILDING` turns the export macros into dllexport so the static exe links against itself.
+The sources under test (`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`) are compiled straight into the test executable with no engine DLL, and **without `GRYCE_HAS_IMGUI`** — which also verifies that the queue and the model layer work in builds with ImGui disabled (headless hosts take that path too). `GRYCE_RENDERER_BUILDING` turns the export macros into dllexport so the static exe links against itself.
 
 The `queue` suite covers the OpQueue itself: FIFO order and seq, in-place coalescing (position and seq untouched), same key with a different type does not merge, discrete ops never merge, a full queue evicts only the oldest coalescing op, a full queue of discrete ops rejects the push and counts it, drain budget, drain interval (the first drain is exempt, an empty drain does not consume the interval), `clear` keeps cumulative stats, the same key after a drain is a new entry, and bad arguments leave the queue untouched.
 
 The `abi` suite covers the C layer: field round-trip with engine-assigned seq, coalescing and discrete ops through the ABI, policy get/set, interval throttling, `GUi_ClearOps`, stats queries tolerating nullptr, bad arguments rejected, and a request beyond capacity capped at capacity. The ABI acts on the process-wide singleton, so cases isolate leftover interval state by clearing and advancing a few frames.
 
+The `state` / `layout` / `theme` / `input` / `snapshot` suites cover the `engine/ui/` model layer: stable ids and the state store (aging boundary, truncation, clear, count ABI), the deterministic layout stack (nested panels, row advance by `max(row height, tallest cell)`, auto-closed rows, indent), theme tokens (presets, per-token override, out-of-range tolerance, `apply` is a no-op without ImGui), input gating and the shortcut table (exact modifier matching, registration-time conflict reporting, capacity), and the panel view model's JSON round-trip (64-bit ids as decimal strings, bad rows skipped, tolerant reads, capacity truncation).
+
 Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5.
+
+`GryceUiSmoke.exe` is the end-to-end demo for the model layer (not part of the gate; needs a window): the panel draws, `--ops-burst N` shows `coalesced` close to the continuous-op count in the stats, and `--ui-interval 3` produces a byte-identical screenshot to per-frame builds.
 
 ## 3. Execution Notes
 

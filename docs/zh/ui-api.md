@@ -274,6 +274,41 @@ for (int i = 0; i < n; ++i) apply(out[i]);   // apply 里可以放心调引擎 A
 
 已用演示宿端到端验证：`--frames 30 --ui-interval 3` 时截图落在第 30 帧（缓存重绘帧），其统计与"每帧构建"的跑法逐字节一致，且与"无 UI"跑法明显不同——节流帧画出的东西与新建帧完全相同。
 
+## 7.6 模型层（`engine/ui/`）与演示宿主
+
+`GUi_*` 是**绘制原语**；跨帧状态、矩形计算、样式、输入门控这些"与画在哪、长什么样无关"的逻辑收在 `engine/ui/`，全部是**不依赖 ImGui 的纯逻辑**——同一份代码能在无窗口 CI 里单测，也能在关掉 ImGui 的构建里编译。
+
+| 文件 | 职责 | 关键规则 |
+| --- | --- | --- |
+| `ui_id.h` | `(label, seed)` → 64 位稳定 id | 恒非 0（0 是状态存储的空槽标记）；冲突不处置 |
+| `ui_state.h` | 跨帧控件状态存储（开放寻址 + 线性探测，删除用后向移位） | 帧号同时是老化基准，超过 `kMaxAgeFrames`（约 900 帧）未被引用的条目被回收；节流 UI 下可见控件每构建帧都在引用，不会误杀 |
+| `ui_layout.h` | 确定性布局栈：相同调用序列 → 相同矩形 | `end_row` 按 `max(行高, 行内最高格)` 推进——`cell(0, 30)` 这种显式高度不该被下一行盖住；与 ImGui 自动排版不要混用同一区域 |
+| `ui_theme.h` | 样式 token（颜色按语义、度量按用途） | `apply()` 无 ImGui 上下文时是 no-op；换主题 = `GUi_ThemeSetPreset` + `GUi_ThemeApply` |
+| `ui_input.h` | 输入门控与快捷键表 | 修饰键精确匹配；注册期报冲突，不等用户按下去才发现 |
+| `ui_snapshot.h` | 面板视图模型（可序列化纯数据） | 64 位 id 在 JSON 里走**十进制字符串**（`JSON.parse` 只有 53 位精度）；读取侧宽容：缺字段用默认、坏行跳过 |
+
+对应 C 面已在 `ui_api.h` 打开：`GUi_MakeId` / `GUi_State*` / `GUi_Layout*` / `GUi_Theme*` / `GUi_ShouldDispatchShortcut` / `GUi_Shortcut*`。用法模式：
+
+```c
+uint64_t id = GUi_MakeId("Opacity", entity_uuid);   // 跨帧同一个 id
+float v = 0.5f;
+GUi_StateGetFloat(id, &v);                           // 取（没有则用默认值）
+if (GUi_SliderFloat("Opacity", &v, 0, 1, "%.2f")) {  // 画
+    GUi_StateSetFloat(id, v);                        // 写回（引擎保管，不是栈上缓冲）
+}
+```
+
+`GryceUiSmoke.exe`（`test/ui_smoke.cpp`）是这套东西的端到端演示，不进门禁、需要窗口：
+
+```bash
+build/GryceUiSmoke.exe                    # 暗色主题，画一块演示面板
+build/GryceUiSmoke.exe --theme light      # 同一 token 表的亮色变体
+build/GryceUiSmoke.exe --ops-burst 200    # 灌 200 条操作：统计里 coalesced≈99、drained=101
+build/GryceUiSmoke.exe --ui-interval 3    # 节流截图与每帧构建逐字节一致（md5 相同）
+```
+
+`--ops-burst` 灌的是一半离散（`key=0`）+ 一半连续（`key=1`）的操作：连续项在队列里合并成一条（只落地最后的值），离散项按每帧预算分批落地——这正是"UI 低刷新率、操作受控执行"的完整闭环。
+
 ## 8. 与宿主输入的分工
 
 UI 吃掉鼠标/键盘时，宿主的场景导航与快捷键必须让路：

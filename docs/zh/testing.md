@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 30 条用例，分六个宿主。
+当前共 35 条用例，分六个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -78,15 +78,19 @@ ctest --test-dir build --output-on-failure
 | `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
 | `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
 
-### 2.6 UI 操作队列（`GryceUiTests.exe`，2 条）
+### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，7 条）
 
-被测源码（`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp`）直编进测试可执行文件，不链 GryceRenderer.dll；且**不定义 `GRYCE_HAS_IMGUI`**——同时验证"关掉 ImGui 的构建里队列照样能用"（无窗口宿主也走这条路）。`GRYCE_RENDERER_BUILDING` 让导出宏变成 dllexport，静态 exe 内自链接。
+被测源码（`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`）直编进测试可执行文件，不链 GryceRenderer.dll；且**不定义 `GRYCE_HAS_IMGUI`**——同时验证"关掉 ImGui 的构建里队列与模型层照样能用"（无窗口宿主也走这条路）。`GRYCE_RENDERER_BUILDING` 让导出宏变成 dllexport，静态 exe 内自链接。
 
 `queue` 套件测 OpQueue 本体：FIFO 顺序与 seq、同键就地合并（位置与 seq 不动）、同 key 不同 type 不合并、离散项绝不合并、满队只逐最旧可合并项、满队全是离散项时拒绝入队并计数、排出预算、排出间隔（首次不受限、空排不消耗间隔）、`clear` 不清累计统计、排出后同键是新的一条、坏参数不动队列。
 
 `abi` 套件测 C 接口层：字段往返与 seq 由引擎填写、经 ABI 的合并与离散、策略读写、间隔节流、`GUi_ClearOps`、统计与查询容忍 nullptr、坏参数拒绝、请求超过容量时按容量封顶。ABI 作用在进程内唯一队列上，用例之间靠"清空 + 推进若干帧"隔离残留的间隔状态。
 
+`state` / `layout` / `theme` / `input` / `snapshot` 五个套件测 `engine/ui/` 模型层：稳定 id 与状态存储（老化边界、截断、清空、计数 ABI）、确定性布局栈（嵌套面板、行高取 `max(行高, 最高格)`、自动收行、缩进）、主题 token（预设、逐项覆盖、越界容忍、无 ImGui 时 apply 为 no-op）、输入门控与快捷键表（精确匹配修饰键、注册期报冲突、容量）、面板视图模型的 JSON 往返（64 位 id 走十进制字符串、坏行跳过、宽容读取、容量截断）。
+
 队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节。
+
+`GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。
 
 ## 3. 执行注意
 

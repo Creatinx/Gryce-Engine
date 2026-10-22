@@ -13,6 +13,7 @@
 #include "api/window_api.h"
 #include "runtime/engine_context.h"
 #include "scene/entity.h"
+#include "ui/ui_theme.h"
 
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
@@ -800,6 +801,7 @@ static void debug_ui_submit_locked() {
     // 帧计数与 UI 操作队列的帧基准在 ImGui 之外推进：关掉 ImGui 的构建里
     // 队列照样要能用（无窗口宿主也走这条路），间隔策略以同一把尺子计量。
     ++g_renderer.ui_frame_counter;
+    gryce_ui::state().begin_frame(static_cast<uint32_t>(g_renderer.ui_frame_counter));
     gryce_ui::op_queue().advance_frame();
 #ifdef GRYCE_HAS_IMGUI
     if (!g_renderer.debug_imgui || !g_renderer.ctx) return;
@@ -1277,6 +1279,11 @@ int GRender_Init(const GRenderInitDesc* desc) {
                 g_renderer.debug_imgui = std::move(renderer);
                 g_renderer.debug_ui_alive = std::make_shared<bool>(true);
                 g_renderer.debug_imgui_ctx = ImGui::GetCurrentContext();   // 引擎自己的上下文
+                // 主题 token 落地一次：此后所有控件（含引擎调试面板与宿主角落）
+                // 的颜色/度量都走 ui_theme.h 那一张表，换主题由宿主调
+                // GUi_ThemeSetPreset + GUi_ThemeApply。在这里 apply 而不是等
+                // 首帧，是因为 Style 要在第一个 NewFrame 之前就位。
+                gryce_ui::apply();
                 // ★★ 关键：告诉 ImGui「不要改 OS 光标的显示/模式」★★
                 //   ImGui 的 GLFW 后端每帧都会按自己的判断调
                 //   glfwSetInputMode(GLFW_CURSOR, GLFW_CURSOR_NORMAL/HIDDEN)，
