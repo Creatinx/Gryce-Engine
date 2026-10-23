@@ -286,6 +286,7 @@ for (int i = 0; i < n; ++i) apply(out[i]);   // apply 里可以放心调引擎 A
 | `ui_theme.h` | 样式 token（颜色按语义、度量按用途） | `apply()` 无 ImGui 上下文时是 no-op；换主题 = `GUi_ThemeSetPreset` + `GUi_ThemeApply` |
 | `ui_input.h` | 输入门控与快捷键表 | 修饰键精确匹配；注册期报冲突，不等用户按下去才发现 |
 | `ui_snapshot.h` | 面板视图模型（可序列化纯数据） | 64 位 id 在 JSON 里走**十进制字符串**（`JSON.parse` 只有 53 位精度）；读取侧宽容：缺字段用默认、坏行跳过 |
+| `ui_component.h` | 组件树布局（保留模式） | 定位规则唯一判据是"父级是不是布局组件"；id 单调递增永不复用；`resolve()` 幂等 |
 
 对应 C 面已在 `ui_api.h` 打开：`GUi_MakeId` / `GUi_State*` / `GUi_Layout*` / `GUi_Theme*` / `GUi_ShouldDispatchShortcut` / `GUi_Shortcut*`。用法模式：
 
@@ -308,6 +309,62 @@ build/GryceUiSmoke.exe --ui-interval 3    # 节流截图与每帧构建逐字节
 ```
 
 `--ops-burst` 灌的是一半离散（`key=0`）+ 一半连续（`key=1`）的操作：连续项在队列里合并成一条（只落地最后的值），离散项按每帧预算分批落地——这正是"UI 低刷新率、操作受控执行"的完整闭环。
+
+## 7.7 组件树布局（保留模式）
+
+`GUi_Layout*` 是**即时模式**的矩形栈（相同调用序列 → 相同矩形）；组件树是**保留模式**的另一半：建一次树，之后只改参数，每帧 `GUi_CompResolve()` 重算矩形。适合"界面结构稳定、内容随状态变"的面板。
+
+```c
+GUiCompSpec root{};                       // parent=0 = 无父级
+root.kind = GUI_COMP_KIND_COLUMN;
+root.x = 460; root.y = 24; root.w = 320; root.h = 480;   // 根必须写 pos/size
+root.gap = 6;
+for (int i = 0; i < 4; ++i) root.padding[i] = 8;         // 上 右 下 左
+uint64_t col = GUi_CompAdd(&root);        // 返回值即组件 id（恒非 0）
+
+GUiCompSpec row{};
+row.parent = col; row.kind = GUI_COMP_KIND_ROW;
+row.align = GUI_COMP_ALIGN_STRETCH;       // 交叉轴吃满
+uint64_t head = GUi_CompAdd(&row);        // x/y/w/h 由布局填，传 0 即可
+
+GUiCompSpec leaf{};
+leaf.parent = head; leaf.kind = GUI_COMP_KIND_LEAF;
+leaf.flex = 1.0f;                         // 主轴剩余空间按 flex 权重分
+GUi_CompAdd(&leaf);
+
+GUi_CompResolve();                        // 幂等：每帧调一次
+GRUiRect r;
+GUi_CompRect(leaf, &r);                   // 取解析结果
+```
+
+**定位规则只有一条：父级是不是布局组件。**
+
+* 父级是 `Column` / `Row` / `Grid` → 子节点的 `x/y/w/h` 由布局安排（调用方写的值被忽略，子项传 0 即可）。
+* 父级是 `Leaf` 或无父级 → 子节点**直接保留调用方写的 pos**，布局一个字节都不碰。所以"把一个组件从叶子换成 Column"会立刻翻转它所有子节点的定位方式——这是特性，不是 bug。
+
+其余语义：
+
+| 主题 | 规则 |
+| --- | --- |
+| 容器自身大小 | 布局**只摆位，不决定容器自身大小**；容器自己的 `w/h` 就是它的外框 |
+| 内容区 | 容器内容区 = 自身 rect 向内缩 `padding`；flex 分配的是内容区里的主轴剩余空间 |
+| flex | 只分配主轴剩余空间；剩余为负（放不下）时钳到 0，不产生负尺寸 |
+| align | 交叉轴对齐：`Start` / `Center` / `End` / `Stretch`（吃满内容区，扣掉交叉 margin） |
+| `Column` / `Row` | 主轴顺序堆叠，`gap` 是主轴间距 |
+| `Grid` | 等宽列（`cols`），行高取行内请求高最大值，子节点填满格子 |
+| 解析顺序 | `resolve_node` 先安排自己的子节点（写回 rect）再递归——父布局的写回一定发生在"以新 rect 摆布孙节点"之前 |
+| id | 单调递增、**永不复用**；移除子树只是释放槽位。`add`/`set` 忽略调用方传入的 id 字段，返回值才是真 id |
+| `set` 换父级 | 做环检查（把自己挂到自己的子孙名下会被拒绝）；父级未变时不动子列表位置 |
+| `remove` | 连带整棵子树；实现上**先收集再统一释放**——逐点释放会在已释放节点上写 `next_sib`，而空闲链表正串在这个字段上 |
+
+C 面见 `ui_api.h` 的「组件树布局（保留模式）」一节：`GUi_CompAdd/Set/Remove/Clear/Resolve/Rect/Get/Kind/Parent/ChildCount/ChildAt/Count`，容量 512，越界枚举值直接拒绝。
+
+**每个组件画成一个窗口时的两条铁律**（`GryceUiSmoke` 的 Layout 页就是这么画的，见 `test/ui_smoke.cpp`）：
+
+1. **不要传 `GUI_WIN_NO_BRING_TO_FRONT`。** 这个标志在 imgui 里会让新窗口创建时进显示序**队首**（画在最底层）——子窗口比父窗口创建得晚，反而被压到父窗口下面，不透明的窗口背景把整棵子树盖得只剩一个根。层级序就是创建序：子窗口创建在后，天然画在父窗口之上，这正是要的效果。
+2. **组件尺寸不要小于 32px。** imgui 的 `WindowMinSize` 默认 (32, 32)，`SetNextWindowSize` 显式给小尺寸也会被钳制。容器若要在自己的第一行画标签，用 `padding` 上边预留一行（演示里是 24），别指望窗口自己缩下去。
+
+演示：`--page layout`（或 `Ctrl+3`）画一棵 20 个组件的树——根 Column、flex 1:2 的标题行、交叉轴四种对齐的中间行、3×2 网格、脚注，外加一个"父级是叶子"的对照组（它的两个孩子直写 pos，布局不碰）。页内滑杆改根的 gap 与网格列数，走的是完整的"Get → 改 → Set → Resolve"保留模式闭环。
 
 ## 8. 与宿主输入的分工
 

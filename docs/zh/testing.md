@@ -78,7 +78,7 @@ ctest --test-dir build --output-on-failure
 | `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
 | `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
 
-### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，7 条）
+### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，9 条）
 
 被测源码（`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`）直编进测试可执行文件，不链 GryceRenderer.dll；且**不定义 `GRYCE_HAS_IMGUI`**——同时验证"关掉 ImGui 的构建里队列与模型层照样能用"（无窗口宿主也走这条路）。`GRYCE_RENDERER_BUILDING` 让导出宏变成 dllexport，静态 exe 内自链接。
 
@@ -88,9 +88,11 @@ ctest --test-dir build --output-on-failure
 
 `state` / `layout` / `theme` / `input` / `snapshot` 五个套件测 `engine/ui/` 模型层：稳定 id 与状态存储（老化边界、截断、清空、计数 ABI）、确定性布局栈（嵌套面板、行高取 `max(行高, 最高格)`、自动收行、缩进）、主题 token（预设、逐项覆盖、越界容忍、无 ImGui 时 apply 为 no-op）、输入门控与快捷键表（精确匹配修饰键、注册期报冲突、容量）、面板视图模型的 JSON 往返（64 位 id 走十进制字符串、坏行跳过、宽容读取、容量截断）。
 
-队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节。
+`comp` 套件测组件树布局：add/find/remove 与子树连带删除、父级必须存在、容量上限、子节点顺序、`set` 换父级做环检查、**非布局父级保留直写 pos**、Column 堆叠、Row 交叉轴四种对齐、flex 分配主轴剩余空间、溢出钳到 0、Grid 等宽列与行高、padding 缩内容区、嵌套树、退化容器。`compabi` 套件测同一套语义经 C 面的往返（spec 字段、越界枚举拒绝、坏参数返回约定）。
 
-`GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。
+队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节，组件树布局见第 7.7 节。
+
+`GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。Layout 页（`--page layout` / `Ctrl+3`）画一棵 20 个组件的树，每帧 `GUi_CompResolve()` 后逐组件取矩形画窗口——组件窗口**不传** `GUI_WIN_NO_BRING_TO_FRONT`，否则子窗口会被压到父窗口底下（原因见 ui-api.md 第 7.7 节）。
 
 ## 3. 执行注意
 

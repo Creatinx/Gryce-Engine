@@ -14,6 +14,7 @@
 #include "api/ui_api_internal.h"
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
+#include "ui/ui_component.h"
 #include "ui/ui_id.h"
 #include "ui/ui_input.h"
 #include "ui/ui_layout.h"
@@ -105,6 +106,11 @@ StateStore& state() {
 Layout& layout() {
     static Layout l;
     return l;
+}
+
+ComponentTree& components() {
+    static ComponentTree t;
+    return t;
 }
 
 ShortcutTable& shortcuts() {
@@ -1062,6 +1068,115 @@ void GUi_LayoutSpace(float px) {
 
 void GUi_LayoutIndent(float px) {
     gryce_ui::layout().indent(px);
+}
+
+// ---------------------------------------------------------------------------
+// 组件树布局（纯数据：不画东西，回调内外都可调）
+// ---------------------------------------------------------------------------
+namespace {
+
+gryce_ui::Component to_component(const GUiCompSpec* s) {
+    gryce_ui::Component c{};
+    if (!s) return c;
+    c.parent = s->parent;
+    c.kind   = static_cast<gryce_ui::CompKind>(s->kind);
+    c.rect   = gryce_ui::Rect{s->x, s->y, s->w, s->h};
+    for (int i = 0; i < 4; ++i) {
+        c.margin[i]  = s->margin[i];
+        c.padding[i] = s->padding[i];
+    }
+    c.flex  = s->flex;
+    c.align = static_cast<gryce_ui::CompAlign>(s->align);
+    c.gap   = s->gap;
+    c.cols  = s->cols;
+    return c;
+}
+
+void from_component(const gryce_ui::Component& c, GUiCompSpec* s) {
+    if (!s) return;
+    s->parent = c.parent;
+    s->kind   = static_cast<int>(c.kind);
+    s->x = c.rect.x; s->y = c.rect.y; s->w = c.rect.w; s->h = c.rect.h;
+    for (int i = 0; i < 4; ++i) {
+        s->margin[i]  = c.margin[i];
+        s->padding[i] = c.padding[i];
+    }
+    s->flex  = c.flex;
+    s->align = static_cast<int>(c.align);
+    s->gap   = c.gap;
+    s->cols  = c.cols;
+}
+
+// kind / align 越界的 spec 直接拒绝：静默夹到合法值会让"我传的 99 怎么了"
+// 这种问题没有答案。
+bool comp_spec_valid(const GUiCompSpec* s) {
+    if (!s) return false;
+    if (s->kind < GUI_COMP_KIND_LEAF || s->kind > GUI_COMP_KIND_GRID) return false;
+    if (s->align < GUI_COMP_ALIGN_START || s->align > GUI_COMP_ALIGN_STRETCH) return false;
+    return true;
+}
+
+} // namespace
+
+uint64_t GUi_CompAdd(const GUiCompSpec* spec) {
+    if (!comp_spec_valid(spec)) return 0;
+    return gryce_ui::components().add(to_component(spec));
+}
+
+int GUi_CompSet(uint64_t id, const GUiCompSpec* spec) {
+    if (!comp_spec_valid(spec)) return 0;
+    return gryce_ui::components().set(id, to_component(spec)) ? 1 : 0;
+}
+
+int GUi_CompRemove(uint64_t id) {
+    return gryce_ui::components().remove(id) ? 1 : 0;
+}
+
+void GUi_CompClear(void) {
+    gryce_ui::components().clear();
+}
+
+int GUi_CompResolve(void) {
+    gryce_ui::components().resolve();
+    return gryce_ui::components().count();
+}
+
+int GUi_CompRect(uint64_t id, GRUiRect* out) {
+    if (!out) return 0;
+    const gryce_ui::Rect* r = gryce_ui::components().rect_of(id);
+    if (!r) return 0;
+    out->x = r->x; out->y = r->y; out->w = r->w; out->h = r->h;
+    return 1;
+}
+
+int GUi_CompGet(uint64_t id, GUiCompSpec* out) {
+    if (!out) return 0;
+    const gryce_ui::Component* c = gryce_ui::components().find(id);
+    if (!c) return 0;
+    from_component(*c, out);
+    return 1;
+}
+
+int GUi_CompKind(uint64_t id) {
+    const gryce_ui::Component* c = gryce_ui::components().find(id);
+    return c ? static_cast<int>(c->kind) : -1;
+}
+
+uint64_t GUi_CompParent(uint64_t id) {
+    const gryce_ui::Component* c = gryce_ui::components().find(id);
+    return c ? c->parent : 0;
+}
+
+int GUi_CompChildCount(uint64_t id) {
+    return gryce_ui::components().child_count(id);
+}
+
+uint64_t GUi_CompChildAt(uint64_t id, int index) {
+    return gryce_ui::components().child_at(id, index);
+}
+
+int GUi_CompCount(void) {
+    return gryce_ui::components().count();
 }
 
 void GUi_ThemeSetPreset(int preset) {

@@ -248,13 +248,14 @@ build/GryceApp.exe --project test/demo_project --frames 60 --shot shot.png --api
 
 ## 运行 UI 系统演示（GryceUiSmoke）
 
-`GryceUiSmoke` 演示引擎的 UI 子系统（`engine/ui` 模型层 + `GUi_*` C 面）：跨帧控件状态（引擎按稳定 id 保管，面板无本地缓冲）、确定性布局栈、主题 token 切换、操作队列受控执行、快捷键门控。
+`GryceUiSmoke` 演示引擎的 UI 子系统（`engine/ui` 模型层 + `GUi_*` C 面）：跨帧控件状态（引擎按稳定 id 保管，面板无本地缓冲）、确定性布局栈、组件树布局（保留模式：父级是布局组件才安排子节点，否则保留直写 pos）、主题 token 切换、操作队列受控执行、快捷键门控。
 
 ```bash
 build/GryceUiSmoke.exe                          # 默认暗色主题
 build/GryceUiSmoke.exe --theme light --shot ui.png
 build/GryceUiSmoke.exe --ops-burst 200          # 灌 200 条操作，看合并/预算/统计
 build/GryceUiSmoke.exe --ui-interval 3          # UI 每 3 帧构建一次，画面不变
+build/GryceUiSmoke.exe --page layout            # 组件树布局页：20 个组件 + 滑杆改参数
 ```
 
 界面与 API 说明见 [docs/zh/ui-api.md](docs/zh/ui-api.md)。

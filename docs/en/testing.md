@@ -78,7 +78,7 @@ Observations are made by comparing scene-JSON bytes rather than entity counts: `
 | `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
 | `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
-### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 7 cases)
+### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 9 cases)
 
 The sources under test (`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`) are compiled straight into the test executable with no engine DLL, and **without `GRYCE_HAS_IMGUI`** — which also verifies that the queue and the model layer work in builds with ImGui disabled (headless hosts take that path too). `GRYCE_RENDERER_BUILDING` turns the export macros into dllexport so the static exe links against itself.
 
@@ -88,9 +88,11 @@ The `abi` suite covers the C layer: field round-trip with engine-assigned seq, c
 
 The `state` / `layout` / `theme` / `input` / `snapshot` suites cover the `engine/ui/` model layer: stable ids and the state store (aging boundary, truncation, clear, count ABI), the deterministic layout stack (nested panels, row advance by `max(row height, tallest cell)`, auto-closed rows, indent), theme tokens (presets, per-token override, out-of-range tolerance, `apply` is a no-op without ImGui), input gating and the shortcut table (exact modifier matching, registration-time conflict reporting, capacity), and the panel view model's JSON round-trip (64-bit ids as decimal strings, bad rows skipped, tolerant reads, capacity truncation).
 
-Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5.
+The `comp` suite covers the component tree layout: add/find/remove with whole-subtree removal, parent must exist, capacity, child order, cycle check when `set` reparents, **a non-layout parent keeps the written pos**, Column stacking, all four Row cross-axis alignments, flex distributing main-axis free space, overflow clamping to 0, Grid equal-width columns and row heights, padding shrinking the content area, nested trees, and degenerate containers. The `compabi` suite round-trips the same semantics through the C surface (spec fields, out-of-range enum rejection, bad-argument return conventions).
 
-`GryceUiSmoke.exe` is the end-to-end demo for the model layer (not part of the gate; needs a window): the panel draws, `--ops-burst N` shows `coalesced` close to the continuous-op count in the stats, and `--ui-interval 3` produces a byte-identical screenshot to per-frame builds.
+Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5; the component tree layout in section 7.7.
+
+`GryceUiSmoke.exe` is the end-to-end demo for the model layer (not part of the gate; needs a window): the panel draws, `--ops-burst N` shows `coalesced` close to the continuous-op count in the stats, and `--ui-interval 3` produces a byte-identical screenshot to per-frame builds. The Layout page (`--page layout` / `Ctrl+3`) draws a 20-component tree, reading each component's rect after `GUi_CompResolve()` and drawing one window per component — those windows deliberately **do not** pass `GUI_WIN_NO_BRING_TO_FRONT`, or the children would sink below their parent (see ui-api.md section 7.7).
 
 ## 3. Execution Notes
 

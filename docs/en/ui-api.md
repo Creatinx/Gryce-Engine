@@ -286,6 +286,7 @@ Verified end to end with the demo host: at `--frames 30 --ui-interval 3` the scr
 | `ui_theme.h` | Style tokens (semantic colors, purpose-named metrics) | `apply()` is a no-op without an ImGui context; switching themes = `GUi_ThemeSetPreset` + `GUi_ThemeApply` |
 | `ui_input.h` | Input gating and the shortcut table | Modifiers must match exactly; conflicts are reported at registration time, not when the user presses the key |
 | `ui_snapshot.h` | Panel view model (serializable pure data) | 64-bit ids go through JSON as **decimal strings** (`JSON.parse` has 53-bit precision); reads are tolerant — missing fields default, bad rows are skipped |
+| `ui_component.h` | Component tree layout (retained mode) | The only positioning rule is "is the parent a layout component"; ids increase monotonically and are never reused; `resolve()` is idempotent |
 
 The C surface is already open in `ui_api.h`: `GUi_MakeId` / `GUi_State*` / `GUi_Layout*` / `GUi_Theme*` / `GUi_ShouldDispatchShortcut` / `GUi_Shortcut*`. The usage pattern:
 
@@ -308,6 +309,62 @@ build/GryceUiSmoke.exe --ui-interval 3    # throttled screenshot is byte-identic
 ```
 
 `--ops-burst` pushes half discrete (`key=0`) and half continuous (`key=1`) ops: the continuous ones coalesce into a single entry (only the last value lands) while the discrete ones land in per-frame batches — the full closed loop of "low UI refresh rate, controlled execution".
+
+## 7.7 Component tree layout (retained mode)
+
+`GUi_Layout*` is the **immediate-mode** rectangle stack (same call sequence → same rects). The component tree is the **retained-mode** half: build the tree once, then only mutate parameters and call `GUi_CompResolve()` each frame to recompute rects. It suits panels whose structure is stable while their contents follow state.
+
+```c
+GUiCompSpec root{};                       // parent=0 = no parent
+root.kind = GUI_COMP_KIND_COLUMN;
+root.x = 460; root.y = 24; root.w = 320; root.h = 480;   // a root must set pos/size
+root.gap = 6;
+for (int i = 0; i < 4; ++i) root.padding[i] = 8;         // top right bottom left
+uint64_t col = GUi_CompAdd(&root);        // the return value is the component id (never 0)
+
+GUiCompSpec row{};
+row.parent = col; row.kind = GUI_COMP_KIND_ROW;
+row.align = GUI_COMP_ALIGN_STRETCH;       // fill the cross axis
+uint64_t head = GUi_CompAdd(&row);        // x/y/w/h are filled by the layout; 0 is fine
+
+GUiCompSpec leaf{};
+leaf.parent = head; leaf.kind = GUI_COMP_KIND_LEAF;
+leaf.flex = 1.0f;                         // share the main-axis free space by flex weight
+GUi_CompAdd(&leaf);
+
+GUi_CompResolve();                        // idempotent: call once per frame
+GRUiRect r;
+GUi_CompRect(leaf, &r);                   // read the resolved rect
+```
+
+**There is exactly one positioning rule: is the parent a layout component.**
+
+* Parent is `Column` / `Row` / `Grid` → the children's `x/y/w/h` are arranged by the layout (caller-written values are ignored; passing 0 is fine).
+* Parent is a `Leaf`, or there is no parent → children **keep the pos the caller wrote**, untouched by the layout. So flipping a component from leaf to `Column` immediately inverts the positioning of all its children — that is a feature, not a bug.
+
+The rest of the semantics:
+
+| Topic | Rule |
+| --- | --- |
+| Container's own size | The layout **only positions**; it never decides a container's own size. Its `w/h` *is* its outer frame |
+| Content area | Container content area = its rect shrunk by `padding`; flex distributes the main-axis free space inside that area |
+| flex | Main axis only; when the free space is negative (overflow) it clamps to 0 — never negative sizes |
+| align | Cross-axis alignment: `Start` / `Center` / `End` / `Stretch` (fills the content area, minus the cross margin) |
+| `Column` / `Row` | Stack along the main axis; `gap` is the main-axis spacing |
+| `Grid` | Equal-width columns (`cols`); row height = max requested height in the row; children fill their cell |
+| Resolution order | `resolve_node` arranges its own children (writing rects back) *before* recursing — a parent layout's write-back always happens before "laying out grandchildren with the new rect" |
+| id | Monotonic, **never reused**; removing a subtree only frees the slot. `add`/`set` ignore the caller's id field; the return value is the real id |
+| `set` reparenting | Cycle-checked (hanging a component under its own descendant is rejected); the child list position is untouched when the parent is unchanged |
+| `remove` | Takes the whole subtree; implemented as **collect-then-free** — freeing point by point would write `next_sib` on freed nodes, and the free list is threaded exactly through that field |
+
+The C surface lives in the "component tree layout (retained mode)" section of `ui_api.h`: `GUi_CompAdd/Set/Remove/Clear/Resolve/Rect/Get/Kind/Parent/ChildCount/ChildAt/Count`. Capacity is 512; out-of-range enum values are rejected outright.
+
+**Two iron rules when drawing one window per component** (this is exactly what the Layout page of `GryceUiSmoke` does, see `test/ui_smoke.cpp`):
+
+1. **Do not pass `GUI_WIN_NO_BRING_TO_FRONT`.** In imgui that flag makes a newly created window enter the display order at the **front** (drawn at the very bottom) — children are created after their parent, so they end up *below* it, and the parent's opaque window background hides the whole subtree except the root. Display order *is* creation order: children created later naturally draw above their parent, which is precisely what you want.
+2. **Do not size components below 32px.** imgui's `WindowMinSize` defaults to (32, 32); an explicit `SetNextWindowSize` smaller than that is clamped anyway. If a container draws its label on its own first line, reserve that line with the top `padding` (24 in the demo) instead of expecting the window to shrink.
+
+Demo: `--page layout` (or `Ctrl+3`) draws a 20-component tree — a root Column, a flex 1:2 title row, a middle row showing all four cross-axis alignments, a 3×2 grid, a footnote, plus a "leaf parent" control group (its two children write their own pos; the layout does not touch them). The page sliders mutate the root gap and the grid column count, exercising the full "Get → mutate → Set → Resolve" retained-mode loop.
 
 ## 8. Sharing input with the host
 

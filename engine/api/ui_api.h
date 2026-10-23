@@ -226,6 +226,72 @@ GRYCE_UI_API void  GUi_LayoutSpace(float px);
 GRYCE_UI_API void  GUi_LayoutIndent(float px);
 
 // ---------------------------------------------------------------------------
+// 组件树布局（保留模式）
+//
+// 与上面的布局栈分工：布局栈是即时模式——矩形按调用序列一帧一算，服务视口
+// 分区、gizmo 原点这类"每帧 imperative 算矩形"的场景；组件树是保留模式——
+// 结构作为数据跨帧存活，resolve() 一次算完整棵树，服务"面板定义"这类
+// "结构是事实、不该每帧重演"的场景。两者可共存：组件树算出的矩形可以直接
+// 喂给 GUi_* 画。
+//
+// 定位规则只有一条：**父级是不是布局组件**。
+//   * 父级是布局组件（Column / Row / Grid）-> 子节点矩形由布局算出并写回；
+//   * 父级不是布局组件（Leaf，或无父级）-> 子节点保留调用方写的 pos，
+//     即"直接写 pos"。
+// 布局只摆位、不决定容器自身大小；容器内容区 = rect 向内缩 padding。
+//
+// 全部函数都是纯数据操作（不画任何东西），回调内外都可调。
+// ---------------------------------------------------------------------------
+
+enum {
+    GUI_COMP_KIND_LEAF   = 0,
+    GUI_COMP_KIND_COLUMN = 1,   // 垂直栈
+    GUI_COMP_KIND_ROW    = 2,   // 水平栈
+    GUI_COMP_KIND_GRID   = 3,   // 网格（等宽列，行高取行内请求高最大值）
+};
+
+enum {
+    GUI_COMP_ALIGN_START   = 0,
+    GUI_COMP_ALIGN_CENTER  = 1,
+    GUI_COMP_ALIGN_END     = 2,
+    GUI_COMP_ALIGN_STRETCH = 3,
+};
+
+typedef struct GUiCompSpec {
+    uint64_t parent;        // 0 = 无父级；否则必须是已存在的组件 id
+    int      kind;          // GUI_COMP_KIND_*
+    float    x, y, w, h;    // 自身几何（绝对坐标，左上角原点）
+    float    margin[4];     // 上 右 下 左（作为子节点时被父布局读取）
+    float    flex;          // 主轴弹性权重；>0 参与剩余空间分配，0 = 用 w/h
+    int      align;         // GUI_COMP_ALIGN_*（交叉轴）
+    float    gap;           // 布局组件：子节点间距
+    float    padding[4];    // 布局组件：内容区内边距（上 右 下 左）
+    int      cols;          // Grid 列数
+} GUiCompSpec;
+
+// 添加。返回新 id（恒非 0）；0 = 失败（表满 / parent 不存在 / 参数越界）。
+GRYCE_UI_API uint64_t GUi_CompAdd(const GUiCompSpec* spec);
+// 整体覆盖（parent 可改）。新父级是自己或自己的后代时拒绝。1 = 成功。
+GRYCE_UI_API int      GUi_CompSet(uint64_t id, const GUiCompSpec* spec);
+// 移除组件及其整棵子树。1 = 移除了什么，0 = 没有这个 id。
+GRYCE_UI_API int      GUi_CompRemove(uint64_t id);
+GRYCE_UI_API void     GUi_CompClear(void);
+// 布局解析。返回解析到的组件数（幂等：同一棵树解析多次结果相同）。
+GRYCE_UI_API int      GUi_CompResolve(void);
+// 解析后的矩形。1 = 有该组件且 *out 已写入。
+GRYCE_UI_API int      GUi_CompRect(uint64_t id, GRUiRect* out);
+// 读回当前值（含解析后的 rect）。1 = 有该组件。
+GRYCE_UI_API int      GUi_CompGet(uint64_t id, GUiCompSpec* out);
+// 种类（GUI_COMP_KIND_*）；-1 = 没有该组件。
+GRYCE_UI_API int      GUi_CompKind(uint64_t id);
+// 父级 id；0 = 无父级或没有该组件。
+GRYCE_UI_API uint64_t GUi_CompParent(uint64_t id);
+// 子节点枚举（插入顺序）。-1 = 没有该组件。
+GRYCE_UI_API int      GUi_CompChildCount(uint64_t id);
+GRYCE_UI_API uint64_t GUi_CompChildAt(uint64_t id, int index);
+GRYCE_UI_API int      GUi_CompCount(void);
+
+// ---------------------------------------------------------------------------
 // 主题（样式 token）
 //
 // 颜色按语义命名、度量按用途命名；调用方只引用 token，不引用色值。

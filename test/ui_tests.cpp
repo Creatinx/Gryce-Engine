@@ -1,7 +1,7 @@
 // ===========================================================================
 // test/ui_tests.cpp
 // UI 系统的单元测试：操作队列（OpQueue 本体 + GUi_* C ABI 两层）与模型层
-// （跨帧状态 / 布局 / 主题 / 输入 / 视图模型）。
+// （跨帧状态 / 布局栈 / 组件树 / 主题 / 输入 / 视图模型）。
 //
 // 与 math / script / asset 测试同构：被测源码（api/ui_op_queue.cpp +
 // api/ui_api.cpp + ui/*.cpp）直接编译进本可执行文件，不链接
@@ -27,6 +27,7 @@
 #include "api/ui_api.h"
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
+#include "ui/ui_component.h"
 #include "ui/ui_id.h"
 #include "ui/ui_input.h"
 #include "ui/ui_layout.h"
@@ -818,6 +819,509 @@ TEST(layout, abi_matches_model) {
 }
 
 // ===========================================================================
+// suite: comp —— 组件树布局（模型层）
+//
+// 核心是那条定位规则：父级是布局组件 -> 子节点由布局摆位；父级不是布局
+// 组件（Leaf 或无父级）-> 子节点保留调用方写的 pos。
+// ===========================================================================
+
+using gryce_ui::Component;
+using gryce_ui::ComponentTree;
+using gryce_ui::CompAlign;
+using gryce_ui::CompKind;
+
+Component make_comp(uint64_t parent, CompKind kind, float x, float y, float w, float h) {
+    Component c{};
+    c.parent = parent;
+    c.kind = kind;
+    c.rect = gryce_ui::Rect{x, y, w, h};
+    return c;
+}
+
+TEST(comp, add_find_remove) {
+    ComponentTree t;
+    const uint64_t a = t.add(make_comp(0, CompKind::Leaf, 10, 20, 100, 50));
+    CHECK_TRUE(a != 0);
+    const Component* ca = t.find(a);
+    CHECK_TRUE(ca != nullptr);
+    CHECK_EQ(ca->parent, 0u);
+    CHECK_NEAR(ca->rect.x, 10.0f, 1e-4f);
+    CHECK_EQ(t.count(), 1);
+
+    const uint64_t b = t.add(make_comp(a, CompKind::Leaf, 0, 0, 10, 10));
+    CHECK_TRUE(b != a);
+    CHECK_EQ(t.find(b)->parent, a);
+    CHECK_EQ(t.child_count(a), 1);
+    CHECK_EQ(t.child_at(a, 0), b);
+
+    // 移除带子树
+    CHECK_TRUE(t.remove(a));
+    CHECK_TRUE(t.find(a) == nullptr);
+    CHECK_TRUE(t.find(b) == nullptr);
+    CHECK_EQ(t.count(), 0);
+
+    // id 单调递增、移除后不复用（野引用不会落到新组件上）
+    const uint64_t c = t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1));
+    CHECK_TRUE(c != a);
+    CHECK_TRUE(c != b);
+}
+
+TEST(comp, parent_must_exist) {
+    ComponentTree t;
+    const uint64_t a = t.add(make_comp(0, CompKind::Leaf, 0, 0, 10, 10));
+    CHECK_EQ(t.add(make_comp(999, CompKind::Leaf, 0, 0, 1, 1)), 0u);
+    CHECK_FALSE(t.set(a, make_comp(999, CompKind::Leaf, 0, 0, 1, 1)));
+    CHECK_EQ(t.count(), 1);
+    CHECK_EQ(t.child_count(999), -1);
+    CHECK_TRUE(t.rect_of(999) == nullptr);
+    CHECK_EQ(t.child_at(a, 0), 0u);
+    CHECK_EQ(t.child_at(a, -1), 0u);
+    CHECK_EQ(t.parent_of(999), 0u);
+    CHECK_FALSE(t.remove(999));
+}
+
+TEST(comp, capacity) {
+    ComponentTree t;
+    std::vector<uint64_t> ids;
+    ids.reserve(ComponentTree::kCapacity);
+    for (int i = 0; i < ComponentTree::kCapacity; ++i) {
+        const uint64_t id = t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1));
+        CHECK_TRUE(id != 0);
+        ids.push_back(id);
+    }
+    CHECK_EQ(t.count(), ComponentTree::kCapacity);
+    CHECK_EQ(t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1)), 0u);   // 满
+    CHECK_TRUE(t.remove(ids[0]));
+    CHECK_TRUE(t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1)) != 0);
+}
+
+TEST(comp, child_order_is_insertion_order) {
+    ComponentTree t;
+    const uint64_t p = t.add(make_comp(0, CompKind::Column, 0, 0, 100, 100));
+    const uint64_t a = t.add(make_comp(p, CompKind::Leaf, 0, 0, 10, 10));
+    const uint64_t b = t.add(make_comp(p, CompKind::Leaf, 0, 0, 10, 10));
+    const uint64_t c = t.add(make_comp(p, CompKind::Leaf, 0, 0, 10, 10));
+    CHECK_EQ(t.child_at(p, 0), a);
+    CHECK_EQ(t.child_at(p, 1), b);
+    CHECK_EQ(t.child_at(p, 2), c);
+    CHECK_EQ(t.child_at(p, 3), 0u);
+
+    // 删掉中间的，剩下的顺序保持（布局顺序 = 插入顺序，不重排）
+    CHECK_TRUE(t.remove(b));
+    CHECK_EQ(t.child_count(p), 2);
+    CHECK_EQ(t.child_at(p, 0), a);
+    CHECK_EQ(t.child_at(p, 1), c);
+}
+
+TEST(comp, set_rejects_cycles) {
+    ComponentTree t;
+    const uint64_t root = t.add(make_comp(0, CompKind::Column, 0, 0, 100, 100));
+    const uint64_t mid = t.add(make_comp(root, CompKind::Column, 0, 0, 100, 50));
+    const uint64_t leaf = t.add(make_comp(mid, CompKind::Leaf, 0, 0, 10, 10));
+
+    Component bad = *t.find(root);
+    bad.parent = leaf;      // 挂到自己的后代下
+    CHECK_FALSE(t.set(root, bad));
+    bad.parent = mid;
+    CHECK_FALSE(t.set(root, bad));
+    bad.parent = root;      // 自挂
+    CHECK_FALSE(t.set(root, bad));
+    CHECK_EQ(t.count(), 3);   // 树没被破坏
+    CHECK_EQ(t.child_count(root), 1);
+
+    // 合法重挂
+    Component ok = *t.find(leaf);
+    ok.parent = root;
+    CHECK_TRUE(t.set(leaf, ok));
+    CHECK_EQ(t.parent_of(leaf), root);
+    CHECK_EQ(t.child_count(mid), 0);
+    CHECK_EQ(t.child_count(root), 2);
+}
+
+TEST(comp, non_layout_parent_keeps_pos) {
+    ComponentTree t;
+    // 叶子当父级：子节点"直接写 pos"，resolve 不碰它
+    const uint64_t anchor = t.add(make_comp(0, CompKind::Leaf, 100, 100, 200, 80));
+    const uint64_t c1 = t.add(make_comp(anchor, CompKind::Leaf, 110, 120, 60, 20));
+    const uint64_t c2 = t.add(make_comp(anchor, CompKind::Leaf, 180, 150, 60, 20));
+    t.resolve();
+    CHECK_NEAR(t.rect_of(c1)->x, 110.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(c1)->y, 120.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(c2)->x, 180.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(c2)->y, 150.0f, 1e-4f);
+
+    // 无父级的根同样直接写 pos
+    const uint64_t root = t.add(make_comp(0, CompKind::Leaf, 5, 6, 7, 8));
+    t.resolve();
+    CHECK_NEAR(t.rect_of(root)->x, 5.0f, 1e-4f);
+
+    // 把 anchor 换成 Column：同一个子节点立刻改由布局摆位（规则翻转）
+    Component up = *t.find(anchor);
+    up.kind = CompKind::Column;
+    up.gap = 10.0f;
+    for (int i = 0; i < 4; ++i) up.padding[i] = 4.0f;
+    CHECK_TRUE(t.set(anchor, up));
+    t.resolve();
+    // 内容区 (104,104,192,72)：c1 在 (104,104,60,20)，c2 在 (104,134,60,20)
+    const gryce_ui::Rect* n1 = t.rect_of(c1);
+    CHECK_NEAR(n1->x, 104.0f, 1e-4f);
+    CHECK_NEAR(n1->y, 104.0f, 1e-4f);
+    CHECK_NEAR(n1->w, 60.0f, 1e-4f);   // 默认 Start：用请求宽
+    CHECK_NEAR(t.rect_of(c2)->y, 134.0f, 1e-4f);
+}
+
+TEST(comp, column_stack_arranges_children) {
+    ComponentTree t;
+    Component col = make_comp(0, CompKind::Column, 0, 0, 300, 200);
+    col.gap = 8.0f;
+    const uint64_t cid = t.add(col);
+    const uint64_t a = t.add(make_comp(cid, CompKind::Leaf, 999, 999, 50, 30));
+    Component b = make_comp(cid, CompKind::Leaf, 999, 999, 70, 40);
+    b.margin[0] = 5.0f;   // 上
+    b.margin[2] = 3.0f;   // 下
+    const uint64_t bid = t.add(b);
+    t.resolve();
+
+    const gryce_ui::Rect* ra = t.rect_of(a);
+    CHECK_NEAR(ra->x, 0.0f, 1e-4f);
+    CHECK_NEAR(ra->y, 0.0f, 1e-4f);
+    CHECK_NEAR(ra->w, 50.0f, 1e-4f);
+    CHECK_NEAR(ra->h, 30.0f, 1e-4f);
+    // b：y = 30(a) + 8(gap) + 5(margin上) = 43
+    const gryce_ui::Rect* rb = t.rect_of(bid);
+    CHECK_NEAR(rb->y, 43.0f, 1e-4f);
+    CHECK_NEAR(rb->h, 40.0f, 1e-4f);
+    CHECK_NEAR(rb->w, 70.0f, 1e-4f);
+    // 调用方写的垃圾 pos 被布局覆盖（这正是"自动布局"的含义）
+    CHECK_FALSE(ra->x == 999.0f);
+}
+
+TEST(comp, row_cross_align) {
+    ComponentTree t;
+    Component row = make_comp(0, CompKind::Row, 0, 0, 300, 100);
+    const uint64_t rid = t.add(row);
+    const uint64_t s = t.add(make_comp(rid, CompKind::Leaf, 0, 0, 40, 30));
+    Component c = make_comp(rid, CompKind::Leaf, 0, 0, 40, 30);
+    c.align = CompAlign::Center;
+    const uint64_t cid = t.add(c);
+    Component e = make_comp(rid, CompKind::Leaf, 0, 0, 40, 30);
+    e.align = CompAlign::End;
+    const uint64_t eid = t.add(e);
+    Component st = make_comp(rid, CompKind::Leaf, 0, 0, 0, 0);
+    st.align = CompAlign::Stretch;
+    st.flex = 1.0f;              // 交叉轴吃满 + 主轴拿剩余：两个轴都填
+    const uint64_t stid = t.add(st);
+    t.resolve();
+
+    // 交叉轴（竖直）对齐
+    CHECK_NEAR(t.rect_of(s)->y, 0.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(cid)->y, 35.0f, 1e-4f);    // (100 - 30) / 2
+    CHECK_NEAR(t.rect_of(eid)->y, 70.0f, 1e-4f);    // 100 - 30
+    const gryce_ui::Rect* rst = t.rect_of(stid);
+    CHECK_NEAR(rst->y, 0.0f, 1e-4f);
+    CHECK_NEAR(rst->h, 100.0f, 1e-4f);              // Stretch 吃满交叉区
+    // 主轴（水平）依次排：40 + 40 + 40 + 剩余
+    CHECK_NEAR(t.rect_of(s)->x, 0.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(cid)->x, 40.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(eid)->x, 80.0f, 1e-4f);
+    CHECK_NEAR(rst->x, 120.0f, 1e-4f);
+    CHECK_NEAR(rst->w, 180.0f, 1e-4f);
+}
+
+TEST(comp, flex_distributes_remaining) {
+    ComponentTree t;
+    Component col = make_comp(0, CompKind::Column, 0, 0, 200, 300);
+    const uint64_t cid = t.add(col);
+    const uint64_t fixed = t.add(make_comp(cid, CompKind::Leaf, 0, 0, 100, 50));
+    Component f1 = make_comp(cid, CompKind::Leaf, 0, 0, 100, 0);
+    f1.flex = 1.0f;
+    const uint64_t i1 = t.add(f1);
+    Component f3 = make_comp(cid, CompKind::Leaf, 0, 0, 100, 0);
+    f3.flex = 3.0f;
+    const uint64_t i3 = t.add(f3);
+    t.resolve();
+
+    // 固定 50；剩余 250 按 1:3 分 -> 62.5 / 187.5
+    CHECK_NEAR(t.rect_of(fixed)->h, 50.0f, 1e-3f);
+    CHECK_NEAR(t.rect_of(i1)->h, 62.5f, 1e-3f);
+    CHECK_NEAR(t.rect_of(i3)->h, 187.5f, 1e-3f);
+    // 交叉轴默认 Start：宽度用请求值 100
+    CHECK_NEAR(t.rect_of(i1)->w, 100.0f, 1e-3f);
+    CHECK_NEAR(t.rect_of(i3)->y, 112.5f, 1e-3f);   // 50 + 62.5
+}
+
+TEST(comp, overflow_clamps_to_zero) {
+    ComponentTree t;
+    // 容器只有 40 高，固定子节点就要 50：放不下
+    Component col = make_comp(0, CompKind::Column, 0, 0, 100, 40);
+    const uint64_t cid = t.add(col);
+    const uint64_t a = t.add(make_comp(cid, CompKind::Leaf, 0, 0, 100, 50));
+    Component b = make_comp(cid, CompKind::Leaf, 0, 0, 100, 50);
+    b.flex = 1.0f;
+    const uint64_t bid = t.add(b);
+    t.resolve();
+
+    // 固定项按请求高落位（溢出就溢出）；弹性项剩余钳到 0，不产生负尺寸
+    CHECK_NEAR(t.rect_of(a)->h, 50.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(bid)->h, 0.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(bid)->y, 50.0f, 1e-4f);
+}
+
+TEST(comp, grid_columns_and_row_height) {
+    ComponentTree t;
+    Component g = make_comp(0, CompKind::Grid, 0, 0, 320, 200);
+    g.cols = 3;
+    g.gap = 4.0f;
+    const uint64_t gid = t.add(g);
+    uint64_t ids[7] = {};
+    for (int i = 0; i < 7; ++i) {
+        ids[i] = t.add(make_comp(gid, CompKind::Leaf, 0, 0, 0, (i % 3 == 0) ? 40.0f : 20.0f));
+    }
+    t.resolve();
+
+    // 列宽 = (320 - 4*2) / 3 = 104；行高 = 行内请求高的最大值
+    CHECK_NEAR(t.rect_of(ids[0])->x, 0.0f, 1e-3f);
+    CHECK_NEAR(t.rect_of(ids[0])->w, 104.0f, 1e-3f);
+    CHECK_NEAR(t.rect_of(ids[0])->h, 40.0f, 1e-3f);
+    CHECK_NEAR(t.rect_of(ids[1])->x, 108.0f, 1e-3f);
+    CHECK_NEAR(t.rect_of(ids[1])->h, 40.0f, 1e-3f);   // 填满行高
+    CHECK_NEAR(t.rect_of(ids[2])->x, 216.0f, 1e-3f);
+    // 行 1：y = 40 + 4
+    CHECK_NEAR(t.rect_of(ids[3])->y, 44.0f, 1e-3f);
+    // 7 个节点 3 列 -> 行 2 只有 1 个：y = 44 + 40 + 4
+    CHECK_NEAR(t.rect_of(ids[6])->y, 88.0f, 1e-3f);
+    // 幂等：再解析一次结果相同
+    t.resolve();
+    CHECK_NEAR(t.rect_of(ids[3])->y, 44.0f, 1e-3f);
+    CHECK_NEAR(t.rect_of(ids[0])->w, 104.0f, 1e-3f);
+}
+
+TEST(comp, padding_shrinks_content) {
+    ComponentTree t;
+    Component col = make_comp(0, CompKind::Column, 50, 60, 200, 100);
+    col.padding[0] = 10.0f;   // 上
+    col.padding[1] = 20.0f;   // 右
+    col.padding[2] = 30.0f;   // 下
+    col.padding[3] = 40.0f;   // 左
+    const uint64_t cid = t.add(col);
+    Component st = make_comp(cid, CompKind::Leaf, 0, 0, 0, 25);
+    st.align = CompAlign::Stretch;
+    const uint64_t sid = t.add(st);
+    t.resolve();
+
+    // 内容区 = (50+40, 60+10, 200-40-20, 100-10-30) = (90, 70, 140, 60)
+    const gryce_ui::Rect* r = t.rect_of(sid);
+    CHECK_NEAR(r->x, 90.0f, 1e-4f);
+    CHECK_NEAR(r->y, 70.0f, 1e-4f);
+    CHECK_NEAR(r->w, 140.0f, 1e-4f);   // Stretch 吃满内容宽
+    CHECK_NEAR(r->h, 25.0f, 1e-4f);    // 主轴用请求高
+}
+
+TEST(comp, nested_trees) {
+    ComponentTree t;
+    // 根 Column -> Row（Stretch 吃满宽）-> 两个 Leaf
+    Component col = make_comp(0, CompKind::Column, 0, 0, 400, 300);
+    col.gap = 10.0f;
+    const uint64_t cid = t.add(col);
+    Component row = make_comp(cid, CompKind::Row, 0, 0, 0, 60);
+    row.align = CompAlign::Stretch;   // 交叉轴（宽）吃满
+    row.gap = 6.0f;
+    const uint64_t rid = t.add(row);
+    const uint64_t l1 = t.add(make_comp(rid, CompKind::Leaf, 0, 0, 80, 20));
+    const uint64_t l2 = t.add(make_comp(rid, CompKind::Leaf, 0, 0, 80, 20));
+    t.resolve();
+
+    CHECK_NEAR(t.rect_of(rid)->y, 0.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(rid)->w, 400.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(rid)->h, 60.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(l1)->x, 0.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(l2)->x, 86.0f, 1e-4f);   // 80 + gap 6
+
+    // 叶子下挂布局组件：叶子不是布局组件 -> 这个 Column 直接写 pos；
+    // 但它自己是布局组件 -> 它的子节点照样由它摆位
+    const uint64_t host = t.add(make_comp(0, CompKind::Leaf, 500, 400, 300, 200));
+    Component inner = make_comp(host, CompKind::Column, 10, 20, 100, 150);
+    inner.gap = 5.0f;
+    const uint64_t iid = t.add(inner);
+    const uint64_t leaf2 = t.add(make_comp(iid, CompKind::Leaf, 0, 0, 30, 30));
+    t.resolve();
+
+    const gryce_ui::Rect* ri = t.rect_of(iid);
+    CHECK_NEAR(ri->x, 10.0f, 1e-4f);
+    CHECK_NEAR(ri->y, 20.0f, 1e-4f);
+    const gryce_ui::Rect* r2 = t.rect_of(leaf2);
+    CHECK_NEAR(r2->x, 10.0f, 1e-4f);
+    CHECK_NEAR(r2->y, 20.0f, 1e-4f);
+    CHECK_NEAR(r2->w, 30.0f, 1e-4f);
+}
+
+TEST(comp, degenerate_container_keeps_children) {
+    ComponentTree t;
+    // 容器没有内容区（padding 吃掉全部）：子节点 rect 保持原值，不崩不写坏
+    Component col = make_comp(0, CompKind::Column, 0, 0, 10, 10);
+    for (int i = 0; i < 4; ++i) col.padding[i] = 8.0f;
+    const uint64_t cid = t.add(col);
+    const uint64_t a = t.add(make_comp(cid, CompKind::Leaf, 33, 44, 5, 5));
+    t.resolve();
+    CHECK_NEAR(t.rect_of(a)->x, 33.0f, 1e-4f);
+    CHECK_NEAR(t.rect_of(a)->y, 44.0f, 1e-4f);
+
+    // 空容器：resolve 不碰任何东西
+    ComponentTree t2;
+    const uint64_t empty = t2.add(make_comp(0, CompKind::Grid, 0, 0, 100, 100));
+    t2.resolve();
+    CHECK_NEAR(t2.rect_of(empty)->w, 100.0f, 1e-4f);
+    (void)empty;
+}
+
+// ===========================================================================
+// suite: compabi —— 组件树的 C ABI
+// ===========================================================================
+
+GUiCompSpec c_spec(uint64_t parent, int kind, float x, float y, float w, float h) {
+    GUiCompSpec s{};
+    s.parent = parent;
+    s.kind = kind;
+    s.x = x; s.y = y; s.w = w; s.h = h;
+    return s;
+}
+
+void comp_reset() {
+    GUi_CompClear();
+}
+
+TEST(compabi, add_get_roundtrip) {
+    comp_reset();
+    CHECK_EQ(GUi_CompCount(), 0);
+
+    GUiCompSpec s = c_spec(0, GUI_COMP_KIND_COLUMN, 10, 20, 300, 200);
+    s.gap = 4.0f;
+    s.padding[0] = 2.0f; s.padding[1] = 3.0f; s.padding[2] = 4.0f; s.padding[3] = 5.0f;
+    s.cols = 2;
+    const uint64_t id = GUi_CompAdd(&s);
+    CHECK_TRUE(id != 0);
+    CHECK_EQ(GUi_CompCount(), 1);
+    CHECK_EQ(GUi_CompKind(id), GUI_COMP_KIND_COLUMN);
+    CHECK_EQ(GUi_CompParent(id), 0u);
+
+    GUiCompSpec back{};
+    CHECK_EQ(GUi_CompGet(id, &back), 1);
+    CHECK_EQ(back.kind, GUI_COMP_KIND_COLUMN);
+    CHECK_NEAR(back.x, 10.0f, 1e-4f);
+    CHECK_NEAR(back.gap, 4.0f, 1e-4f);
+    CHECK_NEAR(back.padding[3], 5.0f, 1e-4f);
+    CHECK_EQ(back.cols, 2);
+
+    // 不存在的 id
+    CHECK_EQ(GUi_CompKind(9999), -1);
+    CHECK_EQ(GUi_CompGet(9999, &back), 0);
+    CHECK_EQ(GUi_CompRect(9999, nullptr), 0);
+    CHECK_EQ(GUi_CompParent(9999), 0u);
+
+    // 坏参数：越界枚举直接拒绝，不静默夹值
+    CHECK_EQ(GUi_CompAdd(nullptr), 0u);
+    GUiCompSpec bad = c_spec(0, 99, 0, 0, 1, 1);
+    CHECK_EQ(GUi_CompAdd(&bad), 0u);
+    bad = c_spec(0, GUI_COMP_KIND_LEAF, 0, 0, 1, 1);
+    bad.align = 99;
+    CHECK_EQ(GUi_CompAdd(&bad), 0u);
+    CHECK_EQ(GUi_CompSet(id, nullptr), 0);
+    CHECK_EQ(GUi_CompCount(), 1);
+}
+
+TEST(compabi, resolve_writes_rects) {
+    comp_reset();
+    GUiCompSpec col = c_spec(0, GUI_COMP_KIND_COLUMN, 0, 0, 200, 100);
+    col.gap = 10.0f;
+    const uint64_t cid = GUi_CompAdd(&col);
+    GUiCompSpec sa = c_spec(cid, GUI_COMP_KIND_LEAF, 7, 7, 50, 30);
+    const uint64_t aid = GUi_CompAdd(&sa);
+    GUiCompSpec sb = c_spec(cid, GUI_COMP_KIND_LEAF, 8, 8, 60, 20);
+    const uint64_t bid = GUi_CompAdd(&sb);
+
+    CHECK_EQ(GUi_CompResolve(), 3);   // 返回解析到的组件数
+    GRUiRect ra{}, rb{};
+    CHECK_EQ(GUi_CompRect(aid, &ra), 1);
+    CHECK_EQ(GUi_CompRect(bid, &rb), 1);
+    CHECK_NEAR(ra.y, 0.0f, 1e-4f);
+    CHECK_NEAR(rb.y, 40.0f, 1e-4f);   // 30 + gap 10
+    CHECK_NEAR(ra.w, 50.0f, 1e-4f);
+
+    // 枚举
+    CHECK_EQ(GUi_CompChildCount(cid), 2);
+    CHECK_EQ(GUi_CompChildAt(cid, 0), aid);
+    CHECK_EQ(GUi_CompChildAt(cid, 1), bid);
+    CHECK_EQ(GUi_CompChildAt(cid, 2), 0u);
+    CHECK_EQ(GUi_CompChildCount(9999), -1);
+}
+
+TEST(compabi, non_layout_parent_keeps_pos) {
+    comp_reset();
+    GUiCompSpec host = c_spec(0, GUI_COMP_KIND_LEAF, 100, 100, 200, 80);
+    const uint64_t hid = GUi_CompAdd(&host);
+    GUiCompSpec kid = c_spec(hid, GUI_COMP_KIND_LEAF, 111, 222, 33, 44);
+    const uint64_t cid = GUi_CompAdd(&kid);
+    CHECK_EQ(GUi_CompParent(cid), hid);
+
+    GUi_CompResolve();
+    GRUiRect r{};
+    CHECK_EQ(GUi_CompRect(cid, &r), 1);
+    CHECK_NEAR(r.x, 111.0f, 1e-4f);   // 父级不是布局组件：pos 原样保留
+    CHECK_NEAR(r.y, 222.0f, 1e-4f);
+
+    // 重挂到布局组件下：立刻改由布局摆位
+    GUiCompSpec col = c_spec(0, GUI_COMP_KIND_COLUMN, 0, 0, 200, 100);
+    const uint64_t colid = GUi_CompAdd(&col);
+    GUiCompSpec mv{};
+    CHECK_EQ(GUi_CompGet(cid, &mv), 1);
+    mv.parent = colid;
+    CHECK_EQ(GUi_CompSet(cid, &mv), 1);
+    CHECK_EQ(GUi_CompParent(cid), colid);
+    GUi_CompResolve();
+    CHECK_EQ(GUi_CompRect(cid, &r), 1);
+    CHECK_NEAR(r.x, 0.0f, 1e-4f);
+    CHECK_NEAR(r.y, 0.0f, 1e-4f);
+
+    // set 到不存在的父级被拒
+    GUiCompSpec bad = c_spec(9999, GUI_COMP_KIND_LEAF, 0, 0, 1, 1);
+    CHECK_EQ(GUi_CompSet(cid, &bad), 0);
+    CHECK_EQ(GUi_CompParent(cid), colid);
+}
+
+TEST(compabi, remove_takes_subtree) {
+    comp_reset();
+    GUiCompSpec col = c_spec(0, GUI_COMP_KIND_COLUMN, 0, 0, 100, 100);
+    const uint64_t cid = GUi_CompAdd(&col);
+    GUiCompSpec sb = c_spec(cid, GUI_COMP_KIND_LEAF, 0, 0, 10, 10);
+    const uint64_t b = GUi_CompAdd(&sb);
+    GUiCompSpec sd = c_spec(b, GUI_COMP_KIND_LEAF, 1, 2, 3, 4);
+    const uint64_t d = GUi_CompAdd(&sd);
+    CHECK_EQ(GUi_CompCount(), 3);
+
+    CHECK_EQ(GUi_CompRemove(b), 1);
+    CHECK_EQ(GUi_CompCount(), 1);          // b 与 d 一起没
+    GRUiRect r{};
+    CHECK_EQ(GUi_CompRect(d, &r), 0);
+    CHECK_EQ(GUi_CompRemove(b), 0);        // 已不存在
+    CHECK_EQ(GUi_CompChildCount(cid), 0);
+}
+
+TEST(compabi, set_rejects_cycle_through_abi) {
+    comp_reset();
+    GUiCompSpec root = c_spec(0, GUI_COMP_KIND_COLUMN, 0, 0, 100, 100);
+    const uint64_t rid = GUi_CompAdd(&root);
+    GUiCompSpec leaf = c_spec(rid, GUI_COMP_KIND_LEAF, 0, 0, 10, 10);
+    const uint64_t lid = GUi_CompAdd(&leaf);
+
+    GUiCompSpec s{};
+    CHECK_EQ(GUi_CompGet(rid, &s), 1);
+    s.parent = lid;                        // 挂到自己的后代下
+    CHECK_EQ(GUi_CompSet(rid, &s), 0);
+    CHECK_EQ(GUi_CompParent(rid), 0u);     // 未被破坏
+    CHECK_EQ(GUi_CompCount(), 2);
+}
+
+// ===========================================================================
 // suite: theme —— 主题 token
 // ===========================================================================
 
@@ -1112,6 +1616,7 @@ int main(int argc, char** argv) {
             c.fn();
             ++cases_total;
             if (g_case_failed > 0) {
+                ++cases_failed;
                 std::printf("  [FAIL] %s (%d/%d checks failed)\n",
                             c.name.c_str(), g_case_failed, g_case_checks);
             } else {
