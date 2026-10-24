@@ -2,10 +2,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <string>
 #include <typeindex>
 #include <vector>
 
 #include "math/math.h"
+#include "reflection/type_name.h"
 
 namespace gryce_engine::scene {
     class Entity;
@@ -200,5 +202,48 @@ private:
     math::Quaternionf local_rotation_ = math::Quaternionf::identity();
     math::Vector3f local_scale_ = math::Vector3f::one();
 };
+
+// ---------------------------------------------------------------------------
+// component_type_chain_names —— 组件的类型祖先链（根 → 派生，含自身）
+//
+// 来源是 collect_type_views() 的类型视角展开（「自身 + 所有祖先类型」）。
+// 引擎的展开约定是「先调基类实现、再追加自己这一层」，于是视角序列形如
+//   [自身, Component, 中间基类..., 直接基类]
+// 同一类型可能出现两次（根实现用 typeid(*this) 记下动态类型，直接基类的
+// 实现又追加一次自身层），按 type_index 去重后把「自身」挪到末尾，
+// 即得「根 → 派生」的祖先链。
+//
+// 每项是该类型的可读全名（解修饰后），例如
+//   "gryce_engine::components::d2::basic_rect::ColorRect"
+// C API 与脚本层共用本函数，保证两侧看到的祖先链完全一致。
+// ---------------------------------------------------------------------------
+inline std::vector<std::string> component_type_chain_names(const Component* comp) {
+    std::vector<std::string> chain;
+    if (!comp) return chain;
+
+    std::vector<ComponentTypeView> views;
+    comp->collect_type_views(views);
+
+    std::vector<std::type_index> seen;
+    std::vector<std::string> names;
+    for (const auto& view : views) {
+        bool duplicated = false;
+        for (const auto& s : seen) {
+            if (s == view.type) {
+                duplicated = true;
+                break;
+            }
+        }
+        if (duplicated) continue;
+        seen.push_back(view.type);
+        names.push_back(reflection::demangle_type_name(view.type.name()));
+    }
+    if (names.empty()) return chain;
+
+    chain.reserve(names.size());
+    for (size_t i = 1; i < names.size(); ++i) chain.push_back(names[i]);  // 祖先（根 → 叶）
+    chain.push_back(names[0]);                                          // 自身排最后
+    return chain;
+}
 
 } // namespace gryce_engine::components

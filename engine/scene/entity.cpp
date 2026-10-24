@@ -145,13 +145,6 @@ void Entity::foreach_component_tree(std::function<void(components::Component*)> 
     }
 }
 
-bool Entity::set_component_parent(components::Component* child, components::Component* parent) {
-    if (!child) return false;
-    if (child->owner() != this) return false;
-    if (parent && parent->owner() != this) return false;
-    return child->set_component_parent(parent);
-}
-
 math::Matrix4f Entity::component_relative_transform(const components::Component* comp) const {
     if (!comp) return math::Matrix4f::identity();
     std::vector<const components::Component*> chain;

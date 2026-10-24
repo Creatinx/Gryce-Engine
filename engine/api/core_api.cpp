@@ -17,6 +17,7 @@
 #include "scene/scene_serializer.h"
 #include "scene/uuid.h"
 #include "reflection/reflection.h"
+#include "reflection/type_name.h"
 #include "components/component_factory.h"
 #include "components/mesh_renderer.h"
 #include "script/script_component.h"
@@ -544,7 +545,14 @@ static void process_command(const GCommand& cmd) {
             if (e) {
                 for (const auto& comp : e->components()) {
                     std::string type_name = get_component_type_name(comp.get());
-                    if (std::hash<std::string>{}(type_name) == p->type_hash) {
+                    // 全名 hash（引擎统一的组件类型 hash 口径，见 reflection/type_name.h）；
+                    // 短名 hash 是反射表没有的类型（ParentComponent / ChildrenComponent /
+                    // SubViewport）的回退口径，一并接受，保证删除接口与
+                    // GComponent_GetRegisteredTypeInfo 给出的哈希对得上。
+                    const uint64_t full_hash = reflection::type_hash_of_name(type_name);
+                    const uint64_t short_hash =
+                        reflection::type_hash_of_name(gryce_core::reflection_lookup_name(type_name));
+                    if (full_hash == p->type_hash || short_hash == p->type_hash) {
                         e->remove_component(comp.get());
                         g_core_state.deferred_entity_list_changed = true;
                         break;
@@ -559,7 +567,7 @@ static void process_command(const GCommand& cmd) {
             if (e) {
                 for (const auto& comp : e->components()) {
                     std::string type_name = get_component_type_name(comp.get());
-                    if (std::hash<std::string>{}(type_name) == p->type_hash) {
+                    if (reflection::type_hash_of_name(type_name) == p->type_hash) {
                         auto fields = gryce_engine::reflection::Registry::instance().all_fields(
                             gryce_core::reflection_lookup_name(type_name));
                         for (const auto* f : fields) {

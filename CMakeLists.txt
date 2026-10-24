@@ -640,6 +640,7 @@ if(BUILD_TESTING)
         engine/script/script_app.cpp
         engine/script/extension_host.cpp
         engine/runtime/engine_context.cpp
+        engine/reflection/type_name.cpp
         engine/utils/glog/glog_lib.cpp
         engine/resources/resource_path.cpp
         engine/resources/project.cpp
@@ -752,11 +753,16 @@ if(BUILD_TESTING)
     # 这些路径只碰内存与反射表，不碰 GPU / 窗口，CI 仍不需要显卡。
     # 覆盖：反射表驱动的全量继承链校验、精确/基类查询、同类型多实例、
     #       组件池的基类视角、on_awake 在两条挂载路径上的一致性。
-    set(GRYCE_COMPONENT_TEST_SUITES hierarchy query pool lifecycle tree serialize)
+    set(GRYCE_COMPONENT_TEST_SUITES hierarchy query pool lifecycle tree serialize capi)
 
     add_executable(GryceComponentTests test/component_tests.cpp)
     target_include_directories(GryceComponentTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    # capi 套件要起一个最小 core（world + 空场景）来跑组件 C API，
+    # 用编辑器测试同一份 demo 工程目录。
+    target_compile_definitions(GryceComponentTests PRIVATE
+        GRYCE_TEST_PROJECT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/demo_project"
     )
     target_link_libraries(GryceComponentTests PRIVATE GryceCore)
 

@@ -114,6 +114,11 @@ struct TypeInfo {
     // 该类型对应的 C++ type_index。反射表同时充当"组件继承关系"的真源，
     // 回归测试用它把名字翻译成类型，逐条校验基类查询（见 test/component_tests.cpp）。
     std::type_index type_index = std::type_index(typeid(void));
+    // 该类型的原始 RTTI 名（typeid(C).name()，未解修饰）。
+    // 解修饰后得到可读全名，全名 hash 是引擎统一的组件类型 hash 口径
+    // （见 reflection/type_name.h）。原始名在此保留，是为了让上层按需自行
+    // 解修饰（不同编译器 / 不同编译单元的解修饰结果一致，无需二次解析）。
+    std::string rtti_name;
 };
 
 // ---------------------------------------------------------------------------
@@ -166,6 +171,11 @@ public:
     // 遍历所有已注册类型（测试/工具用；顺序不保证）
     const std::unordered_map<std::string, TypeInfo>& all_types() const { return types_; }
 
+    // 短名 → 全名 hash（引擎统一的组件类型 hash 口径）。
+    // 查表拿到 rtti_name → 解修饰 → type_hash_of_name。
+    // 类型未注册时返回 0（0 不与任何真实类型的 hash 冲突）。
+    uint64_t full_hash_of(const std::string& short_name) const;
+
 private:
     Registry() = default;
     std::unordered_map<std::string, TypeInfo> types_;
@@ -180,6 +190,7 @@ public:
     TypeBuilder(const char* name, const char* parent) {
         info_ = &Registry::instance().register_type(name, parent);
         info_->type_index = std::type_index(typeid(C));
+        info_->rtti_name = typeid(C).name();
     }
 
     // 可读写字段

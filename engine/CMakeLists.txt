@@ -102,6 +102,7 @@ target_sources(GryceCore
         components/terrain.cpp
         reflection/builtin_reflections.cpp
         reflection/reflection.cpp
+        reflection/type_name.cpp
         scene/uuid.cpp
         scene/entity.cpp
         scene/scene.cpp

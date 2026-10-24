@@ -34,6 +34,10 @@
 #include <typeindex>
 #include <vector>
 
+#include "api/component_api.h"
+#include "api/core_api.h"
+#include "api/edit_api.h"
+#include "api/entity_api.h"
 #include "components/2d/basic_rect.h"
 #include "components/2d/component_2d.h"
 #include "components/2d/label.h"
@@ -42,6 +46,7 @@
 #include "components/component_factory.h"
 #include "ecs/component_store.h"
 #include "reflection/reflection.h"
+#include "reflection/type_name.h"
 #include "scene/entity.h"
 #include "scene/query.h"
 #include "scene/scene.h"
@@ -684,6 +689,261 @@ TEST(serialize, legacy_file_without_tree_fields) {
     CHECK_TRUE(rect != nullptr);
     // 没有 parent 字段 → 是组件树的根
     CHECK_TRUE(rect->component_parent() == nullptr);
+}
+
+// ===========================================================================
+// suite: capi —— 组件 C API（hash 口径统一 + 组件树 + 类型继承）
+//
+// 这一套锁的是「编辑器能用注册类型表匹配到实体上的组件」这条主线：
+//   注册类型表给出的 hash  ==  实体上组件的 hash  ==  属性接口用的 hash
+// 三者必须是同一个数，任何一处口径分裂编辑器就会取不到属性。
+//
+// 组件下标口径同样在这里锁死：Transform / ParentComponent / ChildrenComponent
+// 三个内部组件不进下标空间，可见组件的下标与脚本层一致。
+// ===========================================================================
+namespace {
+
+// 起一个最小 core（world + 空场景），让 C API 的实体解析可用。
+// 注意：GCore_Init 内部会注册内建组件类型，本套件不能再调 ensure_builtins()
+// （重复注册会让工厂类型表出现重复项）。
+bool capi_core_init() {
+    static int state = 0;  // 0 = 未初始化，1 = 成功，-1 = 失败
+    if (state != 0) return state > 0;
+
+    GCoreInitDesc desc{};
+    desc.version = static_cast<uint32_t>(sizeof(GCoreInitDesc));
+    desc.project_root = GRYCE_TEST_PROJECT_DIR;
+    desc.enable_reflection = false;
+    GCore_SetAutoLoadMainScene(false);
+
+    if (GCore_Init(&desc) != 0) {
+        std::printf("      GCore_Init failed (project_root=%s)\n", GRYCE_TEST_PROJECT_DIR);
+        state = -1;
+        return false;
+    }
+    state = 1;
+    return true;
+}
+
+// 推一条命令并让它被消费（process_command 在 BeginFrame 里跑）。
+void capi_pump() {
+    GCore_BeginFrame(1.0f / 60.0f);
+    GCore_EndFrame();
+}
+
+// 造一个新实体并消费命令，返回其句柄（0 = 失败）。
+GEntityHandle capi_create_entity(const char* name) {
+    if (!GEdit_CreateEntity(name, 0)) return 0;
+    capi_pump();
+    return GEntity_GetSelected();
+}
+
+// 注册类型表里按名字找类型的全名 hash（找不到返回 0）。
+uint64_t capi_registered_hash(const char* type_name) {
+    const int count = GComponent_GetRegisteredTypeCount();
+    for (int i = 0; i < count; ++i) {
+        uint64_t hash = 0;
+        char name[128] = {0};
+        if (GComponent_GetRegisteredTypeInfo(i, &hash, name, sizeof(name)) != 0) continue;
+        if (std::strcmp(name, type_name) == 0) return hash;
+    }
+    return 0;
+}
+
+} // namespace
+
+TEST(capi, type_hash_unified_across_tables) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    // 1) 注册类型表：拿到的 hash 必须能按名字原样查回来（编辑器就是这么用的）
+    const int count = GComponent_GetRegisteredTypeCount();
+    CHECK_TRUE(count > 0);
+    for (int i = 0; i < count; ++i) {
+        uint64_t hash = 0;
+        char name[128] = {0};
+        CHECK_INT(GComponent_GetRegisteredTypeInfo(i, &hash, name, sizeof(name)), 0);
+
+        uint64_t by_name = 0;
+        CHECK_INT(GComponent_GetTypeHashByName(name, &by_name), 0);
+        CHECK_TRUE(by_name == hash);
+    }
+
+    // 2) 反射表里有的类型：注册 hash 必须等于反射全名 hash
+    const auto& reg = gryce_engine::reflection::Registry::instance();
+    for (const auto& entry : reg.all_types()) {
+        const uint64_t full = reg.full_hash_of(entry.first);
+        if (full == 0) continue;  // 未在工厂注册的类型（如 Component2D 抽象基类）
+        uint64_t by_name = 0;
+        CHECK_INT(GComponent_GetTypeHashByName(entry.first.c_str(), &by_name), 0);
+        CHECK_TRUE(by_name == full);
+    }
+
+    // 3) 全名 hash 与短名 hash 是两个不同的数（口径统一后不再混用）
+    uint64_t full_hash = 0;
+    uint64_t same_by_full_name = 0;
+    CHECK_INT(GComponent_GetTypeHashByName("ColorRect", &full_hash), 0);
+    CHECK_INT(GComponent_GetTypeHashByName(
+                  "gryce_engine::components::d2::basic_rect::ColorRect", &same_by_full_name), 0);
+    CHECK_TRUE(full_hash == same_by_full_name);
+    CHECK_TRUE(full_hash != gryce_engine::reflection::type_hash_of_name("ColorRect"));
+}
+
+TEST(capi, component_index_space_and_hash_match) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    const GEntityHandle h = capi_create_entity("CapiRect");
+    CHECK_TRUE(h != 0);
+
+    // 内部组件不进下标空间：新建实体只有 Transform / Parent / Children
+    CHECK_INT(GComponent_GetCount(h), 0);
+
+    const uint64_t color_rect = capi_registered_hash("ColorRect");
+    CHECK_TRUE(color_rect != 0);
+    CHECK_INT(GComponent_AddComponent(h, color_rect), 0);
+    capi_pump();
+
+    // 加完一个组件后可见下标空间里只有它
+    CHECK_INT(GComponent_GetCount(h), 1);
+
+    // 实体上组件的 hash 必须与注册类型表给出的 hash 完全一致
+    uint64_t comp_hash = 0;
+    CHECK_INT(GComponent_GetTypeHashAt(h, 0, &comp_hash), 0);
+    CHECK_TRUE(comp_hash == color_rect);
+
+    // 类型名与 hash 同源
+    char type_name[128] = {0};
+    CHECK_TRUE(GComponent_GetTypeNameAt(h, 0, type_name, sizeof(type_name)) > 0);
+    CHECK_TRUE(std::string(type_name).find("ColorRect") != std::string::npos);
+
+    // 属性接口认这个 hash
+    CHECK_TRUE(GComponent_GetPropertyCount(h, comp_hash) > 0);
+}
+
+TEST(capi, base_class_query_by_hash) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    const GEntityHandle h = capi_create_entity("CapiBase");
+    CHECK_TRUE(h != 0);
+
+    const uint64_t color_rect = capi_registered_hash("ColorRect");
+    CHECK_INT(GComponent_AddComponent(h, color_rect), 0);
+    capi_pump();
+
+    uint64_t base_hash = 0;
+    uint64_t other_hash = 0;
+    CHECK_INT(GComponent_GetTypeHashByName("Component2D", &base_hash), 0);
+    CHECK_INT(GComponent_GetTypeHashByName("Sprite2D", &other_hash), 0);
+
+    // 基类查询：传基类 hash 也能命中派生实例
+    CHECK_TRUE(GComponent_GetPropertyCount(h, base_hash) > 0);
+    CHECK_INT(GComponent_IsDerivedFromAt(h, 0, base_hash), 1);
+    CHECK_INT(GComponent_IsDerivedFromAt(h, 0, other_hash), 0);
+
+    // 无关类型：属性个数为 0
+    CHECK_INT(GComponent_GetPropertyCount(h, other_hash), 0);
+}
+
+TEST(capi, type_chain_is_root_to_leaf) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    const GEntityHandle h = capi_create_entity("CapiChain");
+    CHECK_TRUE(h != 0);
+
+    const uint64_t color_rect = capi_registered_hash("ColorRect");
+    CHECK_INT(GComponent_AddComponent(h, color_rect), 0);
+    capi_pump();
+
+    uint64_t chain[8] = {0};
+    const int n = GComponent_GetTypeChainAt(h, 0, chain, 8);
+    CHECK_TRUE(n >= 2);
+    if (n < 2) return;
+
+    // 链尾是组件自身；链首是根基类
+    uint64_t own = 0;
+    CHECK_INT(GComponent_GetTypeHashAt(h, 0, &own), 0);
+    CHECK_TRUE(chain[n - 1] == own);
+
+    uint64_t component_root = 0;
+    CHECK_INT(GComponent_GetTypeHashByName("Component", &component_root), 0);
+    CHECK_TRUE(chain[0] == component_root);
+
+    // 每一层都能按名字对上
+    uint64_t basic_rect = 0;
+    CHECK_INT(GComponent_GetTypeHashByName("BasicRect", &basic_rect), 0);
+    bool found_basic_rect = false;
+    for (int i = 0; i < n; ++i) found_basic_rect = found_basic_rect || chain[i] == basic_rect;
+    CHECK_TRUE(found_basic_rect);
+}
+
+TEST(capi, component_tree_apis) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    const GEntityHandle h = capi_create_entity("CapiTree");
+    CHECK_TRUE(h != 0);
+
+    const uint64_t color_rect = capi_registered_hash("ColorRect");
+    const uint64_t sprite = capi_registered_hash("Sprite2D");
+    CHECK_INT(GComponent_AddComponent(h, color_rect), 0);
+    CHECK_INT(GComponent_AddComponent(h, sprite), 0);
+    capi_pump();
+    CHECK_INT(GComponent_GetCount(h), 2);
+
+    // 初始都是组件树根
+    CHECK_INT(GComponent_GetParentAt(h, 0), -1);
+    CHECK_INT(GComponent_GetParentAt(h, 1), -1);
+    CHECK_INT(GComponent_GetChildCountAt(h, 0), 0);
+
+    // 把 1 挂到 0 之下
+    CHECK_INT(GComponent_SetParentAt(h, 1, 0), 1);
+    CHECK_INT(GComponent_GetParentAt(h, 1), 0);
+    CHECK_INT(GComponent_GetParentAt(h, 0), -1);
+    CHECK_INT(GComponent_GetChildCountAt(h, 0), 1);
+    CHECK_INT(GComponent_GetChildAt(h, 0, 0), 1);
+    CHECK_INT(GComponent_GetChildAt(h, 0, 1), -1);
+
+    // 挂到自己之下 / 非法下标一律失败
+    CHECK_INT(GComponent_SetParentAt(h, 0, 0), 0);
+    CHECK_INT(GComponent_SetParentAt(h, 9, 0), 0);
+    CHECK_INT(GComponent_SetParentAt(h, 0, 9), 0);
+
+    // 生命周期继承：父禁用 → 子失效
+    CHECK_INT(GComponent_IsEffectivelyEnabledAt(h, 0), 1);
+    CHECK_INT(GComponent_IsEffectivelyEnabledAt(h, 1), 1);
+
+    // 脱离父组件 → 重新成为根
+    CHECK_INT(GComponent_SetParentAt(h, 1, -1), 1);
+    CHECK_INT(GComponent_GetParentAt(h, 1), -1);
+    CHECK_INT(GComponent_GetChildCountAt(h, 0), 0);
+}
+
+TEST(capi, local_transform_apis) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    const GEntityHandle h = capi_create_entity("CapiXform");
+    CHECK_TRUE(h != 0);
+
+    const uint64_t color_rect = capi_registered_hash("ColorRect");
+    CHECK_INT(GComponent_AddComponent(h, color_rect), 0);
+    capi_pump();
+
+    const float pos[3] = {1.0f, 2.0f, 3.0f};
+    const float rot[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    const float scl[3] = {2.0f, 2.0f, 2.0f};
+    CHECK_INT(GComponent_SetLocalTransformAt(h, 0, pos, rot, scl), 1);
+
+    float out_pos[3] = {0};
+    float out_rot[4] = {0};
+    float out_scl[3] = {0};
+    CHECK_INT(GComponent_GetLocalTransformAt(h, 0, out_pos, out_rot, out_scl), 0);
+    CHECK_NEAR(out_pos[0], 1.0, 1e-4);
+    CHECK_NEAR(out_pos[1], 2.0, 1e-4);
+    CHECK_NEAR(out_pos[2], 3.0, 1e-4);
+    CHECK_NEAR(out_rot[3], 1.0, 1e-4);
+    CHECK_NEAR(out_scl[0], 2.0, 1e-4);
+
+    // 非法下标
+    CHECK_INT(GComponent_GetLocalTransformAt(h, 5, out_pos, out_rot, out_scl), -1);
+    CHECK_INT(GComponent_SetLocalTransformAt(h, 5, pos, rot, scl), 0);
 }
 
 // ===========================================================================

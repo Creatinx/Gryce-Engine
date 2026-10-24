@@ -143,6 +143,29 @@ public:
     const std::vector<std::unique_ptr<components::Component>>& components() const { return components_; }
 
     // -----------------------------------------------------------------------
+    // 用户可见组件序列（过滤引擎内部组件）
+    //
+    // Transform / ParentComponent / ChildrenComponent 是每个实体都有的内部
+    // 组件，对外（编辑器 Inspector、脚本层）没有意义。C API 的组件下标与
+    // 脚本层的组件下标都必须以本序列为准 —— 两边共用同一个辅助函数，
+    // 否则「按下标取组件」在两侧会错位（编辑器取到 A、脚本取到 B）。
+    //
+    // 实现放在头文件里：脚本测试目标只编被测源码、不链实体实现，
+    // 脚本绑定层要按同一口径取组件，头文件内联实现免掉这条链接依赖。
+    // -----------------------------------------------------------------------
+    std::vector<components::Component*> user_components() const {
+        std::vector<components::Component*> out;
+        out.reserve(components_.size());
+        for (const auto& comp : components_) {
+            if (dynamic_cast<components::Transform*>(comp.get())) continue;
+            if (dynamic_cast<components::ParentComponent*>(comp.get())) continue;
+            if (dynamic_cast<components::ChildrenComponent*>(comp.get())) continue;
+            out.push_back(comp.get());
+        }
+        return out;
+    }
+
+    // -----------------------------------------------------------------------
     // 组件树（组件实例之间的父子挂载关系）
     //
     // 与"基类 / 子类"正交：基类/子类说的是类型继承，父/子组件说的是实例挂载。
@@ -157,7 +180,13 @@ public:
 
     // 改挂：把 child 挂到 parent 之下（parent 传空表示让 child 成为组件树根）。
     // child 与 parent 必须都属于本实体；防环由 Component::set_component_parent 兜底。
-    bool set_component_parent(components::Component* child, components::Component* parent);
+    // 头文件内联实现（理由同 user_components）。
+    bool set_component_parent(components::Component* child, components::Component* parent) {
+        if (!child) return false;
+        if (child->owner() != this) return false;
+        if (parent && parent->owner() != this) return false;
+        return child->set_component_parent(parent);
+    }
 
     // 组件在组件树中的相对变换（父链局部矩阵连乘，不含实体自身的变换）
     math::Matrix4f component_relative_transform(const components::Component* comp) const;
