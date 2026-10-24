@@ -124,6 +124,9 @@ public:
     // 圆角描边：线宽向内生长（矩形外轮廓不变，尺寸不会因为加边框变大）。
     void add_round_border(float x, float y, float w, float h, float radius,
                           float thickness, uint32_t rgba);
+    // 逐角半径的描边（标题栏"上圆下方"要它：四条边一起画，不留半圈缝）。
+    void add_round_border4(float x, float y, float w, float h, const float radii[4],
+                           float thickness, uint32_t rgba);
     // 圆角外阴影：spread 是视觉上的扩散半径，rgba 的 alpha 是中心的浓度。
     void add_shadow(float x, float y, float w, float h, float radius, float spread,
                     uint32_t rgba);

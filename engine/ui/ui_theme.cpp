@@ -179,12 +179,12 @@ const float kMetrics[THEME_METRIC_COUNT] = {
     4.0f,   // ITEM_SPACING
     18.0f,  // INDENT
     1.0f,   // BORDER_W
-    6.0f,   // WINDOW_ROUNDING
-    4.0f,   // CHILD_ROUNDING
-    4.0f,   // FRAME_ROUNDING
-    3.0f,   // GRAB_ROUNDING
-    4.0f,   // POPUP_ROUNDING
-    4.0f,   // TAB_ROUNDING
+    10.0f,  // WINDOW_ROUNDING
+    6.0f,   // CHILD_ROUNDING
+    6.0f,   // FRAME_ROUNDING
+    4.0f,   // GRAB_ROUNDING
+    8.0f,   // POPUP_ROUNDING
+    6.0f,   // TAB_ROUNDING
     12.0f,  // SCROLLBAR_SIZE
     8.0f,   // GRAB_MIN_SIZE
 };
@@ -244,6 +244,10 @@ void derive_extended(Theme& t) {
     t.colors[THEME_COLOR_TAB_SELECTED_OVERLINE] = a[THEME_ANCHOR_ACCENT];
     t.colors[THEME_COLOR_TAB_DIMMED]            = mix(a[THEME_ANCHOR_BUTTON], a[THEME_ANCHOR_WINDOW_BG], 0.7f);
     t.colors[THEME_COLOR_TAB_DIMMED_SELECTED]   = mix(a[THEME_ANCHOR_ACCENT], a[THEME_ANCHOR_WINDOW_BG], 0.85f);
+    // 控件描边：取 BUTTON 与 BORDER 的中点——正好"看得出边界、又不显成线框"。
+    // 直接拿 BORDER 描边时，每个控件都顶着一圈比自身底色亮两档的细线，成片的
+    // 控件就变成一张表格；这个 token 是让控件靠"底色 + 微弱边缘"立住。
+    t.colors[THEME_COLOR_CONTROL_BORDER]        = mix(a[THEME_ANCHOR_BUTTON], a[THEME_ANCHOR_BORDER], 0.5f);
 }
 
 Theme& mutable_theme() {

@@ -625,11 +625,11 @@ Appearance on the built-in track comes from exactly two layers: theme tokens (`u
 
 | Topic | Rule |
 | --- | --- |
-| Five rounding tiers | `WINDOW_ROUNDING=6` (windows), `POPUP_ROUNDING=4` (popups/tooltips), `CHILD_ROUNDING=4` (child regions), `FRAME_ROUNDING=4` (buttons, text fields, progress bars), `GRAB_ROUNDING=3` (checkboxes, menu highlight). Geometry only; presets never change them |
+| Six rounding tiers | `WINDOW_ROUNDING=10` (windows), `POPUP_ROUNDING=8` (popups/tooltips), `CHILD_ROUNDING=6` (child regions), `FRAME_ROUNDING=6` (buttons, text fields, progress bars), `GRAB_ROUNDING=4` (checkboxes, menu highlight), `TAB_ROUNDING=6` (tabs). Geometry only; presets never change them |
 | Per-widget override | `Widget::corner_radius`: `< 0` means "use the tier above", `0` means "square on purpose" (a full-screen modal mask must be 0, otherwise the four corners leak the undimmed scene) |
 | Shadow switch | `Widget::shadow`: on for titled floating windows, popups and tooltips only. Tiled panels sit flush against each other, so their shadow would be painted under the neighbour |
 | Gradient | Panel / button / title-bar fills are a subtle vertical gradient (top brighter). Both ends are derived from the same token by `shade()` (2%–8%), so no extra tokens are needed |
-| Stroke | Width grows inward: the outer silhouette never changes, so neighbouring controls do not shift by a pixel depending on whether a border is present |
+| Stroke | Width grows inward: the outer silhouette never changes, so neighbouring controls do not shift by a pixel depending on whether a border is present. Everyday widget outlines use a dedicated `CONTROL_BORDER` token (the midpoint of BUTTON and BORDER) — stroking with plain BORDER gives every control a ring two shades brighter than its own fill, and rows of controls start looking like a spreadsheet; hover/focus switch to `ACCENT` |
 | Focus | A focused text field switches its stroke to `ACCENT` and thickens it by 0.5px; hovered drag fields and checkboxes do the same |
 
 Renderer side (`engine/render/render2d.h`; the default implementations degrade to rectangles, so a third-party `IRenderer2D` still compiles):

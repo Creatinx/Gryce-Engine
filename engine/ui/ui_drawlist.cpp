@@ -163,6 +163,25 @@ void UiDrawList::add_round_border(float x, float y, float w, float h, float radi
     emit(c);
 }
 
+void UiDrawList::add_round_border4(float x, float y, float w, float h, const float radii[4],
+                                   float thickness, uint32_t rgba) {
+    if (thickness <= 0.0f) return;
+    if (cull_active()) {
+        ++culled_;
+        return;
+    }
+    UiCommand c{};
+    c.cmd      = UiCmd::RoundRectBorder;
+    c.x        = x;
+    c.y        = y;
+    c.w        = w;
+    c.h        = h;
+    c.color    = rgba;
+    c.border_w = thickness;
+    for (int i = 0; i < 4; ++i) c.radii[i] = (radii[i] > 0.0f) ? radii[i] : 0.0f;
+    emit(c);
+}
+
 void UiDrawList::add_shadow(float x, float y, float w, float h, float radius, float spread,
                             uint32_t rgba) {
     if (spread <= 0.0f || (rgba & 0xFFu) == 0u) return;

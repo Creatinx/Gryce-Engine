@@ -2384,11 +2384,12 @@ TEST(widget, draw_follows_theme_preset) {
     CHECK_TRUE(dl.command(0).color2 != 0u);
     CHECK_TRUE(dl.command(0).color != dl.command(0).color2);
     const uint32_t dark_top = dl.command(0).color;
-    // 描边直接取 token（不参与渐变）——换成浅色后它必须换，且角半径不变
+    // 描边取"控件描边"token（不参与渐变）——换成浅色后它必须换，且角半径不变。
+    // 控件描边不是 BORDER：BORDER 是面板/弹层的强边界，控件日常只勾形状。
     const gryce_ui::UiCommand* dark_edge =
         first_cmd(dl, gryce_ui::UiCmd::RoundRectBorder);
     CHECK_TRUE(dark_edge != nullptr);
-    CHECK_EQ(dark_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BORDER]);
+    CHECK_EQ(dark_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_CONTROL_BORDER]);
     CHECK_TRUE(dark_edge->radii[0] > 0.0f);
 
     // 换预设重画：颜色跟着 token 表走（调用方只引用 token）
@@ -2399,7 +2400,7 @@ TEST(widget, draw_follows_theme_preset) {
     const gryce_ui::UiCommand* light_edge =
         first_cmd(dl, gryce_ui::UiCmd::RoundRectBorder);
     CHECK_TRUE(light_edge != nullptr);
-    CHECK_EQ(light_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BORDER]);
+    CHECK_EQ(light_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_CONTROL_BORDER]);
     CHECK_NEAR(light_edge->radii[0], dark_edge->radii[0], 1e-6f);   // 几何不随主题变
     gryce_ui::set_preset(gryce_ui::THEME_PRESET_DARK);   // 别影响后续用例
 }
@@ -3180,13 +3181,17 @@ TEST(theme, derived_tokens_consistent_across_presets) {
         CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_TAB_SELECTED) != 0u);
         CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_NAV_WINDOWING_DIM_BG) != 0u);
         CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_MODAL_WINDOW_DIM_BG) != 0u);
+        CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_CONTROL_BORDER) != 0u);
+        // 控件描边必须与 BORDER 区分开：退化成同一个值时，控件又变成一圈亮线
+        CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_CONTROL_BORDER) !=
+                   GUi_ThemeColor(GUI_THEME_COLOR_BORDER));
     }
 }
 
 TEST(theme, rounding_metrics_present) {
-    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 6.0f, 1e-4f);
-    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_FRAME_ROUNDING), 4.0f, 1e-4f);
-    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_ROUNDING), 3.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 10.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_FRAME_ROUNDING), 6.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_ROUNDING), 4.0f, 1e-4f);
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_SCROLLBAR_SIZE), 12.0f, 1e-4f);
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_MIN_SIZE), 8.0f, 1e-4f);
     // 越界度量读返回 0（既有约定不变）

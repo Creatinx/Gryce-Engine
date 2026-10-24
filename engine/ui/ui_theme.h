@@ -128,6 +128,9 @@ enum ThemeColor : int {
     THEME_COLOR_TAB_SELECTED_OVERLINE,
     THEME_COLOR_TAB_DIMMED,
     THEME_COLOR_TAB_DIMMED_SELECTED,
+    // 控件（按钮/输入框/滑杆槽）的日常描边：比 BORDER 更贴近控件自身底色，
+    // 只用来"勾出形状"而不是"画一圈亮线"。悬停/聚焦仍换 ACCENT。
+    THEME_COLOR_CONTROL_BORDER,
     THEME_COLOR_COUNT,
 };
 

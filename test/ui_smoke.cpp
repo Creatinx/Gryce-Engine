@@ -907,7 +907,13 @@ void draw_style_float_window(void* user) {
     if (GUi_BeginWindow("Floating panel", 470.0f, 96.0f, 260.0f, 132.0f, flags)) {
         GUi_TextColored(GUI_TEXT_DIM, "Title bar: top corners follow the window");
         GUi_Separator();
-        GUi_LabelText("radius", "window 6 / frame 4 / grab 3");
+        // 半径直接读主题度量：写死数字的话换了档位这行就会骗人
+        char radii[64];
+        std::snprintf(radii, sizeof(radii), "w %.0f / f %.0f / g %.0f",
+                      GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING),
+                      GUi_ThemeMetric(GUI_THEME_METRIC_FRAME_ROUNDING),
+                      GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_ROUNDING));
+        GUi_LabelText("radius", radii);
         GUi_ProgressBar(0.35f, 0.0f, 0.0f, "35%");
     }
     GUi_EndWindow();

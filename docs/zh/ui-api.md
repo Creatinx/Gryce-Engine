@@ -625,11 +625,11 @@ debug_ui_submit_locked()            主线程，锁已持有
 
 | 主题 | 规则 |
 | --- | --- |
-| 四档圆角 | `WINDOW_ROUNDING=6`（窗口）、`POPUP_ROUNDING=4`（弹层/提示）、`CHILD_ROUNDING=4`（子区域）、`FRAME_ROUNDING=4`（按钮/输入框/进度条）、`GRAB_ROUNDING=3`（复选框/菜单高亮）。全都只用几何、不随预设变 |
+| 六档圆角 | `WINDOW_ROUNDING=10`（窗口）、`POPUP_ROUNDING=8`（弹层/提示）、`CHILD_ROUNDING=6`（子区域）、`FRAME_ROUNDING=6`（按钮/输入框/进度条）、`GRAB_ROUNDING=4`（复选框/菜单高亮）、`TAB_ROUNDING=6`（页签）。全都只用几何、不随预设变 |
 | 单控件覆盖 | `Widget::corner_radius`：`< 0` 用上面那档默认值，`0` = 明确要直角（模态遮罩铺满屏幕时必须给 0，否则四角漏出没压暗的底图） |
 | 投影开关 | `Widget::shadow`：只有浮窗（带标题栏）、弹层、工具提示打开。平铺面板互相贴着，影子画进邻居身下等于白花顶点 |
 | 渐变 | 面板/按钮/标题栏的填充是"上亮下暗"的竖直渐变，两端色由 `shade()` 从同一个 token 推出来（±2%~8%），不额外增加 token |
-| 描边 | 线宽向内生长：外轮廓尺寸不因加边框变大，相邻控件的对齐不会因为有没有边框而漂 1 像素 |
+| 描边 | 线宽向内生长：外轮廓尺寸不因加边框变大，相邻控件的对齐不会因为有没有边框而漂 1 像素。控件日常描边用专门的 `CONTROL_BORDER` token（BUTTON 与 BORDER 的中点）——直接拿 BORDER 描边时每个控件都顶着一圈比自身底色亮两档的细线，成片控件会变成一张表格；悬停/聚焦才换 `ACCENT` |
 | 聚焦态 | 输入框聚焦时描边换成 `ACCENT` 并加粗 0.5 像素；悬停的拖拽框/复选框描边也换 `ACCENT` |
 
 渲染器一侧（`engine/render/render2d.h`，默认实现退化成直角，所以第三方 `IRenderer2D` 实现不会因为 UI 用圆角而编不过）：
