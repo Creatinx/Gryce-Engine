@@ -1,6 +1,6 @@
 # 编辑器接口（editor-api）
 
-本文汇总**编辑器（外部进程）与引擎之间**的接口面：编辑命令、撤销/重做、视口输出与 ImGui 桥、双视口、变换 Gizmo、显示模式、资产侧车文件。这些接口都是 C ABI，纯头文件即可接入，不依赖引擎内部 C++ 类型。
+本文汇总**编辑器（外部进程）与引擎之间**的接口面：编辑命令、撤销/重做、视口输出与 ImGui 桥、双视口、变换 Gizmo、显示模式、资产侧车文件、组件属性与组件树。这些接口都是 C ABI，纯头文件即可接入，不依赖引擎内部 C++ 类型。
 
 引擎侧不再需要为编辑器新增底层能力：本文件描述的是**已经就绪**的前置条件。
 
@@ -297,7 +297,121 @@ GAsset_ScanDirectoryEach("res:/models", /*recursive=*/0, cb, &my_vector);
 
 `GAssetEntry` 里的字符串指针**只在回调期间有效**（指向遍历用的临时缓冲），要留存必须自己拷。这是为了避免每个条目都做一次堆分配——目录里几千个文件时差别明显。
 
-## 8. 已知边界
+## 8. 组件属性与组件树（`api/component_api.h`）
+
+Inspector 要展示组件属性、编辑器要支持组件的父子挂载，这两条轴在引擎里是**正交**的：
+
+* **类型继承**（基类 / 子类）：`ColorRect` 是 `BasicRect` 的子类，`BasicRect` 又是 `Component2D` 的子类。
+* **组件树**（实例级挂载）：某个 `ColorRect` 可以挂在某个 `Sprite2D` 之下，作为它的子组件。
+
+一个组件可以同时处在两条轴上，编辑器不要把它们混成一件事。
+
+### 8.1 类型 hash 只有一把尺子
+
+引擎里所有组件类型 hash 一律是**可读全名的 `std::hash<std::string>`**，全名形如
+`gryce_engine::components::d2::basic_rect::ColorRect`（定义见 `engine/reflection/type_name.h`）。
+
+| 接口 | `out_hash` | `out_name` |
+| --- | --- | --- |
+| `GComponent_GetTypeHashAt(entity, index, &h)` | 组件自身类型的**全名 hash** | — |
+| `GComponent_GetRegisteredTypeInfo(index, &h, name, n)` | 注册类型表的**全名 hash** | **短名**（如 `ColorRect`），给 UI 显示 |
+| `GComponent_GetTypeHashByName(name, &h)` | **全名 hash** | — |
+
+三者的数值可以直接互相比较——这正是「编辑器用注册类型表匹配到实体上的组件」这条主线成立的前提：注册表拿到的 hash 与实体上组件的 hash 是同一个数，属性接口也认它。
+
+`GComponent_GetTypeHashByName` 的入参三种都收：反射表短名（`ColorRect`）、工厂注册名（`Script`）、可读全名。
+
+**唯一的例外**：工厂注册了但反射表没有的类型（`ParentComponent` / `ChildrenComponent` / `SubViewport`）回退为**短名 hash**。这三个类型不进入对外的可见组件序列，编辑器用不到；回退口径保证哈希仍然稳定可复算。
+
+> 迁移提示：旧版本 `GComponent_GetRegisteredTypeInfo` 给的是短名 hash、`GComponent_GetTypeHashAt` 给的是全名 hash，两者不是同一个数，直接比较必然匹配失败。统一后这个坑消失；若代码里有缓存下来的旧 hash，需要重新取。
+
+### 8.2 组件下标只有一个空间
+
+所有带 `index` 入参的接口共用**同一个下标空间**：实体上的可见组件序列，已过滤掉 `Transform` / `ParentComponent` / `ChildrenComponent` 三个引擎内部组件。引擎侧的实现是 `Entity::user_components()`，C API 与脚本层共用它。
+
+编辑器按下标取组件、脚本按下标取组件，指向的都是同一个组件；不要自己另建一套过滤规则。
+
+### 8.3 属性读写（支持基类查询）
+
+```c
+uint64_t h = 0;
+GComponent_GetTypeHashAt(entity, 0, &h);          // 组件自身类型的全名 hash
+int n = GComponent_GetPropertyCount(entity, h);    // 字段数（含继承链展开，基类字段在前）
+GComponent_GetPropertyInfo(entity, h, 0, name, sizeof(name), &type, &size);
+GComponent_GetProperty(entity, h, "color", &value, sizeof(value));
+GComponent_SetProperty(entity, h, "color", &value, sizeof(value));
+```
+
+* 字段表按**继承链展平**：基类字段在前、派生类字段在后。
+* `comp_type_hash` 传**基类**的 hash 也能命中派生实例（例如传 `Component2D` 的 hash 能取到实体上的 `ColorRect`）。要判断是否派生，用 `GComponent_IsDerivedFromAt`。
+* `GComponent_GetProperty` / `GComponent_SetProperty` 按**字段名**定位，跨继承链有效（`enabled` 声明在 `Component` 上，对派生组件同样可写）。
+
+### 8.4 组件树（父子挂载）
+
+```c
+int parent = GComponent_GetParentAt(entity, index);        // 无父组件 = -1
+GComponent_SetParentAt(entity, index, parent_index);        // parent_index = -1 → 变成根
+int n = GComponent_GetChildCountAt(entity, index);
+int child = GComponent_GetChildAt(entity, index, child_index);
+int on = GComponent_IsEffectivelyEnabledAt(entity, index);  // 生命周期继承后的启用态
+```
+
+* 下标非法一律返回 `-1`（`SetParentAt` 返回 `0`）。
+* `SetParentAt` 会拒绝挂到自己之下，也会拒绝挂到自己的后代之下（成环）。返回值 `1` = 成功，`0` = 失败。
+* `IsEffectivelyEnabledAt` 是**生命周期继承**的结果：自身与整条父链都 `enabled` 才算有效——父组件禁用，整棵子树停摆。
+
+### 8.5 局部变换
+
+```c
+float pos[3], rot[4], scale[3];
+GComponent_GetLocalTransformAt(entity, index, pos, rot, scale);   // [x,y,z] / [x,y,z,w] / [x,y,z]
+GComponent_SetLocalTransformAt(entity, index, pos, rot, scale);
+```
+
+局部变换是**相对父组件**的；根组件相对宿主实体。返回值：读 `0` = 成功、`-1` = 失败；写 `1` = 成功、`0` = 失败。
+
+### 8.6 类型祖先链
+
+```c
+uint64_t chain[8];
+int n = GComponent_GetTypeChainAt(entity, index, chain, 8);   // 写入个数，失败 -1
+```
+
+链的顺序是**根 → 派生**（含自身），每项是全名 hash。例如 `ColorRect` 的链是
+`Component → Component2D → BasicRect → ColorRect`。
+
+`out_hashes` 传 `nullptr` 时只返回链长（供调用方先分配缓冲）。
+
+按名字查某一层的 hash：
+
+```c
+uint64_t base = 0;
+GComponent_GetTypeHashByName("BasicRect", &base);
+int derived = GComponent_IsDerivedFromAt(entity, index, base);   // 1 / 0
+```
+
+### 8.7 脚本侧（`engine.component.*`）
+
+脚本层暴露的是**按名字**的版本，组件下标口径与 C API 一致：
+
+```js
+engine.component.count();                       // 可见组件个数
+engine.component.getParent(index);              // 父组件下标（无父 = -1）
+engine.component.setParent(index, parentIndex); // 改挂（parentIndex = -1 变根）
+engine.component.getChildCount(index);
+engine.component.getChild(index, childIndex);
+engine.component.isEffectivelyEnabled(index);
+engine.component.getLocalPosition(index);       // [x,y,z]
+engine.component.setLocalPosition(index, [x,y,z]);
+engine.component.getLocalRotation(index);       // [x,y,z,w]
+engine.component.setLocalRotation(index, [x,y,z,w]);
+engine.component.getLocalScale(index);          // [x,y,z]
+engine.component.setLocalScale(index, [x,y,z]);
+engine.component.getTypeChain(index);            // 类型名数组（根 → 派生，短名）
+engine.component.isDerivedFrom(index, "Component2D");
+```
+
+## 9. 已知边界
 
 * 撤销是整场快照：单步开销随场景规模增长（demo 场景 1.4 M 三角形约几百微秒），栈深不要开太大。
 * GameView 分辨率跟随 SceneView，需要独立分辨率就得复制整条 HDR 链。

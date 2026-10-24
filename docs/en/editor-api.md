@@ -1,6 +1,6 @@
 # Editor API
 
-This page collects the interfaces between an **external editor process** and the engine: edit commands, undo/redo, viewport output and the ImGui bridge, dual viewports, the transform gizmo, display modes, and asset sidecar files. All of them are C ABI — a header and the import library are enough, no internal C++ types involved.
+This page collects the interfaces between an **external editor process** and the engine: edit commands, undo/redo, viewport output and the ImGui bridge, dual viewports, the transform gizmo, display modes, asset sidecar files, and component properties plus the component tree. All of them are C ABI — a header and the import library are enough, no internal C++ types involved.
 
 Nothing here needs new low-level engine work: this page documents **capabilities that are already in place**.
 
@@ -301,7 +301,119 @@ GAsset_ScanDirectoryEach("res:/models", /*recursive=*/0, cb, &my_vector);
 
 The string pointers in `GAssetEntry` are **only valid during the callback** (they point into the walk's scratch buffer); copy anything you keep. This avoids one heap allocation per entry, which matters noticeably with thousands of files.
 
-## 8. Known limits
+## 8. Component properties and the component tree (`api/component_api.h`)
+
+The Inspector shows component properties, and the editor supports parent/child mounting of components. These two axes are **orthogonal** inside the engine:
+
+* **Type inheritance** (base / derived): `ColorRect` derives from `BasicRect`, which derives from `Component2D`.
+* **Component tree** (instance-level mounting): a `ColorRect` may be mounted under a `Sprite2D` as its child component.
+
+A component can sit on both axes at once — do not conflate them in the editor.
+
+### 8.1 One ruler for type hashes
+
+Every component type hash in the engine is the `std::hash<std::string>` of the **readable full name**, e.g. `gryce_engine::components::d2::basic_rect::ColorRect` (defined in `engine/reflection/type_name.h`).
+
+| Interface | `out_hash` | `out_name` |
+| --- | --- | --- |
+| `GComponent_GetTypeHashAt(entity, index, &h)` | full-name hash of the component's own type | — |
+| `GComponent_GetRegisteredTypeInfo(index, &h, name, n)` | **full-name hash** of the registered type | **short name** (e.g. `ColorRect`), for display |
+| `GComponent_GetTypeHashByName(name, &h)` | **full-name hash** | — |
+
+The three values compare directly — that is exactly what makes "the editor matches a registered type against the component on the entity" work: the hash taken from the registry is the same number as the hash of the component on the entity, and the property API accepts it.
+
+`GComponent_GetTypeHashByName` accepts all three spellings: a reflection short name (`ColorRect`), a factory registration name (`Script`), or a readable full name.
+
+**The single exception**: types registered in the factory but absent from the reflection table (`ParentComponent` / `ChildrenComponent` / `SubViewport`) fall back to the **short-name hash**. They never enter the visible component list, so the editor never touches them; the fallback keeps the hash stable and reproducible.
+
+> Migration note: older builds returned the short-name hash from `GComponent_GetRegisteredTypeInfo` and the full-name hash from `GComponent_GetTypeHashAt` — two different numbers, so comparing them silently failed. The unified ruler removes the trap; any hash cached from the old build has to be re-read.
+
+### 8.2 One component index space
+
+Every interface taking an `index` shares the **same** index space: the entity's visible component list, with the three engine-internal components `Transform` / `ParentComponent` / `ChildrenComponent` filtered out. The engine implements it once, as `Entity::user_components()`, and the C API and the script layer both use it.
+
+Indexing a component in the editor and indexing it in a script therefore reach the same component — do not invent a second filtering rule.
+
+### 8.3 Property access (with base-class queries)
+
+```c
+uint64_t h = 0;
+GComponent_GetTypeHashAt(entity, 0, &h);          // full-name hash of the component's own type
+int n = GComponent_GetPropertyCount(entity, h);    // field count (inheritance chain flattened, base first)
+GComponent_GetPropertyInfo(entity, h, 0, name, sizeof(name), &type, &size);
+GComponent_GetProperty(entity, h, "color", &value, sizeof(value));
+GComponent_SetProperty(entity, h, "color", &value, sizeof(value));
+```
+
+* The field table is **flattened along the inheritance chain**: base-class fields first, derived fields after.
+* Passing a **base** type's `comp_type_hash` still hits the derived instance (e.g. the hash of `Component2D` reaches the `ColorRect` on the entity). Use `GComponent_IsDerivedFromAt` to ask about derivation explicitly.
+* `GComponent_GetProperty` / `GComponent_SetProperty` locate fields **by name**, across the whole chain (`enabled` is declared on `Component` and stays writable for derived components).
+
+### 8.4 The component tree (parent/child mounting)
+
+```c
+int parent = GComponent_GetParentAt(entity, index);        // -1 = no parent
+GComponent_SetParentAt(entity, index, parent_index);        // parent_index = -1 → make it a root
+int n = GComponent_GetChildCountAt(entity, index);
+int child = GComponent_GetChildAt(entity, index, child_index);
+int on = GComponent_IsEffectivelyEnabledAt(entity, index);  // effective state after inheritance
+```
+
+* An invalid index always yields `-1` (`SetParentAt` yields `0`).
+* `SetParentAt` refuses to mount a component under itself and refuses to create a cycle (mounting under its own descendant). Return value: `1` = success, `0` = failure.
+* `IsEffectivelyEnabledAt` is the result of **lifecycle inheritance**: the component and its whole parent chain must be `enabled` — disabling a parent stalls the entire subtree.
+
+### 8.5 Local transform
+
+```c
+float pos[3], rot[4], scale[3];
+GComponent_GetLocalTransformAt(entity, index, pos, rot, scale);   // [x,y,z] / [x,y,z,w] / [x,y,z]
+GComponent_SetLocalTransformAt(entity, index, pos, rot, scale);
+```
+
+The local transform is **relative to the parent component**; a root component is relative to the owning entity. Return values: read `0` = success / `-1` = failure; write `1` = success / `0` = failure.
+
+### 8.6 Type ancestor chain
+
+```c
+uint64_t chain[8];
+int n = GComponent_GetTypeChainAt(entity, index, chain, 8);   // number written, -1 on failure
+```
+
+The chain is ordered **root → derived** (including the component itself), each entry a full-name hash. For `ColorRect` the chain is `Component → Component2D → BasicRect → ColorRect`.
+
+Passing `nullptr` for `out_hashes` returns the chain length only (so the caller can size the buffer).
+
+To look up one level by name:
+
+```c
+uint64_t base = 0;
+GComponent_GetTypeHashByName("BasicRect", &base);
+int derived = GComponent_IsDerivedFromAt(entity, index, base);   // 1 / 0
+```
+
+### 8.7 Script side (`engine.component.*`)
+
+The script layer exposes the **name-based** variant; the component index space is the same as the C API:
+
+```js
+engine.component.count();                       // number of visible components
+engine.component.getParent(index);              // parent index (-1 = none)
+engine.component.setParent(index, parentIndex); // re-mount (parentIndex = -1 → root)
+engine.component.getChildCount(index);
+engine.component.getChild(index, childIndex);
+engine.component.isEffectivelyEnabled(index);
+engine.component.getLocalPosition(index);       // [x,y,z]
+engine.component.setLocalPosition(index, [x,y,z]);
+engine.component.getLocalRotation(index);       // [x,y,z,w]
+engine.component.setLocalRotation(index, [x,y,z,w]);
+engine.component.getLocalScale(index);          // [x,y,z]
+engine.component.setLocalScale(index, [x,y,z]);
+engine.component.getTypeChain(index);            // array of type names (root → derived, short names)
+engine.component.isDerivedFrom(index, "Component2D");
+```
+
+## 9. Known limits
 
 * Undo is a whole-scene snapshot: per-step cost grows with scene size (hundreds of microseconds on the 1.4 M triangle demo scene), so do not set the depth very high.
 * GameView resolution follows SceneView; independent resolutions would require duplicating the entire HDR chain.
