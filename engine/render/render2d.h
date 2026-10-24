@@ -140,6 +140,47 @@ public:
     // 绘制圆形（填充）
     virtual void draw_circle(float cx, float cy, float r, int segments, const Color& color) = 0;
 
+    // -----------------------------------------------------------------------
+    // 圆角矩形族（UI 美化：圆角、渐变、描边、外阴影）
+    // -----------------------------------------------------------------------
+    // radii 按「左上、右上、右下、左下」排列，单位像素，会被钳到 min(w,h)/2。
+    // 默认实现退化成直角矩形：不支持的后端（或第三方 IRenderer2D 实现）不会
+    // 因为 UI 引用了圆角而编不过或画不出东西——最差只是看着方正。
+    //
+    // 为什么不用 SDF + 自定义 shader：2D 的顶点格式只有 position/color/uv，
+    // 塞不进"矩形半宽/圆角半径"这类逐图元参数；而在 CPU 侧把圆角展开成折线
+    // 扇形（边缘再加一条 1 像素的 alpha 渐隐带做抗锯齿）用的是现成的批次与
+    // 混合状态，三后端零改动，也不会为 UI 多编译一份着色器变体。
+    virtual void draw_round_rect(float x, float y, float w, float h,
+                                 const float radii[4], const Color& color) {
+        (void)radii;
+        draw_rect(x, y, w, h, color);
+    }
+    // 竖直渐变填充（top → bottom），圆角同上。
+    virtual void draw_round_rect_gradient(float x, float y, float w, float h,
+                                          const float radii[4],
+                                          const Color& top, const Color& bottom) {
+        (void)radii; (void)bottom;
+        draw_rect(x, y, w, h, top);
+    }
+    // 圆角描边，线宽向内生长（外轮廓尺寸不变）。
+    virtual void draw_round_rect_border(float x, float y, float w, float h,
+                                        const float radii[4], float thickness,
+                                        const Color& color) {
+        (void)radii;
+        if (thickness <= 0.0f || w <= 0.0f || h <= 0.0f) return;
+        draw_rect(x, y, w, thickness, color);
+        draw_rect(x, y + h - thickness, w, thickness, color);
+        draw_rect(x, y, thickness, h, color);
+        draw_rect(x + w - thickness, y, thickness, h, color);
+    }
+    // 圆角外阴影：spread 为扩散半径，color 的 alpha 是贴近矩形处的浓度。
+    virtual void draw_round_shadow(float x, float y, float w, float h,
+                                   const float radii[4], float spread,
+                                   const Color& color) {
+        (void)x; (void)y; (void)w; (void)h; (void)radii; (void)spread; (void)color;
+    }
+
     // 绘制文字（UTF-8 字符串，按码点查字形；图集里没有的码点跳过）。
     // y 是**基线**，不是行盒顶。
     virtual void draw_text(float x, float y, const std::string& text, float font_size, const Color& color) = 0;

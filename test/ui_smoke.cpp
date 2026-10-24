@@ -831,6 +831,88 @@ void draw_anim_stage(void* user) {
     for (int i = 0; i < 4; ++i) draw_stage_box(st->anim_stag[i], "stag");
 }
 
+// 外观页：圆角 / 渐变 / 描边 / 阴影一次看全（颜色全部来自主题 token，
+// 换预设整页跟着变；几何来自主题的 14 个度量，与主题无关）。
+void draw_style_page(void* user) {
+    UiDemoState* st = static_cast<UiDemoState*>(user);
+    GUi_BeginChild("style", 0.0f, 0.0f, 1);
+
+    GUi_TextColored(GUI_TEXT_ACCENT, "Rounded fill + gradient + border");
+    GUi_Separator();
+    if (GUi_Button("Primary")) st->spawn_count += 1;
+    GUi_SameLine(-1.0f);
+    if (GUi_Button("Secondary")) st->spawn_count += 1;
+    GUi_SameLine(-1.0f);
+    GUi_SmallButton("Small");
+
+    const uint64_t id_check = GUi_MakeId("Rounded check", 7);
+    int check = 1;
+    GUi_StateGetBool(id_check, &check);
+    if (GUi_Checkbox("Rounded check", &check)) GUi_StateSetBool(id_check, check);
+
+    const uint64_t id_slider = GUi_MakeId("Corner radius", 8);
+    float slider = 0.42f;
+    GUi_StateGetFloat(id_slider, &slider);
+    if (GUi_SliderFloat("Corner radius", &slider, 0.0f, 1.0f, "%.2f")) {
+        GUi_StateSetFloat(id_slider, slider);
+    }
+
+    const uint64_t id_drag = GUi_MakeId("Padding", 9);
+    float drag = 1.25f;
+    GUi_StateGetFloat(id_drag, &drag);
+    if (GUi_DragFloat("Padding", &drag, 0.01f)) GUi_StateSetFloat(id_drag, drag);
+
+    const uint64_t id_text = GUi_MakeId("Rounded field", 10);
+    char text[64] = {};
+    if (GUi_StateGetText(id_text, text, (int)sizeof(text)) == 0) {
+        std::snprintf(text, sizeof(text), "text inside a rounded frame");
+    }
+    if (GUi_InputText("Rounded field", text, (int)sizeof(text))) {
+        GUi_StateSetText(id_text, text);
+    }
+
+    GUi_ProgressBar(0.62f, 0.0f, 0.0f, "62%");
+
+    GUi_Spacing();
+    GUi_TextColored(GUI_TEXT_ACCENT, "Child region (own clip + rounded scrollbar)");
+    if (GUi_BeginChild("style_child", 0.0f, 92.0f, 1)) {
+        for (int i = 0; i < 12; ++i) {
+            char row[32];
+            std::snprintf(row, sizeof(row), "row %02d", i);
+            GUi_LabelText("row", row);
+        }
+        GUi_EndChild();
+    }
+
+    GUi_Spacing();
+    GUi_TextColored(GUI_TEXT_ACCENT, "Popup + tooltip (both cast a shadow)");
+    if (GUi_Button("Open popup")) GUi_OpenPopup("##style_popup");
+    if (GUi_IsItemHovered()) GUi_SetTooltip("rounded corners + shadow");
+    if (GUi_BeginPopup("##style_popup")) {
+        if (GUi_MenuItem("Duplicate", "Ctrl+D", 1)) st->spawn_count += 1;
+        if (GUi_MenuItem("Delete", "Del", 1)) st->spawn_count -= 1;
+        GUi_Separator();
+        if (GUi_MenuItem("Disabled item", nullptr, 0)) {}
+        GUi_EndPopup();
+    }
+
+    GUi_EndChild();
+}
+
+// 外观页的浮窗：只有"带标题栏的浮窗"投影（平铺面板互相贴着，影子看不见）
+void draw_style_float_window(void* user) {
+    (void)user;
+    const int flags = GUI_WIN_TITLE_BAR | GUI_WIN_NO_SAVED_SETTINGS |
+                      GUI_WIN_NO_RESIZE | GUI_WIN_NO_MOVE | GUI_WIN_NO_COLLAPSE;
+    if (GUi_BeginWindow("Floating panel", 470.0f, 96.0f, 260.0f, 132.0f, flags)) {
+        GUi_TextColored(GUI_TEXT_DIM, "Title bar: top corners follow the window");
+        GUi_Separator();
+        GUi_LabelText("radius", "window 6 / frame 4 / grab 3");
+        GUi_ProgressBar(0.35f, 0.0f, 0.0f, "35%");
+    }
+    GUi_EndWindow();
+}
+
 void ui_callback(void* user) {
     UiDemoState* st = static_cast<UiDemoState*>(user);
     // 翻页检测：布局页与动画页共用进程内唯一的组件树，翻回来必须重建
@@ -861,6 +943,7 @@ void ui_callback(void* user) {
                 if (GUi_MenuItem("Layout", "Ctrl+3", 1)) st->page = 2;
                 if (GUi_MenuItem("Anim", "Ctrl+4", 1)) st->page = 3;
                 if (GUi_MenuItem("Structure", nullptr, 1)) st->page = 5;
+                if (GUi_MenuItem("Style", nullptr, 1)) st->page = 6;
                 if (GUi_MenuItem("About", nullptr, 1)) st->page = 4;
                 GUi_EndMenu();
             }
@@ -872,6 +955,7 @@ void ui_callback(void* user) {
             case 2: draw_layout_page(user, page_switched); break;
             case 3: draw_anim_page(user, page_switched); break;
             case 5: draw_struct_page(user); break;
+            case 6: draw_style_page(user); break;
             default: draw_about_page(user); break;
         }
     }
@@ -881,6 +965,7 @@ void ui_callback(void* user) {
     // 布局页的组件树 / 动画页的舞台：绝对坐标窗口，画在主窗口之后（互不嵌套）
     if (st->page == 2) draw_layout_tree(user);
     if (st->page == 3) draw_anim_stage(user);
+    if (st->page == 6) draw_style_float_window(user);
 }
 
 // ---------------------------------------------------------------------------
@@ -925,7 +1010,7 @@ void print_usage() {
         "  --theme <name>         初始主题预设：dark / light / midnight / nord /\n"
         "                        highcontrast（默认 dark）\n"
         "  --page <name>          初始页：controls / queue / layout / anim /\n"
-        "                        struct / about（默认 controls）\n"
+        "                        struct / style / about（默认 controls）\n"
         "  --ui-backend <name>    UI 后端：imgui（默认）/ builtin（引擎内置，\n"
         "                        不建 ImGui 上下文，界面由 2D 覆盖层自己画）\n"
         "  --no-vsync             关闭垂直同步\n"
@@ -1007,6 +1092,7 @@ int main(int argc, char** argv) {
             else if (std::strcmp(t, "layout") == 0) page = 2;
             else if (std::strcmp(t, "anim") == 0) page = 3;
             else if (std::strcmp(t, "struct") == 0 || std::strcmp(t, "structure") == 0) page = 5;
+            else if (std::strcmp(t, "style") == 0) page = 6;
             else if (std::strcmp(t, "about") == 0) page = 4;
             else {
                 std::fprintf(stderr,

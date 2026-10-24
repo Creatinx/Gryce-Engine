@@ -1597,13 +1597,17 @@ TEST(drawlist, clip_commands_survive_cull_state) {
 namespace {
 
 struct MockCall {
-    enum Kind { Rect, Text, Sprite, Scissor, ResetScissor };
+    enum Kind { Rect, Text, Sprite, Scissor, ResetScissor,
+                Round, RoundGradient, RoundBorder, Shadow };
     Kind        kind = Rect;
     float       x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
     uint32_t    color = 0;
+    uint32_t    color2 = 0;                 // 渐变下端色
     uint64_t    texture = 0;
     float       u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
     float       font_size = 0.0f;
+    float       radii[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float       border_w = 0.0f;            // 描边线宽 / 阴影扩散半径
     std::string text;
 };
 
@@ -1631,6 +1635,36 @@ public:
                         float u0, float v0, float u1, float v1, uint32_t rgba) override {
         MockCall c; c.kind = MockCall::Sprite; c.x = x; c.y = y; c.w = w; c.h = h;
         c.texture = texture; c.u0 = u0; c.v0 = v0; c.u1 = u1; c.v1 = v1; c.color = rgba;
+        calls.push_back(c);
+    }
+    void ui_draw_round_rect(float x, float y, float w, float h,
+                            const float radii[4], uint32_t rgba) override {
+        MockCall c; c.kind = MockCall::Round; c.x = x; c.y = y; c.w = w; c.h = h;
+        c.color = rgba;
+        for (int i = 0; i < 4; ++i) c.radii[i] = radii[i];
+        calls.push_back(c);
+    }
+    void ui_draw_round_gradient(float x, float y, float w, float h,
+                                const float radii[4], uint32_t top,
+                                uint32_t bottom) override {
+        MockCall c; c.kind = MockCall::RoundGradient; c.x = x; c.y = y; c.w = w; c.h = h;
+        c.color = top; c.color2 = bottom;
+        for (int i = 0; i < 4; ++i) c.radii[i] = radii[i];
+        calls.push_back(c);
+    }
+    void ui_draw_round_border(float x, float y, float w, float h,
+                              const float radii[4], float thickness,
+                              uint32_t rgba) override {
+        MockCall c; c.kind = MockCall::RoundBorder; c.x = x; c.y = y; c.w = w; c.h = h;
+        c.color = rgba; c.border_w = thickness;
+        for (int i = 0; i < 4; ++i) c.radii[i] = radii[i];
+        calls.push_back(c);
+    }
+    void ui_draw_shadow(float x, float y, float w, float h, const float radii[4],
+                        float spread, uint32_t rgba) override {
+        MockCall c; c.kind = MockCall::Shadow; c.x = x; c.y = y; c.w = w; c.h = h;
+        c.color = rgba; c.border_w = spread;
+        for (int i = 0; i < 4; ++i) c.radii[i] = radii[i];
         calls.push_back(c);
     }
     void ui_set_scissor(float x, float y, float w, float h) override {
@@ -1906,6 +1940,14 @@ int count_cmd(const gryce_ui::UiDrawList& dl, gryce_ui::UiCmd kind) {
         if (dl.command(i).cmd == kind) ++n;
     }
     return n;
+}
+
+// 第一条指定类型的命令（nullptr = 没有）。颜色断言用它，不必依赖"第 0 条是填充"。
+const gryce_ui::UiCommand* first_cmd(const gryce_ui::UiDrawList& dl, gryce_ui::UiCmd kind) {
+    for (int i = 0; i < dl.command_count(); ++i) {
+        if (dl.command(i).cmd == kind) return &dl.command(i);
+    }
+    return nullptr;
 }
 
 } // namespace
@@ -2307,12 +2349,18 @@ TEST(widget, draw_emits_commands_per_kind) {
     gryce_ui::UiDrawList dl;
     tree.draw(dl, gryce_ui::theme(), metrics);
 
-    // Button: 底 + 4 边框 + 标签 = 6；Label: 1 文本；
-    // Checkbox: 框 + 4 边框 + 标签 = 6；Slider: 标签 + 轨道 + 填充 + 手柄 = 4；
-    // TextInput: 底 + 4 边框 + push/pop 裁剪 + 文本 = 8
-    CHECK_EQ(dl.command_count(), 6 + 1 + 6 + 4 + 8);
-    // Rect：Button 5 + Checkbox 5 + Slider 3 + TextInput 5 = 18
-    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 18);
+    // 美化后的形态：填充与描边各是一条**圆角**命令（不再是"底 + 四条边"）。
+    // Button: 渐变底 + 圆角描边 + 标签 = 3；Label: 1 文本；
+    // Checkbox: 底 + 描边 + 标签 = 3；Slider: 标签 + 轨道 + 填充 + 手柄(底+边) = 5；
+    // TextInput: 底 + 描边 + push/pop 裁剪 + 文本 = 5
+    CHECK_EQ(dl.command_count(), 3 + 1 + 3 + 5 + 5);
+    // 直角矩形一个都不该有：边框全走圆角描边命令
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 0);
+    // 圆角填充：Button 1 + Checkbox 1 + Slider 轨道 1 + Slider 填充 1 + Slider 手柄 1
+    //           + TextInput 1 = 6
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRect), 6);
+    // 圆角描边：Button 1 + Checkbox 1 + Slider 手柄 1 + TextInput 1 = 4
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRectBorder), 4);
     // Text：每个控件各一条
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Text), 5);
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::PushClip), 1);   // 只有 TextInput 裁剪
@@ -2331,15 +2379,28 @@ TEST(widget, draw_follows_theme_preset) {
     ApproxMetrics metrics;
     gryce_ui::UiDrawList dl;
     tree.draw(dl, gryce_ui::theme(), metrics);
-    const uint32_t dark_bg = dl.command(0).color;
-    CHECK_EQ(dark_bg, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BUTTON]);
+    // 按钮底现在是竖直渐变：一条 RoundRect + color2
+    CHECK_EQ(dl.command(0).cmd, gryce_ui::UiCmd::RoundRect);
+    CHECK_TRUE(dl.command(0).color2 != 0u);
+    CHECK_TRUE(dl.command(0).color != dl.command(0).color2);
+    const uint32_t dark_top = dl.command(0).color;
+    // 描边直接取 token（不参与渐变）——换成浅色后它必须换，且角半径不变
+    const gryce_ui::UiCommand* dark_edge =
+        first_cmd(dl, gryce_ui::UiCmd::RoundRectBorder);
+    CHECK_TRUE(dark_edge != nullptr);
+    CHECK_EQ(dark_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BORDER]);
+    CHECK_TRUE(dark_edge->radii[0] > 0.0f);
 
-    // 换预设重画：按钮底色跟着 token 表走（调用方只引用 token）
+    // 换预设重画：颜色跟着 token 表走（调用方只引用 token）
     gryce_ui::set_preset(gryce_ui::THEME_PRESET_LIGHT);
     dl.reset();
     tree.draw(dl, gryce_ui::theme(), metrics);
-    CHECK_EQ(dl.command(0).color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BUTTON]);
-    CHECK_TRUE(dl.command(0).color != dark_bg);
+    CHECK_TRUE(dl.command(0).color != dark_top);
+    const gryce_ui::UiCommand* light_edge =
+        first_cmd(dl, gryce_ui::UiCmd::RoundRectBorder);
+    CHECK_TRUE(light_edge != nullptr);
+    CHECK_EQ(light_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BORDER]);
+    CHECK_NEAR(light_edge->radii[0], dark_edge->radii[0], 1e-6f);   // 几何不随主题变
     gryce_ui::set_preset(gryce_ui::THEME_PRESET_DARK);   // 别影响后续用例
 }
 
@@ -2670,7 +2731,10 @@ TEST(builtin, two_separators_are_two_widgets) {
     ApproxMetrics metrics;
     gryce_ui::UiDrawList dl;
     ui.draw(dl);
-    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 5 + 2);   // chrome 5 + 两条分隔线
+    // chrome 现在是"圆角渐变底 + 圆角描边"2 条，分隔线仍是 2 条直角矩形
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 2);
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRect), 1);
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRectBorder), 1);
 }
 
 TEST(builtin, progress_bar_emits_fill) {
@@ -2684,8 +2748,10 @@ TEST(builtin, progress_bar_emits_fill) {
     ApproxMetrics metrics;
     gryce_ui::UiDrawList dl;
     ui.draw(dl);
-    // chrome 5 条 + 进度条（底 + 4 边框 + 填充）6 条 + 浮层文字 1 条
-    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 5 + 6);
+    // chrome 2 条（渐变底 + 描边）+ 进度条 3 条（轨道 + 描边 + 圆角填充）+ 文字 1
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRect), 3);
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRectBorder), 2);
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 0);
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Text), 1);
 
     // 0 进度不画填充
@@ -2697,8 +2763,9 @@ TEST(builtin, progress_bar_emits_fill) {
     ui.end_frame();
     dl.reset();
     ui.draw(dl);
-    // chrome 5 条 + 进度条（底 + 4 边框）5 条
-    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 5 + 5);
+    // chrome 2 条 + 进度条 2 条（轨道 + 描边）；frac=0 不画填充
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRect), 2);
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 0);
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Text), 0);
 }
 
@@ -2855,16 +2922,19 @@ TEST(builtin, draw_orders_chrome_first_and_clips_content) {
     gryce_ui::UiDrawList dl;
     ui.draw(dl);
 
-    // chrome（底 + 4 边框）在前，然后一个窗口裁剪，最后 pop
-    CHECK_TRUE(dl.command(0).cmd == gryce_ui::UiCmd::Rect);
-    CHECK_EQ(dl.command(0).color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_WINDOW_BG]);
+    // chrome（圆角渐变底 + 圆角描边）在前，然后一个窗口裁剪，最后 pop
+    CHECK_TRUE(dl.command(0).cmd == gryce_ui::UiCmd::RoundRect);
+    CHECK_TRUE(dl.command(0).color2 != 0u);                       // 上亮下暗的渐变
+    CHECK_EQ(dl.command(1).cmd, gryce_ui::UiCmd::RoundRectBorder); // 描边紧随填充
+    CHECK_TRUE(dl.command(0).radii[0] > 0.0f);                    // 圆角生效
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::PushClip), 1);
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::PopClip), 1);
     CHECK_TRUE(dl.command(dl.command_count() - 1).cmd == gryce_ui::UiCmd::PopClip);
     CHECK_EQ(dl.clip_depth(), 0);              // 绘制后裁剪栈归零
-    // chrome 5 条 + Label 1 条文本 + Button（底 + 4 边框 + 文本）6 条
-    CHECK_EQ(dl.command_count(), 5 + 1 + 6 + 2);
-    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 5 + 5);
+    // chrome 2 条 + Label 1 条文本 + Button（渐变底 + 描边 + 文本）3 条 + pop 1 条
+    CHECK_EQ(dl.command_count(), 2 + 1 + 3 + 2);
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRect), 2);        // chrome + button
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRectBorder), 2);
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Text), 2);
 }
 
@@ -4369,6 +4439,116 @@ TEST(builtin, ui_scale_maps_mouse_into_logical_space) {
     const Widget* w2 = ui2.tree().find(gryce_ui::hash_label("Hit", gryce_ui::hash_label("W")));
     CHECK_TRUE(w2 != nullptr);
     CHECK_FALSE(w2->hovered);
+}
+
+// ===========================================================================
+// 美化：圆角族（模型层命令 + 渲染桥转发 + 退化路径）
+// ===========================================================================
+TEST(drawlist, round_family_keeps_geometry_and_culls) {
+    gryce_ui::UiDrawList dl;
+    dl.add_round_rect(10.0f, 20.0f, 100.0f, 40.0f, 6.0f, 0x11223344u);
+    const float radii[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    dl.add_round_rect4(0.0f, 0.0f, 50.0f, 20.0f, radii, 0x01020304u);
+    dl.add_round_gradient(5.0f, 5.0f, 80.0f, 24.0f, 4.0f, 0x11111111u, 0x22222222u);
+    dl.add_round_border(0.0f, 0.0f, 80.0f, 24.0f, 4.0f, 2.0f, 0x33333333u);
+    dl.add_shadow(0.0f, 0.0f, 80.0f, 24.0f, 4.0f, 12.0f, 0x00000044u);
+
+    CHECK_EQ(dl.command_count(), 5);
+    CHECK_EQ(dl.command(0).cmd, gryce_ui::UiCmd::RoundRect);
+    CHECK_NEAR(dl.command(0).radii[0], 6.0f, 1e-6f);
+    CHECK_NEAR(dl.command(0).radii[3], 6.0f, 1e-6f);   // 单值展开成四角
+    CHECK_EQ(dl.command(0).color2, 0u);                // 纯色填充
+
+    // 逐角半径原样记录（标题栏的"上圆下方"靠它）
+    CHECK_NEAR(dl.command(1).radii[0], 1.0f, 1e-6f);
+    CHECK_NEAR(dl.command(1).radii[1], 2.0f, 1e-6f);
+    CHECK_NEAR(dl.command(1).radii[2], 3.0f, 1e-6f);
+    CHECK_NEAR(dl.command(1).radii[3], 4.0f, 1e-6f);
+
+    // 渐变带上第二色，渲染桥据此走 _gradient 分支
+    CHECK_EQ(dl.command(2).cmd, gryce_ui::UiCmd::RoundRect);
+    CHECK_EQ(dl.command(2).color2, 0x22222222u);
+    CHECK_EQ(dl.command(3).cmd, gryce_ui::UiCmd::RoundRectBorder);
+    CHECK_NEAR(dl.command(3).border_w, 2.0f, 1e-6f);
+    CHECK_EQ(dl.command(4).cmd, gryce_ui::UiCmd::Shadow);
+    CHECK_NEAR(dl.command(4).border_w, 12.0f, 1e-6f);  // 阴影用 border_w 存扩散半径
+
+    // 退化输入：0 线宽/0 扩散/全透明阴影都不产生命令（免得白算顶点）
+    const int before = dl.command_count();
+    dl.add_round_border(0.0f, 0.0f, 10.0f, 10.0f, 2.0f, 0.0f, 0xFFFFFFFFu);
+    dl.add_shadow(0.0f, 0.0f, 10.0f, 10.0f, 2.0f, 0.0f, 0x00000000u);
+    dl.add_shadow(0.0f, 0.0f, 10.0f, 10.0f, 2.0f, 8.0f, 0x00000000u);  // alpha = 0
+    CHECK_EQ(dl.command_count(), before);
+
+    // 空裁剪域内一律剔除（圆角不享受例外）
+    dl.push_clip(0.0f, 0.0f, 0.0f, 0.0f);
+    const uint32_t culled_before = dl.culled();
+    dl.add_round_rect(0.0f, 0.0f, 10.0f, 10.0f, 2.0f, 0xFFFFFFFFu);
+    dl.add_round_gradient(0.0f, 0.0f, 10.0f, 10.0f, 2.0f, 0xFFFFFFFFu, 0xFF000000u);
+    dl.add_round_border(0.0f, 0.0f, 10.0f, 10.0f, 2.0f, 1.0f, 0xFFFFFFFFu);
+    dl.add_shadow(0.0f, 0.0f, 10.0f, 10.0f, 2.0f, 8.0f, 0x000000FFu);
+    CHECK_EQ(dl.culled() - culled_before, 4u);
+    CHECK_EQ(dl.command_count(), before + 1);   // 只多了那条 PushClip
+}
+
+TEST(bridge, round_family_forwards_scaled_geometry) {
+    gryce_ui::UiDrawList dl;
+    dl.add_round_rect(10.0f, 20.0f, 100.0f, 40.0f, 6.0f, 0x11223344u);
+    const float radii[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    dl.add_round_rect4(0.0f, 0.0f, 50.0f, 20.0f, radii, 0x01020304u);
+    dl.add_round_gradient(5.0f, 5.0f, 80.0f, 24.0f, 4.0f, 0x11111111u, 0x22222222u);
+    dl.add_round_border(0.0f, 0.0f, 80.0f, 24.0f, 4.0f, 2.0f, 0x33333333u);
+    dl.add_shadow(0.0f, 0.0f, 80.0f, 24.0f, 4.0f, 12.0f, 0x00000044u);
+
+    MockRenderer r;
+    gryce_ui::UiRenderBridge bridge;
+    bridge.render(dl, r);
+
+    CHECK_EQ(bridge.draw_commands(), 5);
+    CHECK_EQ(r.count_of(MockCall::Round), 2);          // 纯色 + 逐角
+    CHECK_EQ(r.count_of(MockCall::RoundGradient), 1);
+    CHECK_EQ(r.count_of(MockCall::RoundBorder), 1);
+    CHECK_EQ(r.count_of(MockCall::Shadow), 1);
+
+    // 只看绘制调用（裁剪命令排在最前，跳过它们再按序取）
+    std::vector<const MockCall*> draws;
+    for (const MockCall& c : r.calls) {
+        if (c.kind != MockCall::Scissor && c.kind != MockCall::ResetScissor) draws.push_back(&c);
+    }
+    CHECK_EQ(static_cast<int>(draws.size()), 5);
+    CHECK_EQ(draws[0]->kind, MockCall::Round);
+    CHECK_NEAR(draws[0]->radii[0], 6.0f, 1e-6f);
+    CHECK_NEAR(draws[1]->radii[2], 3.0f, 1e-6f);
+    CHECK_EQ(draws[2]->color, 0x11111111u);            // 渐变上端
+    CHECK_EQ(draws[2]->color2, 0x22222222u);           // 渐变下端
+    CHECK_NEAR(draws[3]->border_w, 2.0f, 1e-6f);
+    CHECK_NEAR(draws[4]->border_w, 12.0f, 1e-6f);
+}
+
+TEST(bridge, round_family_degrades_to_rect_for_plain_renderers) {
+    // 只实现 ui_draw_rect 的渲染器（旧宿主 / 第三方实现）：圆角命令必须仍有
+    // 可见输出（退化成直角），而不是画不出来。
+    class RectOnlyRenderer final : public gryce_ui::UiRenderer {
+    public:
+        int rects = 0;
+        void ui_draw_rect(float, float, float, float, uint32_t) override { ++rects; }
+        void ui_draw_text(float, float, const char*, float, uint32_t) override {}
+        void ui_draw_sprite(float, float, float, float, uint64_t, float, float,
+                            float, float, uint32_t) override {}
+        void ui_set_scissor(float, float, float, float) override {}
+        void ui_reset_scissor() override {}
+    };
+
+    gryce_ui::UiDrawList dl;
+    dl.add_round_rect(0.0f, 0.0f, 40.0f, 20.0f, 4.0f, 0xFFFFFFFFu);
+    dl.add_round_border(0.0f, 0.0f, 40.0f, 20.0f, 4.0f, 1.0f, 0xFFFFFFFFu);
+    dl.add_shadow(0.0f, 0.0f, 40.0f, 20.0f, 4.0f, 10.0f, 0x00000044u);
+
+    RectOnlyRenderer r;
+    gryce_ui::UiRenderBridge bridge;
+    bridge.render(dl, r);
+    CHECK_EQ(r.rects, 5);          // 圆角底 1 + 直角边框 4；阴影默认不画
+    CHECK_EQ(bridge.draw_commands(), 3);
 }
 
 // ===========================================================================

@@ -98,6 +98,90 @@ void UiDrawList::add_rect(float x, float y, float w, float h, uint32_t rgba) {
     emit(c);
 }
 
+void UiDrawList::add_round_rect(float x, float y, float w, float h, float radius, uint32_t rgba) {
+    const float radii[4] = {radius, radius, radius, radius};
+    add_round_rect4(x, y, w, h, radii, rgba);
+}
+
+void UiDrawList::add_round_rect4(float x, float y, float w, float h, const float radii[4],
+                                 uint32_t rgba) {
+    if (cull_active()) {
+        ++culled_;
+        return;
+    }
+    UiCommand c{};
+    c.cmd   = UiCmd::RoundRect;
+    c.x     = x;
+    c.y     = y;
+    c.w     = w;
+    c.h     = h;
+    c.color = rgba;
+    for (int i = 0; i < 4; ++i) c.radii[i] = (radii && radii[i] > 0.0f) ? radii[i] : 0.0f;
+    emit(c);
+}
+
+void UiDrawList::add_round_gradient(float x, float y, float w, float h, float radius,
+                                    uint32_t top, uint32_t bottom) {
+    const float radii[4] = {radius, radius, radius, radius};
+    add_round_gradient4(x, y, w, h, radii, top, bottom);
+}
+
+void UiDrawList::add_round_gradient4(float x, float y, float w, float h, const float radii[4],
+                                     uint32_t top, uint32_t bottom) {
+    if (cull_active()) {
+        ++culled_;
+        return;
+    }
+    UiCommand c{};
+    c.cmd   = UiCmd::RoundRect;
+    c.x     = x;
+    c.y     = y;
+    c.w     = w;
+    c.h     = h;
+    c.color = top;
+    c.color2 = bottom;
+    for (int i = 0; i < 4; ++i) c.radii[i] = (radii && radii[i] > 0.0f) ? radii[i] : 0.0f;
+    emit(c);
+}
+
+void UiDrawList::add_round_border(float x, float y, float w, float h, float radius,
+                                  float thickness, uint32_t rgba) {
+    if (thickness <= 0.0f) return;
+    if (cull_active()) {
+        ++culled_;
+        return;
+    }
+    UiCommand c{};
+    c.cmd      = UiCmd::RoundRectBorder;
+    c.x        = x;
+    c.y        = y;
+    c.w        = w;
+    c.h        = h;
+    c.color    = rgba;
+    c.border_w = thickness;
+    for (int i = 0; i < 4; ++i) c.radii[i] = (radius > 0.0f) ? radius : 0.0f;
+    emit(c);
+}
+
+void UiDrawList::add_shadow(float x, float y, float w, float h, float radius, float spread,
+                            uint32_t rgba) {
+    if (spread <= 0.0f || (rgba & 0xFFu) == 0u) return;
+    if (cull_active()) {
+        ++culled_;
+        return;
+    }
+    UiCommand c{};
+    c.cmd      = UiCmd::Shadow;
+    c.x        = x;
+    c.y        = y;
+    c.w        = w;
+    c.h        = h;
+    c.color    = rgba;
+    c.border_w = spread;
+    for (int i = 0; i < 4; ++i) c.radii[i] = (radius > 0.0f) ? radius : 0.0f;
+    emit(c);
+}
+
 void UiDrawList::add_text(float x, float y, const char* text, float font_size, uint32_t rgba) {
     if (!text || text[0] == '\0') return;  // 空文本不产生命令
     const size_t len = std::strlen(text);

@@ -325,9 +325,15 @@ int BuiltinUi::begin_window(const char* name, const Rect& rect, uint32_t flags) 
     // chrome 先按整个窗口矩形做命中域（标题栏在内容区之上，不能被内容域裁掉）
     tree_.set_clip(eff);
 
-    // 背景板：不参与命中测试（点面板空白处要能清键盘焦点）
+    // 背景板：不参与命中测试（点面板空白处要能清键盘焦点）。
+    // 投影只给"带标题栏的浮窗"：固定分区的平铺面板互相贴着，阴影会画进
+    // 邻居身下（看不见），白花几百个顶点还多一次叠绘。
     Widget* bg = tree_.touch(id, WidgetKind::Panel, eff, name);
-    if (bg) { bg->scope = 0; bg->layer = win->layer; }
+    if (bg) {
+        bg->scope = 0;
+        bg->layer = win->layer;
+        bg->shadow = want_title;
+    }
 
     if (!want_title) {
         tree_.set_clip(content);
@@ -1124,6 +1130,7 @@ int BuiltinUi::begin_popup_id(uint64_t id) {
         if (m) {
             m->scope = id;
             m->layer = 1;
+            m->corner_radius = 0.0f;   // 铺满屏幕：不能圆，否则四角漏出底图
             m->bg_overridden = true;
             m->bg_color = (theme_ && THEME_COLOR_MODAL_WINDOW_DIM_BG < THEME_COLOR_COUNT)
                         ? theme_->colors[THEME_COLOR_MODAL_WINDOW_DIM_BG] : 0x00000080u;
@@ -1142,6 +1149,7 @@ int BuiltinUi::begin_popup_id(uint64_t id) {
     if (panel) {
         panel->scope = 0;
         panel->layer = 1;
+        panel->shadow = true;   // 弹层浮在内容之上，投影是"层级"的唯一线索
         panel->bg_overridden = true;
         panel->bg_color = (theme_ && THEME_COLOR_POPUP_BG < THEME_COLOR_COUNT)
                         ? theme_->colors[THEME_COLOR_POPUP_BG] : 0xFF2A2A2Au;
@@ -1215,6 +1223,7 @@ void BuiltinUi::set_tooltip(const char* text) {
     if (w) {
         w->scope = 0;
         w->layer = 1;
+        w->shadow = true;
     }
     tooltip_visible_ = (w != nullptr);
 }

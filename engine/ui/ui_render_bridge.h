@@ -42,6 +42,7 @@ namespace gryce_ui {
 //
 // 与 IRenderer2D 的对应关系（适配器负责转换）：
 //   ui_draw_rect      → draw_rect
+//   ui_draw_round_*   → draw_round_rect / _gradient / _border / _shadow（美化的圆角族）
 //   ui_draw_text      → draw_text（(x,y) = 行盒左上角；适配器按字体升部比
 //                       换算到渲染器的基线约定，见 ui_render_bridge_rd.cpp）
 //   ui_draw_sprite    → draw_sprite_region
@@ -53,6 +54,33 @@ public:
     virtual ~UiRenderer() = default;
 
     virtual void ui_draw_rect(float x, float y, float w, float h, uint32_t rgba) = 0;
+    // ---- 圆角族（美化）----
+    // 都给了默认实现：只实现 ui_draw_rect 的自定义渲染器照样能跑，最差是
+    // 圆角退化成直角——新增视觉特性不该让既有宿主编不过。
+    virtual void ui_draw_round_rect(float x, float y, float w, float h,
+                                    const float radii[4], uint32_t rgba) {
+        (void)radii;
+        ui_draw_rect(x, y, w, h, rgba);
+    }
+    virtual void ui_draw_round_gradient(float x, float y, float w, float h,
+                                        const float radii[4], uint32_t top, uint32_t bottom) {
+        (void)radii; (void)top;
+        ui_draw_rect(x, y, w, h, bottom);
+    }
+    virtual void ui_draw_round_border(float x, float y, float w, float h,
+                                      const float radii[4], float thickness, uint32_t rgba) {
+        (void)radii;
+        if (thickness <= 0.0f) return;
+        ui_draw_rect(x, y, w, thickness, rgba);
+        ui_draw_rect(x, y + h - thickness, w, thickness, rgba);
+        ui_draw_rect(x, y, thickness, h, rgba);
+        ui_draw_rect(x + w - thickness, y, thickness, h, rgba);
+    }
+    // 阴影是纯装饰：默认实现什么也不画（不影响布局与命中测试）。
+    virtual void ui_draw_shadow(float x, float y, float w, float h,
+                                const float radii[4], float spread, uint32_t rgba) {
+        (void)x; (void)y; (void)w; (void)h; (void)radii; (void)spread; (void)rgba;
+    }
     virtual void ui_draw_text(float x, float y, const char* text, float font_size,
                               uint32_t rgba) = 0;
     virtual void ui_draw_sprite(float x, float y, float w, float h, uint64_t texture,

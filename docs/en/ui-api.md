@@ -499,7 +499,8 @@ ImGui's role on this path changes accordingly: **from "the UI system itself" to 
 | Topic | Rule |
 | --- | --- |
 | Positioning | Model layer: records only "what to draw" (commands + clip stack + string pool); never touches the GPU, so it is unit-testable headless |
-| Commands | Five kinds: `Rect` / `Text` / `Sprite` / `PushClip` / `PopClip`; POD shared by the render bridge and the tests |
+| Commands | Eight kinds: `Rect` / `Text` / `Sprite` / `PushClip` / `PopClip` / `RoundRect` / `RoundRectBorder` / `Shadow`; POD shared by the render bridge and the tests |
+| Rounded-family fields | `radii[4]` (top-left / top-right / bottom-right / bottom-left), `border_w` (stroke width, or shadow spread), `color2` (non-zero = bottom colour of a vertical gradient). Radii are **logical pixels** and scale with the UI scale factor |
 | Coordinates | Top-left origin, +y down, matching `IRenderer2D`'s `top_left_origin` |
 | Clip intersection | `push_clip` intersects with the current clip; an empty intersection (w≤0 or h≤0) enters the cull state |
 | Cull state | Subsequent **draw commands** are dropped and counted in `culled()`; `PushClip`/`PopClip` are still recorded (otherwise there is no way back) |
@@ -510,7 +511,7 @@ ImGui's role on this path changes accordingly: **from "the UI system itself" to 
 | Empty text | `nullptr` or an empty string produces no command (not counted as culled) |
 | Geometry | No normalization: negative w/h is recorded verbatim; geometric correctness belongs to the layout layer |
 
-Demo host check: `GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim|struct` — no ImGui involved; the built-in immediate-mode layer produces the drawlist and the render bridge draws it, for screenshot regression (same host code as `--ui-backend imgui`, only the backend differs). The `struct` page demos collapsing headers, trees, a scrolling child region, popups, a modal and a tooltip; `--ui-scale N` exercises HiDPI.
+Demo host check: `GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim|struct|style` — no ImGui involved; the built-in immediate-mode layer produces the drawlist and the render bridge draws it, for screenshot regression (same host code as `--ui-backend imgui`, only the backend differs). The `struct` page demos collapsing headers, trees, a scrolling child region, popups, a modal and a tooltip; the `style` page puts rounded corners, gradients, strokes and shadows on one screen (including a titled floating window); `--ui-scale N` exercises HiDPI.
 
 ## 7.11 The built-in UI track (`GRender_SetUIBackend(1)`)
 
@@ -549,14 +550,15 @@ The built-in track now has the **same control set** as the ImGui track: one host
 
 | Topic | Built-in behaviour |
 | --- | --- |
-| `BeginWindow` / `EndWindow` | Supported. `GUI_WIN_TITLE_BAR` adds a title bar (draggable, 22px collapse box on the left); `GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` are honoured. Offset, collapsed and scroll state persist per window id, even though the host re-supplies the rect every frame |
+| Appearance | Every widget and every piece of window chrome is drawn with rounded corners, a vertical gradient and a border (radius tiers and implementation in 7.12); floating windows, popups and tooltips also cast a shadow. `Widget::corner_radius = 0` turns rounding off for a single widget (the modal dimmer must do this) |
+| `BeginWindow` / `EndWindow` | Supported. `GUI_WIN_TITLE_BAR` adds a title bar (draggable, 22px collapse box on the left); `GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` are honoured. Offset, collapsed and scroll state persist per window id, even though the host re-supplies the rect every frame. With a title bar the window body gets a gradient and a shadow; the title bar is rounded on top and square at the bottom |
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | Supported; `Text` **wraps** to the content width |
-| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id) |
+| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id). Hover and press swap the border colour instead of the fill; gradients stay at 2%-8% so text is never muddied |
 | `DragFloat` | Real dragging: while held the value follows the **mouse delta** (`speed` units per pixel, Ctrl for 1/10 fine-tuning). There is no "jump where you clicked" semantics |
 | `DragFloat2/3/4` | Degrades to a `DragFloat` on the first component; the rest are read-only |
 | `ColorEdit4` | Swatch plus a popup with R/G/B/A sliders; edits write back immediately |
 | `Combo` | Real dropdown: popup plus menu items, a selection writes back and closes it |
-| `BeginChild` / `EndChild` | Supported: own clip rect (out-of-view items are invisible *and* unclickable), own wheel scrolling and offset. `size=(0,0)` fills the remaining space, as in ImGui |
+| `BeginChild` / `EndChild` | Supported: own clip rect (out-of-view items are invisible *and* unclickable), own wheel scrolling and offset. `size=(0,0)` fills the remaining space, as in ImGui. `border = true` draws a rounded border while clipping stays rectangular, so corners never eat content |
 | `TreeNode` / `TreePop` / `CollapsingHeader` | Supported: open state persists across frames, children indent automatically |
 | `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | Supported: a menu is a popup anchored under its button; clicking an item closes it |
 | Popups: `OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | Supported. Popups draw on layer 2 (always above windows), auto-size their height, and close on an outside click or Esc — `BeginPopup` already returns 0 on that same frame, matching ImGui's NewFrame semantics |
@@ -616,6 +618,37 @@ Bucket policy (`Renderer2D::ensure_text_raster_size`):
 | `set_scissor` / `reset_scissor` flush batches first | Clipping is state, geometry is vertices: pending vertices must be submitted before the clip changes, or both segments inherit the last clip rect |
 | `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI scale (also brings the glyph atlas up to the matching physical size). The GL backend enables `GL_SCISSOR_TEST` on demand in `set_scissor` and disables plus invalidates the cache when the render target changes (otherwise an offscreen pass inherits a screen-space clip) |
 | `GInput_GetWheel(dx,dy)` / `GInput_InjectPreedit(s)` / `GInput_GetPreedit(buf,cap)` | Wheel delta (take-and-clear) and the IME pre-edit string |
+
+## 7.12 Rounded corners / gradients / strokes / shadows
+
+Appearance on the built-in track comes from exactly two layers: theme tokens (`ui_theme.h`) for colour and metrics, and `IRenderer2D` primitives for rasterisation. No new shader sits in between — a rounded rectangle is a polyline expanded on the CPU.
+
+| Topic | Rule |
+| --- | --- |
+| Five rounding tiers | `WINDOW_ROUNDING=6` (windows), `POPUP_ROUNDING=4` (popups/tooltips), `CHILD_ROUNDING=4` (child regions), `FRAME_ROUNDING=4` (buttons, text fields, progress bars), `GRAB_ROUNDING=3` (checkboxes, menu highlight). Geometry only; presets never change them |
+| Per-widget override | `Widget::corner_radius`: `< 0` means "use the tier above", `0` means "square on purpose" (a full-screen modal mask must be 0, otherwise the four corners leak the undimmed scene) |
+| Shadow switch | `Widget::shadow`: on for titled floating windows, popups and tooltips only. Tiled panels sit flush against each other, so their shadow would be painted under the neighbour |
+| Gradient | Panel / button / title-bar fills are a subtle vertical gradient (top brighter). Both ends are derived from the same token by `shade()` (2%–8%), so no extra tokens are needed |
+| Stroke | Width grows inward: the outer silhouette never changes, so neighbouring controls do not shift by a pixel depending on whether a border is present |
+| Focus | A focused text field switches its stroke to `ACCENT` and thickens it by 0.5px; hovered drag fields and checkboxes do the same |
+
+Renderer side (`engine/render/render2d.h`; the default implementations degrade to rectangles, so a third-party `IRenderer2D` still compiles):
+
+```c
+draw_round_rect(x, y, w, h, radii, color);                 // fill
+draw_round_rect_gradient(x, y, w, h, radii, top, bottom);  // vertical gradient
+draw_round_rect_border(x, y, w, h, radii, thickness, c);   // inward stroke
+draw_round_shadow(x, y, w, h, radii, spread, c);           // outer shadow
+```
+
+Anti-aliasing needs neither an SDF nor a new shader: the outline is expanded into a polyline (`arc_segments()` per corner), the fill is a centre fan, and a **1px ring whose alpha ramps from opaque to zero** wraps the edge — vertex-colour interpolation does the softening. Shadows are eight concentric rings with a `(1-t)²` falloff, which reads close to a Gaussian blur while costing only vertices and no offscreen target.
+
+Two traps:
+
+* **Inner and outer outlines must have the same vertex count**, otherwise the ring is dropped entirely (symptom: only the outer half of a stroke or shadow appears, with a blank gap on the inside). The segment count is therefore derived once from the **base** radius and never from the expanded one; corners with radius 0 still emit `seg+1` coincident points (normals interpolated between the two edges), so the count is always `4*(seg+1)`.
+* **Radii must be clamped to `min(w,h)/2`**: 6px on a 22px row is fine, but capsule grabs use `radius = half width`; without clamping a narrow widget produces a self-intersecting polygon.
+
+Covered widgets: buttons, panels/floating windows, progress bar (track + fill), checkbox (including the tick), slider (track + fill + capsule grab), drag field, text field, title bar (top corners only), collapsing header, menu-item highlight, scroll bar (track + thumb), tooltip and child-region border. Square commands remain where they belong: menu-bar strip, separators, selection highlight and the caret.
 
 ## 8. Sharing input with the host
 

@@ -4,8 +4,12 @@
 // 定位：脱离 Dear ImGui 的引擎内置 UI 渲染路径上，本文件是**模型层**——
 // 只记录"画什么"（命令 + 裁剪栈 + 字符串池），不碰 GPU、不依赖渲染器，
 // 因此可以无窗口单测。光栅化由后续的渲染桥把命令翻成 IRenderer2D 调用
-// （draw_rect / draw_text / draw_sprite_region / set_scissor），三后端
-// （D3D12 / Vulkan / GL）自动继承，不需要为 UI 写新 shader。
+// （draw_rect / draw_round_rect / draw_text / draw_sprite_region / set_scissor），
+// 三后端（D3D12 / Vulkan / GL）自动继承，不需要为 UI 写新 shader。
+//
+// 圆角在模型层只是"四个角的半径 + 线宽"，怎么光栅化（折线扇形 + 1px alpha
+// 渐隐边）是渲染器的事——这样直角与圆角共用同一套批次与裁剪策略，圆角不会
+// 因为引入新的图元类型而丢掉裁剪/剔除语义。
 //
 // 与 ImDrawList 的差异：ImDrawList 每帧由 ImGui 内部生成并直接进后端；
 // 本类是 retained 控件层（阶段 3）与渲染桥（阶段 2）之间的稳定契约，
@@ -26,6 +30,12 @@ enum class UiCmd : uint32_t {
     Sprite   = 2,  // 贴图（x/y/w/h + texture + uv + tint）
     PushClip = 3,  // 压入裁剪矩形（与父裁剪相交）
     PopClip  = 4,  // 弹出裁剪矩形
+    // ---- 美化：圆角族（radii 四角、border_w 线宽、color2 渐变下端色）----
+    // 单独成命令而不是在 Rect 上挂可选字段，是为了让渲染桥的分支保持
+    // "一种命令一次调用"——直角矩形是绝大多数背景板/分隔线，不该为圆角付代价。
+    RoundRect       = 5,  // 圆角填充（color2 != 0 时竖直渐变 color → color2）
+    RoundRectBorder = 6,  // 圆角描边（border_w = 线宽，向内生长）
+    Shadow          = 7,  // 圆角外阴影（border_w = 扩散半径，color 带 alpha）
 };
 
 // ---------------------------------------------------------------------------
@@ -55,6 +65,13 @@ struct UiCommand {
     uint32_t text_off = 0;        // Text：字符串池偏移
     uint32_t text_len = 0;        // Text：字节数（不含 '\0'）
     uint32_t clip = 0;            // 发出时的裁剪栈深度
+
+    // ---- 圆角族（RoundRect / RoundRectBorder / Shadow）----
+    // 四角半径按「左上、右上、右下、左下」排列，单位逻辑像素。单值半径由
+    // add_round_rect 展开成四角相同；只有标题栏那种"上圆下方"才需要逐角给。
+    float    radii[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float    border_w = 0.0f;     // Border：线宽；Shadow：扩散半径
+    uint32_t color2 = 0;          // RoundRect：渐变下端色（0 = 纯色填充）
 };
 
 // ---------------------------------------------------------------------------
@@ -93,6 +110,23 @@ public:
 
     // 绘制命令（剔除态/容量满时按上面的策略丢弃）
     void add_rect(float x, float y, float w, float h, uint32_t rgba);
+    // 圆角矩形填充。radius 会被渲染器钳到 min(w,h)/2，负值按 0 处理。
+    void add_round_rect(float x, float y, float w, float h, float radius, uint32_t rgba);
+    // 逐角半径（左上/右上/右下/左下）。
+    void add_round_rect4(float x, float y, float w, float h, const float radii[4],
+                         uint32_t rgba);
+    // 圆角竖直渐变（top → bottom）：面板/标题栏用得上，比纯色更有层次。
+    void add_round_gradient(float x, float y, float w, float h, float radius,
+                            uint32_t top, uint32_t bottom);
+    // 逐角半径的渐变（标题栏"上圆下方"用它）。
+    void add_round_gradient4(float x, float y, float w, float h, const float radii[4],
+                             uint32_t top, uint32_t bottom);
+    // 圆角描边：线宽向内生长（矩形外轮廓不变，尺寸不会因为加边框变大）。
+    void add_round_border(float x, float y, float w, float h, float radius,
+                          float thickness, uint32_t rgba);
+    // 圆角外阴影：spread 是视觉上的扩散半径，rgba 的 alpha 是中心的浓度。
+    void add_shadow(float x, float y, float w, float h, float radius, float spread,
+                    uint32_t rgba);
     void add_text(float x, float y, const char* text, float font_size, uint32_t rgba);
     void add_sprite(float x, float y, float w, float h, uint64_t texture,
                     float u0, float v0, float u1, float v1, uint32_t rgba);

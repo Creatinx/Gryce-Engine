@@ -63,6 +63,17 @@ public:
     void draw_rect(float x, float y, float w, float h, const Color& color) override;
     void draw_polygon(const std::vector<math::Vector2f>& points, const Color& color) override;
     void draw_circle(float cx, float cy, float r, int segments, const Color& color) override;
+    void draw_round_rect(float x, float y, float w, float h,
+                         const float radii[4], const Color& color) override;
+    void draw_round_rect_gradient(float x, float y, float w, float h,
+                                  const float radii[4],
+                                  const Color& top, const Color& bottom) override;
+    void draw_round_rect_border(float x, float y, float w, float h,
+                                const float radii[4], float thickness,
+                                const Color& color) override;
+    void draw_round_shadow(float x, float y, float w, float h,
+                           const float radii[4], float spread,
+                           const Color& color) override;
     void draw_text(float x, float y, const std::string& text, float font_size, const Color& color) override;
 
     // 2D 光照接口

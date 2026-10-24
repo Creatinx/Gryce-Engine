@@ -1305,6 +1305,263 @@ void Renderer2D::draw_circle(float cx, float cy, float r, int segments, const Co
     }
 }
 
+namespace {
+
+// 圆角轮廓上的点：位置 + 单位外法线（沿法线偏移即可做内缩/外扩）。
+struct RoundPt {
+    float x = 0.0f;
+    float y = 0.0f;
+    float nx = 0.0f;
+    float ny = 0.0f;
+};
+
+constexpr float kPi = 3.14159265358979323846f;
+
+// 半径钳制：相邻两角共享一条边，两半径之和超过边长时按比例整体收缩，
+// 否则大圆角会把对边压成负长度，扇形会翻折出自交的黑块。
+void shrink_radii(float w, float h, float radii[4]) {
+    for (int i = 0; i < 4; ++i) {
+        if (!(radii[i] > 0.0f)) radii[i] = 0.0f;
+    }
+    const float max_r = ((w < h) ? w : h) * 0.5f;
+    for (int i = 0; i < 4; ++i) {
+        if (radii[i] > max_r) radii[i] = max_r;
+    }
+    // 四条边各自的约束：T(r0+r1<=w) B(r3+r2<=w) L(r0+r3<=h) R(r1+r2<=h)
+    const float pairs[4][2] = {{0, 1}, {3, 2}, {0, 3}, {1, 2}};
+    const float limits[4] = {w, w, h, h};
+    float scale = 1.0f;
+    for (int k = 0; k < 4; ++k) {
+        const float sum = radii[static_cast<int>(pairs[k][0])] +
+                          radii[static_cast<int>(pairs[k][1])];
+        if (sum > limits[k] && sum > 0.0f) {
+            const float s = limits[k] / sum;
+            if (s < scale) scale = s;
+        }
+    }
+    if (scale < 1.0f) {
+        for (int i = 0; i < 4; ++i) radii[i] *= scale;
+    }
+}
+
+// 每角的分段数：由**基准**半径算，不随 outset 变——内轮廓与外轮廓的顶点数
+// 必须相等才能组成环带；按各自半径各算一套会让"内外点数不同"，环带被整段
+// 丢掉（症状是阴影或描边只剩外半圈）。
+int arc_segments(const float radii[4]) {
+    float m = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        if (radii[i] > m) m = radii[i];
+    }
+    int seg = static_cast<int>(m * 1.2f) + 2;
+    if (seg < 3) seg = 3;
+    if (seg > 16) seg = 16;
+    return seg;
+}
+
+// 外轮廓折线（顺时针，左上原点 +y 向下）。outset > 0 外扩、< 0 内缩：
+// 圆角矩形沿法线偏移 d 正好等于"矩形与半径同时加 d"，所以这里统一处理。
+// 每角恒定输出 seg+1 个点（半径为 0 时全部落在角点上、法线沿两边插值），
+// 这样不同 outset 的轮廓点数一致，环带不会因为点数不齐被丢弃。
+void build_round_outline(float x, float y, float w, float h, const float radii_in[4],
+                         float outset, int seg, std::vector<RoundPt>& out) {
+    out.clear();
+    if (w <= 0.0f || h <= 0.0f) return;
+
+    const float x0 = x - outset;
+    const float y0 = y - outset;
+    const float x1 = x + w + outset;
+    const float y1 = y + h + outset;
+    if (x1 <= x0 || y1 <= y0) return;
+
+    float r[4] = {radii_in[0], radii_in[1], radii_in[2], radii_in[3]};
+    for (int i = 0; i < 4; ++i) {
+        r[i] = (r[i] > 0.0f) ? (r[i] + outset) : 0.0f;
+        if (r[i] < 0.0f) r[i] = 0.0f;
+    }
+    shrink_radii(x1 - x0, y1 - y0, r);
+
+    out.reserve(static_cast<size_t>(seg + 1) * 4);
+
+    // 四角的圆弧中心、起始角、直角时的角点与两条边法线
+    // (顺序：左上 右上 右下 左下)
+    const float cx[4] = {x0 + r[0], x1 - r[1], x1 - r[2], x0 + r[3]};
+    const float cy[4] = {y0 + r[0], y0 + r[1], y1 - r[2], y1 - r[3]};
+    const float a0[4] = {kPi, kPi * 1.5f, 0.0f, kPi * 0.5f};
+    const float px[4] = {x0, x1, x1, x0};
+    const float py[4] = {y0, y0, y1, y1};
+    const float n0x[4] = {-1.0f, 0.0f, 1.0f, 0.0f};
+    const float n0y[4] = {0.0f, -1.0f, 0.0f, 1.0f};
+    const float n1x[4] = {0.0f, 1.0f, 0.0f, -1.0f};
+    const float n1y[4] = {-1.0f, 0.0f, 1.0f, 0.0f};
+
+    for (int k = 0; k < 4; ++k) {
+        for (int i = 0; i <= seg; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(seg);
+            const float a = a0[k] + t * (kPi * 0.5f);
+            const float c = std::cos(a);
+            const float s = std::sin(a);
+            if (r[k] > 0.0f) {
+                out.push_back({cx[k] + r[k] * c, cy[k] + r[k] * s, c, s});
+            } else {
+                float nx = n0x[k] + (n1x[k] - n0x[k]) * t;
+                float ny = n0y[k] + (n1y[k] - n0y[k]) * t;
+                const float len = std::sqrt(nx * nx + ny * ny);
+                if (len > 1e-6f) { nx /= len; ny /= len; }
+                out.push_back({px[k], py[k], nx, ny});
+            }
+        }
+    }
+}
+
+} // namespace
+
+void Renderer2D::draw_round_rect(float x, float y, float w, float h,
+                                 const float radii[4], const Color& color) {
+    draw_round_rect_gradient(x, y, w, h, radii, color, color);
+}
+
+void Renderer2D::draw_round_rect_gradient(float x, float y, float w, float h,
+                                          const float radii[4],
+                                          const Color& top, const Color& bottom) {
+    if (w <= 0.0f || h <= 0.0f) return;
+
+    // 抗锯齿带宽 1 像素：内侧 0.5 -> 外侧 0.5，颜色从中段向外线性淡出。
+    // 用顶点色做渐变而不是贴图/着色器，是因为这条路径的批次只认 position +
+    // color + uv，顶点色插值天然就是"1 像素宽的软边"。
+    constexpr float kAa = 0.5f;
+
+    const int seg = arc_segments(radii);
+    std::vector<RoundPt> inner;
+    std::vector<RoundPt> outer;
+    build_round_outline(x, y, w, h, radii, -kAa, seg, inner);
+    if (inner.size() < 3) return;
+    build_round_outline(x, y, w, h, radii, kAa, seg, outer);
+
+    // 渐变按顶点 y 在 [y, y+h] 上插值（超出范围的顶点按端点夹取）
+    const float inv_h = (h > 0.0f) ? (1.0f / h) : 0.0f;
+    auto color_at = [&](float py) {
+        float t = (py - y) * inv_h;
+        t = (t < 0.0f) ? 0.0f : (t > 1.0f ? 1.0f : t);
+        return Color(top.r + (bottom.r - top.r) * t,
+                     top.g + (bottom.g - top.g) * t,
+                     top.b + (bottom.b - top.b) * t,
+                     top.a + (bottom.a - top.a) * t);
+    };
+
+    // 中心扇形（凸多边形，折线按序展开）
+    const float cx = x + w * 0.5f;
+    const float cy = y + h * 0.5f;
+    const Color center_col = color_at(cy);
+    const size_t n = inner.size();
+    for (size_t i = 0; i < n; ++i) {
+        const RoundPt& a = inner[i];
+        const RoundPt& b = inner[(i + 1) % n];
+        push_vertex(cx, cy, center_col, 0, 0);
+        push_vertex(a.x, a.y, color_at(a.y), 0, 0);
+        push_vertex(b.x, b.y, color_at(b.y), 0, 0);
+    }
+
+    // 边缘渐隐带
+    if (outer.size() == n) {
+        for (size_t i = 0; i < n; ++i) {
+            const RoundPt& a = inner[i];
+            const RoundPt& b = inner[(i + 1) % n];
+            const RoundPt& oa = outer[i];
+            const RoundPt& ob = outer[(i + 1) % n];
+            const Color ca = color_at(a.y);
+            const Color cb = color_at(b.y);
+            const Color ta(ca.r, ca.g, ca.b, 0.0f);
+            const Color tb(cb.r, cb.g, cb.b, 0.0f);
+            push_vertex(a.x, a.y, ca, 0, 0);
+            push_vertex(b.x, b.y, cb, 0, 0);
+            push_vertex(ob.x, ob.y, tb, 0, 0);
+
+            push_vertex(a.x, a.y, ca, 0, 0);
+            push_vertex(ob.x, ob.y, tb, 0, 0);
+            push_vertex(oa.x, oa.y, ta, 0, 0);
+        }
+    }
+}
+
+void Renderer2D::draw_round_rect_border(float x, float y, float w, float h,
+                                        const float radii[4], float thickness,
+                                        const Color& color) {
+    if (w <= 0.0f || h <= 0.0f || thickness <= 0.0f) return;
+    if (thickness > (w < h ? w : h) * 0.5f) thickness = (w < h ? w : h) * 0.5f;
+
+    constexpr float kAa = 0.5f;
+    std::vector<RoundPt> edge;     // 外沿（描边外边界再向内 0.5，AA 的中点）
+    std::vector<RoundPt> outer;    // 真正的外边界（alpha 0）
+    std::vector<RoundPt> innr;     // 描边内边界
+    const int seg = arc_segments(radii);
+    build_round_outline(x, y, w, h, radii, -kAa, seg, edge);
+    build_round_outline(x, y, w, h, radii, kAa, seg, outer);
+    build_round_outline(x, y, w, h, radii, -kAa - thickness, seg, innr);
+    if (edge.size() < 3 || innr.size() != edge.size() || outer.size() != edge.size()) return;
+
+    const Color clear(color.r, color.g, color.b, 0.0f);
+    const size_t n = edge.size();
+    for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        // 外侧 AA 带
+        push_vertex(edge[i].x, edge[i].y, color, 0, 0);
+        push_vertex(outer[i].x, outer[i].y, clear, 0, 0);
+        push_vertex(outer[j].x, outer[j].y, clear, 0, 0);
+
+        push_vertex(edge[i].x, edge[i].y, color, 0, 0);
+        push_vertex(outer[j].x, outer[j].y, clear, 0, 0);
+        push_vertex(edge[j].x, edge[j].y, color, 0, 0);
+
+        // 实心描边带
+        push_vertex(edge[i].x, edge[i].y, color, 0, 0);
+        push_vertex(edge[j].x, edge[j].y, color, 0, 0);
+        push_vertex(innr[j].x, innr[j].y, color, 0, 0);
+
+        push_vertex(edge[i].x, edge[i].y, color, 0, 0);
+        push_vertex(innr[j].x, innr[j].y, color, 0, 0);
+        push_vertex(innr[i].x, innr[i].y, color, 0, 0);
+    }
+}
+
+void Renderer2D::draw_round_shadow(float x, float y, float w, float h,
+                                   const float radii[4], float spread,
+                                   const Color& color) {
+    if (w <= 0.0f || h <= 0.0f || spread <= 0.0f || color.a <= 0.0f) return;
+
+    // 把扩散半径切成同心环：alpha 按 (1 - d/spread)^2 衰减，看起来接近高斯，
+    // 但只用顶点色——不需要额外的模糊 pass，也不会为了阴影引入离屏目标。
+    constexpr int kRings = 8;
+    const int seg = arc_segments(radii);
+    std::vector<RoundPt> outer;
+    std::vector<RoundPt> inner;
+    for (int i = 0; i < kRings; ++i) {
+        const float t0 = static_cast<float>(i) / static_cast<float>(kRings);
+        const float t1 = static_cast<float>(i + 1) / static_cast<float>(kRings);
+        const float d0 = spread * t0;
+        const float d1 = spread * t1;
+        const float tmid = (t0 + t1) * 0.5f;
+        const float falloff = 1.0f - tmid;
+        const Color c(color.r, color.g, color.b, color.a * falloff * falloff);
+
+        build_round_outline(x, y, w, h, radii, d0, seg, inner);
+        build_round_outline(x, y, w, h, radii, d1, seg, outer);
+        if (inner.size() < 3 || inner.size() != outer.size()) continue;
+
+        const size_t n = inner.size();
+        for (size_t k = 0; k < n; ++k) {
+            const size_t j = (k + 1) % n;
+            push_vertex(inner[k].x, inner[k].y, c, 0, 0);
+            push_vertex(outer[k].x, outer[k].y, c, 0, 0);
+            push_vertex(outer[j].x, outer[j].y, c, 0, 0);
+
+            push_vertex(inner[k].x, inner[k].y, c, 0, 0);
+            push_vertex(outer[j].x, outer[j].y, c, 0, 0);
+            push_vertex(inner[j].x, inner[j].y, c, 0, 0);
+        }
+    }
+}
+
+
 // 逐码点遍历 UTF-8（不做合法性校验：非法字节按单字节码点处理，字形查不到
 // 自然跳过——比抛错/丢整串更接近"显示得出来的都显示"）。
 template <typename F>

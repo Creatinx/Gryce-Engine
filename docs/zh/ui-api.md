@@ -499,7 +499,8 @@ ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编
 | 主题 | 规则 |
 | --- | --- |
 | 定位 | 模型层：只记录"画什么"（命令 + 裁剪栈 + 字符串池），不碰 GPU，可无窗口单测 |
-| 命令 | `Rect` / `Text` / `Sprite` / `PushClip` / `PopClip` 五类；POD，渲染桥与测试共用 |
+| 命令 | `Rect` / `Text` / `Sprite` / `PushClip` / `PopClip` / `RoundRect` / `RoundRectBorder` / `Shadow` 八类；POD，渲染桥与测试共用 |
+| 圆角族字段 | `radii[4]`（左上/右上/右下/左下）、`border_w`（描边线宽 / 阴影扩散半径）、`color2`（非 0 = 竖直渐变的下端色）；半径单位是**逻辑像素**，跟着 UI 缩放一起放大 |
 | 坐标系 | 左上原点、+y 向下，与 `IRenderer2D` 的 `top_left_origin` 一致 |
 | 裁剪相交 | `push_clip` 与当前裁剪取交集；交集为空（w≤0 或 h≤0）进入剔除态 |
 | 剔除态 | 后续**绘制命令**直接丢弃并计 `culled()`；`PushClip`/`PopClip` 照常记录（否则恢复不回来） |
@@ -510,7 +511,7 @@ ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编
 | 空文本 | `nullptr` 或空串不产生命令（不计 culled） |
 | 几何 | 不规范化：w/h 为负原样记录，几何正确性由布局层负责 |
 
-演示宿主验证方式：`GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim|struct`——不经过 ImGui、直接由内置即时模式层生成 drawlist 并经渲染桥画到屏幕，用于截图回归（与 `--ui-backend imgui` 同一份宿主代码，只换后端）。`struct` 页演示折叠头/树/可滚子区域/弹层/模态/提示；`--ui-scale N` 验证 HiDPI。
+演示宿主验证方式：`GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim|struct|style`——不经过 ImGui、直接由内置即时模式层生成 drawlist 并经渲染桥画到屏幕，用于截图回归（与 `--ui-backend imgui` 同一份宿主代码，只换后端）。`struct` 页演示折叠头/树/可滚子区域/弹层/模态/提示；`style` 页把圆角/渐变/描边/投影一次摆出来（含带标题栏的浮窗）；`--ui-scale N` 验证 HiDPI。
 
 ## 7.11 内置 UI 轨（`GRender_SetUIBackend(1)`）
 
@@ -549,14 +550,15 @@ debug_ui_submit_locked()            主线程，锁已持有
 
 | 主题 | 内置轨行为 |
 | --- | --- |
-| `BeginWindow` / `EndWindow` | 支持。`GUI_WIN_TITLE_BAR` 给标题栏（可拖动、左侧 22px 折叠框），`GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` 生效；位移/折叠/滚动按窗口 id 跨帧存活（宿主每帧重给矩形也不丢） |
+| 外观 | 控件与窗口 chrome 全部走圆角 + 纵向渐变 + 描边（半径档位与实现见 7.12）；浮窗、弹层、提示额外带投影。`Widget::corner_radius = 0` 可对单个控件关掉圆角（模态遮罩必须这么做） |
+| `BeginWindow` / `EndWindow` | 支持。`GUI_WIN_TITLE_BAR` 给标题栏（可拖动、左侧 22px 折叠框），`GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` 生效；位移/折叠/滚动按窗口 id 跨帧存活（宿主每帧重给矩形也不丢）。带标题栏时窗口底为渐变 + 投影，标题栏上两角圆、下两角直 |
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | 支持；`Text` 按内容区宽度**自动折行** |
-| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id） |
+| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id）。悬停/按下换描边色而非换底色，渐变幅度 2%~8% 不压文字 |
 | `DragFloat` | 支持真拖拽：按住后按**鼠标位移**改值（`speed` 单位/像素，按住 Ctrl 走 1/10 精调）；没有"点哪算哪"的语义 |
 | `DragFloat2/3/4` | 退化成第一个分量的 `DragFloat`；其余分量只读显示 |
 | `ColorEdit4` | 色块 + 点开的弹层（R/G/B/A 四条滑块），弹层内改动即时回写 |
 | `Combo` | 真下拉：点开弹层 + 菜单项，选中后回写并关闭 |
-| `BeginChild` / `EndChild` | 支持：自有裁剪域（超出不可见也不可点）、自有滚轮与滚动偏移。`size=(0,0)` = 占满剩余空间（与 ImGui 同义） |
+| `BeginChild` / `EndChild` | 支持：自有裁剪域（超出不可见也不可点）、自有滚轮与滚动偏移。`size=(0,0)` = 占满剩余空间（与 ImGui 同义）。`border = true` 画圆角描边（裁剪仍按矩形，四角不会切进内容） |
 | `TreeNode` / `TreePop` / `CollapsingHeader` | 支持：展开态跨帧存活，子项自动缩进 |
 | `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | 支持：菜单就是"贴着按钮下沿打开的弹层"，点菜单项自动关闭 |
 | 弹层：`OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | 支持。弹层画在第二层（永远盖住窗口），自适应高度；点外面或 Esc 关闭（同一帧 `BeginPopup` 即返回 0，与 ImGui 的 NewFrame 语义一致） |
@@ -616,6 +618,37 @@ debug_ui_submit_locked()            主线程，锁已持有
 | `set_scissor` / `reset_scissor` 先 `flush_batches()` | 裁剪是状态、绘制是顶点：改裁剪前必须把已缓冲顶点提交，否则前后两段一起吃最后一次裁剪域 |
 | `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI 倍率（顺带把字形图集补到对应的物理字号档）。GL 后端在 `set_scissor` 里按需开 `GL_SCISSOR_TEST`，换渲染目标时关掉并作废缓存（否则离屏 pass 会被上一段的屏幕坐标裁剪域切掉） |
 | `GInput_GetWheel(dx,dy)` / `GInput_InjectPreedit(s)` / `GInput_GetPreedit(buf,cap)` | 滚轮（取走即清零）与输入法组合串 |
+
+## 7.12 圆角 / 渐变 / 描边 / 投影（美化）
+
+内置轨的外观全部由**主题 token + 渲染器图元**两层决定：颜色/度量在 `ui_theme.h`，几何光栅化在 `IRenderer2D`。中间不引入任何新的着色器——圆角是 CPU 侧展开的折线多边形。
+
+| 主题 | 规则 |
+| --- | --- |
+| 四档圆角 | `WINDOW_ROUNDING=6`（窗口）、`POPUP_ROUNDING=4`（弹层/提示）、`CHILD_ROUNDING=4`（子区域）、`FRAME_ROUNDING=4`（按钮/输入框/进度条）、`GRAB_ROUNDING=3`（复选框/菜单高亮）。全都只用几何、不随预设变 |
+| 单控件覆盖 | `Widget::corner_radius`：`< 0` 用上面那档默认值，`0` = 明确要直角（模态遮罩铺满屏幕时必须给 0，否则四角漏出没压暗的底图） |
+| 投影开关 | `Widget::shadow`：只有浮窗（带标题栏）、弹层、工具提示打开。平铺面板互相贴着，影子画进邻居身下等于白花顶点 |
+| 渐变 | 面板/按钮/标题栏的填充是"上亮下暗"的竖直渐变，两端色由 `shade()` 从同一个 token 推出来（±2%~8%），不额外增加 token |
+| 描边 | 线宽向内生长：外轮廓尺寸不因加边框变大，相邻控件的对齐不会因为有没有边框而漂 1 像素 |
+| 聚焦态 | 输入框聚焦时描边换成 `ACCENT` 并加粗 0.5 像素；悬停的拖拽框/复选框描边也换 `ACCENT` |
+
+渲染器一侧（`engine/render/render2d.h`，默认实现退化成直角，所以第三方 `IRenderer2D` 实现不会因为 UI 用圆角而编不过）：
+
+```c
+draw_round_rect(x, y, w, h, radii, color);                 // 填充
+draw_round_rect_gradient(x, y, w, h, radii, top, bottom);  // 竖直渐变
+draw_round_rect_border(x, y, w, h, radii, thickness, c);   // 描边（向内）
+draw_round_shadow(x, y, w, h, radii, spread, c);           // 外阴影
+```
+
+抗锯齿不用 SDF/新 shader：外轮廓按角展开成折线（每角 `arc_segments()` 段），填充用中心扇形，边缘再加一条**1 像素宽、alpha 由实到 0 的环带**——顶点色插值本身就把硬边化成软边。阴影是 8 层同心环 + `(1-t)²` 衰减，看上去接近高斯模糊，但只花顶点、不需要离屏目标。
+
+两个容易踩的点：
+
+* **内轮廓与外轮廓的顶点数必须相等**，否则环带直接被丢（症状：描边/阴影只剩外半圈、内侧留一道空白）。所以分段数由**基准半径**算一次，不随外扩量变；半径为 0 的角也照常输出 `seg+1` 个重合点（法线沿两边插值），点数恒为 `4*(seg+1)`。
+* **半径要钳到 `min(w,h)/2`**：`22px` 的行高配 `6px` 圆角没问题，但胶囊形抓柄是 `半径 = 半宽`，不钳的话窄控件会画出翻折的自交多边形。
+
+覆盖到的控件：按钮、面板/浮窗、进度条（轨道+填充）、复选框（含勾选块）、滑块（轨道+填充+胶囊抓柄）、拖拽数值框、输入框、标题栏（只有上两角圆）、折叠头、菜单项高亮、滚动条（轨道+滑块）、工具提示、子区域边框。直角命令仍保留：菜单栏底条、分隔线、选区高亮、插入符。
 
 ## 8. 与宿主输入的分工
 

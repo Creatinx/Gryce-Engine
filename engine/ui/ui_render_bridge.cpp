@@ -64,6 +64,24 @@ void UiRenderBridge::render(const UiDrawList& list, UiRenderer& renderer) {
                                         c.u0, c.v0, c.u1, c.v1, c.color);
                 ++draws_;
                 break;
+            case UiCmd::RoundRect:
+                if (c.color2 != 0u) {
+                    renderer.ui_draw_round_gradient(c.x, c.y, c.w, c.h, c.radii,
+                                                    c.color, c.color2);
+                } else {
+                    renderer.ui_draw_round_rect(c.x, c.y, c.w, c.h, c.radii, c.color);
+                }
+                ++draws_;
+                break;
+            case UiCmd::RoundRectBorder:
+                renderer.ui_draw_round_border(c.x, c.y, c.w, c.h, c.radii,
+                                              c.border_w, c.color);
+                ++draws_;
+                break;
+            case UiCmd::Shadow:
+                renderer.ui_draw_shadow(c.x, c.y, c.w, c.h, c.radii, c.border_w, c.color);
+                ++draws_;
+                break;
             case UiCmd::PushClip:
             case UiCmd::PopClip:
                 // 裁剪命令不产生绘制调用；它们的作用已经体现在上面的深度切换里
