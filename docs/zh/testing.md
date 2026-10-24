@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 35 条用例，分六个宿主。
+当前共 39 条用例，分六个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -78,7 +78,7 @@ ctest --test-dir build --output-on-failure
 | `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
 | `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
 
-### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，9 条）
+### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，11 条）
 
 被测源码（`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`）直编进测试可执行文件，不链 GryceRenderer.dll；且**不定义 `GRYCE_HAS_IMGUI`**——同时验证"关掉 ImGui 的构建里队列与模型层照样能用"（无窗口宿主也走这条路）。`GRYCE_RENDERER_BUILDING` 让导出宏变成 dllexport，静态 exe 内自链接。
 
@@ -86,13 +86,15 @@ ctest --test-dir build --output-on-failure
 
 `abi` 套件测 C 接口层：字段往返与 seq 由引擎填写、经 ABI 的合并与离散、策略读写、间隔节流、`GUi_ClearOps`、统计与查询容忍 nullptr、坏参数拒绝、请求超过容量时按容量封顶。ABI 作用在进程内唯一队列上，用例之间靠"清空 + 推进若干帧"隔离残留的间隔状态。
 
-`state` / `layout` / `theme` / `input` / `snapshot` 五个套件测 `engine/ui/` 模型层：稳定 id 与状态存储（老化边界、截断、清空、计数 ABI）、确定性布局栈（嵌套面板、行高取 `max(行高, 最高格)`、自动收行、缩进）、主题 token（预设、逐项覆盖、越界容忍、无 ImGui 时 apply 为 no-op）、输入门控与快捷键表（精确匹配修饰键、注册期报冲突、容量）、面板视图模型的 JSON 往返（64 位 id 走十进制字符串、坏行跳过、宽容读取、容量截断）。
+`state` / `layout` / `theme` / `input` / `snapshot` 五个套件测 `engine/ui/` 模型层：稳定 id 与状态存储（老化边界、截断、清空、计数 ABI）、确定性布局栈（嵌套面板、行高取 `max(行高, 最高格)`、自动收行、缩进）、主题 token（5 套预设锚色、预设数量与名字、派生 token 跨预设一致性、逐项覆盖不跨预设存活、越界容忍、无 ImGui 时 apply 为 no-op、圆角/滚动条度量）、输入门控与快捷键表（精确匹配修饰键、注册期报冲突、容量）、面板视图模型的 JSON 往返（64 位 id 走十进制字符串、坏行跳过、宽容读取、容量截断）。
 
 `comp` 套件测组件树布局：add/find/remove 与子树连带删除、父级必须存在、容量上限、子节点顺序、`set` 换父级做环检查、**非布局父级保留直写 pos**、Column 堆叠、Row 交叉轴四种对齐、flex 分配主轴剩余空间、溢出钳到 0、Grid 等宽列与行高、padding 缩内容区、嵌套树、退化容器。`compabi` 套件测同一套语义经 C 面的往返（spec 字段、越界枚举拒绝、坏参数返回约定）。
 
-队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节，组件树布局见第 7.7 节。
+`anim` 套件测动画系统：块一纯函数（11 种缓动的边界对齐与区间夹取、回弹过冲后回落、补间的延迟/越界/零时长、颜色插值夹取、关键帧有序插入与同刻覆盖、区间外保持、段缓动取自前一个关键帧、容量）与块二运行时（片段时长推导与同名轨道覆盖、Once 播完置 finished 且停在终点、Loop 回绕与 PingPong 折叠、速度/seek/暂停/停止、轨道 delay 期间保持初始值、颜色通道与类型纪律、换片段重建通道表、无片段时全操作 no-op）。`animabi` 套件测 C 面：缓动与名字的模型一致性（含越界枚举）、补间/颜色助手、以及"建 C 片段 → 播放 → 推进 → 读通道 → 暂停/变速/seek/停止"的完整闭环。
 
-`GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。Layout 页（`--page layout` / `Ctrl+3`）画一棵 20 个组件的树，每帧 `GUi_CompResolve()` 后逐组件取矩形画窗口——组件窗口**不传** `GUI_WIN_NO_BRING_TO_FRONT`，否则子窗口会被压到父窗口底下（原因见 ui-api.md 第 7.7 节）。
+队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节，组件树布局见第 7.7 节，主题预设与美化见第 7.8 节，动画系统两块见第 7.9 节。
+
+`GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。Layout 页（`--page layout` / `Ctrl+3`）画一棵 20 个组件的树，每帧 `GUi_CompResolve()` 后逐组件取矩形画窗口——组件窗口**不传** `GUI_WIN_NO_BRING_TO_FRONT`，否则子窗口会被压到父窗口底下（原因见 ui-api.md 第 7.7 节）。Anim 页（`--page anim` / `Ctrl+4`）面板里是块一纯函数演示（缓动组合框 + 补间进度条 + 颜色插值色块），右侧舞台是块二：一根 2 秒片段驱动四个组件（滑移/脉冲/弹跳/错峰入场），这些组件父级为 0，动画直写 pos 不会被布局覆盖。
 
 ## 3. 执行注意
 

@@ -15,6 +15,7 @@
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
 #include "ui/ui_component.h"
+#include "ui/ui_anim.h"
 #include "ui/ui_id.h"
 #include "ui/ui_input.h"
 #include "ui/ui_layout.h"
@@ -111,6 +112,11 @@ Layout& layout() {
 ComponentTree& components() {
     static ComponentTree t;
     return t;
+}
+
+Animator& animator() {
+    static Animator a;
+    return a;
 }
 
 ShortcutTable& shortcuts() {
@@ -478,6 +484,21 @@ int GUi_ColorEdit4(const char* label, float v[4]) {
     return ImGui::ColorEdit4(label ? label : "", v, ImGuiColorEditFlags_Float) ? 1 : 0;
 #else
     (void)label; (void)v;
+    return 0;
+#endif
+}
+
+int GUi_ColorButton(const char* label, const float rgba[4]) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return 0;
+    const ImVec4 c = rgba ? ImVec4(rgba[0], rgba[1], rgba[2], rgba[3])
+                          : ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+    return ImGui::ColorButton(label ? label : "", c,
+                              ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop)
+               ? 1
+               : 0;
+#else
+    (void)label; (void)rgba;
     return 0;
 #endif
 }
@@ -949,10 +970,29 @@ static_assert(GUI_THEME_COLOR_WINDOW_BG == static_cast<int>(gryce_ui::THEME_COLO
               "theme color token mismatch");
 static_assert(GUI_THEME_COLOR_COUNT == static_cast<int>(gryce_ui::THEME_COLOR_COUNT),
               "theme color token count mismatch");
+static_assert(GUI_THEME_COLOR_CHECK_MARK == static_cast<int>(gryce_ui::THEME_COLOR_CHECK_MARK),
+              "theme color token mismatch (extended)");
+static_assert(GUI_THEME_COLOR_TAB_DIMMED_SELECTED ==
+                  static_cast<int>(gryce_ui::THEME_COLOR_TAB_DIMMED_SELECTED),
+              "theme color token mismatch (extended tail)");
 static_assert(GUI_THEME_METRIC_ROW_H == static_cast<int>(gryce_ui::THEME_METRIC_ROW_H),
               "theme metric token mismatch");
 static_assert(GUI_THEME_METRIC_COUNT == static_cast<int>(gryce_ui::THEME_METRIC_COUNT),
               "theme metric token count mismatch");
+static_assert(GUI_THEME_METRIC_GRAB_MIN_SIZE ==
+                  static_cast<int>(gryce_ui::THEME_METRIC_GRAB_MIN_SIZE),
+              "theme metric token mismatch (extended tail)");
+static_assert(GUI_THEME_PRESET_COUNT == static_cast<int>(gryce_ui::THEME_PRESET_COUNT),
+              "theme preset count mismatch");
+static_assert(GUI_THEME_PRESET_HIGH_CONTRAST ==
+                  static_cast<int>(gryce_ui::THEME_PRESET_HIGH_CONTRAST),
+              "theme preset mismatch");
+static_assert(GUI_ANIM_EASE_COUNT == gryce_ui::kAnimEaseCount, "anim ease count mismatch");
+static_assert(GUI_ANIM_EASE_OUT_BOUNCE ==
+                  static_cast<int>(gryce_ui::AnimEase::EaseOutBounce),
+              "anim ease token mismatch");
+static_assert(GUI_ANIM_LOOP_PINGPONG == static_cast<int>(gryce_ui::AnimLoop::PingPong),
+              "anim loop token mismatch");
 
 uint64_t GUi_MakeId(const char* label, uint64_t seed) {
     return gryce_ui::hash_label(label, seed);
@@ -1197,6 +1237,174 @@ float GUi_ThemeMetric(int token) {
 
 void GUi_ThemeApply(void) {
     gryce_ui::apply();
+}
+
+int GUi_ThemePresetCount(void) {
+    return gryce_ui::THEME_PRESET_COUNT;
+}
+
+int GUi_ThemePresetName(int preset, char* out_buf, int cap) {
+    if (!out_buf || cap <= 0) return 0;
+    const char* name = gryce_ui::theme_preset_name(preset);
+    const size_t n = std::strlen(name);
+    if (n >= static_cast<size_t>(cap)) {
+        std::memcpy(out_buf, name, static_cast<size_t>(cap) - 1);
+        out_buf[cap - 1] = '\0';
+        return cap - 1;
+    }
+    std::memcpy(out_buf, name, n + 1);
+    return static_cast<int>(n);
+}
+
+// ---------------------------------------------------------------------------
+// 动画系统（纯数据：与 ImGui 无关，回调内外都可调）
+//
+// 块一的三个纯函数直接转发模型层；块二的播放器是进程内唯一实例
+// （多播放器场景直接实例化 gryce_ui::Animator，不走 C 面）。
+// ---------------------------------------------------------------------------
+namespace {
+
+gryce_ui::AnimEase to_ease(int ease) {
+    if (ease < 0 || ease >= gryce_ui::kAnimEaseCount) return gryce_ui::AnimEase::Linear;
+    return static_cast<gryce_ui::AnimEase>(ease);
+}
+
+gryce_ui::AnimLoop to_loop(int loop) {
+    if (loop < 0 || loop > static_cast<int>(gryce_ui::AnimLoop::PingPong)) {
+        return gryce_ui::AnimLoop::Once;
+    }
+    return static_cast<gryce_ui::AnimLoop>(loop);
+}
+
+// C 结构体 -> 模型层轨道。越界枚举退回默认值（C 调用方可能传来垃圾）。
+gryce_ui::AnimClipTrack to_track(const GUiAnimTrack* t) {
+    gryce_ui::AnimClipTrack out{};
+    if (!t) return out;
+    std::strncpy(out.channel, t->channel, sizeof(out.channel) - 1);
+    out.channel[sizeof(out.channel) - 1] = '\0';
+    out.delay    = t->delay;
+    out.is_color = t->is_color ? 1 : 0;
+    out.ease     = to_ease(t->ease);
+    out.duration = t->duration;
+    out.color_from.r = t->color_from[0];
+    out.color_from.g = t->color_from[1];
+    out.color_from.b = t->color_from[2];
+    out.color_from.a = t->color_from[3];
+    out.color_to.r = t->color_to[0];
+    out.color_to.g = t->color_to[1];
+    out.color_to.b = t->color_to[2];
+    out.color_to.a = t->color_to[3];
+    for (int i = 0; i < t->key_count && i < gryce_ui::AnimTrack::kMaxKeys; ++i) {
+        out.keys.add(t->keys[i].t, t->keys[i].v, to_ease(t->keys[i].ease));
+    }
+    return out;
+}
+
+gryce_ui::AnimClip to_clip(const GUiAnimClip* c) {
+    gryce_ui::AnimClip out{};
+    if (!c) return out;
+    std::strncpy(out.name, c->name, sizeof(out.name) - 1);
+    out.name[sizeof(out.name) - 1] = '\0';
+    out.duration = c->duration;
+    out.loop     = to_loop(c->loop);
+    for (int i = 0; i < c->track_count && i < gryce_ui::AnimClip::kMaxTracks; ++i) {
+        out.add_track(to_track(&c->tracks[i]));
+    }
+    return out;
+}
+
+} // namespace
+
+float GUi_AnimEase(int ease, float t) {
+    return gryce_ui::anim_ease(to_ease(ease), t);
+}
+
+void GUi_AnimTween(float from, float to, float duration, float delay, int ease, float t,
+                   float* out) {
+    if (!out) return;
+    gryce_ui::AnimTween tw;
+    tw.from     = from;
+    tw.to       = to;
+    tw.duration = duration;
+    tw.delay    = delay;
+    tw.ease     = to_ease(ease);
+    *out = tw.value_at(t);
+}
+
+void GUi_AnimColorLerp(const float a[4], const float b[4], float t, float out[4]) {
+    if (!out) return;
+    gryce_ui::AnimColor ca{}, cb{};
+    if (a) { ca.r = a[0]; ca.g = a[1]; ca.b = a[2]; ca.a = a[3]; }
+    if (b) { cb.r = b[0]; cb.g = b[1]; cb.b = b[2]; cb.a = b[3]; }
+    const gryce_ui::AnimColor r = gryce_ui::anim_color_lerp(ca, cb, t);
+    out[0] = r.r; out[1] = r.g; out[2] = r.b; out[3] = r.a;
+}
+
+int GUi_AnimEaseName(int ease, char* out_buf, int cap) {
+    if (!out_buf || cap <= 0) return 0;
+    // 与 to_ease 的"退回 Linear"不同：名字必须忠实。越界就是没有名字，
+    // 回退成 "Linear" 会让调用方把一段非法动画显示成线性动画。
+    const char* name = (ease >= 0 && ease < GUI_ANIM_EASE_COUNT)
+                           ? gryce_ui::anim_ease_name(static_cast<gryce_ui::AnimEase>(ease))
+                           : "";
+    const size_t n = std::strlen(name);
+    if (n >= static_cast<size_t>(cap)) {
+        std::memcpy(out_buf, name, static_cast<size_t>(cap) - 1);
+        out_buf[cap - 1] = '\0';
+        return cap - 1;
+    }
+    std::memcpy(out_buf, name, n + 1);
+    return static_cast<int>(n);
+}
+
+float GUi_AnimClipDuration(const GUiAnimClip* clip) {
+    return to_clip(clip).computed_duration();
+}
+
+void GUi_AnimPlay(const GUiAnimClip* clip, int restart) {
+    gryce_ui::animator().play(to_clip(clip), restart != 0);
+}
+
+void GUi_AnimStop(void) { gryce_ui::animator().stop(); }
+void GUi_AnimPause(void) { gryce_ui::animator().pause(); }
+void GUi_AnimResume(void) { gryce_ui::animator().resume(); }
+void GUi_AnimSetSpeed(float speed) { gryce_ui::animator().set_speed(speed); }
+void GUi_AnimSeek(float t) { gryce_ui::animator().seek(t); }
+void GUi_AnimAdvance(float dt) { gryce_ui::animator().advance(dt); }
+
+int GUi_AnimIsPlaying(void) { return gryce_ui::animator().is_playing() ? 1 : 0; }
+int GUi_AnimIsFinished(void) { return gryce_ui::animator().is_finished() ? 1 : 0; }
+float GUi_AnimTime(void) { return gryce_ui::animator().time(); }
+
+int GUi_AnimChannelCount(void) { return gryce_ui::animator().channel_count(); }
+
+int GUi_AnimChannelName(int index, char* out_buf, int cap) {
+    if (!out_buf || cap <= 0) return 0;
+    const char* name = gryce_ui::animator().channel_name(index);
+    const size_t n = std::strlen(name);
+    if (n >= static_cast<size_t>(cap)) {
+        std::memcpy(out_buf, name, static_cast<size_t>(cap) - 1);
+        out_buf[cap - 1] = '\0';
+        return cap - 1;
+    }
+    std::memcpy(out_buf, name, n + 1);
+    return static_cast<int>(n);
+}
+
+int GUi_AnimChannelFloat(const char* name, float* out) {
+    float v = 0.0f;
+    const int ok = gryce_ui::animator().channel_float(name, &v) ? 1 : 0;
+    if (out) *out = v;
+    return ok;
+}
+
+int GUi_AnimChannelColor(const char* name, float out[4]) {
+    gryce_ui::AnimColor c{};
+    if (!gryce_ui::animator().channel_color(name, &c)) return 0;
+    if (out) {
+        out[0] = c.r; out[1] = c.g; out[2] = c.b; out[3] = c.a;
+    }
+    return 1;
 }
 
 int GUi_ShouldDispatchShortcut(void) {

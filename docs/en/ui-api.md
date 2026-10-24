@@ -84,7 +84,7 @@ GUi_BeginMenuBar(); GUi_BeginMenu(label); GUi_MenuItem(label, shortcut, enabled)
 | --- | --- |
 | Text | `GUi_Text` / `GUi_TextColored(color, text)` / `GUi_LabelText` / `GUi_Separator` / `GUi_Spacing` / `GUi_SameLine(spacing)` |
 | Buttons | `GUi_Button` / `GUi_ButtonSize` / `GUi_SmallButton` / `GUi_Selectable(label, selected)` / `GUi_SetItemAllowOverlap` |
-| Values | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` |
+| Values | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` / `GUi_ColorButton(label, rgba)` |
 | Text input | `GUi_InputText` / `GUi_SetKeyboardFocusHere` / `GUi_IsItemDeactivatedAfterEdit` |
 | Enums | `GUi_Combo(label, current, items, count)` |
 | Trees | `GUi_TreeNode(label, default_open)` + `GUi_TreePop` / `GUi_CollapsingHeader` |
@@ -365,6 +365,119 @@ The C surface lives in the "component tree layout (retained mode)" section of `u
 2. **Do not size components below 32px.** imgui's `WindowMinSize` defaults to (32, 32); an explicit `SetNextWindowSize` smaller than that is clamped anyway. If a container draws its label on its own first line, reserve that line with the top `padding` (24 in the demo) instead of expecting the window to shrink.
 
 Demo: `--page layout` (or `Ctrl+3`) draws a 20-component tree — a root Column, a flex 1:2 title row, a middle row showing all four cross-axis alignments, a 3×2 grid, a footnote, plus a "leaf parent" control group (its two children write their own pos; the layout does not touch them). The page sliders mutate the root gap and the grid column count, exercising the full "Get → mutate → Set → Resolve" retained-mode loop.
+
+## 7.8 Theme presets and beautification
+
+The token table has two parts: **17 anchor colors** (what every preset must supply) and **40 derived colors** (computed from the anchors by fixed rules; presets never set them directly). All derivation rules live in one place, `derive_extended()` in `ui_theme.cpp`:
+
+| Derived token | Rule |
+| --- | --- |
+| `CHECK_MARK` / `SLIDER_GRAB` / `NAV_HIGHLIGHT` | = `ACCENT` |
+| `SLIDER_GRAB_ACTIVE` / `RESIZE_GRIP_ACTIVE` / `SEPARATOR_ACTIVE` | = `ACCENT_ACTIVE` / `ACCENT` |
+| `SEPARATOR` / `TABLE_BORDER_STRONG` | = `BORDER` |
+| `TITLE_BG` / `MENUBAR_BG` / `TABLE_HEADER_BG` | = `HEADER` |
+| `POPUP_BG` | = `WINDOW_BG` |
+| `SCROLLBAR_GRAB_HOVERED` / `ACTIVE` | = `BUTTON_HOVER` / `BUTTON_ACTIVE` |
+| The rest (scrollbar track, grips, tabs, plots, table zebra stripes, nav dim …) | Fixed-ratio `mix` / `shade` (lighten/darken) between anchors |
+
+Two benefits: **a new theme only needs 17 values**, and "which tokens must be equal after switching presets" becomes a unit test (`derived_tokens_consistent_across_presets` asserts `CHECK_MARK == ACCENT`-style identities for every preset). The day a preset starts hand-copying derived values, that test goes red — the early warning of "switching presets drifts half the UI".
+
+Presets (`GUI_THEME_PRESET_*`, numbers aligned with `ThemePreset` and pinned by static asserts):
+
+| # | Name | Positioning |
+| --- | --- | --- |
+| 0 | `Dark` | Default dark (close to ImGui's built-in dark, no visual jump) |
+| 1 | `Light` | Light |
+| 2 | `Midnight` | Deep navy night |
+| 3 | `Nord` | Arctic blue-grey |
+| 4 | `HighContrast` | Pure black high contrast (projection / outdoor) |
+
+Beautification metrics (shared by all presets; geometry does not fork per theme): `WindowRounding=6`, `ChildRounding=4`, `FrameRounding=4`, `GrabRounding=3`, `PopupRounding=4`, `TabRounding=4`, `ScrollbarSize=12`, `GrabMinSize=8`, on top of the existing padding / spacing / indent / border. `apply()` pushes these into the ImGui `Style` in one shot (a no-op without an ImGui context).
+
+```c
+int n = GUi_ThemePresetCount();                 // 5
+char name[24];
+GUi_ThemePresetName(GUI_THEME_PRESET_NORD, name, sizeof(name));   // "Nord"
+GUi_ThemeSetPreset(GUI_THEME_PRESET_MIDNIGHT);
+GUi_ThemeApply();                               // call outside the frame; once per switch
+```
+
+**Per-token overrides do not survive preset switches**: `set_preset` refills the whole table (derived tokens included), so any `GUi_ThemeSetColor` tweaks made on top of a preset are reset. Deliberate — otherwise "switching presets" never switches cleanly.
+
+Demo: the `Theme preset` combo at the top of the Controls page (the switch goes through the op queue, same rule as "UI only enqueues, the host executes outside the lock"), or the launch flag `--theme dark|light|midnight|nord|highcontrast`.
+
+## 7.9 The animation system (two blocks)
+
+The animation system is deliberately split in two; the boundary is "**does it need cross-frame state**":
+
+* **Block 1 (pure functions)**: `GUi_AnimEase` / `GUi_AnimTween` / `GUi_AnimColorLerp` / `GUi_AnimEaseName`. Given a time, they return a value; they hold no state. "Change a property and let it transition smoothly" needs nothing else — button hover lift, panel slide-in, value rollover are all "know elapsed, compute one property value".
+* **Block 2 (runtime)**: `GUiAnimClip` (track table) + the player (`GUi_AnimPlay/Pause/Stop/Resume/Seek/Advance/SetSpeed`) + named channel reads. You need it when one interface runs several interactive animations at once (staggered entrances, color cycling, pulsing).
+
+The boundary is not a line in the sand: the runtime is implemented entirely with block 1's pure functions (`evaluate()` is just repeated `anim_ease` / `AnimTrack::eval` calls) — there is no second copy of the math.
+
+### Block 1: pure functions
+
+```c
+// Easing: 11 kinds, f(0)=0 and f(1)=1 always hold; Back/Elastic exceed [0,1] mid-span
+float e = GUi_AnimEase(GUI_ANIM_EASE_OUT_BACK, 0.7f);
+
+// Tween: from -> to over duration seconds, delay seconds late; t is seconds since the tween started
+float v;
+GUi_AnimTween(0.0f, 1.0f, 1.2f, 0.0f, GUI_ANIM_EASE_IN_OUT_CUBIC, t, &v);
+GUi_ProgressBar(v, -1, 0, nullptr);        // use it directly as a property
+
+// Color interpolation
+float col[4];
+GUi_AnimColorLerp(red, blue, v, col);
+GUi_ColorButton("swatch", col);
+```
+
+Tween boundary semantics: `t < delay` → `from` (nothing moves during the delay); `t >= delay + duration` → **exactly `to`** (independent of the easing shape); `duration <= 0` → `to` (zero duration means instant). Looping is not the pure layer's business — folding time (`fmod`) belongs to the caller, which is exactly what the demo does.
+
+### Block 2: clips / tracks / channels / player
+
+```c
+GUiAnimClip clip{};                        // capacity: 8 tracks / 16 keys per track
+clip.loop = GUI_ANIM_LOOP_LOOP;
+clip.duration = 2.0f;                      // >0 = explicit; 0 = derived from tracks
+
+GUiAnimTrack t{};                          // scalar track
+strncpy(t.channel, "slide.x", sizeof(t.channel) - 1);
+t.key_count = 3;
+t.keys[0].t = 0.0f; t.keys[0].v = 0.0f;   t.keys[0].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+t.keys[1].t = 1.0f; t.keys[1].v = 200.0f; t.keys[1].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+t.keys[2].t = 2.0f; t.keys[2].v = 0.0f;   t.keys[2].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+clip.tracks[clip.track_count++] = t;
+
+GUiAnimTrack c{};                          // color track: endpoint interpolation
+c.is_color = 1; c.duration = 1.6f; c.ease = GUI_ANIM_EASE_IN_OUT_QUAD;
+c.color_from[0] = 1; c.color_to[2] = 1;
+clip.tracks[clip.track_count++] = c;
+
+GUi_AnimPlay(&clip, 1);                    // play (copies the clip internally)
+GUi_AnimAdvance(dt);                       // advance in the frame loop; the time source is the caller's
+float x;
+GUi_AnimChannelFloat("slide.x", &x);       // read a channel; 1 = that scalar channel exists
+```
+
+Semantics:
+
+| Topic | Rule |
+| --- | --- |
+| Channels | Tracks write values into **named channels**; scalar and color channels are strictly typed — reading the wrong type returns 0 (`channel_float` on a color channel and `channel_color` on a scalar channel both return 0) |
+| Segment easing | On a scalar track, key *i*'s `ease` governs the interval `[keys[i], keys[i+1])` ("which curve to use from this key to the next") |
+| Outside the range | Before the first key it holds the first key's value; after the last key it holds the last key's value — no extrapolation |
+| Track delay | Local time = clip time − delay; while negative it holds the initial value (scalar = first key's value, color = `color_from`) — this is what staggered entrances use |
+| Loop | `Once` (sets finished at the end), `Loop` (`fmod` wrap), `PingPong` (triangle fold); `GUi_AnimTime()` reports the **unfolded** accumulated time |
+| Clip duration | Explicit `duration` wins; otherwise the max of `(delay + length)` over all tracks; tracks shorter than it hold their final value in the tail |
+| `play` | Copies the clip internally (the caller's clip can change afterwards); `restart=0` keeps the current time (for changing loop mode / parameters) |
+| Channel table | Rebuilt from the playing clip's tracks on every `play` — after switching clips you cannot read stale values from the previous one |
+| Transport | `stop` halts but **channels keep their last values** (the picture freezes); `pause`/`resume`; `resume` after completion restarts from the beginning; `set_speed` clamps to [0, 64] |
+| Threading | Pure data, no locks; call `advance` outside the frame loop; reading channels inside the callback is the same tier as `GUi_CompRect` |
+
+**Working with the component tree**: the animation system does not know about components, and components do not depend on animation. The host writes channel values into component rects (`GUi_CompGet` → mutate → `GUi_CompSet`). Those components should have parent 0 — otherwise a layout parent would overwrite the animation's pos on `resolve()`. Put the other way around: the 7.7 rule "no layout parent → the written pos is kept" is exactly what the animation system reuses: **animation writes pos directly; the layout does not touch it**.
+
+Demo: `--page anim` (or `Ctrl+4`). The panel is block 1 (easing combo + tween progress bar + color-lerp swatch, timed by the host's own clock); the stage on the right is block 2 — one 2-second clip drives four components: `slide` (ease-in-out-cubic keyframes), `pulse` (two pulses), `hop` (two uneven bounces), `stag.0..3` (staggered entrances with delay 0/0.15/0.30/0.45). The page lets you change the loop mode (without resetting progress), the speed, and drag the seek slider, while the channel list shows every channel's live value.
 
 ## 8. Sharing input with the host
 

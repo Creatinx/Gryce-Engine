@@ -297,11 +297,20 @@ GRYCE_UI_API int      GUi_CompCount(void);
 // 颜色按语义命名、度量按用途命名；调用方只引用 token，不引用色值。
 // apply() 把整张表一次性推成 ImGui Style（帧外调；无 ImGui 构建为 no-op）。
 // 语义文本色（GUI_TEXT_DIM / OK / WARN / ERROR / ACCENT）同样取自本表。
+//
+// 预设：每套预设只定义 17 个锚色，其余颜色 token 由引擎按固定规则派生
+// （hover = 提亮、separator = border ...），所以换预设不会漏掉半个界面。
+// token 编号与 ui_theme.h 逐一对齐（ui_api.cpp 里有静态断言钉死），
+// 新增 token 只能加在枚举末尾。
 // ---------------------------------------------------------------------------
 
 enum {
     GUI_THEME_PRESET_DARK  = 0,
     GUI_THEME_PRESET_LIGHT = 1,
+    GUI_THEME_PRESET_MIDNIGHT = 2,
+    GUI_THEME_PRESET_NORD  = 3,
+    GUI_THEME_PRESET_HIGH_CONTRAST = 4,
+    GUI_THEME_PRESET_COUNT = 5,
 };
 
 enum {
@@ -322,6 +331,47 @@ enum {
     GUI_THEME_COLOR_OK,
     GUI_THEME_COLOR_WARN,
     GUI_THEME_COLOR_ERROR,
+    // ---- 美化扩充（由锚色派生，预设不直接给值） ----
+    GUI_THEME_COLOR_POPUP_BG,
+    GUI_THEME_COLOR_TITLE_BG,
+    GUI_THEME_COLOR_TITLE_BG_ACTIVE,
+    GUI_THEME_COLOR_TITLE_BG_COLLAPSED,
+    GUI_THEME_COLOR_MENUBAR_BG,
+    GUI_THEME_COLOR_SCROLLBAR_BG,
+    GUI_THEME_COLOR_SCROLLBAR_GRAB,
+    GUI_THEME_COLOR_SCROLLBAR_GRAB_HOVERED,
+    GUI_THEME_COLOR_SCROLLBAR_GRAB_ACTIVE,
+    GUI_THEME_COLOR_SEPARATOR,
+    GUI_THEME_COLOR_SEPARATOR_HOVERED,
+    GUI_THEME_COLOR_SEPARATOR_ACTIVE,
+    GUI_THEME_COLOR_RESIZE_GRIP,
+    GUI_THEME_COLOR_RESIZE_GRIP_HOVERED,
+    GUI_THEME_COLOR_RESIZE_GRIP_ACTIVE,
+    GUI_THEME_COLOR_CHECK_MARK,
+    GUI_THEME_COLOR_SLIDER_GRAB,
+    GUI_THEME_COLOR_SLIDER_GRAB_ACTIVE,
+    GUI_THEME_COLOR_HEADER_ACTIVE,
+    GUI_THEME_COLOR_PLOT_LINES,
+    GUI_THEME_COLOR_PLOT_LINES_HOVERED,
+    GUI_THEME_COLOR_PLOT_HISTOGRAM,
+    GUI_THEME_COLOR_PLOT_HISTOGRAM_HOVERED,
+    GUI_THEME_COLOR_TABLE_HEADER_BG,
+    GUI_THEME_COLOR_TABLE_BORDER_STRONG,
+    GUI_THEME_COLOR_TABLE_BORDER_LIGHT,
+    GUI_THEME_COLOR_TABLE_ROW_BG,
+    GUI_THEME_COLOR_TABLE_ROW_BG_ALT,
+    GUI_THEME_COLOR_DRAG_DROP_TARGET,
+    GUI_THEME_COLOR_NAV_HIGHLIGHT,
+    GUI_THEME_COLOR_NAV_WINDOWING_HIGHLIGHT,
+    GUI_THEME_COLOR_NAV_WINDOWING_DIM_BG,
+    GUI_THEME_COLOR_MODAL_WINDOW_DIM_BG,
+    GUI_THEME_COLOR_BORDER_SHADOW,
+    GUI_THEME_COLOR_TAB,
+    GUI_THEME_COLOR_TAB_HOVERED,
+    GUI_THEME_COLOR_TAB_SELECTED,
+    GUI_THEME_COLOR_TAB_SELECTED_OVERLINE,
+    GUI_THEME_COLOR_TAB_DIMMED,
+    GUI_THEME_COLOR_TAB_DIMMED_SELECTED,
     GUI_THEME_COLOR_COUNT,
 };
 
@@ -332,6 +382,15 @@ enum {
     GUI_THEME_METRIC_ITEM_SPACING,  // 行 / 单元格间距
     GUI_THEME_METRIC_INDENT,        // 树形每级缩进
     GUI_THEME_METRIC_BORDER_W,      // 边框宽度
+    // ---- 美化扩充（圆角/滚动条） ----
+    GUI_THEME_METRIC_WINDOW_ROUNDING,
+    GUI_THEME_METRIC_CHILD_ROUNDING,
+    GUI_THEME_METRIC_FRAME_ROUNDING,
+    GUI_THEME_METRIC_GRAB_ROUNDING,
+    GUI_THEME_METRIC_POPUP_ROUNDING,
+    GUI_THEME_METRIC_TAB_ROUNDING,
+    GUI_THEME_METRIC_SCROLLBAR_SIZE,
+    GUI_THEME_METRIC_GRAB_MIN_SIZE,
     GUI_THEME_METRIC_COUNT,
 };
 
@@ -340,6 +399,109 @@ GRYCE_UI_API uint32_t GUi_ThemeColor(int token);        // 0xRRGGBBAA
 GRYCE_UI_API void     GUi_ThemeSetColor(int token, uint32_t rgba);
 GRYCE_UI_API float    GUi_ThemeMetric(int token);
 GRYCE_UI_API void     GUi_ThemeApply(void);
+// 预设数量与显示名（供组合框枚举）。返回名字长度；越界 preset 返回 0。
+GRYCE_UI_API int      GUi_ThemePresetCount(void);
+GRYCE_UI_API int      GUi_ThemePresetName(int preset, char* out_buf, int cap);
+
+// ---------------------------------------------------------------------------
+// 动画系统（两个块：纯函数层 + 运行时）
+//
+// 块一（GUi_AnimEase / GUi_AnimTween / GUi_AnimColorLerp）是纯函数：给定
+// 时间就算出值，不持有跨帧状态。"改一个属性并让它平滑过渡"用它们就够了，
+// 不需要引入运行时。
+//
+// 块二（GUi_Anim* 播放控制 + 通道读取）是运行时：片段 = 一组把值写进具名
+// 通道的轨道；播放器按 dt 推进、按循环模式折叠时间、把评估结果写进通道。
+// 宿主再决定通道值用在哪里（组件 rect / 窗口位置 / 任何数值属性）——动画
+// 不认识组件，组件也不依赖动画。
+//
+// 时间源由调用方给（advance 的 dt），模型层不读时钟：单测里时间是精确的，
+// 帧循环里推进多少完全由宿主决定（UI 低刷新率时传放大后的 dt 即可）。
+// ---------------------------------------------------------------------------
+
+enum {
+    GUI_ANIM_EASE_LINEAR = 0,
+    GUI_ANIM_EASE_IN_QUAD,
+    GUI_ANIM_EASE_OUT_QUAD,
+    GUI_ANIM_EASE_IN_OUT_QUAD,
+    GUI_ANIM_EASE_IN_CUBIC,
+    GUI_ANIM_EASE_OUT_CUBIC,
+    GUI_ANIM_EASE_IN_OUT_CUBIC,
+    GUI_ANIM_EASE_OUT_BACK,      // 回弹（区间中段会超出 1）
+    GUI_ANIM_EASE_IN_OUT_BACK,
+    GUI_ANIM_EASE_OUT_ELASTIC,   // 弹性（过冲并振荡）
+    GUI_ANIM_EASE_OUT_BOUNCE,    // 落地反弹
+    GUI_ANIM_EASE_COUNT,
+};
+
+enum {
+    GUI_ANIM_LOOP_ONCE = 0,      // 播到结尾停下
+    GUI_ANIM_LOOP_LOOP = 1,      // 到头回开头
+    GUI_ANIM_LOOP_PINGPONG = 2,  // 到头反向
+};
+
+typedef struct GUiAnimKey {
+    float t;      // 时刻（秒，相对片段起点）
+    float v;      // 值
+    int   ease;   // 本帧到下一帧的缓动（GUI_ANIM_EASE_*）
+} GUiAnimKey;
+
+typedef struct GUiAnimTrack {
+    char   channel[24];   // 目标通道名（超长截断）
+    float  delay;         // 轨道延迟（错峰）；延迟期间保持初始值
+    int    is_color;      // 0 = 标量轨道（用 keys）；1 = 颜色轨道（用 color_*）
+    int    ease;          // 颜色轨道的缓动
+    float  duration;      // 颜色轨道时长
+    float  color_from[4];
+    float  color_to[4];
+    int       key_count;
+    GUiAnimKey keys[16];
+} GUiAnimTrack;
+
+typedef struct GUiAnimClip {
+    char  name[32];
+    float duration;       // >0 = 显式时长；0 = 由轨道推出
+    int   loop;           // GUI_ANIM_LOOP_*
+    int   track_count;
+    GUiAnimTrack tracks[8];
+} GUiAnimClip;
+
+// ---- 块一：纯函数（回调内外都可调，无任何状态） ----
+
+GRYCE_UI_API float GUi_AnimEase(int ease, float t);
+// 补间：from -> to，duration 秒、delay 秒延迟、ease 缓动；t 是补间开始后
+// 经过的秒数。结果写入 *out。
+GRYCE_UI_API void  GUi_AnimTween(float from, float to, float duration, float delay,
+                                 int ease, float t, float* out);
+GRYCE_UI_API void  GUi_AnimColorLerp(const float a[4], const float b[4], float t,
+                                     float out[4]);
+// 缓动显示名（越界写空串）。返回名字长度。
+GRYCE_UI_API int   GUi_AnimEaseName(int ease, char* out_buf, int cap);
+
+// ---- 块二：运行时 ----
+
+// 片段实际时长（显式 duration 优先，否则由轨道推出）。
+GRYCE_UI_API float GUi_AnimClipDuration(const GUiAnimClip* clip);
+// 播放（内部拷贝片段）。restart=0 时保留当前时间（改循环模式/参数时用）。
+GRYCE_UI_API void  GUi_AnimPlay(const GUiAnimClip* clip, int restart);
+GRYCE_UI_API void  GUi_AnimStop(void);     // 停止；通道保留最后的值
+GRYCE_UI_API void  GUi_AnimPause(void);
+GRYCE_UI_API void  GUi_AnimResume(void);   // 播完之后 resume 会从头再来
+GRYCE_UI_API void  GUi_AnimSetSpeed(float speed);
+GRYCE_UI_API void  GUi_AnimSeek(float t);
+// 按 dt 秒推进并评估全部轨道（未播放时 no-op）。帧循环里调，锁外。
+GRYCE_UI_API void  GUi_AnimAdvance(float dt);
+
+GRYCE_UI_API int   GUi_AnimIsPlaying(void);
+GRYCE_UI_API int   GUi_AnimIsFinished(void);
+GRYCE_UI_API float GUi_AnimTime(void);
+
+// 通道枚举与读取。标量通道用 ChannelFloat，颜色通道用 ChannelColor；
+// 类型不匹配或没有该通道时返回 0 / 0（不创建通道）。
+GRYCE_UI_API int   GUi_AnimChannelCount(void);
+GRYCE_UI_API int   GUi_AnimChannelName(int index, char* out_buf, int cap);
+GRYCE_UI_API int   GUi_AnimChannelFloat(const char* name, float* out);
+GRYCE_UI_API int   GUi_AnimChannelColor(const char* name, float out[4]);
 
 // ---------------------------------------------------------------------------
 // 输入门控与快捷键
@@ -421,6 +583,9 @@ GRYCE_UI_API int   GUi_DragFloat4(const char* label, float v[4], float speed);
 // 颜色：带色块的四个数值框。比四个 DragFloat 好在能直接看到颜色，
 // 而且不用担心把 0~1 拖成负数（内部会夹住）。
 GRYCE_UI_API int   GUi_ColorEdit4(const char* label, float v[4]);
+// 纯色块按钮：rgba 由调用方给（主题 token / 动画通道的值），点击返回 1。
+// 调色板、动画颜色演示用它把"一个颜色值"直接显示出来。
+GRYCE_UI_API int   GUi_ColorButton(const char* label, const float rgba[4]);
 // 返回 1 表示内容被改过（拖动中每帧都可能为 1）。要"提交"语义（回车/失焦）
 // 用 GUi_IsItemDeactivatedAfterEdit 配合判断。buf 就地更新。
 GRYCE_UI_API int   GUi_InputText(const char* label, char* buf, int buf_size);

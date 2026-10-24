@@ -47,7 +47,7 @@ void GUi_GetDisplaySize(float* out_w, float* out_h);
 | `GEntity_Get*` 查询 | 读路径也过锁 | 同上，或读一次缓存在面板模型里 |
 | `GAsset_ScanDirectory` | 文件遍历 + 缓存写入 | `tick` 里刷新，UI 读缓存 |
 
-一句话：**回调内只做纯绘制，唯一允许的输出是"把用户操作记成一个纯数据结构"**。
+**回调内只做纯绘制，唯一允许的输出是"把用户操作记成一个纯数据结构"**。
 
 ### 意图队列
 
@@ -84,7 +84,7 @@ GUi_BeginMenuBar(); GUi_BeginMenu(label); GUi_MenuItem(label, shortcut, enabled)
 | --- | --- |
 | 文本 | `GUi_Text` / `GUi_TextColored(color, text)` / `GUi_LabelText` / `GUi_Separator` / `GUi_Spacing` / `GUi_SameLine(spacing)` |
 | 按钮 | `GUi_Button` / `GUi_ButtonSize` / `GUi_SmallButton` / `GUi_Selectable(label, selected)` / `GUi_SetItemAllowOverlap` |
-| 数值 | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` |
+| 数值 | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` / `GUi_ColorButton(label, rgba)` |
 | 文本输入 | `GUi_InputText` / `GUi_SetKeyboardFocusHere` / `GUi_IsItemDeactivatedAfterEdit` |
 | 枚举 | `GUi_Combo(label, current, items, count)` |
 | 树 | `GUi_TreeNode(label, default_open)` + `GUi_TreePop` / `GUi_CollapsingHeader` |
@@ -365,6 +365,119 @@ C 面见 `ui_api.h` 的「组件树布局（保留模式）」一节：`GUi_Comp
 2. **组件尺寸不要小于 32px。** imgui 的 `WindowMinSize` 默认 (32, 32)，`SetNextWindowSize` 显式给小尺寸也会被钳制。容器若要在自己的第一行画标签，用 `padding` 上边预留一行（演示里是 24），别指望窗口自己缩下去。
 
 演示：`--page layout`（或 `Ctrl+3`）画一棵 20 个组件的树——根 Column、flex 1:2 的标题行、交叉轴四种对齐的中间行、3×2 网格、脚注，外加一个"父级是叶子"的对照组（它的两个孩子直写 pos，布局不碰）。页内滑杆改根的 gap 与网格列数，走的是完整的"Get → 改 → Set → Resolve"保留模式闭环。
+
+## 7.8 主题预设与美化
+
+token 表分两部分：**17 个锚色**（每套预设必须给出的值）与**40 个派生色**（由锚色按固定规则算出，预设不直接给值）。派生规则集中在 `ui_theme.cpp` 的 `derive_extended()`：
+
+| 派生 token | 规则 |
+| --- | --- |
+| `CHECK_MARK` / `SLIDER_GRAB` / `NAV_HIGHLIGHT` | = `ACCENT` |
+| `SLIDER_GRAB_ACTIVE` / `RESIZE_GRIP_ACTIVE` / `SEPARATOR_ACTIVE` | = `ACCENT_ACTIVE` / `ACCENT` |
+| `SEPARATOR` / `TABLE_BORDER_STRONG` | = `BORDER` |
+| `TITLE_BG` / `MENUBAR_BG` / `TABLE_HEADER_BG` | = `HEADER` |
+| `POPUP_BG` | = `WINDOW_BG` |
+| `SCROLLBAR_GRAB_HOVERED` / `ACTIVE` | = `BUTTON_HOVER` / `BUTTON_ACTIVE` |
+| 其余（滚动条底、grip、tab、plot、table 斑马纹、nav 变暗 …） | 锚色之间按固定比例的 `mix` / `shade`（提亮压暗） |
+
+这样做的好处：**新增一套主题只要给 17 个值**，且"换预设后哪些 token 必须相等"可以直接写单测（`derived_tokens_consistent_across_presets` 逐套预设断言 `CHECK_MARK == ACCENT` 等式）。哪天某套预设开始手工抄派生值，这条用例就会红——那是"换预设漂移半个界面"的前兆。
+
+预设清单（`GUI_THEME_PRESET_*`，编号与 `ThemePreset` 逐一对齐、静态断言钉死）：
+
+| 编号 | 名称 | 定位 |
+| --- | --- | --- |
+| 0 | `Dark` | 默认深色（与 ImGui 自带深色接近，观感无跳变） |
+| 1 | `Light` | 浅色 |
+| 2 | `Midnight` | 深蓝夜航 |
+| 3 | `Nord` | 北极青灰 |
+| 4 | `HighContrast` | 纯黑高对比（投影/户外） |
+
+美化度量（所有预设共用，几何不分主题）：`WindowRounding=6`、`ChildRounding=4`、`FrameRounding=4`、`GrabRounding=3`、`PopupRounding=4`、`TabRounding=4`、`ScrollbarSize=12`、`GrabMinSize=8`，加上原有的内边距/间距/缩进/边框。`apply()` 把这些一次性推成 ImGui `Style`（无 ImGui 上下文时是 no-op）。
+
+```c
+int n = GUi_ThemePresetCount();                 // 5
+char name[24];
+GUi_ThemePresetName(GUI_THEME_PRESET_NORD, name, sizeof(name));   // "Nord"
+GUi_ThemeSetPreset(GUI_THEME_PRESET_MIDNIGHT);
+GUi_ThemeApply();                               // 帧外调；每次换预设后一次
+```
+
+**个别覆盖不跨预设存活**：`set_preset` 整表重填（含派生 token），之前在预设上做的 `GUi_ThemeSetColor` 调色会被重置——这是故意的，否则"换预设"永远换不干净。
+
+演示：Controls 页顶部的 `Theme preset` 组合框（换预设走操作队列，与"UI 只入队、宿主锁外执行"同一条规矩），或启动参数 `--theme dark|light|midnight|nord|highcontrast`。
+
+## 7.9 动画系统（两块）
+
+动画系统刻意分成两块，边界是"**要不要跨帧状态**"：
+
+* **块一（纯函数层）**：`GUi_AnimEase` / `GUi_AnimTween` / `GUi_AnimColorLerp` / `GUi_AnimEaseName`。给定时间就算出值，不持有任何状态。"改一个属性并让它平滑过渡"只需要它——按钮 hover 抬起、面板滑入、数值滚动，都是"知道 elapsed 就能算出一个属性值"。
+* **块二（运行时）**：`GUiAnimClip`（轨道表）+ 播放器（`GUi_AnimPlay/Pause/Stop/Resume/Seek/Advance/SetSpeed`）+ 具名通道读取。一个界面同时跑好几段交互动画（错峰入场、颜色循环、脉冲）时才需要它。
+
+两块的边界不是画个境界线：运行时内部全部由块一的纯函数实现（`evaluate()` 就是反复调用 `anim_ease` / `AnimTrack::eval`），不重复造第二套数学。
+
+### 块一：纯函数
+
+```c
+// 缓动：11 种，f(0)=0、f(1)=1 恒成立；Back/Elastic 在区间中段会超出 [0,1]
+float e = GUi_AnimEase(GUI_ANIM_EASE_OUT_BACK, 0.7f);
+
+// 补间：from -> to，duration 秒、delay 秒延迟；t 是补间开始后经过的秒数
+float v;
+GUi_AnimTween(0.0f, 1.0f, 1.2f, 0.0f, GUI_ANIM_EASE_IN_OUT_CUBIC, t, &v);
+GUi_ProgressBar(v, -1, 0, nullptr);        // 直接当属性用
+
+// 颜色插值
+float col[4];
+GUi_AnimColorLerp(red, blue, v, col);
+GUi_ColorButton("swatch", col);
+```
+
+补间的边界语义：`t < delay` → `from`（延迟期间不动）；`t >= delay + duration` → **精确落到 `to`**（不受缓动形状影响）；`duration <= 0` → `to`（零时长就是瞬间到位）。循环不归纯函数管——时间折叠（`fmod`）是调用方的事，演示里就是这么做的。
+
+### 块二：片段 / 轨道 / 通道 / 播放器
+
+```c
+GUiAnimClip clip{};                        // 容量：8 轨道 / 每轨 16 关键帧
+clip.loop = GUI_ANIM_LOOP_LOOP;
+clip.duration = 2.0f;                      // >0 = 显式时长；0 = 由轨道推出
+
+GUiAnimTrack t{};                          // 标量轨道
+strncpy(t.channel, "slide.x", sizeof(t.channel) - 1);
+t.key_count = 3;
+t.keys[0].t = 0.0f; t.keys[0].v = 0.0f;   t.keys[0].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+t.keys[1].t = 1.0f; t.keys[1].v = 200.0f; t.keys[1].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+t.keys[2].t = 2.0f; t.keys[2].v = 0.0f;   t.keys[2].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+clip.tracks[clip.track_count++] = t;
+
+GUiAnimTrack c{};                          // 颜色轨道：端点插值
+c.is_color = 1; c.duration = 1.6f; c.ease = GUI_ANIM_EASE_IN_OUT_QUAD;
+c.color_from[0] = 1; c.color_to[2] = 1;
+clip.tracks[clip.track_count++] = c;
+
+GUi_AnimPlay(&clip, 1);                    // 播放（内部拷贝一份片段）
+GUi_AnimAdvance(dt);                       // 帧循环里推进；时间源归调用方
+float x;
+GUi_AnimChannelFloat("slide.x", &x);       // 读通道；返回 1 = 有该标量通道
+```
+
+语义表：
+
+| 主题 | 规则 |
+| --- | --- |
+| 通道 | 轨道把值写进**具名通道**；标量与颜色通道类型分明，读错类型返回 0（`channel_float` 读颜色通道、`channel_color` 读标量通道都是 0） |
+| 段缓动 | 标量轨道上，第 i 个关键帧的 `ease` 作用于 `[keys[i], keys[i+1])` 区间（"从这一帧到下一帧用什么曲线"） |
+| 区间外 | 首帧之前保持首帧值、尾帧之后保持尾帧值，不插到区间外 |
+| 轨道 delay | 局部时间 = 片段时间 − delay；为负时保持初始值（标量 = 首帧值，颜色 = `color_from`）——错峰入场就靠它 |
+| 循环 | `Once`（播完置 finished）、`Loop`（`fmod` 回绕）、`PingPong`（三角波折叠）；`GUi_AnimTime()` 报**未折叠**的累计时间 |
+| 片段时长 | 显式 `duration` 优先，否则取所有轨道 `(delay + 时长)` 最大值；短于它的轨道在尾部保持终值 |
+| `play` | 内部拷贝片段（调用方的片段之后可以随便改）；`restart=0` 保留当前时间（改循环模式/参数时用） |
+| 通道表 | 每次 `play` 以本片段的轨道为准重建——换片段后读不到上一段的残留值 |
+| 播放控制 | `stop` 停播但**通道保留最后的值**（画面定格）；`pause`/`resume`；`resume` 在播完之后会从头再来；`set_speed` 钳到 [0, 64] |
+| 线程 | 纯数据、无锁；`advance` 在帧循环锁外调，回调内读通道与 `GUi_CompRect` 同级 |
+
+**与组件树的配合**：动画不认识组件，组件也不依赖动画。宿主把通道值写进组件 rect（`GUi_CompGet` → 改 → `GUi_CompSet`）。注意这些组件的父级应该设为 0（无父级）——否则父布局会在 `resolve()` 时覆盖动画写进去的 pos。反过来说，7.7 的"父级不是布局组件就保留直写 pos"这条规则，正好被动画系统复用：**动画直写 pos，布局不碰**。
+
+演示：`--page anim`（或 `Ctrl+4`）。面板里是块一（缓动组合框 + 补间进度条 + 颜色插值色块，时间用宿主时钟）；右侧舞台是块二——一根 2 秒的片段驱动四个组件：`slide`（滑移，InOutCubic 关键帧）、`pulse`（两次脉冲）、`hop`（两段不等高弹跳）、`stag.0..3`（delay 0/0.15/0.30/0.45 错峰入场）。页内可改循环模式（不重置进度）、速度、拖动 seek，通道列表实时显示每个通道的值。
 
 ## 8. 与宿主输入的分工
 

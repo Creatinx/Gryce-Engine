@@ -3,16 +3,21 @@
 // 用法:
 //   GryceUiSmoke.exe [--api opengl|vulkan|dx12] [--project <dir>] [--frames N]
 //                    [--shot <png>] [--w N] [--h N] [--ui-interval N]
-//                    [--theme dark|light] [--no-vsync] [--help]
+//                    [--theme dark|light|midnight|nord|highcontrast]
+//                    [--page controls|queue|layout|anim|about] [--no-vsync] [--help]
 //
 // 与 GryceRenderSmoke 的分工：那个演示渲染管线，这个演示引擎的 UI 子系统
 // （engine/ui 模型层 + api/ui_api.h 的 C 面）。跑起来能看到：
 //   1. 跨帧控件状态：滑块 / 复选框 / 输入框 / 颜色全部由引擎按稳定 id 保管，
 //      面板代码里没有任何本地缓冲——拖到一半切走再回来，值还在；
 //   2. 确定性布局：面板矩形由布局栈算，不依赖 ImGui 自动排版与 imgui.ini；
-//   3. 主题：token 表驱动，Dark / Light 一键切换；
+//   3. 主题：token 表驱动，5 套预设（Dark / Light / Midnight / Nord /
+//      HighContrast）一键切换，圆角/滚动条等美化度量随预设落地；
 //   4. 操作队列：UI 想改引擎状态只入队，宿主在锁外按策略受控排出；
-//   5. 快捷键门控：UI 吃着键盘时不应派发快捷键，画面上有实时读数。
+//   5. 快捷键门控：UI 吃着键盘时不应派发快捷键，画面上有实时读数；
+//   6. 动画系统两块：块一纯函数（补间/缓动/颜色插值，改属性直接用）在
+//      Anim 页面板里演示；块二运行时（片段/轨道/通道/播放器）驱动右侧
+//      舞台上的四个组件（滑移/脉冲/弹跳/错峰入场）。
 //
 // 截图取第 N 帧（--ui-interval N 时若第 N 帧恰好是缓存重绘帧，还能顺带验证
 // "节流帧与构建帧逐字节一致"）。
@@ -27,6 +32,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,6 +64,7 @@ enum {
     CMD_TOGGLE_PANEL = 1,
     CMD_RESET_VIEW   = 2,
     CMD_SHOW_LAYOUT  = 3,
+    CMD_SHOW_ANIM    = 4,
 };
 
 // 宿主键码（GLFW_KEY_*）：本层只做精确匹配，不认识语义
@@ -65,6 +72,7 @@ enum {
     KEY_1 = 49,
     KEY_2 = 50,
     KEY_3 = 51,
+    KEY_4 = 52,
 };
 
 struct ImageStats {
@@ -121,17 +129,32 @@ ImageStats analyze_image(const std::string& path) {
 // 面板私有状态只有"选择哪一页"这种**不属于控件值**的东西；控件值全部走
 // GUi_State*（引擎保管），所以这里没有一个 DragFloat 的本地缓冲。
 struct UiDemoState {
-    int  page = 0;          // 0 = 控件  1 = 队列  2 = 布局  3 = 关于
+    int  page = 0;          // 0 = 控件  1 = 队列  2 = 布局  3 = 动画  4 = 关于
+    int  last_page = -1;    // 上一帧的页：翻页时重建各自的树/舞台
     int  spawn_count = 0;   // 累计排出的离散操作数（排出后才计数）
     int  theme_preset = GUI_THEME_PRESET_DARK;
 
-    // 布局页（组件树）：树只建一次（视口尺寸变化才重建），之后滑杆只改
-    // 树里组件的参数并重解析
+    // 布局页（组件树）：树只建一次（视口尺寸变化或翻页回来才重建），之后
+    // 滑杆只改树里组件的参数并重解析
     uint64_t lay_col = 0;
     uint64_t lay_grid = 0;
     uint64_t lay_anchor = 0;
     int  lay_built_h = 0;
     bool lay_built = false;
+
+    // 动画页：块一的演示时钟（宿主自持，补间是纯函数、时间归调用方），
+    // 块二的舞台组件（父级全是 0 = 无父级，动画直写 pos，布局不碰）
+    float demo_t = 0.0f;
+    int   anim_loop = GUI_ANIM_LOOP_LOOP;
+    int   anim_ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+    float anim_speed = 1.0f;
+    float anim_seek = 0.0f;
+    uint64_t anim_slide = 0;
+    uint64_t anim_pulse = 0;
+    uint64_t anim_hop = 0;
+    uint64_t anim_stag[4] = {0, 0, 0, 0};
+    int  anim_built_h = 0;
+    bool anim_built = false;
 };
 
 // push_op 的失败路径要能翻页提示用户，这里持一份 state 指针；正常路径
@@ -154,8 +177,34 @@ void push_op(uint32_t type, uint32_t key, int64_t arg = 0, const float* vec = nu
     }
 }
 
-void draw_controls_page() {
+// 预设名表：启动时用 GUi_ThemePresetName 填一次，之后只读。
+const char* const* theme_name_table() {
+    static char names[GUI_THEME_PRESET_COUNT][24];
+    static const char* ptrs[GUI_THEME_PRESET_COUNT];
+    static bool init = false;
+    if (!init) {
+        for (int i = 0; i < GUI_THEME_PRESET_COUNT; ++i) {
+            GUi_ThemePresetName(i, names[i], sizeof(names[i]));
+            ptrs[i] = names[i];
+        }
+        init = true;
+    }
+    return ptrs;
+}
+
+void draw_controls_page(void* user) {
+    UiDemoState* st = static_cast<UiDemoState*>(user);
     GUi_BeginChild("controls", 0.0f, 0.0f, 1);
+
+    // 主题预设：换预设走操作队列（离散操作，key=0），排出时才真正落地——
+    // 与"UI 只入队、宿主锁外执行"的规矩一致，不因为在回调里就特批。
+    int preset = st->theme_preset;
+    if (GUi_Combo("Theme preset", &preset, theme_name_table(), GUI_THEME_PRESET_COUNT)) {
+        st->theme_preset = preset;
+        push_op(OP_THEME, 0, preset);
+    }
+    GUi_TextColored(GUI_TEXT_DIM, "5 presets; colors come from one token table.");
+    GUi_Separator();
 
     GUi_TextColored(GUI_TEXT_ACCENT, "Cross-frame widget state (engine-owned, stable id)");
     GUi_Separator();
@@ -258,7 +307,7 @@ void draw_about_page(void* user) {
     GUi_Separator();
     const int dispatch = GUi_ShouldDispatchShortcut();
     GUi_LabelText("ShouldDispatchShortcut", dispatch ? "1 (dispatch)" : "0 (UI owns the keyboard)");
-    GUi_TextColored(GUI_TEXT_DIM, "Ctrl+1 / Ctrl+2 are registered; typing in the input box flips this to 0.");
+    GUi_TextColored(GUI_TEXT_DIM, "Ctrl+1 .. Ctrl+4 are registered; typing in the input box flips this to 0.");
     GUi_Spacing();
     GUi_TextColored(GUI_TEXT_ACCENT, "Theme");
     GUi_Separator();
@@ -399,11 +448,13 @@ void draw_component_window(uint64_t id) {
 }
 
 // 主窗口里的控件与说明；树的参数在这里改（Get -> 改 -> Set）。
-void draw_layout_page(void* user) {
+// page_switched：翻页回来必须重建——组件树是进程内唯一的，动画页会把它
+// 清空另建，不重建的话布局页拿着的是已失效的 id。
+void draw_layout_page(void* user, bool page_switched) {
     UiDemoState* st = static_cast<UiDemoState*>(user);
     float dw = 0.0f, dh = 0.0f;
     GUi_GetDisplaySize(&dw, &dh);
-    if (!st->lay_built || st->lay_built_h != static_cast<int>(dh)) {
+    if (page_switched || !st->lay_built || st->lay_built_h != static_cast<int>(dh)) {
         build_layout_tree(st, dh);
     }
 
@@ -455,8 +506,273 @@ void draw_layout_tree(void* user) {
     draw_component_window(st->lay_anchor);   // 它的两个孩子由递归带出
 }
 
+// ---------------------------------------------------------------------------
+// 动画演示页：块一（纯函数）在面板里，块二（运行时）驱动右侧舞台
+//
+// 两块的边界在这个页面里是看得见的：
+//   * 面板里的补间进度条与颜色色块用 GUi_AnimTween / GUi_AnimColorLerp
+//     直接算——没有播放器、没有片段，时间用宿主自己的时钟（demo_t），
+//     循环靠 fmod 自己折。这就是"改个属性直接用"的用法；
+//   * 右侧舞台的四个组件由 Animator 驱动：片段写具名通道，页面每帧把
+//     通道值写进组件 rect。这些组件的父级全是 0（无父级），所以"动画
+//     直写 pos"不会被布局覆盖——保留模式的规则反过来被动画利用。
+// ---------------------------------------------------------------------------
+
+// 舞台片段：所有轨道合成一段 2 秒的交互动画。
+//   slide.x   0 -> 200 -> 0（滑移，InOutCubic）
+//   pulse.s   两次脉冲（0->1->0->1->0，InOutQuad）
+//   hop.y     两段弹跳（OutQuad 关键帧，落点不等高）
+//   stag.0..3 错峰入场（轨道 delay 0/0.15/0.30/0.45，OutBack 回弹）
+GUiAnimClip build_stage_clip(int loop_mode) {
+    GUiAnimClip clip{};
+    std::snprintf(clip.name, sizeof(clip.name), "stage");
+    clip.loop = loop_mode;
+    clip.duration = 2.0f;   // 显式时长：短于它的轨道在尾部保持终值
+
+    GUiAnimTrack t{};
+    std::strncpy(t.channel, "slide.x", sizeof(t.channel) - 1);
+    t.key_count = 3;
+    t.keys[0].t = 0.0f;  t.keys[0].v = 0.0f;   t.keys[0].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+    t.keys[1].t = 1.0f;  t.keys[1].v = 200.0f; t.keys[1].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+    t.keys[2].t = 2.0f;  t.keys[2].v = 0.0f;   t.keys[2].ease = GUI_ANIM_EASE_IN_OUT_CUBIC;
+    clip.tracks[clip.track_count++] = t;
+
+    t = GUiAnimTrack{};
+    std::strncpy(t.channel, "pulse.s", sizeof(t.channel) - 1);
+    t.key_count = 5;
+    const float pulse_t[5] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f};
+    const float pulse_v[5] = {0.0f, 1.0f, 0.0f, 1.0f, 0.0f};
+    for (int i = 0; i < 5; ++i) {
+        t.keys[i].t = pulse_t[i];
+        t.keys[i].v = pulse_v[i];
+        t.keys[i].ease = GUI_ANIM_EASE_IN_OUT_QUAD;
+    }
+    clip.tracks[clip.track_count++] = t;
+
+    t = GUiAnimTrack{};
+    std::strncpy(t.channel, "hop.y", sizeof(t.channel) - 1);
+    t.key_count = 7;
+    const float hop_t[7] = {0.0f, 0.30f, 0.50f, 0.80f, 1.00f, 1.50f, 1.70f};
+    const float hop_v[7] = {0.0f, 60.0f,  0.0f,  26.0f,  0.0f,  60.0f,  0.0f};
+    for (int i = 0; i < 7; ++i) {
+        t.keys[i].t = hop_t[i];
+        t.keys[i].v = hop_v[i];
+        t.keys[i].ease = GUI_ANIM_EASE_OUT_QUAD;
+    }
+    clip.tracks[clip.track_count++] = t;
+
+    for (int i = 0; i < 4; ++i) {
+        t = GUiAnimTrack{};
+        char nm[24];
+        std::snprintf(nm, sizeof(nm), "stag.%d", i);
+        std::strncpy(t.channel, nm, sizeof(t.channel) - 1);
+        t.delay = 0.15f * static_cast<float>(i);
+        t.key_count = 2;
+        t.keys[0].t = 0.0f;  t.keys[0].v = 0.0f; t.keys[0].ease = GUI_ANIM_EASE_OUT_BACK;
+        t.keys[1].t = 0.45f; t.keys[1].v = 1.0f; t.keys[1].ease = GUI_ANIM_EASE_OUT_BACK;
+        clip.tracks[clip.track_count++] = t;
+    }
+    return clip;
+}
+
+// 舞台组件：全部无父级（parent = 0）。动画每帧直写它们的 rect——父级不是
+// 布局组件，这些 pos 会被保留，resolve 不会碰它们。
+void build_anim_stage(UiDemoState* st, float dh) {
+    GUi_CompClear();
+    GUiCompSpec s{};
+    s.kind = GUI_COMP_KIND_LEAF;
+
+    s.x = 470.0f; s.y = 70.0f;  s.w = 110.0f; s.h = 40.0f;
+    st->anim_slide = GUi_CompAdd(&s);
+    s.x = 620.0f; s.y = 130.0f; s.w = 80.0f;  s.h = 80.0f;
+    st->anim_pulse = GUi_CompAdd(&s);
+    s.x = 480.0f; s.y = 250.0f; s.w = 90.0f;  s.h = 36.0f;
+    st->anim_hop = GUi_CompAdd(&s);
+    for (int i = 0; i < 4; ++i) {
+        s.x = 480.0f + 56.0f * static_cast<float>(i);
+        s.y = 330.0f;
+        s.w = 40.0f; s.h = 40.0f;
+        st->anim_stag[i] = GUi_CompAdd(&s);
+    }
+    st->anim_built = true;
+    st->anim_built_h = static_cast<int>(dh);
+}
+
+// 通道值 -> 组件 rect（Get -> 改 -> Set）。不需要 resolve：没有布局父级。
+void anim_set_rect(uint64_t id, float x, float y, float w, float h) {
+    GUiCompSpec s{};
+    if (GUi_CompGet(id, &s) != 1) return;
+    s.x = x; s.y = y; s.w = w; s.h = h;
+    GUi_CompSet(id, &s);
+}
+
+void apply_anim_to_stage(UiDemoState* st) {
+    float v = 0.0f;
+    if (GUi_AnimChannelFloat("slide.x", &v)) {
+        anim_set_rect(st->anim_slide, 470.0f + v, 70.0f, 110.0f, 40.0f);
+    }
+    if (GUi_AnimChannelFloat("pulse.s", &v)) {
+        const float w = 48.0f + 48.0f * v;
+        anim_set_rect(st->anim_pulse, 660.0f - w * 0.5f, 170.0f - w * 0.5f, w, w);
+    }
+    if (GUi_AnimChannelFloat("hop.y", &v)) {
+        anim_set_rect(st->anim_hop, 480.0f, 250.0f + v, 90.0f, 36.0f);
+    }
+    for (int i = 0; i < 4; ++i) {
+        char nm[24];
+        std::snprintf(nm, sizeof(nm), "stag.%d", i);
+        if (GUi_AnimChannelFloat(nm, &v)) {
+            anim_set_rect(st->anim_stag[i],
+                          480.0f + 56.0f * static_cast<float>(i) + 44.0f * v,
+                          330.0f, 40.0f, 40.0f);
+        }
+    }
+}
+
+void draw_stage_box(uint64_t id, const char* label) {
+    GRUiRect r{};
+    if (GUi_CompRect(id, &r) != 1) return;
+    char name[40];
+    std::snprintf(name, sizeof(name), "##s%llu", (unsigned long long)id);
+    // 与布局页同一条铁律：不要传 GUI_WIN_NO_BRING_TO_FRONT（新窗口会进显示
+    // 序队首，先画的盖住后画的）。
+    const int flags = GUI_WIN_NO_TITLE_BAR | GUI_WIN_NO_RESIZE | GUI_WIN_NO_MOVE
+                    | GUI_WIN_NO_SAVED_SETTINGS | GUI_WIN_NO_SCROLLBAR
+                    | GUI_WIN_NO_COLLAPSE;
+    const int began = GUi_BeginWindow(name, r.x, r.y, r.w, r.h, flags);
+    if (began) {
+        char line[48];
+        std::snprintf(line, sizeof(line), "%s %.0fx%.0f", label, r.w, r.h);
+        GUi_Text(line);
+    }
+    GUi_EndWindow();
+}
+
+void draw_anim_page(void* user, bool page_switched) {
+    UiDemoState* st = static_cast<UiDemoState*>(user);
+    float dw = 0.0f, dh = 0.0f;
+    GUi_GetDisplaySize(&dw, &dh);
+    if (page_switched || !st->anim_built || st->anim_built_h != static_cast<int>(dh)) {
+        build_anim_stage(st, dh);
+        // 翻页进来从头播：动画是"看到就动"的东西，停在上次退出的位置只会
+        // 让人以为坏了
+        GUiAnimClip first = build_stage_clip(st->anim_loop);
+        GUi_AnimPlay(&first, 1);
+    }
+
+    GUi_BeginChild("anim", 0.0f, 0.0f, 1);
+    GUi_TextColored(GUI_TEXT_ACCENT, "Animation: block 1 (pure) + block 2 (runtime)");
+    GUi_Separator();
+
+    // ---- 块一：纯函数，改属性直接用 ----
+    static char ease_bufs[GUI_ANIM_EASE_COUNT][24];
+    static const char* ease_ptrs[GUI_ANIM_EASE_COUNT];
+    static bool ease_init = false;
+    if (!ease_init) {
+        for (int i = 0; i < GUI_ANIM_EASE_COUNT; ++i) {
+            GUi_AnimEaseName(i, ease_bufs[i], sizeof(ease_bufs[i]));
+            ease_ptrs[i] = ease_bufs[i];
+        }
+        ease_init = true;
+    }
+    GUi_TextColored(GUI_TEXT_DIM, "Block 1 - pure functions (no player, no state):");
+    int ease = st->anim_ease;
+    if (GUi_Combo("Tween ease", &ease, ease_ptrs, GUI_ANIM_EASE_COUNT)) {
+        st->anim_ease = ease;
+    }
+    // 补间演示：时间用宿主自己的时钟，循环靠 fmod 自己折——纯函数层没有
+    // 循环模式，折叠是调用方的事
+    const float cycle = 1.2f;
+    const float tt = std::fmod(st->demo_t, cycle);
+    float v = 0.0f;
+    GUi_AnimTween(0.0f, 1.0f, cycle, 0.0f, st->anim_ease, tt, &v);
+    GUi_ProgressBar(v, -1.0f, 0.0f, nullptr);
+    char line[96];
+    std::snprintf(line, sizeof(line), "0->1 over %.1fs @ t=%.2f -> %.3f", cycle, tt, (double)v);
+    GUi_LabelText("tween", line);
+    const float red[4]   = {0.85f, 0.25f, 0.25f, 1.0f};
+    const float blue[4]  = {0.25f, 0.45f, 0.90f, 1.0f};
+    float col[4] = {};
+    GUi_AnimColorLerp(red, blue, v, col);
+    GUi_ColorButton("color lerp", col);
+    GUi_Spacing();
+
+    // ---- 块二：运行时 ----
+    GUiAnimClip clip = build_stage_clip(st->anim_loop);
+    const float dur = GUi_AnimClipDuration(&clip);
+    GUi_TextColored(GUI_TEXT_DIM, "Block 2 - clip / tracks / channels / player:");
+    if (GUi_Button("Play")) {
+        // 播完之后 Play = 从头再来；暂停中 Play = 继续
+        if (GUi_AnimIsFinished()) GUi_AnimPlay(&clip, 1);
+        else GUi_AnimResume();
+    }
+    GUi_SameLine(0.0f);
+    if (GUi_Button("Pause")) GUi_AnimPause();
+    GUi_SameLine(0.0f);
+    if (GUi_Button("Stop")) GUi_AnimStop();
+    GUi_SameLine(0.0f);
+    if (GUi_Button("Restart")) GUi_AnimPlay(&clip, 1);
+
+    static const char* loop_names[3] = {"Once", "Loop", "PingPong"};
+    int loop_mode = st->anim_loop;
+    if (GUi_Combo("Loop mode", &loop_mode, loop_names, 3)) {
+        st->anim_loop = loop_mode;
+        // 循环模式住在片段里：换模式不重置进度（restart = 0）
+        GUi_AnimPlay(&clip, 0);
+    }
+
+    if (GUi_SliderFloat("Speed", &st->anim_speed, 0.25f, 3.0f, "%.2fx")) {
+        GUi_AnimSetSpeed(st->anim_speed);
+    }
+    // Seek 滑杆要有本地缓冲：每帧用 GUi_AnimTime() 覆盖它，拖拽会被自己
+    // 弹回去。只有"没有任何控件在编辑"时才同步播放进度。
+    if (!GUi_IsAnyItemActive()) st->anim_seek = GUi_AnimTime();
+    float seek_t = st->anim_seek;
+    if (GUi_SliderFloat("Seek", &seek_t, 0.0f, dur, "%.2fs")) {
+        st->anim_seek = seek_t;
+        GUi_AnimSeek(seek_t);
+    }
+
+    GUi_Spacing();
+    GUi_TextColored(GUI_TEXT_DIM, "Channels (clip writes them; stage rects read them):");
+    const int nch = GUi_AnimChannelCount();
+    for (int i = 0; i < nch; ++i) {
+        char nm[24] = {};
+        GUi_AnimChannelName(i, nm, sizeof(nm));
+        float fv = 0.0f;
+        float cv[4] = {};
+        if (GUi_AnimChannelFloat(nm, &fv)) {
+            std::snprintf(line, sizeof(line), "%.2f", (double)fv);
+        } else if (GUi_AnimChannelColor(nm, cv)) {
+            std::snprintf(line, sizeof(line), "%.2f %.2f %.2f %.2f",
+                          (double)cv[0], (double)cv[1], (double)cv[2], (double)cv[3]);
+        } else {
+            std::snprintf(line, sizeof(line), "?");
+        }
+        GUi_LabelText(nm, line);
+    }
+    std::snprintf(line, sizeof(line), "playing=%d finished=%d t=%.2f/%.2f",
+                  GUi_AnimIsPlaying(), GUi_AnimIsFinished(),
+                  (double)GUi_AnimTime(), (double)dur);
+    GUi_LabelText("player", line);
+    GUi_EndChild();
+}
+
+// 舞台画在主窗口之后：每个组件一个绝对定位窗口（与布局页同一套画法）
+void draw_anim_stage(void* user) {
+    UiDemoState* st = static_cast<UiDemoState*>(user);
+    apply_anim_to_stage(st);
+    draw_stage_box(st->anim_slide, "slide");
+    draw_stage_box(st->anim_pulse, "pulse");
+    draw_stage_box(st->anim_hop, "hop");
+    for (int i = 0; i < 4; ++i) draw_stage_box(st->anim_stag[i], "stag");
+}
+
 void ui_callback(void* user) {
     UiDemoState* st = static_cast<UiDemoState*>(user);
+    // 翻页检测：布局页与动画页共用进程内唯一的组件树，翻回来必须重建
+    const bool page_switched = st->page != st->last_page;
+    st->last_page = st->page;
 
     // 布局栈算出的面板矩形（确定性：相同调用序列 -> 相同矩形）
     GRUiRect viewport{};
@@ -480,23 +796,26 @@ void ui_callback(void* user) {
                 if (GUi_MenuItem("Controls", "Ctrl+1", 1)) st->page = 0;
                 if (GUi_MenuItem("Queue", "Ctrl+2", 1)) st->page = 1;
                 if (GUi_MenuItem("Layout", "Ctrl+3", 1)) st->page = 2;
-                if (GUi_MenuItem("About", nullptr, 1)) st->page = 3;
+                if (GUi_MenuItem("Anim", "Ctrl+4", 1)) st->page = 3;
+                if (GUi_MenuItem("About", nullptr, 1)) st->page = 4;
                 GUi_EndMenu();
             }
             GUi_EndMenuBar();
         }
         switch (st->page) {
-            case 0: draw_controls_page(); break;
+            case 0: draw_controls_page(user); break;
             case 1: draw_queue_page(user); break;
-            case 2: draw_layout_page(user); break;
+            case 2: draw_layout_page(user, page_switched); break;
+            case 3: draw_anim_page(user, page_switched); break;
             default: draw_about_page(user); break;
         }
     }
     GUi_EndWindow();
     GUi_LayoutEndPanel();
 
-    // 布局页的组件树：绝对坐标窗口，画在主窗口之后（互不嵌套）
+    // 布局页的组件树 / 动画页的舞台：绝对坐标窗口，画在主窗口之后（互不嵌套）
     if (st->page == 2) draw_layout_tree(user);
+    if (st->page == 3) draw_anim_stage(user);
 }
 
 // ---------------------------------------------------------------------------
@@ -537,8 +856,10 @@ void print_usage() {
         "  --w / --h <px>         窗口与视口尺寸（默认 800x600）\n"
         "  --ui-interval <N>      UI 帧节流：每 N 个渲染帧才构建一次 UI（默认 1）\n"
         "  --ops-burst <N>        先批量灌 N 条操作再跑帧循环：演示合并/预算/统计\n"
-        "  --theme <dark|light>   初始主题预设（默认 dark）\n"
-        "  --page <name>          初始页：controls / queue / layout / about（默认 controls）\n"
+        "  --theme <name>         初始主题预设：dark / light / midnight / nord /\n"
+        "                        highcontrast（默认 dark）\n"
+        "  --page <name>          初始页：controls / queue / layout / anim / about\n"
+        "                        （默认 controls）\n"
         "  --no-vsync             关闭垂直同步\n"
         "  --help                 显示本帮助\n");
 }
@@ -582,8 +903,13 @@ int main(int argc, char** argv) {
             const char* t = value_at(i);
             if (std::strcmp(t, "light") == 0) theme_preset = GUI_THEME_PRESET_LIGHT;
             else if (std::strcmp(t, "dark") == 0) theme_preset = GUI_THEME_PRESET_DARK;
+            else if (std::strcmp(t, "midnight") == 0) theme_preset = GUI_THEME_PRESET_MIDNIGHT;
+            else if (std::strcmp(t, "nord") == 0) theme_preset = GUI_THEME_PRESET_NORD;
+            else if (std::strcmp(t, "highcontrast") == 0) theme_preset = GUI_THEME_PRESET_HIGH_CONTRAST;
             else {
-                std::fprintf(stderr, "[ui-smoke] 未知主题 '%s'（dark 或 light）\n", t);
+                std::fprintf(stderr,
+                             "[ui-smoke] 未知主题 '%s'（dark / light / midnight / nord / highcontrast）\n",
+                             t);
                 return 1;
             }
         }
@@ -593,9 +919,12 @@ int main(int argc, char** argv) {
             if (std::strcmp(t, "controls") == 0) page = 0;
             else if (std::strcmp(t, "queue") == 0) page = 1;
             else if (std::strcmp(t, "layout") == 0) page = 2;
-            else if (std::strcmp(t, "about") == 0) page = 3;
+            else if (std::strcmp(t, "anim") == 0) page = 3;
+            else if (std::strcmp(t, "about") == 0) page = 4;
             else {
-                std::fprintf(stderr, "[ui-smoke] 未知页 '%s'（controls / queue / layout / about）\n", t);
+                std::fprintf(stderr,
+                             "[ui-smoke] 未知页 '%s'（controls / queue / layout / anim / about）\n",
+                             t);
                 return 1;
             }
         }
@@ -665,6 +994,7 @@ int main(int argc, char** argv) {
     }
     GUi_ShortcutAdd(KEY_2, GUI_MOD_CTRL, CMD_RESET_VIEW);
     GUi_ShortcutAdd(KEY_3, GUI_MOD_CTRL, CMD_SHOW_LAYOUT);
+    GUi_ShortcutAdd(KEY_4, GUI_MOD_CTRL, CMD_SHOW_ANIM);
 
     // 主题先设好：引擎在 GRender_Init 里按当前 token 落地一次 Style
     // （Style 要在第一个 NewFrame 之前就位），所以这里只设预设、不 apply。
@@ -730,6 +1060,10 @@ int main(int argc, char** argv) {
     while (!window.should_close()) {
         window.poll_events();
         const float dt = 1.0f / 60.0f;
+        // 动画时间源：块一补间的演示时钟（宿主自持）+ 块二播放器推进。
+        // 两者都在锁外，与 drain_and_apply 同级。
+        state.demo_t += dt;
+        GUi_AnimAdvance(dt);
         GCore_BeginFrame(dt);
         GRender_BeginFrame();
         GRender_RenderWorld();

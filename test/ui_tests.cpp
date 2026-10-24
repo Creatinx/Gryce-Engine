@@ -1,7 +1,7 @@
 // ===========================================================================
 // test/ui_tests.cpp
 // UI 系统的单元测试：操作队列（OpQueue 本体 + GUi_* C ABI 两层）与模型层
-// （跨帧状态 / 布局栈 / 组件树 / 主题 / 输入 / 视图模型）。
+// （跨帧状态 / 布局栈 / 组件树 / 主题 / 输入 / 视图模型 / 动画系统）。
 //
 // 与 math / script / asset 测试同构：被测源码（api/ui_op_queue.cpp +
 // api/ui_api.cpp + ui/*.cpp）直接编译进本可执行文件，不链接
@@ -27,6 +27,7 @@
 #include "api/ui_api.h"
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
+#include "ui/ui_anim.h"
 #include "ui/ui_component.h"
 #include "ui/ui_id.h"
 #include "ui/ui_input.h"
@@ -1380,6 +1381,490 @@ TEST(theme, apply_is_safe_without_imgui) {
     GUi_ThemeApply();
     GUi_ThemeApply();
     CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), before);
+}
+
+TEST(theme, preset_count_and_names) {
+    CHECK_EQ(GUi_ThemePresetCount(), GUI_THEME_PRESET_COUNT);
+    CHECK_EQ(GUi_ThemePresetCount(), 5);
+    char a[32] = {};
+    CHECK_EQ(GUi_ThemePresetName(GUI_THEME_PRESET_DARK, a, sizeof(a)), 4);
+    CHECK_TRUE(std::strcmp(a, "Dark") == 0);
+    CHECK_EQ(GUi_ThemePresetName(GUI_THEME_PRESET_HIGH_CONTRAST, a, sizeof(a)), 12);
+    CHECK_TRUE(std::strcmp(a, "HighContrast") == 0);
+    // 越界：写空串、返回 0
+    char bad[8] = {'x', 'x', 'x', 'x', 'x', 'x', 'x', '\0'};
+    CHECK_EQ(GUi_ThemePresetName(GUI_THEME_PRESET_COUNT, bad, sizeof(bad)), 0);
+    CHECK_EQ(bad[0], '\0');
+    CHECK_EQ(GUi_ThemePresetName(-1, nullptr, 0), 0);
+}
+
+TEST(theme, new_presets_anchors) {
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_MIDNIGHT);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x141822FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x6EA8FEFFu);
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_NORD);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x2E3440FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ERROR), 0xBF616AFFu);
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_HIGH_CONTRAST);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x000000FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), 0xFFFFFFFFu);
+    // 度量与预设无关（几何不分主题）
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_ROW_H), 22.0f, 1e-4f);
+}
+
+TEST(theme, derived_tokens_consistent_across_presets) {
+    // 派生规则固定：换任何预设这些等式都成立。哪天某套预设开始手工抄派生值，
+    // 这条用例就会红——那是"换预设漂移半个界面"的前兆。
+    for (int p = 0; p < GUI_THEME_PRESET_COUNT; ++p) {
+        GUi_ThemeSetPreset(p);
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_CHECK_MARK),
+                 GUi_ThemeColor(GUI_THEME_COLOR_ACCENT));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_SLIDER_GRAB),
+                 GUi_ThemeColor(GUI_THEME_COLOR_ACCENT));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_SLIDER_GRAB_ACTIVE),
+                 GUi_ThemeColor(GUI_THEME_COLOR_ACCENT_ACTIVE));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_SEPARATOR),
+                 GUi_ThemeColor(GUI_THEME_COLOR_BORDER));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TITLE_BG),
+                 GUi_ThemeColor(GUI_THEME_COLOR_HEADER));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_MENUBAR_BG),
+                 GUi_ThemeColor(GUI_THEME_COLOR_HEADER));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_POPUP_BG),
+                 GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_SCROLLBAR_GRAB_HOVERED),
+                 GUi_ThemeColor(GUI_THEME_COLOR_BUTTON_HOVER));
+        CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_SCROLLBAR_GRAB_ACTIVE),
+                 GUi_ThemeColor(GUI_THEME_COLOR_BUTTON_ACTIVE));
+        // 派生 token 非零（0 会被当成"越界读"的返回值，界面表现是缺色/透明）
+        CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_SCROLLBAR_BG) != 0u);
+        CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_TABLE_ROW_BG_ALT) != 0u);
+        CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_TAB_SELECTED) != 0u);
+        CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_NAV_WINDOWING_DIM_BG) != 0u);
+        CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_MODAL_WINDOW_DIM_BG) != 0u);
+    }
+}
+
+TEST(theme, rounding_metrics_present) {
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 6.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_FRAME_ROUNDING), 4.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_ROUNDING), 3.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_SCROLLBAR_SIZE), 12.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_MIN_SIZE), 8.0f, 1e-4f);
+    // 越界度量读返回 0（既有约定不变）
+    CHECK_EQ(GUi_ThemeMetric(GUI_THEME_METRIC_COUNT), 0.0f);
+}
+
+// ===========================================================================
+// suite: anim —— 动画系统（块一纯函数层 + 块二运行时）
+// ===========================================================================
+
+TEST(anim, ease_boundaries) {
+    for (int i = 0; i < gryce_ui::kAnimEaseCount; ++i) {
+        const gryce_ui::AnimEase e = static_cast<gryce_ui::AnimEase>(i);
+        // 边界对齐：所有缓动 f(0)=0、f(1)=1（回弹类也如此）
+        CHECK_NEAR(gryce_ui::anim_ease(e, 0.0f), 0.0f, 1e-6f);
+        CHECK_NEAR(gryce_ui::anim_ease(e, 1.0f), 1.0f, 1e-6f);
+        // t 夹到 [0,1]：负值与超界不泄漏到区间外
+        CHECK_NEAR(gryce_ui::anim_ease(e, -3.0f), 0.0f, 1e-6f);
+        CHECK_NEAR(gryce_ui::anim_ease(e, 7.0f), 1.0f, 1e-6f);
+    }
+    CHECK_NEAR(gryce_ui::anim_ease(gryce_ui::AnimEase::Linear, 0.5f), 0.5f, 1e-6f);
+    CHECK_NEAR(gryce_ui::anim_ease(gryce_ui::AnimEase::EaseInQuad, 0.5f), 0.25f, 1e-6f);
+    CHECK_NEAR(gryce_ui::anim_ease(gryce_ui::AnimEase::EaseOutQuad, 0.5f), 0.75f, 1e-6f);
+    CHECK_NEAR(gryce_ui::anim_ease(gryce_ui::AnimEase::EaseInOutCubic, 0.5f), 0.5f, 1e-6f);
+    // 回弹类允许过冲，但必须回落到 1
+    CHECK_TRUE(gryce_ui::anim_ease(gryce_ui::AnimEase::EaseOutBack, 0.7f) > 1.0f);
+    CHECK_NEAR(gryce_ui::anim_ease(gryce_ui::AnimEase::EaseOutBack, 1.0f), 1.0f, 1e-6f);
+}
+
+TEST(anim, ease_names_unique) {
+    for (int i = 0; i < gryce_ui::kAnimEaseCount; ++i) {
+        const char* n = gryce_ui::anim_ease_name(static_cast<gryce_ui::AnimEase>(i));
+        CHECK_TRUE(n && n[0] != '\0');
+        for (int j = i + 1; j < gryce_ui::kAnimEaseCount; ++j) {
+            CHECK_TRUE(std::strcmp(n, gryce_ui::anim_ease_name(
+                                          static_cast<gryce_ui::AnimEase>(j))) != 0);
+        }
+    }
+    CHECK_EQ(std::strcmp(gryce_ui::anim_ease_name(
+                             static_cast<gryce_ui::AnimEase>(gryce_ui::kAnimEaseCount + 3)),
+                         ""),
+             0);
+}
+
+TEST(anim, tween_delay_and_bounds) {
+    gryce_ui::AnimTween tw;
+    tw.from = 10.0f;
+    tw.to = 110.0f;
+    tw.duration = 1.0f;
+    tw.delay = 0.5f;
+    tw.ease = gryce_ui::AnimEase::Linear;
+    CHECK_NEAR(tw.value_at(0.0f), 10.0f, 1e-5f);    // 延迟期间不动
+    CHECK_NEAR(tw.value_at(0.5f), 10.0f, 1e-5f);    // 恰在 delay 上仍是起点
+    CHECK_NEAR(tw.value_at(1.0f), 60.0f, 1e-5f);    // delay+0.5s -> 线性中点
+    CHECK_NEAR(tw.value_at(1.5f), 110.0f, 1e-5f);   // 精确落到终点
+    CHECK_NEAR(tw.value_at(9.0f), 110.0f, 1e-5f);   // 超界保持终点
+    tw.ease = gryce_ui::AnimEase::EaseInQuad;
+    CHECK_NEAR(tw.value_at(1.0f), 35.0f, 1e-5f);    // 10 + 100*0.25
+}
+
+TEST(anim, tween_zero_duration_is_instant) {
+    gryce_ui::AnimTween tw;
+    tw.from = 0.0f;
+    tw.to = 5.0f;
+    tw.duration = 0.0f;
+    CHECK_NEAR(tw.value_at(0.0f), 5.0f, 1e-6f);
+    CHECK_NEAR(tw.value_at(-1.0f), 5.0f, 1e-6f);
+}
+
+TEST(anim, color_lerp_clamps) {
+    const gryce_ui::AnimColor a{0.0f, 0.0f, 0.0f, 1.0f};
+    const gryce_ui::AnimColor b{1.0f, 0.5f, 0.25f, 0.5f};
+    const gryce_ui::AnimColor mid = gryce_ui::anim_color_lerp(a, b, 0.5f);
+    CHECK_NEAR(mid.r, 0.5f, 1e-6f);
+    CHECK_NEAR(mid.g, 0.25f, 1e-6f);
+    CHECK_NEAR(mid.b, 0.125f, 1e-6f);
+    CHECK_NEAR(mid.a, 0.75f, 1e-6f);
+    CHECK_NEAR(gryce_ui::anim_color_lerp(a, b, -1.0f).r, 0.0f, 1e-6f);
+    CHECK_NEAR(gryce_ui::anim_color_lerp(a, b, 2.0f).r, 1.0f, 1e-6f);
+}
+
+TEST(anim, track_insert_sorted_and_overwrite) {
+    gryce_ui::AnimTrack tr;
+    CHECK_TRUE(tr.add(1.0f, 10.0f, gryce_ui::AnimEase::Linear));
+    CHECK_TRUE(tr.add(0.0f, 0.0f, gryce_ui::AnimEase::Linear));    // 插到最前
+    CHECK_TRUE(tr.add(2.0f, -5.0f, gryce_ui::AnimEase::Linear));
+    CHECK_TRUE(tr.add(1.0f, 7.0f, gryce_ui::AnimEase::Linear));    // 同刻覆盖
+    CHECK_EQ(tr.count(), 3);
+    CHECK_NEAR(tr.duration(), 2.0f, 1e-6f);
+    CHECK_NEAR(tr.eval(1.0f), 7.0f, 1e-6f);     // 覆盖后的值
+    CHECK_NEAR(tr.eval(0.5f), 3.5f, 1e-6f);     // 0 -> 7 线性中点
+}
+
+TEST(anim, track_eval_holds_outside_range) {
+    gryce_ui::AnimTrack tr;
+    tr.add(0.5f, 2.0f, gryce_ui::AnimEase::Linear);
+    tr.add(1.5f, 4.0f, gryce_ui::AnimEase::Linear);
+    CHECK_NEAR(tr.eval(0.0f), 2.0f, 1e-6f);     // 首帧之前保持首帧值
+    CHECK_NEAR(tr.eval(0.5f), 2.0f, 1e-6f);
+    CHECK_NEAR(tr.eval(1.0f), 3.0f, 1e-6f);
+    CHECK_NEAR(tr.eval(1.5f), 4.0f, 1e-6f);
+    CHECK_NEAR(tr.eval(9.0f), 4.0f, 1e-6f);     // 尾帧之后保持尾帧值
+    gryce_ui::AnimTrack empty;
+    CHECK_NEAR(empty.eval(1.0f), 0.0f, 1e-6f);  // 空轨道
+    CHECK_EQ(empty.count(), 0);
+}
+
+TEST(anim, track_segment_ease_uses_previous_key) {
+    gryce_ui::AnimTrack tr;
+    tr.add(0.0f, 0.0f, gryce_ui::AnimEase::EaseInQuad);     // 本段用 InQuad
+    tr.add(1.0f, 100.0f, gryce_ui::AnimEase::Linear);
+    CHECK_NEAR(tr.eval(0.5f), 25.0f, 1e-4f);                // 0.25*100，不是 50
+    tr.add(2.0f, 0.0f, gryce_ui::AnimEase::Linear);         // 第二段 Linear
+    CHECK_NEAR(tr.eval(1.5f), 50.0f, 1e-4f);
+}
+
+TEST(anim, track_capacity) {
+    gryce_ui::AnimTrack tr;
+    for (int i = 0; i < gryce_ui::AnimTrack::kMaxKeys; ++i) {
+        CHECK_TRUE(tr.add(static_cast<float>(i), 1.0f, gryce_ui::AnimEase::Linear));
+    }
+    CHECK_FALSE(tr.add(99.0f, 1.0f, gryce_ui::AnimEase::Linear));   // 满：拒绝
+    CHECK_EQ(tr.count(), gryce_ui::AnimTrack::kMaxKeys);
+}
+
+TEST(anim, clip_duration_and_track_replace) {
+    gryce_ui::AnimClip clip;
+    CHECK_NEAR(clip.computed_duration(), 0.0f, 1e-6f);      // 空片段
+    gryce_ui::AnimClipTrack t{};
+    std::strncpy(t.channel, "x", sizeof(t.channel) - 1);
+    t.keys.add(0.0f, 0.0f, gryce_ui::AnimEase::Linear);
+    t.keys.add(0.5f, 50.0f, gryce_ui::AnimEase::Linear);
+    CHECK_TRUE(clip.add_track(t));
+    gryce_ui::AnimClipTrack c{};
+    std::strncpy(c.channel, "tint", sizeof(c.channel) - 1);
+    c.is_color = 1;
+    c.duration = 0.25f;
+    c.delay = 0.25f;
+    CHECK_TRUE(clip.add_track(c));
+    CHECK_NEAR(clip.computed_duration(), 0.5f, 1e-6f);      // max(0.5, 0.25+0.25)
+    CHECK_EQ(clip.track_count(), 2);
+    // 同名通道整体覆盖（位置不变、计数不变）
+    gryce_ui::AnimClipTrack t2 = t;
+    t2.keys.clear();
+    t2.keys.add(0.0f, 9.0f, gryce_ui::AnimEase::Linear);
+    CHECK_TRUE(clip.add_track(t2));
+    CHECK_EQ(clip.track_count(), 2);
+    CHECK_NEAR(clip.track(0).keys.key(0).v, 9.0f, 1e-6f);
+    clip.duration = 3.0f;
+    CHECK_NEAR(clip.computed_duration(), 3.0f, 1e-6f);      // 显式时长优先
+}
+
+// 测试用片段：标量通道 "x"，0 -> 100，1 秒线性。
+gryce_ui::AnimClip make_slide_clip(gryce_ui::AnimLoop loop) {
+    gryce_ui::AnimClip clip;
+    std::strncpy(clip.name, "slide", sizeof(clip.name) - 1);
+    clip.loop = loop;
+    gryce_ui::AnimClipTrack t{};
+    std::strncpy(t.channel, "x", sizeof(t.channel) - 1);
+    t.keys.add(0.0f, 0.0f, gryce_ui::AnimEase::Linear);
+    t.keys.add(1.0f, 100.0f, gryce_ui::AnimEase::Linear);
+    clip.add_track(t);
+    return clip;
+}
+
+TEST(anim, animator_once_play_and_finish) {
+    const gryce_ui::AnimClip clip = make_slide_clip(gryce_ui::AnimLoop::Once);
+    gryce_ui::Animator a;
+    a.play(clip, true);
+    CHECK_TRUE(a.is_playing());
+    CHECK_FALSE(a.is_finished());
+    float x = -1.0f;
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 0.0f, 1e-6f);                  // play 立即评估
+    a.advance(0.5f);
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 50.0f, 1e-6f);
+    a.advance(0.5f);
+    CHECK_FALSE(a.is_playing());
+    CHECK_TRUE(a.is_finished());
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 100.0f, 1e-6f);                // 停在终点
+    CHECK_FALSE(a.channel_float("nope", &x));    // 没有的通道
+    CHECK_FALSE(a.channel_color("x", nullptr));  // 标量通道不当颜色读
+}
+
+TEST(anim, animator_loop_and_pingpong) {
+    float x = 0.0f;
+    gryce_ui::Animator a;
+    a.play(make_slide_clip(gryce_ui::AnimLoop::Loop), true);
+    a.advance(1.5f);
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 50.0f, 1e-6f);                 // 绕回中点
+    CHECK_TRUE(a.is_playing());
+    CHECK_FALSE(a.is_finished());
+
+    a.play(make_slide_clip(gryce_ui::AnimLoop::PingPong), true);
+    a.advance(1.5f);
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 50.0f, 1e-6f);                 // 折叠 1.5 -> 0.5
+    a.advance(0.5f);                             // 累计 2.0 -> 折叠 0
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 0.0f, 1e-6f);
+    CHECK_NEAR(a.time(), 2.0f, 1e-6f);           // time() 报未折叠的累计值
+}
+
+TEST(anim, animator_speed_seek_pause_stop) {
+    gryce_ui::Animator a;
+    a.set_speed(2.0f);
+    a.play(make_slide_clip(gryce_ui::AnimLoop::Loop), true);
+    a.advance(0.25f);
+    CHECK_NEAR(a.time(), 0.5f, 1e-6f);           // 2x 速度
+    CHECK_NEAR(a.speed(), 2.0f, 1e-6f);
+    a.seek(0.25f);
+    CHECK_NEAR(a.time(), 0.25f, 1e-6f);
+    float x = 0.0f;
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 25.0f, 1e-6f);                 // seek 后立即评估
+    a.pause();
+    CHECK_FALSE(a.is_playing());
+    a.advance(1.0f);
+    CHECK_NEAR(a.time(), 0.25f, 1e-6f);          // 暂停中不推进
+    a.resume();
+    CHECK_TRUE(a.is_playing());
+    a.advance(0.1f);
+    CHECK_NEAR(a.time(), 0.45f, 1e-6f);
+    a.stop();
+    CHECK_FALSE(a.is_playing());
+    CHECK_FALSE(a.is_finished());                // stop 不是"播完"
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_NEAR(x, 45.0f, 1e-6f);                 // 停止后通道保留最后的值
+}
+
+TEST(anim, animator_delay_holds_initial) {
+    gryce_ui::AnimClip clip = make_slide_clip(gryce_ui::AnimLoop::Once);
+    gryce_ui::AnimClipTrack late = clip.track(0);
+    std::strncpy(late.channel, "b", sizeof(late.channel) - 1);
+    late.delay = 0.5f;
+    clip.add_track(late);
+
+    gryce_ui::Animator a;
+    a.play(clip, true);
+    a.advance(0.25f);
+    float x = 0.0f, b = -1.0f;
+    CHECK_TRUE(a.channel_float("x", &x));
+    CHECK_TRUE(a.channel_float("b", &b));
+    CHECK_NEAR(x, 25.0f, 1e-6f);
+    CHECK_NEAR(b, 0.0f, 1e-6f);                  // 延迟期间 = 首帧值
+    a.advance(0.5f);                             // t = 0.75
+    CHECK_TRUE(a.channel_float("b", &b));
+    CHECK_NEAR(b, 25.0f, 1e-6f);                 // 0.75 - 0.5 = 0.25 处
+}
+
+TEST(anim, animator_color_channel) {
+    gryce_ui::AnimClip clip;
+    gryce_ui::AnimClipTrack t{};
+    std::strncpy(t.channel, "tint", sizeof(t.channel) - 1);
+    t.is_color = 1;
+    t.duration = 1.0f;
+    t.ease = gryce_ui::AnimEase::Linear;
+    t.color_from.r = 1.0f;   // 红
+    t.color_from.g = 0.0f;
+    t.color_from.b = 0.0f;
+    t.color_to.r = 0.0f;     // 蓝
+    t.color_to.g = 0.0f;
+    t.color_to.b = 1.0f;
+    clip.add_track(t);
+
+    gryce_ui::Animator a;
+    a.play(clip, true);
+    a.advance(0.5f);
+    gryce_ui::AnimColor c{};
+    CHECK_TRUE(a.channel_color("tint", &c));
+    CHECK_NEAR(c.r, 0.5f, 1e-6f);
+    CHECK_NEAR(c.g, 0.0f, 1e-6f);
+    CHECK_NEAR(c.b, 0.5f, 1e-6f);
+    float f = -1.0f;
+    CHECK_FALSE(a.channel_float("tint", &f));    // 颜色通道不当标量读
+    a.advance(0.5f);
+    CHECK_TRUE(a.channel_color("tint", &c));
+    CHECK_NEAR(c.b, 1.0f, 1e-6f);
+}
+
+TEST(anim, animator_channels_rebuild_on_play) {
+    gryce_ui::AnimClip one = make_slide_clip(gryce_ui::AnimLoop::Once);
+    gryce_ui::AnimClip two{};
+    gryce_ui::AnimClipTrack t{};
+    std::strncpy(t.channel, "y", sizeof(t.channel) - 1);
+    t.keys.add(0.0f, 7.0f, gryce_ui::AnimEase::Linear);
+    t.keys.add(1.0f, 7.0f, gryce_ui::AnimEase::Linear);
+    two.add_track(t);
+
+    gryce_ui::Animator a;
+    a.play(one, true);
+    CHECK_EQ(a.channel_count(), 1);
+    a.advance(0.3f);
+    // 换片段不重置时间（restart=false）：通道表整体换成新片段的
+    a.play(two, false);
+    CHECK_EQ(a.channel_count(), 1);
+    CHECK_NEAR(a.time(), 0.3f, 1e-6f);
+    float x = -1.0f, y = -1.0f;
+    CHECK_FALSE(a.channel_float("x", &x));       // 旧片段通道不残留
+    CHECK_TRUE(a.channel_float("y", &y));
+    CHECK_NEAR(y, 7.0f, 1e-6f);
+}
+
+TEST(anim, animator_without_clip_is_noop) {
+    gryce_ui::Animator a;
+    a.advance(1.0f);
+    CHECK_FALSE(a.is_playing());
+    CHECK_FALSE(a.is_finished());
+    CHECK_EQ(a.channel_count(), 0);
+    a.pause();
+    a.resume();
+    a.stop();
+    a.seek(1.0f);
+    float x = -1.0f;
+    CHECK_FALSE(a.channel_float("x", &x));
+    gryce_ui::AnimColor c{};
+    CHECK_FALSE(a.channel_color("x", &c));
+}
+
+// ===========================================================================
+// suite: animabi —— 动画系统 C ABI（与 anim 套件分工：那边测模型，这边测
+// C 结构体转换、枚举映射、进程内唯一播放器的读写闭环）
+// ===========================================================================
+
+TEST(animabi, ease_helpers_match_model) {
+    for (int i = 0; i < GUI_ANIM_EASE_COUNT; ++i) {
+        CHECK_NEAR(GUi_AnimEase(i, 0.25f),
+                   gryce_ui::anim_ease(static_cast<gryce_ui::AnimEase>(i), 0.25f), 1e-6f);
+        CHECK_NEAR(GUi_AnimEase(i, 0.9f),
+                   gryce_ui::anim_ease(static_cast<gryce_ui::AnimEase>(i), 0.9f), 1e-6f);
+    }
+    // 越界枚举退回 Linear
+    CHECK_NEAR(GUi_AnimEase(GUI_ANIM_EASE_COUNT + 3, 0.5f), 0.5f, 1e-6f);
+    char name[32] = {};
+    CHECK_EQ(GUi_AnimEaseName(GUI_ANIM_EASE_OUT_BOUNCE, name, sizeof(name)), 13);
+    CHECK_TRUE(std::strcmp(name, "EaseOutBounce") == 0);
+    CHECK_EQ(GUi_AnimEaseName(-1, name, sizeof(name)), 0);
+    CHECK_EQ(name[0], '\0');
+}
+
+TEST(animabi, tween_and_color_helpers) {
+    float v = 0.0f;
+    GUi_AnimTween(0.0f, 100.0f, 1.0f, 0.5f, GUI_ANIM_EASE_LINEAR, 1.0f, &v);
+    CHECK_NEAR(v, 50.0f, 1e-5f);
+    GUi_AnimTween(0.0f, 100.0f, 1.0f, 0.5f, GUI_ANIM_EASE_LINEAR, 0.2f, &v);
+    CHECK_NEAR(v, 0.0f, 1e-5f);                   // 延迟期间保持起点
+    const float a[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    const float b[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float out[4] = {};
+    GUi_AnimColorLerp(a, b, 0.25f, out);
+    CHECK_NEAR(out[0], 0.25f, 1e-6f);
+    CHECK_NEAR(out[3], 1.0f, 1e-6f);
+}
+
+TEST(animabi, play_channels_roundtrip) {
+    GUiAnimClip clip{};
+    std::strncpy(clip.name, "demo", sizeof(clip.name) - 1);
+    clip.loop = GUI_ANIM_LOOP_ONCE;
+    GUiAnimTrack tx{};
+    std::strncpy(tx.channel, "x", sizeof(tx.channel) - 1);
+    tx.key_count = 2;
+    tx.keys[0].t = 0.0f;
+    tx.keys[0].v = 0.0f;
+    tx.keys[0].ease = GUI_ANIM_EASE_LINEAR;
+    tx.keys[1].t = 1.0f;
+    tx.keys[1].v = 100.0f;
+    tx.keys[1].ease = GUI_ANIM_EASE_LINEAR;
+    clip.tracks[0] = tx;
+    GUiAnimTrack tc{};
+    std::strncpy(tc.channel, "tint", sizeof(tc.channel) - 1);
+    tc.is_color = 1;
+    tc.duration = 1.0f;
+    tc.ease = GUI_ANIM_EASE_LINEAR;
+    tc.color_to[0] = tc.color_to[1] = tc.color_to[2] = tc.color_to[3] = 1.0f;
+    clip.tracks[1] = tc;
+    clip.track_count = 2;
+
+    CHECK_NEAR(GUi_AnimClipDuration(&clip), 1.0f, 1e-6f);
+    GUi_AnimPlay(&clip, 1);
+    CHECK_EQ(GUi_AnimIsPlaying(), 1);
+    CHECK_EQ(GUi_AnimChannelCount(), 2);
+    char nm[24] = {};
+    CHECK_EQ(GUi_AnimChannelName(0, nm, sizeof(nm)), 1);
+    CHECK_TRUE(std::strcmp(nm, "x") == 0);
+    float x = 0.0f;
+    CHECK_EQ(GUi_AnimChannelFloat("x", &x), 1);
+    CHECK_NEAR(x, 0.0f, 1e-6f);
+
+    GUi_AnimAdvance(0.5f);
+    CHECK_EQ(GUi_AnimChannelFloat("x", &x), 1);
+    CHECK_NEAR(x, 50.0f, 1e-6f);
+    float tint[4] = {};
+    CHECK_EQ(GUi_AnimChannelColor("tint", tint), 1);
+    CHECK_NEAR(tint[0], 0.5f, 1e-6f);
+    CHECK_EQ(GUi_AnimChannelFloat("tint", &x), 0);    // 颜色通道不当标量读
+    CHECK_EQ(GUi_AnimChannelColor("x", tint), 0);     // 标量通道不当颜色读
+
+    GUi_AnimAdvance(0.5f);
+    CHECK_EQ(GUi_AnimIsPlaying(), 0);
+    CHECK_EQ(GUi_AnimIsFinished(), 1);
+    GUi_AnimResume();                                 // 播完之后 resume 从头再来
+    CHECK_EQ(GUi_AnimIsPlaying(), 1);
+    CHECK_NEAR(GUi_AnimTime(), 0.0f, 1e-6f);
+    GUi_AnimPause();
+    GUi_AnimSetSpeed(2.0f);
+    GUi_AnimResume();
+    GUi_AnimAdvance(0.25f);                           // 2x 速度 -> 0.5s
+    CHECK_NEAR(GUi_AnimTime(), 0.5f, 1e-6f);
+    GUi_AnimSeek(0.75f);
+    CHECK_NEAR(GUi_AnimTime(), 0.75f, 1e-6f);
+    GUi_AnimStop();
+    CHECK_EQ(GUi_AnimIsPlaying(), 0);
+    CHECK_EQ(GUi_AnimChannelFloat("x", &x), 1);       // 停止后通道保留最后的值
+    CHECK_NEAR(x, 75.0f, 1e-6f);
 }
 
 // ===========================================================================

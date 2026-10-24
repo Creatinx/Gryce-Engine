@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 35 cases across six hosts.
+There are currently 39 cases across six hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -78,7 +78,7 @@ Observations are made by comparing scene-JSON bytes rather than entity counts: `
 | `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
 | `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
-### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 9 cases)
+### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 11 cases)
 
 The sources under test (`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`) are compiled straight into the test executable with no engine DLL, and **without `GRYCE_HAS_IMGUI`** — which also verifies that the queue and the model layer work in builds with ImGui disabled (headless hosts take that path too). `GRYCE_RENDERER_BUILDING` turns the export macros into dllexport so the static exe links against itself.
 
@@ -86,13 +86,15 @@ The `queue` suite covers the OpQueue itself: FIFO order and seq, in-place coales
 
 The `abi` suite covers the C layer: field round-trip with engine-assigned seq, coalescing and discrete ops through the ABI, policy get/set, interval throttling, `GUi_ClearOps`, stats queries tolerating nullptr, bad arguments rejected, and a request beyond capacity capped at capacity. The ABI acts on the process-wide singleton, so cases isolate leftover interval state by clearing and advancing a few frames.
 
-The `state` / `layout` / `theme` / `input` / `snapshot` suites cover the `engine/ui/` model layer: stable ids and the state store (aging boundary, truncation, clear, count ABI), the deterministic layout stack (nested panels, row advance by `max(row height, tallest cell)`, auto-closed rows, indent), theme tokens (presets, per-token override, out-of-range tolerance, `apply` is a no-op without ImGui), input gating and the shortcut table (exact modifier matching, registration-time conflict reporting, capacity), and the panel view model's JSON round-trip (64-bit ids as decimal strings, bad rows skipped, tolerant reads, capacity truncation).
+The `state` / `layout` / `theme` / `input` / `snapshot` suites cover the `engine/ui/` model layer: stable ids and the state store (aging boundary, truncation, clear, count ABI), the deterministic layout stack (nested panels, row advance by `max(row height, tallest cell)`, auto-closed rows, indent), theme tokens (5 preset anchor sets, preset count and names, derived-token consistency across presets, per-token overrides not surviving preset switches, out-of-range tolerance, `apply` is a no-op without ImGui, rounding/scrollbar metrics), input gating and the shortcut table (exact modifier matching, registration-time conflict reporting, capacity), and the panel view model's JSON round-trip (64-bit ids as decimal strings, bad rows skipped, tolerant reads, capacity truncation).
 
 The `comp` suite covers the component tree layout: add/find/remove with whole-subtree removal, parent must exist, capacity, child order, cycle check when `set` reparents, **a non-layout parent keeps the written pos**, Column stacking, all four Row cross-axis alignments, flex distributing main-axis free space, overflow clamping to 0, Grid equal-width columns and row heights, padding shrinking the content area, nested trees, and degenerate containers. The `compabi` suite round-trips the same semantics through the C surface (spec fields, out-of-range enum rejection, bad-argument return conventions).
 
-Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5; the component tree layout in section 7.7.
+The `anim` suite covers the animation system: block 1's pure functions (boundary alignment and input clamping for all 11 easings, overshoot returning to 1 for Back, tween delay/overshoot/zero-duration, color lerp clamping, ordered key insertion with same-time overwrite, holding outside the range, segment easing taken from the previous key, capacity) and block 2's runtime (clip duration derivation and same-name track replacement, Once finishing at the end and stopping there, Loop wrap and PingPong fold, speed/seek/pause/stop, track delay holding the initial value, color channels and type discipline, the channel table rebuilt per clip, all operations no-op without a clip). The `animabi` suite covers the C surface: easing/name consistency with the model (including out-of-range enums), the tween/color helpers, and the full loop of "build a C clip → play → advance → read channels → pause/change speed/seek/stop".
 
-`GryceUiSmoke.exe` is the end-to-end demo for the model layer (not part of the gate; needs a window): the panel draws, `--ops-burst N` shows `coalesced` close to the continuous-op count in the stats, and `--ui-interval 3` produces a byte-identical screenshot to per-frame builds. The Layout page (`--page layout` / `Ctrl+3`) draws a 20-component tree, reading each component's rect after `GUi_CompResolve()` and drawing one window per component — those windows deliberately **do not** pass `GUI_WIN_NO_BRING_TO_FRONT`, or the children would sink below their parent (see ui-api.md section 7.7).
+Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5; the component tree layout in section 7.7; theme presets and beautification in section 7.8; the two animation blocks in section 7.9.
+
+`GryceUiSmoke.exe` is the end-to-end demo for the model layer (not part of the gate; needs a window): the panel draws, `--ops-burst N` shows `coalesced` close to the continuous-op count in the stats, and `--ui-interval 3` produces a byte-identical screenshot to per-frame builds. The Layout page (`--page layout` / `Ctrl+3`) draws a 20-component tree, reading each component's rect after `GUi_CompResolve()` and drawing one window per component — those windows deliberately **do not** pass `GUI_WIN_NO_BRING_TO_FRONT`, or the children would sink below their parent (see ui-api.md section 7.7). The Anim page (`--page anim` / `Ctrl+4`) shows block 1 in the panel (easing combo + tween progress bar + color-lerp swatch) and block 2 on the stage: one 2-second clip drives four components (slide / pulse / bounce / staggered entrance) whose parent is 0, so the animation's direct pos writes are never overwritten by a layout.
 
 ## 3. Execution Notes
 
