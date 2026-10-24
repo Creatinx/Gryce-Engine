@@ -746,6 +746,27 @@ if(BUILD_TESTING)
         set_tests_properties(editor_${suite} PROPERTIES
             LABELS "unit;editor" TIMEOUT 120)
     endforeach()
+
+    # 组件继承语义（基类查询 / 类型视角索引）回归测试。
+    # 链 GryceCore.dll —— Entity / ComponentStore / 反射表都在 core 内部；
+    # 这些路径只碰内存与反射表，不碰 GPU / 窗口，CI 仍不需要显卡。
+    # 覆盖：反射表驱动的全量继承链校验、精确/基类查询、同类型多实例、
+    #       组件池的基类视角、on_awake 在两条挂载路径上的一致性。
+    set(GRYCE_COMPONENT_TEST_SUITES hierarchy query pool lifecycle)
+
+    add_executable(GryceComponentTests test/component_tests.cpp)
+    target_include_directories(GryceComponentTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    target_link_libraries(GryceComponentTests PRIVATE GryceCore)
+
+    foreach(suite IN LISTS GRYCE_COMPONENT_TEST_SUITES)
+        add_test(NAME component_${suite}
+                 COMMAND GryceComponentTests --suite ${suite}
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(component_${suite} PROPERTIES
+            LABELS "unit;component" TIMEOUT 120)
+    endforeach()
 endif()
 
 # ===========================================================================

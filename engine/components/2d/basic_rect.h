@@ -12,6 +12,14 @@ public:
     float width = 0.0f;
     float height = 0.0f;
 
+    // BasicRect 有派生类（ColorRect），必须提供类型视角展开，
+    // 否则 get_component<BasicRect>() 查不到实例。
+    void collect_type_views(std::vector<ComponentTypeView>& out) const override {
+        Component2D::collect_type_views(out);
+        out.push_back({ std::type_index(typeid(BasicRect)),
+                        const_cast<void*>(static_cast<const void*>(this)) });
+    }
+
 protected:
     BasicRect() = default;
 

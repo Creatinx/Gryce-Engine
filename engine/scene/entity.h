@@ -85,10 +85,14 @@ public:
         T* ptr = comp.get();
         ptr->on_attach(this);
         components_.push_back(std::move(comp));
-        component_index_[std::type_index(typeid(T))] = ptr;
+        index_component(ptr);
         if (store_) {
-            store_->register_component(id_, std::type_index(typeid(T)), ptr);
+            store_->register_component(id_, ptr);
         }
+        // 生命周期：awake（组件已挂载但场景尚未开始）。
+        // 与 add_component(unique_ptr) 保持一致 —— 模板版过去漏了这一步，
+        // 导致 Timer / ScriptComponent 通过模板挂载时收不到 on_awake。
+        ptr->on_awake();
         mark_dirty();
         return ptr;
     }
@@ -96,15 +100,41 @@ public:
     template<typename T>
     T* get_component() const {
         static_assert(std::is_base_of_v<components::Component, T>, "T must derive from Component");
-        // O(1) 哈希查找。原实现是"线性扫描 + dynamic_cast"：重场景（数千实体）下
-        // get_component 是每实体每帧多次调用的热路径，仅这一项就让 RenderWorld
-        // 达到 ~3.6μs/实体。类型索引在 add_component / remove_component 与
-        // clone / deserialize 路径同步维护；未命中即"确实没有该组件"。
+        // O(1) 哈希查找。索引是"类型视角索引"：每个组件实例向它的所有祖先
+        // 类型各登记一份该祖先视角下的指针，所以基类查询与精确查询都命中
+        // 同一张表。原实现是"线性扫描 + dynamic_cast"（支持基类，但慢），
+        // 中途被改成 typeid 精确哈希（快，但丢了基类语义 —— Component2D
+        // 是抽象类，精确查询恒空，2D 渲染系统因此收集不到任何组件）。
         auto it = component_index_.find(std::type_index(typeid(T)));
-        if (it != component_index_.end()) {
-            return static_cast<T*>(it->second);
+        if (it == component_index_.end() || it->second.empty()) {
+            return nullptr;
         }
-        return nullptr;
+        return static_cast<T*>(it->second.front());
+    }
+
+    // 类型擦除的组件查找：按类型索引取"该类型视角下"的组件指针。
+    // 基类语义与 get_component<T>() 一致；供测试与工具（无法写模板的场合）使用。
+    void* find_component_view(std::type_index type) const {
+        auto it = component_index_.find(type);
+        if (it == component_index_.end() || it->second.empty()) {
+            return nullptr;
+        }
+        return it->second.front();
+    }
+
+    // 指定类型视角下的组件个数（同类型多实例计数；统计与测试用）
+    std::size_t component_view_count(std::type_index type) const {
+        auto it = component_index_.find(type);
+        return it == component_index_.end() ? 0 : it->second.size();
+    }
+
+    // 指定类型视角下的第 index 个组件指针（按挂载顺序；越界返回 nullptr）
+    void* component_view_at(std::type_index type, std::size_t index) const {
+        auto it = component_index_.find(type);
+        if (it == component_index_.end() || index >= it->second.size()) {
+            return nullptr;
+        }
+        return it->second[index];
     }
 
     components::Component* add_component(std::unique_ptr<components::Component> comp);
@@ -144,6 +174,17 @@ public:
 private:
     static ecs::EntityID generate_id();
 
+    // 组件类型视角索引：类型 -> 该类型视角下的组件指针列表。
+    // 每个组件实例向它的所有祖先类型各登记一份指针，因此：
+    //   - get_component<Derived>() 与 get_component<Base>() 命中同一实例；
+    //   - 拿到的是该类型正确的子对象地址（多继承时各基类地址不同）；
+    //   - 列表而非单值 → 同类型多实例不再互相覆盖。
+    std::unordered_map<std::type_index, std::vector<void*>> component_index_;
+
+    // 索引维护：挂载时登记全部类型视角，卸载时按指针精确擦除。
+    void index_component(components::Component* comp);
+    void unindex_component(components::Component* comp);
+
     std::string name_;
     UUID uuid_;
     ecs::EntityID id_ = ecs::k_invalid_entity;
@@ -153,10 +194,6 @@ private:
     std::vector<std::unique_ptr<Entity>> children_;
 
     std::vector<std::unique_ptr<components::Component>> components_;
-    // 组件类型 → 实例指针索引。让 get_component<T>() 从"线性扫描 + dynamic_cast"
-    // 降为一次哈希查找。重场景（数千实体）下 get_component 是每实体每帧多次
-    // 调用的热路径，原实现仅这一项就让 RenderWorld 达到 ~3.6μs/实体。
-    std::unordered_map<std::type_index, components::Component*> component_index_;
     components::Transform* transform_ = nullptr; // 指向 components_ 中的 Transform
     components::ParentComponent* parent_comp_ = nullptr; // 指向 components_ 中的 ParentComponent
     components::ChildrenComponent* children_comp_ = nullptr; // 指向 components_ 中的 ChildrenComponent

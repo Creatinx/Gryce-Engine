@@ -74,6 +74,14 @@ public:
 
     virtual void draw(render::IRenderer2D* renderer) = 0;
 
+    // Component2D 有 18 个派生类，必须提供类型视角展开，
+    // 否则 get_component<Component2D>() 查不到任何实例（2D 渲染系统会瞎）。
+    void collect_type_views(std::vector<ComponentTypeView>& out) const override {
+        Component::collect_type_views(out);
+        out.push_back({ std::type_index(typeid(Component2D)),
+                        const_cast<void*>(static_cast<const void*>(this)) });
+    }
+
     // 渲染状态哈希，用于 Dirty-Frame 优化。
     // 当组件所有影响画面的字段都没变化时，返回的哈希值应保持不变。
     virtual uint64_t render_hash() const;

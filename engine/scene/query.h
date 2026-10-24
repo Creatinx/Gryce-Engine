@@ -63,7 +63,7 @@ void foreach_with_components(scene::Scene& scene, F&& fn) {
     if (pool_a && pool_b && !pool_a->empty() && !pool_b->empty()) {
         // 选较小的池做主循环
         if (pool_a->size() <= pool_b->size()) {
-            for (components::Component* raw : *pool_a) {
+            for (void* raw : *pool_a) {
                 auto* ca = static_cast<A*>(raw);
                 if (!ca || !ca->enabled) continue;
                 scene::Entity* owner = ca->owner();
@@ -74,7 +74,7 @@ void foreach_with_components(scene::Scene& scene, F&& fn) {
                 }
             }
         } else {
-            for (components::Component* raw : *pool_b) {
+            for (void* raw : *pool_b) {
                 auto* cb = static_cast<B*>(raw);
                 if (!cb || !cb->enabled) continue;
                 scene::Entity* owner = cb->owner();
@@ -104,7 +104,7 @@ void foreach_with_component(scene::Scene& scene, F&& fn) {
     static_assert(std::is_base_of_v<components::Component, T>, "T must derive from Component");
     const auto* pool = scene.component_store().pool_ptr<T>();
     if (pool && !pool->empty()) {
-        for (components::Component* raw : *pool) {
+        for (void* raw : *pool) {
             auto* comp = static_cast<T*>(raw);
             if (!comp || !comp->enabled) continue;
             scene::Entity* owner = comp->owner();

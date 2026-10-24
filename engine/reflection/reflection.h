@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <typeindex>
 #include <unordered_map>
 #include <vector>
 
@@ -110,6 +111,9 @@ struct TypeInfo {
     std::string name;
     std::string parent_name;
     std::vector<FieldInfo> fields;
+    // 该类型对应的 C++ type_index。反射表同时充当"组件继承关系"的真源，
+    // 回归测试用它把名字翻译成类型，逐条校验基类查询（见 test/component_tests.cpp）。
+    std::type_index type_index = std::type_index(typeid(void));
 };
 
 // ---------------------------------------------------------------------------
@@ -153,6 +157,15 @@ public:
     // 已注册类型数量（测试/监控用）
     size_t type_count() const { return types_.size(); }
 
+    // 取已注册类型的 type_index（未注册返回 typeid(void)）
+    std::type_index type_index_of(const std::string& name) const {
+        const TypeInfo* info = find(name);
+        return info ? info->type_index : std::type_index(typeid(void));
+    }
+
+    // 遍历所有已注册类型（测试/工具用；顺序不保证）
+    const std::unordered_map<std::string, TypeInfo>& all_types() const { return types_; }
+
 private:
     Registry() = default;
     std::unordered_map<std::string, TypeInfo> types_;
@@ -166,6 +179,7 @@ class TypeBuilder {
 public:
     TypeBuilder(const char* name, const char* parent) {
         info_ = &Registry::instance().register_type(name, parent);
+        info_->type_index = std::type_index(typeid(C));
     }
 
     // 可读写字段

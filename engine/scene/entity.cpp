@@ -28,6 +28,35 @@ Entity::Entity(const std::string& name)
         add_component(std::make_unique<components::ChildrenComponent>()));
 }
 
+void Entity::index_component(components::Component* comp) {
+    if (!comp) return;
+    std::vector<components::ComponentTypeView> views;
+    comp->collect_type_views(views);
+    for (const auto& v : views) {
+        component_index_[v.type].push_back(v.ptr);
+    }
+}
+
+void Entity::unindex_component(components::Component* comp) {
+    if (!comp) return;
+    std::vector<components::ComponentTypeView> views;
+    comp->collect_type_views(views);
+    for (const auto& v : views) {
+        auto it = component_index_.find(v.type);
+        if (it == component_index_.end()) continue;
+        auto& bucket = it->second;
+        for (auto b = bucket.begin(); b != bucket.end(); ++b) {
+            if (*b == v.ptr) {
+                bucket.erase(b);
+                break;
+            }
+        }
+        if (bucket.empty()) {
+            component_index_.erase(it);
+        }
+    }
+}
+
 void Entity::set_store(ecs::ComponentStore* store) {
     if (store_ == store) return;
     if (store_) {
@@ -36,7 +65,7 @@ void Entity::set_store(ecs::ComponentStore* store) {
     store_ = store;
     if (store_) {
         for (const auto& comp : components_) {
-            store_->register_component(id_, std::type_index(typeid(*comp)), comp.get());
+            store_->register_component(id_, comp.get());
         }
     }
     // 递归传播到子实体，否则移动子树后子孙实体的 store_ 仍指向旧（可能已释放的）store
@@ -57,9 +86,9 @@ components::Component* Entity::add_component(std::unique_ptr<components::Compone
     components::Component* raw = comp.get();
     raw->on_attach(this);
     components_.push_back(std::move(comp));
-    component_index_[std::type_index(typeid(*raw))] = raw;
+    index_component(raw);
     if (store_) {
-        store_->register_component(id_, std::type_index(typeid(*raw)), raw);
+        store_->register_component(id_, raw);
     }
     // 生命周期：awake（组件已挂载但场景尚未开始）
     raw->on_awake();
@@ -71,9 +100,9 @@ bool Entity::remove_component(components::Component* comp) {
     if (!comp) return false;
     for (auto it = components_.begin(); it != components_.end(); ++it) {
         if (it->get() == comp) {
-            component_index_.erase(std::type_index(typeid(*comp)));
+            unindex_component(comp);
             if (store_) {
-                store_->unregister_component(id_, std::type_index(typeid(*comp)));
+                store_->unregister_component(id_, comp);
             }
             comp->on_disable();
             comp->on_detach();
