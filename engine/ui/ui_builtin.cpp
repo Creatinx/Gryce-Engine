@@ -131,6 +131,17 @@ void BuiltinUi::end_frame() {
 void BuiltinUi::draw(UiDrawList& dl) {
     if (!theme_ || !metrics_) return;
 
+    // 状态过渡动画：时间源是输入快照的 time（0 = 无时钟，动画原地踏步）。
+    // 放在 draw 开头——本帧全部 touch 已落地（hovered/pressed 是最终值），
+    // 推进后下面的绘制读到的就是插值后的颜色。
+    {
+        const float t = tree_.input().time;
+        float dt = 0.0f;
+        if (prev_anim_time_ > 0.0f && t > prev_anim_time_) dt = t - prev_anim_time_;
+        if (t > 0.0f) prev_anim_time_ = t;
+        tree_.advance_animations(dt, *theme_);
+    }
+
     const UiDrawContext ctx{tree_.focus_id(), tree_.caret_visible()};
 
     // 两遍：窗口层在前、弹层在后。层内按提交序遍历；遇 Panel（窗口/弹层

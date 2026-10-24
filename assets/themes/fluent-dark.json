@@ -1,0 +1,36 @@
+{
+  "name": "Fluent Dark",
+  "anchors": {
+    "window_bg": "#202020",
+    "child_bg": "#2C2C2C",
+    "border": "#383838",
+    "text": "#FFFFFF",
+    "text_dim": "#9D9D9D",
+    "accent": "#4CC2FF",
+    "accent_hover": "#62C7FF",
+    "accent_active": "#33A3E6",
+    "button": "#323232",
+    "button_hover": "#3A3A3A",
+    "button_active": "#2A2A2A",
+    "header": "#262626",
+    "header_hover": "#2E2E2E",
+    "selection": "#2F596E",
+    "ok": "#6CCB5F",
+    "warn": "#E7B958",
+    "error": "#E74856"
+  },
+  "metrics": {
+    "window_rounding": 8,
+    "child_rounding": 8,
+    "frame_rounding": 4,
+    "grab_rounding": 4,
+    "popup_rounding": 8,
+    "tab_rounding": 4
+  },
+  "animation": {
+    "enabled": true,
+    "hover_ms": 100,
+    "press_ms": 70,
+    "ease": "out_cubic"
+  }
+}

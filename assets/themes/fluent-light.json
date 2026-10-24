@@ -1,0 +1,36 @@
+{
+  "name": "Fluent Light",
+  "anchors": {
+    "window_bg": "#F3F3F3",
+    "child_bg": "#FFFFFF",
+    "border": "#DBDBDB",
+    "text": "#1B1B1B",
+    "text_dim": "#5C5C5C",
+    "accent": "#005FB8",
+    "accent_hover": "#1A73C7",
+    "accent_active": "#0054A6",
+    "button": "#FBFBFB",
+    "button_hover": "#F4F4F4",
+    "button_active": "#EAEAEA",
+    "header": "#EEEEF0",
+    "header_hover": "#E4E4E6",
+    "selection": "#CCE4F7",
+    "ok": "#0F7B0F",
+    "warn": "#B98200",
+    "error": "#C42B1C"
+  },
+  "metrics": {
+    "window_rounding": 8,
+    "child_rounding": 8,
+    "frame_rounding": 4,
+    "grab_rounding": 4,
+    "popup_rounding": 8,
+    "tab_rounding": 4
+  },
+  "animation": {
+    "enabled": true,
+    "hover_ms": 90,
+    "press_ms": 60,
+    "ease": "out_cubic"
+  }
+}

@@ -689,7 +689,7 @@ if(BUILD_TESTING)
     # 工作"（无窗口宿主也走这条路）。GRYCE_RENDERER_BUILDING 让导出宏变成
     # dllexport，静态 exe 内自链接（否则 dllimport 会去找 __imp_ 符号）。
     # ui_snapshot.cpp 用 nlohmann/json（头文件库，与 GryceRenderer 同一份）。
-    set(GRYCE_UI_TEST_SUITES queue abi state layout comp compabi drawlist bridge widget builtin theme input snapshot anim animabi)
+    set(GRYCE_UI_TEST_SUITES queue abi state layout comp compabi drawlist bridge widget builtin theme theme_json widget_anim input snapshot anim animabi)
 
     add_executable(GryceUiTests
         test/ui_tests.cpp
@@ -711,7 +711,11 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json
     )
-    target_compile_definitions(GryceUiTests PRIVATE GRYCE_RENDERER_BUILDING)
+    # assets/themes 的"四套皮肤能加载"是交付物级断言：把源目录烙进来，
+    # 测试在 build/ 工作目录里跑也能找到文件（ctest 以 build/ 为 cwd）。
+    target_compile_definitions(GryceUiTests PRIVATE
+        GRYCE_RENDERER_BUILDING
+        GRYCE_UI_THEMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/themes")
 
     foreach(suite IN LISTS GRYCE_UI_TEST_SUITES)
         add_test(NAME ui_${suite}

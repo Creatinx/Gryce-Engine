@@ -1933,9 +1933,19 @@ UiInputFrame typing(const char* chars, bool backspace = false) {
     return in;
 }
 
+// 与 ui_widget.cpp 的 shade(c, +0.04f) 同公式：按钮渐变填充命令的顶端色。
+// 断言"填充命令颜色"时必须用它换算——命令里装的是渐变端点，不是 token 原值。
+uint32_t shade_top_4(uint32_t c) {
+    auto adj = [](uint32_t v) {
+        const float t = static_cast<float>(v) / 255.0f;
+        return static_cast<uint32_t>((t + (1.0f - t) * 0.04f) * 255.0f + 0.5f);
+    };
+    return (adj((c >> 24) & 0xFFu) << 24) | (adj((c >> 16) & 0xFFu) << 16) |
+           (adj((c >> 8) & 0xFFu) << 8) | (c & 0xFFu);
+}
+
 // 统计 drawlist 里某类命令的条数
-int count_cmd(const gryce_ui::UiDrawList& dl, gryce_ui::UiCmd kind) {
-    int n = 0;
+int count_cmd(const gryce_ui::UiDrawList& dl, gryce_ui::UiCmd kind) {    int n = 0;
     for (int i = 0; i < dl.command_count(); ++i) {
         if (dl.command(i).cmd == kind) ++n;
     }
@@ -3196,6 +3206,155 @@ TEST(theme, rounding_metrics_present) {
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_MIN_SIZE), 8.0f, 1e-4f);
     // 越界度量读返回 0（既有约定不变）
     CHECK_EQ(GUi_ThemeMetric(GUI_THEME_METRIC_COUNT), 0.0f);
+}
+
+// ===========================================================================
+// suite: theme_json —— JSON 主题加载（C API 路径）
+// ===========================================================================
+
+TEST(theme_json, load_full_replaces_anchors_metrics_and_animation) {
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+    const char* json = "{"
+        "\"name\":\"Test Fluent\","
+        "\"anchors\":{\"window_bg\":\"#111111\",\"accent\":\"#22AAFF\",\"text\":\"#EEEEEE\"},"
+        "\"metrics\":{\"window_rounding\":7.0,\"frame_rounding\":3.0},"
+        "\"animation\":{\"enabled\":true,\"hover_ms\":200,\"press_ms\":80,"
+        "               \"ease\":\"out_quad\"}"
+        "}";
+    CHECK_EQ(GUi_ThemeLoadFromJson(json), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x111111FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x22AAFFFFu);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 7.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_FRAME_ROUNDING), 3.0f, 1e-4f);
+    const gryce_ui::ThemeAnim& a = gryce_ui::theme_anim();
+    CHECK_TRUE(a.enabled);
+    CHECK_NEAR(a.hover_s, 0.200f, 1e-4f);
+    CHECK_NEAR(a.press_s, 0.080f, 1e-4f);
+    CHECK_EQ(a.ease, static_cast<int>(gryce_ui::AnimEase::EaseOutQuad));
+    // 动画参数是进程内全局状态，别泄漏给后面的用例
+    gryce_ui::set_theme_anim(gryce_ui::ThemeAnim{});
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+}
+
+TEST(theme_json, partial_file_keeps_derived_colors) {
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+    const char* json = "{\"anchors\":{\"window_bg\":\"#101010\"}}";
+    CHECK_EQ(GUi_ThemeLoadFromJson(json), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x101010FFu);
+    // 未列出的锚色回落出厂深色，派生色照常生成（非 0 = 没读到野数据）
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x4CC2FFFFu);
+    CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_CONTROL_BORDER) != 0u);
+    CHECK_TRUE(GUi_ThemeColor(GUI_THEME_COLOR_MODAL_WINDOW_DIM_BG) != 0u);
+}
+
+TEST(theme_json, color_override_beats_derivation) {
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+    const char* json = "{\"colors\":{\"control_border\":\"#123456\"}}";
+    CHECK_EQ(GUi_ThemeLoadFromJson(json), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_CONTROL_BORDER), 0x123456FFu);
+}
+
+TEST(theme_json, bad_input_rejected_and_theme_unchanged) {
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+    const uint32_t before = GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG);
+    CHECK_EQ(GUi_ThemeLoadFromJson(""), 0);
+    CHECK_EQ(GUi_ThemeLoadFromJson("not json {"), 0);
+    CHECK_EQ(GUi_ThemeLoadFromJson("[1,2,3]"), 0);   // 合法 JSON 但不是对象
+    CHECK_EQ(GUi_ThemeLoadFromJson(nullptr), 0);
+    // 非法输入一律不动当前主题
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), before);
+}
+
+TEST(theme_json, shipped_files_load) {
+    // assets/themes 的四套皮肤是交付物：加载失败 = 文件被改坏，必须叫。
+    // 路径走编译期烙入的源目录（ctest 以 build/ 为 cwd，相对路径找不到）。
+    const std::string dir = GRYCE_UI_THEMES_DIR;
+    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/fluent-dark.json").c_str()), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x4CC2FFFFu);
+    CHECK_TRUE(gryce_ui::theme_anim().enabled);
+    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/fluent-light.json").c_str()), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x005FB8FFu);
+    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/blender-dark.json").c_str()), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0xED9E5CFFu);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 4.0f, 1e-4f);
+    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/blender-light.json").c_str()), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0xD9822BFFu);
+    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/nope.json").c_str()), 0);
+    gryce_ui::set_theme_anim(gryce_ui::ThemeAnim{});
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+}
+
+// ===========================================================================
+// suite: widget_anim —— 状态过渡动画（主题 animation 块驱动）
+// ===========================================================================
+
+TEST(widget_anim, hover_transition_lerps_and_lands) {
+    gryce_ui::set_theme_anim({true, 0.20f, 0.10f, 5});   // hover 200ms / out_cubic
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+    const gryce_ui::Theme& theme = gryce_ui::theme();
+
+    WidgetTree tree;
+    const Rect r{10.0f, 10.0f, 100.0f, 30.0f};
+    const uint32_t normal = theme.colors[gryce_ui::THEME_COLOR_BUTTON];
+    const uint32_t hover  = theme.colors[gryce_ui::THEME_COLOR_BUTTON_HOVER];
+
+    // 第 1 帧：鼠标在按钮上 → 首帧直接落位 hover 目标
+    tree.begin_frame(mouse_at(50.0f, 20.0f, false, false, false));
+    Widget* w = tree.touch(1, WidgetKind::Button, r, "OK");
+    CHECK_TRUE(w->hovered);
+    tree.advance_animations(0.0f, theme);
+    CHECK_EQ(w->anim_to, hover);
+    tree.end_frame();
+
+    // 第 2 帧：鼠标移开 → 目标切回常态，从 hover 色往回走到一半
+    tree.begin_frame(mouse_at(400.0f, 400.0f, false, false, false));
+    w = tree.touch(1, WidgetKind::Button, r, "OK");
+    CHECK_FALSE(w->hovered);
+    tree.advance_animations(0.1f, theme);
+
+    ApproxMetrics metrics;
+    gryce_ui::UiDrawList dl;
+    tree.draw(dl, theme, metrics);
+    const gryce_ui::UiCommand* fill = first_cmd(dl, gryce_ui::UiCmd::RoundRect);
+    CHECK_TRUE(fill != nullptr);
+    CHECK_TRUE(fill->color != shade_top_4(normal));      // 还在半路
+    CHECK_TRUE(fill->color != shade_top_4(hover));
+    tree.end_frame();
+
+    // 时间走满：精确落到常态色（端点不受缓动形状影响）。注意填充命令装的是
+    // shade(bg,+4%) 的渐变端点——它恰好等于 hover token 原值，别直接拿 token 比
+    tree.begin_frame(mouse_at(400.0f, 400.0f, false, false, false));
+    tree.touch(1, WidgetKind::Button, r, "OK");
+    tree.advance_animations(1.0f, theme);
+    dl.reset();
+    tree.draw(dl, theme, metrics);
+    fill = first_cmd(dl, gryce_ui::UiCmd::RoundRect);
+    CHECK_TRUE(fill != nullptr);
+    CHECK_EQ(fill->color, shade_top_4(normal));
+    tree.end_frame();
+
+    gryce_ui::set_theme_anim(gryce_ui::ThemeAnim{});
+}
+
+TEST(widget_anim, disabled_snaps_to_static_path) {
+    gryce_ui::set_theme_anim(gryce_ui::ThemeAnim{});     // enabled = false
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+    const gryce_ui::Theme& theme = gryce_ui::theme();
+
+    WidgetTree tree;
+    const Rect r{10.0f, 10.0f, 100.0f, 30.0f};
+    tree.begin_frame(mouse_at(50.0f, 20.0f, false, false, false));
+    Widget* w = tree.touch(1, WidgetKind::Button, r, "OK");
+    tree.advance_animations(0.016f, theme);
+    CHECK_EQ(w->anim_to, 0u);               // 未进入动画集合
+    ApproxMetrics metrics;
+    gryce_ui::UiDrawList dl;
+    tree.draw(dl, theme, metrics);
+    const gryce_ui::UiCommand* fill = first_cmd(dl, gryce_ui::UiCmd::RoundRect);
+    CHECK_TRUE(fill != nullptr);
+    // 静态路径：填充 = shade(hover 目标, +4%) 的渐变端点，不是 token 原值
+    CHECK_EQ(fill->color, shade_top_4(theme.colors[gryce_ui::THEME_COLOR_BUTTON_HOVER]));
+    tree.end_frame();
 }
 
 // ===========================================================================

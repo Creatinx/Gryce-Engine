@@ -158,6 +158,43 @@ struct Theme {
     float    metrics[THEME_METRIC_COUNT];
 };
 
+// ---------------------------------------------------------------------------
+// ThemeAnim — 主题自带的交互动画参数（JSON 主题 "animation" 块）
+//
+// 驱动内置轨的"状态过渡"：悬停/按下时控件主填充色在 from/to 之间按
+// ease 插值。enabled=false（或时长为 0）时一切瞬变——单测与截图用
+// time=0 的输入天然走这条路径，画面可复现。
+// ---------------------------------------------------------------------------
+struct ThemeAnim {
+    bool     enabled  = false;
+    float    hover_s  = 0.12f;   // 悬停/普通状态过渡时长（秒）
+    float    press_s  = 0.08f;   // 按下状态过渡时长（秒，更跟手）
+    int      ease     = 5;       // AnimEase（ui_anim.h；默认 EaseOutCubic）
+};
+
+// 当前主题的动画参数（与 theme() 同为进程内唯一、UI 线程、无锁）。
+const ThemeAnim& theme_anim();
+void set_theme_anim(const ThemeAnim& a);
+
+// ---------------------------------------------------------------------------
+// JSON 主题加载
+//
+// 文件/文本格式（全部可选，缺什么补什么）：
+//   {
+//     "name": "Fluent Dark",
+//     "anchors": { "window_bg": "#202020", "accent": "#4CC2FFFF", ... },
+//     "colors":  { "control_border": "#333333", ... },   // 派生后覆盖
+//     "metrics": { "window_rounding": 8, ... },
+//     "animation": { "enabled": true, "hover_ms": 100, "press_ms": 70,
+//                    "ease": "out_cubic" }
+//   }
+// 颜色写 "#RRGGBB" / "#RRGGBBAA"（# 可省略）。语义：以深色预设的锚色为
+// 底 → 套 anchors → derive_extended → 套 colors 覆盖 → 套 metrics/animation。
+// 部分主题文件（只写 anchors）因此是良定义的。返回 1/0（0 = JSON 非法）。
+// ---------------------------------------------------------------------------
+int load_theme_json(const char* json_text);
+int load_theme_file(const char* path);
+
 // 当前主题（进程内唯一，默认深色）。返回引用：调用方读取后立即用，
 // 不要长期缓存（主题随时可能被换）。
 const Theme& theme();

@@ -408,6 +408,11 @@ GRYCE_UI_API void     GUi_ThemeApply(void);
 GRYCE_UI_API int      GUi_ThemePresetCount(void);
 GRYCE_UI_API int      GUi_ThemePresetName(int preset, char* out_buf, int cap);
 
+// JSON 主题（见 docs/zh/ui-api.md）：anchors/colors/metrics/animation 四块，
+// 部分文件合法（缺项由派生规则与出厂默认补齐）。返回 1/0（0 = 非法/读不到）。
+GRYCE_UI_API int      GUi_ThemeLoadFromJson(const char* json_text);
+GRYCE_UI_API int      GUi_ThemeLoadFromFile(const char* path);
+
 // ---------------------------------------------------------------------------
 // 动画系统（两个块：纯函数层 + 运行时）
 //

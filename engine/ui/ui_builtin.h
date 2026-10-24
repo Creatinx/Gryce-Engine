@@ -306,6 +306,10 @@ private:
     float      tooltip_since_ = 0.0f;
     bool       tooltip_visible_ = false;
 
+    // 状态过渡动画的时钟（input.time 差分；time==0 = 无时钟，动画不走，
+    // 单测/截图因此可复现）
+    float      prev_anim_time_ = 0.0f;
+
     // 刚提交的 item 的 id（拖放源判据）
     uint64_t   last_id_ = 0;
 

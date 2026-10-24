@@ -1550,6 +1550,14 @@ void GUi_ThemeApply(void) {
     gryce_ui::apply();
 }
 
+int GUi_ThemeLoadFromJson(const char* json_text) {
+    return gryce_ui::load_theme_json(json_text);
+}
+
+int GUi_ThemeLoadFromFile(const char* path) {
+    return gryce_ui::load_theme_file(path);
+}
+
 int GUi_ThemePresetCount(void) {
     return gryce_ui::THEME_PRESET_COUNT;
 }

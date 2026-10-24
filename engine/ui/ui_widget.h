@@ -234,6 +234,14 @@ struct Widget {
     bool hovered = false;
     bool pressed = false;   // 正被按住（且是按在它身上开始的）
     bool clicked = false;   // 本帧在它身上完成一次点击
+
+    // —— 状态过渡动画（主题 animation 块驱动；由 advance_animations 推进）——
+    // anim_to == 0 表示"不在动画集合"：绘制走静态目标色（单测/截图路径）。
+    // 目标切换时把当前插值位置记为 anim_from，从新目标重新计时——快速来回
+    // 悬停不会跳色。
+    uint32_t anim_from  = 0;   // 过渡起点色（0xRRGGBBAA）
+    uint32_t anim_to    = 0;   // 过渡目标色；0 = 未初始化/不在动画集合
+    float    anim_clock = 0.0f; // 距本次目标切换的秒数
 };
 
 // 绘制上下文：焦点（输入框高亮边框）与插入符是否可见（闪烁相位由树算好，
@@ -292,6 +300,12 @@ public:
 
     // retained 宿主：对整棵树跑一遍交互（用各控件现有的 rect/label）。
     void update_all();
+
+    // 推进状态过渡动画（悬停/按下的填充色渐变，参数见 theme_anim()）。
+    // 在交互落地之后、draw 之前调用一次；dt = 本帧秒数（0 = 时间没走，
+    // 动画停在原地）。不参与动画的控件被跳过。retained 宿主不调用即
+    // 得到"瞬变"行为，与单测/截图路径一致。
+    void advance_animations(float dt, const Theme& theme);
 
     // 按提交序遍历存活控件（数组序 = 提交序 = 绘制序）。宿主一般不直接
     // 遍历（用 find()）；即时模式层的窗口分组裁剪需要这个序。

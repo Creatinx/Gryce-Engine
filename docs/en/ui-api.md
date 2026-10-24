@@ -650,6 +650,33 @@ Two traps:
 
 Covered widgets: buttons, panels/floating windows, progress bar (track + fill), checkbox (including the tick), slider (track + fill + capsule grab), drag field, text field, title bar (top corners only), collapsing header, menu-item highlight, scroll bar (track + thumb), tooltip and child-region border. Square commands remain where they belong: menu-bar strip, separators, selection highlight and the caret.
 
+## 7.13 JSON themes and interaction animations
+
+A whole theme can live in a JSON file -- no C code, no recompile:
+
+```c
+GUi_ThemeLoadFromFile("assets/themes/blender-dark.json");   // 1/0
+GUi_ThemeLoadFromJson(json_text);                           // theme text in memory
+```
+
+File format (all four blocks optional; missing entries fall back to the factory defaults and the derivation rules):
+
+```json
+{
+  "name": "Blender Dark",
+  "anchors": { "window_bg": "#303030", "accent": "#ED9E5C" },
+  "colors":  { "popup_bg": "#202020", "check_mark": "#E5E5E5" },
+  "metrics": { "window_rounding": 4, "frame_rounding": 2 },
+  "animation": { "enabled": true, "hover_ms": 70, "press_ms": 50, "ease": "out_cubic" }
+}
+```
+
+Load semantics: start from the factory dark preset's 17 anchors, apply `anchors`, run `derive_extended()`, then apply `colors` on top of the derived values, then `metrics`/`animation`. A file that only sets `"anchors": {"window_bg": ...}` is therefore well-defined. Colors are `"#RRGGBB"` / `"#RRGGBBAA"` (`#` optional); token names are the snake_case enum names (`window_bg`, `control_border`, `frame_rounding`, ...; the full table is the name map in `engine/ui/ui_theme.cpp`). Entries of the wrong type are skipped; invalid JSON returns 0 and leaves the current theme untouched.
+
+Four skins ship with the engine (`assets/themes/`): **fluent-dark / fluent-light** (Win11 Fluent, 8px panels + 4px control rounding) and **blender-dark / blender-light** (Blender-like: grey base, near-square 2-4px rounding, orange accent, dark text on buttons).
+
+The `animation` block drives the built-in track's **state-transition animations**: for the participating widgets (button, drag field, checkbox, slider grab, menu highlight, collapsing header) the primary fill color lerps over `hover_ms`/`press_ms` with the given easing whenever hover/press/check state changes; the menu highlight additionally fades in and out. `BuiltinUi::draw` advances the clock from the input snapshot's `time` delta -- with `time == 0` (tests, screenshots) everything is instant and therefore reproducible. Retained hosts that never call `advance_animations()` get the same instant behaviour. `set_preset` does not reset the animation params; a missing `animation` block keeps the current values.
+
 ## 8. Sharing input with the host
 
 When the UI eats mouse/keyboard, host navigation and shortcuts must yield:

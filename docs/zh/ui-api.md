@@ -650,6 +650,33 @@ draw_round_shadow(x, y, w, h, radii, spread, c);           // 外阴影
 
 覆盖到的控件：按钮、面板/浮窗、进度条（轨道+填充）、复选框（含勾选块）、滑块（轨道+填充+胶囊抓柄）、拖拽数值框、输入框、标题栏（只有上两角圆）、折叠头、菜单项高亮、滚动条（轨道+滑块）、工具提示、子区域边框。直角命令仍保留：菜单栏底条、分隔线、选区高亮、插入符。
 
+## 7.13 JSON 主题与交互动画
+
+主题可以整套放在 JSON 文件里加载，不必写 C 代码、不必重编译：
+
+```c
+GUi_ThemeLoadFromFile("assets/themes/blender-dark.json");   // 1/0
+GUi_ThemeLoadFromJson(json_text);                           // 内存中的主题文本
+```
+
+文件格式（四块全可选，缺项由出厂默认与派生规则补齐）：
+
+```json
+{
+  "name": "Blender Dark",
+  "anchors": { "window_bg": "#303030", "accent": "#ED9E5C", "...": "..." },
+  "colors":  { "popup_bg": "#202020", "check_mark": "#E5E5E5" },
+  "metrics": { "window_rounding": 4, "frame_rounding": 2 },
+  "animation": { "enabled": true, "hover_ms": 70, "press_ms": 50, "ease": "out_cubic" }
+}
+```
+
+加载语义：以出厂深色预设的 17 个锚色为底 → 套 `anchors` → `derive_extended()` 派生 → 套 `colors` 覆盖派生结果 → 套 `metrics`/`animation`。所以只写 `"anchors": {"window_bg": ...}` 的主题文件也是良定义的。颜色写 `"#RRGGBB"` / `"#RRGGBBAA"`（`#` 可省略）；token 名是枚举的 snake_case（`window_bg`、`control_border`、`frame_rounding` 等，全表见 `engine/ui/ui_theme.cpp` 的名字表）。类型不对的项跳过、非法 JSON 返回 0 且不动当前主题。
+
+随引擎交付四套皮肤（`assets/themes/`）：**fluent-dark / fluent-light**（Win11 Fluent，8px 面板 + 4px 控件圆角）与 **blender-dark / blender-light**（类 Blender：灰底、方形小圆角 2~4px、橙色强调色、按钮深字）。
+
+`animation` 块驱动内置轨的**状态过渡动画**：参与控件（按钮、拖拽框、复选框、滑杆抓柄、菜单高亮、折叠头）的主填充色在悬停/按下/勾选切换时按 `hover_ms`/`press_ms` 与缓动曲线插值；菜单高亮额外带淡入淡出。动画由 `BuiltinUi::draw` 用输入快照的 `time` 差分推进——`time == 0`（单测/截图）时一切瞬变，画面可复现。retained 宿主不调用 `advance_animations()` 即得到瞬变行为。`set_preset` 不重置动画参数；`animation` 块缺省时保持现状。
+
 ## 8. 与宿主输入的分工
 
 UI 吃掉鼠标/键盘时，宿主的场景导航与快捷键必须让路：

@@ -12,6 +12,12 @@
 
 #include "ui/ui_theme.h"
 
+#include <cctype>
+#include <fstream>
+#include <string>
+
+#include <nlohmann/json.hpp>
+
 #ifdef GRYCE_HAS_IMGUI
 #include <imgui.h>
 #endif
@@ -19,6 +25,10 @@
 namespace gryce_ui {
 
 namespace {
+
+// 下面定义在本文件后半段；load_theme_json 更早使用它们。
+Theme& mutable_theme();
+void   derive_extended(Theme& t);
 
 // ---- 颜色小工具（0xRRGGBBAA） ----
 
@@ -201,8 +211,201 @@ const uint32_t* anchors_of(int preset) {
     }
 }
 
-// 把 17 个锚色之后的 40 个 token 全部从锚色派生。规则写死在这里，
-// 换预设 = 换锚色 = 派生色整体跟着换，不会出现"改了一套预设漏了半个界面"。
+// ---- JSON 主题加载 ----
+//
+// 名字表把枚举翻译成主题文件里的 snake_case 名（anchors 用锚色槽位 = 颜色
+// 表前 17 项；colors 覆盖派生槽位）。解析对类型不敏感：颜色不是字符串、
+// 度量不是数字，一律跳过该项——坏主题文件最多"少了点效果"，不能让引擎崩。
+
+struct TokenName { const char* name; int token; };
+
+const TokenName kAnchorNames[] = {
+    {"window_bg", THEME_COLOR_WINDOW_BG},
+    {"child_bg", THEME_COLOR_CHILD_BG},
+    {"border", THEME_COLOR_BORDER},
+    {"text", THEME_COLOR_TEXT},
+    {"text_dim", THEME_COLOR_TEXT_DIM},
+    {"accent", THEME_COLOR_ACCENT},
+    {"accent_hover", THEME_COLOR_ACCENT_HOVER},
+    {"accent_active", THEME_COLOR_ACCENT_ACTIVE},
+    {"button", THEME_COLOR_BUTTON},
+    {"button_hover", THEME_COLOR_BUTTON_HOVER},
+    {"button_active", THEME_COLOR_BUTTON_ACTIVE},
+    {"header", THEME_COLOR_HEADER},
+    {"header_hover", THEME_COLOR_HEADER_HOVER},
+    {"selection", THEME_COLOR_SELECTION},
+    {"ok", THEME_COLOR_OK},
+    {"warn", THEME_COLOR_WARN},
+    {"error", THEME_COLOR_ERROR},
+};
+
+const TokenName kDerivedNames[] = {
+    {"popup_bg", THEME_COLOR_POPUP_BG},
+    {"title_bg", THEME_COLOR_TITLE_BG},
+    {"title_bg_active", THEME_COLOR_TITLE_BG_ACTIVE},
+    {"title_bg_collapsed", THEME_COLOR_TITLE_BG_COLLAPSED},
+    {"menubar_bg", THEME_COLOR_MENUBAR_BG},
+    {"scrollbar_bg", THEME_COLOR_SCROLLBAR_BG},
+    {"scrollbar_grab", THEME_COLOR_SCROLLBAR_GRAB},
+    {"scrollbar_grab_hovered", THEME_COLOR_SCROLLBAR_GRAB_HOVERED},
+    {"scrollbar_grab_active", THEME_COLOR_SCROLLBAR_GRAB_ACTIVE},
+    {"separator", THEME_COLOR_SEPARATOR},
+    {"separator_hovered", THEME_COLOR_SEPARATOR_HOVERED},
+    {"separator_active", THEME_COLOR_SEPARATOR_ACTIVE},
+    {"resize_grip", THEME_COLOR_RESIZE_GRIP},
+    {"resize_grip_hovered", THEME_COLOR_RESIZE_GRIP_HOVERED},
+    {"resize_grip_active", THEME_COLOR_RESIZE_GRIP_ACTIVE},
+    {"check_mark", THEME_COLOR_CHECK_MARK},
+    {"slider_grab", THEME_COLOR_SLIDER_GRAB},
+    {"slider_grab_active", THEME_COLOR_SLIDER_GRAB_ACTIVE},
+    {"header_active", THEME_COLOR_HEADER_ACTIVE},
+    {"plot_lines", THEME_COLOR_PLOT_LINES},
+    {"plot_lines_hovered", THEME_COLOR_PLOT_LINES_HOVERED},
+    {"plot_histogram", THEME_COLOR_PLOT_HISTOGRAM},
+    {"plot_histogram_hovered", THEME_COLOR_PLOT_HISTOGRAM_HOVERED},
+    {"table_header_bg", THEME_COLOR_TABLE_HEADER_BG},
+    {"table_border_strong", THEME_COLOR_TABLE_BORDER_STRONG},
+    {"table_border_light", THEME_COLOR_TABLE_BORDER_LIGHT},
+    {"table_row_bg", THEME_COLOR_TABLE_ROW_BG},
+    {"table_row_bg_alt", THEME_COLOR_TABLE_ROW_BG_ALT},
+    {"drag_drop_target", THEME_COLOR_DRAG_DROP_TARGET},
+    {"nav_highlight", THEME_COLOR_NAV_HIGHLIGHT},
+    {"nav_windowing_highlight", THEME_COLOR_NAV_WINDOWING_HIGHLIGHT},
+    {"nav_windowing_dim_bg", THEME_COLOR_NAV_WINDOWING_DIM_BG},
+    {"modal_window_dim_bg", THEME_COLOR_MODAL_WINDOW_DIM_BG},
+    {"border_shadow", THEME_COLOR_BORDER_SHADOW},
+    {"tab", THEME_COLOR_TAB},
+    {"tab_hovered", THEME_COLOR_TAB_HOVERED},
+    {"tab_selected", THEME_COLOR_TAB_SELECTED},
+    {"tab_selected_overline", THEME_COLOR_TAB_SELECTED_OVERLINE},
+    {"tab_dimmed", THEME_COLOR_TAB_DIMMED},
+    {"tab_dimmed_selected", THEME_COLOR_TAB_DIMMED_SELECTED},
+    {"control_border", THEME_COLOR_CONTROL_BORDER},
+};
+
+const TokenName kMetricNames[] = {
+    {"pad_x", THEME_METRIC_PAD_X},
+    {"pad_y", THEME_METRIC_PAD_Y},
+    {"row_h", THEME_METRIC_ROW_H},
+    {"item_spacing", THEME_METRIC_ITEM_SPACING},
+    {"indent", THEME_METRIC_INDENT},
+    {"border_w", THEME_METRIC_BORDER_W},
+    {"window_rounding", THEME_METRIC_WINDOW_ROUNDING},
+    {"child_rounding", THEME_METRIC_CHILD_ROUNDING},
+    {"frame_rounding", THEME_METRIC_FRAME_ROUNDING},
+    {"grab_rounding", THEME_METRIC_GRAB_ROUNDING},
+    {"popup_rounding", THEME_METRIC_POPUP_ROUNDING},
+    {"tab_rounding", THEME_METRIC_TAB_ROUNDING},
+    {"scrollbar_size", THEME_METRIC_SCROLLBAR_SIZE},
+    {"grab_min_size", THEME_METRIC_GRAB_MIN_SIZE},
+};
+
+// AnimEase（ui_anim.h）枚举序：Linear..EaseOutBounce。
+const char* const kEaseNames[] = {
+    "linear", "in_quad", "out_quad", "inout_quad", "in_cubic", "out_cubic",
+    "inout_cubic", "out_back", "inout_back", "out_elastic", "out_bounce",
+};
+constexpr int kEaseNameCount = static_cast<int>(sizeof(kEaseNames) / sizeof(kEaseNames[0]));
+
+int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// "#RRGGBB" / "#RRGGBBAA"（# 可省略；缺 alpha 按不透明）。其余写法一律 false。
+bool parse_color(const std::string& s, uint32_t* out) {
+    size_t i = (!s.empty() && s[0] == '#') ? 1 : 0;
+    const size_t n = s.size() - i;
+    if (n != 6 && n != 8) return false;
+    uint32_t v = 0;
+    for (; i < s.size(); ++i) {
+        const int d = hex_digit(s[i]);
+        if (d < 0) return false;
+        v = (v << 4) | static_cast<uint32_t>(d);
+    }
+    if (n == 6) v = (v << 8) | 0xFFu;
+    *out = v;
+    return true;
+}
+
+int find_ease(const std::string& name) {
+    for (int i = 0; i < kEaseNameCount; ++i) {
+        if (name == kEaseNames[i]) return i;
+    }
+    return -1;
+}
+
+} // namespace
+
+int load_theme_json(const char* json_text) {
+    if (!json_text || !json_text[0]) return 0;
+    const nlohmann::json j = nlohmann::json::parse(json_text, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return 0;
+
+    Theme& t = mutable_theme();
+    // 底：出厂深色锚色，保证"只写一部分"的主题文件也是良定义的
+    const uint32_t* base = anchors_of(THEME_PRESET_DARK);
+    for (int i = 0; i < THEME_ANCHOR_COUNT; ++i) t.colors[i] = base[i];
+
+    auto apply_colors = [&j, &t](const char* block, const TokenName* names, int count) {
+        const auto it = j.find(block);
+        if (it == j.end() || !it->is_object()) return;
+        for (int k = 0; k < count; ++k) {
+            const auto c = it->find(names[k].name);
+            if (c == it->end() || !c->is_string()) continue;
+            uint32_t v = 0;
+            if (parse_color(c->get<std::string>(), &v)) t.colors[names[k].token] = v;
+        }
+    };
+    apply_colors("anchors", kAnchorNames, THEME_ANCHOR_COUNT);
+    derive_extended(t);          // 先按 anchors 派生，再让 colors 覆盖派生结果
+    apply_colors("colors", kDerivedNames, static_cast<int>(sizeof(kDerivedNames) / sizeof(kDerivedNames[0])));
+
+    const auto m = j.find("metrics");
+    if (m != j.end() && m->is_object()) {
+        for (int k = 0; k < THEME_METRIC_COUNT; ++k) {
+            const auto v = m->find(kMetricNames[k].name);
+            if (v == m->end() || !v->is_number()) continue;
+            t.metrics[kMetricNames[k].token] = v->get<float>();
+        }
+    }
+
+    // animation 块缺省时保持现状（换主题文件不该悄悄重置宿主调过的参数）
+    const auto a = j.find("animation");
+    if (a != j.end() && a->is_object()) {
+        ThemeAnim anim = theme_anim();
+        if (const auto v = a->find("enabled"); v != a->end() && v->is_boolean()) {
+            anim.enabled = v->get<bool>();
+        }
+        if (const auto v = a->find("hover_ms"); v != a->end() && v->is_number()) {
+            anim.hover_s = v->get<float>() * 0.001f;
+        }
+        if (const auto v = a->find("press_ms"); v != a->end() && v->is_number()) {
+            anim.press_s = v->get<float>() * 0.001f;
+        }
+        if (const auto v = a->find("ease"); v != a->end() && v->is_string()) {
+            const int e = find_ease(v->get<std::string>());
+            if (e >= 0) anim.ease = e;
+        }
+        if (anim.hover_s < 0.0f) anim.hover_s = 0.0f;
+        if (anim.press_s < 0.0f) anim.press_s = 0.0f;
+        set_theme_anim(anim);
+    }
+    return 1;
+}
+
+int load_theme_file(const char* path) {
+    if (!path || !path[0]) return 0;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return 0;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return load_theme_json(text.c_str());
+}
+
+namespace {
+
 void derive_extended(Theme& t) {
     const uint32_t* a = t.colors;   // 前 17 项即锚色（顺序与枚举一致）
 
@@ -300,6 +503,15 @@ void set_metric(int token, float value) {
 float metric(int token) {
     if (token < 0 || token >= THEME_METRIC_COUNT) return 0.0f;
     return theme().metrics[token];
+}
+
+const ThemeAnim& theme_anim() {
+    static ThemeAnim a{};
+    return a;
+}
+
+void set_theme_anim(const ThemeAnim& a) {
+    const_cast<ThemeAnim&>(theme_anim()) = a;
 }
 
 void apply() {

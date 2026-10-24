@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "ui/ui_anim.h"
+
 namespace gryce_ui {
 
 // ---------------------------------------------------------------------------
@@ -215,6 +217,67 @@ uint32_t on_fill(uint32_t fill, const Theme& t) {
     return ((da < 0.0f ? -da : da) >= (db < 0.0f ? -db : db)) ? a : b;
 }
 
+// ---- 状态过渡动画（主题 animation 块驱动） ----
+//
+// 参与动画的控件种类与其"主填充色"目标。绘制与推进共用同一份目标，
+// 保证动画落点与从未开过动画的静态帧逐字节一致（单测走的就是静态路径）。
+
+bool widget_anim_fill(const Widget& w, const Theme& t, uint32_t* out) {
+    switch (w.kind) {
+        case WidgetKind::Button:
+            *out = !w.enabled ? theme_color(t, THEME_COLOR_BUTTON)
+                 : w.pressed  ? theme_color(t, THEME_COLOR_BUTTON_ACTIVE)
+                 : w.hovered  ? theme_color(t, THEME_COLOR_BUTTON_HOVER)
+                              : theme_color(t, THEME_COLOR_BUTTON);
+            return true;
+        case WidgetKind::DragFloat:
+            *out = w.pressed ? theme_color(t, THEME_COLOR_BUTTON_ACTIVE)
+                 : w.hovered ? theme_color(t, THEME_COLOR_BUTTON_HOVER)
+                             : theme_color(t, THEME_COLOR_BUTTON);
+            return true;
+        case WidgetKind::Checkbox:
+            *out = w.checked ? theme_color(t, THEME_COLOR_ACCENT)
+                 : w.hovered ? theme_color(t, THEME_COLOR_BUTTON_HOVER)
+                             : theme_color(t, THEME_COLOR_BUTTON);
+            return true;
+        case WidgetKind::Slider: {
+            const uint32_t base = on_fill(theme_color(t, THEME_COLOR_ACCENT), t);
+            *out = w.pressed ? mix_rgba(base, theme_color(t, THEME_COLOR_ACCENT), 0.30f)
+                             : base;
+            return true;
+        }
+        case WidgetKind::MenuItem: {
+            // 高亮块：悬停淡入、移开淡出（目标 = 同色 alpha 清 0）
+            uint32_t c = mix_rgba(theme_color(t, THEME_COLOR_NAV_HIGHLIGHT),
+                                  theme_color(t, THEME_COLOR_POPUP_BG), 0.65f);
+            if (!(w.hovered && w.enabled)) c &= 0xFFFFFF00u;
+            *out = c;
+            return true;
+        }
+        case WidgetKind::Header:
+            *out = w.hovered ? theme_color(t, THEME_COLOR_HEADER_HOVER)
+                             : theme_color(t, THEME_COLOR_HEADER);
+            return true;
+        default:
+            return false;
+    }
+}
+
+// 动画集合控件的"当前主填充色"。anim_to == 0（推进从未跑过）或动画关闭时
+// 直接取静态目标；时钟走满后精确落在目标色（缓动形状不影响端点）。
+uint32_t widget_fill_now(const Widget& w, const Theme& t) {
+    const ThemeAnim& a = theme_anim();
+    if (w.anim_to == 0 || !a.enabled) {
+        uint32_t target = theme_color(t, THEME_COLOR_BUTTON);
+        widget_anim_fill(w, t, &target);
+        return target;
+    }
+    const float dur = w.pressed ? a.press_s : a.hover_s;
+    if (dur <= 0.0f) return w.anim_to;
+    const float k = anim_ease(static_cast<AnimEase>(a.ease), w.anim_clock / dur);
+    return mix_rgba(w.anim_from, w.anim_to, k);
+}
+
 // 折叠标记：小方框里一个 + / -（drawlist 只有矩形与文本，画不了三角形；
 // 用 ASCII 字符是唯一能保证任意字体都出字的做法）。
 void draw_fold_marker(UiDrawList& dl, float x, float y, bool open,
@@ -388,11 +451,7 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             break;
 
         case WidgetKind::Button: {
-            const uint32_t bg = w.bg_overridden ? w.bg_color
-                              : !w.enabled  ? theme_color(theme, THEME_COLOR_BUTTON)
-                              : w.pressed  ? theme_color(theme, THEME_COLOR_BUTTON_ACTIVE)
-                              : w.hovered  ? theme_color(theme, THEME_COLOR_BUTTON_HOVER)
-                                           : theme_color(theme, THEME_COLOR_BUTTON);
+            const uint32_t bg = w.bg_overridden ? w.bg_color : widget_fill_now(w, theme);
             // Fluent 是扁平填充：渐变只留 2%~4% 的极微层次给"可按"的方向感，
             // 按下时整体沉下去（顶亮面收掉、底暗面加深）。
             const uint32_t b_edge = !w.enabled ? edge_soft
@@ -469,9 +528,7 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             const float bx = r.x + 2.0f;
             const float by = r.y + (r.h - side) * 0.5f;
             const Rect   box{bx, by, side, side};
-            const uint32_t box_bg = w.checked ? accent
-                                  : w.hovered ? theme_color(theme, THEME_COLOR_BUTTON_HOVER)
-                                              : theme_color(theme, THEME_COLOR_BUTTON);
+            const uint32_t box_bg = widget_fill_now(w, theme);
             const uint32_t box_edge = w.checked ? shade(accent, 0.30f)
                                     : w.hovered ? accent
                                                 : edge_soft;
@@ -517,10 +574,7 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             // 抓柄是胶囊：半径取半宽，缩放后也不会变成小方块。颜色要跟已经填成
             // ACCENT 的轨道拉开——同色抓柄在那个位置等于看不见。
             const Rect grab{gx, r.y + (r.h - gh) * 0.5f, gw, gh};
-            const uint32_t knob_base = on_fill(accent, theme);
-            const uint32_t knob = w.pressed
-                ? mix_rgba(knob_base, accent, 0.30f)
-                : knob_base;
+            const uint32_t knob = widget_fill_now(w, theme);
             draw_round_frame(dl, grab, gw * 0.5f, knob,
                              mix_rgba(knob, accent, 0.45f), bw);
             break;
@@ -528,9 +582,7 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
 
         case WidgetKind::DragFloat: {
             // 与 ImGui 的形态一致：一条可拖的"值框"，左标签、右数值。
-            const uint32_t bg = w.pressed ? theme_color(theme, THEME_COLOR_BUTTON_ACTIVE)
-                              : w.hovered ? theme_color(theme, THEME_COLOR_BUTTON_HOVER)
-                                          : theme_color(theme, THEME_COLOR_BUTTON);
+            const uint32_t bg = widget_fill_now(w, theme);
             draw_round_frame_gradient(dl, r, r_frame,
                                       shade(bg, w.pressed ? 0.01f : 0.04f),
                                       shade(bg, w.pressed ? -0.05f : -0.02f),
@@ -556,8 +608,7 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
         }
 
         case WidgetKind::Header: {
-            const uint32_t bg = w.hovered ? theme_color(theme, THEME_COLOR_HEADER_HOVER)
-                                          : theme_color(theme, THEME_COLOR_HEADER);
+            const uint32_t bg = widget_fill_now(w, theme);
             draw_round_frame_gradient(dl, r, r_frame, shade(bg, 0.03f),
                                       shade(bg, -0.01f), 0u, 0.0f);
             draw_fold_marker(dl, r.x + 4.0f, ty, w.open, theme, metrics, fs);
@@ -567,12 +618,10 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
         }
 
         case WidgetKind::MenuItem: {
-            if (w.hovered && w.enabled) {
-                // 满强度的导航高亮（= ACCENT）在弹层里像选中态，用 1/3 强度的
-                // 同色底更符合"鼠标经过"的语义
-                dl.add_round_rect(r.x, r.y, r.w, r.h, r_frame,
-                                  mix_rgba(theme_color(theme, THEME_COLOR_NAV_HIGHLIGHT),
-                                           theme_color(theme, THEME_COLOR_POPUP_BG), 0.65f));
+            // 高亮块带淡入/淡出（动画关闭时 alpha 瞬变，行为与旧版一致）
+            const uint32_t hl = widget_fill_now(w, theme);
+            if ((hl & 0xFFu) != 0) {
+                dl.add_round_rect(r.x, r.y, r.w, r.h, r_frame, hl);
             }
             dl.add_text(r.x + 8.0f, ty, w.label, fs,
                         theme_color(theme, w.enabled ? THEME_COLOR_TEXT : THEME_COLOR_TEXT_DIM));
@@ -1098,6 +1147,37 @@ void WidgetTree::update_all() {
     for (int i = 0; i < used_; ++i) {
         if (!slots_[i].alive) continue;
         touch(slots_[i].w.id, slots_[i].w.kind, slots_[i].w.rect, slots_[i].w.label);
+    }
+}
+
+void WidgetTree::advance_animations(float dt, const Theme& theme) {
+    const ThemeAnim& anim = theme_anim();
+    for (int i = 0; i < used_; ++i) {
+        if (!slots_[i].alive) continue;
+        Widget& w = slots_[i].w;
+        uint32_t target = 0;
+        if (!anim.enabled || !widget_anim_fill(w, theme, &target)) {
+            w.anim_from = 0;
+            w.anim_to   = 0;
+            w.anim_clock = 0.0f;
+            continue;
+        }
+        if (w.anim_to == 0) {
+            // 首次进入动画集合：直接落位（不从头过渡——控件是新建出来的，
+            // 没有"上一个颜色"可过渡）
+            w.anim_from  = target;
+            w.anim_to    = target;
+            w.anim_clock = 0.0f;
+            continue;
+        }
+        if (w.anim_to != target) {
+            // 目标变了（悬停/按下/勾选切换）：从当前插值位置出发重新计时，
+            // 快速来回扫鼠标不会跳色
+            w.anim_from  = widget_fill_now(w, theme);
+            w.anim_to    = target;
+            w.anim_clock = 0.0f;
+        }
+        if (dt > 0.0f) w.anim_clock += dt;
     }
 }
 

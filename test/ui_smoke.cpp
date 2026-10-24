@@ -1015,6 +1015,8 @@ void print_usage() {
         "  --ops-burst <N>        先批量灌 N 条操作再跑帧循环：演示合并/预算/统计\n"
         "  --theme <name>         初始主题预设：dark / light / midnight / nord /\n"
         "                        highcontrast（默认 dark）\n"
+        "  --theme-file <path>    JSON 主题文件（assets/themes/*.json）：覆盖预设并\n"
+        "                        启用该文件定义的交互动画\n"
         "  --page <name>          初始页：controls / queue / layout / anim /\n"
         "                        struct / style / about（默认 controls）\n"
         "  --ui-backend <name>    UI 后端：imgui（默认）/ builtin（引擎内置，\n"
@@ -1037,6 +1039,7 @@ int main(int argc, char** argv) {
     int ops_burst = 0;
     bool vsync = true;
     int theme_preset = GUI_THEME_PRESET_DARK;
+    const char* theme_file = nullptr;
     int page = 0;
     int ui_backend = 0;   // 0 = ImGui（默认），1 = 引擎内置
 
@@ -1081,6 +1084,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+        else if (std::strcmp(a, "--theme-file") == 0) theme_file = value_at(i);
         else if (std::strcmp(a, "--no-vsync") == 0) vsync = false;
         else if (std::strcmp(a, "--ui-backend") == 0) {
             const char* t = value_at(i);
@@ -1182,6 +1186,14 @@ int main(int argc, char** argv) {
     // 主题先设好：引擎在 GRender_Init 里按当前 token 落地一次 Style
     // （Style 要在第一个 NewFrame 之前就位），所以这里只设预设、不 apply。
     GUi_ThemeSetPreset(theme_preset);
+    if (theme_file) {
+        // JSON 主题文件（assets/themes/*.json）：覆盖预设的锚色/度量并带上
+        // 动画参数。加载失败直接退出——静默用错主题比报错更难查。
+        if (!GUi_ThemeLoadFromFile(theme_file)) {
+            std::fprintf(stderr, "[ui-smoke] 主题文件加载失败：%s\n", theme_file);
+            return 1;
+        }
+    }
 
     // 排出策略：单次最多 16 条、每个推进过的帧都可排。间隔策略由
     // GUi_SetOpPolicy 的第二个参数控制，这里演示"有预算"。
