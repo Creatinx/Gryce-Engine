@@ -20,8 +20,8 @@
 namespace gryce_ui {
 
 struct BuiltinUiOps {
-    // 窗口 / 内容
-    int  (*begin_window)(const char* name, float x, float y, float w, float h);
+    // ---- 窗口 / 内容 ----
+    int  (*begin_window)(const char* name, float x, float y, float w, float h, uint32_t flags);
     void (*end_window)();
     void (*text)(const char* s);
     void (*text_colored)(uint32_t rgba, const char* s);
@@ -29,37 +29,76 @@ struct BuiltinUiOps {
     void (*spacing)(float px);
     void (*same_line)(float spacing);
     void (*label_text)(const char* label, const char* text);
+    void (*indent)(float px);          // px < 0 = 用主题缩进
+    void (*unindent)(float px);
+    float (*window_scroll_y)();
+    void  (*set_window_scroll_y)(float v);
 
-    // 交互控件
+    // ---- 交互控件 ----
     int  (*button)(const char* label);
     int  (*button_size)(const char* label, float w, float h);
     int  (*checkbox)(const char* label, int* inout_value);
     int  (*slider_float)(const char* label, float* inout_value, float vmin, float vmax);
+    int  (*drag_float)(const char* label, float* inout_value, float speed,
+                       float vmin, float vmax);
     int  (*input_text)(const char* label, char* buf, int buf_size);
     int  (*color_button)(const char* label, const float rgba[4]);
     void (*progress_bar)(float fraction, const char* overlay);
 
-    // 度量与光标流
+    // ---- 结构 ----
+    int  (*tree_node)(const char* label, int default_open);
+    void (*tree_pop)();
+    int  (*collapsing_header)(const char* label, int default_open);
+    void (*begin_menu_bar)();
+    void (*end_menu_bar)();
+    int  (*begin_menu)(const char* label);
+    void (*end_menu)();
+    int  (*menu_item)(const char* label, const char* shortcut, int enabled);
+    int  (*begin_child)(const char* id, float w, float h, int border);
+    void (*end_child)();
+
+    // ---- 弹层 ----
+    void (*open_popup)(const char* id, float x, float y, float w, float h);
+    void (*open_popup_on_item)(const char* id, float w);
+    int  (*begin_popup)(const char* id);
+    void (*end_popup)();
+    void (*close_current_popup)();
+    int  (*is_popup_open)(const char* id);
+    void (*open_modal)(const char* name, float w, float h);
+    int  (*begin_modal)(const char* name, float w, float h);
+    void (*set_tooltip)(const char* text);
+
+    // ---- 拖放 ----
+    int  (*begin_drag_drop_source)();
+    void (*set_drag_drop_payload_string)(const char* type, const char* text);
+    void (*end_drag_drop_source)();
+    int  (*begin_drag_drop_target)();
+    int  (*accept_drag_drop_payload_string)(const char* type, char* out, int cap);
+    void (*end_drag_drop_target)();
+
+    // ---- 度量与光标流 ----
     void  (*display_size)(float* out_w, float* out_h);
     float (*text_line_height)();
     float (*frame_height)();
     float (*calc_text_width)(const char* text);
     void  (*set_next_item_width)(float w);   // 内置轨暂无列宽概念：空操作
     void  (*get_content_avail)(float* out_w, float* out_h);
-    void  (*set_cursor_pos)(float x, float y);
+    void  (*set_cursor_pos)(float x, float y);   // 光标由控件推进：空操作
 
-    // 刚提交 item 的查询
+    // ---- 刚提交 item 的查询 ----
     void (*last_item_rect)(float* out_x, float* out_y, float* out_w, float* out_h);
     int  (*is_item_hovered)();
     int  (*is_item_active)();
+    int  (*is_item_clicked)(int mouse_button);
     // 整棵树里有没有控件正被按住（连续编辑合并撤销的判据，见 ui-api.md）
     int  (*is_any_item_active)();
 
-    // 原始鼠标状态（宿主在自己的输入处理里用）
+    // ---- 原始鼠标 / 键盘状态 ----
     void (*mouse_pos)(float* out_x, float* out_y);
     int  (*is_mouse_down)(int button);
     int  (*is_mouse_clicked)(int button);
     int  (*is_mouse_released)(int button);
+    int  (*get_modifiers)();
     int  (*want_capture_mouse)();
     int  (*want_capture_keyboard)();
 };

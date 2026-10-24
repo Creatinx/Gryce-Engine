@@ -157,11 +157,17 @@ GRYCE_RENDERER_API bool GRender_HasImGui(void);
 //       由引擎内置的即时模式层 + 2D 覆盖层自己渲染（不依赖 ImGui、不依赖
 //       宿主的任何 UI 库）。两条轨的回调与节流语义完全相同。
 //
-// GUi_* 里少数只有 ImGui 才有的能力（菜单栏、树节点、弹出层、拖放）在内置轨
-// 下返回 0 / 空操作——宿主按返回值跳过即可，界面其余部分照常工作。
+// GUi_* 的能力差异（内置轨没有的少数 API 返回 0 / 空操作）见 docs/zh/ui-api.md
+// 第 7.11 节的逐条能力表。
 // ---------------------------------------------------------------------------
 GRYCE_RENDERER_API void GRender_SetUIBackend(int backend);
 GRYCE_RENDERER_API int  GRender_GetUIBackend(void);
+
+// 内置 UI 轨的 HiDPI 缩放（1.0 = 100%）。UI 始终按逻辑像素布局，鼠标在进入
+// 模型层前除以它，绘制时（坐标 + 字号 + 裁剪框）再乘回去。默认 1.0。
+// 只影响内置轨：ImGui 轨的缩放由它的后端按 DPI 自行处理。
+GRYCE_RENDERER_API void  GRender_SetUIScale(float scale);
+GRYCE_RENDERER_API float GRender_GetUIScale(void);
 
 // UI 帧节流：每 frames 个渲染帧才真正构建一次 ImGui 帧（跑宿主回调与
 // gizmo），中间的帧直接重绘上一次的 draw data。frames <= 1 = 每帧都构建

@@ -171,6 +171,7 @@ public:
     BlendEquation blend_equation_ = BlendEquation::Add;
     int viewport_x_ = 0, viewport_y_ = 0, viewport_w_ = 0, viewport_h_ = 0;
     int scissor_x_ = 0, scissor_y_ = 0, scissor_w_ = 0, scissor_h_ = 0;
+    bool scissor_test_on_ = false;   // GL_SCISSOR_TEST 当前是否打开
 
     void save_screenshot(const std::string& path);
 

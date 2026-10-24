@@ -14,6 +14,7 @@
 
 #include "api/ui_builtin_backend.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -27,19 +28,42 @@ namespace gryce_ui {
 namespace {
 
 // GLFW 键码（与 platform 的 keys[] 索引同一套，见 input.cpp 的 32..348）。
+// 本帧"按下"的编辑键走这条通道（字符通道只送可打印码点）。
 constexpr int kKeyBackspace = 259;
+constexpr int kEditKeys[] = {
+    263, 262, 268, 269, 261,   // Left Right Home End Delete
+    259, 256, 258, 257, 265,   // Backspace Esc Tab Enter Up
+    264, 65, 67, 86, 88,       // Down A C V X
+};
+constexpr int kEditKeyCount = static_cast<int>(sizeof(kEditKeys) / sizeof(kEditKeys[0]));
+
+// GLFW 修饰键
+constexpr int kKeyLeftShift = 340, kKeyRightShift = 344;
+constexpr int kKeyLeftCtrl  = 341, kKeyRightCtrl  = 345;
+constexpr int kKeyLeftAlt   = 342, kKeyRightAlt   = 346;
+constexpr int kKeyLeftSuper = 343, kKeyRightSuper = 347;
+
+// 单帧时钟（插入符闪烁用；宿主不需要自己的时钟）
+float ui_clock() {
+    static const auto t0 = std::chrono::steady_clock::now();
+    const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    return static_cast<float>(dt) * 0.001f;
+}
 
 // 文本度量：宽度走渲染器的真实字形推进量；渲染器不支持时退回估算。
 // 两者共用 UiTextMetrics 接口，布局与绘制因此不会用两个宽度。
 class RendererTextMetrics final : public UiTextMetrics {
 public:
-    explicit RendererTextMetrics(gryce_engine::render::IRenderer2D* renderer)
-        : renderer_(renderer) {}
+    RendererTextMetrics(gryce_engine::render::IRenderer2D* renderer, float scale)
+        : renderer_(renderer), scale_((scale > 0.0f) ? scale : 1.0f) {}
 
     float width(const char* text, float font_size) const override {
+        // 模型层用逻辑字号问宽度，渲染器按真实字号量，再换回逻辑单位——
+        // 布局与绘制因此始终同一口径（HiDPI 下也不会错位）。
         if (renderer_) {
-            const float w = renderer_->measure_text(text, font_size);
-            if (w > 0.0f) return w;
+            const float w = renderer_->measure_text(text, font_size * scale_);
+            if (w > 0.0f) return w / scale_;
         }
         return ui_approx_text_width(text, font_size);
     }
@@ -51,6 +75,7 @@ public:
 
 private:
     gryce_engine::render::IRenderer2D* renderer_;
+    float scale_ = 1.0f;
 };
 
 // 本帧输入快照。宿主没开窗口时所有查询返回 0/false，得到一份全零输入——
@@ -72,6 +97,37 @@ UiInputFrame collect_input() {
 
     in.char_count = GInput_PullChars(in.chars, UiInputFrame::kMaxChars);
     in.backspace  = GInput_IsKeyPressed(kKeyBackspace);
+
+    // 编辑键（方向键/Home/End/Delete/Esc/Ctrl+字母）：只收"本帧按下"的边沿，
+    // 按住不放不该让插入点连续跑（连发交给系统重复即可）。
+    for (int i = 0; i < kEditKeyCount; ++i) {
+        if (GInput_IsKeyPressed(kEditKeys[i])) {
+            in.keys[in.key_count++] = kEditKeys[i];
+        }
+    }
+
+    // 修饰键
+    if (GInput_IsKeyHeld(kKeyLeftShift) || GInput_IsKeyHeld(kKeyRightShift)) {
+        in.mods |= UiInputFrame::ModShift;
+    }
+    if (GInput_IsKeyHeld(kKeyLeftCtrl) || GInput_IsKeyHeld(kKeyRightCtrl)) {
+        in.mods |= UiInputFrame::ModCtrl;
+    }
+    if (GInput_IsKeyHeld(kKeyLeftAlt) || GInput_IsKeyHeld(kKeyRightAlt)) {
+        in.mods |= UiInputFrame::ModAlt;
+    }
+    if (GInput_IsKeyHeld(kKeyLeftSuper) || GInput_IsKeyHeld(kKeyRightSuper)) {
+        in.mods |= UiInputFrame::ModSuper;
+    }
+
+    // 滚轮（取走即清零）
+    GInput_GetWheel(nullptr, &in.wheel);
+
+    // 输入法预编辑串
+    GInput_GetPreedit(in.preedit, static_cast<int>(sizeof(in.preedit)));
+
+    // 时钟：只给插入符闪烁用
+    in.time = ui_clock();
     return in;
 }
 
@@ -81,9 +137,9 @@ BuiltinRuntime& rt() { return BuiltinRuntime::instance(); }
 // 实现表：把 GUi_* 的 C 签名翻到模型层
 // ---------------------------------------------------------------------------
 const BuiltinUiOps kOps = {
-    // 窗口 / 内容
-    [](const char* name, float x, float y, float w, float h) {
-        return rt().ui().begin_window(name, Rect{x, y, w, h});
+    // ---- 窗口 / 内容 ----
+    [](const char* name, float x, float y, float w, float h, uint32_t flags) {
+        return rt().ui().begin_window(name, Rect{x, y, w, h}, flags);
     },
     []() { rt().ui().end_window(); },
     [](const char* s) { rt().ui().text(s); },
@@ -92,19 +148,61 @@ const BuiltinUiOps kOps = {
     [](float px) { rt().ui().spacing(px); },
     [](float spacing) { rt().ui().same_line(spacing); },
     [](const char* label, const char* text) { rt().ui().label_text(label, text); },
+    [](float px) { rt().ui().indent(px); },
+    [](float px) { rt().ui().unindent(px); },
+    []() { return rt().ui().window_scroll_y(); },
+    [](float v) { rt().ui().set_window_scroll_y(v); },
 
-    // 交互控件
+    // ---- 交互控件 ----
     [](const char* label) { return rt().ui().button(label); },
     [](const char* label, float w, float h) { return rt().ui().button_size(label, w, h); },
     [](const char* label, int* v) { return rt().ui().checkbox(label, v); },
     [](const char* label, float* v, float lo, float hi) {
         return rt().ui().slider_float(label, v, lo, hi);
     },
+    [](const char* label, float* v, float speed, float lo, float hi) {
+        return rt().ui().drag_float(label, v, speed, lo, hi);
+    },
     [](const char* label, char* buf, int cap) { return rt().ui().input_text(label, buf, cap); },
     [](const char* label, const float rgba[4]) { return rt().ui().color_button(label, rgba); },
     [](float fraction, const char* overlay) { rt().ui().progress_bar(fraction, overlay); },
 
-    // 度量与光标流
+    // ---- 结构 ----
+    [](const char* label, int def) { return rt().ui().tree_node(label, def); },
+    []() { rt().ui().tree_pop(); },
+    [](const char* label, int def) { return rt().ui().collapsing_header(label, def); },
+    []() { rt().ui().begin_menu_bar(); },
+    []() { rt().ui().end_menu_bar(); },
+    [](const char* label) { return rt().ui().begin_menu(label); },
+    []() { rt().ui().end_menu(); },
+    [](const char* label, const char* sc, int en) { return rt().ui().menu_item(label, sc, en); },
+    [](const char* id, float w, float h, int border) { return rt().ui().begin_child(id, w, h, border); },
+    []() { rt().ui().end_child(); },
+
+    // ---- 弹层 ----
+    [](const char* id, float x, float y, float w, float h) {
+        rt().ui().open_popup(id, x, y, w, h);
+    },
+    [](const char* id, float w) { rt().ui().open_popup_on_item(id, w); },
+    [](const char* id) { return rt().ui().begin_popup(id); },
+    []() { rt().ui().end_popup(); },
+    []() { rt().ui().close_current_popup(); },
+    [](const char* id) { return rt().ui().is_popup_open(id); },
+    [](const char* name, float w, float h) { rt().ui().open_modal(name, w, h); },
+    [](const char* name, float w, float h) { return rt().ui().begin_modal(name, w, h); },
+    [](const char* text) { rt().ui().set_tooltip(text); },
+
+    // ---- 拖放 ----
+    []() { return rt().ui().begin_drag_drop_source(); },
+    [](const char* type, const char* text) { rt().ui().set_drag_drop_payload_string(type, text); },
+    []() { rt().ui().end_drag_drop_source(); },
+    []() { return rt().ui().begin_drag_drop_target(); },
+    [](const char* type, char* out, int cap) {
+        return rt().ui().accept_drag_drop_payload_string(type, out, cap);
+    },
+    []() { rt().ui().end_drag_drop_target(); },
+
+    // ---- 度量与光标流 ----
     [](float* w, float* h) {
         if (w) *w = rt().display_width();
         if (h) *h = rt().display_height();
@@ -123,7 +221,7 @@ const BuiltinUiOps kOps = {
     },
     [](float x, float y) { (void)x; (void)y; },   // 光标流由控件推进，宿主不能随意跳
 
-    // 刚提交 item 的查询
+    // ---- 刚提交 item 的查询 ----
     [](float* x, float* y, float* w, float* h) {
         const Rect r = rt().ui().last_item_rect();
         if (x) *x = r.x;
@@ -133,9 +231,10 @@ const BuiltinUiOps kOps = {
     },
     []() { return rt().ui().is_item_hovered() ? 1 : 0; },
     []() { return rt().ui().is_item_active() ? 1 : 0; },
+    [](int button) { return rt().ui().is_item_clicked(button) ? 1 : 0; },
     []() { return rt().ui().tree().active_id() != 0 ? 1 : 0; },
 
-    // 原始鼠标状态
+    // ---- 原始鼠标 / 键盘状态 ----
     [](float* x, float* y) {
         float mx = 0.0f;
         float my = 0.0f;
@@ -146,7 +245,16 @@ const BuiltinUiOps kOps = {
     [](int button) { return GInput_IsMouseButtonHeld(button) ? 1 : 0; },
     [](int button) { return GInput_IsMouseButtonPressed(button) ? 1 : 0; },
     [](int button) { return GInput_IsMouseButtonReleased(button) ? 1 : 0; },
-    // WantCaptureMouse：鼠标落在任何一个面板里就不该交给视口。
+    []() {
+        // 位：1 = Shift，2 = Ctrl，4 = Alt（与 GUI_MOD_* 对齐）
+        const UiInputFrame& in = rt().ui().tree().input();
+        int m = 0;
+        if (in.mods & UiInputFrame::ModShift) m |= 1;
+        if (in.mods & UiInputFrame::ModCtrl)  m |= 2;
+        if (in.mods & UiInputFrame::ModAlt)   m |= 4;
+        return m;
+    },
+    // WantCaptureMouse：鼠标落在任何一个面板/弹层里就不该交给视口。
     // WantCaptureKeyboard：输入框拿到焦点时不派发快捷键。
     []() { return rt().ui().wants_mouse() ? 1 : 0; },
     []() { return rt().ui().wants_keyboard() ? 1 : 0; },
@@ -185,7 +293,11 @@ bool BuiltinRuntime::begin_build() {
     if (!rebuild_due_) return false;
     if (width_ <= 0 || height_ <= 0) return false;
 
-    metrics_ = std::make_unique<RendererTextMetrics>(renderer_);
+    metrics_ = std::make_unique<RendererTextMetrics>(renderer_, scale_);
+    ui_.set_scale(scale_);
+    // 弹层/遮罩要夹在屏幕内：模型层要逻辑尺寸
+    ui_.set_display_size(static_cast<float>(width_) / scale_,
+                         static_cast<float>(height_) / scale_);
     ui_.begin_frame(collect_input(), theme(), *metrics_);
     building_ = true;
     return true;
@@ -215,7 +327,7 @@ void BuiltinRuntime::draw_now(gryce_engine::render::IRenderer2D* renderer) {
     {
         // 适配器与桥是无状态的短命对象：一次 pass 内建、用完即弃，
         // 没有任何 UI 对象跨帧持有渲染器指针。
-        std::unique_ptr<UiRenderer> target = make_renderer2d_ui_renderer(renderer);
+        std::unique_ptr<UiRenderer> target = make_renderer2d_ui_renderer(renderer, scale_);
         UiRenderBridge bridge;
         bridge.render(list_, *target);
         last_draws_ = bridge.draw_commands();
@@ -224,7 +336,7 @@ void BuiltinRuntime::draw_now(gryce_engine::render::IRenderer2D* renderer) {
 }
 
 float BuiltinRuntime::text_width(const char* text) const {
-    const RendererTextMetrics metrics(renderer_);
+    const RendererTextMetrics metrics(renderer_, scale_);
     return metrics.width(text, kWidgetFontSize);
 }
 

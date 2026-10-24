@@ -18,6 +18,9 @@
 #include "platform/input.h"
 #include "utils/glog/glog_lib.h"
 
+#include <cstdio>
+#include <cstring>
+
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -63,6 +66,14 @@ struct PlatformState {
         static constexpr int kCharCap = 64;
         unsigned int chars[kCharCap] = {};
         int char_count = 0;
+
+        // 滚轮增量（一帧内累积，GInput_GetWheel 取走即清零）
+        float wheel_x = 0.0f;
+        float wheel_y = 0.0f;
+
+        // 输入法预编辑串（宿主注入，内置 UI 画在插入点处）
+        static constexpr int kPreeditCap = 64;
+        char preedit[kPreeditCap] = {};
 
         // GInput_SyncToCore 的"上次已同步"快照，只对变化推命令
         bool synced_keys[512] = {};
@@ -135,6 +146,13 @@ static void update_input_from_window() {
         chars, PlatformState::InputState::kCharCap - g_platform.input.char_count);
     for (int i = 0; i < n; ++i) {
         g_platform.input.chars[g_platform.input.char_count++] = chars[i];
+    }
+
+    // 滚轮：同样是事件式累积
+    double wx = 0.0, wy = 0.0;
+    if (g_platform.window->take_scroll(wx, wy)) {
+        g_platform.input.wheel_x += static_cast<float>(wx);
+        g_platform.input.wheel_y += static_cast<float>(wy);
     }
 }
 
@@ -564,8 +582,39 @@ void GInput_InjectMouseButton(int button, GInputAction action, float x, float y)
 
 void GInput_InjectMouseScroll(float delta_x, float delta_y) {
     GRYCE_API_GUARD();
-    // Scroll is event-based; for now, store in a separate field if needed
-    (void)delta_x; (void)delta_y;
+    std::lock_guard lock(g_platform.input_mutex);
+    g_platform.input.wheel_x += delta_x;
+    g_platform.input.wheel_y += delta_y;
+}
+
+void GInput_GetWheel(float* out_dx, float* out_dy) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (out_dx) *out_dx = g_platform.input.wheel_x;
+    if (out_dy) *out_dy = g_platform.input.wheel_y;
+    // 取出即清零：滚轮是"本帧事件"，读两次不该翻倍
+    g_platform.input.wheel_x = 0.0f;
+    g_platform.input.wheel_y = 0.0f;
+}
+
+void GInput_InjectPreedit(const char* utf8_text) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    const size_t cap = sizeof(g_platform.input.preedit);
+    if (!utf8_text) {
+        g_platform.input.preedit[0] = '\0';
+        return;
+    }
+    std::strncpy(g_platform.input.preedit, utf8_text, cap - 1);
+    g_platform.input.preedit[cap - 1] = '\0';
+}
+
+int GInput_GetPreedit(char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (!out_buf || buf_size <= 0) return 0;
+    std::snprintf(out_buf, static_cast<size_t>(buf_size), "%s", g_platform.input.preedit);
+    return static_cast<int>(std::strlen(out_buf));
 }
 
 void GInput_ResetMouseBaseline(void) {

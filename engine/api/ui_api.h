@@ -57,6 +57,10 @@ enum {
     GUI_WIN_MENU_BAR          = 1 << 5,
     GUI_WIN_NO_SCROLLBAR      = 1 << 6,
     GUI_WIN_NO_BRING_TO_FRONT = 1 << 7,
+    // 内置轨专有：显式要求标题栏（带折叠框，可拖动移窗）。内置轨默认不给
+    // 标题栏——引擎里的面板多是"已经排好位置的固定区域"，标题栏会白吃高度。
+    // ImGui 轨忽略这一位（它本来就有标题栏，用 NO_TITLE_BAR 关）。
+    GUI_WIN_TITLE_BAR         = 1 << 8,
 };
 
 // 文本着色（语义化，不暴露主题色值）
@@ -630,6 +634,16 @@ GRYCE_UI_API void  GUi_EndPopup(void);
 // （ImGui 只在点到弹窗外面时才自动关）。
 GRYCE_UI_API void  GUi_CloseCurrentPopup(void);
 
+// 工具提示：画在鼠标右下方。内置轨带 0.35 秒悬停延时（宿主时钟为 0 时立即出，
+// 便于单测与截图）；ImGui 轨是即时显示（延时由 ImGui 的 hover 计时管）。
+GRYCE_UI_API void  GUi_SetTooltip(const char* text);
+
+// 模态弹层：屏幕遮罩 + 居中面板。点面板外面**不关**，Esc 或
+// GUi_CloseCurrentPopup 才关。宽高 <= 0 时用默认尺寸。
+// 用法与 popup 一致：Open 一次，之后每帧 Begin/End。
+GRYCE_UI_API void  GUi_OpenModal(const char* name, float w, float h);
+GRYCE_UI_API int   GUi_BeginModal(const char* name, float w, float h);
+
 // ---------------------------------------------------------------------------
 // 拖放
 //
@@ -672,6 +686,13 @@ GRYCE_UI_API void  GUi_SetCursorPos(float x, float y);
 GRYCE_UI_API void  GUi_GetCursorPos(float* out_x, float* out_y);
 GRYCE_UI_API void  GUi_GetContentAvail(float* out_w, float* out_h);
 GRYCE_UI_API void  GUi_SetNextItemWidth(float w);
+// 缩进 / 反缩进（树形层级用）。px <= 0 = 用主题的缩进度量。
+GRYCE_UI_API void  GUi_Indent(float px);
+GRYCE_UI_API void  GUi_Unindent(float px);
+// 当前窗口的竖向滚动位置。内容超出窗口时内置轨会自动出现滚动条，宿主只在
+// 需要"滚到某处"（选中项可见、Home/End 翻页）时才用这两个。
+GRYCE_UI_API float GUi_GetWindowScrollY(void);
+GRYCE_UI_API void  GUi_SetWindowScrollY(float v);
 GRYCE_UI_API float GUi_GetTextLineHeight(void);
 GRYCE_UI_API float GUi_GetFrameHeight(void);
 // 文本宽度（像素）。检视器要用它算"标签占多宽"，再把控件宽度设成

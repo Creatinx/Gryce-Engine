@@ -2348,6 +2348,17 @@ int GRender_GetUIBackend(void) {
     return gryce_ui::ui_backend();
 }
 
+void GRender_SetUIScale(float scale) {
+    GRYCE_API_GUARD();
+    // 只影响内置轨：ImGui 轨的缩放由后端自己按 DPI 处理。
+    gryce_ui::BuiltinRuntime::instance().set_scale(scale);
+}
+
+float GRender_GetUIScale(void) {
+    GRYCE_API_GUARD();
+    return gryce_ui::BuiltinRuntime::instance().scale();
+}
+
 uint64_t GRender_GetImGuiTextureId(GTextureHandle texture) {
     GRYCE_API_GUARD();
 #ifndef GRYCE_HAS_IMGUI

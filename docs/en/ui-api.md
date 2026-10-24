@@ -510,7 +510,7 @@ ImGui's role on this path changes accordingly: **from "the UI system itself" to 
 | Empty text | `nullptr` or an empty string produces no command (not counted as culled) |
 | Geometry | No normalization: negative w/h is recorded verbatim; geometric correctness belongs to the layout layer |
 
-Demo host check: `GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim` — no ImGui involved; the built-in immediate-mode layer produces the drawlist and the render bridge draws it, for screenshot regression (same host code as `--ui-backend imgui`, only the backend differs).
+Demo host check: `GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim|struct` — no ImGui involved; the built-in immediate-mode layer produces the drawlist and the render bridge draws it, for screenshot regression (same host code as `--ui-backend imgui`, only the backend differs). The `struct` page demos collapsing headers, trees, a scrolling child region, popups, a modal and a tooltip; `--ui-scale N` exercises HiDPI.
 
 ## 7.11 The built-in UI track (`GRender_SetUIBackend(1)`)
 
@@ -545,34 +545,58 @@ debug_ui_submit_locked()            main thread, lock held
 
 ### What the built-in track supports
 
-| `GUi_*` | Built-in behaviour |
+The built-in track now has the **same control set** as the ImGui track: one host code base runs the full flow on either track. Only the differences and the exact semantics are listed here.
+
+| Topic | Built-in behaviour |
 | --- | --- |
-| `BeginWindow` / `EndWindow` | Supported (no title bar, no dragging, no collapsing; `flags` ignored) |
-| `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` | Supported; `Text` **wraps** to the content width |
+| `BeginWindow` / `EndWindow` | Supported. `GUI_WIN_TITLE_BAR` adds a title bar (draggable, 22px collapse box on the left); `GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` are honoured. Offset, collapsed and scroll state persist per window id, even though the host re-supplies the rect every frame |
+| `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | Supported; `Text` **wraps** to the content width |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id) |
-| `Combo` | Degrades to a "click to cycle" button: returns 1 with `*current` already updated |
-| `DragFloat` | Read-only: draws a slider showing the current value, returns 0 |
-| `DragFloat2/3/4` / `ColorEdit4` | Not drawn or replaced by a swatch, returns 0 |
-| `BeginChild` | Always returns 0 (no child windows); contents are inlined; the matching `EndChild` is a no-op |
-| `BeginMenuBar` / `MenuItem` / `TreeNode` / `CollapsingHeader` / popups / drag and drop | Always return 0 / no-op |
-| Queries: `LastItemRect` / `IsItemHovered` / `IsItemActive` / `IsAnyItemActive` / `MousePos` / `IsMouse*` | Supported |
-| `MouseDeltaX/Y` / `GetModifiers` / `SetCursorPos` | Always 0 / no-op (read `GInput_*` for deltas and modifiers) |
-| `WantCaptureMouse` | True while the mouse is inside any panel rect |
+| `DragFloat` | Real dragging: while held the value follows the **mouse delta** (`speed` units per pixel, Ctrl for 1/10 fine-tuning). There is no "jump where you clicked" semantics |
+| `DragFloat2/3/4` | Degrades to a `DragFloat` on the first component; the rest are read-only |
+| `ColorEdit4` | Swatch plus a popup with R/G/B/A sliders; edits write back immediately |
+| `Combo` | Real dropdown: popup plus menu items, a selection writes back and closes it |
+| `BeginChild` / `EndChild` | Supported: own clip rect (out-of-view items are invisible *and* unclickable), own wheel scrolling and offset. `size=(0,0)` fills the remaining space, as in ImGui |
+| `TreeNode` / `TreePop` / `CollapsingHeader` | Supported: open state persists across frames, children indent automatically |
+| `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | Supported: a menu is a popup anchored under its button; clicking an item closes it |
+| Popups: `OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | Supported. Popups draw on layer 2 (always above windows), auto-size their height, and close on an outside click or Esc — `BeginPopup` already returns 0 on that same frame, matching ImGui's NewFrame semantics |
+| Modal: `OpenModal` / `BeginModal` | Supported: centred, a dim full-screen mask underneath, **outside clicks do not close it**; only Esc or `CloseCurrentPopup` |
+| Tooltip: `SetTooltip` | Supported: follows the mouse; delayed 0.35 s when `time > 0` (with `time = 0` it shows immediately, which keeps unit tests and screenshots reproducible) |
+| Drag and drop: `BeginDragDropSource` / `SetDragDropPayloadString` / `EndDragDropSource` / `BeginDragDropTarget` / `AcceptDragDropPayloadString` | Supported: activates past a 4px threshold; payload = (type string, text); delivered when the button is released over the target |
+| Queries: `LastItemRect` / `IsItemHovered` / `IsItemClicked` / `IsItemActive` / `IsAnyItemActive` / `MousePos` / `IsMouse*` / `GetModifiers` | Supported |
+| `MouseDeltaX/Y` / `SetCursorPos` | Always 0 / no-op (read `GInput_*` for deltas) |
+| `WantCaptureMouse` | True while the mouse is inside any panel or popup rect |
 | `WantCaptureKeyboard` | True while a text input holds focus |
+
+### Text editing (what `InputText` really does on the built-in track)
+
+| Input | Behaviour |
+| --- | --- |
+| Click / drag | The caret is mapped from x through the **real text width** into a byte offset that always sits on a UTF-8 code-point boundary; dragging selects |
+| ← → / Home / End | Move by code point / to line start and end; with Shift it extends the selection |
+| Ctrl+← → | Move by word (`text_word_left/right`) |
+| Backspace / Delete | Deletes the selection when there is one, otherwise the previous/next code point |
+| Ctrl+A / C / X / V | Select all / copy / cut / paste through the process-wide clipboard `ui_clipboard()` (hosts may read and write it to mirror the OS clipboard) |
+| Esc | Clears the selection and drops focus |
+| IME | The pre-edit string (`UiInputFrame::preedit`) is drawn **underlined** at the caret and belongs only to the input that holds focus this frame; composing never writes into the caller's buffer |
+| Caret blink | Driven by `UiInputFrame::time` (1.06 s period, 0.53 s on); `time == 0` keeps it always visible, so tests and screenshots stay reproducible |
+| Long text | Scrolls horizontally to keep the caret visible; text never bleeds outside the box |
 
 ### Three prerequisites for text and coordinates
 
 1. **One source of metrics**: auto-sizing (button width = text width + padding) and text centring both use `IRenderer2D::measure_text` (sum of glyph advances, UTF-8 by code point); when the renderer provides no metrics it falls back to `ui_approx_text_width`. They must be the same source, otherwise "layout by estimate, draw by truth" drifts apart.
 2. **`draw_text` resolves glyphs per code point**: the 2D text path now decodes UTF-8 (`Renderer2D::draw_text`), so CJK renders; code points missing from the atlas are skipped.
-3. **Coordinates assume 1:1**: the built-in track uses `GInput_GetMousePosition`'s window coordinates as screen coordinates and the render target's pixel size as the display size. Under HiDPI these differ (the ImGui track leaves scaling to its backend); scale on the host side if needed.
+3. **HiDPI goes through `GRender_SetUIScale`**: the model layer always works in **logical pixels** (layout, hit testing and text metrics are logical); input coordinates are divided by the scale in `begin_frame` and the render bridge multiplies rects, font size and scissor boxes back. The host sets the scale once after init and must not scale panel coordinates itself.
 
-### Three renderer additions this needed (`engine/render/render2d.h`)
+### Renderer additions this track needed (`engine/render/render2d.h`)
 
 | Interface | Purpose |
 | --- | --- |
 | `measure_text(text, size)` | Text width (0 = no metrics, callers fall back to the estimate) |
 | `begin_overlay_pass(w,h)` / `end_overlay_pass()` | The UI overlay gets its own pass: save/restore the camera, switch to top-left 1:1, skip bloom and shadows |
 | `set_scissor` / `reset_scissor` flush batches first | Clipping is state, geometry is vertices: pending vertices must be submitted before the clip changes, or both segments inherit the last clip rect |
+| `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI scale. The GL backend enables `GL_SCISSOR_TEST` on demand in `set_scissor` and disables plus invalidates the cache when the render target changes (otherwise an offscreen pass inherits a screen-space clip) |
+| `GInput_GetWheel(dx,dy)` / `GInput_InjectPreedit(s)` / `GInput_GetPreedit(buf,cap)` | Wheel delta (take-and-clear) and the IME pre-edit string |
 
 ## 8. Sharing input with the host
 
@@ -591,8 +615,9 @@ Missing the keyboard guard looks like: renaming an entity, pressing `W` starts t
 ## 9. Known limits
 
 * No docking, no multi-window docking, no `ImPlot` or node-editor style add-ons — add a new `GUi_*` function for those instead of pulling ImGui into the extension.
-* The built-in track (7.11) has no child windows, menu bars, tree nodes, popups or drag and drop; those work on the ImGui track, so host code shared by both tracks should skip them by return value.
 * Drag/drop payloads are a single string: no multi-selection dragging, no custom payload types, and no cross-process or cross-window dragging.
+* Windows can be dragged and collapsed but not resized by their border (`GUI_WIN_NO_RESIZE` always applies: the host layout owns the size).
+* The font atlas covers ASCII plus a CJK fallback; there is no rich text or mixed font sizes — one control has one font size.
 * Five built-in theme presets (Dark / Light / Midnight / Nord / HighContrast, see 7.8); callers reference tokens only — do not hardcode colours in callers.
 * `GUi_Image` takes no custom UVs or border tinting; the viewport shows the full texture.
 * Non-ASCII text depends on the font atlas the engine loaded; missing glyphs render as boxes rather than crashing.

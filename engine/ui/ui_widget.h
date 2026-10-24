@@ -27,11 +27,16 @@
 //   * 标签      = 纯显示，不参与命中测试（面板背景一类的大矩形因此不会
 //                 抢走上面按钮的鼠标）。
 //
-// 已知边界（等需要时再收，接口不变）：
-//   * 不解析重叠遮挡（hovered 是几何包含；本 UI 的确定性布局不产生重叠，
-//     弹出层尚未实现）；
-//   * 无滚动、无工具提示、无拖放、无键盘导航（Tab 切换焦点）；
-//   * 文本无光标渲染（编辑正确，视觉上看不到插入符）。
+// 文本编辑（单行，与常见编辑器一致，均有单测）：
+//   * 插入点 + 选区锚点（字节偏移）、Shift+方向键扩选、Ctrl+A 全选；
+//   * 方向键按 UTF-8 码点边界移动，Ctrl+方向键按词移动，Home/End 首尾；
+//   * Backspace/Delete 有选区时删选区、无选区时删前一/后一个码点；
+//   * Ctrl+C/X/V 走进程级剪贴板（ui_clipboard()，宿主也可直接读写）；
+//   * 点击定位插入点（按文本的真实宽度换算，见 UiTextMetrics）；
+//   * 输入法预编辑（preedit）以带下划线的形式画在插入点处。
+//
+// 绘制顺序：控件带 layer（0 = 窗口层，1 = 弹层）。WidgetTree::draw 分两遍画，
+// 所以弹层内容永远盖在窗口内容之上，与提交顺序无关。
 // ===========================================================================
 
 #ifndef GRYCE_UI_WIDGET_H
@@ -55,9 +60,20 @@ enum class WidgetKind : uint32_t {
     Slider    = 2,   // value ∈ [min_value, max_value]
     Checkbox  = 3,   // checked
     TextInput = 4,   // text（键盘焦点）
-    Panel     = 5,   // 窗口背景板：填充 + 边框，不参与命中测试
+    Panel     = 5,   // 窗口 / 弹层背景板：填充 + 边框，不参与命中测试
     Progress  = 6,   // 进度条：value = fraction，label = 浮层文字，不参与命中测试
     Separator = 7,   // 分隔线，不参与命中测试
+    DragFloat = 8,   // 按住左右移动改值（value / min_value / max_value）
+    TreeNode  = 9,   // 折叠三角 + 标签；open = 展开态
+    Header    = 10,  // 折叠头（整行可点）；open = 展开态
+    MenuItem  = 11,  // 菜单项（label + 右对齐快捷键）；enabled = 可用
+    ScrollBar = 12,  // 垂直滚动条；value = 0..1 位置，thumb = 可见比例
+    Tooltip   = 13,  // 浮层板 + 文字（纯绘制，不参与命中测试）
+    ClipBegin = 14,  // 绘制专用：push_clip(rect)，不参与命中测试
+    ClipEnd   = 15,  // 绘制专用：pop_clip，不参与命中测试
+    Bar       = 16,  // 装饰性横条（菜单栏底/分组标题底），不参与命中测试
+    TitleBar  = 17,  // 窗口标题栏：可拖动、左侧折叠框（交互在 BuiltinUi 里）
+    Frame     = 18,  // 纯框：填充 + 边框，不参与命中测试、不切裁剪（子区域用）
     Count,
 };
 
@@ -66,6 +82,7 @@ enum class WidgetKind : uint32_t {
 // 说明截掉尾巴（早期内置 UI 的实际症状）。96 = 一行折行前的大致上限。
 constexpr int kWidgetLabelCap = 96;
 constexpr int kWidgetTextCap  = 128;
+constexpr int kWidgetPreeditCap = 64;
 
 // 默认字号（逻辑像素）。主题度量里没有字号一项：行高/内边距都按它推算，
 // 换主题不换字号——要可变字号时加成主题度量（只能加在枚举末尾）。
@@ -83,13 +100,51 @@ struct UiInputFrame {
     bool  mouse_down[3]     = {};  // 按住（左/右/中）
     bool  mouse_clicked[3]  = {};  // 本帧刚按下（边沿）
     bool  mouse_released[3] = {};  // 本帧刚松开（边沿）
+    float wheel = 0.0f;            // 本帧滚轮增量（正 = 上滚，内容往下看）
 
     // 本帧键入的 Unicode 码点（聚焦的 TextInput 消费；宿主未提供字符通道时
     // 恒为空，输入框仍可用退格，见 platform InputManager 的 char 回调）
     static constexpr int kMaxChars = 64;
     uint32_t chars[kMaxChars] = {};
     int      char_count = 0;
-    bool     backspace = false;
+    bool     backspace = false;   // 兼容字段（等价于 keys 里出现 KeyBackspace）
+
+    // 本帧按下的非字符键（GLFW 键码，见下面的 Key* 常量）。方向键/Home/End/
+    // Delete 一类编辑键走这里——字符通道只送可打印码点。
+    static constexpr int kMaxKeys = 16;
+    int keys[kMaxKeys] = {};
+    int key_count = 0;
+
+    // 修饰键（本帧快照，位见 Mod* 常量）。Ctrl+C/V/X/A、Shift+方向键看它。
+    static constexpr uint32_t ModShift = 1u;
+    static constexpr uint32_t ModCtrl  = 2u;
+    static constexpr uint32_t ModAlt   = 4u;
+    static constexpr uint32_t ModSuper = 8u;
+    uint32_t mods = 0;
+
+    // 输入法预编辑文本（UTF-8，空 = 无组合）。宿主没有输入法时恒为空。
+    char preedit[kWidgetPreeditCap] = {};
+    int  preedit_caret = -1;   // 预编辑内的插入点（字节偏移，-1 = 末尾）
+
+    // 秒（宿主时钟）。只用于插入符闪烁：0 = 恒显（单测/截图可复现），
+    // 非 0 时按 1.06 秒一个周期闪。
+    float time = 0.0f;
+
+    // GLFW 键码（与平台层 keys[] 索引同一套）
+    enum : int {
+        KeyTab = 258, KeyEnter = 257, KeyEsc = 256, KeyBackspace = 259,
+        KeyDelete = 261, KeyRight = 262, KeyLeft = 263, KeyDown = 264, KeyUp = 265,
+        KeyHome = 268, KeyEnd = 269, KeyA = 65, KeyC = 67, KeyV = 86, KeyX = 88,
+        KeyZ = 90,
+    };
+
+    bool key_pressed(int code) const {
+        for (int i = 0; i < key_count; ++i) {
+            if (keys[i] == code) return true;
+        }
+        return false;
+    }
+    bool any_key() const { return key_count > 0; }
 };
 
 // ---------------------------------------------------------------------------
@@ -110,6 +165,18 @@ struct UiTextMetrics {
 float ui_approx_text_width(const char* text, float font_size);
 
 // ---------------------------------------------------------------------------
+// 进程级剪贴板（Ctrl+C/X/V 与宿主共用一份）
+//
+// 放在模型层而不是树里：同一进程里可能有多棵树（每个面板一棵），剪贴板是
+// 进程级资源。宿主也可以直接读写（比如从系统剪贴板同步）。
+// ---------------------------------------------------------------------------
+struct UiClipboard {
+    char  text[kWidgetTextCap * 2] = {};
+    uint32_t seq = 0;   // 每次写入 +1（宿主可据此同步到系统剪贴板）
+};
+UiClipboard& ui_clipboard();
+
+// ---------------------------------------------------------------------------
 // Widget — 单个控件
 // ---------------------------------------------------------------------------
 struct Widget {
@@ -119,15 +186,25 @@ struct Widget {
     char      label[kWidgetLabelCap] = {};
 
     // —— 值（按种类解释）——
-    float value     = 0.0f;              // Slider：当前值
-    float min_value = 0.0f;              // Slider：最小值
-    float max_value = 1.0f;              // Slider：最大值
+    float value     = 0.0f;              // Slider/DragFloat/ScrollBar：当前值
+    float min_value = 0.0f;              // Slider/DragFloat：最小值
+    float max_value = 1.0f;              // Slider/DragFloat：最大值
     bool  checked   = false;             // Checkbox
+    bool  open      = false;             // TreeNode/Header：展开态
     char  text[kWidgetTextCap] = {};     // TextInput：内容（'\0' 结尾）
+
+    // —— 文本编辑态（TextInput）——
+    int   caret      = 0;    // 插入点（字节偏移，恒落在码点边界上）
+    int   sel_anchor = -1;   // 选区锚点（字节偏移，-1 = 无选区）
+    float scroll_x   = 0.0f; // 文本水平滚动（保证插入点可见）
+    char  preedit[kWidgetPreeditCap] = {};   // 输入法预编辑（带下划线显示）
+
+    // —— ScrollBar ——
+    float thumb = 0.3f;      // 滑块长度占轨道的比例（可见高度 / 内容高度）
 
     bool enabled = true;
 
-    // ---- 颜色覆盖（内置即时模式层的两个特例控件用）----
+    // ---- 颜色覆盖（内置即时模式层的特例控件用）----
     // ColorButton 的底色就是被选的颜色本身，TextColored 的文字色由调用方给。
     // 不覆盖时一律走主题 token——覆盖只是"这一帧这个控件"的例外。
     bool     bg_overridden = false;
@@ -137,6 +214,13 @@ struct Widget {
 
     // 所属窗口（即时模式层打戳，用于绘制时按窗口分组裁剪；0 = 无窗口）。
     uint64_t scope = 0;
+    // 层级：0 = 窗口层，1 = 弹层（弹层永远画在窗口之上，见 WidgetTree::draw）。
+    uint8_t  layer = 0;
+
+    // 命中测试的有效域（窗口/弹层的内容矩形）。控件滚出可见区后不响应鼠标，
+    // 否则"看不见但能点中"会误触发。has_clip 为假时按 rect 自身判。
+    bool has_clip = false;
+    Rect clip{};
 
     // —— 每帧由 touch() 刷新的交互标志（对宿主只读）——
     bool hovered = false;
@@ -144,9 +228,18 @@ struct Widget {
     bool clicked = false;   // 本帧在它身上完成一次点击
 };
 
-// 控件绘制（主题给颜色/度量，度量器给文本宽高）。focus_id 只对 TextInput
-// 有意义（聚焦时边框用强调色）。WidgetTree::draw 与内置即时模式层的窗口
-// 分组裁剪都走这一个函数——两处画出来的东西必须逐字节一致。
+// 绘制上下文：焦点（输入框高亮边框）与插入符是否可见（闪烁相位由树算好，
+// 绘制本身不碰时钟——这样截图与单测都可复现）。
+struct UiDrawContext {
+    uint64_t focus_id     = 0;
+    bool     caret_visible = true;
+};
+
+// 控件绘制（主题给颜色/度量，度量器给文本宽高）。
+void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& metrics,
+                    const UiDrawContext& ctx, UiDrawList& dl);
+
+// 兼容旧签名（等价于 UiDrawContext{focus_id, true}）。
 void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& metrics,
                     uint64_t focus_id, UiDrawList& dl);
 
@@ -160,8 +253,11 @@ public:
     static constexpr int kCapacity = 512;
 
     // ---- 帧输入 ----
-    void begin_frame(const UiInputFrame& input);
+    // metrics 可空：空时插入点定位与选中区宽度退回估算（见 ui_approx_text_width）。
+    // 宿主不该让"布局用真实度量、编辑用估算"长期并存——传进来才是正解。
+    void begin_frame(const UiInputFrame& input, const UiTextMetrics* metrics = nullptr);
     const UiInputFrame& input() const { return input_; }
+    const UiTextMetrics* metrics() const { return metrics_; }
 
     // ---- 控件提交 ----
     // 取（没有则新建）并按本帧几何刷新交互标志；随后按种类落地标准交互语义
@@ -177,6 +273,14 @@ public:
 
     Widget*       find(uint64_t id);
     const Widget* find(uint64_t id) const;
+
+    // 命中域：之后提交的控件都受这个矩形约束（滚出可见区的不响应鼠标）。
+    // clear 之后回到"按控件自身矩形判"。
+    void set_clip(const Rect& r);
+    void clear_clip();
+
+    // DragFloat 的灵敏度（每像素改多少）。即时模式层按标签设置，默认 1。
+    void set_drag_speed(float per_pixel) { drag_speed_hint_ = per_pixel; }
 
     // retained 宿主：对整棵树跑一遍交互（用各控件现有的 rect/label）。
     void update_all();
@@ -201,13 +305,22 @@ public:
     uint64_t focus_id() const { return focus_id_; }    // 键盘焦点（TextInput）
     void clear_focus() { focus_id_ = 0; }
 
+    // ---- 拖放（即时模式层实现 drag_drop_*，状态放在这里以便跨帧存活）----
+    bool  drag_active() const { return drag_active_; }
+    const char* drag_payload_type() const { return drag_type_; }
+    const char* drag_payload_text() const { return drag_text_; }
+    void  begin_drag(uint64_t source_id, const char* type, const char* text);
+    void  end_drag();
+
     // ---- 绘制 ----
-    // 数组序 = 提交序 = 绘制序（后画者在上层）。主题给颜色/度量，度量器给
-    // 文本宽高——两者都由调用方注入，模型层不持有渲染器也不持有字体。
+    // 两遍：先 layer 0（窗口），再 layer 1（弹层）。数组序 = 提交序 = 绘制序。
     void draw(UiDrawList& dl, const Theme& theme, const UiTextMetrics& metrics) const;
 
     int  count() const { return alive_count_; }
     void clear();
+
+    // 插入符可见性（由 begin_frame 按 input.time 算；time == 0 时恒真）。
+    bool caret_visible() const { return caret_visible_; }
 
 private:
     struct Slot {
@@ -220,6 +333,8 @@ private:
     Slot*  alloc(uint64_t id);
     Slot*  find_slot(uint64_t id);
     void   apply_standard_interaction(Widget& w);
+    void   edit_text(Widget& w);
+    void   sync_text_scroll(Widget& w) const;
 
     Slot      slots_[kCapacity];
     int       used_ = 0;
@@ -228,10 +343,39 @@ private:
     uint32_t  frame_ = 0;
 
     UiInputFrame input_;
+    const UiTextMetrics* metrics_ = nullptr;
     uint64_t active_id_ = 0;
     uint64_t focus_id_  = 0;
     uint64_t press_claimed_ = 0;   // 本帧拿到按下的控件（0 = 点了空白）
+    bool     caret_visible_ = true;
+
+    bool     drag_active_ = false;
+    uint64_t drag_source_ = 0;
+    char     drag_type_[32] = {};
+    char     drag_text_[kWidgetTextCap] = {};
+
+    // DragFloat 的拖拽基准（上一帧鼠标 x、当前被拖的控件、每像素灵敏度）
+    float    drag_last_x_ = 0.0f;
+    uint64_t drag_owner_  = 0;
+    float    drag_speed_  = 0.0f;
+    float    drag_speed_hint_ = 1.0f;
+
+    // 提交期的命中域（见 set_clip）
+    bool     clip_active_ = false;
+    Rect     pending_clip_{};
 };
+
+// ---- 文本工具（宿主与内置层都会用，导出以便复用）----
+int   utf8_text_length(const char* s);                       // 字节数
+int   utf8_prev_boundary(const char* s, int pos);            // 上一个码点起点
+int   utf8_next_boundary(const char* s, int pos);            // 下一个码点起点
+// 字节偏移 → 像素 x（相对文本左端）；越界自动夹到 [0, len]。
+float text_x_at(const char* s, int byte_pos, const UiTextMetrics& metrics, float font_size);
+// 像素 x → 最近的码点边界（点击定位插入点）。
+int   text_pos_at(const char* s, float x, const UiTextMetrics& metrics, float font_size);
+// 按词移动（Ctrl+方向键）：跳过空白与标点。
+int   text_word_left(const char* s, int pos);
+int   text_word_right(const char* s, int pos);
 
 } // namespace gryce_ui
 

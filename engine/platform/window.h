@@ -109,6 +109,8 @@ public:
     void push_char(unsigned int codepoint);
     // 取走全部待处理码点，返回实际条数（队列随之清空）。
     int  pull_chars(unsigned int* out, int cap);
+    // 滚轮增量（事件式累积，取走即清零）。返回 false = 本帧没滚。
+    bool take_scroll(double& dx, double& dy);
     // 指针位移增量（仅 Web 有真实数据）。浏览器 pointer lock 期间光标坐标被钉死，
     // GLFW 只搬 clientX/Y，位移只能从 JS 侧的 movementX/Y 累积里取；取走即清零。
     // 返回 false 表示这一帧没有位移（或非 Web 平台，调用方走 get_cursor_pos 差分）。
@@ -142,6 +144,10 @@ private:
     unsigned int char_queue_[kCharQueueCap] = {};
     int char_head_ = 0;
     int char_count_ = 0;
+
+    // 滚轮累积（GLFW 回调里 +=，输入层每帧取走）
+    double scroll_x_ = 0.0;
+    double scroll_y_ = 0.0;
 
 #ifdef _WIN32
     // 无边框窗口边缘缩放的 WndProc 子类化（GLFW 无边框用 WS_POPUP，无 WS_THICKFRAME

@@ -58,6 +58,11 @@ public:
     // 节流：与 ImGui 轨同一套规则（frame % interval == 1 时重建；首帧必建）。
     void set_throttle(int interval, uint64_t frame);
 
+    // HiDPI：UI 的逻辑像素 → 屏幕像素的倍数。模型层始终在逻辑坐标里布局，
+    // 鼠标在进入模型层前除以它，几何在渲染桥里乘回去（含字号）。
+    void  set_scale(float s) { scale_ = (s > 0.0f) ? s : 1.0f; }
+    float scale() const { return scale_; }
+
     // 帧构建。返 false = 本帧不重建（节流命中或没有回调），沿用上次的 drawlist。
     bool begin_build();
     void end_build();
@@ -107,6 +112,7 @@ private:
     uint64_t         frame_    = 0;
     uint64_t         build_count_ = 0;
     int              last_draws_  = 0;
+    float            scale_    = 1.0f;
 
     bool             building_ = false;
     bool             rebuild_due_ = true;

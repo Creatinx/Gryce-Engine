@@ -356,7 +356,12 @@ void GLBackend::set_scissor(int x, int y, int w, int h) {
         scissor_w_ == w && scissor_h_ == h) {
         return;
     }
+    // 只 glScissor 不开 GL_SCISSOR_TEST 等于没设：裁剪测试默认关着。
+    // 这里按需打开，绑/解帧缓冲时再关掉（见 bind_framebuffer），免得离屏
+    // pass 被上一段屏幕坐标的裁剪域切掉。
+    glEnable(GL_SCISSOR_TEST);
     glScissor(x, y, w, h);
+    scissor_test_on_ = true;
     scissor_x_ = x;
     scissor_y_ = y;
     scissor_w_ = w;
@@ -375,6 +380,14 @@ void GLBackend::set_scissor(int x, int y, int w, int h, uint32_t viewport_index)
 }
 
 void GLBackend::bind_framebuffer(RHIFramebufferHandle fb) {
+    // 换渲染目标：裁剪域是上一个目标的坐标，必须作废（并且关掉裁剪测试，
+    // 否则离屏 pass 会被屏幕坐标的 scissor 切掉）。缓存一并失效，下一次
+    // set_scissor 会重新下发。
+    if (scissor_test_on_) {
+        glDisable(GL_SCISSOR_TEST);
+        scissor_test_on_ = false;
+    }
+    state_cache_valid_ = false;
     IFramebuffer* fbo = framebuffer(fb);
     if (fbo) {
         fbo->bind();
@@ -397,7 +410,6 @@ void GLBackend::resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferHand
 void GLBackend::unbind_framebuffer() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
-
 void GLBackend::set_depth_test(bool enabled) {
     if (state_cache_valid_ && depth_test_enabled_ == enabled) {
         return;

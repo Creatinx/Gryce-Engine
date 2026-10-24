@@ -353,6 +353,13 @@ Window::Window(const std::string& title, int width, int height, WindowMode mode,
         auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
         if (self) self->push_char(codepoint);
     });
+    // 滚轮：事件式（一帧可能多次），积累成增量由输入层每帧取走。
+    glfwSetScrollCallback(handle_, [](GLFWwindow* w, double dx, double dy) {
+        auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
+        if (!self) return;
+        self->scroll_x_ += dx;
+        self->scroll_y_ += dy;
+    });
 
     // Windows: 注册 Raw Input 键盘设备，RIDEV_NOHOTKEYS 阻止 Shift 切换输入法
 #ifdef _WIN32
@@ -726,6 +733,14 @@ int Window::pull_chars(unsigned int* out, int cap) {
     char_count_ -= n;
     // 没被取走的（cap 不够）留在队列里，下一帧继续
     return n;
+}
+
+bool Window::take_scroll(double& dx, double& dy) {
+    dx = scroll_x_;
+    dy = scroll_y_;
+    scroll_x_ = 0.0;
+    scroll_y_ = 0.0;
+    return dx != 0.0 || dy != 0.0;
 }
 
 void Window::get_cursor_pos(double& x, double& y) const {

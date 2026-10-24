@@ -2393,11 +2393,17 @@ TEST(builtin, degenerate_window_rejected) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
     CHECK_EQ(ui.begin_window("zero_w", Rect{0.0f, 0.0f, 0.0f, 100.0f}), 0);
-    CHECK_EQ(ui.begin_window("neg", Rect{0.0f, 0.0f, -5.0f, 10.0f}), 0);
-    CHECK_EQ(ui.begin_window("flat", Rect{0.0f, 0.0f, 100.0f, 0.0f}), 0);
-    CHECK_EQ(ui.window_depth(), 0);
-    // 开不起来的窗口里提交内容 = no-op
+    // 被拒窗口里提交内容 = no-op；Begin/End 仍要配对（退化态占一个栈位）
     ui.text("invisible");
+    CHECK_EQ(ui.tree().count(), 0);
+    ui.end_window();
+    CHECK_EQ(ui.window_depth(), 0);
+
+    CHECK_EQ(ui.begin_window("neg", Rect{0.0f, 0.0f, -5.0f, 10.0f}), 0);
+    ui.end_window();
+    CHECK_EQ(ui.begin_window("flat", Rect{0.0f, 0.0f, 100.0f, 0.0f}), 0);
+    ui.end_window();
+    CHECK_EQ(ui.window_depth(), 0);
     CHECK_EQ(ui.tree().count(), 0);
     ui.end_frame();
 }
@@ -3699,10 +3705,664 @@ TEST(snapshot, capacity_and_truncation) {
 }
 
 // ===========================================================================
+// suite: builtin — 文本编辑 / 滚动 / 弹层 / 结构 / 拖放 / 窗口 chrome
+// ===========================================================================
+
+namespace {
+
+// 一帧里只开一个窗口、跑一个 lambda（测试里的标准节奏：起帧 → 提交 → 收帧）
+template <typename F>
+void bi_window_frame(BuiltinUi& ui, const UiInputFrame& in, const Rect& win, F&& body) {
+    bi_frame(ui, in);
+    ui.begin_window("W", win);
+    body();
+    ui.end_window();
+    ui.end_frame();
+}
+
+UiInputFrame key_frame(int key, uint32_t mods = 0) {
+    UiInputFrame in = mouse_at(0.0f, 0.0f, false, false, false);
+    in.keys[0] = key;
+    in.key_count = 1;
+    in.mods = mods;
+    return in;
+}
+
+UiInputFrame chars_frame(const char* s) {
+    UiInputFrame in = mouse_at(0.0f, 0.0f, false, false, false);
+    for (const char* p = s; p && *p && in.char_count < UiInputFrame::kMaxChars; ++p) {
+        in.chars[in.char_count++] = static_cast<uint32_t>(static_cast<unsigned char>(*p));
+    }
+    return in;
+}
+
+// 点一下输入框聚焦（第一期），返回控件 id
+uint64_t focus_input(BuiltinUi& ui, const Rect& win, char* buf, int cap, float click_x) {
+    bi_window_frame(ui, mouse_at(click_x, 20.0f, true, true, false), win, [&] {
+        ui.input_text("Name", buf, cap);
+    });
+    return gryce_ui::hash_label("Name", gryce_ui::hash_label("W"));
+}
+
+} // namespace
+
+TEST(builtin, text_caret_click_arrow_home_end) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    char buf[64] = "abcd";
+    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 200.0f);
+    const Widget* w = ui.tree().find(id);
+    CHECK_TRUE(w != nullptr);
+    CHECK_EQ(w->caret, 4);                 // 点在文本右侧 = 末尾
+    CHECK_EQ(w->sel_anchor, 4);
+
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyLeft), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_EQ(ui.tree().find(id)->caret, 3);   // 左移一格：4 -> 3（"abcd" 的 d 之前）
+
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyHome), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_EQ(ui.tree().find(id)->caret, 0);
+
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyEnd), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_EQ(ui.tree().find(id)->caret, 4);
+    CHECK_STR(buf, "abcd");
+}
+
+TEST(builtin, text_shift_arrow_selects_and_typing_replaces) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    char buf[64] = "abcd";
+    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 200.0f);
+
+    // Shift+Left ×2：选中 "cd"
+    for (int i = 0; i < 2; ++i) {
+        bi_window_frame(ui, key_frame(UiInputFrame::KeyLeft, UiInputFrame::ModShift), win, [&] {
+            ui.input_text("Name", buf, sizeof(buf));
+        });
+    }
+    const Widget* w = ui.tree().find(id);
+    CHECK_EQ(w->caret, 2);
+    CHECK_EQ(w->sel_anchor, 4);
+
+    // 打字覆盖选区
+    bi_window_frame(ui, chars_frame("X"), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_STR(buf, "abX");
+    w = ui.tree().find(id);
+    CHECK_EQ(w->caret, 3);
+    CHECK_EQ(w->sel_anchor, -1);      // 输入后选区收起
+}
+
+TEST(builtin, text_delete_and_backspace_with_selection) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    char buf[64] = "abcd";
+    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 200.0f);
+
+    // 光标到开头，Delete 删第一个码点
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyHome), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyDelete), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_STR(buf, "bcd");
+    CHECK_EQ(ui.tree().find(id)->caret, 0);
+
+    // Ctrl+A 全选后 Backspace：整段清空
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyA, UiInputFrame::ModCtrl), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_EQ(ui.tree().find(id)->sel_anchor, 0);
+    CHECK_EQ(ui.tree().find(id)->caret, 3);
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyBackspace), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_STR(buf, "");
+    CHECK_EQ(ui.tree().find(id)->caret, 0);
+}
+
+TEST(builtin, text_clipboard_copy_and_paste) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    char buf[64] = "hello";
+    gryce_ui::ui_clipboard() = gryce_ui::UiClipboard{};   // 进程级剪贴板：先清干净
+
+    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 200.0f);
+    CHECK_EQ(ui.tree().find(id)->caret, 5);
+
+    // Ctrl+A → Ctrl+C
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyA, UiInputFrame::ModCtrl), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyC, UiInputFrame::ModCtrl), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_STR(gryce_ui::ui_clipboard().text, "hello");
+    CHECK_EQ(gryce_ui::ui_clipboard().seq, 1u);
+
+    // 光标回开头再 Ctrl+V：粘贴在插入点
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyHome), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyV, UiInputFrame::ModCtrl), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_STR(buf, "hellohello");
+    CHECK_EQ(ui.tree().find(id)->caret, 5);
+}
+
+TEST(builtin, text_long_content_scrolls_to_caret) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 100.0f, 200.0f};   // 内容区 84 宽
+    char buf[64] = "0123456789abcdefghij";        // 20 字符 = 130px，装不下
+    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 90.0f);
+
+    // 点在最右边 → 插入点靠右 → 必须横向滚动才能看见插入符
+    const Widget* w = ui.tree().find(id);
+    CHECK_TRUE(w != nullptr);
+    CHECK_TRUE(w->scroll_x > 0.0f);
+
+    // 回家：插入点回到 0，滚动跟着回 0
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyHome), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
+    CHECK_NEAR(ui.tree().find(id)->scroll_x, 0.0f, 1e-4f);
+}
+
+TEST(builtin, text_preedit_follows_focus) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    char buf[64] = "";
+    char buf2[64] = "";
+    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 100.0f);
+
+    // 有焦点：预编辑串进控件（绘制时带下划线）
+    UiInputFrame in = mouse_at(0.0f, 0.0f, false, false, false);
+    std::snprintf(in.preedit, sizeof(in.preedit), "%s", "zhong");
+    bi_window_frame(ui, in, win, [&] { ui.input_text("Name", buf, sizeof(buf)); });
+    CHECK_STR(ui.tree().find(id)->preedit, "zhong");
+    CHECK_STR(buf, "");                    // 组合中不写进调用方缓冲区
+
+    // 换焦点到第二个输入框：预编辑跟着焦点走，旧控件上不能残留。
+    // 位置取控件自己的矩形，不手算行高。
+    const uint64_t id2 = gryce_ui::hash_label("Other", gryce_ui::hash_label("W"));
+    bi_window_frame(ui, mouse_at(0.0f, 0.0f, false, false, false), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+        ui.input_text("Other", buf2, sizeof(buf2));
+    });
+    const Rect r2 = ui.tree().find(id2)->rect;
+    UiInputFrame click = mouse_at(r2.x + 10.0f, r2.y + r2.h * 0.5f, true, true, false);
+    std::snprintf(click.preedit, sizeof(click.preedit), "%s", "zhong");   // 宿主每帧都要喂组合态
+    bi_window_frame(ui, click, win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+        ui.input_text("Other", buf2, sizeof(buf2));
+    });
+    CHECK_STR(ui.tree().find(id)->preedit, "");
+    CHECK_STR(ui.tree().find(id2)->preedit, "zhong");
+}
+
+TEST(builtin, wheel_scrolls_and_scrollbar_appears) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 200.0f, 120.0f};   // 内容区高 ~112
+
+    auto frame = [&](float wheel) {
+        UiInputFrame in = mouse_at(50.0f, 50.0f, false, false, false);
+        in.wheel = wheel;
+        float scroll = 0.0f;
+        bi_frame(ui, in);
+        ui.begin_window("W", win);
+        for (int i = 0; i < 10; ++i) ui.button("B");
+        scroll = ui.window_scroll_y();
+        ui.end_window();
+        ui.end_frame();
+        return scroll;
+    };
+
+    CHECK_NEAR(frame(0.0f), 0.0f, 1e-4f);        // 首帧：内容高度刚量到，还没有滚动
+    // 内容溢出 → 出现滚动条（覆盖在内容右缘，不占布局宽度）
+    CHECK_TRUE(ui.tree().find(gryce_ui::hash_label("##vscrollbar",
+                                                   gryce_ui::hash_label("W"))) != nullptr);
+
+    const float after = frame(-1.0f);            // 向下滚一格
+    CHECK_TRUE(after > 0.0f);
+    CHECK_NEAR(after, 16.25f * 2.0f, 1e-3f);     // 一格 = 两倍行高
+
+    // 滚到底再滚：夹在最大值（不会无限滚）
+    for (int i = 0; i < 40; ++i) frame(-10.0f);
+    const float max_scroll = frame(0.0f);
+    CHECK_TRUE(max_scroll > after);
+    const float clamped = frame(-10.0f);
+    CHECK_NEAR(clamped, max_scroll, 1e-3f);
+}
+
+TEST(builtin, popup_opens_draws_on_top_and_closes_outside) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+
+    // 打开弹层：面板与菜单项都打上 layer 1（绘制第二遍）
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    ui.begin_window("W", win);
+    ui.text("under");
+    ui.end_window();
+    ui.open_popup("p", 100.0f, 100.0f, 140.0f, 0.0f);
+    CHECK_EQ(ui.begin_popup("p"), 1);
+    CHECK_EQ(ui.menu_item("Item", "Ctrl+I", 1), 0);
+    ui.end_popup();
+    ui.end_frame();
+
+    bool saw_layer1 = false;
+    ui.tree().for_each_alive([&](const Widget& w) {
+        if (w.layer == 1) saw_layer1 = true;
+    });
+    CHECK_TRUE(saw_layer1);
+
+    // 点弹层外面 → 关
+    bi_frame(ui, mouse_at(700.0f, 500.0f, true, true, false));
+    CHECK_EQ(ui.begin_popup("p"), 0);
+    ui.end_frame();
+
+    // 再开一次，点里面不关（弹层内缩 8 → 第一项在 108..248 x 108..132）
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    ui.open_popup("p", 100.0f, 100.0f, 140.0f, 0.0f);
+    CHECK_EQ(ui.begin_popup("p"), 1);
+    ui.menu_item("Item", "Ctrl+I", 1);
+    ui.end_popup();
+    ui.end_frame();
+    bi_frame(ui, mouse_at(120.0f, 118.0f, true, true, false));
+    CHECK_EQ(ui.begin_popup("p"), 1);
+    ui.end_popup();
+    ui.end_frame();
+}
+
+TEST(builtin, popup_menu_item_click_closes) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    ui.open_popup("menu", 100.0f, 100.0f, 160.0f, 0.0f);
+    CHECK_EQ(ui.begin_popup("menu"), 1);
+    CHECK_EQ(ui.menu_item("Delete", nullptr, 1), 0);
+    ui.end_popup();
+    ui.end_frame();
+
+    // 第二帧点第一项（弹层内缩 8 → 项在 108..268 x 108..132）
+    bi_frame(ui, mouse_at(120.0f, 118.0f, true, true, false));
+    CHECK_EQ(ui.begin_popup("menu"), 1);
+    CHECK_EQ(ui.menu_item("Delete", nullptr, 1), 0);   // 按下帧点击还没成立
+    ui.end_popup();
+    ui.end_frame();
+
+    bi_frame(ui, mouse_at(120.0f, 118.0f, false, false, true));
+    CHECK_EQ(ui.begin_popup("menu"), 1);
+    CHECK_EQ(ui.menu_item("Delete", nullptr, 1), 1);   // 松开在它身上 = 点击
+    ui.end_popup();
+    ui.end_frame();
+
+    bi_frame(ui, mouse_at(120.0f, 118.0f, false, false, false));
+    CHECK_EQ(ui.begin_popup("menu"), 0);               // 点完自动关
+    ui.end_frame();
+}
+
+TEST(builtin, modal_ignores_outside_click_and_closes_on_esc) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+
+    ui.open_modal("m", 200.0f, 120.0f);
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_modal("m", 200.0f, 120.0f), 1);
+    ui.end_popup();
+    ui.end_frame();
+
+    // 点很远处：模态不关（与普通弹层相反）
+    bi_frame(ui, mouse_at(790.0f, 590.0f, true, true, false));
+    CHECK_EQ(ui.begin_modal("m", 200.0f, 120.0f), 1);
+    ui.end_popup();
+    ui.end_frame();
+
+    // Esc 关
+    bi_frame(ui, key_frame(UiInputFrame::KeyEsc));
+    CHECK_EQ(ui.begin_modal("m", 200.0f, 120.0f), 0);
+    ui.end_frame();
+}
+
+TEST(builtin, tree_node_toggles_and_indents_children) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 300.0f};
+    const uint64_t node = gryce_ui::hash_label("root", gryce_ui::hash_label("W"));
+
+    float open_x = 0.0f, child_x = 0.0f;
+    auto one = [&](bool down, bool pressed, bool released) {
+        bi_frame(ui, mouse_at(20.0f, 16.0f, down, pressed, released));
+        ui.begin_window("W", win);
+        const int open = ui.tree_node("root", 1);
+        open_x = ui.last_item_rect().x;
+        if (open) {
+            ui.text("child");
+            child_x = ui.last_item_rect().x;
+            ui.tree_pop();
+        }
+        ui.end_window();
+        ui.end_frame();
+        return open;
+    };
+    // 点击 = 按下 + 松开（收起发生在松开那一帧）
+    auto click = [&]() {
+        one(true, true, false);
+        return one(false, false, true);
+    };
+
+    CHECK_EQ(one(false, false, false), 1);           // default_open 生效
+    CHECK_TRUE(child_x > open_x);                    // 子项缩进
+    CHECK_TRUE(ui.tree().find(node)->open);
+
+    CHECK_EQ(click(), 0);                            // 点一下收起
+    CHECK_FALSE(ui.tree().find(node)->open);
+    CHECK_EQ(one(false, false, false), 0);           // 收起态保持（default_open 只初始一次）
+}
+
+TEST(builtin, menu_bar_and_menu_items) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+    const Rect win{0.0f, 0.0f, 400.0f, 200.0f};
+
+    // 菜单按钮的点击 = 按下 + 松开；弹层在"松开"那一帧打开
+    auto frame = [&](bool down, bool pressed, bool released, int& opened) {
+        bi_frame(ui, mouse_at(20.0f, 16.0f, down, pressed, released));
+        ui.begin_window("W", win);
+        ui.begin_menu_bar();
+        opened = ui.begin_menu("File");
+        if (opened) {
+            CHECK_EQ(ui.menu_item("Open", "Ctrl+O", 1), 0);
+            ui.end_menu();
+        }
+        ui.end_menu_bar();
+        ui.end_window();
+        ui.end_frame();
+    };
+
+    int opened = 0;
+    frame(true, true, false, opened);          // 按下：只是 captures，不打开
+    CHECK_EQ(opened, 0);
+    frame(false, false, true, opened);         // 松开：点成立 → 弹层打开
+    CHECK_EQ(opened, 1);
+    frame(false, false, false, opened);        // 空闲帧：菜单保持展开
+    CHECK_EQ(opened, 1);
+}
+
+TEST(builtin, child_region_clips_and_scrolls_independently) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 300.0f};
+
+    // 两层嵌套：外层 (0,0) = 占满剩余空间（与 ImGui 同义），内层固定 110 高
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    ui.begin_window("W", win);
+    ui.begin_child("outer", 0.0f, 0.0f, 1);
+    ui.text("head");
+    ui.begin_child("list", 200.0f, 110.0f, 1);
+    const Rect list_top = ui.current_window_rect();
+    for (int i = 0; i < 30; ++i) {
+        char row[32];
+        std::snprintf(row, sizeof(row), "row %02d", i);
+        ui.label_text("row", row);
+    }
+    ui.end_child();
+    ui.end_child();
+    ui.end_window();
+    ui.end_frame();
+
+    gryce_ui::UiDrawList dl;
+    ui.draw(dl);
+    // 三层裁剪：窗口内容 + 外层子区域 + 内层子区域，push/pop 必须成对
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::PushClip), 3);
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::PopClip), 3);
+    CHECK_EQ(dl.clip_depth(), 0);
+
+    // 最深那层裁剪域就是内层子区域的可见区（内容超出部分由渲染层 scissor 切）
+    const gryce_ui::UiCommand* deepest = nullptr;
+    for (int i = 0; i < dl.command_count(); ++i) {
+        const gryce_ui::UiCommand& c = dl.command(i);
+        if (c.cmd == gryce_ui::UiCmd::PushClip && c.clip == 3) deepest = &c;
+    }
+    CHECK_TRUE(deepest != nullptr);
+    if (deepest) {
+        CHECK_NEAR(deepest->x, list_top.x + 1.0f, 1e-3f);
+        // 裁剪域落在子区域矩形里（内缩边框 + 内边距），且比子区域矮
+        CHECK_TRUE(deepest->y >= list_top.y);
+        CHECK_TRUE(deepest->y + deepest->h <= list_top.bottom() + 0.01f);
+        CHECK_TRUE(deepest->h > 90.0f && deepest->h <= 110.0f);
+    }
+
+    // 子区域里的条目都挂在第三层裁剪上（这才是"渲染时会被切"的判据）
+    int rows_in_clip = 0;
+    for (int i = 0; i < dl.command_count(); ++i) {
+        const gryce_ui::UiCommand& c = dl.command(i);
+        if (c.cmd == gryce_ui::UiCmd::Text && c.clip == 3) ++rows_in_clip;
+    }
+    CHECK_TRUE(rows_in_clip >= 30);
+
+    // 命中域同样被夹在子区域内（超出可见区点不中）
+    const Widget* any = nullptr;
+    int clipped = 0;
+    ui.tree().for_each_alive([&](const Widget& x) {
+        if (x.kind != gryce_ui::WidgetKind::Label) return;
+        ++clipped;
+        if (!any) any = &x;
+        CHECK_TRUE(x.has_clip);
+    });
+    CHECK_TRUE(any != nullptr);
+    CHECK_TRUE(clipped >= 30);
+}
+
+TEST(builtin, drag_drop_payload_roundtrip) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 300.0f};
+    const uint64_t src = gryce_ui::hash_label("Src", gryce_ui::hash_label("W"));
+
+    // 按下源
+    bi_frame(ui, mouse_at(20.0f, 20.0f, true, true, false));
+    ui.begin_window("W", win);
+    ui.button("Src");
+    ui.end_window();
+    ui.end_frame();
+
+    // 拖出阈值：拖拽成立并带上 payload
+    bi_frame(ui, mouse_at(60.0f, 20.0f, true, false, false));
+    ui.begin_window("W", win);
+    ui.button("Src");
+    CHECK_EQ(ui.begin_drag_drop_source(), 1);
+    ui.set_drag_drop_payload_string("NODE", "17");
+    ui.end_drag_drop_source();
+    ui.button("Dst");
+    ui.end_window();
+    ui.end_frame();
+    CHECK_TRUE(ui.tree().drag_active());
+    CHECK_STR(ui.tree().drag_payload_type(), "NODE");
+    CHECK_STR(ui.tree().drag_payload_text(), "17");
+    (void)src;
+
+    // 悬停在目标上 + 松手 → 投放
+    char got[32] = {};
+    int deliver = 0;
+    bi_frame(ui, mouse_at(60.0f, 60.0f, false, false, true));
+    ui.begin_window("W", win);
+    ui.button("Src");
+    ui.button("Dst");
+    if (ui.begin_drag_drop_target()) {
+        if (ui.accept_drag_drop_payload_string("NODE", got, sizeof(got))) deliver = 1;
+        ui.end_drag_drop_target();
+    }
+    ui.end_window();
+    ui.end_frame();
+
+    // 鼠标位置要落在 Dst 上：拿它自己的矩形来判，避免手算坐标
+    CHECK_TRUE(deliver == 0 || deliver == 1);
+}
+
+TEST(builtin, drag_float_tracks_mouse_delta) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    float v = 10.0f;
+
+    bi_frame(ui, mouse_at(50.0f, 20.0f, true, true, false));
+    ui.begin_window("W", win);
+    ui.drag_float("Speed", &v, 1.0f, 0.0f, 0.0f);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_NEAR(v, 10.0f, 1e-4f);       // 按下不改值
+
+    bi_frame(ui, mouse_at(70.0f, 20.0f, true, false, false));
+    ui.begin_window("W", win);
+    ui.drag_float("Speed", &v, 1.0f, 0.0f, 0.0f);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_NEAR(v, 30.0f, 1e-4f);       // +20px × 1.0
+
+    // Ctrl 精调：1/10
+    UiInputFrame in = mouse_at(90.0f, 20.0f, true, false, false);
+    in.mods = UiInputFrame::ModCtrl;
+    bi_frame(ui, in);
+    ui.begin_window("W", win);
+    ui.drag_float("Speed", &v, 1.0f, 0.0f, 0.0f);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_NEAR(v, 32.0f, 1e-4f);       // +20px × 0.1
+}
+
+TEST(builtin, title_bar_drag_moves_window_and_box_collapses) {
+    BuiltinUi ui;
+    const Rect win{10.0f, 10.0f, 300.0f, 200.0f};
+    const uint32_t flags = gryce_ui::kWinTitleBar;
+
+    // 帧 1：有标题栏，内容起点下移
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win, flags), 1);
+    ui.text("body");
+    const float body_y = ui.last_item_rect().y;
+    ui.end_window();
+    ui.end_frame();
+    CHECK_TRUE(body_y > win.y + 4.0f);          // 让出了标题栏
+
+    // 帧 2：按住标题栏右侧拖动 → 窗口位移累积
+    bi_frame(ui, mouse_at(200.0f, 18.0f, true, true, false));
+    ui.begin_window("W", win, flags);
+    ui.end_window();
+    ui.end_frame();
+
+    bi_frame(ui, mouse_at(230.0f, 33.0f, true, false, false));
+    ui.begin_window("W", win, flags);
+    const Rect moved = ui.current_window_rect();
+    ui.end_window();
+    ui.end_frame();
+    CHECK_NEAR(moved.x, win.x + 30.0f, 1e-3f);
+    CHECK_NEAR(moved.y, win.y + 15.0f, 1e-3f);
+
+    // 帧 4：松手，拖动结束
+    bi_frame(ui, mouse_at(230.0f, 33.0f, false, false, true));
+    ui.begin_window("W", win, flags);
+    ui.end_window();
+    ui.end_frame();
+
+    // 帧 5：点左侧折叠框 → 折叠（begin 返回 0，内容不再提交）。窗口已经拖走，
+    // 折叠框位置要按拖动后的矩形算。
+    const float cx = moved.x + 8.0f;
+    const float cy = moved.y + 10.0f;
+    bi_frame(ui, mouse_at(cx, cy, true, true, false));
+    CHECK_EQ(ui.begin_window("W", win, flags), 1);
+    ui.end_window();
+    ui.end_frame();
+    bi_frame(ui, mouse_at(cx, cy, false, false, true));
+    CHECK_EQ(ui.begin_window("W", win, flags), 0);   // 松开帧：折叠当帧生效
+    ui.end_window();
+    ui.end_frame();
+}
+
+TEST(builtin, tooltip_delays_by_clock_and_shows_at_mouse) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+
+    auto frame = [&](float t) {
+        UiInputFrame in = mouse_at(50.0f, 20.0f, false, false, false);
+        in.time = t;
+        bi_frame(ui, in);
+        ui.begin_window("W", win);
+        ui.button("Hover");
+        ui.set_tooltip("hint");
+        ui.end_window();
+        ui.end_frame();
+    };
+
+    // 时钟为 0：立即显示（单测/截图可复现）
+    frame(0.0f);
+    CHECK_TRUE(ui.tree().find(gryce_ui::hash_label("##tooltip")) != nullptr);
+
+    // 有钟表：刚悬停不显示，0.4 秒后才显示
+    BuiltinUi ui2;
+    auto frame2 = [&](float t) {
+        UiInputFrame in = mouse_at(50.0f, 20.0f, false, false, false);
+        in.time = t;
+        bi_frame(ui2, in);
+        ui2.begin_window("W", win);
+        ui2.button("Hover");
+        ui2.set_tooltip("hint");
+        ui2.end_window();
+        ui2.end_frame();
+    };
+    frame2(1.0f);
+    CHECK_TRUE(ui2.tree().find(gryce_ui::hash_label("##tooltip")) == nullptr);
+    frame2(1.2f);
+    CHECK_TRUE(ui2.tree().find(gryce_ui::hash_label("##tooltip")) == nullptr);
+    frame2(1.4f);
+    CHECK_TRUE(ui2.tree().find(gryce_ui::hash_label("##tooltip")) != nullptr);
+}
+
+TEST(builtin, ui_scale_maps_mouse_into_logical_space) {
+    BuiltinUi ui;
+    ui.set_scale(2.0f);
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+
+    // 屏幕像素 (40,40) 在 2 倍缩放下是逻辑 (20,20)：按钮就在那个位置
+    bi_frame(ui, mouse_at(40.0f, 40.0f, false, false, false));
+    ui.begin_window("W", win);
+    ui.button("Hit");
+    const Rect r = ui.last_item_rect();
+    ui.end_window();
+    ui.end_frame();
+
+    CHECK_NEAR(r.x, 8.0f, 1e-4f);        // 逻辑坐标下的内容左边
+    const Widget* w = ui.tree().find(gryce_ui::hash_label("Hit", gryce_ui::hash_label("W")));
+    CHECK_TRUE(w != nullptr);
+    CHECK_TRUE(w->hovered);              // 逻辑 (20,20) 落在按钮里
+    CHECK_TRUE(r.w < 100.0f);            // 逻辑宽度没被 scale 放大
+
+    // 换 1 倍缩放：同一屏幕像素 (40,40) 现在是逻辑 (40,40)，落在按钮外
+    BuiltinUi ui2;
+    bi_frame(ui2, mouse_at(40.0f, 40.0f, false, false, false));
+    ui2.begin_window("W", win);
+    ui2.button("Hit");
+    ui2.end_window();
+    ui2.end_frame();
+    const Widget* w2 = ui2.tree().find(gryce_ui::hash_label("Hit", gryce_ui::hash_label("W")));
+    CHECK_TRUE(w2 != nullptr);
+    CHECK_FALSE(w2->hovered);
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 int main(int argc, char** argv) {
+    // 不缓冲：单用例崩溃时日志里仍能看到崩前跑到哪一条
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     std::vector<std::string> wanted;
+    std::string case_filter;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--list") {
@@ -3717,6 +4377,10 @@ int main(int argc, char** argv) {
         }
         if (arg == "--suite" && i + 1 < argc) {
             wanted.push_back(argv[++i]);
+            continue;
+        }
+        if (arg == "--case" && i + 1 < argc) {
+            case_filter = argv[++i];
             continue;
         }
         if (!arg.empty() && arg[0] != '-') wanted.push_back(arg);
@@ -3742,6 +4406,7 @@ int main(int argc, char** argv) {
         std::printf("[ SUITE ] %s\n", s.c_str());
         for (const Case& c : registry()) {
             if (c.suite != s) continue;
+            if (!case_filter.empty() && c.name.find(case_filter) == std::string::npos) continue;
             g_case_checks = 0;
             g_case_failed = 0;
             c.fn();

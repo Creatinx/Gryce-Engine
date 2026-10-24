@@ -56,36 +56,45 @@ gryce_engine::render::RHITextureHandle to_handle(uint64_t packed) {
 
 class Renderer2DAdapter final : public UiRenderer {
 public:
-    explicit Renderer2DAdapter(gryce_engine::render::IRenderer2D* renderer)
-        : renderer_(renderer) {}
+    Renderer2DAdapter(gryce_engine::render::IRenderer2D* renderer, float scale)
+        : renderer_(renderer), scale_((scale > 0.0f) ? scale : 1.0f) {}
 
     void ui_draw_rect(float x, float y, float w, float h, uint32_t rgba) override {
         if (!renderer_) return;
-        renderer_->draw_rect(x, y, w, h, to_color(rgba));
+        renderer_->draw_rect(x * scale_, y * scale_, w * scale_, h * scale_,
+                             to_color(rgba));
     }
 
     void ui_draw_text(float x, float y, const char* text, float font_size,
                       uint32_t rgba) override {
         if (!renderer_ || !text) return;
-        // 行盒顶 → 基线（见文件头第 3 条）
-        renderer_->draw_text(x, y + font_size * kAscentRatio, text, font_size,
+        // 行盒顶 → 基线（见文件头第 3 条）；字号与坐标一起按缩放放大
+        const float fs = font_size * scale_;
+        renderer_->draw_text(x * scale_, y * scale_ + fs * kAscentRatio, text, fs,
                              to_color(rgba));
     }
 
     void ui_draw_sprite(float x, float y, float w, float h, uint64_t texture,
                         float u0, float v0, float u1, float v1, uint32_t rgba) override {
         if (!renderer_) return;
-        renderer_->draw_sprite_region(x, y, w, h, u0, v0, u1, v1,
-                                      to_handle(texture), to_color(rgba));
+        renderer_->draw_sprite_region(x * scale_, y * scale_, w * scale_, h * scale_,
+                                      u0, v0, u1, v1, to_handle(texture), to_color(rgba));
     }
 
     void ui_set_scissor(float x, float y, float w, float h) override {
         if (!renderer_) return;
-        // float → int 向外取整：裁剪域只允许变大，不允许变小
-        const int ix = static_cast<int>(std::floor(x));
-        const int iy = static_cast<int>(std::floor(y));
-        const int iw = static_cast<int>(std::ceil(x + w)) - ix;
-        const int ih = static_cast<int>(std::ceil(y + h)) - iy;
+        // float → int 向外取整：裁剪域只允许变大，不允许变小。
+        // y 要翻：引擎的 scissor 是 GL 约定（原点在左下），UI 的矩形原点在
+        // 左上。不翻的话只要有裁剪域不在画面正中就会被切到错的位置。
+        const float sx = x * scale_;
+        const float sy = y * scale_;
+        const float ex = sx + w * scale_;
+        const float ey = sy + h * scale_;
+        const int ix = static_cast<int>(std::floor(sx));
+        const int iw = static_cast<int>(std::ceil(ex)) - ix;
+        const int ih = static_cast<int>(std::ceil(ey)) - static_cast<int>(std::floor(sy));
+        const float vh = renderer_->screen_size().y;
+        const int iy = static_cast<int>(std::floor(vh - ey));
         renderer_->set_scissor(ix, iy, iw, ih);
     }
 
@@ -96,13 +105,14 @@ public:
 
 private:
     gryce_engine::render::IRenderer2D* renderer_;  // 不持有：生命周期归宿主
+    float scale_ = 1.0f;
 };
 
 } // namespace
 
 std::unique_ptr<UiRenderer> make_renderer2d_ui_renderer(
-    gryce_engine::render::IRenderer2D* renderer) {
-    return std::make_unique<Renderer2DAdapter>(renderer);
+    gryce_engine::render::IRenderer2D* renderer, float scale) {
+    return std::make_unique<Renderer2DAdapter>(renderer, scale);
 }
 
 } // namespace gryce_ui

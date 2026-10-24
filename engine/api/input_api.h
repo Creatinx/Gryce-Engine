@@ -31,6 +31,17 @@ GRYCE_PLATFORM_API void GInput_SetMouseLocked(bool locked);
 GRYCE_PLATFORM_API int  GInput_PullChars(unsigned int* out, int cap);
 GRYCE_PLATFORM_API void GInput_InjectChar(unsigned int codepoint);
 
+// 滚轮：本帧累积增量，**取走即清零**（滚轮是事件，读两次不该翻倍）。
+// 正 y = 向上滚。宿主没给窗口时由 GInput_InjectMouseScroll 注入。
+GRYCE_PLATFORM_API void GInput_GetWheel(float* out_dx, float* out_dy);
+
+// 输入法预编辑串（UTF-8，组合过程中的下划线文本）。
+// GLFW 不暴露 IME 的 preedit（只把最终提交的字符送到 char 回调），所以组合
+// 串由宿主注入：外部 HWND 模式接 IMM32，或编辑器自己的输入法桥。空串 = 无
+// 组合。内置 UI 的输入框会把它画在插入点处并加下划线。
+GRYCE_PLATFORM_API void GInput_InjectPreedit(const char* utf8_text);
+GRYCE_PLATFORM_API int  GInput_GetPreedit(char* out_buf, int buf_size);
+
 // Push changed input state into the engine command ring buffer.
 GRYCE_PLATFORM_API void GInput_SyncToCore(void);
 

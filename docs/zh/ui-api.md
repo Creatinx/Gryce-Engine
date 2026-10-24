@@ -510,7 +510,7 @@ ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编
 | 空文本 | `nullptr` 或空串不产生命令（不计 culled） |
 | 几何 | 不规范化：w/h 为负原样记录，几何正确性由布局层负责 |
 
-演示宿主验证方式：`GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim`——不经过 ImGui、直接由内置即时模式层生成 drawlist 并经渲染桥画到屏幕，用于截图回归（与 `--ui-backend imgui` 同一份宿主代码，只换后端）。
+演示宿主验证方式：`GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim|struct`——不经过 ImGui、直接由内置即时模式层生成 drawlist 并经渲染桥画到屏幕，用于截图回归（与 `--ui-backend imgui` 同一份宿主代码，只换后端）。`struct` 页演示折叠头/树/可滚子区域/弹层/模态/提示；`--ui-scale N` 验证 HiDPI。
 
 ## 7.11 内置 UI 轨（`GRender_SetUIBackend(1)`）
 
@@ -545,34 +545,58 @@ debug_ui_submit_locked()            主线程，锁已持有
 
 ### 内置轨的能力边界
 
-| `GUi_*` | 内置轨行为 |
+内置轨与 ImGui 轨的**控件集合已经对齐**：同一份宿主代码两条轨都能跑完整流程。下面只列差异与语义细节。
+
+| 主题 | 内置轨行为 |
 | --- | --- |
-| `BeginWindow` / `EndWindow` | 支持（无标题栏、无拖动、无折叠；`flags` 被忽略） |
-| `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` | 支持；`Text` 按内容区宽度**自动折行** |
+| `BeginWindow` / `EndWindow` | 支持。`GUI_WIN_TITLE_BAR` 给标题栏（可拖动、左侧 22px 折叠框），`GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` 生效；位移/折叠/滚动按窗口 id 跨帧存活（宿主每帧重给矩形也不丢） |
+| `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | 支持；`Text` 按内容区宽度**自动折行** |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id） |
-| `Combo` | 退化成"点一下换下一个"的按钮：返回 1 时 `*current` 已更新 |
-| `DragFloat` | 只读：画一条反映当前值的滑块，返回 0（拖拽语义无法映射成"点哪算哪"） |
-| `DragFloat2/3/4` / `ColorEdit4` | 不画或用色块代替，返回 0 |
-| `BeginChild` | 恒返回 0（无子窗口），内容就地内联；配对的 `EndChild` 是空操作 |
-| `BeginMenuBar` / `MenuItem` / `TreeNode` / `CollapsingHeader` / 弹出层 / 拖放 | 恒返回 0 / 空操作 |
-| 查询：`LastItemRect` / `IsItemHovered` / `IsItemActive` / `IsAnyItemActive` / `MousePos` / `IsMouse*` | 支持 |
-| `MouseDeltaX/Y` / `GetModifiers` / `SetCursorPos` | 恒 0 / 空操作（要 delta 与修饰键请直接读 `GInput_*`） |
-| `WantCaptureMouse` | 鼠标落在任何一个面板矩形内即为真 |
+| `DragFloat` | 支持真拖拽：按住后按**鼠标位移**改值（`speed` 单位/像素，按住 Ctrl 走 1/10 精调）；没有"点哪算哪"的语义 |
+| `DragFloat2/3/4` | 退化成第一个分量的 `DragFloat`；其余分量只读显示 |
+| `ColorEdit4` | 色块 + 点开的弹层（R/G/B/A 四条滑块），弹层内改动即时回写 |
+| `Combo` | 真下拉：点开弹层 + 菜单项，选中后回写并关闭 |
+| `BeginChild` / `EndChild` | 支持：自有裁剪域（超出不可见也不可点）、自有滚轮与滚动偏移。`size=(0,0)` = 占满剩余空间（与 ImGui 同义） |
+| `TreeNode` / `TreePop` / `CollapsingHeader` | 支持：展开态跨帧存活，子项自动缩进 |
+| `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | 支持：菜单就是"贴着按钮下沿打开的弹层"，点菜单项自动关闭 |
+| 弹层：`OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | 支持。弹层画在第二层（永远盖住窗口），自适应高度；点外面或 Esc 关闭（同一帧 `BeginPopup` 即返回 0，与 ImGui 的 NewFrame 语义一致） |
+| 模态：`OpenModal` / `BeginModal` | 支持：居中、铺一层暗底遮罩、**点外面不关**，Esc 或 `CloseCurrentPopup` 才关 |
+| 提示：`SetTooltip` | 支持：贴在鼠标位置，`time > 0` 时延迟 0.35 秒出现（单测里 `time = 0` 立即出现，便于截图复现） |
+| 拖放：`BeginDragDropSource` / `SetDragDropPayloadString` / `EndDragDropSource` / `BeginDragDropTarget` / `AcceptDragDropPayloadString` | 支持：拖出 4px 阈值才成立，payload = (类型串, 文本)，松手在目标上时交付 |
+| 查询：`LastItemRect` / `IsItemHovered` / `IsItemClicked` / `IsItemActive` / `IsAnyItemActive` / `MousePos` / `IsMouse*` / `GetModifiers` | 支持 |
+| `MouseDeltaX/Y` / `SetCursorPos` | 恒 0 / 空操作（要 delta 请直接读 `GInput_*`） |
+| `WantCaptureMouse` | 鼠标落在任何一个面板/弹层矩形内即为真 |
 | `WantCaptureKeyboard` | 输入框拿到焦点时为真 |
+
+### 文本编辑（`InputText` 在内置轨的真实语义）
+
+| 输入 | 行为 |
+| --- | --- |
+| 点击 / 拖选 | 插入点按**文本真实宽度**换算到字节偏移（始终落在 UTF-8 码点边界上）；拖动=拖选 |
+| ← → / Home / End | 逐码点移动 / 行首行尾；带 Shift 时拉选区 |
+| Ctrl+← → | 按词移动（`text_word_left/right`） |
+| Backspace / Delete | 有选区删选区，无选区删前/后一个码点 |
+| Ctrl+A / C / X / V | 全选 / 复制 / 剪切 / 粘贴，走进程级剪贴板 `ui_clipboard()`（宿主可直接读写，便于镜像到系统剪贴板） |
+| Esc | 清选区并失焦 |
+| 输入法 | 预编辑串（`UiInputFrame::preedit`）以**带下划线**的形式画在插入点处，只属于当帧持有焦点的输入框；组合中不写回调用方缓冲区 |
+| 插入符闪烁 | 由 `UiInputFrame::time` 驱动（1.06 秒一周期，亮 0.53 秒）；`time == 0` 恒亮，单测与截图因此可复现 |
+| 长文本 | 横向滚动保证插入点可见，文本不淌出框外 |
 
 ### 文本与坐标的三个前提
 
 1. **度量走同一个口径**：自动尺寸（按钮宽 = 文字宽 + 内边距）与文字居中都用 `IRenderer2D::measure_text`（字形 advance 之和，UTF-8 按码点累加）；渲染器不支持度量时退回 `ui_approx_text_width` 估算。两边必须是同一份，否则"布局按估算、绘制按真实"会互相漂移。
 2. **`draw_text` 按码点取字形**：2D 文本路径已改成 UTF-8 解码（`Renderer2D::draw_text`），CJK 因此能出字；图集里没有的码点跳过。
-3. **坐标系假设 1:1**：内置轨用 `GInput_GetMousePosition` 的窗口坐标当屏幕坐标，视口尺寸用渲染目标的像素尺寸。HiDPI 下两者不等价（ImGui 轨由后端自己做缩放），需要按 DPI 缩放时在宿主侧换算。
+3. **HiDPI 走 `GRender_SetUIScale`**：模型层永远按**逻辑像素**算（布局、命中、文本度量都是逻辑值），输入坐标在 `begin_frame` 里除以倍率，渲染桥把矩形、字号、裁剪框乘回去。宿主只需在 init 后设一次倍率，不要自己缩放面板坐标。
 
-### 渲染侧为此新增的三件事（`engine/render/render2d.h`）
+### 渲染侧为本轨新增的接口（`engine/render/render2d.h`）
 
 | 接口 | 用途 |
 | --- | --- |
 | `measure_text(text, size)` | 文本宽度（返回 0 = 无度量，调用方退回估算） |
 | `begin_overlay_pass(w,h)` / `end_overlay_pass()` | UI 覆盖层独立成帧：存/还相机、切左上角 1:1、关 bloom 与阴影 |
 | `set_scissor` / `reset_scissor` 先 `flush_batches()` | 裁剪是状态、绘制是顶点：改裁剪前必须把已缓冲顶点提交，否则前后两段一起吃最后一次裁剪域 |
+| `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI 倍率。GL 后端在 `set_scissor` 里按需开 `GL_SCISSOR_TEST`，换渲染目标时关掉并作废缓存（否则离屏 pass 会被上一段的屏幕坐标裁剪域切掉） |
+| `GInput_GetWheel(dx,dy)` / `GInput_InjectPreedit(s)` / `GInput_GetPreedit(buf,cap)` | 滚轮（取走即清零）与输入法组合串 |
 
 ## 8. 与宿主输入的分工
 
@@ -591,8 +615,9 @@ if (GUi_WantCaptureKeyboard()) return;   // 不派发任何快捷键
 ## 9. 已知边界
 
 * 无 docking、无多窗口停靠、无 `ImPlot`/节点编辑器一类扩展——需要的话加成 `GUi_*` 的新函数，不要在扩展里引 ImGui。
-* 内置轨（7.11）没有子窗口、菜单栏、树节点、弹层与拖放；这些控件在 ImGui 轨可用，两轨混用同一份宿主代码时按返回值跳过即可。
 * 拖放 payload 只支持单个字符串，没有多选拖拽、没有自定义 payload 类型（跨进程/跨窗口拖拽也不支持）。
+* 窗口只能拖动/折叠，没有可拉的边框（`GUI_WIN_NO_RESIZE` 恒生效：尺寸由宿主的布局决定）。
+* 字体图集按字节走 ASCII 与 CJK 回退，没有富文本/多字号混排；一个控件只有一种字号。
 * 主题内置 5 套预设（Dark / Light / Midnight / Nord / HighContrast，见 7.8）；调用方只引用 token，不要在调用方硬编码色值。
 * `GUi_Image` 不接受自定义 UV / 边框着色，视口只显示完整纹理。
 * 中文等非 ASCII 文本依赖引擎加载的字体图集；字体缺失时显示为方块，不会崩。

@@ -2,9 +2,9 @@
 //
 // 用法:
 //   GryceUiSmoke.exe [--api opengl|vulkan|dx12] [--project <dir>] [--frames N]
-//                    [--shot <png>] [--w N] [--h N] [--ui-interval N]
+//                    [--shot <png>] [--w N] [--h N] [--ui-interval N] [--ui-scale f]
 //                    [--theme dark|light|midnight|nord|highcontrast]
-//                    [--page controls|queue|layout|anim|about] [--no-vsync]
+//                    [--page controls|queue|layout|anim|struct|about] [--no-vsync]
 //                    [--ui-backend imgui|builtin] [--help]
 //
 // 与 GryceRenderSmoke 的分工：那个演示渲染管线，这个演示引擎的 UI 子系统
@@ -246,6 +246,68 @@ void draw_controls_page(void* user) {
     GUi_TextColored(GUI_TEXT_DIM, "None of the four widgets above has a local buffer:");
     GUi_TextColored(GUI_TEXT_DIM, "their values live in the engine state store,");
     GUi_TextColored(GUI_TEXT_DIM, "keyed by (label, seed). Switch pages and come back.");
+
+    GUi_EndChild();
+}
+
+// 结构与弹层页：折叠头 / 树 / 可滚子区域 / 弹层 / 模态 / 提示
+void draw_struct_page(void* user) {
+    UiDemoState* st = static_cast<UiDemoState*>(user);
+    GUi_BeginChild("struct", 0.0f, 0.0f, 1);
+
+    GUi_TextColored(GUI_TEXT_ACCENT, "Structure (tree / header / child scroll)");
+    GUi_Separator();
+
+    if (GUi_CollapsingHeader("Collapsing header", 1)) {
+        GUi_TextColored(GUI_TEXT_DIM, "展开时子项才提交；折叠态跨帧保留（控件 id 稳定）。");
+    }
+
+    if (GUi_TreeNode("Scene", 1)) {
+        for (int i = 0; i < 3; ++i) {
+            char lbl[32];
+            std::snprintf(lbl, sizeof(lbl), "Mesh %d", i);
+            if (GUi_TreeNode(lbl, 0)) {
+                GUi_Indent(12.0f);
+                GUi_LabelText("nested", "one level deeper");
+                GUi_Unindent(12.0f);
+                GUi_TreePop();
+            }
+        }
+        GUi_TreePop();
+    }
+
+    GUi_Spacing();
+    GUi_TextColored(GUI_TEXT_ACCENT, "Child region: own clip + own scroll");
+    if (GUi_BeginChild("log", 0.0f, 110.0f, 1)) {
+        for (int i = 0; i < 30; ++i) {
+            char row[32];
+            std::snprintf(row, sizeof(row), "row %02d", i);
+            GUi_LabelText("row", row);
+        }
+        char scroll[64];
+        std::snprintf(scroll, sizeof(scroll), "scroll_y = %.1f", (double)GUi_GetWindowScrollY());
+        GUi_LabelText("scroll", scroll);
+        GUi_EndChild();
+    }
+
+    GUi_Spacing();
+    GUi_TextColored(GUI_TEXT_ACCENT, "Popups: dropdown / tooltip / modal");
+    if (GUi_Button("Actions")) GUi_OpenPopup("##actions_menu");
+    if (GUi_IsItemHovered()) GUi_SetTooltip("click to open a popup");
+    if (GUi_BeginPopup("##actions_menu")) {
+        if (GUi_MenuItem("Duplicate", "Ctrl+D", 1)) st->spawn_count += 1;
+        if (GUi_MenuItem("Delete", "Del", 1)) st->spawn_count -= 1;
+        GUi_EndPopup();
+    }
+    GUi_SameLine(0.0f);
+    if (GUi_Button("Modal")) GUi_OpenModal("demo_modal", 280.0f, 110.0f);
+    if (GUi_BeginModal("demo_modal", 280.0f, 110.0f)) {
+        GUi_Text("Modal: outside clicks are ignored, Esc closes.");
+        if (GUi_Button("Close")) GUi_CloseCurrentPopup();
+        GUi_EndPopup();
+    }
+    GUi_SameLine(0.0f);
+    GUi_LabelText("actions", "counter follows the menu items");
 
     GUi_EndChild();
 }
@@ -798,6 +860,7 @@ void ui_callback(void* user) {
                 if (GUi_MenuItem("Queue", "Ctrl+2", 1)) st->page = 1;
                 if (GUi_MenuItem("Layout", "Ctrl+3", 1)) st->page = 2;
                 if (GUi_MenuItem("Anim", "Ctrl+4", 1)) st->page = 3;
+                if (GUi_MenuItem("Structure", nullptr, 1)) st->page = 5;
                 if (GUi_MenuItem("About", nullptr, 1)) st->page = 4;
                 GUi_EndMenu();
             }
@@ -808,6 +871,7 @@ void ui_callback(void* user) {
             case 1: draw_queue_page(user); break;
             case 2: draw_layout_page(user, page_switched); break;
             case 3: draw_anim_page(user, page_switched); break;
+            case 5: draw_struct_page(user); break;
             default: draw_about_page(user); break;
         }
     }
@@ -856,11 +920,12 @@ void print_usage() {
         "  --shot <png>           截图输出路径（默认 ui_smoke_<api>.png）\n"
         "  --w / --h <px>         窗口与视口尺寸（默认 800x600）\n"
         "  --ui-interval <N>      UI 帧节流：每 N 个渲染帧才构建一次 UI（默认 1）\n"
+        "  --ui-scale <f>         UI 缩放（HiDPI；模型层仍按逻辑像素算，默认 1）\n"
         "  --ops-burst <N>        先批量灌 N 条操作再跑帧循环：演示合并/预算/统计\n"
         "  --theme <name>         初始主题预设：dark / light / midnight / nord /\n"
         "                        highcontrast（默认 dark）\n"
-        "  --page <name>          初始页：controls / queue / layout / anim / about\n"
-        "                        （默认 controls）\n"
+        "  --page <name>          初始页：controls / queue / layout / anim /\n"
+        "                        struct / about（默认 controls）\n"
         "  --ui-backend <name>    UI 后端：imgui（默认）/ builtin（引擎内置，\n"
         "                        不建 ImGui 上下文，界面由 2D 覆盖层自己画）\n"
         "  --no-vsync             关闭垂直同步\n"
@@ -877,6 +942,7 @@ int main(int argc, char** argv) {
     int width = 800, height = 600;
     int width_override = 0, height_override = 0;
     int ui_interval = 1;
+    float ui_scale = 1.0f;
     int ops_burst = 0;
     bool vsync = true;
     int theme_preset = GUI_THEME_PRESET_DARK;
@@ -902,6 +968,13 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--w") == 0) width_override = std::atoi(value_at(i));
         else if (std::strcmp(a, "--h") == 0) height_override = std::atoi(value_at(i));
         else if (std::strcmp(a, "--ui-interval") == 0) ui_interval = std::atoi(value_at(i));
+        else if (std::strcmp(a, "--ui-scale") == 0) {
+            ui_scale = static_cast<float>(std::atof(value_at(i)));
+            if (ui_scale <= 0.0f) {
+                std::fprintf(stderr, "[ui-smoke] --ui-scale 必须 > 0\n");
+                return 1;
+            }
+        }
         else if (std::strcmp(a, "--ops-burst") == 0) ops_burst = std::atoi(value_at(i));
         else if (std::strcmp(a, "--theme") == 0) {
             const char* t = value_at(i);
@@ -933,10 +1006,11 @@ int main(int argc, char** argv) {
             else if (std::strcmp(t, "queue") == 0) page = 1;
             else if (std::strcmp(t, "layout") == 0) page = 2;
             else if (std::strcmp(t, "anim") == 0) page = 3;
+            else if (std::strcmp(t, "struct") == 0 || std::strcmp(t, "structure") == 0) page = 5;
             else if (std::strcmp(t, "about") == 0) page = 4;
             else {
                 std::fprintf(stderr,
-                             "[ui-smoke] 未知页 '%s'（controls / queue / layout / anim / about）\n",
+                             "[ui-smoke] 未知页 '%s'（controls / queue / layout / anim / struct / about）\n",
                              t);
                 return 1;
             }
@@ -997,6 +1071,8 @@ int main(int argc, char** argv) {
     if (ui_interval > 1) GRender_SetUiFrameInterval(ui_interval);
     // UI 后端也是 init 前生效项（决定建不建 ImGui 上下文）。
     if (ui_backend == 1) GRender_SetUIBackend(1);
+    // HiDPI：模型层始终按逻辑像素算，渲染桥与输入按这个倍率换算。
+    if (ui_scale != 1.0f) GRender_SetUIScale(ui_scale);
 
     UiDemoState state;
     state.theme_preset = theme_preset;

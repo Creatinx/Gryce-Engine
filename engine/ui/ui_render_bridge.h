@@ -114,8 +114,10 @@ private:
 // 返回的适配器不持有 renderer 的所有权：renderer 必须在桥的使用期内有效。
 // 无状态，可以每次绘制现建现弃（内置轨就是这么做的）。
 // ---------------------------------------------------------------------------
+// 把 drawlist 渲染到引擎的 IRenderer2D 上（引擎内唯一接线点）。
+// scale = UI 逻辑像素 → 屏幕像素的倍数（HiDPI）；坐标、字号、裁剪框一起乘。
 std::unique_ptr<UiRenderer> make_renderer2d_ui_renderer(
-    gryce_engine::render::IRenderer2D* renderer);
+    gryce_engine::render::IRenderer2D* renderer, float scale = 1.0f);
 
 } // namespace gryce_ui
 

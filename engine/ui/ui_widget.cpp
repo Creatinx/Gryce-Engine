@@ -44,7 +44,33 @@ float UiTextMetrics::line_height(float font_size) const {
     return font_size * 1.25f;
 }
 
+// ---------------------------------------------------------------------------
+// 剪贴板
+// ---------------------------------------------------------------------------
+
+UiClipboard& ui_clipboard() {
+    static UiClipboard clipboard_;
+    return clipboard_;
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 工具
+// ---------------------------------------------------------------------------
+
 namespace {
+
+// 解一个码点，返回占用字节数（>=1）。坏字节按单字节跳过。
+int utf8_seq_len(const char* s) {
+    const unsigned char c = static_cast<unsigned char>(*s);
+    int n = 1;
+    if      ((c & 0xE0u) == 0xC0u) n = 2;
+    else if ((c & 0xF0u) == 0xE0u) n = 3;
+    else if ((c & 0xF8u) == 0xF0u) n = 4;
+    for (int i = 1; i < n; ++i) {
+        if (!s[i]) return i;   // 截断的多字节序列：只走已有部分
+    }
+    return n;
+}
 
 inline bool rect_contains(const Rect& r, float x, float y) {
     return x >= r.x && x <= r.right() && y >= r.y && y <= r.bottom();
@@ -53,6 +79,10 @@ inline bool rect_contains(const Rect& r, float x, float y) {
 inline float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
+
+inline int imin(int a, int b) { return a < b ? a : b; }
+inline int imax(int a, int b) { return a > b ? a : b; }
+inline int clampint(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 // 把一个 Unicode 码点按 UTF-8 追加进 buf（保证 '\0' 结尾；放不下整码点则不加）。
 void utf8_append(char* buf, size_t cap, uint32_t cp) {
@@ -109,19 +139,146 @@ float theme_metric(const Theme& t, int token, float fallback) {
     return (token >= 0 && token < THEME_METRIC_COUNT) ? t.metrics[token] : fallback;
 }
 
+// 折叠标记：小方框里一个 + / -（drawlist 只有矩形与文本，画不了三角形；
+// 用 ASCII 字符是唯一能保证任意字体都出字的做法）。
+void draw_fold_marker(UiDrawList& dl, float x, float y, bool open,
+                      const Theme& theme, const UiTextMetrics& metrics, float fs) {
+    const uint32_t c = theme_color(theme, THEME_COLOR_TEXT_DIM);
+    const float side = fs * 0.75f;
+    const Rect box{x, y + (fs * 1.25f - side) * 0.5f, side, side};
+    draw_frame_border(dl, box, c, 1.0f);
+    const char* mark = open ? "-" : "+";
+    const float tw = metrics.width(mark, fs);
+    dl.add_text(box.x + (side - tw) * 0.5f, y, mark, fs, c);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
-// ui_draw_widget — 控件绘制（匿名空间外的公共入口，见 ui_widget.h）
+// UTF-8 工具（导出）
+// ---------------------------------------------------------------------------
+
+int utf8_text_length(const char* s) {
+    return s ? static_cast<int>(std::strlen(s)) : 0;
+}
+
+int utf8_prev_boundary(const char* s, int pos) {
+    if (!s || pos <= 0) return 0;
+    int i = imin(pos, utf8_text_length(s)) - 1;
+    while (i > 0 && (static_cast<unsigned char>(s[i]) & 0xC0u) == 0x80u) --i;
+    return i;
+}
+
+int utf8_next_boundary(const char* s, int pos) {
+    if (!s) return 0;
+    const int len = utf8_text_length(s);
+    if (pos < 0) return 0;
+    if (pos >= len) return len;
+    return imin(pos + utf8_seq_len(s + pos), len);
+}
+
+float text_x_at(const char* s, int byte_pos, const UiTextMetrics& metrics, float font_size) {
+    if (!s) return 0.0f;
+    const int len = utf8_text_length(s);
+    if (byte_pos <= 0) return 0.0f;
+    if (byte_pos > len) byte_pos = len;
+    if (font_size <= 0.0f) font_size = kWidgetFontSize;
+    char buf[kWidgetTextCap * 2 + 1];
+    if (byte_pos > static_cast<int>(sizeof(buf)) - 1) byte_pos = static_cast<int>(sizeof(buf)) - 1;
+    std::memcpy(buf, s, static_cast<size_t>(byte_pos));
+    buf[byte_pos] = '\0';
+    return metrics.width(buf, font_size);
+}
+
+int text_pos_at(const char* s, float x, const UiTextMetrics& metrics, float font_size) {
+    if (!s || x <= 0.0f) return 0;
+    if (font_size <= 0.0f) font_size = kWidgetFontSize;
+    const int len = utf8_text_length(s);
+    char buf[kWidgetTextCap * 2 + 1];
+
+    int   best_pos = 0;
+    float best_w   = 0.0f;
+    int   pos      = 0;
+    while (pos < len) {
+        const int n = utf8_seq_len(s + pos);
+        const int end = imin(pos + n, len);
+        if (end > static_cast<int>(sizeof(buf)) - 1) break;
+        std::memcpy(buf, s, static_cast<size_t>(end));
+        buf[end] = '\0';
+        const float w = metrics.width(buf, font_size);
+        if (w <= x) {
+            best_pos = end;
+            best_w   = w;
+        } else {
+            // x 落在 [best_w, w] 之间：谁近算谁
+            if ((x - best_w) > (w - x)) best_pos = end;
+            return best_pos;
+        }
+        pos = end;
+    }
+    return best_pos;
+}
+
+namespace {
+
+inline bool is_word_char(unsigned char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80;
+}
+
+} // namespace
+
+int text_word_left(const char* s, int pos) {
+    if (!s || pos <= 0) return 0;
+    const int len = utf8_text_length(s);
+    if (pos > len) pos = len;
+    int i = pos;
+    // 先跳过左侧的非词字符，再吞掉一段词
+    while (i > 0) {
+        const int p = utf8_prev_boundary(s, i);
+        if (is_word_char(static_cast<unsigned char>(s[p]))) break;
+        i = p;
+    }
+    while (i > 0) {
+        const int p = utf8_prev_boundary(s, i);
+        if (!is_word_char(static_cast<unsigned char>(s[p]))) break;
+        i = p;
+    }
+    return i;
+}
+
+int text_word_right(const char* s, int pos) {
+    if (!s) return 0;
+    const int len = utf8_text_length(s);
+    if (pos < 0) pos = 0;
+    int i = pos;
+    while (i < len) {
+        if (!is_word_char(static_cast<unsigned char>(s[i]))) break;
+        i = utf8_next_boundary(s, i);
+    }
+    while (i < len) {
+        if (is_word_char(static_cast<unsigned char>(s[i]))) break;
+        i = utf8_next_boundary(s, i);
+    }
+    return i;
+}
+
+// ---------------------------------------------------------------------------
+// ui_draw_widget — 控件绘制
 // ---------------------------------------------------------------------------
 
 void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& metrics,
                     uint64_t focus_id, UiDrawList& dl) {
+    ui_draw_widget(w, theme, metrics, UiDrawContext{focus_id, true}, dl);
+}
+
+void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& metrics,
+                    const UiDrawContext& ctx, UiDrawList& dl) {
     const Rect&  r  = w.rect;
     const float  fs = kWidgetFontSize;
     const float  lh = metrics.line_height(fs);
     const float  ty = r.y + (r.h - lh) * 0.5f;   // 行盒在控件里垂直居中
     const float  bw = theme_metric(theme, THEME_METRIC_BORDER_W, 1.0f);
+    const bool   focused = (w.id == ctx.focus_id);
     const uint32_t text_col = w.text_overridden
                             ? w.text_color
                             : theme_color(theme, w.enabled ? THEME_COLOR_TEXT : THEME_COLOR_TEXT_DIM);
@@ -145,7 +302,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
         }
 
         case WidgetKind::Panel:
-            dl.add_rect(r.x, r.y, r.w, r.h, theme_color(theme, THEME_COLOR_WINDOW_BG));
+            dl.add_rect(r.x, r.y, r.w, r.h, w.bg_overridden
+                        ? w.bg_color : theme_color(theme, THEME_COLOR_WINDOW_BG));
             draw_frame_border(dl, r, theme_color(theme, THEME_COLOR_BORDER), bw);
             break;
 
@@ -213,19 +371,146 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             break;
         }
 
+        case WidgetKind::DragFloat: {
+            // 与 ImGui 的形态一致：一条可拖的"值框"，左标签、右数值。
+            const uint32_t bg = w.pressed ? theme_color(theme, THEME_COLOR_BUTTON_ACTIVE)
+                              : w.hovered ? theme_color(theme, THEME_COLOR_BUTTON_HOVER)
+                                          : theme_color(theme, THEME_COLOR_BUTTON);
+            dl.add_rect(r.x, r.y, r.w, r.h, bg);
+            draw_frame_border(dl, r, theme_color(theme, THEME_COLOR_BORDER), bw);
+            if (w.label[0]) {
+                dl.add_text(r.x + 6.0f, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
+            }
+            char val[32];
+            std::snprintf(val, sizeof(val), "%.3f", w.value);
+            const float vw = metrics.width(val, fs);
+            dl.add_text(r.right() - vw - 6.0f, ty, val, fs,
+                        theme_color(theme, THEME_COLOR_TEXT));
+            break;
+        }
+
+        case WidgetKind::TreeNode: {
+            draw_fold_marker(dl, r.x + 2.0f, ty, w.open, theme, metrics, fs);
+            const float ox = r.x + 4.0f + fs * 0.75f + 4.0f;
+            dl.add_text(ox, ty, w.label, fs,
+                        w.hovered ? theme_color(theme, THEME_COLOR_TEXT)
+                                  : theme_color(theme, THEME_COLOR_TEXT));
+            break;
+        }
+
+        case WidgetKind::Header: {
+            const uint32_t bg = w.hovered ? theme_color(theme, THEME_COLOR_HEADER_HOVER)
+                                          : theme_color(theme, THEME_COLOR_HEADER);
+            dl.add_rect(r.x, r.y, r.w, r.h, bg);
+            draw_fold_marker(dl, r.x + 4.0f, ty, w.open, theme, metrics, fs);
+            const float ox = r.x + 8.0f + fs * 0.75f + 2.0f;
+            dl.add_text(ox, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
+            break;
+        }
+
+        case WidgetKind::MenuItem: {
+            if (w.hovered && w.enabled) {
+                dl.add_rect(r.x, r.y, r.w, r.h, theme_color(theme, THEME_COLOR_NAV_HIGHLIGHT));
+            }
+            dl.add_text(r.x + 8.0f, ty, w.label, fs,
+                        theme_color(theme, w.enabled ? THEME_COLOR_TEXT : THEME_COLOR_TEXT_DIM));
+            if (w.text[0]) {
+                const float sw = metrics.width(w.text, fs);
+                dl.add_text(r.right() - sw - 8.0f, ty, w.text, fs,
+                            theme_color(theme, THEME_COLOR_TEXT_DIM));
+            }
+            break;
+        }
+
+        case WidgetKind::ScrollBar: {
+            // rect 就是轨道本身（调用方给出窄条，命中测试才只落在条上）
+            dl.add_rect(r.x, r.y, r.w, r.h, theme_color(theme, THEME_COLOR_SCROLLBAR_BG));
+            const float frac = clampf(w.value, 0.0f, 1.0f);
+            const float vis  = clampf(w.thumb, 0.05f, 1.0f);
+            const float thumb_h = r.h * vis;
+            const float max_off = r.h - thumb_h;
+            const float thumb_y = r.y + max_off * frac;
+            const uint32_t tc = w.pressed ? theme_color(theme, THEME_COLOR_SCROLLBAR_GRAB_ACTIVE)
+                              : w.hovered ? theme_color(theme, THEME_COLOR_SCROLLBAR_GRAB_HOVERED)
+                                          : theme_color(theme, THEME_COLOR_SCROLLBAR_GRAB);
+            dl.add_rect(r.x + 2.0f, thumb_y, (r.w > 4.0f) ? (r.w - 4.0f) : r.w, thumb_h, tc);
+            break;
+        }
+
+        case WidgetKind::Bar:
+            dl.add_rect(r.x, r.y, r.w, r.h,
+                        w.bg_overridden ? w.bg_color : theme_color(theme, THEME_COLOR_MENUBAR_BG));
+            dl.add_rect(r.x, r.bottom() - 1.0f, r.w, 1.0f,
+                        theme_color(theme, THEME_COLOR_BORDER));
+            break;
+
+        case WidgetKind::Frame:
+            dl.add_rect(r.x, r.y, r.w, r.h,
+                        w.bg_overridden ? w.bg_color : theme_color(theme, THEME_COLOR_CHILD_BG));
+            draw_frame_border(dl, r, theme_color(theme, THEME_COLOR_BORDER), bw);
+            break;
+
+        case WidgetKind::TitleBar: {
+            const uint32_t bg = !w.enabled ? theme_color(theme, THEME_COLOR_TITLE_BG_COLLAPSED)
+                              : w.pressed  ? theme_color(theme, THEME_COLOR_TITLE_BG_ACTIVE)
+                                           : theme_color(theme, THEME_COLOR_TITLE_BG);
+            dl.add_rect(r.x, r.y, r.w, r.h, bg);
+            draw_frame_border(dl, r, theme_color(theme, THEME_COLOR_BORDER), bw);
+            draw_fold_marker(dl, r.x + 5.0f, ty, w.open, theme, metrics, fs);
+            dl.add_text(r.x + 12.0f + fs * 0.75f, ty, w.label, fs,
+                        theme_color(theme, THEME_COLOR_TEXT));
+            break;
+        }
+
+        case WidgetKind::Tooltip: {
+            dl.add_rect(r.x, r.y, r.w, r.h, theme_color(theme, THEME_COLOR_POPUP_BG));
+            draw_frame_border(dl, r, theme_color(theme, THEME_COLOR_BORDER), bw);
+            dl.add_text(r.x + 6.0f, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
+            break;
+        }
+
         case WidgetKind::TextInput: {
             dl.add_rect(r.x, r.y, r.w, r.h, theme_color(theme, THEME_COLOR_BUTTON));
             draw_frame_border(dl, r,
-                              theme_color(theme, (focus_id == w.id) ? THEME_COLOR_ACCENT
-                                                                    : THEME_COLOR_BORDER),
+                              theme_color(theme, focused ? THEME_COLOR_ACCENT : THEME_COLOR_BORDER),
                               bw);
             // 长文本不许淌出框外：裁剪 + 只画框内那一段
             dl.push_clip(r.x, r.y, r.w, r.h);
-            dl.add_text(r.x + 4.0f, ty, w.text, fs, theme_color(theme, THEME_COLOR_TEXT));
+            const float tx = r.x + 4.0f - w.scroll_x;
+            const int   len = utf8_text_length(w.text);
+
+            // 选区（只在该控件有焦点时画：失焦后不显示残留高亮）
+            if (focused && w.sel_anchor >= 0 && w.sel_anchor != w.caret) {
+                const int a = imin(w.sel_anchor, w.caret);
+                const int b = imax(w.sel_anchor, w.caret);
+                const float x0 = tx + text_x_at(w.text, a, metrics, fs);
+                const float x1 = tx + text_x_at(w.text, b, metrics, fs);
+                if (x1 > x0) {
+                    dl.add_rect(x0, r.y + (r.h - lh) * 0.5f, x1 - x0, lh,
+                                theme_color(theme, THEME_COLOR_SELECTION));
+                }
+            }
+
+            dl.add_text(tx, ty, w.text, fs, theme_color(theme, THEME_COLOR_TEXT));
+
+            // 插入符 + 输入法预编辑（预编辑画在插入符之后，带下划线）
+            const float cx = tx + text_x_at(w.text, clampint(w.caret, 0, len), metrics, fs);
+            if (focused && ctx.caret_visible) {
+                dl.add_rect(cx, r.y + (r.h - lh) * 0.5f + 1.0f, 1.0f, lh - 2.0f,
+                            theme_color(theme, THEME_COLOR_TEXT));
+            }
+            if (focused && w.preedit[0]) {
+                dl.add_text(cx, ty, w.preedit, fs, theme_color(theme, THEME_COLOR_TEXT));
+                const float pw = metrics.width(w.preedit, fs);
+                dl.add_rect(cx, r.y + (r.h + lh) * 0.5f - 2.0f, pw, 1.0f,
+                            theme_color(theme, THEME_COLOR_ACCENT));
+            }
             dl.pop_clip();
             break;
         }
 
+        case WidgetKind::ClipBegin:
+        case WidgetKind::ClipEnd:
         default:
             break;
     }
@@ -235,10 +520,19 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
 // WidgetTree
 // ---------------------------------------------------------------------------
 
-void WidgetTree::begin_frame(const UiInputFrame& input) {
-    input_ = input;
+void WidgetTree::begin_frame(const UiInputFrame& input, const UiTextMetrics* metrics) {
+    input_   = input;
+    metrics_ = metrics;
     ++frame_;
     press_claimed_ = 0;
+
+    // 插入符闪烁：宿主给了时钟才闪（0 = 恒显，截图与单测可复现）
+    if (input.time > 0.0f) {
+        const float phase = input.time - static_cast<float>(static_cast<int>(input.time / 1.06f)) * 1.06f;
+        caret_visible_ = phase < 0.53f;
+    } else {
+        caret_visible_ = true;
+    }
 }
 
 Widget* WidgetTree::ensure(uint64_t id, WidgetKind kind, const Rect& rect, const char* label) {
@@ -252,8 +546,13 @@ Widget* WidgetTree::ensure(uint64_t id, WidgetKind kind, const Rect& rect, const
     Widget& w = s->w;
     w.kind = kind;
     w.rect = rect;
-    std::memset(w.label, 0, sizeof(w.label));
-    if (label) std::strncpy(w.label, label, sizeof(w.label) - 1);
+    w.has_clip = clip_active_;
+    w.clip = pending_clip_;
+    w.label[0] = '\0';
+    if (label) {
+        std::strncpy(w.label, label, sizeof(w.label) - 1);
+        w.label[sizeof(w.label) - 1] = '\0';
+    }
     s->frame = frame_;
     return &w;
 }
@@ -262,17 +561,23 @@ Widget* WidgetTree::touch(uint64_t id, WidgetKind kind, const Rect& rect, const 
     Widget* w = ensure(id, kind, rect, label);
     if (!w) return nullptr;
 
-    // 每帧标志先清零。Label/Panel/Progress/Separator 不参与命中测试：面板
-    // 背景一类的大矩形因此不会抢走覆盖在它上面的按钮。
+    // 每帧标志先清零。Label/Panel/Progress/Separator/装饰件不参与命中测试：
+    // 面板背景一类的大矩形因此不会抢走覆盖在它上面的按钮。
     w->hovered = false;
     w->pressed = false;
     w->clicked = false;
     if (!w->enabled || kind == WidgetKind::Label || kind == WidgetKind::Panel ||
-        kind == WidgetKind::Progress || kind == WidgetKind::Separator) {
+        kind == WidgetKind::Progress || kind == WidgetKind::Separator ||
+        kind == WidgetKind::Tooltip || kind == WidgetKind::ClipBegin ||
+        kind == WidgetKind::ClipEnd || kind == WidgetKind::Bar ||
+        kind == WidgetKind::Frame) {
         return w;
     }
 
-    const bool inside = rect_contains(rect, input_.mouse_x, input_.mouse_y);
+    bool inside = rect_contains(rect, input_.mouse_x, input_.mouse_y);
+    if (inside && w->has_clip && !rect_contains(w->clip, input_.mouse_x, input_.mouse_y)) {
+        inside = false;   // 滚出可见区 / 超出弹层：看得见才点得中
+    }
     if (inside) w->hovered = true;
 
     if (inside && input_.mouse_clicked[0]) {
@@ -282,11 +587,24 @@ Widget* WidgetTree::touch(uint64_t id, WidgetKind kind, const Rect& rect, const 
         press_claimed_ = id;
         if (kind == WidgetKind::TextInput) {
             focus_id_ = id;
+            // 点击定位插入点：鼠标 x → 字节偏移（用与绘制同一份度量）
+            if (metrics_) {
+                const float tx = input_.mouse_x - (rect.x + 4.0f) + w->scroll_x;
+                w->caret = text_pos_at(w->text, tx, *metrics_, kWidgetFontSize);
+                w->sel_anchor = w->caret;   // 空选区；拖动时拉开
+            }
         } else if (focus_id_ != 0) {
             focus_id_ = 0;   // 点别的控件：焦点转移走
         }
     }
-    if (active_id_ == id && input_.mouse_down[0]) w->pressed = true;
+    if (active_id_ == id && input_.mouse_down[0]) {
+        w->pressed = true;
+        // 输入框里按住拖动 = 拖选（锚点已在按下帧落好）
+        if (kind == WidgetKind::TextInput && metrics_ && w->sel_anchor >= 0) {
+            const float tx = input_.mouse_x - (rect.x + 4.0f) + w->scroll_x;
+            w->caret = text_pos_at(w->text, tx, *metrics_, kWidgetFontSize);
+        }
+    }
     // 拖到外面松开 = 取消，不产生点击
     if (active_id_ == id && input_.mouse_released[0] && inside) w->clicked = true;
 
@@ -310,20 +628,240 @@ void WidgetTree::apply_standard_interaction(Widget& w) {
             break;
         }
 
-        case WidgetKind::TextInput: {
-            if (focus_id_ != w.id) break;
-            for (int i = 0; i < input_.char_count; ++i) {
-                const uint32_t cp = input_.chars[i];
-                if (cp < 0x20u || cp == 0x7Fu) continue;   // 控制字符不进输入框
-                utf8_append(w.text, sizeof(w.text), cp);
+        case WidgetKind::DragFloat: {
+            // 增量式：按住时按鼠标位移改值（没有"点哪算哪"的语义，
+            // 所以第一次按下要记下基准，之后每帧只加位移）。
+            if (w.clicked) w.value = w.value;   // 点击不改值（只捕获拖拽）
+            if (w.pressed) {
+                const float dx = input_.mouse_x - drag_last_x_;
+                if (drag_owner_ == w.id) {
+                    const float speed = drag_speed_;
+                    const float step = (input_.mods & UiInputFrame::ModCtrl) ? speed * 0.1f : speed;
+                    w.value += dx * step;
+                    if (w.max_value > w.min_value) {
+                        w.value = clampf(w.value, w.min_value, w.max_value);
+                    }
+                }
             }
-            if (input_.backspace) utf8_pop(w.text);
+            if (w.pressed || w.clicked) {
+                drag_owner_ = w.id;
+                drag_speed_ = drag_speed_hint_;
+            }
             break;
         }
+
+        case WidgetKind::TreeNode:
+        case WidgetKind::Header:
+            if (w.clicked) w.open = !w.open;
+            break;
+
+        case WidgetKind::ScrollBar: {
+            if (!w.pressed || w.rect.h <= 0.0f) break;
+            const float vis = clampf(w.thumb, 0.05f, 1.0f);
+            // 点击轨道：把滑块中心对到鼠标（ImGui 的"跳转"语义）
+            const float max_off = w.rect.h * (1.0f - vis);
+            const float frac = (max_off <= 0.0f)
+                             ? 0.0f
+                             : clampf((input_.mouse_y - w.rect.y - w.rect.h * vis * 0.5f) / max_off,
+                                      0.0f, 1.0f);
+            w.value = frac;
+            break;
+        }
+
+        case WidgetKind::TextInput:
+            edit_text(w);
+            break;
 
         default:
             break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// 文本编辑
+// ---------------------------------------------------------------------------
+
+namespace {
+
+int text_len(const Widget& w) { return utf8_text_length(w.text); }
+
+void text_erase(Widget& w, int from, int to) {
+    const int len = text_len(w);
+    if (from < 0) from = 0;
+    if (to > len) to = len;
+    if (to <= from) return;
+    std::memmove(w.text + from, w.text + to, static_cast<size_t>(len - to) + 1);
+}
+
+// 在插入点插入 n 个字节（调用方保证已清掉选区）
+void text_insert_raw(Widget& w, const char* s, int n) {
+    if (n <= 0) return;
+    const int len = text_len(w);
+    if (len + n >= kWidgetTextCap) return;   // 放不下整段就整段丢弃，不截断半个码点
+    std::memmove(w.text + w.caret + n, w.text + w.caret,
+                 static_cast<size_t>(len - w.caret) + 1);
+    std::memcpy(w.text + w.caret, s, static_cast<size_t>(n));
+    w.caret += n;
+}
+
+} // namespace
+
+void WidgetTree::sync_text_scroll(Widget& w) const {
+    if (!metrics_) return;
+    const float fs = kWidgetFontSize;
+    const float cx = text_x_at(w.text, clampint(w.caret, 0, text_len(w)), *metrics_, fs);
+    const float avail = w.rect.w - 8.0f;   // 左右各 4px 内边距
+    if (avail <= 0.0f) {
+        w.scroll_x = 0.0f;
+        return;
+    }
+    if (cx - w.scroll_x > avail) w.scroll_x = cx - avail;
+    if (cx - w.scroll_x < 0.0f) w.scroll_x = cx;
+    if (w.scroll_x < 0.0f) w.scroll_x = 0.0f;
+}
+
+void WidgetTree::edit_text(Widget& w) {
+    if (focus_id_ != w.id) {
+        w.preedit[0] = '\0';   // 失焦：预编辑不该留在控件上
+        return;
+    }
+
+    const int  len   = text_len(w);
+    const bool shift = (input_.mods & UiInputFrame::ModShift) != 0;
+    const bool ctrl  = (input_.mods & UiInputFrame::ModCtrl) != 0;
+
+    // 归一化（宿主可能直接改 text，caret 会越界）
+    if (w.caret < 0) w.caret = 0;
+    if (w.caret > len) w.caret = len;
+    if (w.sel_anchor > len) w.sel_anchor = len;
+    if (w.sel_anchor < 0) w.sel_anchor = -1;
+
+    auto has_selection = [&]() { return w.sel_anchor >= 0 && w.sel_anchor != w.caret; };
+    auto sel_range = [&](int* a, int* b) {
+        *a = imin(w.sel_anchor, w.caret);
+        *b = imax(w.sel_anchor, w.caret);
+    };
+    auto move_to = [&](int to, bool extend) {
+        if (to < 0) to = 0;
+        if (to > len) to = len;
+        if (extend) {
+            if (w.sel_anchor < 0) w.sel_anchor = w.caret;
+        } else {
+            w.sel_anchor = -1;
+        }
+        w.caret = to;
+    };
+    auto delete_selection = [&]() {
+        int a = 0, b = 0;
+        sel_range(&a, &b);
+        text_erase(w, a, b);
+        w.caret = a;
+        w.sel_anchor = -1;
+    };
+    auto delete_back = [&]() {
+        if (has_selection()) { delete_selection(); return; }
+        if (w.caret <= 0) return;
+        const int p = utf8_prev_boundary(w.text, w.caret);
+        text_erase(w, p, w.caret);
+        w.caret = p;
+        w.sel_anchor = -1;
+    };
+    auto delete_forward = [&]() {
+        if (has_selection()) { delete_selection(); return; }
+        if (w.caret >= len) return;
+        const int n = utf8_next_boundary(w.text, w.caret);
+        text_erase(w, w.caret, n);
+        w.sel_anchor = -1;
+    };
+
+    // ---- 编辑键（按按下顺序处理）----
+    for (int i = 0; i < input_.key_count; ++i) {
+        const int k = input_.keys[i];
+        switch (k) {
+            case UiInputFrame::KeyLeft:
+                move_to(ctrl ? text_word_left(w.text, w.caret)
+                             : utf8_prev_boundary(w.text, w.caret), shift);
+                break;
+            case UiInputFrame::KeyRight:
+                move_to(ctrl ? text_word_right(w.text, w.caret)
+                             : utf8_next_boundary(w.text, w.caret), shift);
+                break;
+            case UiInputFrame::KeyHome: move_to(0, shift); break;
+            case UiInputFrame::KeyEnd:  move_to(len, shift); break;
+            case UiInputFrame::KeyDelete: delete_forward(); break;
+            case UiInputFrame::KeyBackspace: delete_back(); break;
+            case UiInputFrame::KeyEsc:
+                w.sel_anchor = -1;
+                w.preedit[0] = '\0';
+                focus_id_ = 0;
+                break;
+            default:
+                break;
+        }
+    }
+    // 兼容旧的布尔退格字段（宿主没填 keys[] 时也得能用）
+    if (input_.backspace && !input_.key_pressed(UiInputFrame::KeyBackspace)) {
+        delete_back();
+    }
+
+    // ---- 剪贴板 ----
+    if (ctrl && !(input_.mods & UiInputFrame::ModAlt)) {
+        UiClipboard& clip = ui_clipboard();
+        if (input_.key_pressed(UiInputFrame::KeyA)) {
+            w.sel_anchor = 0;
+            w.caret = len;
+        }
+        if (input_.key_pressed(UiInputFrame::KeyC) || input_.key_pressed(UiInputFrame::KeyX)) {
+            if (has_selection()) {
+                int a = 0, b = 0;
+                sel_range(&a, &b);
+                const int n = imin(b - a, static_cast<int>(sizeof(clip.text)) - 1);
+                std::memcpy(clip.text, w.text + a, static_cast<size_t>(n));
+                clip.text[n] = '\0';
+                ++clip.seq;
+                if (input_.key_pressed(UiInputFrame::KeyX)) delete_selection();
+            }
+        }
+        if (input_.key_pressed(UiInputFrame::KeyV)) {
+            if (has_selection()) delete_selection();
+            const int n = imin(utf8_text_length(clip.text),
+                               kWidgetTextCap - 1 - text_len(w));
+            if (n > 0) text_insert_raw(w, clip.text, n);
+        }
+    }
+
+    // ---- 字符输入（覆盖选区）----
+    if (input_.char_count > 0) {
+        if (has_selection()) delete_selection();
+        for (int i = 0; i < input_.char_count; ++i) {
+            const uint32_t cp = input_.chars[i];
+            if (cp < 0x20u || cp == 0x7Fu) continue;   // 控制字符不进输入框
+            char tmp[kWidgetTextCap];
+            tmp[0] = '\0';
+            utf8_append(tmp, sizeof(tmp), cp);
+            text_insert_raw(w, tmp, static_cast<int>(std::strlen(tmp)));
+        }
+        w.sel_anchor = -1;
+    }
+
+    // ---- 预编辑（输入法组合态）----
+    std::snprintf(w.preedit, sizeof(w.preedit), "%s", input_.preedit);
+
+    // 重新归一化并在需要时横向滚动，保证插入点可见
+    if (w.caret < 0) w.caret = 0;
+    if (w.caret > text_len(w)) w.caret = text_len(w);
+    if (w.sel_anchor > text_len(w)) w.sel_anchor = text_len(w);
+    sync_text_scroll(w);
+}
+
+void WidgetTree::set_clip(const Rect& r) {
+    clip_active_ = true;
+    pending_clip_ = r;
+}
+
+void WidgetTree::clear_clip() {
+    clip_active_ = false;
+    pending_clip_ = Rect{};
 }
 
 Widget* WidgetTree::find(uint64_t id) {
@@ -377,6 +915,16 @@ void WidgetTree::end_frame() {
     if (!input_.mouse_down[0]) active_id_ = 0;
     // 点击落在空白处：没有任何控件认领这次按下 → 清键盘焦点
     if (input_.mouse_clicked[0] && press_claimed_ == 0) focus_id_ = 0;
+    drag_last_x_ = input_.mouse_x;
+    if (!input_.mouse_down[0]) drag_owner_ = 0;
+
+    // 输入法组合态只属于"本帧结束时仍持有焦点"的那个输入框。焦点可能在本帧
+    // 中途才转移（后提交的输入框抢走焦点），先提交的那个此时已经把预编辑抄进
+    // 自己身上了——帧末统一清掉，不然失焦的框会顶着一串组合字。
+    for (int i = 0; i < used_; ++i) {
+        if (!slots_[i].alive) continue;
+        if (slots_[i].w.id != focus_id_) slots_[i].w.preedit[0] = '\0';
+    }
 }
 
 void WidgetTree::sweep() {
@@ -390,10 +938,31 @@ void WidgetTree::sweep() {
     }
 }
 
+void WidgetTree::begin_drag(uint64_t source_id, const char* type, const char* text) {
+    drag_active_ = true;
+    drag_source_ = source_id;
+    std::snprintf(drag_type_, sizeof(drag_type_), "%s", type ? type : "");
+    std::snprintf(drag_text_, sizeof(drag_text_), "%s", text ? text : "");
+}
+
+void WidgetTree::end_drag() {
+    drag_active_ = false;
+    drag_source_ = 0;
+    drag_type_[0] = '\0';
+    drag_text_[0] = '\0';
+}
+
 void WidgetTree::draw(UiDrawList& dl, const Theme& theme, const UiTextMetrics& metrics) const {
-    for (int i = 0; i < used_; ++i) {
-        if (!slots_[i].alive) continue;
-        ui_draw_widget(slots_[i].w, theme, metrics, focus_id_, dl);
+    const UiDrawContext ctx{focus_id_, caret_visible_};
+    // 两遍：窗口层在前、弹层在后。弹层的提交顺序可能与窗口交叉（宿主在
+    // 窗口内容中间弹层），靠 layer 分流比靠调用顺序可靠。
+    for (int layer = 0; layer <= 1; ++layer) {
+        for (int i = 0; i < used_; ++i) {
+            if (!slots_[i].alive) continue;
+            const Widget& w = slots_[i].w;
+            if (static_cast<int>(w.layer) != layer) continue;
+            ui_draw_widget(w, theme, metrics, ctx, dl);
+        }
     }
 }
 
@@ -407,6 +976,9 @@ void WidgetTree::clear() {
     active_id_ = 0;
     focus_id_ = 0;
     press_claimed_ = 0;
+    drag_owner_ = 0;
+    drag_last_x_ = 0.0f;
+    end_drag();
 }
 
 } // namespace gryce_ui
