@@ -3068,21 +3068,21 @@ TEST(builtin, last_item_queries) {
 
 TEST(theme, default_dark_preset) {
     GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), 0xE6E6EAFFu);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x1F1F24FFu);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x4C8DFFFFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), 0xFFFFFFFFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x202020FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x4CC2FFFFu);
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_ROW_H), 22.0f, 1e-4f);
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_INDENT), 18.0f, 1e-4f);
 }
 
 TEST(theme, light_preset_swaps_and_back) {
     GUi_ThemeSetPreset(GUI_THEME_PRESET_LIGHT);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0xF2F2F4FFu);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), 0x222228FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0xF3F3F3FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), 0x1B1B1BFFu);
     // 度量与预设无关
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_ROW_H), 22.0f, 1e-4f);
     GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x1F1F24FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x202020FFu);
 }
 
 TEST(theme, per_token_override_and_reset) {
@@ -3091,7 +3091,7 @@ TEST(theme, per_token_override_and_reset) {
     CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0xFF0000FFu);
     // 换预设整体重置（个别覆盖不跨预设存活）
     GUi_ThemeSetPreset(GUI_THEME_PRESET_LIGHT);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x2E6BE6FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x005FB8FFu);
 
     GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
     GUi_ThemeSetColor(GUI_THEME_COLOR_TEXT, 0x123456FFu);
@@ -3107,11 +3107,11 @@ TEST(theme, bad_tokens_tolerated) {
     CHECK_EQ(GUi_ThemeMetric(-1), 0.0f);
     GUi_ThemeSetColor(-1, 0xFFFFFFFFu);
     GUi_ThemeSetColor(GUI_THEME_COLOR_COUNT + 5, 0xFFFFFFFFu);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), 0xE6E6EAFFu);   // 未被误改
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_TEXT), 0xFFFFFFFFu);   // 未被误改
 
     // 未知 preset 回落深色（调用方传错值时行为仍确定）
     GUi_ThemeSetPreset(42);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x1F1F24FFu);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_WINDOW_BG), 0x202020FFu);
 }
 
 TEST(theme, apply_is_safe_without_imgui) {
@@ -3189,8 +3189,8 @@ TEST(theme, derived_tokens_consistent_across_presets) {
 }
 
 TEST(theme, rounding_metrics_present) {
-    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 10.0f, 1e-4f);
-    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_FRAME_ROUNDING), 6.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 8.0f, 1e-4f);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_FRAME_ROUNDING), 4.0f, 1e-4f);
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_ROUNDING), 4.0f, 1e-4f);
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_SCROLLBAR_SIZE), 12.0f, 1e-4f);
     CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_GRAB_MIN_SIZE), 8.0f, 1e-4f);

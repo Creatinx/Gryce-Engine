@@ -60,47 +60,48 @@ uint32_t shade(uint32_t rgba, float mul) {
 
 // ---- 预设锚色（每套 17 个，顺序 = ThemeAnchor 枚举） ----
 //
-// 前两套与历史上的深色/浅色逐字节一致（既有测试钉住这些值，不许漂移）；
-// 后三套是新增的审美预设。
+// Dark / Light 是 Fluent（Win11）风格的现代扁平预设：低对比分层、控制件
+// 4px 圆角、强调色只在"可点"与"已选"上出现。更早的高对比配色由
+// HighContrast 预设承担；Midnight / Nord 是氛围向备选。
 
 const uint32_t kAnchorsDark[THEME_ANCHOR_COUNT] = {
-    0x1F1F24FF,  // WINDOW_BG
-    0x17171BFF,  // CHILD_BG
-    0x3A3A42FF,  // BORDER
-    0xE6E6EAFF,  // TEXT
-    0x9A9AA3FF,  // TEXT_DIM
-    0x4C8DFFFF,  // ACCENT
-    0x6FA3FFFF,  // ACCENT_HOVER
-    0x3B76DDFF,  // ACCENT_ACTIVE
-    0x2E2E36FF,  // BUTTON
-    0x3A3A44FF,  // BUTTON_HOVER
-    0x44444EFF,  // BUTTON_ACTIVE
-    0x26262CFF,  // HEADER
-    0x32323AFF,  // HEADER_HOVER
-    0x2F5D8FFF,  // SELECTION
-    0x6BBE6BFF,  // OK
-    0xE0C15AFF,  // WARN
-    0xE06C6CFF,  // ERROR
+    0x202020FF,  // WINDOW_BG   Fluent 深色底（Mica 近似值）
+    0x2C2C2CFF,  // CHILD_BG    卡片层：比底色亮一档
+    0x383838FF,  // BORDER      ≈ 白色 10% 叠在底上，分隔线几乎不可见
+    0xFFFFFFFF,  // TEXT
+    0x9D9D9DFF,  // TEXT_DIM    ≈ 白色 60%
+    0x4CC2FFFF,  // ACCENT      Win11 深色主题的亮蓝
+    0x62C7FFFF,  // ACCENT_HOVER
+    0x33A3E6FF,  // ACCENT_ACTIVE
+    0x323232FF,  // BUTTON      ≈ 白色 7% 叠在底上：低对比的"次级填充"
+    0x3A3A3AFF,  // BUTTON_HOVER
+    0x2A2A2AFF,  // BUTTON_ACTIVE  按下反而更暗（Fluent 的触感）
+    0x262626FF,  // HEADER      标题栏/菜单栏：比底色亮一点点
+    0x2E2E2EFF,  // HEADER_HOVER
+    0x2F596EFF,  // SELECTION   强调色 35% 混进底色
+    0x6CCB5FFF,  // OK
+    0xE7B958FF,  // WARN
+    0xE74856FF,  // ERROR
 };
 
 const uint32_t kAnchorsLight[THEME_ANCHOR_COUNT] = {
-    0xF2F2F4FF,  // WINDOW_BG
-    0xFFFFFFFF,  // CHILD_BG
-    0xC8C8CEFF,  // BORDER
-    0x222228FF,  // TEXT
-    0x6A6A72FF,  // TEXT_DIM
-    0x2E6BE6FF,  // ACCENT
-    0x4F86F0FF,  // ACCENT_HOVER
-    0x2455B8FF,  // ACCENT_ACTIVE
-    0xE4E4EAFF,  // BUTTON
-    0xD8D8E0FF,  // BUTTON_HOVER
-    0xCACAD2FF,  // BUTTON_ACTIVE
-    0xEAEAEFFF,  // HEADER
-    0xE0E0E6FF,  // HEADER_HOVER
-    0xC9DCFAFF,  // SELECTION
-    0x2E8B2EFF,  // OK
-    0xA67C00FF,  // WARN
-    0xC0392BFF,  // ERROR
+    0xF3F3F3FF,  // WINDOW_BG   Fluent 浅色底（Mica 近似值）
+    0xFFFFFFFF,  // CHILD_BG    卡片：纯白浮在灰底上
+    0xDBDBDBFF,  // BORDER      ≈ 黑色 12%
+    0x1B1B1BFF,  // TEXT
+    0x5C5C5CFF,  // TEXT_DIM    ≈ 黑色 60%
+    0x005FB8FF,  // ACCENT      Win11 浅色主题的深蓝
+    0x1A73C7FF,  // ACCENT_HOVER
+    0x0054A6FF,  // ACCENT_ACTIVE
+    0xFBFBFBFF,  // BUTTON      近白：浅色下"次级填充"比底色更亮
+    0xF4F4F4FF,  // BUTTON_HOVER
+    0xEAEAEAFF,  // BUTTON_ACTIVE
+    0xEEEEF0FF,  // HEADER
+    0xE4E4E6FF,  // HEADER_HOVER
+    0xCCE4F7FF,  // SELECTION   Fluent 浅色选区蓝
+    0x0F7B0FFF,  // OK
+    0xB98200FF,  // WARN
+    0xC42B1CFF,  // ERROR
 };
 
 // 深蓝夜航：底色比默认深色更蓝更沉，强调色换成柔和的天空蓝。
@@ -171,7 +172,8 @@ const char* const kPresetNames[THEME_PRESET_COUNT] = {
 };
 
 // 度量与预设无关（所有主题共用同一套几何；圆角/滚动条是"美化"的一部分，
-// 不分主题——浅色下同样的圆角同样成立）。
+// 不分主题——浅色下同样的圆角同样成立）。圆角取 Fluent 档位：窗口/弹层/
+// 卡片 8px，控制件 4px——Win11 的"大面板圆、小控件方"的层次感。
 const float kMetrics[THEME_METRIC_COUNT] = {
     8.0f,   // PAD_X
     5.0f,   // PAD_Y
@@ -179,12 +181,12 @@ const float kMetrics[THEME_METRIC_COUNT] = {
     4.0f,   // ITEM_SPACING
     18.0f,  // INDENT
     1.0f,   // BORDER_W
-    10.0f,  // WINDOW_ROUNDING
-    6.0f,   // CHILD_ROUNDING
-    6.0f,   // FRAME_ROUNDING
+    8.0f,   // WINDOW_ROUNDING
+    8.0f,   // CHILD_ROUNDING
+    4.0f,   // FRAME_ROUNDING
     4.0f,   // GRAB_ROUNDING
     8.0f,   // POPUP_ROUNDING
-    6.0f,   // TAB_ROUNDING
+    4.0f,   // TAB_ROUNDING
     12.0f,  // SCROLLBAR_SIZE
     8.0f,   // GRAB_MIN_SIZE
 };

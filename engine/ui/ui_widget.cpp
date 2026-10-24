@@ -161,7 +161,7 @@ uint32_t mix_rgba(uint32_t a, uint32_t b, float t) {
 }
 
 // 相对亮度（sRGB → 线性，Rec.709 权重）。判断"这个颜色上该压白字还是黑字"
-// 只能用线性亮度——直接把 0x4C8DFF 的 RGB 平均值当亮度会得出"中等灰"，
+// 只能用线性亮度——直接把 0x4CC2FF 的 RGB 平均值当亮度会得出"中等灰"，
 // 于是在蓝底上压深灰字，看着像脏了一块。
 float rel_luma(uint32_t rgba) {
     auto lin = [](uint32_t v) {
@@ -376,8 +376,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
     // 分两层——贴身的紧影给出"离地关系"，外围的散影给出"悬空体积"；单层要么
     // 糊成一团灰晕，要么像贴纸。
     const uint32_t shadow_rgb  = theme_color(theme, THEME_COLOR_BORDER_SHADOW) & 0xFFFFFF00u;
-    const uint32_t shadow_near = shadow_rgb | 0x8Cu;
-    const uint32_t shadow_far  = shadow_rgb | 0x4Cu;
+    const uint32_t shadow_near = shadow_rgb | 0x78u;
+    const uint32_t shadow_far  = shadow_rgb | 0x40u;
     // 控件日常描边：比 BORDER 更贴近控件底色，只勾形状不画线框；悬停/聚焦换 ACCENT
     const uint32_t edge_soft = theme_color(theme, THEME_COLOR_CONTROL_BORDER);
     const uint32_t accent    = theme_color(theme, THEME_COLOR_ACCENT);
@@ -393,15 +393,15 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                               : w.pressed  ? theme_color(theme, THEME_COLOR_BUTTON_ACTIVE)
                               : w.hovered  ? theme_color(theme, THEME_COLOR_BUTTON_HOVER)
                                            : theme_color(theme, THEME_COLOR_BUTTON);
-            // 上亮下暗的纵向渐变给出"可按"的厚度。按下时反过来压暗并缩小上下差
-            //（顶亮底暗 → 整体沉下去），比只换底色更像被按进去。
+            // Fluent 是扁平填充：渐变只留 2%~4% 的极微层次给"可按"的方向感，
+            // 按下时整体沉下去（顶亮面收掉、底暗面加深）。
             const uint32_t b_edge = !w.enabled ? edge_soft
                                   : w.pressed  ? theme_color(theme, THEME_COLOR_ACCENT_ACTIVE)
                                   : w.hovered  ? accent
                                                : edge_soft;
             draw_round_frame_gradient(dl, r, r_frame,
-                                      shade(bg, w.pressed ? 0.02f : 0.14f),
-                                      shade(bg, w.pressed ? -0.12f : -0.08f),
+                                      shade(bg, w.pressed ? 0.01f : 0.04f),
+                                      shade(bg, w.pressed ? -0.05f : -0.02f),
                                       b_edge, bw);
             const float tw = metrics.width(w.label, fs);
             dl.add_text(r.x + (r.w - tw) * 0.5f, ty, w.label, fs, text_col);
@@ -412,18 +412,17 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             // 弹层（layer 1）用弹层圆角、窗口用窗口圆角：两者的视觉权重不同
             const float rad = (w.layer > 0) ? r_popup : r_window;
             if (w.shadow) {
-                dl.add_shadow(r.x, r.y, r.w, r.h, rad, 7.0f, shadow_near);
-                dl.add_shadow(r.x, r.y, r.w, r.h, rad, 20.0f, shadow_far);
+                dl.add_shadow(r.x, r.y, r.w, r.h, rad, 8.0f, shadow_near);
+                dl.add_shadow(r.x, r.y, r.w, r.h, rad, 24.0f, shadow_far);
             }
             if (w.bg_overridden) {
                 draw_round_frame(dl, r, rad, w.bg_color,
                                  theme_color(theme, THEME_COLOR_BORDER), bw);
             } else {
                 const uint32_t base = theme_color(theme, THEME_COLOR_WINDOW_BG);
-                // 窗口面积大，渐变幅度要收着：从标题栏一路到底的强渐变会让
-                // 内容区像被打了顶光，看久了累
-                draw_round_frame_gradient(dl, r, rad, shade(base, 0.05f),
-                                          shade(base, -0.04f),
+                // Fluent 的窗口是平的：只留 2% 的上下层次，几乎察觉不到
+                draw_round_frame_gradient(dl, r, rad, shade(base, 0.02f),
+                                          shade(base, -0.01f),
                                           mix_rgba(theme_color(theme, THEME_COLOR_BORDER),
                                                    base, 0.20f), bw);
             }
@@ -453,8 +452,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                 const float fill_h = r.h - bw * 2.0f;
                 if (inner_r > fill_h * 0.5f) inner_r = fill_h * 0.5f;
                 const uint32_t a = theme_color(theme, THEME_COLOR_ACCENT);
-                dl.add_round_gradient(r.x + bw, r.y + bw, (r.w - bw * 2.0f) * frac,
-                                      fill_h, inner_r, shade(a, 0.18f), shade(a, -0.08f));
+                dl.add_round_rect(r.x + bw, r.y + bw, (r.w - bw * 2.0f) * frac,
+                                  fill_h, inner_r, a);
             }
             if (w.label[0]) {
                 const float tw = metrics.width(w.label, fs);
@@ -476,8 +475,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             const uint32_t box_edge = w.checked ? shade(accent, 0.30f)
                                     : w.hovered ? accent
                                                 : edge_soft;
-            draw_round_frame_gradient(dl, box, r_grab, shade(box_bg, 0.12f),
-                                      shade(box_bg, -0.10f), box_edge, bw);
+            draw_round_frame_gradient(dl, box, r_grab, shade(box_bg, 0.04f),
+                                      shade(box_bg, -0.02f), box_edge, bw);
             if (w.checked) {
                 // 没有勾线路径可画：用一块与底色反差最大的内缩圆角块当"已选"。
                 // 块不能给大——16px 的方框里塞 10px 白方块像贴了张纸。
@@ -533,8 +532,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                               : w.hovered ? theme_color(theme, THEME_COLOR_BUTTON_HOVER)
                                           : theme_color(theme, THEME_COLOR_BUTTON);
             draw_round_frame_gradient(dl, r, r_frame,
-                                      shade(bg, w.pressed ? 0.02f : 0.12f),
-                                      shade(bg, w.pressed ? -0.12f : -0.08f),
+                                      shade(bg, w.pressed ? 0.01f : 0.04f),
+                                      shade(bg, w.pressed ? -0.05f : -0.02f),
                                       (w.hovered || w.pressed) ? accent : edge_soft, bw);
             if (w.label[0]) {
                 dl.add_text(r.x + 6.0f, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
@@ -559,8 +558,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
         case WidgetKind::Header: {
             const uint32_t bg = w.hovered ? theme_color(theme, THEME_COLOR_HEADER_HOVER)
                                           : theme_color(theme, THEME_COLOR_HEADER);
-            draw_round_frame_gradient(dl, r, r_frame, shade(bg, 0.10f),
-                                      shade(bg, -0.06f), 0u, 0.0f);
+            draw_round_frame_gradient(dl, r, r_frame, shade(bg, 0.03f),
+                                      shade(bg, -0.01f), 0u, 0.0f);
             draw_fold_marker(dl, r.x + 4.0f, ty, w.open, theme, metrics, fs);
             const float ox = r.x + 8.0f + fs * 0.75f + 2.0f;
             dl.add_text(ox, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
@@ -616,8 +615,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                 const uint32_t base = w.bg_overridden
                                     ? w.bg_color
                                     : theme_color(theme, THEME_COLOR_CHILD_BG);
-                draw_round_frame_gradient(dl, r, r_child, shade(base, 0.06f),
-                                          shade(base, -0.04f),
+                draw_round_frame_gradient(dl, r, r_child, shade(base, 0.02f),
+                                          shade(base, -0.01f),
                                           mix_rgba(theme_color(theme, THEME_COLOR_BORDER), base, 0.45f),
                                           bw);
             }
@@ -631,8 +630,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             // 用逐角半径的渐变，一次搞定"圆角 + 纵向层次"，不再叠第二个矩形
             //（叠加会在圆角外露出一圈方块边）。
             const float tradii[4] = {r_window, r_window, 0.0f, 0.0f};
-            dl.add_round_gradient4(r.x, r.y, r.w, r.h, tradii, shade(bg, 0.16f),
-                                   shade(bg, -0.10f));
+            dl.add_round_gradient4(r.x, r.y, r.w, r.h, tradii, shade(bg, 0.05f),
+                                   shade(bg, -0.02f));
             // 标题栏自己再描一圈边。窗口底板的描边先画、被标题栏盖住，不补这一
             // 条时窗口上沿是没有边框的，而且圆角处会露出一像素的底板色（看着
             // 像缺口）。下沿那条边同时充当"标题栏 / 内容区"的分隔线——标题栏与
@@ -647,12 +646,12 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
 
         case WidgetKind::Tooltip: {
             if (w.shadow) {
-                dl.add_shadow(r.x, r.y, r.w, r.h, r_popup, 6.0f, shadow_near);
-                dl.add_shadow(r.x, r.y, r.w, r.h, r_popup, 18.0f, shadow_far);
+                dl.add_shadow(r.x, r.y, r.w, r.h, r_popup, 7.0f, shadow_near);
+                dl.add_shadow(r.x, r.y, r.w, r.h, r_popup, 20.0f, shadow_far);
             }
             const uint32_t tbg = theme_color(theme, THEME_COLOR_POPUP_BG);
-            draw_round_frame_gradient(dl, r, r_popup, shade(tbg, 0.10f),
-                                      shade(tbg, -0.04f),
+            draw_round_frame_gradient(dl, r, r_popup, shade(tbg, 0.03f),
+                                      shade(tbg, -0.01f),
                                       theme_color(theme, THEME_COLOR_BORDER), bw);
             dl.add_text(r.x + 6.0f, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
             break;
@@ -663,8 +662,8 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             // 平涂的输入框与按钮长得一模一样，用户看不出哪里能打字。
             const uint32_t base = mix_rgba(theme_color(theme, THEME_COLOR_BUTTON),
                                            theme_color(theme, THEME_COLOR_CHILD_BG), 0.55f);
-            draw_round_frame_gradient(dl, r, r_frame, shade(base, -0.10f),
-                                      shade(base, 0.04f),
+            draw_round_frame_gradient(dl, r, r_frame, shade(base, -0.03f),
+                                      shade(base, 0.02f),
                                       focused ? accent : edge_soft,
                                       focused ? (bw + 0.5f) : bw);
             // 长文本不许淌出框外：裁剪 + 只画框内那一段
