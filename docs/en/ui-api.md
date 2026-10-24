@@ -479,6 +479,39 @@ Semantics:
 
 Demo: `--page anim` (or `Ctrl+4`). The panel is block 1 (easing combo + tween progress bar + color-lerp swatch, timed by the host's own clock); the stage on the right is block 2 — one 2-second clip drives four components: `slide` (ease-in-out-cubic keyframes), `pulse` (two pulses), `hop` (two uneven bounces), `stag.0..3` (staggered entrances with delay 0/0.15/0.30/0.45). The page lets you change the loop mode (without resetting progress), the speed, and drag the seek slider, while the channel list shows every channel's live value.
 
+## 7.10 The built-in UI render path (leaving ImGui) and UIDrawList
+
+`GUi_*` currently lands through Dear ImGui. The engine is building a **built-in UI runtime**: a retained control tree (`ui_component`) plus self-drawn rendering, with no ImGui dependency at the end. Four phases, each independently verifiable:
+
+| Phase | Content | Status |
+| --- | --- | --- |
+| 1 | `ui_drawlist` command buffer (model layer, pure logic) | this round |
+| 2 | Render bridge: drawlist → `IRenderer2D`; all three backends inherit it; no new shader | next |
+| 3 | Retained control layer: hit testing + event dispatch + control library (Button/Label/Slider/Checkbox/TextInput) | planned |
+| 4 | `GUi_*` dual-track switch; ImGui retreats to an optional debug backend | planned |
+
+ImGui's role on this path changes accordingly: **from "the UI system itself" to "one backend for editor/debug UI"**. The UI model layer (7.6), component tree (7.7) and animation (7.9) contain no ImGui dependency, so swapping the backend does not touch them.
+
+**Why the render bridge needs no new shader**: the rasterization carrier is the engine's existing `IRenderer2D` (`engine/render/render2d.h`) — `draw_rect` / `draw_text` / `draw_sprite_region` / `set_scissor` / `top_left_origin` (that interface's comment literally says "UI/HUD layer") — already implemented on all three backends (D3D12 / Vulkan / GL); text goes through the engine's own `FontAtlas` (stb_truetype, multi-source Latin+CJK fallback, glyph UV/advance). The built-in UI only supplies what is missing: the command buffer and the control semantics.
+
+### UIDrawList semantics (`engine/ui/ui_drawlist.h`)
+
+| Topic | Rule |
+| --- | --- |
+| Positioning | Model layer: records only "what to draw" (commands + clip stack + string pool); never touches the GPU, so it is unit-testable headless |
+| Commands | Five kinds: `Rect` / `Text` / `Sprite` / `PushClip` / `PopClip`; POD shared by the render bridge and the tests |
+| Coordinates | Top-left origin, +y down, matching `IRenderer2D`'s `top_left_origin` |
+| Clip intersection | `push_clip` intersects with the current clip; an empty intersection (w≤0 or h≤0) enters the cull state |
+| Cull state | Subsequent **draw commands** are dropped and counted in `culled()`; `PushClip`/`PopClip` are still recorded (otherwise there is no way back) |
+| Per-command clip tag | Every command carries `clip` = the clip-stack depth **in effect after executing it** (PushClip records the depth after pushing, PopClip after popping, draw commands the current depth; 0 = no clip); the render bridge switches scissor by depth instead of storing a clip rect per command |
+| Clip stack full | The push is rejected and counted in `dropped()`; `pop` only unwinds by depth, so a rejected push never unbalances later pops |
+| Command table full | Dropped and counted in `dropped()` (capacity 4096) |
+| String pool | 32KB; if a whole string does not fit, the **entry is dropped and counted, never truncated** — half a string is harder to debug than none |
+| Empty text | `nullptr` or an empty string produces no command (not counted as culled) |
+| Geometry | No normalization: negative w/h is recorded verbatim; geometric correctness belongs to the layout layer |
+
+The demo host gains `--page builtin` in phase 2: no ImGui involved — a retained control tree generates a drawlist that the render bridge draws to the screen, for screenshot regression.
+
 ## 8. Sharing input with the host
 
 When the UI eats mouse/keyboard, host navigation and shortcuts must yield:
@@ -497,6 +530,6 @@ Missing the keyboard guard looks like: renaming an entity, pressing `W` starts t
 
 * No docking, no multi-window docking, no `ImPlot` or node-editor style add-ons — add a new `GUi_*` function for those instead of pulling ImGui into the extension.
 * Drag/drop payloads are a single string: no multi-selection dragging, no custom payload types, and no cross-process or cross-window dragging.
-* One dark theme plus semantic text colours (`GUI_TEXT_*`). To restyle, change the engine's `debug_imgui` style; do not hardcode colours in callers.
+* Five built-in theme presets (Dark / Light / Midnight / Nord / HighContrast, see 7.8); callers reference tokens only — do not hardcode colours in callers.
 * `GUi_Image` takes no custom UVs or border tinting; the viewport shows the full texture.
 * Non-ASCII text depends on the font atlas the engine loaded; missing glyphs render as boxes rather than crashing.

@@ -479,6 +479,39 @@ GUi_AnimChannelFloat("slide.x", &x);       // 读通道；返回 1 = 有该标�
 
 演示：`--page anim`（或 `Ctrl+4`）。面板里是块一（缓动组合框 + 补间进度条 + 颜色插值色块，时间用宿主时钟）；右侧舞台是块二——一根 2 秒的片段驱动四个组件：`slide`（滑移，InOutCubic 关键帧）、`pulse`（两次脉冲）、`hop`（两段不等高弹跳）、`stag.0..3`（delay 0/0.15/0.30/0.45 错峰入场）。页内可改循环模式（不重置进度）、速度、拖动 seek，通道列表实时显示每个通道的值。
 
+## 7.10 内置 UI 渲染路径（脱离 ImGui）与 UIDrawList
+
+`GUi_*` 目前经 Dear ImGui 落地。引擎在做**内置 UI 运行时**：retained 控件树（`ui_component`）+ 自绘渲染，最终不再依赖 ImGui。分四阶段推进，每阶段独立可验证：
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| 1 | `ui_drawlist` 命令缓冲（模型层，纯逻辑） | 本轮完成 |
+| 2 | 渲染桥：drawlist → `IRenderer2D`，三后端自动继承，不写新 shader | 下一步 |
+| 3 | retained 控件层：命中测试 + 事件分发 + 控件库（Button/Label/Slider/Checkbox/TextInput） | 规划中 |
+| 4 | `GUi_*` 双轨切换，ImGui 退居可选调试后端 | 规划中 |
+
+ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编辑器调试 UI 的一个后端"**。UI 模型层（7.6）与组件树（7.7）、动画（7.9）都不含 ImGui 依赖，换后端不伤它们。
+
+**为什么渲染桥不需要新 shader**：光栅化载体是引擎已有的 `IRenderer2D`（`engine/render/render2d.h`）——`draw_rect` / `draw_text` / `draw_sprite_region` / `set_scissor` / `top_left_origin`（该接口的注释里就写着"UI/HUD 层"）三后端（D3D12 / Vulkan / GL）均已实现；文本用引擎自己的 `FontAtlas`（stb_truetype、多字体源 Latin+CJK 回退、glyph UV/advance）。内置 UI 只补"缺的那部分"：命令缓冲与控件语义。
+
+### UIDrawList 语义表（`engine/ui/ui_drawlist.h`）
+
+| 主题 | 规则 |
+| --- | --- |
+| 定位 | 模型层：只记录"画什么"（命令 + 裁剪栈 + 字符串池），不碰 GPU，可无窗口单测 |
+| 命令 | `Rect` / `Text` / `Sprite` / `PushClip` / `PopClip` 五类；POD，渲染桥与测试共用 |
+| 坐标系 | 左上原点、+y 向下，与 `IRenderer2D` 的 `top_left_origin` 一致 |
+| 裁剪相交 | `push_clip` 与当前裁剪取交集；交集为空（w≤0 或 h≤0）进入剔除态 |
+| 剔除态 | 后续**绘制命令**直接丢弃并计 `culled()`；`PushClip`/`PopClip` 照常记录（否则恢复不回来） |
+| 命令裁剪标记 | 每条命令带 `clip` 字段 = **执行该命令后**生效的裁剪栈深度（PushClip 记压入后、PopClip 记弹出后、绘制命令记当前深度；0 = 无裁剪）；渲染桥据此切 scissor，不在命令里存裁剪矩形 |
+| 裁剪栈满 | 拒绝 push 并计 `dropped()`；`pop` 只按深度弹，未成功的 push 不会让后续 pop 失衡 |
+| 命令表满 | 丢弃并计 `dropped()`（容量 4096） |
+| 字符串池 | 容量 32KB；放不下整条文本时**整条丢弃并计数，不截断**——半条字符串比没有更难调试 |
+| 空文本 | `nullptr` 或空串不产生命令（不计 culled） |
+| 几何 | 不规范化：w/h 为负原样记录，几何正确性由布局层负责 |
+
+演示宿主阶段 2 会加 `--page builtin`：不经过 ImGui、直接由 retained 控件树生成 drawlist 并经渲染桥画到屏幕，用于截图回归。
+
 ## 8. 与宿主输入的分工
 
 UI 吃掉鼠标/键盘时，宿主的场景导航与快捷键必须让路：
@@ -497,6 +530,6 @@ if (GUi_WantCaptureKeyboard()) return;   // 不派发任何快捷键
 
 * 无 docking、无多窗口停靠、无 `ImPlot`/节点编辑器一类扩展——需要的话加成 `GUi_*` 的新函数，不要在扩展里引 ImGui。
 * 拖放 payload 只支持单个字符串，没有多选拖拽、没有自定义 payload 类型（跨进程/跨窗口拖拽也不支持）。
-* 主题只有一套暗色 + 语义文本色（`GUI_TEXT_*`）。要换主题改引擎内 `debug_imgui` 的 style，不要在调用方硬编码颜色。
+* 主题内置 5 套预设（Dark / Light / Midnight / Nord / HighContrast，见 7.8）；调用方只引用 token，不要在调用方硬编码色值。
 * `GUi_Image` 不接受自定义 UV / 边框着色，视口只显示完整纹理。
 * 中文等非 ASCII 文本依赖引擎加载的字体图集；字体缺失时显示为方块，不会崩。

@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 39 cases across six hosts.
+There are currently 40 cases across six hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -78,7 +78,7 @@ Observations are made by comparing scene-JSON bytes rather than entity counts: `
 | `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
 | `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
-### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 11 cases)
+### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 12 cases)
 
 The sources under test (`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`) are compiled straight into the test executable with no engine DLL, and **without `GRYCE_HAS_IMGUI`** — which also verifies that the queue and the model layer work in builds with ImGui disabled (headless hosts take that path too). `GRYCE_RENDERER_BUILDING` turns the export macros into dllexport so the static exe links against itself.
 
@@ -92,7 +92,9 @@ The `comp` suite covers the component tree layout: add/find/remove with whole-su
 
 The `anim` suite covers the animation system: block 1's pure functions (boundary alignment and input clamping for all 11 easings, overshoot returning to 1 for Back, tween delay/overshoot/zero-duration, color lerp clamping, ordered key insertion with same-time overwrite, holding outside the range, segment easing taken from the previous key, capacity) and block 2's runtime (clip duration derivation and same-name track replacement, Once finishing at the end and stopping there, Loop wrap and PingPong fold, speed/seek/pause/stop, track delay holding the initial value, color channels and type discipline, the channel table rebuilt per clip, all operations no-op without a clip). The `animabi` suite covers the C surface: easing/name consistency with the model (including out-of-range enums), the tween/color helpers, and the full loop of "build a C clip → play → advance → read channels → pause/change speed/seek/stop".
 
-Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5; the component tree layout in section 7.7; theme presets and beautification in section 7.8; the two animation blocks in section 7.9.
+Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5; the component tree layout in section 7.7; theme presets and beautification in section 7.8; the two animation blocks in section 7.9; the built-in UI render path and UIDrawList in section 7.10.
+
+The `drawlist` suite covers the UI self-draw command buffer (the model layer of the built-in UI render path, see ui-api.md section 7.10): command order and field round-trip, empty text/nullptr producing no command, multiple string-pool entries not overlapping, commands tagged with the clip depth, nested clips intersecting, an empty clip culling draw commands while clip commands are still recorded, pop restoring the parent clip, popping an empty stack as a no-op, three-level intersection, a full clip stack rejecting the push without unbalancing pops, a full command table dropping and counting, a string pool dropping whole entries instead of truncating, reset clearing the clip stack, and negative geometry recorded verbatim.
 
 `GryceUiSmoke.exe` is the end-to-end demo for the model layer (not part of the gate; needs a window): the panel draws, `--ops-burst N` shows `coalesced` close to the continuous-op count in the stats, and `--ui-interval 3` produces a byte-identical screenshot to per-frame builds. The Layout page (`--page layout` / `Ctrl+3`) draws a 20-component tree, reading each component's rect after `GUi_CompResolve()` and drawing one window per component — those windows deliberately **do not** pass `GUI_WIN_NO_BRING_TO_FRONT`, or the children would sink below their parent (see ui-api.md section 7.7). The Anim page (`--page anim` / `Ctrl+4`) shows block 1 in the panel (easing combo + tween progress bar + color-lerp swatch) and block 2 on the stage: one 2-second clip drives four components (slide / pulse / bounce / staggered entrance) whose parent is 0, so the animation's direct pos writes are never overwritten by a layout.
 

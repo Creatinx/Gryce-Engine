@@ -29,6 +29,7 @@
 #include "api/ui_op_queue_internal.h"
 #include "ui/ui_anim.h"
 #include "ui/ui_component.h"
+#include "ui/ui_drawlist.h"
 #include "ui/ui_id.h"
 #include "ui/ui_input.h"
 #include "ui/ui_layout.h"
@@ -1320,6 +1321,233 @@ TEST(compabi, set_rejects_cycle_through_abi) {
     CHECK_EQ(GUi_CompSet(rid, &s), 0);
     CHECK_EQ(GUi_CompParent(rid), 0u);     // 未被破坏
     CHECK_EQ(GUi_CompCount(), 2);
+}
+
+// ===========================================================================
+// suite: drawlist —— UI 自绘命令缓冲（内置 UI 渲染路径的模型层）
+// ===========================================================================
+
+TEST(drawlist, empty_and_reset) {
+    gryce_ui::UiDrawList dl;
+    CHECK_EQ(dl.command_count(), 0);
+    CHECK_EQ(dl.clip_depth(), 0);
+    CHECK_EQ(dl.dropped(), 0u);
+    CHECK_EQ(dl.culled(), 0u);
+
+    dl.add_rect(0, 0, 10, 10, 0xFF0000FFu);
+    dl.push_clip(0, 0, 5, 5);
+    dl.add_text(1, 1, "hi", 12.0f, 0xFFFFFFFFu);
+    CHECK_EQ(dl.command_count(), 3);
+    CHECK_EQ(dl.clip_depth(), 1);
+
+    dl.reset();
+    CHECK_EQ(dl.command_count(), 0);
+    CHECK_EQ(dl.clip_depth(), 0);
+    CHECK_EQ(dl.dropped(), 0u);
+    CHECK_EQ(dl.culled(), 0u);
+}
+
+TEST(drawlist, command_order_and_fields) {
+    gryce_ui::UiDrawList dl;
+    dl.add_rect(10, 20, 30, 40, 0x11223344u);
+    dl.add_text(1, 2, "ok", 16.0f, 0xAABBCCDDu);
+    dl.add_sprite(5, 6, 7, 8, 42u, 0.1f, 0.2f, 0.3f, 0.4f, 0x01020304u);
+
+    CHECK_EQ(dl.command_count(), 3);
+    CHECK_EQ(dl.command(0).cmd, gryce_ui::UiCmd::Rect);
+    CHECK_EQ(dl.command(0).x, 10.0f);
+    CHECK_EQ(dl.command(0).w, 30.0f);
+    CHECK_EQ(dl.command(0).color, 0x11223344u);
+
+    CHECK_EQ(dl.command(1).cmd, gryce_ui::UiCmd::Text);
+    CHECK_EQ(dl.command(1).font_size, 16.0f);
+    CHECK_EQ(dl.command(1).color, 0xAABBCCDDu);
+    CHECK_TRUE(std::strcmp(dl.text_at(dl.command(1).text_off), "ok") == 0);
+    CHECK_EQ(dl.command(1).text_len, 2u);
+
+    CHECK_EQ(dl.command(2).cmd, gryce_ui::UiCmd::Sprite);
+    CHECK_EQ(dl.command(2).texture, 42u);
+    CHECK_NEAR(dl.command(2).u0, 0.1f, 1e-6f);
+    CHECK_NEAR(dl.command(2).v1, 0.4f, 1e-6f);
+}
+
+TEST(drawlist, text_pool_roundtrip_multiple) {
+    gryce_ui::UiDrawList dl;
+    dl.add_text(0, 0, "alpha", 12.0f, 0xFFFFFFFFu);
+    dl.add_text(0, 20, "beta", 12.0f, 0xFFFFFFFFu);
+    dl.add_text(0, 40, "", 12.0f, 0xFFFFFFFFu);   // 空串不产生命令
+    dl.add_text(0, 60, nullptr, 12.0f, 0xFFFFFFFFu);
+    CHECK_EQ(dl.command_count(), 2);
+    CHECK_TRUE(std::strcmp(dl.text_at(dl.command(0).text_off), "alpha") == 0);
+    CHECK_TRUE(std::strcmp(dl.text_at(dl.command(1).text_off), "beta") == 0);
+    // 两条文本在池中互不重叠（偏移不同）
+    CHECK_TRUE(dl.command(0).text_off != dl.command(1).text_off);
+}
+
+TEST(drawlist, clip_depth_tagged_on_commands) {
+    gryce_ui::UiDrawList dl;
+    dl.add_rect(0, 0, 10, 10, 0xFFFFFFFFu);       // clip = 0
+    dl.push_clip(0, 0, 100, 100);
+    dl.add_rect(0, 0, 10, 10, 0xFFFFFFFFu);       // clip = 1
+    dl.push_clip(0, 0, 50, 50);
+    dl.add_rect(0, 0, 10, 10, 0xFFFFFFFFu);       // clip = 2
+    CHECK_EQ(dl.command(0).clip, 0u);
+    CHECK_EQ(dl.command(1).clip, 1u);             // PushClip 记"执行后"深度
+    CHECK_EQ(dl.command(2).clip, 1u);
+    CHECK_EQ(dl.command(3).clip, 2u);
+    CHECK_EQ(dl.command(4).clip, 2u);
+}
+
+TEST(drawlist, clip_intersects_parent) {
+    gryce_ui::UiDrawList dl;
+    dl.push_clip(0, 0, 100, 100);
+    dl.push_clip(50, 50, 100, 100);               // 与父相交 -> (50,50,50,50)
+    const gryce_ui::UiClipRect& c = dl.clip_at(2);
+    CHECK_NEAR(c.x, 50.0f, 1e-6f);
+    CHECK_NEAR(c.y, 50.0f, 1e-6f);
+    CHECK_NEAR(c.w, 50.0f, 1e-6f);
+    CHECK_NEAR(c.h, 50.0f, 1e-6f);
+
+    dl.push_clip(200, 200, 10, 10);               // 与父不相交 -> 空
+    const gryce_ui::UiClipRect& e = dl.clip_at(3);
+    CHECK_TRUE(e.w <= 0.0f);
+    CHECK_TRUE(e.h <= 0.0f);
+}
+
+TEST(drawlist, empty_clip_culls_draw_commands) {
+    gryce_ui::UiDrawList dl;
+    dl.push_clip(0, 0, 100, 100);
+    dl.push_clip(500, 500, 10, 10);               // 不相交 -> 剔除态
+    dl.add_rect(0, 0, 10, 10, 0xFFFFFFFFu);       // 被剔除
+    dl.add_text(1, 1, "x", 12.0f, 0xFFFFFFFFu);   // 被剔除
+    dl.add_sprite(1, 1, 4, 4, 7u, 0, 0, 1, 1, 0xFFFFFFFFu);
+    CHECK_EQ(dl.culled(), 3u);
+    CHECK_EQ(dl.command_count(), 2);              // 只剩两条 PushClip
+
+    dl.pop_clip();                                // 回到父裁剪（非空）
+    dl.add_rect(0, 0, 10, 10, 0xFFFFFFFFu);       // 恢复可见
+    CHECK_EQ(dl.command_count(), 4);
+    CHECK_EQ(dl.culled(), 3u);
+    CHECK_EQ(dl.command(2).cmd, gryce_ui::UiCmd::PopClip);
+    CHECK_EQ(dl.command(2).clip, 1u);             // pop 先减深度再记录
+    CHECK_EQ(dl.command(3).cmd, gryce_ui::UiCmd::Rect);
+    CHECK_EQ(dl.command(3).clip, 1u);             // 恢复后命令带父深度
+}
+
+TEST(drawlist, pop_clip_restores_and_records) {
+    gryce_ui::UiDrawList dl;
+    dl.push_clip(0, 0, 100, 100);                 // depth 1
+    dl.push_clip(0, 0, 50, 50);                   // depth 2
+    dl.pop_clip();                                // depth 1
+    CHECK_EQ(dl.clip_depth(), 1);
+    const gryce_ui::UiClipRect& c = dl.clip_at(1);
+    CHECK_NEAR(c.w, 100.0f, 1e-6f);               // 父裁剪完好
+    dl.add_rect(0, 0, 10, 10, 0xFFFFFFFFu);
+    CHECK_EQ(dl.command_count(), 4);
+    CHECK_EQ(dl.command(2).cmd, gryce_ui::UiCmd::PopClip);
+    CHECK_EQ(dl.command(2).clip, 1u);             // pop 后 depth=1
+    CHECK_EQ(dl.command(3).clip, 1u);             // 后续命令带 depth 1
+}
+
+TEST(drawlist, pop_on_empty_stack_is_noop) {
+    gryce_ui::UiDrawList dl;
+    dl.pop_clip();
+    dl.pop_clip();
+    CHECK_EQ(dl.clip_depth(), 0);
+    CHECK_EQ(dl.command_count(), 0);
+    CHECK_EQ(dl.dropped(), 0u);
+    dl.add_rect(0, 0, 1, 1, 0xFFFFFFFFu);         // 仍然可用
+    CHECK_EQ(dl.command_count(), 1);
+}
+
+TEST(drawlist, nested_clip_three_levels) {
+    gryce_ui::UiDrawList dl;
+    dl.push_clip(0, 0, 300, 300);
+    dl.push_clip(100, 100, 300, 300);             // -> (100,100,200,200)
+    dl.push_clip(150, 150, 300, 300);             // -> (150,150,150,150)
+    const gryce_ui::UiClipRect& c = dl.clip_at(3);
+    CHECK_NEAR(c.x, 150.0f, 1e-6f);
+    CHECK_NEAR(c.y, 150.0f, 1e-6f);
+    CHECK_NEAR(c.w, 150.0f, 1e-6f);
+    CHECK_NEAR(c.h, 150.0f, 1e-6f);
+    dl.pop_clip();
+    const gryce_ui::UiClipRect& p = dl.clip_at(2);
+    CHECK_NEAR(p.x, 100.0f, 1e-6f);
+    CHECK_NEAR(p.w, 200.0f, 1e-6f);
+}
+
+TEST(drawlist, clip_stack_overflow_rejected) {
+    gryce_ui::UiDrawList dl;
+    for (int i = 0; i < gryce_ui::UiDrawList::kMaxClips; ++i) {
+        dl.push_clip(0, 0, 100, 100);
+    }
+    CHECK_EQ(dl.clip_depth(), gryce_ui::UiDrawList::kMaxClips);
+    dl.push_clip(0, 0, 10, 10);                   // 栈满：拒绝
+    CHECK_EQ(dl.clip_depth(), gryce_ui::UiDrawList::kMaxClips);
+    CHECK_TRUE(dl.dropped() >= 1u);
+    // pop 仍然按 depth 弹，不会失衡
+    dl.pop_clip();
+    CHECK_EQ(dl.clip_depth(), gryce_ui::UiDrawList::kMaxClips - 1);
+    dl.add_rect(0, 0, 5, 5, 0xFFFFFFFFu);
+    CHECK_EQ(dl.command_count(), gryce_ui::UiDrawList::kMaxClips + 1 + 1);
+}
+
+TEST(drawlist, command_capacity_drops_and_counts) {
+    gryce_ui::UiDrawList dl;
+    for (int i = 0; i < gryce_ui::UiDrawList::kMaxCommands + 8; ++i) {
+        dl.add_rect(0, 0, 1, 1, 0xFFFFFFFFu);
+    }
+    CHECK_EQ(dl.command_count(), gryce_ui::UiDrawList::kMaxCommands);
+    CHECK_EQ(dl.dropped(), 8u);
+    // 丢弃不影响已记录命令
+    CHECK_EQ(dl.command(0).cmd, gryce_ui::UiCmd::Rect);
+}
+
+TEST(drawlist, text_pool_overflow_drops_whole_entry) {
+    gryce_ui::UiDrawList dl;
+    // 第一条吃掉几乎整个池子（余量 < 10 字节）
+    const std::string big(static_cast<size_t>(gryce_ui::UiDrawList::kTextPoolSize) - 4, 'a');
+    dl.add_text(0, 0, big.c_str(), 12.0f, 0xFFFFFFFFu);
+    CHECK_EQ(dl.command_count(), 1);
+    // 第二条放不下：整条丢弃（不截断）
+    dl.add_text(0, 0, "overflow", 12.0f, 0xFFFFFFFFu);
+    CHECK_EQ(dl.command_count(), 1);
+    CHECK_TRUE(dl.dropped() >= 1u);
+}
+
+TEST(drawlist, reset_clears_clip_stack) {
+    gryce_ui::UiDrawList dl;
+    dl.push_clip(0, 0, 100, 100);
+    dl.push_clip(500, 500, 10, 10);               // 空裁剪
+    dl.reset();
+    CHECK_EQ(dl.clip_depth(), 0);
+    dl.add_rect(0, 0, 10, 10, 0xFFFFFFFFu);       // 不再被剔除
+    CHECK_EQ(dl.command_count(), 1);
+    CHECK_EQ(dl.culled(), 0u);
+}
+
+TEST(drawlist, negative_geometry_kept_verbatim) {
+    gryce_ui::UiDrawList dl;
+    dl.add_rect(-5, -5, -10, -10, 0xFFFFFFFFu);   // 布局层的锅，drawlist 不规范化
+    CHECK_EQ(dl.command_count(), 1);
+    CHECK_EQ(dl.command(0).x, -5.0f);
+    CHECK_EQ(dl.command(0).w, -10.0f);
+}
+
+TEST(drawlist, clip_commands_survive_cull_state) {
+    gryce_ui::UiDrawList dl;
+    dl.push_clip(0, 0, 10, 10);
+    dl.push_clip(500, 0, 10, 10);                 // 不相交
+    CHECK_TRUE(dl.clip_at(2).w <= 0.0f);
+    dl.push_clip(0, 0, 100, 100);                 // 与空裁剪相交仍为空
+    CHECK_TRUE(dl.clip_at(3).w <= 0.0f);
+    dl.pop_clip();
+    dl.pop_clip();
+    CHECK_EQ(dl.clip_depth(), 1);
+    const gryce_ui::UiClipRect& c = dl.clip_at(1);
+    CHECK_NEAR(c.w, 10.0f, 1e-6f);                // 恢复的是父级，不是被pop的
+    dl.add_rect(0, 0, 5, 5, 0xFFFFFFFFu);
+    CHECK_EQ(dl.culled(), 0u);                    // 父级非空，恢复可见
 }
 
 // ===========================================================================

@@ -195,6 +195,7 @@ target_sources(GryceRenderer
         ui/ui_state.cpp
         ui/ui_layout.cpp
         ui/ui_component.cpp
+        ui/ui_drawlist.cpp
         ui/ui_theme.cpp
         ui/ui_anim.cpp
         ui/ui_input.cpp

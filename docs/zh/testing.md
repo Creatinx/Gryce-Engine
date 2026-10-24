@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 39 条用例，分六个宿主。
+当前共 40 条用例，分六个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -78,7 +78,7 @@ ctest --test-dir build --output-on-failure
 | `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
 | `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
 
-### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，11 条）
+### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，12 条）
 
 被测源码（`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`）直编进测试可执行文件，不链 GryceRenderer.dll；且**不定义 `GRYCE_HAS_IMGUI`**——同时验证"关掉 ImGui 的构建里队列与模型层照样能用"（无窗口宿主也走这条路）。`GRYCE_RENDERER_BUILDING` 让导出宏变成 dllexport，静态 exe 内自链接。
 
@@ -92,7 +92,9 @@ ctest --test-dir build --output-on-failure
 
 `anim` 套件测动画系统：块一纯函数（11 种缓动的边界对齐与区间夹取、回弹过冲后回落、补间的延迟/越界/零时长、颜色插值夹取、关键帧有序插入与同刻覆盖、区间外保持、段缓动取自前一个关键帧、容量）与块二运行时（片段时长推导与同名轨道覆盖、Once 播完置 finished 且停在终点、Loop 回绕与 PingPong 折叠、速度/seek/暂停/停止、轨道 delay 期间保持初始值、颜色通道与类型纪律、换片段重建通道表、无片段时全操作 no-op）。`animabi` 套件测 C 面：缓动与名字的模型一致性（含越界枚举）、补间/颜色助手、以及"建 C 片段 → 播放 → 推进 → 读通道 → 暂停/变速/seek/停止"的完整闭环。
 
-队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节，组件树布局见第 7.7 节，主题预设与美化见第 7.8 节，动画系统两块见第 7.9 节。
+队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节，组件树布局见第 7.7 节，主题预设与美化见第 7.8 节，动画系统两块见第 7.9 节，内置 UI 渲染路径与 UIDrawList 见第 7.10 节。
+
+`drawlist` 套件测 UI 自绘命令缓冲（内置 UI 渲染路径的模型层，见 ui-api.md 第 7.10 节）：命令顺序与字段往返、空文本/nullptr 不产生命令、字符串池多条互不重叠、命令带裁剪深度标记、嵌套裁剪取交集、空裁剪剔除绘制命令且 clip 命令照常记录、pop 恢复父裁剪、空栈 pop 无操作、三层嵌套交集、裁剪栈满拒绝 push 且 pop 不失衡、命令表满丢弃并计数、字符串池放不下整条丢弃不截断、reset 清空裁剪栈、负几何原样记录。
 
 `GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。Layout 页（`--page layout` / `Ctrl+3`）画一棵 20 个组件的树，每帧 `GUi_CompResolve()` 后逐组件取矩形画窗口——组件窗口**不传** `GUI_WIN_NO_BRING_TO_FRONT`，否则子窗口会被压到父窗口底下（原因见 ui-api.md 第 7.7 节）。Anim 页（`--page anim` / `Ctrl+4`）面板里是块一纯函数演示（缓动组合框 + 补间进度条 + 颜色插值色块），右侧舞台是块二：一根 2 秒片段驱动四个组件（滑移/脉冲/弹跳/错峰入场），这些组件父级为 0，动画直写 pos 不会被布局覆盖。
 

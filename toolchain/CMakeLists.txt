@@ -110,7 +110,14 @@ if(BUILD_TESTING)
         add_test(NAME grycegc_${s}
                  COMMAND GryceGCTests --suite ${s}
                  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-        set_tests_properties(grycegc_${s} PROPERTIES
-            LABELS "unit;grycegc" TIMEOUT 60)
+    # package 套件把整棵引擎 build 树打包两遍（含二次打包幂等验证），
+    # 上千个文件的复制量在慢磁盘上实测可达 80s+（CPU 时间仅 ~1s，全在
+    # 文件 IO）——统一 60s 会间歇性超时。单独放宽它。
+    set(_grycegc_suite_timeout 60)
+    if(s STREQUAL "package")
+        set(_grycegc_suite_timeout 180)
+    endif()
+    set_tests_properties(grycegc_${s} PROPERTIES
+        LABELS "unit;grycegc" TIMEOUT ${_grycegc_suite_timeout})
     endforeach()
 endif()
