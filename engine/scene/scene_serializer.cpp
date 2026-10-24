@@ -21,7 +21,10 @@ namespace {
 
 // v2：场景改为单根节点树（合成根节点不落盘），文件布局与 v1 完全一致，
 // 加载端兼容 version 缺失 / 1 / 2（父子关系按 UUID 重建，无需区分版本）。
-constexpr int k_gesc_version = 2;
+// v3：组件支持父子挂载关系（组件树）。组件数组元素新增 "parent"（父组件的
+// 槽位号）与 "local_transform"（组件局部变换）。旧文件没有这两个字段，
+// 加载端按"全部是根组件 + 单位局部变换"处理 —— 无需版本分支即可兼容。
+constexpr int k_gesc_version = 3;
 
 std::string read_file(const std::string& path) {
     std::ifstream file(path);
@@ -111,7 +114,19 @@ nlohmann::json SceneSerializer::serialize_entity(const Entity& entity) {
     }
 
     // 其他组件
+    //
+    // 组件树：组件在 entity.components() 里的下标就是它的"槽位号"，子组件用
+    // "parent" 字段引用父组件的槽位号。
+    //
+    // 槽位号空间包含 Entity 构造函数自动创建的三个内置组件（Transform /
+    // ParentComponent / ChildrenComponent）—— 它们不落进 "components" 数组，
+    // 但槽位号仍然保留，因此"以 Transform 为父"的组件也能精确还原。
+    // 读取端用同一约定重建槽位表（见 deserialize_entity）。
     nlohmann::json components = nlohmann::json::array();
+    std::unordered_map<const components::Component*, int> slot_of;
+    for (size_t i = 0; i < entity.components().size(); ++i) {
+        slot_of[entity.components()[i].get()] = static_cast<int>(i);
+    }
     for (const auto& comp : entity.components()) {
         if (comp->type() == std::string("Transform")) continue; // Transform 已单独处理
         if (comp->type() == std::string("ParentComponent")) continue; // 内部运行时数据
@@ -119,6 +134,32 @@ nlohmann::json SceneSerializer::serialize_entity(const Entity& entity) {
         nlohmann::json comp_json;
         comp_json["type"] = comp->type();
         comp_json["enabled"] = comp->enabled;
+
+        // 组件树父引用（槽位号）
+        const components::Component* parent = comp->component_parent();
+        if (parent) {
+            auto it = slot_of.find(parent);
+            if (it != slot_of.end()) {
+                comp_json["parent"] = it->second;
+            } else {
+                GLOG_WARN("SceneSerializer: component '{}' has a parent outside this entity, "
+                          "serialized as root", comp->type());
+            }
+        }
+
+        // 局部变换（组件树语义的一部分）。统一放嵌套对象，避免与组件自有
+        // 字段撞名（Transform 自己就有 position / rotation / scale）。
+        {
+            nlohmann::json lt;
+            const auto& lp = comp->local_position();
+            const auto& lr = comp->local_rotation();
+            const auto& ls = comp->local_scale();
+            lt["position"] = { lp.x, lp.y, lp.z };
+            lt["rotation"] = { lr.x, lr.y, lr.z, lr.w };
+            lt["scale"] = { ls.x, ls.y, ls.z };
+            comp_json["local_transform"] = lt;
+        }
+
         comp->serialize(comp_json);
         components.push_back(comp_json);
     }
@@ -267,15 +308,56 @@ std::unique_ptr<Entity> SceneSerializer::deserialize_entity(
     }
 
     // 反序列化其他组件
+    //
+    // 组件树：槽位号空间与写入端一致 —— Entity 构造函数自动创建的内置组件
+    // 占前若干槽位，文件 "components" 数组的组件按顺序接在其后。先把组件
+    // 全部建出来，再统一按 "parent" 槽位号连父子关系（父组件未必先于子
+    // 组件出现在文件里）。
     const auto& comps_json = e_json.value("components", nlohmann::json::array());
+    std::vector<components::Component*> slots;
+    slots.reserve(entity->components().size() + comps_json.size());
+    for (const auto& c : entity->components()) {
+        slots.push_back(c.get());
+    }
+    std::vector<std::pair<components::Component*, int>> pending_parents;
     for (const auto& c_json : comps_json) {
         std::string type = c_json.value("type", "");
         auto comp = components::ComponentFactory::instance().create(type);
-        if (comp) {
-            comp->enabled = c_json.value("enabled", true);
-            comp->deserialize(c_json);
-            entity->add_component(std::move(comp));
+        if (!comp) continue;
+        comp->enabled = c_json.value("enabled", true);
+        comp->deserialize(c_json);
+
+        // 局部变换（组件树语义的一部分）
+        if (c_json.contains("local_transform") && c_json["local_transform"].is_object()) {
+            const auto& lt = c_json["local_transform"];
+            auto pos = lt.value("position", std::vector<float>{0, 0, 0});
+            if (pos.size() >= 3) comp->set_local_position(math::Vector3f(pos[0], pos[1], pos[2]));
+            auto rot = lt.value("rotation", std::vector<float>{0, 0, 0, 1});
+            if (rot.size() >= 4) comp->set_local_rotation(math::Quaternionf(rot[0], rot[1], rot[2], rot[3]));
+            auto scl = lt.value("scale", std::vector<float>{1, 1, 1});
+            if (scl.size() >= 3) comp->set_local_scale(math::Vector3f(scl[0], scl[1], scl[2]));
         }
+
+        components::Component* raw = comp.get();
+        entity->add_component(std::move(comp));
+        slots.push_back(raw);
+        if (c_json.contains("parent") && c_json["parent"].is_number_integer()) {
+            pending_parents.emplace_back(raw, c_json["parent"].get<int>());
+        }
+    }
+
+    // 建立组件父子关系（防环由 Component::set_component_parent 兜底：
+    // 不允许把组件挂到它自己或它的后代之下）
+    for (const auto& link : pending_parents) {
+        components::Component* child = link.first;
+        const int parent_slot = link.second;
+        if (parent_slot < 0 || parent_slot >= static_cast<int>(slots.size())) {
+            GLOG_WARN("SceneSerializer: component parent slot {} out of range, ignored", parent_slot);
+            continue;
+        }
+        components::Component* parent = slots[parent_slot];
+        if (!parent || parent == child) continue;
+        child->set_component_parent(parent);
     }
 
     entity_map[id] = entity.get();

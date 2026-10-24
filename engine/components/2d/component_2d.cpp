@@ -58,6 +58,52 @@ Transform2D world_transform_2d(const scene::Entity* entity) {
     return world;
 }
 
+namespace {
+
+// 组件树链上的 2D 局部变换（按 2D 规则组合：XY 平移 + Z 旋转 + XY 缩放）。
+// 链的顺序是"根 → 叶"，因此逐级把子节点的局部变换叠到父节点之上。
+Transform2D component_chain_transform_2d(const components::Component* component) {
+    Transform2D out;  // 单位变换
+    if (!component) return out;
+
+    std::vector<const components::Component*> chain;
+    for (const components::Component* cur = component; cur; cur = cur->component_parent()) {
+        chain.push_back(cur);
+    }
+
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        const components::Component* c = *it;
+        Transform2D local;
+        local.position = math::Vector2f(c->local_position().x, c->local_position().y);
+        local.rotation = quat_to_z(c->local_rotation());
+        local.scale = math::Vector2f(c->local_scale().x, c->local_scale().y);
+
+        // out = out ⊕ local
+        out.position = out.position + rotate_2d(
+            math::Vector2f(local.position.x * out.scale.x, local.position.y * out.scale.y),
+            out.rotation);
+        out.rotation = out.rotation + local.rotation;
+        out.scale = math::Vector2f(out.scale.x * local.scale.x, out.scale.y * local.scale.y);
+    }
+    return out;
+}
+
+} // namespace
+
+Transform2D world_transform_2d(const scene::Entity* entity, const components::Component* component) {
+    const Transform2D base = world_transform_2d(entity);
+    if (!component) return base;
+
+    const Transform2D chain = component_chain_transform_2d(component);
+    Transform2D world;
+    world.position = base.position + rotate_2d(
+        math::Vector2f(chain.position.x * base.scale.x, chain.position.y * base.scale.y),
+        base.rotation);
+    world.rotation = base.rotation + chain.rotation;
+    world.scale = math::Vector2f(base.scale.x * chain.scale.x, base.scale.y * chain.scale.y);
+    return world;
+}
+
 uint64_t Component2D::render_hash() const {
     uint64_t h = hash_string(type());
     hash_combine(h, static_cast<uint64_t>(enabled));
@@ -74,15 +120,15 @@ uint64_t Component2D::render_hash() const {
 }
 
 math::Vector2f Component2D::position() const {
-    return world_transform_2d(owner_).position;
+    return world_transform_2d(owner_, this).position;
 }
 
 float Component2D::rotation() const {
-    return world_transform_2d(owner_).rotation;
+    return world_transform_2d(owner_, this).rotation;
 }
 
 math::Vector2f Component2D::scale() const {
-    return world_transform_2d(owner_).scale;
+    return world_transform_2d(owner_, this).scale;
 }
 
 math::Vector2f Component2D::transform_point(const math::Vector2f& local) const {

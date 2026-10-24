@@ -5,6 +5,8 @@
 #include <typeindex>
 #include <vector>
 
+#include "math/math.h"
+
 namespace gryce_engine::scene {
     class Entity;
 } // namespace gryce_engine::scene
@@ -103,10 +105,100 @@ public:
 
     bool enabled = true;
 
+    // -----------------------------------------------------------------------
+    // 组件树（父子挂载关系）
+    //
+    // 一个 Entity 上挂载的组件可以形成一棵树（Godot Node 树的组件化版本）：
+    //   - 父组件是子组件的组合容器：子组件继承父组件的 enabled 状态
+    //     （父禁用 → 整棵子树停摆），子组件的局部变换叠在父组件之上；
+    //   - 根组件（没有父组件）的变换以 owner 实体的变换为基准；
+    //   - 父组件被移除时，子组件重新挂到祖父（或成为根），不会连带销毁。
+    //
+    // 这与"基类 / 子类"是两条正交的轴：
+    //   基类/子类 = 类型继承（is_derived_from，见 collect_type_views）；
+    //   父/子组件 = 实例挂载关系（本节）。
+    // 一个 ColorRect 可以既是 BasicRect 的子类，又是某个 Sprite2D 的子组件。
+    // -----------------------------------------------------------------------
+
+    // 父组件（nullptr = 组件树的根）
+    Component* component_parent() const { return component_parent_; }
+
+    // 子组件（按挂载顺序）
+    const std::vector<Component*>& component_children() const { return component_children_; }
+
+    // 挂到父组件下；传 nullptr 表示脱离父组件、成为根。
+    // 防环：不允许把组件挂到它自己或它的后代之下（否则树会成环，遍历与序列化
+    // 会死循环）。返回 false 表示被防环规则拒绝，树保持原状。
+    bool set_component_parent(Component* parent) {
+        if (parent == component_parent_) return true;
+        for (const Component* cur = parent; cur; cur = cur->component_parent_) {
+            if (cur == this) return false;  // 会成环
+        }
+        // 从旧父上摘下
+        if (component_parent_) {
+            auto& siblings = component_parent_->component_children_;
+            for (auto it = siblings.begin(); it != siblings.end(); ++it) {
+                if (*it == this) {
+                    siblings.erase(it);
+                    break;
+                }
+            }
+        }
+        component_parent_ = parent;
+        if (parent) parent->component_children_.push_back(this);
+        return true;
+    }
+
+    // 沿父链走到组件树的根
+    Component* component_root() {
+        Component* cur = this;
+        while (cur->component_parent_) cur = cur->component_parent_;
+        return cur;
+    }
+    const Component* component_root() const {
+        const Component* cur = this;
+        while (cur->component_parent_) cur = cur->component_parent_;
+        return cur;
+    }
+
+    // 生命周期继承：自身与整条父链都 enabled 才算有效。
+    // 父组件被禁用 → 整棵子树停摆。
+    bool is_effectively_enabled() const {
+        for (const Component* cur = this; cur; cur = cur->component_parent_) {
+            if (!cur->enabled) return false;
+        }
+        return true;
+    }
+
+    // 局部变换（相对父组件；根组件相对 owner 实体）
+    const math::Vector3f& local_position() const { return local_position_; }
+    const math::Quaternionf& local_rotation() const { return local_rotation_; }
+    const math::Vector3f& local_scale() const { return local_scale_; }
+    void set_local_position(const math::Vector3f& v) { local_position_ = v; }
+    void set_local_rotation(const math::Quaternionf& q) { local_rotation_ = q; }
+    void set_local_scale(const math::Vector3f& v) { local_scale_ = v; }
+
+    // 局部变换矩阵
+    math::Matrix4f local_matrix() const {
+        return math::Matrix4f::translate(local_position_) *
+               math::Matrix4f::from_quaternion(local_rotation_) *
+               math::Matrix4f::scale(local_scale_);
+    }
+
 protected:
     Component() = default;
 
     scene::Entity* owner_ = nullptr;
+
+private:
+    // 组件树的父 / 子指针。owner 相同才构成一棵合法的组件树。
+    Component* component_parent_ = nullptr;
+    std::vector<Component*> component_children_;
+
+    // 局部变换（默认单位变换）
+    math::Vector3f local_position_;
+    math::Quaternionf local_rotation_ = math::Quaternionf::identity();
+    math::Vector3f local_scale_ = math::Vector3f::one();
 };
 
 } // namespace gryce_engine::components

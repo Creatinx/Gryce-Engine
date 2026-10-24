@@ -32,6 +32,11 @@ struct Transform2D {
 //   world.rot = parent.rot + local.rot，world.scale = parent.scale * local.scale。
 GRYCE_API Transform2D world_transform_2d(const scene::Entity* entity);
 
+// 组件视角的 2D 世界变换 = 实体 2D 世界变换 ⊕ 组件树链的局部变换。
+// 组件树没有父子关系时（局部变换为单位、且组件是树根）与 entity 版本等价。
+GRYCE_API Transform2D world_transform_2d(const scene::Entity* entity,
+                                         const components::Component* component);
+
 
 // ---------------------------------------------------------------------------
 // 2D 渲染哈希辅助

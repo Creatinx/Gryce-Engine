@@ -27,6 +27,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -44,6 +45,7 @@
 #include "scene/entity.h"
 #include "scene/query.h"
 #include "scene/scene.h"
+#include "scene/scene_serializer.h"
 
 using gryce_engine::components::Component;
 using gryce_engine::components::ComponentFactory;
@@ -51,6 +53,7 @@ using gryce_engine::components::d2::Component2D;
 using gryce_engine::ecs::ComponentStore;
 using gryce_engine::scene::Entity;
 using gryce_engine::scene::Scene;
+namespace math = gryce_engine::math;
 
 // ===========================================================================
 // 迷你断言框架（与其它测试同风格，无第三方依赖）
@@ -113,6 +116,19 @@ void fail_at(const char* file, int line, const std::string& msg) {
         if (a_ != b_) {                                                              \
             char buf_[256];                                                          \
             std::snprintf(buf_, sizeof(buf_), "%s => %lld, expected %lld", #actual,   \
+                          a_, b_);                                                   \
+            ::fail_at(__FILE__, __LINE__, buf_);                                     \
+        }                                                                            \
+    } while (0)
+
+#define CHECK_NEAR(actual, expected, eps)                                            \
+    do {                                                                             \
+        ++::g_checks; ++::g_case_checks;                                             \
+        const double a_ = static_cast<double>(actual);                                \
+        const double b_ = static_cast<double>(expected);                              \
+        if (!(std::fabs(a_ - b_) <= static_cast<double>(eps))) {                      \
+            char buf_[256];                                                          \
+            std::snprintf(buf_, sizeof(buf_), "%s => %.8g, expected %.8g", #actual,   \
                           a_, b_);                                                   \
             ::fail_at(__FILE__, __LINE__, buf_);                                     \
         }                                                                            \
@@ -427,6 +443,247 @@ TEST(lifecycle, awake_on_both_mount_paths) {
     entity.add_component(std::move(owned));
     CHECK_TRUE(raw->awakened);
     CHECK_INT(raw->awake_count, 1);
+}
+
+// ===========================================================================
+// suite: tree —— 组件父子挂载关系（组件树）
+// ===========================================================================
+
+TEST(tree, attach_and_detach) {
+    ensure_builtins();
+
+    Entity entity("Tree");
+    auto* parent = entity.add_component<ProbeComponent>();
+    auto* child = entity.add_component<ProbeComponent>();
+    CHECK_TRUE(parent != nullptr);
+    CHECK_TRUE(child != nullptr);
+
+    // 初始都是组件树的根（实体的三个内置组件 + 两个探针）
+    CHECK_TRUE(parent->component_parent() == nullptr);
+    CHECK_TRUE(child->component_parent() == nullptr);
+    CHECK_INT(entity.component_roots().size(), 5);
+
+    // 挂载
+    CHECK_TRUE(entity.set_component_parent(child, parent));
+    CHECK_TRUE(child->component_parent() == parent);
+    CHECK_INT(parent->component_children().size(), 1);
+    CHECK_TRUE(parent->component_children()[0] == child);
+    CHECK_TRUE(child->component_root() == parent);
+
+    // 脱离 → 重新成为根
+    CHECK_TRUE(entity.set_component_parent(child, nullptr));
+    CHECK_TRUE(child->component_parent() == nullptr);
+    CHECK_INT(parent->component_children().size(), 0);
+}
+
+TEST(tree, cycle_is_rejected) {
+    ensure_builtins();
+
+    Entity entity("Tree");
+    auto* a = entity.add_component<ProbeComponent>();
+    auto* b = entity.add_component<ProbeComponent>();
+    auto* c = entity.add_component<ProbeComponent>();
+
+    CHECK_TRUE(entity.set_component_parent(b, a));
+    CHECK_TRUE(entity.set_component_parent(c, b));
+
+    // 把 a 挂到自己的后代 c 之下 → 必须被拒绝
+    CHECK_FALSE(entity.set_component_parent(a, c));
+    CHECK_TRUE(a->component_parent() == nullptr);
+    CHECK_TRUE(c->component_parent() == b);
+
+    // 挂到自己之下 → 拒绝
+    CHECK_FALSE(entity.set_component_parent(a, a));
+    CHECK_TRUE(a->component_parent() == nullptr);
+}
+
+TEST(tree, lifecycle_inherits_from_parent) {
+    ensure_builtins();
+
+    Entity entity("Tree");
+    auto* parent = entity.add_component<ProbeComponent>();
+    auto* child = entity.add_component<ProbeComponent>();
+    CHECK_TRUE(entity.set_component_parent(child, parent));
+
+    CHECK_TRUE(parent->is_effectively_enabled());
+    CHECK_TRUE(child->is_effectively_enabled());
+
+    // 父组件禁用 → 整棵子树停摆
+    parent->enabled = false;
+    CHECK_TRUE(parent->is_effectively_enabled() == false);
+    CHECK_TRUE(child->is_effectively_enabled() == false);
+
+    parent->enabled = true;
+    CHECK_TRUE(child->is_effectively_enabled());
+}
+
+TEST(tree, local_transform_composes) {
+    ensure_builtins();
+
+    Entity entity("Tree");
+    auto* parent = entity.add_component<ProbeComponent>();
+    auto* child = entity.add_component<ProbeComponent>();
+    CHECK_TRUE(entity.set_component_parent(child, parent));
+
+    parent->set_local_position(math::Vector3f(10.0f, 0.0f, 0.0f));
+    child->set_local_position(math::Vector3f(5.0f, 0.0f, 0.0f));
+
+    // 相对变换 = 父 × 子
+    const math::Matrix4f rel = entity.component_relative_transform(child);
+    const math::Vector3f p = rel.transform_point(math::Vector3f(0.0f, 0.0f, 0.0f));
+    CHECK_NEAR(p.x, 15.0, 1e-4);
+    CHECK_NEAR(p.y, 0.0, 1e-4);
+
+    // 世界变换 = 实体变换 × 相对变换（实体在原点 → 与相对变换一致）
+    const math::Vector3f w = entity.component_world_transform(child)
+                                 .transform_point(math::Vector3f(0.0f, 0.0f, 0.0f));
+    CHECK_NEAR(w.x, 15.0, 1e-4);
+}
+
+TEST(tree, removing_parent_keeps_children) {
+    ensure_builtins();
+
+    Entity entity("Tree");
+    auto* grandparent = entity.add_component<ProbeComponent>();
+    auto* parent = entity.add_component<ProbeComponent>();
+    auto* child = entity.add_component<ProbeComponent>();
+    CHECK_TRUE(entity.set_component_parent(parent, grandparent));
+    CHECK_TRUE(entity.set_component_parent(child, parent));
+
+    // 移除父组件 → 子组件重挂到祖父，不被连带销毁
+    CHECK_TRUE(entity.remove_component(parent));
+    CHECK_TRUE(child->component_parent() == grandparent);
+    CHECK_INT(grandparent->component_children().size(), 1);
+}
+
+TEST(tree, clone_rebuilds_component_tree) {
+    ensure_builtins();
+
+    Entity entity("Tree");
+    // 用工厂里真实存在的组件类型（clone 走 ComponentFactory 重建）
+    auto* parent = entity.add_component(
+        std::make_unique<gryce_engine::components::d2::basic_rect::ColorRect>());
+    auto* child = entity.add_component(
+        std::make_unique<gryce_engine::components::d2::text::Label>());
+    CHECK_TRUE(entity.set_component_parent(child, parent));
+    parent->set_local_position(math::Vector3f(3.0f, 4.0f, 0.0f));
+    child->set_local_position(math::Vector3f(1.0f, 0.0f, 0.0f));
+
+    auto cloned = entity.clone();
+    CHECK_TRUE(cloned != nullptr);
+
+    // 按挂载顺序对齐：克隆体的第 4 / 第 5 个组件对应原体的 parent / child
+    const auto& comps = cloned->components();
+    CHECK_TRUE(comps.size() >= 5);
+    auto* cloned_parent = comps[3].get();
+    auto* cloned_child = comps[4].get();
+
+    CHECK_TRUE(cloned_child->component_parent() == cloned_parent);
+    CHECK_NEAR(cloned_parent->local_position().x, 3.0, 1e-4);
+    CHECK_NEAR(cloned_parent->local_position().y, 4.0, 1e-4);
+    CHECK_NEAR(cloned_child->local_position().x, 1.0, 1e-4);
+}
+
+TEST(tree, foreach_component_tree_visits_depth_first) {
+    ensure_builtins();
+
+    Entity entity("Tree");
+    auto* a = entity.add_component<ProbeComponent>();
+    auto* b = entity.add_component<ProbeComponent>();
+    auto* c = entity.add_component<ProbeComponent>();
+    CHECK_TRUE(entity.set_component_parent(b, a));
+    CHECK_TRUE(entity.set_component_parent(c, a));
+
+    std::vector<Component*> visited;
+    entity.foreach_component_tree([&](Component* comp) { visited.push_back(comp); });
+
+    // 组件树里的三个组件都要被访问到（实体的内置组件也是根）
+    bool saw_a = false, saw_b = false, saw_c = false;
+    for (const Component* comp : visited) {
+        if (comp == a) saw_a = true;
+        if (comp == b) saw_b = true;
+        if (comp == c) saw_c = true;
+    }
+    CHECK_TRUE(saw_a);
+    CHECK_TRUE(saw_b);
+    CHECK_TRUE(saw_c);
+}
+
+// ===========================================================================
+// suite: serialize —— 组件树与局部变换的存档往返
+// ===========================================================================
+
+TEST(serialize, component_tree_roundtrip) {
+    ensure_builtins();
+
+    Scene scene("Roundtrip");
+    Entity* entity = scene.create_entity("Quad");
+    CHECK_TRUE(entity != nullptr);
+
+    auto* parent = entity->add_component(
+        std::make_unique<gryce_engine::components::d2::basic_rect::ColorRect>());
+    auto* child = entity->add_component(
+        std::make_unique<gryce_engine::components::d2::text::Label>());
+    CHECK_TRUE(entity->set_component_parent(child, parent));
+    parent->set_local_position(math::Vector3f(1.0f, 2.0f, 0.0f));
+    child->set_local_position(math::Vector3f(0.5f, 0.0f, 0.0f));
+
+    const nlohmann::json json = gryce_engine::scene::SceneSerializer::serialize(scene);
+    CHECK_TRUE(json.contains("entities"));
+    // 版本已升到 3（组件树）
+    CHECK_INT(json.value("version", 0), 3);
+
+    auto restored = gryce_engine::scene::SceneSerializer::deserialize(json);
+    CHECK_TRUE(restored != nullptr);
+    CHECK_INT(restored->roots().size(), 1);
+
+    Entity* restored_entity = restored->roots()[0].get();
+    CHECK_TRUE(restored_entity != nullptr);
+
+    auto* r_parent = restored_entity->get_component<gryce_engine::components::d2::basic_rect::ColorRect>();
+    auto* r_child = restored_entity->get_component<gryce_engine::components::d2::text::Label>();
+    CHECK_TRUE(r_parent != nullptr);
+    CHECK_TRUE(r_child != nullptr);
+
+    // 父子关系在存档往返后保持
+    CHECK_TRUE(r_child->component_parent() == r_parent);
+    CHECK_INT(r_parent->component_children().size(), 1);
+
+    // 局部变换在存档往返后保持
+    CHECK_NEAR(r_parent->local_position().x, 1.0, 1e-4);
+    CHECK_NEAR(r_parent->local_position().y, 2.0, 1e-4);
+    CHECK_NEAR(r_child->local_position().x, 0.5, 1e-4);
+}
+
+// 旧存档（没有 parent / local_transform 字段）必须仍能正常加载：全部按根组件处理。
+TEST(serialize, legacy_file_without_tree_fields) {
+    ensure_builtins();
+
+    nlohmann::json json;
+    json["version"] = 2;
+    json["name"] = "Legacy";
+    nlohmann::json entities = nlohmann::json::array();
+    nlohmann::json e;
+    e["uuid"] = "legacy-entity";
+    e["name"] = "Legacy";
+    nlohmann::json comps = nlohmann::json::array();
+    nlohmann::json c;
+    c["type"] = "ColorRect";
+    c["enabled"] = true;
+    comps.push_back(c);
+    e["components"] = comps;
+    entities.push_back(e);
+    json["entities"] = entities;
+
+    auto restored = gryce_engine::scene::SceneSerializer::deserialize(json);
+    CHECK_TRUE(restored != nullptr);
+    CHECK_INT(restored->roots().size(), 1);
+    Entity* e2 = restored->roots()[0].get();
+    CHECK_TRUE(e2 != nullptr);
+    auto* rect = e2->get_component<gryce_engine::components::d2::basic_rect::ColorRect>();
+    CHECK_TRUE(rect != nullptr);
+    // 没有 parent 字段 → 是组件树的根
+    CHECK_TRUE(rect->component_parent() == nullptr);
 }
 
 // ===========================================================================

@@ -100,6 +100,15 @@ bool Entity::remove_component(components::Component* comp) {
     if (!comp) return false;
     for (auto it = components_.begin(); it != components_.end(); ++it) {
         if (it->get() == comp) {
+            // 子组件不连带销毁：重新挂到被删组件原来的父级（或成为组件树根），
+            // 避免"删父毁子"把用户数据一起带走。
+            components::Component* old_parent = comp->component_parent();
+            const std::vector<components::Component*> children = comp->component_children();
+            // 先把 comp 自己从父的子列表里摘掉（否则父会一直持有已删组件）
+            comp->set_component_parent(nullptr);
+            for (components::Component* child : children) {
+                child->set_component_parent(old_parent);
+            }
             unindex_component(comp);
             if (store_) {
                 store_->unregister_component(id_, comp);
@@ -114,9 +123,56 @@ bool Entity::remove_component(components::Component* comp) {
     return false;
 }
 
+std::vector<components::Component*> Entity::component_roots() const {
+    std::vector<components::Component*> roots;
+    for (const auto& comp : components_) {
+        if (!comp->component_parent()) roots.push_back(comp.get());
+    }
+    return roots;
+}
+
+void Entity::foreach_component_tree(std::function<void(components::Component*)> callback) const {
+    // 深度优先：先根后子；同一父下按挂载顺序
+    std::function<void(components::Component*)> visit = [&](components::Component* c) {
+        if (!c) return;
+        callback(c);
+        for (components::Component* child : c->component_children()) {
+            visit(child);
+        }
+    };
+    for (const auto& comp : components_) {
+        if (!comp->component_parent()) visit(comp.get());
+    }
+}
+
+bool Entity::set_component_parent(components::Component* child, components::Component* parent) {
+    if (!child) return false;
+    if (child->owner() != this) return false;
+    if (parent && parent->owner() != this) return false;
+    return child->set_component_parent(parent);
+}
+
+math::Matrix4f Entity::component_relative_transform(const components::Component* comp) const {
+    if (!comp) return math::Matrix4f::identity();
+    std::vector<const components::Component*> chain;
+    for (const components::Component* cur = comp; cur; cur = cur->component_parent()) {
+        chain.push_back(cur);
+    }
+    math::Matrix4f m = math::Matrix4f::identity();
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        m = m * (*it)->local_matrix();
+    }
+    return m;
+}
+
+math::Matrix4f Entity::component_world_transform(const components::Component* comp) const {
+    if (!comp) return math::Matrix4f::identity();
+    return world_transform() * component_relative_transform(comp);
+}
+
 void Entity::on_init() {
     for (auto& comp : components_) {
-        if (comp->enabled) comp->on_init();
+        if (comp->is_effectively_enabled()) comp->on_init();
     }
     for (auto& child : children_) {
         child->on_init();
@@ -125,7 +181,7 @@ void Entity::on_init() {
 
 void Entity::on_start() {
     for (auto& comp : components_) {
-        if (comp->enabled) comp->on_start();
+        if (comp->is_effectively_enabled()) comp->on_start();
     }
     for (auto& child : children_) {
         child->on_start();
@@ -135,7 +191,7 @@ void Entity::on_start() {
 void Entity::on_enable() {
     if (!enabled) return;
     for (auto& comp : components_) {
-        if (comp->enabled) comp->on_enable();
+        if (comp->is_effectively_enabled()) comp->on_enable();
     }
     for (auto& child : children_) {
         child->on_enable();
@@ -154,7 +210,8 @@ void Entity::on_disable() {
 void Entity::on_update(float dt) {
     if (!enabled) return;
     for (auto& comp : components_) {
-        if (comp->enabled) comp->on_update(dt);
+        // 生命周期继承：父组件被禁用 → 整棵子树停摆
+        if (comp->is_effectively_enabled()) comp->on_update(dt);
     }
     for (auto& child : children_) {
         child->on_update(dt);
@@ -164,7 +221,7 @@ void Entity::on_update(float dt) {
 void Entity::on_render(render::RenderContext& ctx) {
     if (!enabled) return;
     for (auto& comp : components_) {
-        if (comp->enabled) comp->on_render(ctx);
+        if (comp->is_effectively_enabled()) comp->on_render(ctx);
     }
     for (auto& child : children_) {
         child->on_render(ctx);
@@ -338,6 +395,9 @@ std::unique_ptr<Entity> Entity::clone() const {
     clone_entity->enabled = enabled;
     clone_entity->prefab_template_uuid_ = prefab_template_uuid_;
 
+    // 原组件 → 克隆组件的映射，用于重建组件树与复制局部变换
+    std::unordered_map<const components::Component*, components::Component*> cloned;
+
     // 深拷贝所有组件（除 Transform 和层级组件外，它们由构造函数自创建）
     for (const auto& comp : components_) {
         const std::string ctype = comp->type();
@@ -360,7 +420,25 @@ std::unique_ptr<Entity> Entity::clone() const {
         comp->serialize(json);
         new_comp->deserialize(json);
         new_comp->enabled = comp->enabled;
+        // 局部变换随组件一起复制（组件树语义的一部分）
+        new_comp->set_local_position(comp->local_position());
+        new_comp->set_local_rotation(comp->local_rotation());
+        new_comp->set_local_scale(comp->local_scale());
+        components::Component* raw = new_comp.get();
         clone_entity->add_component(std::move(new_comp));
+        cloned[comp.get()] = raw;
+    }
+
+    // 重建组件树：先全部克隆完，再统一挂父子关系
+    // （父组件未必先于子组件出现在 components_ 里，所以不能边克隆边挂）
+    for (const auto& comp : components_) {
+        auto it = cloned.find(comp.get());
+        if (it == cloned.end()) continue;
+        const components::Component* parent = comp->component_parent();
+        if (!parent) continue;
+        auto pit = cloned.find(parent);
+        if (pit == cloned.end()) continue;
+        it->second->set_component_parent(pit->second);
     }
 
     // 递归深拷贝子节点

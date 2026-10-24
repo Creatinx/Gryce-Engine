@@ -142,6 +142,29 @@ public:
     components::Component* get_component_by_type(const std::string& type) const;
     const std::vector<std::unique_ptr<components::Component>>& components() const { return components_; }
 
+    // -----------------------------------------------------------------------
+    // 组件树（组件实例之间的父子挂载关系）
+    //
+    // 与"基类 / 子类"正交：基类/子类说的是类型继承，父/子组件说的是实例挂载。
+    // 一个 ColorRect 既可以是 BasicRect 的子类，也可以是某个 Sprite2D 的子组件。
+    // -----------------------------------------------------------------------
+
+    // 组件树根（没有父组件的组件），按挂载顺序
+    std::vector<components::Component*> component_roots() const;
+
+    // 深度优先遍历整棵组件树（先根后子；同一实体内的所有组件树）
+    void foreach_component_tree(std::function<void(components::Component*)> callback) const;
+
+    // 改挂：把 child 挂到 parent 之下（parent 传空表示让 child 成为组件树根）。
+    // child 与 parent 必须都属于本实体；防环由 Component::set_component_parent 兜底。
+    bool set_component_parent(components::Component* child, components::Component* parent);
+
+    // 组件在组件树中的相对变换（父链局部矩阵连乘，不含实体自身的变换）
+    math::Matrix4f component_relative_transform(const components::Component* comp) const;
+
+    // 组件的世界变换 = 实体世界变换 × 组件树相对变换
+    math::Matrix4f component_world_transform(const components::Component* comp) const;
+
     // Transform 快捷访问
     components::Transform* transform() const { return transform_; }
 

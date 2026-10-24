@@ -752,7 +752,7 @@ if(BUILD_TESTING)
     # 这些路径只碰内存与反射表，不碰 GPU / 窗口，CI 仍不需要显卡。
     # 覆盖：反射表驱动的全量继承链校验、精确/基类查询、同类型多实例、
     #       组件池的基类视角、on_awake 在两条挂载路径上的一致性。
-    set(GRYCE_COMPONENT_TEST_SUITES hierarchy query pool lifecycle)
+    set(GRYCE_COMPONENT_TEST_SUITES hierarchy query pool lifecycle tree serialize)
 
     add_executable(GryceComponentTests test/component_tests.cpp)
     target_include_directories(GryceComponentTests PRIVATE

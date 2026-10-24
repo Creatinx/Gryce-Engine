@@ -463,22 +463,53 @@ bool Prefab::revert(Entity* instance_root) {
         for (auto* comp : to_remove) {
             instance_root->remove_component(comp);
         }
-        for (const auto& comp : fresh->components()) {
+
+        // 组件树：fresh 的组件槽位（entity.components() 的下标）与本实体一一
+        // 对应，重建后按槽位把父子关系接回去；局部变换随组件一起复制。
+        std::unordered_map<int, components::Component*> rebuilt;
+        std::unordered_map<const components::Component*, int> fresh_slot;
+        for (size_t i = 0; i < fresh->components().size(); ++i) {
+            fresh_slot[fresh->components()[i].get()] = static_cast<int>(i);
+        }
+
+        for (size_t i = 0; i < fresh->components().size(); ++i) {
+            const auto& comp = fresh->components()[i];
             const std::string type = comp->type();
             if (type == "Transform") {
                 nlohmann::json t_json;
                 comp->serialize(t_json);
                 instance_root->transform()->deserialize(t_json);
-            } else if (type != "PrefabInstance" && type != "ParentComponent" && type != "ChildrenComponent") {
+                rebuilt[static_cast<int>(i)] = instance_root->transform();
+            } else if (type != "PrefabInstance" && type != "ParentComponent"
+                       && type != "ChildrenComponent") {
                 auto new_comp = components::ComponentFactory::instance().create(type);
                 if (!new_comp) continue;
                 nlohmann::json c_json;
                 comp->serialize(c_json);
                 new_comp->deserialize(c_json);
                 new_comp->enabled = comp->enabled;
+                new_comp->set_local_position(comp->local_position());
+                new_comp->set_local_rotation(comp->local_rotation());
+                new_comp->set_local_scale(comp->local_scale());
+                components::Component* raw = new_comp.get();
                 instance_root->add_component(std::move(new_comp));
+                rebuilt[static_cast<int>(i)] = raw;
             }
         }
+
+        // 接回组件树的父子关系（父组件槽位在 rebuilt 里找得到才连）
+        for (size_t i = 0; i < fresh->components().size(); ++i) {
+            auto child_it = rebuilt.find(static_cast<int>(i));
+            if (child_it == rebuilt.end()) continue;
+            const components::Component* parent = fresh->components()[i]->component_parent();
+            if (!parent) continue;
+            auto pslot = fresh_slot.find(parent);
+            if (pslot == fresh_slot.end()) continue;
+            auto parent_it = rebuilt.find(pslot->second);
+            if (parent_it == rebuilt.end()) continue;
+            child_it->second->set_component_parent(parent_it->second);
+        }
+
         instance_root->enabled = fresh->enabled;
         instance_root->set_name(fresh->name());
     }
