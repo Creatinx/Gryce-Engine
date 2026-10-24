@@ -582,20 +582,39 @@ The built-in track now has the **same control set** as the ImGui track: one host
 | Caret blink | Driven by `UiInputFrame::time` (1.06 s period, 0.53 s on); `time == 0` keeps it always visible, so tests and screenshots stay reproducible |
 | Long text | Scrolls horizontally to keep the caret visible; text never bleeds outside the box |
 
-### Three prerequisites for text and coordinates
+### Four prerequisites for text and coordinates
 
 1. **One source of metrics**: auto-sizing (button width = text width + padding) and text centring both use `IRenderer2D::measure_text` (sum of glyph advances, UTF-8 by code point); when the renderer provides no metrics it falls back to `ui_approx_text_width`. They must be the same source, otherwise "layout by estimate, draw by truth" drifts apart.
 2. **`draw_text` resolves glyphs per code point**: the 2D text path now decodes UTF-8 (`Renderer2D::draw_text`), so CJK renders; code points missing from the atlas are skipped.
 3. **HiDPI goes through `GRender_SetUIScale`**: the model layer always works in **logical pixels** (layout, hit testing and text metrics are logical); input coordinates are divided by the scale in `begin_frame` and the render bridge multiplies rects, font size and scissor boxes back. The host sets the scale once after init and must not scale panel coordinates itself.
+4. **Font sizes must land on whole pixels**: `ui_text_physical_size()` rounds logical size × scale, and **both measuring and drawing must go through it** (widths computed at 19.5 while glyphs are drawn at 20 drift by a whole character over a long string). The rounding matters because the glyph atlas is baked in integer-pixel buckets (next section) — only a draw size equal to a bucket is a 1:1 sample.
+
+### Text quality: anti-aliasing + a glyph size ladder
+
+Three things together decide whether text looks sharp; skipping any one makes it mushy:
+
+| Stage | What we do | What happens otherwise |
+| --- | --- | --- |
+| Coverage | stb_truetype's per-pixel 8-bit coverage is used **as alpha, verbatim**; the fragment shader does not threshold it | The shader used to contain `smoothstep(0.45, 0.55, alpha)`, which squashed coverage into 0/1 — every glyph edge became a hard staircase, i.e. visually "no anti-aliasing at all" |
+| Raster size | The atlas bakes each glyph set in **integer-pixel buckets** (`FontAtlas`'s size ladder: `ensure_size` / `bucket_for`) and drawing picks the bucket with the smallest relative error | A single 32px atlas drawing 13px UI text is a 0.4× downscale: every stroke gets a grey halo (measurably softer than ImGui's 1:1 text); scaled up it is plain mosaic |
+| Pixel alignment | When the ratio is ≈1, each glyph origin is rounded to a whole pixel (`snap` in `Renderer2D::draw_text`) | A glyph landing on a half pixel gets averaged into two half-grey columns by bilinear sampling — half the sharpness is gone |
+
+Bucket policy (`Renderer2D::ensure_text_raster_size`):
+
+* At startup one bucket is baked at `ui_text_physical_size(13, ui_scale)` — 13 on a 1× display, 20 at 1.5×, 26 at 2×. **This is what "supports DPI" means here: a 2× display does not upscale the 13px atlas, it gets a freshly baked 26px one.**
+* A second, fixed 32px bucket is always baked for the engine's own overlays (the 22px FPS text) and 2D Labels, so those are not upscaled 1.7× from 13px.
+* Buckets have a 12% tolerance and a cap of 6; adding one re-bakes and re-uploads the whole atlas, so it only happens when `GRender_SetUIScale` actually changes the ratio (the runtime rebuild goes through `RenderContext::run_with_gpu_context_sync`; do not call it from a UI callback).
+* A host can ignore all of this: never calling `GRender_SetUIScale` means a 1× display with a single 13px bucket, and text is still crisp.
 
 ### Renderer additions this track needed (`engine/render/render2d.h`)
 
 | Interface | Purpose |
 | --- | --- |
 | `measure_text(text, size)` | Text width (0 = no metrics, callers fall back to the estimate) |
+| `ensure_text_raster_size(px)` / `text_raster_size()` | Re-bake the glyph atlas at a physical size (DPI/scale). Default no-op, so backends without a ladder keep scaling instead |
 | `begin_overlay_pass(w,h)` / `end_overlay_pass()` | The UI overlay gets its own pass: save/restore the camera, switch to top-left 1:1, skip bloom and shadows |
 | `set_scissor` / `reset_scissor` flush batches first | Clipping is state, geometry is vertices: pending vertices must be submitted before the clip changes, or both segments inherit the last clip rect |
-| `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI scale. The GL backend enables `GL_SCISSOR_TEST` on demand in `set_scissor` and disables plus invalidates the cache when the render target changes (otherwise an offscreen pass inherits a screen-space clip) |
+| `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI scale (also brings the glyph atlas up to the matching physical size). The GL backend enables `GL_SCISSOR_TEST` on demand in `set_scissor` and disables plus invalidates the cache when the render target changes (otherwise an offscreen pass inherits a screen-space clip) |
 | `GInput_GetWheel(dx,dy)` / `GInput_InjectPreedit(s)` / `GInput_GetPreedit(buf,cap)` | Wheel delta (take-and-clear) and the IME pre-edit string |
 
 ## 8. Sharing input with the host

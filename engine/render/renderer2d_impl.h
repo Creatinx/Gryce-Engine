@@ -96,6 +96,8 @@ public:
     void reset_scissor() override;
 
     float measure_text(const char* text, float font_size) const override;
+    bool  ensure_text_raster_size(float px) override;
+    float text_raster_size() const override;
     void  begin_overlay_pass(int screen_width, int screen_height) override;
     void  end_overlay_pass() override;
 
@@ -193,6 +195,12 @@ private:
     RHIShaderHandle bloom_compose_shader_;
     RHIMeshHandle mesh_;
     FontAtlas font_atlas_;
+    // 实际成功加载的字体文件：DPI/缩放变化时按同一个文件重新烘字形图集
+    // （换字号要重走 stb 打包，不能只改采样倍率，否则放大就是马赛克）。
+    std::string font_path_;
+    // 首烘尺寸。宿主可以在 init 之前就设定（那时图集还没建，直接按这个尺寸烘，
+    // 省掉"先烘 32 再重烘"的一次浪费）；之后由 ensure_text_raster_size 维护。
+    float text_raster_hint_ = 32.0f;
     std::vector<Vertex2D> vertices_;       // 普通图形顶点（无纹理）
     std::vector<Vertex2D> text_vertices_;  // 文字顶点（使用字体图集）
     std::unordered_map<LitBatchKey, LitBatch, LitBatchKeyHash> lit_batches_; // 受光照精灵批次（按纹理分组）

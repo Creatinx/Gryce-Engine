@@ -113,10 +113,12 @@ uniform sampler2D uTexture;
 uniform int uUseTexture; // 0=color, 1=font, 2=sprite
 void main() {
     if (uUseTexture == 1) {
-        float alpha = texture(uTexture, vTexCoord).a;
-        float a = smoothstep(0.45, 0.55, alpha);
-        if (a < 0.01) discard;
-        FragColor = vec4(vColor.rgb, vColor.a * a);
+        // 字形覆盖度直接当 alpha 用，**不做阈值化**：smoothstep(0.45,0.55,a)
+        // 会把 8bit 覆盖度压成 0/1 两档，字缘全是硬阶梯（实质等于没有抗锯齿）。
+        // 抗锯齿的灰度信息是 stb_truetype 逐像素算出来的，混掉它等于白烘一遍。
+        float a = texture(uTexture, vTexCoord).a * vColor.a;
+        if (a <= 0.0) discard;
+        FragColor = vec4(vColor.rgb, a);
     } else if (uUseTexture == 2) {
         FragColor = texture(uTexture, vTexCoord) * vColor;
     } else {
@@ -403,8 +405,9 @@ void Renderer2D::init(RenderContext* ctx) {
         }
         if (std::filesystem::exists(bundled)) {
             GLOG_INFO("Renderer2D: trying bundled font '{}'", bundled);
-            if (font_atlas_.init(ctx_, bundled, 32.0f)) {
+            if (font_atlas_.init(ctx_, bundled, text_raster_hint_)) {
                 using_fallback_font_ = false;
+                font_path_ = bundled;
                 GLOG_INFO("Renderer2D: loaded bundled font '{}'", bundled);
             }
         }
@@ -430,8 +433,9 @@ void Renderer2D::init(RenderContext* ctx) {
 
         for (int i = 0; font_names[i]; ++i) {
             std::string font_path = font_dir + font_names[i];
-            if (font_atlas_.init(ctx_, font_path, 32.0f)) {
+            if (font_atlas_.init(ctx_, font_path, text_raster_hint_)) {
                 using_fallback_font_ = false;
+                font_path_ = font_path;
                 GLOG_INFO("Renderer2D: loaded system font '{}'", font_path);
                 break;
             }
@@ -456,8 +460,9 @@ void Renderer2D::init(RenderContext* ctx) {
         }
         std::sort(candidates.begin(), candidates.end());
         for (const std::string& path : candidates) {
-            if (font_atlas_.init(ctx_, path, 32.0f)) {
+            if (font_atlas_.init(ctx_, path, text_raster_hint_)) {
                 using_fallback_font_ = false;
+                font_path_ = path;
                 GLOG_INFO("Renderer2D: loaded scanned system font '{}'", path);
                 break;
             }
@@ -470,11 +475,19 @@ void Renderer2D::init(RenderContext* ctx) {
 
     if (!font_atlas_.texture()) {
         GLOG_WARN("Renderer2D: no system font loaded, creating fallback atlas");
-        if (font_atlas_.create_fallback_atlas(ctx_, 32.0f)) {
+        if (font_atlas_.create_fallback_atlas(ctx_, text_raster_hint_)) {
             using_fallback_font_ = true;
         } else {
             GLOG_ERROR("Renderer2D: failed to create fallback font atlas, text rendering disabled");
         }
+    }
+
+    // 除界面文字那一档，再固定烘一档 32px 通用尺寸：引擎自带的叠加层文字
+    // （FPS / 帧耗时，22px）与 2D Label 组件用的是任意字号，只有 13px 一档时
+    // 它们会被放大 1.7 倍（比原来从 32 缩下来还糊）。两张档同在一张图集里，
+    // 选档在 draw_text 里按相对误差做，调用方不用关心。
+    if (!using_fallback_font_ && std::fabs(font_atlas_.font_size() - 32.0f) >= 1.0f) {
+        font_atlas_.ensure_size(ctx_, 32.0f);
     }
 
     vertices_.reserve(4096);
@@ -1337,23 +1350,34 @@ void Renderer2D::draw_text(float x, float y, const std::string& text, float font
         return;
     }
 
-    const float scale = font_size / font_atlas_.font_size();
+    const int   bucket = font_atlas_.bucket_for(font_size);
+    const float raster = font_atlas_.bucket_size(bucket);
+    if (raster <= 0.0f || font_size <= 0.0f) return;
+    const float scale = font_size / raster;
+    // 1:1 时把字形原点对齐到整像素：图集是按整数像素烘的，落在半像素上会被
+    // 双线性采样平均成两列半灰，白白丢掉一半锐度（这正是"文字发虚"的典型成因）。
+    // 缩放比明显不是 1 时不能对：那会把缩放的连续位置量化成台阶。
+    const bool snap = std::fabs(scale - 1.0f) < 0.02f;
     float cursor_x = x;
     float cursor_y = y;
 
     for_each_codepoint(text.c_str(), [&](uint32_t cp) {
         if (cp == '\n') {
             cursor_x = x;
-            cursor_y += font_atlas_.font_size() * scale;
+            cursor_y += raster * scale;
             return;
         }
-        const Glyph* g = font_atlas_.get_glyph(cp);
+        const Glyph* g = font_atlas_.get_glyph(bucket, cp);
         if (!g) return;
 
         float x0 = cursor_x + g->offset_x * scale;
         float y0 = cursor_y + g->offset_y * scale;
-        float x1 = x0 + g->width * scale;
-        float y1 = y0 + g->height * scale;
+        if (snap) {
+            x0 = std::floor(x0 + 0.5f);
+            y0 = std::floor(y0 + 0.5f);
+        }
+        const float x1 = x0 + g->width * scale;
+        const float y1 = y0 + g->height * scale;
 
         push_text_vertex(x0, y0, color, g->uv0_x, g->uv0_y);
         push_text_vertex(x1, y0, color, g->uv1_x, g->uv0_y);
@@ -1368,10 +1392,13 @@ void Renderer2D::draw_text(float x, float y, const std::string& text, float font
 }
 
 float Renderer2D::measure_text(const char* text, float font_size) const {
-    if (!text || !font_atlas_.texture() || using_fallback_font_ || font_atlas_.font_size() <= 0.0f) {
+    if (!text || !font_atlas_.texture() || using_fallback_font_) {
         return 0.0f;
     }
-    const float scale = font_size / font_atlas_.font_size();
+    const int   bucket = font_atlas_.bucket_for(font_size);
+    const float raster = font_atlas_.bucket_size(bucket);
+    if (raster <= 0.0f || font_size <= 0.0f) return 0.0f;
+    const float scale = font_size / raster;
     float    best    = 0.0f;
     float    cursor  = 0.0f;
     // 多行取最宽一行（与 draw_text 的换行规则一致：'\n' 归零并下移）
@@ -1381,14 +1408,44 @@ float Renderer2D::measure_text(const char* text, float font_size) const {
             cursor = 0.0f;
             return;
         }
-        const Glyph* g = font_atlas_.get_glyph(cp);
+        const Glyph* g = font_atlas_.get_glyph(bucket, cp);
         if (g) cursor += g->advance * scale;
     });
     return cursor > best ? cursor : best;
 }
 
-void Renderer2D::begin_overlay_pass(int screen_width, int screen_height) {
-    if (screen_width <= 0 || screen_height <= 0) return;
+bool Renderer2D::ensure_text_raster_size(float px) {
+    if (px < 6.0f) px = 6.0f;
+    if (px > 128.0f) px = 128.0f;
+    const float want = std::round(px);
+    // init 之前调用只记"首烘尺寸"：那时图集还没建，正好一次按它烘好，
+    // 不必"先烘 32 再重烘 13"（重烘 = 整张纹理重传）。
+    text_raster_hint_ = want;
+    if (!initialized_ || font_path_.empty() || using_fallback_font_) return false;
+    // 已有档（12% 容差）就不再重烘：图集重建要重传整张纹理，不能每次问都做。
+    if (font_atlas_.has_size(want)) return false;
+
+    bool baked = false;
+    auto bake = [this, want, &baked]() { baked = font_atlas_.ensure_size(ctx_, want); };
+    if (ctx_ && ctx_->is_running()) {
+        // 运行期重建纹理必须在渲染线程的上下文中做，而且必须**等它做完**：
+        // 本帧随后的 draw_text 立刻会去查新档的字形表，异步会出现"表已换、
+        // 纹理还没上"的中间态（这一帧的字要么丢要么采样到旧图）。
+        ctx_->run_with_gpu_context_sync(bake);
+    } else {
+        bake();
+    }
+    if (!baked) return false;
+    GLOG_INFO("Renderer2D: font atlas rebaked at {} px ({} size bucket(s))",
+              static_cast<int>(want), font_atlas_.bucket_count());
+    return true;
+}
+
+float Renderer2D::text_raster_size() const {
+    return font_atlas_.font_size();
+}
+
+void Renderer2D::begin_overlay_pass(int screen_width, int screen_height) {    if (screen_width <= 0 || screen_height <= 0) return;
 
     // 场景 2D 的残留顶点先落地，免得被覆盖层的新相机重新变换一遍
     flush_batches();

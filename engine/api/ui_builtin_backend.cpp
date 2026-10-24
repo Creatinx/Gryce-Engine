@@ -21,6 +21,7 @@
 
 #include "api/input_api.h"
 #include "render/render2d.h"
+#include "ui/ui_render_bridge.h"
 #include "ui/ui_theme.h"
 
 namespace gryce_ui {
@@ -60,9 +61,11 @@ public:
 
     float width(const char* text, float font_size) const override {
         // 模型层用逻辑字号问宽度，渲染器按真实字号量，再换回逻辑单位——
-        // 布局与绘制因此始终同一口径（HiDPI 下也不会错位）。
+        // 布局与绘制因此始终同一口径（HiDPI 下也不会错位）。真实字号必须与
+        // 绘制侧一样取整（ui_text_physical_size），否则宽度按 19.5 算、字形按
+        // 20 画，累计到一长串文字就能差出一个字。
         if (renderer_) {
-            const float w = renderer_->measure_text(text, font_size * scale_);
+            const float w = renderer_->measure_text(text, ui_text_physical_size(font_size, scale_));
             if (w > 0.0f) return w / scale_;
         }
         return ui_approx_text_width(text, font_size);

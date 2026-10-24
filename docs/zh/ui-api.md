@@ -582,20 +582,39 @@ debug_ui_submit_locked()            主线程，锁已持有
 | 插入符闪烁 | 由 `UiInputFrame::time` 驱动（1.06 秒一周期，亮 0.53 秒）；`time == 0` 恒亮，单测与截图因此可复现 |
 | 长文本 | 横向滚动保证插入点可见，文本不淌出框外 |
 
-### 文本与坐标的三个前提
+### 文本与坐标的四个前提
 
 1. **度量走同一个口径**：自动尺寸（按钮宽 = 文字宽 + 内边距）与文字居中都用 `IRenderer2D::measure_text`（字形 advance 之和，UTF-8 按码点累加）；渲染器不支持度量时退回 `ui_approx_text_width` 估算。两边必须是同一份，否则"布局按估算、绘制按真实"会互相漂移。
 2. **`draw_text` 按码点取字形**：2D 文本路径已改成 UTF-8 解码（`Renderer2D::draw_text`），CJK 因此能出字；图集里没有的码点跳过。
 3. **HiDPI 走 `GRender_SetUIScale`**：模型层永远按**逻辑像素**算（布局、命中、文本度量都是逻辑值），输入坐标在 `begin_frame` 里除以倍率，渲染桥把矩形、字号、裁剪框乘回去。宿主只需在 init 后设一次倍率，不要自己缩放面板坐标。
+4. **字号要落到整像素**：逻辑字号 × 倍率之后由 `ui_text_physical_size()` 取整，**度量与绘制都必须过这个函数**（宽度按 19.5 算、字形按 20 画，长串文字能差出一个字）。取整的真正理由是字形图集按整数像素分档烘（下一节），绘制尺寸与某一档相等才是 1:1 采样。
+
+### 文字质量：抗锯齿 + 字形尺寸阶梯
+
+三件事一起决定"字看着清不清楚"，缺一件都会糊：
+
+| 环节 | 做法 | 不做会怎样 |
+| --- | --- | --- |
+| 覆盖度 | stb_truetype 逐像素算出的 8bit 覆盖度**原样当 alpha**，片元着色器不做阈值化 | 原来写过 `smoothstep(0.45, 0.55, alpha)`，等于把覆盖度压成 0/1，字缘全是硬阶梯——视觉上就是"没有抗锯齿" |
+| 栅格尺寸 | 图集里同一批字形按**整数像素分档**烘（`FontAtlas` 的尺寸阶梯：`ensure_size` / `bucket_for`），绘制时选相对误差最小的一档 | 单张 32px 图集画 13px 界面文字＝缩到 0.4 倍，笔画两侧各糊一圈灰边（实测比 ImGui 的 1:1 明显软）；反过来放大则是马赛克 |
+| 像素对齐 | 缩比≈1 时把每个字形原点 `round` 到整像素（`Renderer2D::draw_text` 里 `snap`） | 字落在半像素上会被双线性采样平均成两列半灰，锐度掉一半 |
+
+分档策略（`Renderer2D::ensure_text_raster_size`）：
+
+* 启动时按 `ui_text_physical_size(13, ui_scale)` 烘一档（1 倍屏是 13、1.5 倍是 20、2 倍是 26——**这就是"支持 DPI"的落点：2 倍屏不是把 13px 的图放大两倍，而是重新烘了一份 26px 的字**）。
+* 再固定烘一档 32px 通用尺寸，供引擎自带叠加层（FPS 文字 22px）与 2D Label 这类任意字号使用，免得它们被 13px 放大 1.7 倍。
+* 档位有 12% 容差、上限 6 档；加档＝整张图集重烘 + 重传纹理，所以只在 `GRender_SetUIScale` 真的改了倍率时发生（运行期重建走 `RenderContext::run_with_gpu_context_sync`，宿主别在 UI 回调里调）。
+* 宿主可以完全不碰这些：不调 `GRender_SetUIScale` 就是 1 倍屏、13px 一档，字照样清晰。
 
 ### 渲染侧为本轨新增的接口（`engine/render/render2d.h`）
 
 | 接口 | 用途 |
 | --- | --- |
 | `measure_text(text, size)` | 文本宽度（返回 0 = 无度量，调用方退回估算） |
+| `ensure_text_raster_size(px)` / `text_raster_size()` | 字形图集按物理字号重烘（DPI/缩放）。默认空实现，不支持的后端退化成缩放绘制 |
 | `begin_overlay_pass(w,h)` / `end_overlay_pass()` | UI 覆盖层独立成帧：存/还相机、切左上角 1:1、关 bloom 与阴影 |
 | `set_scissor` / `reset_scissor` 先 `flush_batches()` | 裁剪是状态、绘制是顶点：改裁剪前必须把已缓冲顶点提交，否则前后两段一起吃最后一次裁剪域 |
-| `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI 倍率。GL 后端在 `set_scissor` 里按需开 `GL_SCISSOR_TEST`，换渲染目标时关掉并作废缓存（否则离屏 pass 会被上一段的屏幕坐标裁剪域切掉） |
+| `GRender_SetUIScale(f)` / `GRender_GetUIScale()` | HiDPI 倍率（顺带把字形图集补到对应的物理字号档）。GL 后端在 `set_scissor` 里按需开 `GL_SCISSOR_TEST`，换渲染目标时关掉并作废缓存（否则离屏 pass 会被上一段的屏幕坐标裁剪域切掉） |
 | `GInput_GetWheel(dx,dy)` / `GInput_InjectPreedit(s)` / `GInput_GetPreedit(buf,cap)` | 滚轮（取走即清零）与输入法组合串 |
 
 ## 8. 与宿主输入的分工

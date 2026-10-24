@@ -1841,6 +1841,23 @@ TEST(bridge, text_pool_string_forwarded_verbatim) {
     CHECK_NEAR(r.calls[3].y, 40.0f, 1e-6f);
 }
 
+// 逻辑字号 → 物理字号必须取整：字形图集按整数像素烘一档，绘制尺寸与那一档
+// 完全相等才是 1:1 采样（渲染器这时还会把字形原点对齐到像素格）。13×1.5=19.5
+// 直接画就是"半像素落点 + 半像素缩放"，笔画立刻发虚。
+TEST(bridge, physical_text_size_rounds_to_whole_pixels) {
+    CHECK_NEAR(gryce_ui::ui_text_physical_size(13.0f, 1.0f), 13.0f, 1e-6f);
+    CHECK_NEAR(gryce_ui::ui_text_physical_size(13.0f, 1.5f), 20.0f, 1e-6f);
+    CHECK_NEAR(gryce_ui::ui_text_physical_size(13.0f, 2.0f), 26.0f, 1e-6f);
+    CHECK_NEAR(gryce_ui::ui_text_physical_size(13.0f, 1.25f), 16.0f, 1e-6f);
+    // scale 非法（0/负数）按 1 处理：不能让整屏文字塌成 0 号
+    CHECK_NEAR(gryce_ui::ui_text_physical_size(13.0f, 0.0f), 13.0f, 1e-6f);
+    // 结果恒为整数（这就是"能 1:1"的判据）
+    for (float s : {1.0f, 1.1f, 1.25f, 1.5f, 1.75f, 2.0f, 3.0f}) {
+        const float px = gryce_ui::ui_text_physical_size(13.0f, s);
+        CHECK_NEAR(px, std::floor(px), 1e-6f);
+    }
+}
+
 // ===========================================================================
 // suite: widget —— retained 控件层（命中测试 / 事件 / 值 / 绘制）
 //

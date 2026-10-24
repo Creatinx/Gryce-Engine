@@ -68,8 +68,9 @@ public:
     void ui_draw_text(float x, float y, const char* text, float font_size,
                       uint32_t rgba) override {
         if (!renderer_ || !text) return;
-        // 行盒顶 → 基线（见文件头第 3 条）；字号与坐标一起按缩放放大
-        const float fs = font_size * scale_;
+        // 行盒顶 → 基线（见文件头第 3 条）；字号取整到物理像素（与度量同一
+        // 口径，见 ui_text_physical_size），再和坐标一起按缩放放大
+        const float fs = ui_text_physical_size(font_size, scale_);
         renderer_->draw_text(x * scale_, y * scale_ + fs * kAscentRatio, text, fs,
                              to_color(rgba));
     }

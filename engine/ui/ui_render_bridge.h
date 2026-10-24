@@ -25,6 +25,7 @@
 #ifndef GRYCE_UI_RENDER_BRIDGE_H
 #define GRYCE_UI_RENDER_BRIDGE_H
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 
@@ -118,6 +119,19 @@ private:
 // scale = UI 逻辑像素 → 屏幕像素的倍数（HiDPI）；坐标、字号、裁剪框一起乘。
 std::unique_ptr<UiRenderer> make_renderer2d_ui_renderer(
     gryce_engine::render::IRenderer2D* renderer, float scale = 1.0f);
+
+// ---------------------------------------------------------------------------
+// 逻辑字号 → 物理字号
+//
+// **必须取整**，而且度量与绘制要用同一个函数：字形图集是按整数像素烘的
+// （一档一个尺寸，见 FontAtlas 注释），绘制尺寸与某一档完全相等时才是 1:1
+// 采样（此时渲染器还会把字形原点对齐到整像素格）。13 × 1.5 = 19.5 直接拿去
+// 画就是"半像素落点 + 半像素缩放"，锐度立刻掉一半。
+// ---------------------------------------------------------------------------
+inline float ui_text_physical_size(float logical, float scale) {
+    const float px = logical * ((scale > 0.0f) ? scale : 1.0f);
+    return std::floor(px + 0.5f);
+}
 
 } // namespace gryce_ui
 

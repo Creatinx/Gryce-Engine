@@ -15,6 +15,7 @@
 #include "runtime/engine_context.h"
 #include "scene/entity.h"
 #include "ui/ui_theme.h"
+#include "ui/ui_render_bridge.h"
 
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
@@ -1177,6 +1178,9 @@ static void apply_backend_switch() {
 
     g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
     if (g_renderer.renderer2d) {
+        // 换后端等于换了整套纹理：UI 字号那一档要跟着来（同 GRender_Init）
+        g_renderer.renderer2d->ensure_text_raster_size(gryce_ui::ui_text_physical_size(
+            gryce_ui::kWidgetFontSize, gryce_ui::BuiltinRuntime::instance().scale()));
         g_renderer.renderer2d->init(g_renderer.ctx.get());
     }
     if (!sync) {
@@ -1277,8 +1281,15 @@ int GRender_Init(const GRenderInitDesc* desc) {
     // init 必须在 RenderContext::start()（渲染线程）之前调用。
     g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
     if (g_renderer.renderer2d) {
+        // 字形图集按 UI 的**物理**字号烘。init 里默认烘 32px 通用档，而界面
+        // 文字是 13px——只靠缩放的话笔画会糊出一圈灰边（实测明显比 ImGui 的
+        // 1:1 文字软）。这个调用在 init 之前只记下尺寸，让首烘一次到位。
+        const float ui_px = gryce_ui::ui_text_physical_size(
+            gryce_ui::kWidgetFontSize, gryce_ui::BuiltinRuntime::instance().scale());
+        g_renderer.renderer2d->ensure_text_raster_size(ui_px);
         g_renderer.renderer2d->init(g_renderer.ctx.get());
-        GLOG_INFO("GRender_Init: 2D overlay renderer initialized");
+        GLOG_INFO("GRender_Init: 2D overlay renderer initialized (ui text raster {} px)",
+                  static_cast<int>(ui_px));
     } else {
         GLOG_WARN("GRender_Init: create_renderer2d returned nullptr");
     }
@@ -2352,6 +2363,14 @@ void GRender_SetUIScale(float scale) {
     GRYCE_API_GUARD();
     // 只影响内置轨：ImGui 轨的缩放由后端自己按 DPI 处理。
     gryce_ui::BuiltinRuntime::instance().set_scale(scale);
+    // 缩放变了，界面文字的**物理**字号也变了：字形图集要补上那一档，否则
+    // 2 倍屏上是把 13px 的图放大两倍（边缘马赛克），1.5 倍屏上是 19.5→20 的
+    // 半像素缩放（笔画发虚）。运行期重建纹理由 ensure_text_raster_size 走
+    // GPU 上下文同步，宿主在帧间调用即可（别在 UI 回调里调）。
+    if (g_renderer.renderer2d) {
+        g_renderer.renderer2d->ensure_text_raster_size(
+            gryce_ui::ui_text_physical_size(gryce_ui::kWidgetFontSize, scale));
+    }
 }
 
 float GRender_GetUIScale(void) {
