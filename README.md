@@ -257,7 +257,10 @@ build/GryceUiSmoke.exe --ops-burst 200          # 灌 200 条操作，看合并/
 build/GryceUiSmoke.exe --ui-interval 3          # UI 每 3 帧构建一次，画面不变
 build/GryceUiSmoke.exe --page layout            # 组件树布局页：20 个组件 + 滑杆改参数
 build/GryceUiSmoke.exe --page anim              # 动画页：补间/颜色纯函数 + 四组件片段动画
+build/GryceUiSmoke.exe --ui-backend builtin     # 引擎内置 UI 轨：不建 ImGui 上下文，同一份界面自己画
 ```
+
+`--ui-backend` 切的是**谁来画**：默认 `imgui` 走 Dear ImGui；`builtin` 走引擎内置的即时模式层 + 2D 覆盖层（`ui_drawlist` → `IRenderer2D`），不依赖任何 UI 库。宿主代码一行不改，两轨共用同一套 `GUi_*`。
 
 界面与 API 说明见 [docs/zh/ui-api.md](docs/zh/ui-api.md)。
 

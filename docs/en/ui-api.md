@@ -485,10 +485,10 @@ Demo: `--page anim` (or `Ctrl+4`). The panel is block 1 (easing combo + tween pr
 
 | Phase | Content | Status |
 | --- | --- | --- |
-| 1 | `ui_drawlist` command buffer (model layer, pure logic) | this round |
-| 2 | Render bridge: drawlist → `IRenderer2D`; all three backends inherit it; no new shader | next |
-| 3 | Retained control layer: hit testing + event dispatch + control library (Button/Label/Slider/Checkbox/TextInput) | planned |
-| 4 | `GUi_*` dual-track switch; ImGui retreats to an optional debug backend | planned |
+| 1 | `ui_drawlist` command buffer (model layer, pure logic) | done |
+| 2 | Render bridge: drawlist → `IRenderer2D`; all three backends inherit it; no new shader | done (7.11) |
+| 3 | Retained control layer: hit testing + event dispatch + control library (Button/Label/Slider/Checkbox/TextInput) | done (7.11) |
+| 4 | `GUi_*` dual-track switch; ImGui retreats to an optional debug backend | done (7.11) |
 
 ImGui's role on this path changes accordingly: **from "the UI system itself" to "one backend for editor/debug UI"**. The UI model layer (7.6), component tree (7.7) and animation (7.9) contain no ImGui dependency, so swapping the backend does not touch them.
 
@@ -510,7 +510,69 @@ ImGui's role on this path changes accordingly: **from "the UI system itself" to 
 | Empty text | `nullptr` or an empty string produces no command (not counted as culled) |
 | Geometry | No normalization: negative w/h is recorded verbatim; geometric correctness belongs to the layout layer |
 
-The demo host gains `--page builtin` in phase 2: no ImGui involved — a retained control tree generates a drawlist that the render bridge draws to the screen, for screenshot regression.
+Demo host check: `GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim` — no ImGui involved; the built-in immediate-mode layer produces the drawlist and the render bridge draws it, for screenshot regression (same host code as `--ui-backend imgui`, only the backend differs).
+
+## 7.11 The built-in UI track (`GRender_SetUIBackend(1)`)
+
+Once all four phases landed, `GUi_*` has two implementations and **the same host code** runs on both.
+
+```c
+GRender_SetUIBackend(1);      /* must be before GRender_Init: decides whether an ImGui context is created */
+GRender_SetUICallback(cb, user);   /* callback signature unchanged, identical on both tracks */
+GRender_Init(&desc);
+```
+
+| Topic | Rule |
+| --- | --- |
+| Backend choice | Process-wide, effective before init. 0 = ImGui (default, behaviour identical to before); 1 = built-in |
+| Who draws | ImGui track: ImGui draw data → commands. Built-in track: `UiDrawList` → 2D overlay pass |
+| Callback position | Same: inside `GRender_EndFrame`, with `g_renderer.mutex` held |
+| Throttling | Same: `GRender_SetUiFrameInterval` means "rebuild every N frames"; non-build frames redraw the previous result |
+| Context | The built-in track creates **no** ImGui context (`GRender_HasImGui()` returning false is the normal state) |
+
+### Frame order (`engine/api/ui_builtin_backend.h`)
+
+```
+debug_ui_submit_locked()            main thread, lock held
+  ├─ gather input (GInput_IsMouseButton*/GInput_PullChars/backspace) → UiInputFrame
+  ├─ ui.begin_frame(...)            inject theme + text metrics
+  ├─ host callback                  submit controls / enqueue ops only
+  ├─ ui.end_frame() + ui.draw()     close the frame, sweep unsubmitted controls, produce a UiDrawList
+  └─ renderer2d->begin_overlay_pass / bridge / end_overlay_pass
+```
+
+**Why it draws synchronously here instead of pushing a render command like ImGui**: `Renderer2D`'s members (camera, vertex batches, screen size) are written only by the main thread; the render thread only executes the commands it packs. Handing the overlay pass to the render thread races with the next frame's main-thread writes — the symptom is random heap corruption (`0xC0000374`), not a stable crash. The overlay pass itself only records vertices and packs them into commands, so GL calls still land after the scene commands and the UI still covers the final image.
+
+### What the built-in track supports
+
+| `GUi_*` | Built-in behaviour |
+| --- | --- |
+| `BeginWindow` / `EndWindow` | Supported (no title bar, no dragging, no collapsing; `flags` ignored) |
+| `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` | Supported; `Text` **wraps** to the content width |
+| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id) |
+| `Combo` | Degrades to a "click to cycle" button: returns 1 with `*current` already updated |
+| `DragFloat` | Read-only: draws a slider showing the current value, returns 0 |
+| `DragFloat2/3/4` / `ColorEdit4` | Not drawn or replaced by a swatch, returns 0 |
+| `BeginChild` | Always returns 0 (no child windows); contents are inlined; the matching `EndChild` is a no-op |
+| `BeginMenuBar` / `MenuItem` / `TreeNode` / `CollapsingHeader` / popups / drag and drop | Always return 0 / no-op |
+| Queries: `LastItemRect` / `IsItemHovered` / `IsItemActive` / `IsAnyItemActive` / `MousePos` / `IsMouse*` | Supported |
+| `MouseDeltaX/Y` / `GetModifiers` / `SetCursorPos` | Always 0 / no-op (read `GInput_*` for deltas and modifiers) |
+| `WantCaptureMouse` | True while the mouse is inside any panel rect |
+| `WantCaptureKeyboard` | True while a text input holds focus |
+
+### Three prerequisites for text and coordinates
+
+1. **One source of metrics**: auto-sizing (button width = text width + padding) and text centring both use `IRenderer2D::measure_text` (sum of glyph advances, UTF-8 by code point); when the renderer provides no metrics it falls back to `ui_approx_text_width`. They must be the same source, otherwise "layout by estimate, draw by truth" drifts apart.
+2. **`draw_text` resolves glyphs per code point**: the 2D text path now decodes UTF-8 (`Renderer2D::draw_text`), so CJK renders; code points missing from the atlas are skipped.
+3. **Coordinates assume 1:1**: the built-in track uses `GInput_GetMousePosition`'s window coordinates as screen coordinates and the render target's pixel size as the display size. Under HiDPI these differ (the ImGui track leaves scaling to its backend); scale on the host side if needed.
+
+### Three renderer additions this needed (`engine/render/render2d.h`)
+
+| Interface | Purpose |
+| --- | --- |
+| `measure_text(text, size)` | Text width (0 = no metrics, callers fall back to the estimate) |
+| `begin_overlay_pass(w,h)` / `end_overlay_pass()` | The UI overlay gets its own pass: save/restore the camera, switch to top-left 1:1, skip bloom and shadows |
+| `set_scissor` / `reset_scissor` flush batches first | Clipping is state, geometry is vertices: pending vertices must be submitted before the clip changes, or both segments inherit the last clip rect |
 
 ## 8. Sharing input with the host
 
@@ -529,6 +591,7 @@ Missing the keyboard guard looks like: renaming an entity, pressing `W` starts t
 ## 9. Known limits
 
 * No docking, no multi-window docking, no `ImPlot` or node-editor style add-ons — add a new `GUi_*` function for those instead of pulling ImGui into the extension.
+* The built-in track (7.11) has no child windows, menu bars, tree nodes, popups or drag and drop; those work on the ImGui track, so host code shared by both tracks should skip them by return value.
 * Drag/drop payloads are a single string: no multi-selection dragging, no custom payload types, and no cross-process or cross-window dragging.
 * Five built-in theme presets (Dark / Light / Midnight / Nord / HighContrast, see 7.8); callers reference tokens only — do not hardcode colours in callers.
 * `GUi_Image` takes no custom UVs or border tinting; the viewport shows the full texture.

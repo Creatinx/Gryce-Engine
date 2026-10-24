@@ -95,6 +95,10 @@ public:
     void set_scissor(int x, int y, int w, int h) override;
     void reset_scissor() override;
 
+    float measure_text(const char* text, float font_size) const override;
+    void  begin_overlay_pass(int screen_width, int screen_height) override;
+    void  end_overlay_pass() override;
+
     RHITextureHandle create_texture_from_data(const assets::TextureData* data) override;
     ITexture* resolve_texture(RHITextureHandle handle) const override;
 
@@ -201,6 +205,20 @@ private:
     bool camera_top_left_origin_ = false;
     float screen_width_ = 0.0f;
     float screen_height_ = 0.0f;
+
+    // 覆盖层 pass 的相机快照（begin_overlay_pass 存、end_overlay_pass 还）。
+    // 覆盖层把相机切成"左上角原点 1:1"，结束后必须原样还回去——同一帧里
+    // 之后还可能再有别的 2D 绘制（GameView）用到场景相机。
+    struct OverlaySavedCamera {
+        math::Vector2f center    = math::Vector2f::zero();
+        float          zoom      = 1.0f;
+        float          rotation  = 0.0f;
+        float          width     = 0.0f;
+        float          height    = 0.0f;
+        bool           top_left  = false;
+        bool           active    = false;
+    };
+    OverlaySavedCamera overlay_saved_;
     bool initialized_ = false;
     bool using_fallback_font_ = false;
     // 无可用字体时只告警一次（避免每帧刷日志）；回退图集的实心色块不再绘制。

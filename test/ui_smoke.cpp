@@ -4,7 +4,8 @@
 //   GryceUiSmoke.exe [--api opengl|vulkan|dx12] [--project <dir>] [--frames N]
 //                    [--shot <png>] [--w N] [--h N] [--ui-interval N]
 //                    [--theme dark|light|midnight|nord|highcontrast]
-//                    [--page controls|queue|layout|anim|about] [--no-vsync] [--help]
+//                    [--page controls|queue|layout|anim|about] [--no-vsync]
+//                    [--ui-backend imgui|builtin] [--help]
 //
 // 与 GryceRenderSmoke 的分工：那个演示渲染管线，这个演示引擎的 UI 子系统
 // （engine/ui 模型层 + api/ui_api.h 的 C 面）。跑起来能看到：
@@ -860,6 +861,8 @@ void print_usage() {
         "                        highcontrast（默认 dark）\n"
         "  --page <name>          初始页：controls / queue / layout / anim / about\n"
         "                        （默认 controls）\n"
+        "  --ui-backend <name>    UI 后端：imgui（默认）/ builtin（引擎内置，\n"
+        "                        不建 ImGui 上下文，界面由 2D 覆盖层自己画）\n"
         "  --no-vsync             关闭垂直同步\n"
         "  --help                 显示本帮助\n");
 }
@@ -878,6 +881,7 @@ int main(int argc, char** argv) {
     bool vsync = true;
     int theme_preset = GUI_THEME_PRESET_DARK;
     int page = 0;
+    int ui_backend = 0;   // 0 = ImGui（默认），1 = 引擎内置
 
     // 带值的参数必须在解析后跳过值本身，否则下一轮循环会把 "60" 当成
     // 未知参数（与 renderer_smoke 同一模式：取值时 ++i）。
@@ -914,6 +918,15 @@ int main(int argc, char** argv) {
             }
         }
         else if (std::strcmp(a, "--no-vsync") == 0) vsync = false;
+        else if (std::strcmp(a, "--ui-backend") == 0) {
+            const char* t = value_at(i);
+            if (std::strcmp(t, "imgui") == 0) ui_backend = 0;
+            else if (std::strcmp(t, "builtin") == 0) ui_backend = 1;
+            else {
+                std::fprintf(stderr, "[ui-smoke] 未知 UI 后端 '%s'（imgui / builtin）\n", t);
+                return 1;
+            }
+        }
         else if (std::strcmp(a, "--page") == 0) {
             const char* t = value_at(i);
             if (std::strcmp(t, "controls") == 0) page = 0;
@@ -982,6 +995,8 @@ int main(int argc, char** argv) {
     GRender_SetFPSOverlay(false);
     GRender_SetVSync(vsync);
     if (ui_interval > 1) GRender_SetUiFrameInterval(ui_interval);
+    // UI 后端也是 init 前生效项（决定建不建 ImGui 上下文）。
+    if (ui_backend == 1) GRender_SetUIBackend(1);
 
     UiDemoState state;
     state.theme_preset = theme_preset;
@@ -1023,7 +1038,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!GRender_HasImGui()) {
+    if (GRender_GetUIBackend() == 0 && !GRender_HasImGui()) {
         std::fprintf(stderr, "[ui-smoke] ImGui 未被接管，UI 不会绘制\n");
         GCore_Shutdown();
         GRender_Shutdown();
@@ -1031,8 +1046,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("[ui-smoke] backend=%s frames=%d viewport=%dx%d ui_interval=%d page=%d\n",
-                backend_name, frames, width, height, ui_interval, page);
+    std::printf("[ui-smoke] backend=%s ui=%s frames=%d viewport=%dx%d ui_interval=%d page=%d\n",
+                backend_name, ui_backend == 1 ? "builtin" : "imgui",
+                frames, width, height, ui_interval, page);
 
     // --ops-burst：灌一批操作再进帧循环。一半离散（key=0，一条不合并）、
     // 一半连续（key=1，排队期间合并成一条）。跑完后看统计：coalesced 应该

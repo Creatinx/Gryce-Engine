@@ -58,6 +58,12 @@ struct PlatformState {
         float mouse_delta_y = 0.0f;
         bool first_mouse = true;
 
+        // 文本输入：一帧内积攒的 Unicode 码点，由 GInput_PullChars 取走。
+        // 内置 UI 的输入框靠这条通道拿到真正的字符（大小写 / 输入法 / 粘贴）。
+        static constexpr int kCharCap = 64;
+        unsigned int chars[kCharCap] = {};
+        int char_count = 0;
+
         // GInput_SyncToCore 的"上次已同步"快照，只对变化推命令
         bool synced_keys[512] = {};
         bool synced_mouse_buttons[8] = {};
@@ -120,6 +126,15 @@ static void update_input_from_window() {
             static_cast<float>(g_platform.input_mgr->mouse_delta_x());
         g_platform.input.mouse_delta_y =
             static_cast<float>(g_platform.input_mgr->mouse_delta_y());
+    }
+
+    // 字符：窗口回调是事件式的，这里搬到 InputState 供 GInput_PullChars 取用。
+    // 队列满了就丢（正常一帧到不了 64 个字符）。
+    unsigned int chars[PlatformState::InputState::kCharCap];
+    const int n = g_platform.window->pull_chars(
+        chars, PlatformState::InputState::kCharCap - g_platform.input.char_count);
+    for (int i = 0; i < n; ++i) {
+        g_platform.input.chars[g_platform.input.char_count++] = chars[i];
     }
 }
 
@@ -586,6 +601,40 @@ bool GInput_IsMouseButtonPressed(int button) {
     std::lock_guard lock(g_platform.input_mutex);
     if (button < 0 || button >= 8) return false;
     return g_platform.input.mouse_buttons[button] && !g_platform.input.mouse_buttons_prev[button];
+}
+
+bool GInput_IsMouseButtonHeld(int button) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (button < 0 || button >= 8) return false;
+    return g_platform.input.mouse_buttons[button];
+}
+
+bool GInput_IsMouseButtonReleased(int button) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (button < 0 || button >= 8) return false;
+    return !g_platform.input.mouse_buttons[button] && g_platform.input.mouse_buttons_prev[button];
+}
+
+int GInput_PullChars(unsigned int* out, int cap) {
+    GRYCE_API_GUARD();
+    if (!out || cap <= 0) return 0;
+    std::lock_guard lock(g_platform.input_mutex);
+    const int n = g_platform.input.char_count < cap ? g_platform.input.char_count : cap;
+    for (int i = 0; i < n; ++i) out[i] = g_platform.input.chars[i];
+    // 剩余的往前挪（cap 不够时留下的不能丢）
+    for (int i = n; i < g_platform.input.char_count; ++i) {
+        g_platform.input.chars[i - n] = g_platform.input.chars[i];
+    }
+    g_platform.input.char_count -= n;
+    return n;
+}
+void GInput_InjectChar(unsigned int codepoint) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (g_platform.input.char_count >= PlatformState::InputState::kCharCap) return;
+    g_platform.input.chars[g_platform.input.char_count++] = codepoint;
 }
 
 void GInput_GetMousePosition(float* out_x, float* out_y) {

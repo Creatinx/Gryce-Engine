@@ -485,10 +485,10 @@ GUi_AnimChannelFloat("slide.x", &x);       // 读通道；返回 1 = 有该标�
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | `ui_drawlist` 命令缓冲（模型层，纯逻辑） | 本轮完成 |
-| 2 | 渲染桥：drawlist → `IRenderer2D`，三后端自动继承，不写新 shader | 下一步 |
-| 3 | retained 控件层：命中测试 + 事件分发 + 控件库（Button/Label/Slider/Checkbox/TextInput） | 规划中 |
-| 4 | `GUi_*` 双轨切换，ImGui 退居可选调试后端 | 规划中 |
+| 1 | `ui_drawlist` 命令缓冲（模型层，纯逻辑） | 完成 |
+| 2 | 渲染桥：drawlist → `IRenderer2D`，三后端自动继承，不写新 shader | 完成（7.11） |
+| 3 | retained 控件层：命中测试 + 事件分发 + 控件库（Button/Label/Slider/Checkbox/TextInput） | 完成（7.11） |
+| 4 | `GUi_*` 双轨切换，ImGui 退居可选调试后端 | 完成（7.11） |
 
 ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编辑器调试 UI 的一个后端"**。UI 模型层（7.6）与组件树（7.7）、动画（7.9）都不含 ImGui 依赖，换后端不伤它们。
 
@@ -510,7 +510,69 @@ ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编
 | 空文本 | `nullptr` 或空串不产生命令（不计 culled） |
 | 几何 | 不规范化：w/h 为负原样记录，几何正确性由布局层负责 |
 
-演示宿主阶段 2 会加 `--page builtin`：不经过 ImGui、直接由 retained 控件树生成 drawlist 并经渲染桥画到屏幕，用于截图回归。
+演示宿主验证方式：`GryceUiSmoke --ui-backend builtin --page controls|queue|layout|anim`——不经过 ImGui、直接由内置即时模式层生成 drawlist 并经渲染桥画到屏幕，用于截图回归（与 `--ui-backend imgui` 同一份宿主代码，只换后端）。
+
+## 7.11 内置 UI 轨（`GRender_SetUIBackend(1)`）
+
+四阶段全部落地后的形态：`GUi_*` 有两套实现，**同一份宿主代码**两边都能跑。
+
+```c
+GRender_SetUIBackend(1);      // 必须在 GRender_Init 之前：决定建不建 ImGui 上下文
+GRender_SetUICallback(cb, user);   // 回调签名不变，两条轨一样
+GRender_Init(&desc);
+```
+
+| 主题 | 规则 |
+| --- | --- |
+| 后端选择 | 进程级、init 前生效。0 = ImGui（默认，行为与旧版完全一致）；1 = 内置 |
+| 谁画 | ImGui 轨：ImGui 的 draw data → 命令；内置轨：`UiDrawList` → 2D 覆盖层 pass |
+| 回调位置 | 相同：`GRender_EndFrame` 内、`g_renderer.mutex` 已持有 |
+| 节流 | 相同：`GRender_SetUiFrameInterval` 对两条轨都是"每 N 帧才重建"，非构建帧重绘上次结果 |
+| 上下文 | 内置轨**不建** ImGui 上下文（`GRender_HasImGui()` 为 false 是正常状态） |
+
+### 一帧的时序（`engine/api/ui_builtin_backend.h`）
+
+```
+debug_ui_submit_locked()            主线程，锁已持有
+  ├─ 拉输入（GInput_IsMouseButton*/GInput_PullChars/退格键）→ UiInputFrame
+  ├─ ui.begin_frame(...)            注入主题 + 文本度量
+  ├─ 宿主回调                       只提交控件/只入队
+  ├─ ui.end_frame() + ui.draw()     收帧、回收未提交控件、产出 UiDrawList
+  └─ renderer2d->begin_overlay_pass / 桥 / end_overlay_pass
+```
+
+**为什么在同一处同步画、而不是像 ImGui 那样压成渲染命令**：`Renderer2D` 的成员（相机、顶点批次、屏幕尺寸）只由主线程写，渲染线程只执行它压进去的命令。把覆盖层 pass 打包成命令交给渲染线程执行，会与下一帧主线程的写入竞争——症状是随机的堆损坏（`0xC0000374`），不是稳定崩溃。覆盖层 pass 本身也只记录顶点、再把顶点压成命令，所以 GL 调用仍然排在场景命令之后、UI 盖在最终画面上。
+
+### 内置轨的能力边界
+
+| `GUi_*` | 内置轨行为 |
+| --- | --- |
+| `BeginWindow` / `EndWindow` | 支持（无标题栏、无拖动、无折叠；`flags` 被忽略） |
+| `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` | 支持；`Text` 按内容区宽度**自动折行** |
+| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id） |
+| `Combo` | 退化成"点一下换下一个"的按钮：返回 1 时 `*current` 已更新 |
+| `DragFloat` | 只读：画一条反映当前值的滑块，返回 0（拖拽语义无法映射成"点哪算哪"） |
+| `DragFloat2/3/4` / `ColorEdit4` | 不画或用色块代替，返回 0 |
+| `BeginChild` | 恒返回 0（无子窗口），内容就地内联；配对的 `EndChild` 是空操作 |
+| `BeginMenuBar` / `MenuItem` / `TreeNode` / `CollapsingHeader` / 弹出层 / 拖放 | 恒返回 0 / 空操作 |
+| 查询：`LastItemRect` / `IsItemHovered` / `IsItemActive` / `IsAnyItemActive` / `MousePos` / `IsMouse*` | 支持 |
+| `MouseDeltaX/Y` / `GetModifiers` / `SetCursorPos` | 恒 0 / 空操作（要 delta 与修饰键请直接读 `GInput_*`） |
+| `WantCaptureMouse` | 鼠标落在任何一个面板矩形内即为真 |
+| `WantCaptureKeyboard` | 输入框拿到焦点时为真 |
+
+### 文本与坐标的三个前提
+
+1. **度量走同一个口径**：自动尺寸（按钮宽 = 文字宽 + 内边距）与文字居中都用 `IRenderer2D::measure_text`（字形 advance 之和，UTF-8 按码点累加）；渲染器不支持度量时退回 `ui_approx_text_width` 估算。两边必须是同一份，否则"布局按估算、绘制按真实"会互相漂移。
+2. **`draw_text` 按码点取字形**：2D 文本路径已改成 UTF-8 解码（`Renderer2D::draw_text`），CJK 因此能出字；图集里没有的码点跳过。
+3. **坐标系假设 1:1**：内置轨用 `GInput_GetMousePosition` 的窗口坐标当屏幕坐标，视口尺寸用渲染目标的像素尺寸。HiDPI 下两者不等价（ImGui 轨由后端自己做缩放），需要按 DPI 缩放时在宿主侧换算。
+
+### 渲染侧为此新增的三件事（`engine/render/render2d.h`）
+
+| 接口 | 用途 |
+| --- | --- |
+| `measure_text(text, size)` | 文本宽度（返回 0 = 无度量，调用方退回估算） |
+| `begin_overlay_pass(w,h)` / `end_overlay_pass()` | UI 覆盖层独立成帧：存/还相机、切左上角 1:1、关 bloom 与阴影 |
+| `set_scissor` / `reset_scissor` 先 `flush_batches()` | 裁剪是状态、绘制是顶点：改裁剪前必须把已缓冲顶点提交，否则前后两段一起吃最后一次裁剪域 |
 
 ## 8. 与宿主输入的分工
 
@@ -529,6 +591,7 @@ if (GUi_WantCaptureKeyboard()) return;   // 不派发任何快捷键
 ## 9. 已知边界
 
 * 无 docking、无多窗口停靠、无 `ImPlot`/节点编辑器一类扩展——需要的话加成 `GUi_*` 的新函数，不要在扩展里引 ImGui。
+* 内置轨（7.11）没有子窗口、菜单栏、树节点、弹层与拖放；这些控件在 ImGui 轨可用，两轨混用同一份宿主代码时按返回值跳过即可。
 * 拖放 payload 只支持单个字符串，没有多选拖拽、没有自定义 payload 类型（跨进程/跨窗口拖拽也不支持）。
 * 主题内置 5 套预设（Dark / Light / Midnight / Nord / HighContrast，见 7.8）；调用方只引用 token，不要在调用方硬编码色值。
 * `GUi_Image` 不接受自定义 UV / 边框着色，视口只显示完整纹理。

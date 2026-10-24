@@ -5,6 +5,7 @@
 #include "api/render_api.h"
 #include "api/api_guard.h"
 #include "api/ui_api_internal.h"
+#include "api/ui_builtin_backend.h"
 #include "api/ui_op_queue_internal.h"
 #include "api/viewport_api.h"
 #include "api/core_api.h"
@@ -803,6 +804,30 @@ static void debug_ui_submit_locked() {
     ++g_renderer.ui_frame_counter;
     gryce_ui::state().begin_frame(static_cast<uint32_t>(g_renderer.ui_frame_counter));
     gryce_ui::op_queue().advance_frame();
+
+    // ---- 内置 UI 轨 ----
+    // 与 ImGui 轨互斥（后端在 GRender_Init 时定），走同一份宿主回调与同一个
+    // 节流间隔，只是"谁来画"不同：内置轨把 drawlist 打成一条渲染命令，在帧尾
+    // 用 2D 覆盖层 pass 画出去（时序见 api/ui_builtin_backend.h）。
+    if (gryce_ui::builtin_ui()) {
+        gryce_ui::BuiltinRuntime& rt = gryce_ui::BuiltinRuntime::instance();
+        rt.set_frame_context(g_renderer.viewport_w, g_renderer.viewport_h,
+                             g_renderer.renderer2d.get());
+        rt.set_throttle(g_renderer.ui_frame_interval, g_renderer.ui_frame_counter);
+        if (rt.begin_build()) {
+            if (g_renderer.ui_callback) {
+                // 约束同 ImGui 轨：本函数运行在 g_renderer.mutex 已持有的路径上，
+                // 回调内只能调 GUi_*（纯绘制/入队），不得调 GRender_*/GCore_*。
+                gryce_ui::enter_callback();
+                g_renderer.ui_callback(g_renderer.ui_callback_user);
+                gryce_ui::leave_callback();
+            }
+            rt.end_build();
+        }
+        rt.draw_now(g_renderer.renderer2d.get());
+        return;
+    }
+
 #ifdef GRYCE_HAS_IMGUI
     if (!g_renderer.debug_imgui || !g_renderer.ctx) return;
     // ★ 显式切到引擎自己的 ImGui 上下文再 NewFrame/Render：宿主（编辑器）可能在
@@ -1258,13 +1283,22 @@ int GRender_Init(const GRenderInitDesc* desc) {
         GLOG_WARN("GRender_Init: create_renderer2d returned nullptr");
     }
 
+    // 内置 UI 轨：先把实现表装进 ui_api 再决定建不建 ImGui。顺序反了的话
+    // 首帧的宿主回调会打到空表上（GUi_* 全部静默空操作，界面一片空白）。
+    if (gryce_ui::builtin_ui()) {
+        gryce_ui::install_builtin_ui();
+        gryce_ui::BuiltinRuntime::instance().reset();
+    }
+
     // 调试 UI：宿主没有自己的 ImGui 上下文时，引擎接管一套（左上角 FPS/帧时间
     // 叠加 + F1 调试窗口）。必须在渲染线程启动**之前**完成 —— ImGui 后端会建
     // 自己的 PSO/SRV 堆与字体纹理，放到渲染线程跑起来之后再建容易和首帧抢资源。
 #ifdef GRYCE_HAS_IMGUI
     // 需要 ImGui 的两种情况：引擎自带调试叠加，或宿主注册了 UI 回调（编辑器）。
     // 宿主已自建上下文（编辑器自管 ImGui）时一律让出，绝不再建第二个。
-    const bool want_imgui = g_renderer.debug_ui_enabled || g_renderer.ui_callback != nullptr;
+    // 内置 UI 轨（GRender_SetUIBackend(1)）不建 ImGui 上下文——这正是它的目的。
+    const bool want_imgui = !gryce_ui::builtin_ui() &&
+                            (g_renderer.debug_ui_enabled || g_renderer.ui_callback != nullptr);
     if (want_imgui && desc->native_window && ImGui::GetCurrentContext() == nullptr) {
         auto imgui_backend = g_renderer.ctx->backend()
                                  ? g_renderer.ctx->backend()->create_imgui_backend()
@@ -2302,6 +2336,16 @@ bool GRender_HasImGui(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.debug_imgui != nullptr;
+}
+
+void GRender_SetUIBackend(int backend) {
+    GRYCE_API_GUARD();
+    gryce_ui::set_ui_backend(backend);
+}
+
+int GRender_GetUIBackend(void) {
+    GRYCE_API_GUARD();
+    return gryce_ui::ui_backend();
 }
 
 uint64_t GRender_GetImGuiTextureId(GTextureHandle texture) {

@@ -689,7 +689,7 @@ if(BUILD_TESTING)
     # 工作"（无窗口宿主也走这条路）。GRYCE_RENDERER_BUILDING 让导出宏变成
     # dllexport，静态 exe 内自链接（否则 dllimport 会去找 __imp_ 符号）。
     # ui_snapshot.cpp 用 nlohmann/json（头文件库，与 GryceRenderer 同一份）。
-    set(GRYCE_UI_TEST_SUITES queue abi state layout comp compabi drawlist theme input snapshot anim animabi)
+    set(GRYCE_UI_TEST_SUITES queue abi state layout comp compabi drawlist bridge widget builtin theme input snapshot anim animabi)
 
     add_executable(GryceUiTests
         test/ui_tests.cpp
@@ -699,6 +699,9 @@ if(BUILD_TESTING)
         engine/ui/ui_layout.cpp
         engine/ui/ui_component.cpp
         engine/ui/ui_drawlist.cpp
+        engine/ui/ui_render_bridge.cpp
+        engine/ui/ui_widget.cpp
+        engine/ui/ui_builtin.cpp
         engine/ui/ui_theme.cpp
         engine/ui/ui_anim.cpp
         engine/ui/ui_input.cpp

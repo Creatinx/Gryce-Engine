@@ -1292,6 +1292,38 @@ void Renderer2D::draw_circle(float cx, float cy, float r, int segments, const Co
     }
 }
 
+// 逐码点遍历 UTF-8（不做合法性校验：非法字节按单字节码点处理，字形查不到
+// 自然跳过——比抛错/丢整串更接近"显示得出来的都显示"）。
+template <typename F>
+static void for_each_codepoint(const char* s, F&& fn) {
+    if (!s) return;
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s);
+    while (*p) {
+        uint32_t cp = *p;
+        int extra = 0;
+        if (cp < 0x80u) {
+            ++p;
+        } else if ((cp & 0xE0u) == 0xC0u) {
+            cp &= 0x1Fu; extra = 1;
+        } else if ((cp & 0xF0u) == 0xE0u) {
+            cp &= 0x0Fu; extra = 2;
+        } else if ((cp & 0xF8u) == 0xF0u) {
+            cp &= 0x07u; extra = 3;
+        } else {
+            ++p;                      // 续接字节/非法首字节：当作单字节跳过
+            fn(static_cast<uint32_t>(0xFFFFFFFFu));
+            continue;
+        }
+        if (extra > 0) {
+            ++p;
+            for (int i = 0; i < extra && (*p & 0xC0u) == 0x80u; ++i, ++p) {
+                cp = (cp << 6) | (*p & 0x3Fu);
+            }
+        }
+        fn(cp);
+    }
+}
+
 void Renderer2D::draw_text(float x, float y, const std::string& text, float font_size, const Color& color) {
     if (!font_atlas_.texture() || using_fallback_font_) {
         // 回退图集的每个"字形"是一块实心色块（见 FontAtlas::create_fallback_atlas），
@@ -1305,19 +1337,18 @@ void Renderer2D::draw_text(float x, float y, const std::string& text, float font
         return;
     }
 
-    float scale = font_size / font_atlas_.font_size();
+    const float scale = font_size / font_atlas_.font_size();
     float cursor_x = x;
     float cursor_y = y;
 
-    for (char c : text) {
-        if (c == '\n') {
+    for_each_codepoint(text.c_str(), [&](uint32_t cp) {
+        if (cp == '\n') {
             cursor_x = x;
             cursor_y += font_atlas_.font_size() * scale;
-            continue;
+            return;
         }
-
-        const Glyph* g = font_atlas_.get_glyph(c);
-        if (!g) continue;
+        const Glyph* g = font_atlas_.get_glyph(cp);
+        if (!g) return;
 
         float x0 = cursor_x + g->offset_x * scale;
         float y0 = cursor_y + g->offset_y * scale;
@@ -1333,7 +1364,70 @@ void Renderer2D::draw_text(float x, float y, const std::string& text, float font
         push_text_vertex(x0, y1, color, g->uv0_x, g->uv1_y);
 
         cursor_x += g->advance * scale;
+    });
+}
+
+float Renderer2D::measure_text(const char* text, float font_size) const {
+    if (!text || !font_atlas_.texture() || using_fallback_font_ || font_atlas_.font_size() <= 0.0f) {
+        return 0.0f;
     }
+    const float scale = font_size / font_atlas_.font_size();
+    float    best    = 0.0f;
+    float    cursor  = 0.0f;
+    // 多行取最宽一行（与 draw_text 的换行规则一致：'\n' 归零并下移）
+    for_each_codepoint(text, [&](uint32_t cp) {
+        if (cp == '\n') {
+            if (cursor > best) best = cursor;
+            cursor = 0.0f;
+            return;
+        }
+        const Glyph* g = font_atlas_.get_glyph(cp);
+        if (g) cursor += g->advance * scale;
+    });
+    return cursor > best ? cursor : best;
+}
+
+void Renderer2D::begin_overlay_pass(int screen_width, int screen_height) {
+    if (screen_width <= 0 || screen_height <= 0) return;
+
+    // 场景 2D 的残留顶点先落地，免得被覆盖层的新相机重新变换一遍
+    flush_batches();
+
+    overlay_saved_.center   = camera_center_;
+    overlay_saved_.zoom     = camera_zoom_;
+    overlay_saved_.rotation = camera_rotation_;
+    overlay_saved_.width    = screen_width_;
+    overlay_saved_.height   = screen_height_;
+    overlay_saved_.top_left = camera_top_left_origin_;
+    overlay_saved_.active   = true;
+
+    screen_width_  = static_cast<float>(screen_width);
+    screen_height_ = static_cast<float>(screen_height);
+    ortho_ = math::Matrix4f::ortho(0.0f, screen_width_, screen_height_, 0.0f, -1.0f, 1.0f);
+    set_camera(math::Vector2f(0.0f, 0.0f), 1.0f, true);
+
+    if (context_alive()) {
+        ctx_->set_viewport(0, 0, screen_width, screen_height);
+        ctx_->set_depth_test(false);
+        ctx_->set_blend(true);
+        ctx_->set_cull_face(CullMode::None);
+    }
+    set_blend_mode(BlendMode::Alpha);
+}
+
+void Renderer2D::end_overlay_pass() {
+    // 只提交顶点：不走 end_frame()，因为那里会跑阴影 pass 与 bloom 后处理
+    //（覆盖层不需要、也不该被 bloom 洗一遍）。
+    flush_batches();
+    reset_scissor();
+
+    if (!overlay_saved_.active) return;
+    overlay_saved_.active = false;
+    screen_width_  = overlay_saved_.width;
+    screen_height_ = overlay_saved_.height;
+    ortho_ = math::Matrix4f::ortho(0.0f, screen_width_, screen_height_, 0.0f, -1.0f, 1.0f);
+    set_camera(overlay_saved_.center, overlay_saved_.zoom, overlay_saved_.top_left,
+               overlay_saved_.rotation);
 }
 
 void Renderer2D::set_ambient_light(const Color& color) {
@@ -1571,12 +1665,17 @@ ITexture* Renderer2D::resolve_texture(RHITextureHandle handle) const {
 }
 
 void Renderer2D::set_scissor(int x, int y, int w, int h) {
+    // 裁剪是**状态**，绘制是**顶点**：vertices_ 里的几何要到 flush 才带着当时的
+    // 状态下发，所以改裁剪前必须先把已缓冲的顶点提交掉，否则前后两段会一起
+    // 吃到最后一次设置的裁剪域（内置 UI 的窗口裁剪就是这么用的）。
+    flush_batches();
     if (ctx_) {
         ctx_->set_scissor(x, y, w, h);
     }
 }
 
 void Renderer2D::reset_scissor() {
+    flush_batches();
     if (ctx_) {
         const auto size = screen_size();
         ctx_->set_scissor(0, 0, static_cast<int>(size.x), static_cast<int>(size.y));

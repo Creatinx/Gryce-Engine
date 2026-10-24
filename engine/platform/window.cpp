@@ -346,6 +346,13 @@ Window::Window(const std::string& title, int width, int height, WindowMode mode,
         if (!self) return;
         self->close_requested_ = true;
     });
+    // 字符输入：唯一的真实字符通道（大小写、输入法、粘贴都靠它）。
+    // 注意：ImGui 的 GLFW 后端初始化时会装自己的 char 回调，覆盖这一条——
+    // 那时内置 UI 轨拿不到字符（两条轨本来就不该同时跑）。
+    glfwSetCharCallback(handle_, [](GLFWwindow* w, unsigned int codepoint) {
+        auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
+        if (self) self->push_char(codepoint);
+    });
 
     // Windows: 注册 Raw Input 键盘设备，RIDEV_NOHOTKEYS 阻止 Shift 切换输入法
 #ifdef _WIN32
@@ -701,6 +708,24 @@ bool Window::has_focus() const {
 // ---------------------------------------------------------------------------
 bool Window::get_key(int key) const {
     return handle_ ? (glfwGetKey(handle_, key) == GLFW_PRESS) : false;
+}
+
+void Window::push_char(unsigned int codepoint) {
+    if (char_count_ >= kCharQueueCap) return;   // 满了丢新字符（见 window.h）
+    char_queue_[(char_head_ + char_count_) % kCharQueueCap] = codepoint;
+    ++char_count_;
+}
+
+int Window::pull_chars(unsigned int* out, int cap) {
+    if (!out || cap <= 0) return 0;
+    const int n = char_count_ < cap ? char_count_ : cap;
+    for (int i = 0; i < n; ++i) {
+        out[i] = char_queue_[(char_head_ + i) % kCharQueueCap];
+    }
+    char_head_  = (char_head_ + n) % kCharQueueCap;
+    char_count_ -= n;
+    // 没被取走的（cap 不够）留在队列里，下一帧继续
+    return n;
 }
 
 void Window::get_cursor_pos(double& x, double& y) const {

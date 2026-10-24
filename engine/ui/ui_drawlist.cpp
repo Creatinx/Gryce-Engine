@@ -65,6 +65,12 @@ void UiDrawList::push_clip(float x, float y, float w, float h) {
 
     UiCommand c{};
     c.cmd = UiCmd::PushClip;
+    // 相交后的生效矩形随命令下发：命令流自描述，渲染桥不必回查构建期的
+    // 裁剪栈（见 ui_drawlist.h 对 UiCommand 的说明）
+    c.x = ox;
+    c.y = oy;
+    c.w = ow;
+    c.h = oh;
     emit(c);
 }
 

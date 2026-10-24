@@ -140,8 +140,30 @@ public:
     // 绘制圆形（填充）
     virtual void draw_circle(float cx, float cy, float r, int segments, const Color& color) = 0;
 
-    // 绘制文字（UTF-8 字符串，当前仅支持 ASCII 可见字符）
+    // 绘制文字（UTF-8 字符串，按码点查字形；图集里没有的码点跳过）。
+    // y 是**基线**，不是行盒顶。
     virtual void draw_text(float x, float y, const std::string& text, float font_size, const Color& color) = 0;
+
+    // 文本宽度（同一套字形推进量，含 UTF-8 解码）。返回 0 表示本渲染器
+    // 不提供度量（无字体图集/后端未实现），调用方应退回估算宽度。
+    // 存在的意义：自动尺寸控件（按钮宽 = 文字宽 + 内边距）与文字居中都
+    // 必须和真正画出来的宽度用同一个口径，否则宽度会漂。
+    virtual float measure_text(const char* text, float font_size) const {
+        (void)text; (void)font_size; return 0.0f;
+    }
+
+    // -----------------------------------------------------------------------
+    // UI 覆盖层 pass
+    // -----------------------------------------------------------------------
+    // 内置 UI 的绘制入口：与场景 2D 共用同一个 Renderer2D，但**独立成帧**——
+    // 保存并切换相机到"左上角原点、1:1"、关掉 bloom/阴影、清空批次，结束时
+    // 直接提交顶点并恢复相机。这样 UI 命令既不需要插进场景 2D 的批次里
+    //（那要求 UI 在场景 pass 之前构建），也不会被 2D bloom 洗一遍。
+    // 默认空实现：不支持的后端退化成"UI 不显示"，不影响场景渲染。
+    virtual void begin_overlay_pass(int screen_width, int screen_height) {
+        (void)screen_width; (void)screen_height;
+    }
+    virtual void end_overlay_pass() {}
 
     // -----------------------------------------------------------------------
     // 2D 光照接口

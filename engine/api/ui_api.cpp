@@ -12,6 +12,7 @@
 
 #include "api/ui_api.h"
 #include "api/ui_api_internal.h"
+#include "api/ui_builtin_ops.h"
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
 #include "ui/ui_component.h"
@@ -23,6 +24,7 @@
 #include "ui/ui_theme.h"
 
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 
 #ifdef GRYCE_HAS_IMGUI
@@ -33,14 +35,55 @@ namespace {
 
 bool g_in_frame = false;
 
+// 内置 UI 轨的实现表（见 api/ui_builtin_ops.h）。空 = 只有 ImGui 轨。
+const gryce_ui::BuiltinUiOps* g_builtin_ops = nullptr;
+
+// 后端选择：0 = ImGui（默认），1 = 内置。
+int g_ui_backend = 0;
+
+// 内置轨可用 = 帧内 + 有人装了实现表。两条判据都必须在：帧外调 GUi_* 是
+// 宿主的常见误用（顺手算尺寸），那时不能往控件表里塞控件。
+inline bool builtin_now() { return g_in_frame && g_builtin_ops != nullptr; }
+inline const gryce_ui::BuiltinUiOps& bo() { return *g_builtin_ops; }
+
 #ifdef GRYCE_HAS_IMGUI
 // 本后端的纹理是否需要翻 V 才与 ImGui 的 uv 约定一致（见 ui_api_internal.h）。
 // 默认 false = D3D12 / Vulkan 约定。render_api.cpp 在建好 ImGui 后端后会覆盖。
 bool g_texture_v_flip = false;
 #endif
 
+// 语义文本色取自主题 token（ui_theme.h）：换主题时这些颜色一起换，不再有
+// 散落在控件实现里的硬编码色值。两条轨共用这一个映射——ImGui 轨再包成
+// ImVec4，内置轨直接用 0xRRGGBBAA。
+uint32_t text_token_rgba(int kind) {
+    using gryce_ui::THEME_COLOR_ACCENT;
+    using gryce_ui::THEME_COLOR_ERROR;
+    using gryce_ui::THEME_COLOR_OK;
+    using gryce_ui::THEME_COLOR_TEXT;
+    using gryce_ui::THEME_COLOR_TEXT_DIM;
+    using gryce_ui::THEME_COLOR_WARN;
+    int token = THEME_COLOR_TEXT;
+    switch (kind) {
+        case GUI_TEXT_DIM:    token = THEME_COLOR_TEXT_DIM;  break;
+        case GUI_TEXT_OK:     token = THEME_COLOR_OK;       break;
+        case GUI_TEXT_WARN:   token = THEME_COLOR_WARN;     break;
+        case GUI_TEXT_ERROR:  token = THEME_COLOR_ERROR;    break;
+        case GUI_TEXT_ACCENT: token = THEME_COLOR_ACCENT;   break;
+        default:              token = THEME_COLOR_TEXT;     break;
+    }
+    return gryce_ui::color(token);
+}
+
 #ifdef GRYCE_HAS_IMGUI
 inline bool ready() { return g_in_frame && ImGui::GetCurrentContext() != nullptr; }
+
+ImVec4 text_color(int kind) {
+    const uint32_t c = text_token_rgba(kind);
+    return ImVec4(static_cast<float>((c >> 24) & 0xFF) / 255.0f,
+                  static_cast<float>((c >> 16) & 0xFF) / 255.0f,
+                  static_cast<float>((c >> 8) & 0xFF) / 255.0f,
+                  static_cast<float>(c & 0xFF) / 255.0f);
+}
 
 ImGuiWindowFlags to_window_flags(int flags) {
     ImGuiWindowFlags out = ImGuiWindowFlags_None;
@@ -57,28 +100,6 @@ ImGuiWindowFlags to_window_flags(int flags) {
 
 // 语义文本色取自主题 token（ui_theme.h）：换主题时这些颜色一起换，
 // 不再有散落在控件实现里的硬编码色值。无 ImGui 时同样可算（token 是纯数据）。
-ImVec4 text_color(int kind) {
-    using gryce_ui::THEME_COLOR_ACCENT;
-    using gryce_ui::THEME_COLOR_ERROR;
-    using gryce_ui::THEME_COLOR_OK;
-    using gryce_ui::THEME_COLOR_TEXT;
-    using gryce_ui::THEME_COLOR_TEXT_DIM;
-    using gryce_ui::THEME_COLOR_WARN;
-    int token = THEME_COLOR_TEXT;
-    switch (kind) {
-        case GUI_TEXT_DIM:    token = THEME_COLOR_TEXT_DIM;  break;
-        case GUI_TEXT_OK:     token = THEME_COLOR_OK;       break;
-        case GUI_TEXT_WARN:   token = THEME_COLOR_WARN;     break;
-        case GUI_TEXT_ERROR:  token = THEME_COLOR_ERROR;    break;
-        case GUI_TEXT_ACCENT: token = THEME_COLOR_ACCENT;   break;
-        default:              token = THEME_COLOR_TEXT;     break;
-    }
-    const uint32_t c = gryce_ui::color(token);
-    return ImVec4(static_cast<float>((c >> 24) & 0xFF) / 255.0f,
-                  static_cast<float>((c >> 16) & 0xFF) / 255.0f,
-                  static_cast<float>((c >> 8) & 0xFF) / 255.0f,
-                  static_cast<float>(c & 0xFF) / 255.0f);
-}
 #else
 inline bool ready() { return false; }
 #endif
@@ -89,6 +110,14 @@ namespace gryce_ui {
 
 void enter_callback() { g_in_frame = true; }
 void leave_callback() { g_in_frame = false; }
+
+// ---- 内置 UI 轨的后端选择与实现表 ----
+void set_ui_backend(int backend) { g_ui_backend = (backend == 1) ? 1 : 0; }
+int  ui_backend() { return g_ui_backend; }
+bool builtin_ui() { return g_ui_backend == 1; }
+
+const BuiltinUiOps* builtin_ops() { return g_builtin_ops; }
+void install_builtin_ops(const BuiltinUiOps* ops) { g_builtin_ops = ops; }
 
 void set_texture_v_flip(bool flip) {
 #ifdef GRYCE_HAS_IMGUI
@@ -212,11 +241,16 @@ void GUi_AdvanceOpFrame(void) {
 
 extern "C" {
 
-int GUi_InFrame(void) { return ready() ? 1 : 0; }
+int GUi_InFrame(void) {
+    // 内置轨没有 ImGui 上下文，ready() 恒假——帧内判据要单独认这条路。
+    if (g_in_frame && builtin_now()) return 1;
+    return ready() ? 1 : 0;
+}
 
 void GUi_GetDisplaySize(float* out_w, float* out_h) {
     if (out_w) *out_w = 0.0f;
     if (out_h) *out_h = 0.0f;
+    if (builtin_now()) { bo().display_size(out_w, out_h); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     const ImVec2 s = ImGui::GetIO().DisplaySize;
@@ -230,6 +264,7 @@ void GUi_GetDisplaySize(float* out_w, float* out_h) {
 // ---------------------------------------------------------------------------
 
 int GUi_BeginWindow(const char* name, float x, float y, float w, float h, int flags) {
+    if (builtin_now()) return bo().begin_window(name, x, y, w, h);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
@@ -242,6 +277,7 @@ int GUi_BeginWindow(const char* name, float x, float y, float w, float h, int fl
 }
 
 void GUi_EndWindow(void) {
+    if (builtin_now()) { bo().end_window(); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::End();
@@ -249,6 +285,9 @@ void GUi_EndWindow(void) {
 }
 
 int GUi_BeginChild(const char* id, float w, float h, int border) {
+    // 内置轨还没有子窗口（独立的裁剪域 + 独立光标流）。返回 0 让宿主按
+    // "开不起来"处理——内联提交而不是画进一个不存在的容器。
+    if (builtin_now()) { (void)id; (void)w; (void)h; (void)border; return 0; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     const ImGuiChildFlags child_flags = border ? ImGuiChildFlags_Borders : ImGuiChildFlags_None;
@@ -260,6 +299,7 @@ int GUi_BeginChild(const char* id, float w, float h, int border) {
 }
 
 void GUi_EndChild(void) {
+    if (builtin_now()) return;   // BeginChild 恒失败，配对的 End 也是空操作
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::EndChild();
@@ -267,6 +307,7 @@ void GUi_EndChild(void) {
 }
 
 int GUi_BeginMenuBar(void) {
+    if (builtin_now()) return 0;   // 内置轨无菜单栏
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::BeginMenuBar() ? 1 : 0;
@@ -276,6 +317,7 @@ int GUi_BeginMenuBar(void) {
 }
 
 void GUi_EndMenuBar(void) {
+    if (builtin_now()) return;
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::EndMenuBar();
@@ -283,6 +325,7 @@ void GUi_EndMenuBar(void) {
 }
 
 int GUi_BeginMenu(const char* label) {
+    if (builtin_now()) { (void)label; return 0; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::BeginMenu(label ? label : "") ? 1 : 0;
@@ -293,6 +336,7 @@ int GUi_BeginMenu(const char* label) {
 }
 
 void GUi_EndMenu(void) {
+    if (builtin_now()) return;
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::EndMenu();
@@ -300,6 +344,7 @@ void GUi_EndMenu(void) {
 }
 
 int GUi_MenuItem(const char* label, const char* shortcut, int enabled) {
+    if (builtin_now()) { (void)label; (void)shortcut; (void)enabled; return 0; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::MenuItem(label ? label : "", shortcut, false, enabled != 0) ? 1 : 0;
@@ -314,6 +359,7 @@ int GUi_MenuItem(const char* label, const char* shortcut, int enabled) {
 // ---------------------------------------------------------------------------
 
 void GUi_Text(const char* text) {
+    if (builtin_now()) { bo().text(text); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::TextUnformatted(text ? text : "");
@@ -323,6 +369,7 @@ void GUi_Text(const char* text) {
 }
 
 void GUi_TextColored(int color, const char* text) {
+    if (builtin_now()) { bo().text_colored(text_token_rgba(color), text); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     const ImVec4 c = text_color(color);
@@ -333,6 +380,7 @@ void GUi_TextColored(int color, const char* text) {
 }
 
 void GUi_Separator(void) {
+    if (builtin_now()) { bo().separator(); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::Separator();
@@ -340,6 +388,8 @@ void GUi_Separator(void) {
 }
 
 void GUi_Spacing(void) {
+    // 内置轨的 spacing(-1) = 空一行（主题行间距）。
+    if (builtin_now()) { bo().spacing(-1.0f); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::Spacing();
@@ -347,6 +397,7 @@ void GUi_Spacing(void) {
 }
 
 void GUi_SameLine(float spacing) {
+    if (builtin_now()) { bo().same_line(spacing); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::SameLine(spacing);
@@ -356,6 +407,7 @@ void GUi_SameLine(float spacing) {
 }
 
 void GUi_LabelText(const char* label, const char* text) {
+    if (builtin_now()) { bo().label_text(label, text); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::LabelText(label ? label : "", "%s", text ? text : "");
@@ -365,6 +417,7 @@ void GUi_LabelText(const char* label, const char* text) {
 }
 
 int GUi_Button(const char* label) {
+    if (builtin_now()) return bo().button(label);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::Button(label ? label : "") ? 1 : 0;
@@ -375,6 +428,7 @@ int GUi_Button(const char* label) {
 }
 
 int GUi_ButtonSize(const char* label, float w, float h) {
+    if (builtin_now()) return bo().button_size(label, w, h);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::Button(label ? label : "", ImVec2(w, h)) ? 1 : 0;
@@ -385,6 +439,9 @@ int GUi_ButtonSize(const char* label, float w, float h) {
 }
 
 int GUi_SmallButton(const char* label) {
+    // 内置轨没有独立的"小按钮"样式：退化成普通按钮（尺寸随标签），
+    // 保持行为可用而不是消失。
+    if (builtin_now()) return bo().button(label);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::SmallButton(label ? label : "") ? 1 : 0;
@@ -395,6 +452,8 @@ int GUi_SmallButton(const char* label) {
 }
 
 int GUi_Selectable(const char* label, int selected) {
+    // 内置轨没有选中态高亮：当成按钮用，返回值语义一致（点中了=1）。
+    if (builtin_now()) { (void)selected; return bo().button(label); }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::Selectable(label ? label : "", selected != 0) ? 1 : 0;
@@ -405,6 +464,7 @@ int GUi_Selectable(const char* label, int selected) {
 }
 
 void GUi_SetItemAllowOverlap(void) {
+    if (builtin_now()) return;   // 内置轨不解析重叠，无需登记
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::SetNextItemAllowOverlap();
@@ -412,6 +472,7 @@ void GUi_SetItemAllowOverlap(void) {
 }
 
 int GUi_Checkbox(const char* label, int* inout_value) {
+    if (builtin_now()) return inout_value ? bo().checkbox(label, inout_value) : 0;
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !inout_value) return 0;
     bool v = *inout_value != 0;
@@ -426,6 +487,10 @@ int GUi_Checkbox(const char* label, int* inout_value) {
 
 int GUi_SliderFloat(const char* label, float* inout_value,
                     float min_value, float max_value, const char* fmt) {
+    if (builtin_now()) {
+        (void)fmt;   // 内置轨的滑块不显示数字（只有轨道 + 填充 + 手柄）
+        return inout_value ? bo().slider_float(label, inout_value, min_value, max_value) : 0;
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !inout_value) return 0;
     return ImGui::SliderFloat(label ? label : "", inout_value, min_value, max_value,
@@ -438,7 +503,24 @@ int GUi_SliderFloat(const char* label, float* inout_value,
 #endif
 }
 
+// DragFloat 系列靠"按住横向拖拽改值"的语义，内置轨的滑块是"点/拖到某个
+// 位置=那个值"，两者不能混用（调用方按 1.0f 的量级调 speed，映射成像素会
+// 差几个数量级）。所以内置轨下这三个是纯显示：画一条只读滑块反映当前值，
+// 返回 0（没有变化）。
+static int builtin_readonly_slider(const char* label, float* v, float lo, float hi) {
+    if (!v || !builtin_now()) return 0;
+    float tmp = *v;
+    bo().slider_float(label, &tmp, lo, hi);
+    return 0;
+}
+
 int GUi_DragFloat(const char* label, float* inout_value, float speed) {
+    if (builtin_now()) {
+        (void)speed;
+        if (!inout_value) return 0;
+        return builtin_readonly_slider(label, inout_value, *inout_value - 1.0f,
+                                       *inout_value + 1.0f);
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !inout_value) return 0;
     return ImGui::DragFloat(label ? label : "", inout_value, speed) ? 1 : 0;
@@ -449,6 +531,7 @@ int GUi_DragFloat(const char* label, float* inout_value, float speed) {
 }
 
 int GUi_DragFloat2(const char* label, float v[2], float speed) {
+    if (builtin_now()) { (void)label; (void)v; (void)speed; return 0; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
     return ImGui::DragFloat2(label ? label : "", v, speed) ? 1 : 0;
@@ -459,6 +542,7 @@ int GUi_DragFloat2(const char* label, float v[2], float speed) {
 }
 
 int GUi_DragFloat3(const char* label, float v[3], float speed) {
+    if (builtin_now()) { (void)label; (void)v; (void)speed; return 0; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
     return ImGui::DragFloat3(label ? label : "", v, speed) ? 1 : 0;
@@ -469,6 +553,7 @@ int GUi_DragFloat3(const char* label, float v[3], float speed) {
 }
 
 int GUi_DragFloat4(const char* label, float v[4], float speed) {
+    if (builtin_now()) { (void)label; (void)v; (void)speed; return 0; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
     return ImGui::DragFloat4(label ? label : "", v, speed) ? 1 : 0;
@@ -479,6 +564,12 @@ int GUi_DragFloat4(const char* label, float v[4], float speed) {
 }
 
 int GUi_ColorEdit4(const char* label, float v[4]) {
+    // 内置轨没有颜色拾取面板：只画色块（不可编辑），返回 0。
+    if (builtin_now()) {
+        (void)label;
+        if (v) bo().color_button("##color_edit", v);
+        return 0;
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
     return ImGui::ColorEdit4(label ? label : "", v, ImGuiColorEditFlags_Float) ? 1 : 0;
@@ -489,6 +580,7 @@ int GUi_ColorEdit4(const char* label, float v[4]) {
 }
 
 int GUi_ColorButton(const char* label, const float rgba[4]) {
+    if (builtin_now()) return bo().color_button(label, rgba);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     const ImVec4 c = rgba ? ImVec4(rgba[0], rgba[1], rgba[2], rgba[3])
@@ -504,6 +596,7 @@ int GUi_ColorButton(const char* label, const float rgba[4]) {
 }
 
 int GUi_InputText(const char* label, char* buf, int buf_size) {
+    if (builtin_now()) return bo().input_text(label, buf, buf_size);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !buf || buf_size <= 0) return 0;
     return ImGui::InputText(label ? label : "", buf, static_cast<size_t>(buf_size)) ? 1 : 0;
@@ -530,6 +623,19 @@ int GUi_IsItemDeactivatedAfterEdit(void) {
 }
 
 int GUi_Combo(const char* label, int* current, const char* const* items, int count) {
+    // 内置轨没有弹出列表：退化成"点一下换下一个"的按钮。语义与 ImGui 的
+    // Combo 一致（变化时返回 1 并写回 *current），只是交互方式不同——
+    // 对工具栏里的少量枚举选项够用，等真需要下拉时再给内置轨加弹层。
+    if (builtin_now()) {
+        if (!current || !items || count <= 0) return 0;
+        int cur = (*current < 0 || *current >= count) ? 0 : *current;
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%s: %s", label ? label : "",
+                      items[cur] ? items[cur] : "");
+        if (!bo().button(buf)) return 0;
+        *current = (cur + 1) % count;
+        return 1;
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !current || !items || count <= 0) return 0;
     return ImGui::Combo(label ? label : "", current, items, count) ? 1 : 0;
@@ -540,6 +646,8 @@ int GUi_Combo(const char* label, int* current, const char* const* items, int cou
 }
 
 void GUi_ProgressBar(float fraction, float w, float h, const char* overlay) {
+    // 内置轨的进度条总是撑满内容区（w/h 是 ImGui 专用尺寸参数）。
+    if (builtin_now()) { (void)w; (void)h; bo().progress_bar(fraction, overlay); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::ProgressBar(fraction, ImVec2(w, h), overlay);
@@ -727,6 +835,7 @@ void GUi_EndDragDropTarget(void) {
 // ---------------------------------------------------------------------------
 
 void GUi_SetCursorPos(float x, float y) {
+    if (builtin_now()) { bo().set_cursor_pos(x, y); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::SetCursorPos(ImVec2(x, y));
@@ -738,6 +847,12 @@ void GUi_SetCursorPos(float x, float y) {
 void GUi_GetCursorPos(float* out_x, float* out_y) {
     if (out_x) *out_x = 0.0f;
     if (out_y) *out_y = 0.0f;
+    // 内置轨里光标由控件流推进，宿主持有不了它；退回"上一个 item 的左上角"，
+    // 这对"在它下面接着排"的常见用法是同一个答案。
+    if (builtin_now()) {
+        bo().last_item_rect(out_x, out_y, nullptr, nullptr);
+        return;
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     const ImVec2 p = ImGui::GetCursorPos();
@@ -749,6 +864,7 @@ void GUi_GetCursorPos(float* out_x, float* out_y) {
 void GUi_GetContentAvail(float* out_w, float* out_h) {
     if (out_w) *out_w = 0.0f;
     if (out_h) *out_h = 0.0f;
+    if (builtin_now()) { bo().get_content_avail(out_w, out_h); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     const ImVec2 s = ImGui::GetContentRegionAvail();
@@ -758,6 +874,7 @@ void GUi_GetContentAvail(float* out_w, float* out_h) {
 }
 
 void GUi_SetNextItemWidth(float w) {
+    if (builtin_now()) { bo().set_next_item_width(w); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::SetNextItemWidth(w);
@@ -767,6 +884,7 @@ void GUi_SetNextItemWidth(float w) {
 }
 
 float GUi_GetTextLineHeight(void) {
+    if (builtin_now()) return bo().text_line_height();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0.0f;
     return ImGui::GetTextLineHeight();
@@ -776,6 +894,7 @@ float GUi_GetTextLineHeight(void) {
 }
 
 float GUi_GetFrameHeight(void) {
+    if (builtin_now()) return bo().frame_height();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0.0f;
     return ImGui::GetFrameHeight();
@@ -785,6 +904,7 @@ float GUi_GetFrameHeight(void) {
 }
 
 float GUi_CalcTextWidth(const char* text) {
+    if (builtin_now()) return bo().calc_text_width(text);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !text) return 0.0f;
     return ImGui::CalcTextSize(text).x;
@@ -799,6 +919,7 @@ void GUi_LastItemRect(float* out_x, float* out_y, float* out_w, float* out_h) {
     if (out_y) *out_y = 0.0f;
     if (out_w) *out_w = 0.0f;
     if (out_h) *out_h = 0.0f;
+    if (builtin_now()) { bo().last_item_rect(out_x, out_y, out_w, out_h); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     const ImVec2 min = ImGui::GetItemRectMin();
@@ -811,6 +932,7 @@ void GUi_LastItemRect(float* out_x, float* out_y, float* out_w, float* out_h) {
 }
 
 int GUi_IsItemHovered(void) {
+    if (builtin_now()) return bo().is_item_hovered();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsItemHovered() ? 1 : 0;
@@ -820,6 +942,11 @@ int GUi_IsItemHovered(void) {
 }
 
 int GUi_IsItemClicked(int mouse_button) {
+    if (builtin_now()) {
+        // "刚提交的 item 上发生了一次左键按下" = 该控件本帧 hovered 且左键按下
+        return (bo().is_item_hovered() && bo().is_mouse_clicked(mouse_button == GUI_MOUSE_RIGHT ? 1 : 0))
+                   ? 1 : 0;
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsItemClicked(mouse_button == GUI_MOUSE_RIGHT ? 1 : 0) ? 1 : 0;
@@ -830,6 +957,7 @@ int GUi_IsItemClicked(int mouse_button) {
 }
 
 int GUi_IsItemActive(void) {
+    if (builtin_now()) return bo().is_item_active();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsItemActive() ? 1 : 0;
@@ -839,6 +967,7 @@ int GUi_IsItemActive(void) {
 }
 
 int GUi_IsAnyItemActive(void) {
+    if (builtin_now()) return bo().is_any_item_active();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsAnyItemActive() ? 1 : 0;
@@ -865,6 +994,7 @@ int GUi_GetModifiers(void) {
 void GUi_MousePos(float* out_x, float* out_y) {
     if (out_x) *out_x = 0.0f;
     if (out_y) *out_y = 0.0f;
+    if (builtin_now()) { bo().mouse_pos(out_x, out_y); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     const ImVec2 p = ImGui::GetIO().MousePos;
@@ -874,6 +1004,9 @@ void GUi_MousePos(float* out_x, float* out_y) {
 }
 
 float GUi_MouseDeltaX(void) {
+    // 内置轨不维护自己的 delta（控件交互只看位置与边沿）。宿主要 delta 时
+    // 直接读 GInput_GetMouseDelta —— 那才是权威来源。
+    if (builtin_now()) return 0.0f;
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0.0f;
     return ImGui::GetIO().MouseDelta.x;
@@ -883,6 +1016,7 @@ float GUi_MouseDeltaX(void) {
 }
 
 float GUi_MouseDeltaY(void) {
+    if (builtin_now()) return 0.0f;
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0.0f;
     return ImGui::GetIO().MouseDelta.y;
@@ -892,6 +1026,7 @@ float GUi_MouseDeltaY(void) {
 }
 
 int GUi_IsMouseDown(int button) {
+    if (builtin_now()) return bo().is_mouse_down(button);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsMouseDown(button) ? 1 : 0;
@@ -902,6 +1037,7 @@ int GUi_IsMouseDown(int button) {
 }
 
 int GUi_IsMouseClicked(int button) {
+    if (builtin_now()) return bo().is_mouse_clicked(button);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsMouseClicked(button) ? 1 : 0;
@@ -912,6 +1048,7 @@ int GUi_IsMouseClicked(int button) {
 }
 
 int GUi_IsMouseReleased(int button) {
+    if (builtin_now()) return bo().is_mouse_released(button);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsMouseReleased(button) ? 1 : 0;
@@ -922,6 +1059,7 @@ int GUi_IsMouseReleased(int button) {
 }
 
 int GUi_WantCaptureMouse(void) {
+    if (builtin_now()) return bo().want_capture_mouse();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::GetIO().WantCaptureMouse ? 1 : 0;
@@ -931,6 +1069,7 @@ int GUi_WantCaptureMouse(void) {
 }
 
 int GUi_WantCaptureKeyboard(void) {
+    if (builtin_now()) return bo().want_capture_keyboard();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::GetIO().WantCaptureKeyboard ? 1 : 0;

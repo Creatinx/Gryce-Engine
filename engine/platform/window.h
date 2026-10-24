@@ -101,6 +101,14 @@ public:
     // 输入
     bool get_key(int key) const;
     void get_cursor_pos(double& x, double& y) const;
+
+    // 文本输入（Unicode 码点）：GLFW 的字符回调是事件式的（一帧可能多次），
+    // 这里积累成小环形队列，由 InputManager 每帧取走。存在的理由是内置 UI 的
+    // 输入框需要真正的字符通道——按 glfwGetKey 反推字符拿不到大小写/输入法。
+    static constexpr int kCharQueueCap = 64;
+    void push_char(unsigned int codepoint);
+    // 取走全部待处理码点，返回实际条数（队列随之清空）。
+    int  pull_chars(unsigned int* out, int cap);
     // 指针位移增量（仅 Web 有真实数据）。浏览器 pointer lock 期间光标坐标被钉死，
     // GLFW 只搬 clientX/Y，位移只能从 JS 侧的 movementX/Y 累积里取；取走即清零。
     // 返回 false 表示这一帧没有位移（或非 Web 平台，调用方走 get_cursor_pos 差分）。
@@ -128,6 +136,12 @@ private:
     int height_ = 0;
     ResizeCallback resize_callback_;
     bool close_requested_ = false;
+
+    // 字符队列（单生产者 GLFW 回调 / 单消费者主线程）。满了丢新字符：
+    // 一帧 64 个字符已经是粘贴级别的量，溢出说明消费端没在跑。
+    unsigned int char_queue_[kCharQueueCap] = {};
+    int char_head_ = 0;
+    int char_count_ = 0;
 
 #ifdef _WIN32
     // 无边框窗口边缘缩放的 WndProc 子类化（GLFW 无边框用 WS_POPUP，无 WS_THICKFRAME

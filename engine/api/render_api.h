@@ -149,6 +149,20 @@ GRYCE_RENDERER_API void  GRender_DrawDebugPanel(void);
 GRYCE_RENDERER_API void GRender_SetUICallback(void (*callback)(void* user), void* user);
 GRYCE_RENDERER_API bool GRender_HasImGui(void);
 
+// ---------------------------------------------------------------------------
+// UI 后端选择（在 GRender_Init **之前**调；中途切换需要重建渲染器）
+//
+//   0 = ImGui（默认）：引擎按上面的规则接管 ImGui，宿主用 imgui.h 画界面。
+//   1 = 内置：引擎不建 ImGui 上下文，宿主用 api/ui_api.h 的 GUi_* 画界面，
+//       由引擎内置的即时模式层 + 2D 覆盖层自己渲染（不依赖 ImGui、不依赖
+//       宿主的任何 UI 库）。两条轨的回调与节流语义完全相同。
+//
+// GUi_* 里少数只有 ImGui 才有的能力（菜单栏、树节点、弹出层、拖放）在内置轨
+// 下返回 0 / 空操作——宿主按返回值跳过即可，界面其余部分照常工作。
+// ---------------------------------------------------------------------------
+GRYCE_RENDERER_API void GRender_SetUIBackend(int backend);
+GRYCE_RENDERER_API int  GRender_GetUIBackend(void);
+
 // UI 帧节流：每 frames 个渲染帧才真正构建一次 ImGui 帧（跑宿主回调与
 // gizmo），中间的帧直接重绘上一次的 draw data。frames <= 1 = 每帧都构建
 // （默认）。UI 的刷新率不需要跟渲染帧率一样高——面板读数慢半拍看不出来，

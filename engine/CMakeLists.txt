@@ -191,6 +191,7 @@ target_sources(GryceRenderer
     PRIVATE
         api/render_api.cpp
         api/ui_api.cpp
+        api/ui_builtin_backend.cpp
         api/ui_op_queue.cpp
         ui/ui_state.cpp
         ui/ui_layout.cpp
@@ -200,6 +201,12 @@ target_sources(GryceRenderer
         ui/ui_anim.cpp
         ui/ui_input.cpp
         ui/ui_snapshot.cpp
+        # 内置 UI 渲染路径：drawlist → IRenderer2D 的桥（+ 本 DLL 内的适配器）
+        # 与 retained 控件层（命中测试 / 事件 / 控件库）
+        ui/ui_render_bridge.cpp
+        ui/ui_render_bridge_rd.cpp
+        ui/ui_widget.cpp
+        ui/ui_builtin.cpp
         render/render.cpp
         render/renderer2d_impl.cpp
         render/core_shaders.cpp
