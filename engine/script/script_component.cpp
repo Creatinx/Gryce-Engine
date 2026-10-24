@@ -10,12 +10,28 @@
 
 #include "resources/resource_path.h"
 #include "runtime/engine_context.h"
+#include "scene/entity.h"
 #include "script/js_value.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::components {
 
 ScriptComponent::ScriptComponent(std::string script_path_) : script_path(std::move(script_path_)) {}
+
+// ---------------------------------------------------------------------------
+// 组件树访问（engine.component.* 的数据源）
+// ---------------------------------------------------------------------------
+int ScriptComponent::host_component_count() const {
+    if (!owner()) return 0;
+    return static_cast<int>(owner()->user_components().size());
+}
+
+Component* ScriptComponent::host_component_at(int index) const {
+    if (!owner() || index < 0) return nullptr;
+    auto comps = owner()->user_components();
+    if (index >= static_cast<int>(comps.size())) return nullptr;
+    return comps[static_cast<size_t>(index)];
+}
 
 // ---------------------------------------------------------------------------
 // 序列化

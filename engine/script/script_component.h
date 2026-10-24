@@ -63,6 +63,13 @@ public:
     uint64_t host_frame() const override { return frame_; }
     float host_elapsed() const override { return elapsed_; }
 
+    // 组件树访问（engine.component.* 的数据源）。
+    // 下标口径与 C API 一致：宿主实体上的可见组件序列
+    // （Entity::user_components()，过滤 Transform / ParentComponent /
+    //  ChildrenComponent 三个内部组件）。
+    int host_component_count() const override;
+    Component* host_component_at(int index) const override;
+
     // ---- 序列化字段 ----
     std::string script_path; // res:/scripts/xxx.js（空 = 未配置）
     nlohmann::json props = nlohmann::json::object();

@@ -630,7 +630,7 @@ if(BUILD_TESTING)
     # 脚本系统（QuickJS）套件：值转换 / 生命周期 / 错误隔离 / 热重载 / 应用入口。
     # 与 math 测试同构——被测源码（engine/script + runtime + glog + resources
     # 路径解析）直编进 exe，不链 GryceCore.dll，与 GPU/无头环境无关。
-    set(GRYCE_SCRIPT_TEST_SUITES value_convert lifecycle error_isolation hot_reload app_entry)
+    set(GRYCE_SCRIPT_TEST_SUITES value_convert lifecycle error_isolation hot_reload app_entry component)
 
     add_executable(GryceScriptTests
         test/script_tests.cpp

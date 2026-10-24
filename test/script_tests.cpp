@@ -768,6 +768,98 @@ TEST(app_entry, extension_add_function) {
     rt.destroy_context(ctx);
 }
 
+// ===========================================================================
+// suite: component —— engine.component.* 绑定（组件树 + 类型继承）
+// ===========================================================================
+
+// 桩组件：绑定层只依赖 Component 的树接口与局部变换，不碰具体组件类型。
+struct StubComponent : gryce_engine::components::Component {
+    const char* type() const override { return "Stub"; }
+    void serialize(nlohmann::json& out) const override { out["type"] = "Stub"; }
+    void deserialize(const nlohmann::json&) override {}
+};
+
+// 桩宿主：给出两个可见组件，并挂成一棵组件树（第二个是第一个的子组件）。
+struct TreeHost : ScriptHost {
+    StubComponent parent;
+    StubComponent child;
+    std::vector<gryce_engine::components::Component*> comps;
+
+    TreeHost() {
+        comps.push_back(&parent);
+        comps.push_back(&child);
+        child.set_component_parent(&parent);
+    }
+
+    gryce_engine::scene::Entity* host_entity() override { return nullptr; }
+    float host_dt() const override { return 0.0f; }
+    uint64_t host_frame() const override { return 0; }
+    float host_elapsed() const override { return 0.0f; }
+
+    int host_component_count() const override { return static_cast<int>(comps.size()); }
+    gryce_engine::components::Component* host_component_at(int index) const override {
+        if (index < 0 || index >= static_cast<int>(comps.size())) return nullptr;
+        return comps[static_cast<size_t>(index)];
+    }
+};
+
+TEST(component, tree_and_inheritance) {
+    auto& rt = ScriptRuntime::instance();
+    JSContext* ctx = rt.create_context();
+    TreeHost host;
+    gryce_engine::script::install_engine_bindings(ctx, &host);
+
+    const char* src =
+        "globalThis.__calls = [];\n"
+        "export function run() {\n"
+        "  globalThis.__calls.push('count=' + engine.component.count());\n"
+        "  globalThis.__calls.push('parent=' + engine.component.getParent(1));\n"
+        "  globalThis.__calls.push('root-parent=' + engine.component.getParent(0));\n"
+        "  globalThis.__calls.push('children=' + engine.component.getChildCount(0));\n"
+        "  globalThis.__calls.push('child0=' + engine.component.getChild(0, 0));\n"
+        "  globalThis.__calls.push('enabled=' + engine.component.isEffectivelyEnabled(1));\n"
+        "  globalThis.__calls.push('pos=' + engine.component.getLocalPosition(0).join(','));\n"
+        "  engine.component.setLocalPosition(0, [1, 2, 3]);\n"
+        "  globalThis.__calls.push('pos2=' + engine.component.getLocalPosition(0).join(','));\n"
+        "  globalThis.__calls.push('chain=' + engine.component.getTypeChain(0).join(','));\n"
+        "  globalThis.__calls.push('derived=' + engine.component.isDerivedFrom(0, 'Component'));\n"
+        "  globalThis.__calls.push('not-derived=' + engine.component.isDerivedFrom(0, 'Sprite2D'));\n"
+        "  globalThis.__calls.push('bad-index=' + engine.component.getParent(99));\n"
+        "  try { engine.component.setParent(0, -1); globalThis.__calls.push('no-throw'); }\n"
+        "  catch (e) { globalThis.__calls.push('set-parent-throws'); }\n"
+        "}\n";
+    JSValue mod = rt.eval_module(ctx, src, "<component>");
+    CHECK_FALSE(JS_IsException(mod));
+    JSValue run = JS_GetPropertyStr(ctx, mod, "run");
+    JSValue result = JS_Call(ctx, run, JS_UNDEFINED, 0, nullptr);
+    CHECK_FALSE(JS_IsException(result));
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, run);
+    JS_FreeValue(ctx, mod);
+
+    const auto calls = read_calls(ctx);
+    CHECK_TRUE(calls.size() == 13);
+    if (calls.size() == 13) {
+        CHECK_TRUE(calls[0] == "count=2");
+        CHECK_TRUE(calls[1] == "parent=0");
+        CHECK_TRUE(calls[2] == "root-parent=-1");
+        CHECK_TRUE(calls[3] == "children=1");
+        CHECK_TRUE(calls[4] == "child0=1");
+        CHECK_TRUE(calls[5] == "enabled=true");
+        CHECK_TRUE(calls[6] == "pos=0,0,0");
+        CHECK_TRUE(calls[7] == "pos2=1,2,3");
+        // 祖先链按「根 → 派生」给短名；桩组件定义在匿名命名空间里，
+        // 解修饰后的短名是 "StubComponent"。
+        CHECK_TRUE(calls[8] == "chain=Component,StubComponent");
+        CHECK_TRUE(calls[9] == "derived=true");
+        CHECK_TRUE(calls[10] == "not-derived=false");
+        CHECK_TRUE(calls[11] == "bad-index=-1");
+        CHECK_TRUE(calls[12] == "set-parent-throws");
+    }
+
+    rt.destroy_context(ctx);
+}
+
 } // namespace
 
 // ===========================================================================
