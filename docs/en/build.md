@@ -79,6 +79,7 @@ The Vulkan SDK is optional: after installing the LunarG SDK, the `VULKAN_SDK` en
 | --- | --- | --- |
 | `GRYCE_ENABLE_IMGUI` | `ON` | ImGui editor overlay |
 | `BUILD_TESTING` | `ON` | CTest cases |
+| `GRYCE_BUILD_EDITOR` | `OFF` | The whole editor (`GryceEditor.exe` + `GryceEditorExtension.dll` + project, see [../editor/README.md](../../editor/README.md)). A development-time tool: its outputs stay out of the runtime directory and out of the gates. Its UI runs on the engine's built-in track |
 | `GRYCE_BUILD_TOOLCHAIN` | `ON` | GryceGC command-line toolchain (see [toolchain.md](toolchain.md)) |
 | `GRYCE_ENABLE_D3D12` | `ON` | D3D12 backend; on Windows + GCC/Clang it probes for `d3d12.h` from the bundled MinGW or the Windows SDK, and skips silently if neither exists |
 | `GRYCE_ENABLE_WEBGL` | `OFF` | WebGL (Emscripten) build; enabled automatically when an Emscripten toolchain is detected |

@@ -92,6 +92,13 @@ if(GRYCE_ENABLE_LTO AND NOT MSVC AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
+# ===========================================================================
+# 编辑器：editor/ 整套（GryceEditor.exe + GryceEditorExtension.dll + 项目）。
+# 默认 OFF —— 它是开发期工具，产物不进运行时目录，也不参与门禁。开启后
+# 界面走引擎**内置轨**（GRender_SetUIBackend），不依赖 ImGui 上下文。
+# ===========================================================================
+option(GRYCE_BUILD_EDITOR "构建编辑器（GryceEditor.exe + 扩展）" OFF)
+
 # 使用 LLVM lld 链接，避免 GNU ld 处理大型对象崩溃
 find_program(LLD_LINKER ld.lld)
 if(LLD_LINKER)
@@ -517,6 +524,15 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(GryceDemoExtension PRIVATE GryceCore)
     set_target_properties(GryceDemoExtension PROPERTIES
         PREFIX "" OUTPUT_NAME "GryceDemoExtension")
+endif()
+
+# ===========================================================================
+# 编辑器（可选）：editor/ 里自带 exe + 扩展 + 项目三件套。
+# 放在 GryceAppHost 之后 —— 编辑器的 exe 复用它，不做第二套宿主逻辑。
+# 只做扩展时（改 ext/ 下的源码）也可以只 build GryceEditorExtension。
+# ===========================================================================
+if(GRYCE_BUILD_EDITOR AND NOT EMSCRIPTEN)
+    add_subdirectory(editor)
 endif()
 
 # 引擎 DLL 同步到 exe 目录。

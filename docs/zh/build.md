@@ -79,6 +79,7 @@ Vulkan SDK 为可选项：装好 LunarG SDK 后 `VULKAN_SDK` 环境变量会指�
 | --- | --- | --- |
 | `GRYCE_ENABLE_IMGUI` | `ON` | ImGui 编辑器叠加层 |
 | `BUILD_TESTING` | `ON` | CTest 用例 |
+| `GRYCE_BUILD_EDITOR` | `OFF` | 编辑器整套（`GryceEditor.exe` + `GryceEditorExtension.dll` + 项目，见 [../editor/README.md](../../editor/README.md)）。开发期工具，产物不进运行时目录、不参与门禁；界面走引擎内置轨 |
 | `GRYCE_BUILD_TOOLCHAIN` | `ON` | GryceGC 命令行工具链（见 [toolchain.md](toolchain.md)） |
 | `GRYCE_ENABLE_D3D12` | `ON` | D3D12 后端；Windows + GCC/Clang 时探测 mingw 自带或 Windows SDK 的 `d3d12.h`，都没有则静默跳过 |
 | `GRYCE_ENABLE_WEBGL` | `OFF` | WebGL（Emscripten）构建，检测到 Emscripten 工具链时自动启用 |
