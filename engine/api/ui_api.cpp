@@ -479,6 +479,17 @@ int GUi_Checkbox(const char* label, int* inout_value) {
 #endif
 }
 
+int GUi_RadioButton(const char* label, int active) {
+    if (builtin_now()) return bo().radio_button(label, active);
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return 0;
+    return ImGui::RadioButton(label ? label : "", active != 0) ? 1 : 0;
+#else
+    (void)label; (void)active;
+    return 0;
+#endif
+}
+
 int GUi_SliderFloat(const char* label, float* inout_value,
                     float min_value, float max_value, const char* fmt) {
     if (builtin_now()) {

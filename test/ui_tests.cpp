@@ -2425,6 +2425,9 @@ TEST(widget, every_kind_has_an_explicit_class_and_only_interactive_is_hit_tested
         {WidgetKind::Image,      WidgetClass::Interactive, "Image"},
         {WidgetKind::Combo,      WidgetClass::Interactive, "Combo"},
         {WidgetKind::ColorEdit,  WidgetClass::Interactive, "ColorEdit"},
+        {WidgetKind::MenuBar,    WidgetClass::Decoration,  "MenuBar"},
+        {WidgetKind::Menu,       WidgetClass::Interactive, "Menu"},
+        {WidgetKind::Radio,      WidgetClass::Interactive, "Radio"},
     };
     const int n = static_cast<int>(sizeof(table) / sizeof(table[0]));
     CHECK_EQ(n, static_cast<int>(WidgetKind::Count));   // 一条不漏、一条不多
@@ -4696,6 +4699,203 @@ TEST(builtin, menu_bar_and_menu_items) {
     CHECK_EQ(opened, 1);
     frame(false, false, false, opened);        // 空闲帧：菜单保持展开
     CHECK_EQ(opened, 1);
+}
+
+// 菜单栏是**原生控件**：一条 MenuBar + N 个 Menu，横排由菜单栏自己摆，
+// 不再是"一排 Button + SameLine 拼出来"的产物。
+TEST(builtin, menu_bar_is_native_widgets_laid_out_in_one_row) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+    const Rect win{0.0f, 0.0f, 400.0f, 200.0f};
+
+    bi_frame(ui, mouse_at(0.0f, 300.0f, false, false, false));
+    bi_window(ui, "W", win, gryce_ui::kWinNoTitleBar | gryce_ui::kWinMenuBar);
+    CHECK_EQ(ui.begin_menu_bar(), 1);
+    const char* const names[] = {"File", "Edit", "Create"};
+    for (const char* n : names) {
+        ui.begin_menu(n);
+        ui.end_menu();
+    }
+    ui.end_menu_bar();
+    ui.end_window();
+    ui.end_frame();
+
+    const Widget* order[WidgetTree::kCapacity];
+    int n = 0;
+    ui.tree().collect_in_submit_order(order, WidgetTree::kCapacity, &n);
+
+    int bars = 0, menus = 0, buttons = 0;
+    Rect bar{};
+    Rect title[3];
+    int tn = 0;
+    for (int i = 0; i < n; ++i) {
+        const Widget& w = *order[i];
+        if (w.kind == WidgetKind::MenuBar) {
+            ++bars;
+            bar = w.rect;
+        } else if (w.kind == WidgetKind::Menu) {
+            ++menus;
+            if (tn < 3) title[tn++] = w.rect;
+        } else if (w.kind == WidgetKind::Button) {
+            ++buttons;
+        }
+    }
+    CHECK_EQ(bars, 1);
+    CHECK_EQ(menus, 3);
+    CHECK_EQ(tn, 3);
+    CHECK_EQ(buttons, 0);     // 标题不是 Button —— 不再靠 Button 拼菜单栏
+
+    // 同一条横带上、一个接一个紧贴排开，且占满菜单栏那一行
+    for (int i = 0; i < 3; ++i) {
+        CHECK_NEAR(title[i].y, bar.y, 0.01f);
+        CHECK_NEAR(title[i].h, bar.h, 0.01f);
+        if (i > 0) CHECK_NEAR(title[i].x, title[i - 1].right(), 0.01f);
+    }
+    CHECK_TRUE(title[2].right() <= bar.right() + 0.01f);
+
+    // 标题宽 = 字宽 + 左右内边距：4 字符的 File 与 Edit 等宽，6 字符的
+    // Create 比它们正好宽两个字（7px/字符，默认度量 0.5em）。
+    CHECK_NEAR(title[0].w, title[1].w, 0.01f);
+    CHECK_NEAR(title[2].w - title[0].w, 2.0f * 7.0f, 0.01f);
+
+    // 菜单栏底色用主题的 MENUBAR_BG（不是控件按钮色）
+    const Widget* barw = nullptr;
+    for (int i = 0; i < n; ++i) {
+        if (order[i]->kind == WidgetKind::MenuBar) barw = order[i];
+    }
+    CHECK_TRUE(barw != nullptr);
+    CHECK_EQ(barw->bg_overridden, true);
+    CHECK_EQ(barw->bg_color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_MENUBAR_BG]);
+}
+
+// 菜单宽度按最宽条目自适应；鼠标移到同级标题上直接换菜单（ImGui 的菜单栏
+// 行为），并且"点在自己弹层里"不会被判成点外面。
+TEST(builtin, menu_auto_sizes_and_switches_on_hover) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+    const Rect win{0.0f, 0.0f, 400.0f, 200.0f};
+
+    int file_open = 0, edit_open = 0, undo_clicked = 0;
+    Rect file_rect{}, edit_rect{}, popup_rect{}, item_rect{};
+
+    auto frame = [&](const UiInputFrame& in) {
+        bi_frame(ui, in);
+        bi_window(ui, "W", win, gryce_ui::kWinNoTitleBar | gryce_ui::kWinMenuBar);
+        ui.begin_menu_bar();
+        file_open = ui.begin_menu("File");
+        file_rect = ui.last_item_rect();
+        if (file_open) {
+            ui.menu_item("Save", "Ctrl+S", 1);
+            ui.end_menu();
+        }
+        edit_open = ui.begin_menu("Edit");
+        edit_rect = ui.last_item_rect();
+        if (edit_open) {
+            popup_rect = ui.current_window_rect();
+            undo_clicked = ui.menu_item("Undo", "Ctrl+Z", 1);
+            item_rect = ui.last_item_rect();
+            ui.end_menu();
+        } else {
+            undo_clicked = 0;
+        }
+        ui.end_menu_bar();
+        ui.end_window();
+        ui.end_frame();
+    };
+
+    // 先空跑一帧拿到标题矩形（菜单栏标题的位置由菜单栏自己算）
+    frame(mouse_at(0.0f, 300.0f, false, false, false));
+    CHECK_EQ(file_open, 0);
+    const float file_cx = file_rect.x + file_rect.w * 0.5f;
+    const float edit_cx = edit_rect.x + edit_rect.w * 0.5f;
+    const float bar_cy  = file_rect.y + file_rect.h * 0.5f;
+    CHECK_TRUE(edit_rect.x >= file_rect.right() - 0.01f);   // 横排
+
+    // 鼠标划过 Edit：没有展开的菜单时不该弹出来
+    frame(mouse_at(edit_cx, bar_cy, false, false, false));
+    CHECK_EQ(edit_open, 0);
+
+    frame(mouse_at(file_cx, bar_cy, true, true, false));
+    CHECK_EQ(file_open, 0);                        // 按下不算点击
+    frame(mouse_at(file_cx, bar_cy, false, false, true));
+    CHECK_EQ(file_open, 1);                        // 松开 → File 展开
+
+    // 移到 Edit：同一个帧里直接换过去，File 收起（不会两个菜单同时在）
+    frame(mouse_at(edit_cx, bar_cy, false, false, false));
+    CHECK_EQ(file_open, 0);
+    CHECK_EQ(edit_open, 1);
+
+    // 再空跑一帧，宽度已经按 "Undo" + "Ctrl+Z" 定下来
+    frame(mouse_at(edit_cx, bar_cy, false, false, false));
+    CHECK_EQ(edit_open, 1);
+    ApproxMetrics metrics;
+    const float need = metrics.width("Undo", 14.0f) + 16.0f +
+                       metrics.width("Ctrl+Z", 14.0f) + file_rect.x * 2.0f;
+    // file_rect.x 就是菜单栏左内边距（窗口 x = 0）
+    CHECK_NEAR(popup_rect.w, need, 0.51f);
+    CHECK_TRUE(popup_rect.w > file_rect.w);        // 比标题宽：条目说了算
+
+    // 点在自己的弹层里（x > 180，早先会被误判成"点外面"）→ 命中条目并收起
+    const float item_x = item_rect.x + item_rect.w * 0.5f;
+    const float item_y = item_rect.y + item_rect.h * 0.5f;
+    frame(mouse_at(item_x, item_y, true, true, false));
+    CHECK_EQ(edit_open, 1);                        // 按下：菜单还在
+    CHECK_EQ(undo_clicked, 0);
+    frame(mouse_at(item_x, item_y, false, false, true));
+    CHECK_EQ(undo_clicked, 1);                     // 松开 → 命中 "Undo"
+    CHECK_EQ(edit_open, 1);                        // 这一帧弹层仍提交了（帧内才收）
+    frame(mouse_at(item_x, item_y, false, false, false));
+    CHECK_EQ(edit_open, 0);                        // 下一帧起确实关掉
+}
+
+// 单选按钮是原生控件：框宽按内容走（不是 65%），标签在圆环右边且算进
+// 命中范围；active 是入参状态，点它只报"被点了"，不改调用方的值。
+TEST(builtin, radio_button_is_content_sized_and_reports_click) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 400.0f, 200.0f};
+    static const char* const names[] = {"Move", "Rotate", "Scale"};
+    ApproxMetrics metrics;
+    const float dia = 14.0f;      // 圆环直径 = 字号（ImGui 的 RadioButton）
+
+    Rect r[3];
+    int  clicked = -1;
+    int  active  = 0;
+    auto frame = [&](const UiInputFrame& in) {
+        clicked = -1;
+        bi_frame(ui, in);
+        bi_window(ui, "W", win);
+        for (int i = 0; i < 3; ++i) {
+            if (i > 0) ui.same_line(10.0f);
+            if (ui.radio_button(names[i], active == i ? 1 : 0)) clicked = i;
+            r[i] = ui.last_item_rect();
+        }
+        ui.end_window();
+        ui.end_frame();
+    };
+
+    frame(mouse_at(0.0f, 100.0f, false, false, false));
+    // 框宽 = 圆环 + 内间距 + 字宽（不是整行的 65%）
+    for (int i = 0; i < 3; ++i) {
+        CHECK_NEAR(r[i].w, dia + 4.0f + metrics.width(names[i], 14.0f), 0.51f);
+        CHECK_NEAR(r[i].y, r[0].y, 0.01f);                    // 同一行
+        if (i > 0) CHECK_NEAR(r[i].x, r[i - 1].right() + 10.0f, 0.01f);
+    }
+
+    // 选中态是入参：只有第 0 个是实心的
+    const uint64_t id0 = gryce_ui::hash_label("Move", gryce_ui::hash_label("W"));
+    const uint64_t id1 = gryce_ui::hash_label("Rotate", gryce_ui::hash_label("W"));
+    CHECK_TRUE(ui.tree().find(id0)->selected);
+    CHECK_FALSE(ui.tree().find(id1)->selected);
+
+    // 点第 2 个的**标签部分**（不是圆环）：命中范围包含标签，报 1，
+    // 但 active 没被改（互斥组归调用方管）。
+    const float label_x = r[1].x + dia + 10.0f;
+    const float cy      = r[1].y + r[1].h * 0.5f;
+    frame(mouse_at(label_x, cy, true, true, false));
+    CHECK_EQ(clicked, -1);                                // 按下不算点击
+    frame(mouse_at(label_x, cy, false, false, true));
+    CHECK_EQ(clicked, 1);
+    CHECK_EQ(active, 0);
 }
 
 TEST(builtin, child_region_clips_and_scrolls_independently) {

@@ -38,6 +38,9 @@ struct BuiltinUiOps {
     int  (*button)(const char* label);
     int  (*button_size)(const char* label, float w, float h);
     int  (*checkbox)(const char* label, int* inout_value);
+    // 单选按钮：左侧圆环 + 右侧标签；active 由调用方持有（互斥组归它管），
+    // 返回 1 = 本帧被点（此时**不**改 active，由调用方换组）
+    int  (*radio_button)(const char* label, int active);
     int  (*slider_float)(const char* label, float* inout_value, float vmin, float vmax,
                          const char* fmt);
     int  (*drag_float)(const char* label, float* inout_value, float speed,

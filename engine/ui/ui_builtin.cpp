@@ -117,7 +117,11 @@ void BuiltinUi::begin_frame(const UiInputFrame& input, const Theme& theme,
     if (popup_.open) {
         const float h = (popup_.h > 0.0f) ? popup_.h
                       : ((popup_.measured_h > 0.0f) ? popup_.measured_h : frame_height() * 2.0f);
-        const Rect pr{popup_.x, popup_.y, (popup_.w > 0.0f) ? popup_.w : 180.0f, h};
+        // 宽度同样要取实测值：自适应宽度的菜单一旦比 180 宽，用默认值判
+        // "点外面"会把点在自己身上的那一下当成外部点击，菜单一碰就关。
+        const float pw = (popup_.w > 0.0f) ? popup_.w
+                       : ((popup_.measured_w > 1.0f) ? popup_.measured_w : 180.0f);
+        const Rect pr{popup_.x, popup_.y, pw, h};
         const bool esc = in.key_pressed(UiInputFrame::KeyEsc);
         const bool clicked_outside = in.mouse_clicked[0] &&
                                      !rect_contains(pr, in.mouse_x, in.mouse_y);
@@ -570,6 +574,55 @@ Rect BuiltinUi::place(float w, float h) {
     return r;
 }
 
+// 菜单宽度自适应的一票：item 报"我至少要多宽"。只在**按内容自适应**的
+// 菜单弹层里生效——固定宽度的弹层由调用方拍板，不该被内容顶大。
+//
+// 只认"文本需要多宽"（Menu/emit_label 报），不按 item 右边缘累计：后者在
+// 宽度大于内容时会把自己报大，弹层就再也收不回来（第一帧用了估算宽度就
+// 一直卡在那个宽度）。代价是图片 / 占位一类没有文本的 item 不参与定宽，
+// 菜单里也基本不会出现。
+void BuiltinUi::note_menu_width(float w) {
+    if (!popup_.open || !popup_.is_menu || popup_.w > 0.0f) return;
+    if (depth_ <= 0 || windows_[depth_ - 1].id != popup_.id) return;
+    // 上限：允许菜单为一行说明文字宽一点，但不能让它吃着屏幕长大。
+    float cap = (display_w_ > 0.0f) ? display_w_ * 0.6f : 480.0f;
+    if (cap < popup_.min_w) cap = popup_.min_w;
+    if (w > cap) w = cap;
+    if (w > popup_.want_w) popup_.want_w = w;
+}
+
+// 菜单宽度缓存：同一个菜单第二次打开就是准的，不必先窄一帧再撑开。
+void BuiltinUi::remember_menu_width(uint64_t id, float w) {
+    if (id == 0 || w <= 1.0f) return;
+    for (int i = 0; i < kMenuWidthCache; ++i) {
+        if (menu_w_cache_[i].id == id) { menu_w_cache_[i].w = w; return; }
+    }
+    // 空位优先，其次覆盖最早写入的（菜单数量很小，不必做 LRU）
+    int slot = -1;
+    for (int i = 0; i < kMenuWidthCache; ++i) {
+        if (menu_w_cache_[i].id == 0) { slot = i; break; }
+    }
+    if (slot < 0) slot = static_cast<int>(menu_w_seq_++ % kMenuWidthCache);
+    menu_w_cache_[slot].id = id;
+    menu_w_cache_[slot].w  = w;
+}
+
+float BuiltinUi::cached_menu_width(uint64_t id) const {
+    for (int i = 0; i < kMenuWidthCache; ++i) {
+        if (menu_w_cache_[i].id == id) return menu_w_cache_[i].w;
+    }
+    return 0.0f;
+}
+
+// 打开一个菜单弹层：宽度按内容自适应（下限 = 标题宽），起始宽度取缓存。
+void BuiltinUi::open_menu_popup(uint64_t id, float x, float y, float title_w) {
+    open_popup_id(id, x, y, 0.0f, 0.0f, false);
+    popup_.is_menu = true;
+    popup_.min_w   = title_w;
+    const float cached = cached_menu_width(id);
+    if (cached > title_w) popup_.measured_w = cached;
+}
+
 // ---------------------------------------------------------------------------
 // 文本
 // ---------------------------------------------------------------------------
@@ -625,6 +678,9 @@ void BuiltinUi::emit_label(const char* s, uint32_t rgba, bool colored) {
     if (metrics_) {
         const float tw = metrics_->width(s ? s : "", kWidgetFontSize);
         if (tw > 0.0f && tw < label_w) label_w = tw;
+        // 菜单里的一行说明文字也参与"菜单要多宽"：用**未截断**的文本宽，
+        // 否则最宽的那行会被当前（偏窄的）弹层宽度自己截住，永远长不大。
+        note_menu_width(tw + pad_x() * 2.0f);
     }
     const Rect r = place(label_w, line_height());
     Widget* w = tree_.touch(item_id(s, true), WidgetKind::Label, r, s);
@@ -786,6 +842,25 @@ int BuiltinUi::checkbox(const char* label, int* inout_value) {
         return 1;
     }
     return 0;
+}
+
+int BuiltinUi::radio_button(const char* label, int active) {
+    if (!usable()) { finish_impl(nullptr); return 0; }
+    char shown[kWidgetLabelCap];
+    copy_display_label(label, shown, sizeof(shown));
+    // 宽度按内容走：圆环 + 内间距 + 字宽。用 item_width()（65%）就没法在
+    // 工具栏里横排——一个按钮会把整行吃掉。
+    // 圆环直径 = 字号（ImGui 的 RadioButton 用 radius = FontSize * 0.5），
+    // 比复选框的方框（= 行高）小一圈，视觉上与 ImGui 同一档。
+    const float tw  = (shown[0] && metrics_) ? metrics_->width(shown, kWidgetFontSize) : 0.0f;
+    const float dia = kWidgetFontSize;
+    const Rect r = place(dia + (tw > 0.0f ? tw + kItemInnerSpacing : 0.0f), frame_height());
+    Widget* w = tree_.touch(item_id(label, false), WidgetKind::Radio, r, shown);
+    if (!w) { finish_impl(nullptr); return 0; }
+    stamp(w);
+    w->selected = active != 0;
+    finish_impl(w);
+    return w->clicked ? 1 : 0;
 }
 
 int BuiltinUi::slider_float(const char* label, float* inout_value, float vmin, float vmax,
@@ -1195,21 +1270,45 @@ int BuiltinUi::begin_menu_bar() {
     // 返回 0 让调用方跳过菜单体。ImGui 的 BeginMenuBar 也是这么做的
     // （它是"这个窗口有没有声明菜单栏"的判据，不是"现在要不要画"）。
     if ((win.flags & kWinMenuBar) == 0) return 0;
-    win.in_menubar = true;
+
     const Rect bar = place(content_width(), frame_height());
-    Widget* w = tree_.touch(item_id("##menubar", true), WidgetKind::Bar, bar, nullptr);
-    if (w) stamp(w);
-    // 菜单按钮从 bar 左边起逐个排开
-    win.last_rect = Rect{bar.x, bar.y, 0.0f, bar.h};
-    win.pending_same_line = true;
-    win.same_line_spacing = 0.0f;
+    Widget* w = tree_.touch(item_id("##menubar", true), WidgetKind::MenuBar, bar, nullptr);
+    if (w) {
+        stamp(w);
+        // 底色取主题的 MENUBAR_BG（与 ImGui 的 ImGuiCol_MenuBarBg 同一个
+        // token）。角半径为 0、不描边：菜单栏是窗口 chrome，描边会把它读成
+        // 一块面板。
+        w->bg_overridden = true;
+        w->bg_color = (theme_ && THEME_COLOR_MENUBAR_BG < THEME_COLOR_COUNT)
+                    ? theme_->colors[THEME_COLOR_MENUBAR_BG] : 0u;
+        w->corner_radius = 0.0f;
+    }
+
+    // 悬停切换：已经有菜单展开、鼠标移到同级标题上，就直接换过去（ImGui 的
+    // 菜单栏行为）。做在这里而不是 begin_menu 里，是因为 BeginMenu 是边提交
+    // 边判的——轮到第二个标题时第一个已经把自己的弹层提交了，切换会让同一帧
+    // 出现两个菜单。放在 BeginMenuBar 就只有一个。
+    if (popup_.open && popup_.is_menu) {
+        for (int i = 0; i < menu_title_count_; ++i) {
+            const MenuTitleHit& hit = menu_titles_[i];
+            if (hit.popup_id == popup_.id) continue;
+            if (!rect_contains(hit.rect, mouse_x_, mouse_y_)) continue;
+            open_menu_popup(hit.popup_id, hit.rect.x, hit.rect.bottom(), hit.rect.w);
+            break;
+        }
+    }
+    menu_title_count_ = 0;
+
+    // 标题从 bar 左边起，由菜单栏自己一个个摆开（见 begin_menu）
+    win.in_menubar   = true;
+    win.menubar_rect = bar;
+    win.menubar_x    = bar.x;
     return 1;
 }
 
 void BuiltinUi::end_menu_bar() {
     if (!usable()) return;
     windows_[depth_ - 1].in_menubar = false;
-    windows_[depth_ - 1].pending_same_line = false;
 }
 
 namespace {
@@ -1222,40 +1321,64 @@ void make_menu_popup_id(const char* label, char* out, size_t cap) {
 int BuiltinUi::begin_menu(const char* label) {
     if (!usable()) { finish_impl(nullptr); return 0; }
     WindowState& win = windows_[depth_ - 1];
-    // 菜单栏里的菜单一律横排：begin_menu_bar 只在开头置了一次"同行"，第一个
-    // 菜单会把它消费掉，第二个开始就掉到下一行（表现为菜单竖着摞起来）。
-    // 非菜单栏上下文（普通弹层里的子菜单）不加，那里本来就该换行。
-    if (win.in_menubar) {
-        win.pending_same_line = true;
-        win.same_line_spacing = 0.0f;
-    }
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
-    const float tw = metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f;
-    const Rect r = place(tw + pad_x() * 2.0f, frame_height());
-    Widget* w = tree_.touch(item_id(label, false), WidgetKind::Button, r, shown);
+    const float pad = pad_x();
+    const float tw  = metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f;
+    // 标题宽 = 字宽 + 左右内边距（ImGui 的 BeginMenu 用 FramePadding.x*2）。
+    const float menu_w = tw + pad * 2.0f;
+
+    Rect r;
+    if (win.in_menubar) {
+        // 菜单栏里的标题由菜单栏布局摆位：横排、紧密相接、不进光标流。
+        // 借 SameLine 摆的话，"第几个菜单"只活在 pending_same_line 里，
+        // 第二个菜单起就得调用方每帧补一次置位（漏了就是竖着摞），而且会
+        // 跟宿主自己的 SameLine / 换行互相污染。
+        const float right = win.menubar_rect.right();
+        float x = win.menubar_x;
+        if (x + menu_w > right) x = right - menu_w;      // 放不下就贴右边
+        if (x < win.menubar_rect.x) x = win.menubar_rect.x;
+        r = Rect{x, win.menubar_rect.y, menu_w, win.menubar_rect.h};
+        win.menubar_x = r.right();
+    } else {
+        // 弹层里的子菜单 / 独立菜单：走普通光标流，整行宽。
+        r = place(item_width(), frame_height());
+    }
+
+    Widget* w = tree_.touch(item_id(label, false), WidgetKind::Menu, r, shown);
     if (w) stamp(w);
-    finish_impl(w);
 
     char pid[64];
     make_menu_popup_id(label, pid, sizeof(pid));
-    const uint64_t id = hash_label(pid);
+    const uint64_t popup_id = hash_label(pid);
+    const bool was_open = popup_.open && popup_.id == popup_id;
+
+    // 记下标题矩形，供下一帧的悬停切换判位（只在菜单栏里有意义）
+    if (win.in_menubar && menu_title_count_ < kMaxMenuTitles) {
+        menu_titles_[menu_title_count_].popup_id = popup_id;
+        menu_titles_[menu_title_count_].rect     = r;
+        ++menu_title_count_;
+    }
 
     if (w && w->clicked) {
         // 这一次点击是不是刚把菜单关掉（begin_frame 判的"点外面"）？是就别再开，
-        // 否则"点自己的按钮关菜单"会变成关了立刻又开。
+        // 否则"点自己的标题关菜单"会变成关了立刻又开。
         const bool closed_here = dismiss_x_ >= r.x && dismiss_x_ <= r.right() &&
                                  dismiss_y_ >= r.y && dismiss_y_ <= r.bottom();
         if (closed_here) {
             // 保持关闭
-        } else if (popup_.open && popup_.id == id) {
+        } else if (was_open) {
             popup_.open = false;      // 再点一次 = 收起来
         } else {
-            open_popup_id(id, r.x, r.bottom(), (tw + pad_x() * 2.0f + 90.0f), 0.0f, false);
+            open_menu_popup(popup_id, r.x, r.bottom(), menu_w);
         }
     }
 
-    if (popup_.open && popup_.id == id && begin_popup_id(id)) {
+    const bool is_open = popup_.open && popup_.id == popup_id;
+    if (w) w->open = is_open;     // 展开态决定标题底色（Header 恒亮）
+    finish_impl(w);
+
+    if (is_open && begin_popup_id(popup_id)) {
         menu_begun_ = true;
         return 1;
     }
@@ -1273,7 +1396,7 @@ int BuiltinUi::menu_item(const char* label, const char* shortcut, int enabled) {
     if (!usable()) { finish_impl(nullptr); return 0; }
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
-    const Rect r = place(content_width(), frame_height());
+    const Rect r = place(item_width(), frame_height());
     Widget* w = tree_.touch(item_id(label, false), WidgetKind::MenuItem, r, shown);
     if (!w) { finish_impl(nullptr); return 0; }
     stamp(w);
@@ -1282,6 +1405,13 @@ int BuiltinUi::menu_item(const char* label, const char* shortcut, int enabled) {
     if (shortcut) {
         std::strncpy(w->text, shortcut, sizeof(w->text) - 1);
         w->text[sizeof(w->text) - 1] = '\0';
+    }
+    // 菜单宽度由最宽的一项决定：标签 + 右对齐的快捷键。标题宽度算不出来，
+    // 只能在这里累计（见 note_menu_width / PopupState::want_w）。
+    {
+        const float tw = metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f;
+        const float sw = (shortcut && metrics_) ? metrics_->width(shortcut, kWidgetFontSize) : 0.0f;
+        note_menu_width(tw + ((sw > 0.0f) ? (sw + 16.0f) : 0.0f) + pad_x() * 2.0f);
     }
     finish_impl(w);
     const bool clicked = w && w->clicked;
@@ -1408,8 +1538,24 @@ void BuiltinUi::open_modal(const char* name, float w, float h) {
 int BuiltinUi::begin_popup_id(uint64_t id) {
     if (!popup_.open || popup_.id != id) return 0;
     if (depth_ >= kMaxWindows) return 0;
+    // 宽度需求是本帧内容现算的，不能跨帧累计：累计的话内容变窄了宽度也
+    // 收不回来。
+    popup_.want_w = 0.0f;
 
-    const float w = (popup_.w > 0.0f) ? popup_.w : 180.0f;
+    // 宽度：给了就是给的；没给就按内容自适应（缓存 / 上一帧量到的 / 估算）。
+    // 菜单的估算取 max(标题宽, 140)：第一次打开时先给个不至于把条目截断的
+    // 宽度，end_popup 之后就有准数了。
+    float w = popup_.w;
+    if (w <= 0.0f) {
+        if (popup_.measured_w > 1.0f) {
+            w = popup_.measured_w;
+        } else if (popup_.min_w > 1.0f) {
+            w = (popup_.min_w > 140.0f) ? popup_.min_w : 140.0f;
+        } else {
+            w = 180.0f;
+        }
+        if (w < popup_.min_w) w = popup_.min_w;
+    }
     float       h = popup_.h;
     if (h <= 0.0f) {
         h = (popup_.measured_h > 0.0f) ? popup_.measured_h
@@ -1485,6 +1631,11 @@ void BuiltinUi::end_popup() {
     if (popup_.h <= 0.0f) {
         const float measured = win.content_h + pad_y() * 2.0f;
         if (measured > 1.0f) popup_.measured_h = measured;
+    }
+    // 宽度同理：这一帧各项报上来的需求汇总成下一帧的宽度（菜单还要进缓存）。
+    if (popup_.w <= 0.0f && popup_.want_w > 1.0f) {
+        popup_.measured_w = popup_.want_w;
+        if (popup_.is_menu) remember_menu_width(popup_.id, popup_.want_w);
     }
     pop_state();
     popup_begun_ = false;

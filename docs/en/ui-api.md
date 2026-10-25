@@ -84,7 +84,7 @@ GUi_BeginMenuBar(); GUi_BeginMenu(label); GUi_MenuItem(label, shortcut, enabled)
 | --- | --- |
 | Text | `GUi_Text` / `GUi_TextColored(color, text)` / `GUi_LabelText` / `GUi_Separator` / `GUi_Spacing` / `GUi_SameLine(spacing)` |
 | Buttons | `GUi_Button` / `GUi_ButtonSize` / `GUi_SmallButton` / `GUi_Selectable(label, selected)` / `GUi_SetItemAllowOverlap` |
-| Values | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` / `GUi_ColorButton(label, rgba)` |
+| Values | `GUi_Checkbox` / `GUi_RadioButton(label, active)` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` / `GUi_ColorButton(label, rgba)` |
 | Text input | `GUi_InputText` / `GUi_SetKeyboardFocusHere` / `GUi_IsItemDeactivatedAfterEdit` |
 | Enums | `GUi_Combo(label, current, items, count)` |
 | Trees | `GUi_TreeNode(label, default_open)` + `GUi_TreePop` / `GUi_CollapsingHeader` |
@@ -595,6 +595,19 @@ So `BuiltinUi::draw()` goes through `WidgetTree::collect_in_submit_order()`: wid
 
 A child region (`BeginChild`) whose content is taller than the visible area also gets a scrollbar (same as ImGui's `BeginChild` default). Without one the overflowing last lines are neither visible nor draggable, and a log/stats panel silently "loses a line".
 
+### Native widgets first, no hand-stitched composites
+
+Composite UI has to be implemented **once, in the widget layer** — never assembled from lower-level primitives inside the host. The test is simple: if something needs cross-frame state (open / selected / hovered), needs its own hit rect, or is a single function in ImGui, it deserves a `WidgetKind`.
+
+Two places that were built by hand first and fixed later:
+
+| Thing | Hand-stitched (wrong) | Native widget (right) |
+| --- | --- | --- |
+| Menu bar | A decorative bar plus one `Button` per menu, arranged with `SameLine` ("which menu am I" lived only in `pending_same_line`, so every menu after the first needed the host to re-arm it every frame — miss once and the titles stack vertically) | `MenuBar` + `Menu`: the bar owns its horizontal cursor (`menubar_x`) and lays titles out back to back; `Menu.open` drives the fill (Header family) and hover-to-switch runs in `BeginMenuBar`, where the current frame's titles are not submitted yet — so only one popup can exist per frame |
+| Radio group / boolean toggle | `SmallButton("[x] Move")` / `SmallButton("[ ] Local")` — state encoded in a text prefix | `RadioButton(label, active)` / `Checkbox(label, &v)`: ring plus dot, box plus tick; the widget draws the state |
+
+Hand-stitching always looks right and behaves wrong: accessibility, hit rects and keyboard navigation end up on the wrong rectangle, and state has nowhere to live except a label string — while both the compiler and the tests stay silent.
+
 ### What the built-in track supports
 
 The built-in track now has the **same control set** as the ImGui track: one host code base runs the full flow on either track. Only the differences and the exact semantics are listed here.
@@ -604,7 +617,7 @@ The built-in track now has the **same control set** as the ImGui track: one host
 | Appearance | Every widget and every piece of window chrome is drawn with rounded corners, a vertical gradient and a border (radius tiers and implementation in 7.12); floating windows, popups and tooltips also cast a shadow. `Widget::corner_radius = 0` turns rounding off for a single widget (the modal dimmer must do this) |
 | `BeginWindow` / `EndWindow` | Supported. A title bar is **on by default** (`GUI_WIN_NO_TITLE_BAR` turns it off, matching ImGui's `NoTitleBar`); it is draggable and carries a collapse box on the left (`GUI_WIN_NO_COLLAPSE` removes it). The menu bar only appears when `GUI_WIN_MENU_BAR` is passed. `GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` are honoured. Offset, collapsed and scroll state persist per window id, even though the host re-supplies the rect every frame. The title bar is rounded on top, square at the bottom, and a 1px BORDER line under it separates it from the content |
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | Supported; `Text` **wraps** to the content width |
-| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id). Hover and press swap the border colour instead of the fill; gradients stay at 2%-8% so text is never muddied |
+| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `RadioButton` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id). Hover and press swap the border colour instead of the fill; gradients stay at 2%-8% so text is never muddied. `RadioButton` = a ring (diameter = row height) plus a label on the right, **sized to its content** rather than 65% (toolbars put several in a row), and the label is part of the hit rect; `active` is input state and a click only returns 1 — the exclusive group belongs to the caller |
 | `DragFloat` | Real dragging: while held the value follows the **mouse delta** (`speed` units per pixel, Ctrl for 1/10 fine-tuning). There is no "jump where you clicked" semantics |
 | `DragFloat2/3/4` | Supported: N equally wide number boxes side by side on one row (the **widget group** is split following `PushMultiItemsWidths`), with the label text to the right of the whole group (outside it). The group width is whatever `GUi_SetNextItemWidth` asked for, otherwise `ItemWidthDefault` (65% of the window width) — so the "split width between label and widget" recipe above works for 2/3/4-component widgets too. The N boxes are N independent widgets (id derived from "label + component index"), so dragging one only changes that one; any component change returns 1 |
 | `Selectable` | Supported: full-row width, left-aligned text, selected-state highlight. `selected` is an **input** (the caller owns the selection set); the return value only means "was clicked" and never flips `selected` itself — same as `ImGui::Selectable(label, bool)` |
@@ -613,7 +626,7 @@ The built-in track now has the **same control set** as the ImGui track: one host
 | `Combo` | Real dropdown: popup plus menu items, a selection writes back and closes it |
 | `BeginChild` / `EndChild` | Supported: own clip rect (out-of-view items are invisible *and* unclickable), own wheel scrolling and offset. `size=(0,0)` fills the remaining space, as in ImGui. `border = true` draws a rounded border while clipping stays rectangular, so corners never eat content |
 | `TreeNode` / `TreePop` / `CollapsingHeader` | Supported: open state persists across frames, children indent automatically |
-| `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | Supported: a menu is a popup anchored under its button; clicking an item closes it |
+| `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | Supported, and they are **native widgets**: the whole bar is one `MenuBar` (flat `menubar_bg` fill, no border) and every title is a `Menu` (plain text normally, Header-family fill on hover/open). Titles are laid out by the bar itself, back to back — not with `SameLine`. While a menu is open, moving the mouse onto a sibling title switches to it (ImGui's menu bar behaviour). The popup sizes itself to its widest item (right-aligned shortcuts included), never narrower than its title, and the width is cached across frames so the second open is exact. Clicking an item closes it |
 | Popups: `OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | Supported. Popups draw on layer 2 (always above windows), auto-size their height, and close on an outside click or Esc — `BeginPopup` already returns 0 on that same frame, matching ImGui's NewFrame semantics |
 | Modal: `OpenModal` / `BeginModal` | Supported: centred, a dim full-screen mask underneath, **outside clicks do not close it**; only Esc or `CloseCurrentPopup` |
 | Tooltip: `SetTooltip` | Supported: follows the mouse; delayed 0.35 s when `time > 0` (with `time = 0` it shows immediately, which keeps unit tests and screenshots reproducible) |

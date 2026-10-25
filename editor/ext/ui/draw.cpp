@@ -251,27 +251,28 @@ void draw_toolbar(DrawState& st) {
     toolbar_gap();
 
     for (int i = 0; i < 3; ++i) {
-        // 用按钮模拟单选：当前模式按下去是"亮"的（靠文本前缀区分，
-        // 因为 C 接口没有 push/pop 按钮色）。
-        const bool on = gizmo::operation() == i;
-        char label[32];
-        std::snprintf(label, sizeof(label), "%s%s", on ? "[x] " : "", kGizmoNames[i]);
-        if (GUi_SmallButton(label)) {
+        // 互斥的模式选择用**原生单选按钮**：圆环 + 标签，选中那一个的圆心
+        // 是实心的。以前是拿 SmallButton 加 "[x] " 前缀拼出来的，既不是控件
+        // 语义（读屏/命中范围都不对），也看不出一组三个是互斥的。
+        if (GUi_RadioButton(kGizmoNames[i], gizmo::operation() == i ? 1 : 0)) {
             Intent it = make(kGizmoMode);
             it.flag = i;
             it.other = gizmo::space();
             push(it);
         }
-        GUi_SameLine(0);
+        // 组内间隔比按钮之间大一点：圆环紧贴下一个标签时"一组三个"的
+        // 分组感会没有（按钮之间靠边框就能分开，圆环没有边框）。
+        GUi_SameLine(10.0f);
     }
     toolbar_gap();
 
     {
-        const bool on = gizmo::space() == 1;
-        if (GUi_SmallButton(on ? "[x] Local" : "[ ] Local")) {
+        // 局部/世界坐标是布尔开关，用原生复选框（同样不该用 "[ ] " 拼）。
+        int local = (gizmo::space() == 1) ? 1 : 0;
+        if (GUi_Checkbox("Local", &local)) {
             Intent it = make(kGizmoMode);
             it.flag = gizmo::operation();
-            it.other = on ? 0 : 1;
+            it.other = local ? 1 : 0;
             push(it);
         }
     }

@@ -585,6 +585,10 @@ GRYCE_UI_API int   GUi_Selectable(const char* label, int selected);
 GRYCE_UI_API void  GUi_SetItemAllowOverlap(void);
 
 GRYCE_UI_API int   GUi_Checkbox(const char* label, int* inout_value);
+// 单选按钮（ImGui 的 RadioButton）：左侧圆环 + 右侧标签，框宽按内容走。
+// active 由调用方持有（互斥组归它管），返回 1 只表示"被点了"——要切换就由
+// 调用方改自己的 active。与 ImGui 一样，同一组里只该有一个 active。
+GRYCE_UI_API int   GUi_RadioButton(const char* label, int active);
 // 返回 1 表示值被改过（拖动中每帧都可能为 1）。inout 就地更新。
 GRYCE_UI_API int   GUi_SliderFloat(const char* label, float* inout_value,
                                    float min_value, float max_value, const char* fmt);

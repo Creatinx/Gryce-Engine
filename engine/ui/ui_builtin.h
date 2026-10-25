@@ -121,6 +121,10 @@ public:
     int  button(const char* label);
     int  button_size(const char* label, float w, float h);
     int  checkbox(const char* label, int* inout_value);
+    // 单选按钮（ImGui 的 RadioButton）：左侧圆环（选中时圆心实心）+ 右侧标签，
+    // 框宽按内容走（不是 65%），因为工具栏里要横排成一串。
+    // active 是**入参状态**——互斥组归调用方管，返回 1 只表示"被点了"。
+    int  radio_button(const char* label, int active);
     int  slider_float(const char* label, float* inout_value, float vmin, float vmax,
                       const char* fmt = nullptr);
     int  drag_float(const char* label, float* inout_value, float speed,
@@ -246,7 +250,14 @@ private:
         bool     collapsed = false;
         bool     is_popup  = false;   // 弹层：layer 1、无 chrome、无滚动条
         bool     is_child  = false;   // 子区域：无 chrome、有滚动
-        bool     in_menubar = false;
+        // —— 菜单栏 ——
+        // 菜单标题的横排由菜单栏自己管：next_x 是下一个标题的左边缘，标题
+        // 一个接一个紧贴排开。**不走 SameLine / 光标流**——那条路上"第几个
+        // 菜单"这个信息只活在 pending_same_line 里，第二个菜单起就得靠调用
+        // 方每帧补一次置位，而且会跟宿主自己的 SameLine 互相污染。
+        bool     in_menubar  = false;
+        Rect     menubar_rect{};      // 整条（底色 / 命中参照）
+        float    menubar_x   = 0.0f;  // 下一个菜单标题的左边缘
         uint8_t  layer = 0;
         float    title_h = 0.0f;
         // 被拒的窗口（退化矩形/栈满）也压栈以保证 Begin/End 配对，但它的
@@ -257,16 +268,35 @@ private:
     struct PopupState {
         uint64_t id = 0;
         float    x = 0.0f, y = 0.0f;
-        float    w = 0.0f, h = 0.0f;      // h <= 0 = 自适应
+        float    w = 0.0f, h = 0.0f;      // <= 0 = 按内容自适应
         float    measured_h = 0.0f;       // 上一帧量到的高度（自适应用）
+        // 宽度自适应：want_w 是本次提交的条目累计出来的需要宽度，end_popup
+        // 把它记进 measured_w，下一帧 begin_popup_id 直接用。菜单的宽度取决
+        // 于最宽的那一项（含右对齐快捷键），标题宽度算不出来。
+        float    measured_w = 0.0f;
+        float    want_w     = 0.0f;
+        float    min_w      = 0.0f;       // 下限（菜单至少要放得下自己的标题）
+        // 这个弹层是不是菜单（BeginMenu 开的）。悬停切换只在菜单之间做，
+        // 不能把右键菜单 / 下拉框弹层也当成"菜单栏的邻居"。
+        bool     is_menu = false;
         bool     open = false;
         bool     modal = false;
         uint64_t open_frame = 0;
     };
 
+    // 菜单栏标题的上一帧矩形。悬停切换要判"鼠标在这个标题上、而弹层属于
+    // 另一个标题"——做判断的时刻是 BeginMenuBar（它早于本帧所有 BeginMenu），
+    // 那时本帧的标题还没提交，只能拿上一帧的矩形。
+    struct MenuTitleHit {
+        uint64_t popup_id = 0;
+        Rect     rect{};
+    };
+    static constexpr int kMaxMenuTitles = 16;
+    MenuTitleHit menu_titles_[kMaxMenuTitles];
+    int          menu_title_count_ = 0;
+
     // 光标流定位：返回本 item 的矩形并推进光标。无窗口返回全零矩形。
-    Rect place(float w, float h);
-    // 当前区域可用（有开着的窗口且没被拒）
+    Rect place(float w, float h);    // 当前区域可用（有开着的窗口且没被拒）
     bool usable() const { return depth_ > 0 && windows_[depth_ - 1].valid; }
 
     // 单行 Label 提交（换行后的每一行也走它）。
@@ -276,6 +306,22 @@ private:
 
     // 记录"刚提交的 item"的查询状态（w 为空时清空）。
     void finish_impl(Widget* w);
+    // 菜单宽度自适应的一票：item 报"我至少要多宽"。只在按内容自适应的菜单
+    // 弹层里生效；end_popup 汇总成 measured_w，下一帧 begin_popup_id 直接用。
+    void note_menu_width(float w);
+    // 菜单宽度缓存（按弹层 id）：同一个菜单再打开时直接用上次量到的宽度，
+    // 否则每次都要"先窄一帧再撑开"，看起来是闪一下。
+    struct MenuWidthCache {
+        uint64_t id = 0;
+        float    w  = 0.0f;
+    };
+    static constexpr int kMenuWidthCache = 12;
+    MenuWidthCache menu_w_cache_[kMenuWidthCache];
+    uint32_t       menu_w_seq_ = 0;
+    void  remember_menu_width(uint64_t id, float w);
+    float cached_menu_width(uint64_t id) const;
+    // 打开菜单弹层（按内容自适应宽 + 标题宽下限 + 宽度缓存）
+    void  open_menu_popup(uint64_t id, float x, float y, float title_w);
     // 给控件打上所属窗口与层（含命中域）。
     void stamp(Widget* w);
 

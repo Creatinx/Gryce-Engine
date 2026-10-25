@@ -160,6 +160,7 @@ const BuiltinUiOps kOps = {
     [](const char* label) { return rt().ui().button(label); },
     [](const char* label, float w, float h) { return rt().ui().button_size(label, w, h); },
     [](const char* label, int* v) { return rt().ui().checkbox(label, v); },
+    [](const char* label, int active) { return rt().ui().radio_button(label, active); },
     [](const char* label, float* v, float lo, float hi, const char* fmt) {
         return rt().ui().slider_float(label, v, lo, hi, fmt);
     },

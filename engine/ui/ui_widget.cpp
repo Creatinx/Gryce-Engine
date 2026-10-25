@@ -263,6 +263,25 @@ bool widget_anim_fill(const Widget& w, const Theme& t, uint32_t* out) {
             *out = w.hovered ? theme_color(t, THEME_COLOR_HEADER_HOVER)
                              : theme_color(t, THEME_COLOR_HEADER);
             return true;
+        case WidgetKind::Menu: {
+            // 菜单标题：展开态恒亮（Header），只是悬停时 HeaderHover，其余
+            // 透明。这条与 ImGui 的 BeginMenu 一致——菜单栏上的标题平时是
+            // 纯文字，只有悬停/展开才出现底色块。
+            uint32_t c = w.open ? theme_color(t, THEME_COLOR_HEADER)
+                     : w.hovered ? theme_color(t, THEME_COLOR_HEADER_HOVER)
+                                 : theme_color(t, THEME_COLOR_HEADER);
+            if (!w.open && !w.hovered) c &= 0xFFFFFF00u;
+            *out = c;
+            return true;
+        }
+        case WidgetKind::Radio:
+            // 单选按钮的圆环底色跟输入框同一档（ImGui 的 RadioButton 用的是
+            // FrameBg / FrameBgHovered / FrameBgActive），选中与否由圆心那个
+            // 实心点表达，不换底色。
+            *out = w.pressed ? theme_color(t, THEME_COLOR_BUTTON_ACTIVE)
+                 : w.hovered ? theme_color(t, THEME_COLOR_BUTTON_HOVER)
+                             : theme_color(t, THEME_COLOR_BUTTON);
+            return true;
         case WidgetKind::Selectable: {
             // 列表项的底色：选中恒亮、悬停淡入、其余透明（不画底）。
             // 与 ImGui 的 Selectable 一致：选中项即使鼠标不在上面也保持高亮。
@@ -320,7 +339,8 @@ void draw_fold_marker(UiDrawList& dl, float x, float y, bool open,
 // ---------------------------------------------------------------------------
 
 // ImGuiStyle::ItemInnerSpacing.x 的默认值：控件框与它右侧标签的间隙。
-constexpr float kItemInnerSpacing = 4.0f;
+// 定义在 ui_widget.h —— 布局（BuiltinUi）与绘制（本文件）都要用它，
+// 各写一份的话主题一改就会错位。
 
 // 控件框：填充 + 1px 边框。对应 ImGui 的 RenderFrame() + RenderFrameBorder()：
 // 先填后描、描边向内吃一圈，所以框的外轮廓尺寸不会被边框撑大。
@@ -861,6 +881,54 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                                           : theme_color(theme, THEME_COLOR_SCROLLBAR_GRAB);
             const float tw2 = (r.w > 4.0f) ? (r.w - 4.0f) : r.w;
             dl.add_round_rect(r.x + 2.0f, thumb_y, tw2, thumb_h, tw2 * 0.5f, tc);
+            break;
+        }
+
+        case WidgetKind::Radio: {
+            // ImGui 的 RadioButton：圆环直径 = 字号（不是行高，所以比复选框的
+            // 方框小一圈），在行内垂直居中；选中时圆心再画一个实心点。
+            const float dia = fs;
+            const float cy  = r.y + (r.h - dia) * 0.5f;
+            const uint32_t fill = widget_fill_now(w, theme);
+            dl.add_round_rect(r.x, cy, dia, dia, dia * 0.5f, fill);
+            dl.add_round_border(r.x, cy, dia, dia, dia * 0.5f, bw,
+                                theme_color(theme, THEME_COLOR_BORDER));
+            if (w.selected) {
+                // 内点：ImGui 用 radius - 3，换算成直径就是 dia - 6
+                float d = dia - 6.0f;
+                if (d > 0.0f) {
+                    dl.add_round_rect(r.x + (dia - d) * 0.5f, cy + (dia - d) * 0.5f,
+                                      d, d, d * 0.5f,
+                                      theme_color(theme, THEME_COLOR_CHECK_MARK));
+                }
+            }
+            if (w.label[0]) {
+                dl.add_text(r.x + dia + kItemInnerSpacing, ty, w.label, fs, text_col);
+            }
+            break;
+        }
+
+        case WidgetKind::MenuBar: {
+            // 菜单栏：一整条纯色底（ImGui 的 MenuBarBg），不描边、不圆角。
+            // 描边会让它读成"一块面板"——菜单栏是窗口 chrome，不是内容。
+            const uint32_t bg = w.bg_overridden
+                              ? w.bg_color
+                              : theme_color(theme, THEME_COLOR_MENUBAR_BG);
+            if ((bg & 0xFFu) != 0) {
+                dl.add_rect(r.x, r.y, r.w, r.h, bg);
+            }
+            break;
+        }
+
+        case WidgetKind::Menu: {
+            // 菜单标题：平时是纯文字，悬停 / 展开才出现底色块（Header 系）。
+            // 底色走 widget_fill_now，主题开了动画就是渐入渐出。
+            const uint32_t hl = widget_fill_now(w, theme);
+            if ((hl & 0xFFu) != 0) {
+                dl.add_rect(r.x, r.y, r.w, r.h, hl);
+            }
+            const float tw = metrics.width(w.label, fs);
+            dl.add_text(r.x + (r.w - tw) * 0.5f, ty, w.label, fs, text_col);
             break;
         }
 

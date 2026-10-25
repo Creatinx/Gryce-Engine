@@ -84,7 +84,7 @@ GUi_BeginMenuBar(); GUi_BeginMenu(label); GUi_MenuItem(label, shortcut, enabled)
 | --- | --- |
 | 文本 | `GUi_Text` / `GUi_TextColored(color, text)` / `GUi_LabelText` / `GUi_Separator` / `GUi_Spacing` / `GUi_SameLine(spacing)` |
 | 按钮 | `GUi_Button` / `GUi_ButtonSize` / `GUi_SmallButton` / `GUi_Selectable(label, selected)` / `GUi_SetItemAllowOverlap` |
-| 数值 | `GUi_Checkbox` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` / `GUi_ColorButton(label, rgba)` |
+| 数值 | `GUi_Checkbox` / `GUi_RadioButton(label, active)` / `GUi_SliderFloat` / `GUi_DragFloat` / `GUi_DragFloat2` / `GUi_DragFloat3` / `GUi_DragFloat4` / `GUi_ColorEdit4` / `GUi_ColorButton(label, rgba)` |
 | 文本输入 | `GUi_InputText` / `GUi_SetKeyboardFocusHere` / `GUi_IsItemDeactivatedAfterEdit` |
 | 枚举 | `GUi_Combo(label, current, items, count)` |
 | 树 | `GUi_TreeNode(label, default_open)` + `GUi_TreePop` / `GUi_CollapsingHeader` |
@@ -575,6 +575,19 @@ debug_ui_submit_locked()            主线程，锁已持有
 
 子区域（`BeginChild`）内容超出可见高度时同样有一条滚动条（与 ImGui 的 `BeginChild` 默认行为一致）；不给的话超出的最后几行既看不见也拖不动，日志/统计面板会"少一行"。
 
+### 原生控件优先于手工拼装
+
+复合 UI 必须在**控件层**实现一次，不能在宿主里拿底层原语拼。判据很简单：一个东西需要跨帧状态（展开 / 选中 / 悬停）、需要自己的命中范围、或者在 ImGui 那边是一个函数——它就该是一个 `WidgetKind`。
+
+已经按这条落地过的两处（都是先被拼错过、后来才改的）：
+
+| 东西 | 拼装写法（错） | 原生控件（对） |
+| --- | --- | --- |
+| 菜单栏 | 一条装饰横条 + 每个菜单一个 `Button`，靠 `SameLine` 摆横排（"第几个菜单"只活在 `pending_same_line` 里，第二个起调用方每帧补一次置位，漏一次就竖着摞） | `MenuBar` + `Menu`：菜单栏自己持有横排游标 `menubar_x`，标题一个一个紧贴排开；`Menu.open` 决定底色（Header 系），悬停切换在 `BeginMenuBar` 里做——那时本帧的标题还没提交，一帧只可能有一个弹层 |
+| 单选组 / 布尔开关 | `SmallButton("[x] Move")` / `SmallButton("[ ] Local")` 用文本前缀表达状态 | `RadioButton(label, active)` / `Checkbox(label, &v)`：圆环 + 实心点、方框 + 勾，状态由控件画 |
+
+拼装写法的通病是"看起来对、用起来不对"：读屏 / 命中范围 / 键盘导航都落在错误的矩形上，状态也没地方存（只能塞进标签字符串），而编译器和单测都看不出异常。
+
 ### 内置轨的能力边界
 
 内置轨与 ImGui 轨的**控件集合已经对齐**：同一份宿主代码两条轨都能跑完整流程。下面只列差异与语义细节。
@@ -584,7 +597,7 @@ debug_ui_submit_locked()            主线程，锁已持有
 | 外观 | 控件与窗口 chrome 全部走圆角 + 纵向渐变 + 描边（半径档位与实现见 7.12）；浮窗、弹层、提示额外带投影。`Widget::corner_radius = 0` 可对单个控件关掉圆角（模态遮罩必须这么做） |
 | `BeginWindow` / `EndWindow` | 支持。**标题栏默认就有**（`GUI_WIN_NO_TITLE_BAR` 关掉，与 ImGui 的 `NoTitleBar` 同向），可拖动、左侧折叠框（`GUI_WIN_NO_COLLAPSE` 去掉）；菜单栏要显式给 `GUI_WIN_MENU_BAR`，不给就完全不画。`GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` 生效；位移/折叠/滚动按窗口 id 跨帧存活（宿主每帧重给矩形也不丢）。标题栏上两角圆、下两角直，底边压 1px BORDER 当分隔线 |
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | 支持；`Text` 按内容区宽度**自动折行** |
-| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id）。悬停/按下换描边色而非换底色，渐变幅度 2%~8% 不压文字 |
+| `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `RadioButton` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id）。悬停/按下换描边色而非换底色，渐变幅度 2%~8% 不压文字。`RadioButton` = 圆环（直径 = 行高）+ 右侧标签，**框宽按内容走**不是 65%（工具栏要横排一串），标签算在命中范围内；`active` 是入参状态、点它只返回 1，互斥组归调用方管 |
 | `DragFloat` | 支持真拖拽：按住后按**鼠标位移**改值（`speed` 单位/像素，按住 Ctrl 走 1/10 精调）；没有"点哪算哪"的语义 |
 | `DragFloat2/3/4` | 支持：一行里并排 N 个只显示数值的框（等宽，按 `PushMultiItemsWidths` 的口径切分**控件组宽**），标签文本跟在整组右边（不占组宽）。组宽 = `GUi_SetNextItemWidth` 指定的值，没指定时按 `ItemWidthDefault`（窗口宽 65%）——所以上面「标签与控件的宽度分摊」那套写法在 2/3/4 分量上同样成立。N 个框是 N 个独立控件（id 由「标签 + 分量序号」派生），拖哪个改哪个；任一分量变化即返回 1 |
 | `Selectable` | 支持：整行宽、左对齐文本、选中态高亮。`selected` 是**入参状态**（选中集合归调用方管），返回值只表示"被点了"，不自行改 `selected`——与 `ImGui::Selectable(label, bool)` 一致 |
@@ -593,7 +606,7 @@ debug_ui_submit_locked()            主线程，锁已持有
 | `Combo` | 真下拉：点开弹层 + 菜单项，选中后回写并关闭 |
 | `BeginChild` / `EndChild` | 支持：自有裁剪域（超出不可见也不可点）、自有滚轮与滚动偏移。`size=(0,0)` = 占满剩余空间（与 ImGui 同义）。`border = true` 画圆角描边（裁剪仍按矩形，四角不会切进内容） |
 | `TreeNode` / `TreePop` / `CollapsingHeader` | 支持：展开态跨帧存活，子项自动缩进 |
-| `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | 支持：菜单就是"贴着按钮下沿打开的弹层"，点菜单项自动关闭 |
+| `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | 支持，且是**原生控件**：整条菜单栏是一个 `MenuBar`（`menubar_bg` 纯色底、无描边），每个标题是一个 `Menu`（平时纯文字、悬停/展开才出现 Header 系底色块）。标题的横排由菜单栏自己摆（紧密相接，不借 `SameLine`）。已经是菜单栏的前提下，**有菜单展开时把鼠标移到同级标题上会直接换过去**（ImGui 的菜单栏行为）。菜单弹层宽度按最宽的条目自适应（含右对齐的快捷键），下限是标题宽，并跨帧缓存——第二次打开就是准的。点条目自动关闭 |
 | 弹层：`OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | 支持。弹层画在第二层（永远盖住窗口），自适应高度；点外面或 Esc 关闭（同一帧 `BeginPopup` 即返回 0，与 ImGui 的 NewFrame 语义一致） |
 | 模态：`OpenModal` / `BeginModal` | 支持：居中、铺一层暗底遮罩、**点外面不关**，Esc 或 `CloseCurrentPopup` 才关 |
 | 提示：`SetTooltip` | 支持：贴在鼠标位置，`time > 0` 时延迟 0.35 秒出现（单测里 `time = 0` 立即出现，便于截图复现） |

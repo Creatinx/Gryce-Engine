@@ -91,6 +91,16 @@ enum class WidgetKind : uint32_t {
     // 颜色编辑：4 个分量框（左边缘带通道色标）+ 色块 + 右侧标签。整行是
     // 一个控件：按下后按"鼠标落在第几个分量框"选中通道，横向拖动改它。
     ColorEdit = 22,
+    // 菜单栏：窗口内容顶部那条横带（MENUBAR_BG 填充、无边框）。纯装饰——
+    // 命中落在菜单标题上，不落在条上。标题的横排由 BuiltinUi 的菜单栏布局
+    // 负责，不借 SameLine（见 ui_builtin.cpp 的 begin_menu_bar）。
+    MenuBar   = 23,
+    // 菜单标题（菜单栏里的一项）：扁平无边框，悬停 / 展开换 Header 系底色，
+    // 文本居中。open = 它的弹层正开着（与 ImGui 的 BeginMenu 同义）。
+    Menu      = 24,
+    // 单选按钮：左侧圆环（选中时圆心实心）+ 右侧标签。selected 是**入参
+    // 状态**（互斥组归调用方管），点击只产生 clicked。
+    Radio     = 25,
     Count,
 };
 
@@ -137,6 +147,9 @@ constexpr WidgetClass widget_class_of(WidgetKind k) {
         case WidgetKind::Image:      return WidgetClass::Interactive;
         case WidgetKind::Combo:      return WidgetClass::Interactive;
         case WidgetKind::ColorEdit:  return WidgetClass::Interactive;
+        case WidgetKind::MenuBar:    return WidgetClass::Decoration;
+        case WidgetKind::Menu:       return WidgetClass::Interactive;
+        case WidgetKind::Radio:      return WidgetClass::Interactive;
     }
     return WidgetClass::Interactive;   // 不可达（见上面的 static_assert）
 }
@@ -146,7 +159,7 @@ constexpr bool widget_is_interactive(WidgetKind k) {
 }
 
 // WidgetKind 增删时必须同步 widget_class_of 的分类表与 builtin 套件的校表测试。
-static_assert(static_cast<int>(WidgetKind::Count) == 23,
+static_assert(static_cast<int>(WidgetKind::Count) == 26,
               "WidgetKind changed: update widget_class_of and its test table");
 
 // 控件文案 / 输入内容容量。
@@ -163,6 +176,11 @@ constexpr int kWidgetPreeditCap = 64;
 // 的 kDebugUIFontSize），两轨要逐像素对齐，字号必须同源。行高 = 字号、
 // 控件框高 = 字号 + 2*4 = 22，也都是从这一个数推出来的。
 constexpr float kWidgetFontSize = 14.0f;
+
+// ImGuiStyle::ItemInnerSpacing.x 的默认值：控件内部的间隙（复选框方框 / 单选
+// 圆环与它右侧标签之间、ColorEdit 的分量框与色块之间）。布局（BuiltinUi）与
+// 绘制（ui_widget.cpp）共用这一个数——各写一份就会在改主题时错位。
+constexpr float kItemInnerSpacing = 4.0f;
 
 // ---------------------------------------------------------------------------
 // UiInputFrame — 一帧的输入快照
