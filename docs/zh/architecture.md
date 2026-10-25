@@ -44,9 +44,30 @@
 - 系统位于 `ecs/systems/`：`animator` / `audio` / `hierarchy` / `physics_2d` / `physics_3d` / `render_2d` / `render_3d` / `subviewport`。Play 模式驱动这些系统更新，退出后恢复编辑态快照。
 - 组件经 `reflection/` 注册，因此可被序列化、编辑器与脚本统一访问；组件创建走 `components/component_factory.h`。
 
+### 3.1 类型继承（基类 / 子类）
+
+组件查询必须同时支持**精确查询**（实体有没有 `ColorRect`）与**基类查询**（实体有没有任意 `Component2D` 派生组件）。两者互不为子集——`Component2D` 是抽象类，永远不会被实例化，但"实体有一个 `Component2D` 组件"显然成立。
+
+实现方式是**类型视角**（`components/component.h`）：每个组件实例在挂载时展开出"自身类型 + 所有祖先类型"上各自的正确子对象指针，一次性登记进索引。查询热路径退化为一次哈希查找 + 一次指针重解释，零 `dynamic_cast`、零偏移计算。
+
+- 继承关系的真源是反射表：`GRYCE_REFLECT_CLASS(Class, Base)` 的 `Base` 就是真实的 C++ 基类。
+- 有派生类的基类必须覆写 `collect_type_views()`（当前是 `Component2D` 与 `BasicRect`），否则以它为基类的查询会静默返回空。反射表驱动的回归测试（`test/component_tests.cpp` 的 `hierarchy` 套件）会逐条校验，不会漏。
+- 组件索引与组件池都是**视角索引**（`type → 指针列表`），因此同类型多实例互不覆盖。
+
+### 3.2 组件树（实例级父子挂载）
+
+与类型继承正交的第二条轴：**父 / 子组件说的是实例挂载关系**。一个 `ColorRect` 既可以是 `BasicRect` 的子类，也可以是某个 `Sprite2D` 的子组件。
+
+- `Component::set_component_parent()` 建立父子关系并**防环**（不允许挂到自己的后代下）。
+- 生命周期继承：父组件被禁用 → 整棵子树停摆（`is_effectively_enabled()`）。
+- 局部变换：子组件的变换叠在父组件之上；根组件以实体自身的变换为基准。
+- 移除父组件时子组件重挂到祖父，不会被连带销毁。
+
 ## 4. 场景与序列化
 
-场景为 JSON 文本格式（`.gesc`，当前 version 2），实体由 `name` / `uuid` / `parent` / `enabled` / `transform` / `components` 组成。序列化器位于 `scene/scene_serializer.cpp`，预制体位于 `scene/prefab.cpp`。
+场景为 JSON 文本格式（`.gesc`，当前 version 3），实体由 `name` / `uuid` / `parent` / `enabled` / `transform` / `components` 组成。序列化器位于 `scene/scene_serializer.cpp`，预制体位于 `scene/prefab.cpp`。
+
+version 3 的组件数组元素新增 `parent`（父组件的槽位号）与 `local_transform`（组件局部变换）。旧存档（version 1 / 2）没有这两个字段，加载端按"全部是根组件 + 单位局部变换"处理，无需版本分支即可兼容。
 
 多材质模型导入时，`scene/multi_material_assembly.cpp` 把子网格拆成父实体加子实体，子实体经 `copy_settings_from` 继承父实体材质参数（见 [model-import.md](model-import.md)）。
 
