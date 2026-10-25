@@ -1,5 +1,5 @@
 // ===========================================================================
-// engine/ui/ui_component.cpp — 组件树布局的实现
+// engine/ui/ui_layout_tree.cpp — 布局树的实现
 //
 // 存储：定长扁平数组 + 入侵式兄弟链表。id 与槽位解耦——id 单调递增永不复用，
 // 槽位走空闲链表复用；移除整棵子树时先收集再统一释放（逐点释放会在已释放
@@ -10,7 +10,7 @@
 // 时子节点 rect 原样保留，但递归继续（那些子节点自己可能是布局组件）。
 // ===========================================================================
 
-#include "ui/ui_component.h"
+#include "ui/ui_layout_tree.h"
 
 namespace gryce_ui {
 namespace {
@@ -28,31 +28,31 @@ Rect shrink(const Rect& r, const float pad[4]) {
 }
 
 // 主轴 = main_is_y ? 竖直 : 水平；交叉轴是另一个。
-float main_lead_margin(const Component& c, bool main_is_y) {
+float main_lead_margin(const UiLayoutNode& c, bool main_is_y) {
     return main_is_y ? c.margin[0] : c.margin[3];
 }
 
-float main_trail_margin(const Component& c, bool main_is_y) {
+float main_trail_margin(const UiLayoutNode& c, bool main_is_y) {
     return main_is_y ? c.margin[2] : c.margin[1];
 }
 
-float main_margin_total(const Component& c, bool main_is_y) {
+float main_margin_total(const UiLayoutNode& c, bool main_is_y) {
     return main_lead_margin(c, main_is_y) + main_trail_margin(c, main_is_y);
 }
 
-float cross_margin_total(const Component& c, bool main_is_y) {
+float cross_margin_total(const UiLayoutNode& c, bool main_is_y) {
     return main_is_y ? (c.margin[3] + c.margin[1]) : (c.margin[0] + c.margin[2]);
 }
 
 // 子节点在主轴上的请求尺寸（flex == 0 时使用；负值钳到 0）。
-float main_request(const Component& c, bool main_is_y) {
+float main_request(const UiLayoutNode& c, bool main_is_y) {
     const float v = main_is_y ? c.rect.h : c.rect.w;
     return v > 0.0f ? v : 0.0f;
 }
 
 // 交叉轴尺寸：Stretch 吃满交叉区（扣掉交叉 margin），否则用请求尺寸。
-float cross_size_for(const Component& c, float cross_avail, bool main_is_y) {
-    if (c.align == CompAlign::Stretch) {
+float cross_size_for(const UiLayoutNode& c, float cross_avail, bool main_is_y) {
+    if (c.align == UiLayoutAlign::Stretch) {
         const float v = cross_avail - cross_margin_total(c, main_is_y);
         return v > 0.0f ? v : 0.0f;
     }
@@ -62,7 +62,7 @@ float cross_size_for(const Component& c, float cross_avail, bool main_is_y) {
 
 // 交叉轴起点：Start 贴内容区前缘（加引导 margin），Center / End 在扣掉双侧
 // margin 的剩余区里对齐；超出（剩余 < 请求）时钳到前缘，不产生负坐标。
-float cross_pos_for(const Component& c, const Rect& content, float cross_avail,
+float cross_pos_for(const UiLayoutNode& c, const Rect& content, float cross_avail,
                     float cross_sz, bool main_is_y) {
     const float lead = main_is_y ? c.margin[3] : c.margin[0];
     const float trail = main_is_y ? c.margin[1] : c.margin[2];
@@ -71,15 +71,15 @@ float cross_pos_for(const Component& c, const Rect& content, float cross_avail,
     if (avail < 0.0f) avail = 0.0f;
     const float slack = avail - cross_sz;
     switch (c.align) {
-        case CompAlign::Center:  return slack > 0.0f ? start + slack * 0.5f : start;
-        case CompAlign::End:     return slack > 0.0f ? start + slack : start;
-        case CompAlign::Stretch:
-        case CompAlign::Start:
+        case UiLayoutAlign::Center:  return slack > 0.0f ? start + slack * 0.5f : start;
+        case UiLayoutAlign::End:     return slack > 0.0f ? start + slack : start;
+        case UiLayoutAlign::Stretch:
+        case UiLayoutAlign::Start:
         default:                 return start;
     }
 }
 
-void write_rect(Component& c, float main_pos, float cross_pos,
+void write_rect(UiLayoutNode& c, float main_pos, float cross_pos,
                 float main_sz, float cross_sz, bool main_is_y) {
     if (main_is_y) {
         c.rect.y = main_pos; c.rect.h = main_sz;
@@ -92,7 +92,7 @@ void write_rect(Component& c, float main_pos, float cross_pos,
 
 } // namespace
 
-int ComponentTree::find_index(uint64_t id) const {
+int UiLayoutTree::find_index(uint64_t id) const {
     if (id == 0) return -1;
     for (int i = 0; i < high_water_; ++i) {
         if (nodes_[i].alive && nodes_[i].comp.id == id) return i;
@@ -100,7 +100,7 @@ int ComponentTree::find_index(uint64_t id) const {
     return -1;
 }
 
-int ComponentTree::alloc_node() {
+int UiLayoutTree::alloc_node() {
     int idx = -1;
     if (free_head_ >= 0) {
         idx = free_head_;
@@ -116,7 +116,7 @@ int ComponentTree::alloc_node() {
     return idx;
 }
 
-void ComponentTree::append_child(int parent_idx, int idx) {
+void UiLayoutTree::append_child(int parent_idx, int idx) {
     Node& p = nodes_[parent_idx];
     Node& c = nodes_[idx];
     c.parent = parent_idx;
@@ -127,7 +127,7 @@ void ComponentTree::append_child(int parent_idx, int idx) {
     p.last_child = idx;
 }
 
-void ComponentTree::unlink(int idx) {
+void UiLayoutTree::unlink(int idx) {
     Node& n = nodes_[idx];
     if (n.prev_sib >= 0) {
         nodes_[n.prev_sib].next_sib = n.next_sib;
@@ -144,7 +144,7 @@ void ComponentTree::unlink(int idx) {
     n.next_sib = -1;
 }
 
-uint64_t ComponentTree::add(const Component& c) {
+uint64_t UiLayoutTree::add(const UiLayoutNode& c) {
     int parent_idx = -1;
     if (c.parent != 0) {
         parent_idx = find_index(c.parent);
@@ -159,7 +159,7 @@ uint64_t ComponentTree::add(const Component& c) {
     return n.comp.id;
 }
 
-bool ComponentTree::set(uint64_t id, const Component& c) {
+bool UiLayoutTree::set(uint64_t id, const UiLayoutNode& c) {
     const int idx = find_index(id);
     if (idx < 0) return false;
     int parent_idx = -1;
@@ -169,7 +169,7 @@ bool ComponentTree::set(uint64_t id, const Component& c) {
         if (parent_idx == idx) return false;       // 自挂
         if (is_descendant(parent_idx, idx)) return false;   // 成环
     }
-    Component next = c;
+    UiLayoutNode next = c;
     next.id = id;
     if (parent_idx == nodes_[idx].parent) {
         // 父级没变：只改数据，不动子列表位置（顺序变了会 silently 改变布局）
@@ -182,7 +182,7 @@ bool ComponentTree::set(uint64_t id, const Component& c) {
     return true;
 }
 
-bool ComponentTree::is_descendant(int idx, int ancestor) const {
+bool UiLayoutTree::is_descendant(int idx, int ancestor) const {
     // idx 是否是 ancestor 的后代（含自身）
     for (int i = idx; i >= 0; i = nodes_[i].parent) {
         if (i == ancestor) return true;
@@ -190,14 +190,14 @@ bool ComponentTree::is_descendant(int idx, int ancestor) const {
     return false;
 }
 
-bool ComponentTree::remove(uint64_t id) {
+bool UiLayoutTree::remove(uint64_t id) {
     const int idx = find_index(id);
     if (idx < 0) return false;
     remove_subtree(idx);
     return true;
 }
 
-void ComponentTree::remove_subtree(int idx) {
+void UiLayoutTree::remove_subtree(int idx) {
     // 先序收集整棵子树，再统一进空闲链表。逐点释放会在已释放节点上写
     // next_sib（空闲链表正串在这个字段上），把链表本身写坏。
     int list[kCapacity];
@@ -223,30 +223,41 @@ void ComponentTree::remove_subtree(int idx) {
     used_ -= n;
 }
 
-void ComponentTree::clear() {
+void UiLayoutTree::clear() {
     for (int i = 0; i < high_water_; ++i) nodes_[i] = Node{};
     free_head_ = -1;
     high_water_ = 0;
     used_ = 0;
-    // next_id_ 不复位：clear 之后新组件的 id 不与 clear 之前的冲突
+    // next_id_ 不复位：clear 之后新节点的 id 不与 clear 之前的冲突
 }
 
-Component* ComponentTree::find(uint64_t id) {
+UiLayoutNode* UiLayoutTree::find(uint64_t id) {
     const int i = find_index(id);
     return i >= 0 ? &nodes_[i].comp : nullptr;
 }
 
-const Component* ComponentTree::find(uint64_t id) const {
+const UiLayoutNode* UiLayoutTree::find(uint64_t id) const {
     const int i = find_index(id);
     return i >= 0 ? &nodes_[i].comp : nullptr;
 }
 
-const Rect* ComponentTree::rect_of(uint64_t id) const {
+const Rect* UiLayoutTree::rect_of(uint64_t id) const {
     const int i = find_index(id);
     return i >= 0 ? &nodes_[i].comp.rect : nullptr;
 }
 
-int ComponentTree::child_count(uint64_t id) const {
+const UiLayoutNode* UiLayoutTree::node_at(int index) const {
+    if (index < 0) return nullptr;
+    int seen = 0;
+    for (int i = 0; i < high_water_; ++i) {
+        if (!nodes_[i].alive) continue;
+        if (seen == index) return &nodes_[i].comp;
+        ++seen;
+    }
+    return nullptr;
+}
+
+int UiLayoutTree::child_count(uint64_t id) const {
     const int i = find_index(id);
     if (i < 0) return -1;
     int n = 0;
@@ -254,7 +265,7 @@ int ComponentTree::child_count(uint64_t id) const {
     return n;
 }
 
-uint64_t ComponentTree::child_at(uint64_t id, int index) const {
+uint64_t UiLayoutTree::child_at(uint64_t id, int index) const {
     const int i = find_index(id);
     if (i < 0 || index < 0) return 0;
     int n = 0;
@@ -265,12 +276,12 @@ uint64_t ComponentTree::child_at(uint64_t id, int index) const {
     return 0;
 }
 
-uint64_t ComponentTree::parent_of(uint64_t id) const {
+uint64_t UiLayoutTree::parent_of(uint64_t id) const {
     const int i = find_index(id);
     return i >= 0 ? nodes_[i].comp.parent : 0;
 }
 
-void ComponentTree::resolve() {
+void UiLayoutTree::resolve() {
     for (int i = 0; i < high_water_; ++i) {
         if (!nodes_[i].alive) continue;
         if (nodes_[i].parent < 0) resolve_node(i);
@@ -279,9 +290,9 @@ void ComponentTree::resolve() {
     // set 原子重挂），所以从根走一遍即可覆盖全树。
 }
 
-void ComponentTree::resolve_node(int idx) {
+void UiLayoutTree::resolve_node(int idx) {
     Node& n = nodes_[idx];
-    // 布局组件先安排子节点（写回子节点 rect），再递归进子节点——父布局的
+    // 布局节点先安排子节点（写回子节点 rect），再递归进子节点——父布局的
     // 写回一定发生在"以新 rect 摆布孙节点"之前。
     if (is_layout(n.comp.kind)) arrange_children(idx);
     // 父级不是布局组件时子节点 rect 不动（直接写 pos），但递归继续：
@@ -291,23 +302,23 @@ void ComponentTree::resolve_node(int idx) {
     }
 }
 
-void ComponentTree::arrange_children(int ci) {
-    const Component& k = nodes_[ci].comp;
+void UiLayoutTree::arrange_children(int ci) {
+    const UiLayoutNode& k = nodes_[ci].comp;
     const Rect content = shrink(k.rect, k.padding);
     int n = 0;
     for (int c = nodes_[ci].first_child; c >= 0; c = nodes_[c].next_sib) ++n;
     if (n == 0) return;                            // 没有子节点可摆
     if (content.w <= 0.0f || content.h <= 0.0f) return;   // 容器没有内容区：子节点 rect 保持原值
     switch (k.kind) {
-        case CompKind::Column: arrange_stack(ci, content, true);  break;
-        case CompKind::Row:    arrange_stack(ci, content, false); break;
-        case CompKind::Grid:   arrange_grid(ci, content);         break;
+        case UiLayoutKind::Column: arrange_stack(ci, content, true);  break;
+        case UiLayoutKind::Row:    arrange_stack(ci, content, false); break;
+        case UiLayoutKind::Grid:   arrange_grid(ci, content);         break;
         default: break;
     }
 }
 
-void ComponentTree::arrange_stack(int ci, const Rect& content, bool main_is_y) {
-    const Component& k = nodes_[ci].comp;
+void UiLayoutTree::arrange_stack(int ci, const Rect& content, bool main_is_y) {
+    const UiLayoutNode& k = nodes_[ci].comp;
     const float main_avail = main_is_y ? content.h : content.w;
     const float cross_avail = main_is_y ? content.w : content.h;
     const float gap = k.gap > 0.0f ? k.gap : 0.0f;
@@ -317,7 +328,7 @@ void ComponentTree::arrange_stack(int ci, const Rect& content, bool main_is_y) {
     float flex_total = 0.0f;
     int n = 0;
     for (int c = nodes_[ci].first_child; c >= 0; c = nodes_[c].next_sib) {
-        const Component& ch = nodes_[c].comp;
+        const UiLayoutNode& ch = nodes_[c].comp;
         ++n;
         if (ch.flex > 0.0f) {
             flex_total += ch.flex;
@@ -333,7 +344,7 @@ void ComponentTree::arrange_stack(int ci, const Rect& content, bool main_is_y) {
     // rect 的请求尺寸在覆盖前已读走，不会自我反馈。
     float cursor = main_is_y ? content.y : content.x;
     for (int c = nodes_[ci].first_child; c >= 0; c = nodes_[c].next_sib) {
-        Component& ch = nodes_[c].comp;
+        UiLayoutNode& ch = nodes_[c].comp;
         cursor += main_lead_margin(ch, main_is_y);
         const float main_sz = ch.flex > 0.0f ? ch.flex * unit : main_request(ch, main_is_y);
         const float cross_sz = cross_size_for(ch, cross_avail, main_is_y);
@@ -343,8 +354,8 @@ void ComponentTree::arrange_stack(int ci, const Rect& content, bool main_is_y) {
     }
 }
 
-void ComponentTree::arrange_grid(int ci, const Rect& content) {
-    const Component& k = nodes_[ci].comp;
+void UiLayoutTree::arrange_grid(int ci, const Rect& content) {
+    const UiLayoutNode& k = nodes_[ci].comp;
     int n = 0;
     for (int c = nodes_[ci].first_child; c >= 0; c = nodes_[c].next_sib) ++n;
 

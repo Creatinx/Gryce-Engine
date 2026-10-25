@@ -15,7 +15,7 @@
 #include "api/ui_builtin_ops.h"
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
-#include "ui/ui_component.h"
+#include "ui/ui_layout_tree.h"
 #include "ui/ui_anim.h"
 #include "ui/ui_id.h"
 #include "ui/ui_input.h"
@@ -125,8 +125,8 @@ Layout& layout() {
     return l;
 }
 
-ComponentTree& components() {
-    static ComponentTree t;
+UiLayoutTree& components() {
+    static UiLayoutTree t;
     return t;
 }
 
@@ -1428,28 +1428,28 @@ void GUi_LayoutIndent(float px) {
 }
 
 // ---------------------------------------------------------------------------
-// 组件树布局（纯数据：不画东西，回调内外都可调）
+// 布局树（纯数据：不画东西，回调内外都可调）
 // ---------------------------------------------------------------------------
 namespace {
 
-gryce_ui::Component to_component(const GUiCompSpec* s) {
-    gryce_ui::Component c{};
+gryce_ui::UiLayoutNode to_component(const GUiCompSpec* s) {
+    gryce_ui::UiLayoutNode c{};
     if (!s) return c;
     c.parent = s->parent;
-    c.kind   = static_cast<gryce_ui::CompKind>(s->kind);
+    c.kind   = static_cast<gryce_ui::UiLayoutKind>(s->kind);
     c.rect   = gryce_ui::Rect{s->x, s->y, s->w, s->h};
     for (int i = 0; i < 4; ++i) {
         c.margin[i]  = s->margin[i];
         c.padding[i] = s->padding[i];
     }
     c.flex  = s->flex;
-    c.align = static_cast<gryce_ui::CompAlign>(s->align);
+    c.align = static_cast<gryce_ui::UiLayoutAlign>(s->align);
     c.gap   = s->gap;
     c.cols  = s->cols;
     return c;
 }
 
-void from_component(const gryce_ui::Component& c, GUiCompSpec* s) {
+void from_component(const gryce_ui::UiLayoutNode& c, GUiCompSpec* s) {
     if (!s) return;
     s->parent = c.parent;
     s->kind   = static_cast<int>(c.kind);
@@ -1508,19 +1508,19 @@ int GUi_CompRect(uint64_t id, GRUiRect* out) {
 
 int GUi_CompGet(uint64_t id, GUiCompSpec* out) {
     if (!out) return 0;
-    const gryce_ui::Component* c = gryce_ui::components().find(id);
+    const gryce_ui::UiLayoutNode* c = gryce_ui::components().find(id);
     if (!c) return 0;
     from_component(*c, out);
     return 1;
 }
 
 int GUi_CompKind(uint64_t id) {
-    const gryce_ui::Component* c = gryce_ui::components().find(id);
+    const gryce_ui::UiLayoutNode* c = gryce_ui::components().find(id);
     return c ? static_cast<int>(c->kind) : -1;
 }
 
 uint64_t GUi_CompParent(uint64_t id) {
-    const gryce_ui::Component* c = gryce_ui::components().find(id);
+    const gryce_ui::UiLayoutNode* c = gryce_ui::components().find(id);
     return c ? c->parent : 0;
 }
 

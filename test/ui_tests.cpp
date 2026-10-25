@@ -1,7 +1,7 @@
 // ===========================================================================
 // test/ui_tests.cpp
 // UI 系统的单元测试：操作队列（OpQueue 本体 + GUi_* C ABI 两层）与模型层
-// （跨帧状态 / 布局栈 / 组件树 / 主题 / 输入 / 视图模型 / 动画系统）。
+// （跨帧状态 / 布局栈 / 布局树 / 主题 / 输入 / 视图模型 / 动画系统）。
 //
 // 与 math / script / asset 测试同构：被测源码（api/ui_op_queue.cpp +
 // api/ui_api.cpp + ui/*.cpp）直接编译进本可执行文件，不链接
@@ -28,7 +28,7 @@
 #include "api/ui_op_queue.h"
 #include "api/ui_op_queue_internal.h"
 #include "ui/ui_anim.h"
-#include "ui/ui_component.h"
+#include "ui/ui_layout_tree.h"
 #include "ui/ui_drawlist.h"
 #include "ui/ui_id.h"
 #include "ui/ui_input.h"
@@ -40,6 +40,7 @@
 #include "ui/ui_theme.h"
 #include "ui/ui_widget.h"
 #include "ui/ui_builtin.h"
+#include "ui/ui_layout_tree_json.h"
 
 using gryce_ui::Op;
 using gryce_ui::OpQueue;
@@ -836,19 +837,19 @@ TEST(layout, abi_matches_model) {
 }
 
 // ===========================================================================
-// suite: comp —— 组件树布局（模型层）
+// suite: comp —— 布局树（模型层）
 //
 // 核心是那条定位规则：父级是布局组件 -> 子节点由布局摆位；父级不是布局
 // 组件（Leaf 或无父级）-> 子节点保留调用方写的 pos。
 // ===========================================================================
 
-using gryce_ui::Component;
-using gryce_ui::ComponentTree;
-using gryce_ui::CompAlign;
-using gryce_ui::CompKind;
+using gryce_ui::UiLayoutNode;
+using gryce_ui::UiLayoutTree;
+using gryce_ui::UiLayoutAlign;
+using gryce_ui::UiLayoutKind;
 
-Component make_comp(uint64_t parent, CompKind kind, float x, float y, float w, float h) {
-    Component c{};
+UiLayoutNode make_comp(uint64_t parent, UiLayoutKind kind, float x, float y, float w, float h) {
+    UiLayoutNode c{};
     c.parent = parent;
     c.kind = kind;
     c.rect = gryce_ui::Rect{x, y, w, h};
@@ -856,16 +857,16 @@ Component make_comp(uint64_t parent, CompKind kind, float x, float y, float w, f
 }
 
 TEST(comp, add_find_remove) {
-    ComponentTree t;
-    const uint64_t a = t.add(make_comp(0, CompKind::Leaf, 10, 20, 100, 50));
+    UiLayoutTree t;
+    const uint64_t a = t.add(make_comp(0, UiLayoutKind::Leaf, 10, 20, 100, 50));
     CHECK_TRUE(a != 0);
-    const Component* ca = t.find(a);
+    const UiLayoutNode* ca = t.find(a);
     CHECK_TRUE(ca != nullptr);
     CHECK_EQ(ca->parent, 0u);
     CHECK_NEAR(ca->rect.x, 10.0f, 1e-4f);
     CHECK_EQ(t.count(), 1);
 
-    const uint64_t b = t.add(make_comp(a, CompKind::Leaf, 0, 0, 10, 10));
+    const uint64_t b = t.add(make_comp(a, UiLayoutKind::Leaf, 0, 0, 10, 10));
     CHECK_TRUE(b != a);
     CHECK_EQ(t.find(b)->parent, a);
     CHECK_EQ(t.child_count(a), 1);
@@ -878,16 +879,16 @@ TEST(comp, add_find_remove) {
     CHECK_EQ(t.count(), 0);
 
     // id 单调递增、移除后不复用（野引用不会落到新组件上）
-    const uint64_t c = t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1));
+    const uint64_t c = t.add(make_comp(0, UiLayoutKind::Leaf, 0, 0, 1, 1));
     CHECK_TRUE(c != a);
     CHECK_TRUE(c != b);
 }
 
 TEST(comp, parent_must_exist) {
-    ComponentTree t;
-    const uint64_t a = t.add(make_comp(0, CompKind::Leaf, 0, 0, 10, 10));
-    CHECK_EQ(t.add(make_comp(999, CompKind::Leaf, 0, 0, 1, 1)), 0u);
-    CHECK_FALSE(t.set(a, make_comp(999, CompKind::Leaf, 0, 0, 1, 1)));
+    UiLayoutTree t;
+    const uint64_t a = t.add(make_comp(0, UiLayoutKind::Leaf, 0, 0, 10, 10));
+    CHECK_EQ(t.add(make_comp(999, UiLayoutKind::Leaf, 0, 0, 1, 1)), 0u);
+    CHECK_FALSE(t.set(a, make_comp(999, UiLayoutKind::Leaf, 0, 0, 1, 1)));
     CHECK_EQ(t.count(), 1);
     CHECK_EQ(t.child_count(999), -1);
     CHECK_TRUE(t.rect_of(999) == nullptr);
@@ -898,26 +899,26 @@ TEST(comp, parent_must_exist) {
 }
 
 TEST(comp, capacity) {
-    ComponentTree t;
+    UiLayoutTree t;
     std::vector<uint64_t> ids;
-    ids.reserve(ComponentTree::kCapacity);
-    for (int i = 0; i < ComponentTree::kCapacity; ++i) {
-        const uint64_t id = t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1));
+    ids.reserve(UiLayoutTree::kCapacity);
+    for (int i = 0; i < UiLayoutTree::kCapacity; ++i) {
+        const uint64_t id = t.add(make_comp(0, UiLayoutKind::Leaf, 0, 0, 1, 1));
         CHECK_TRUE(id != 0);
         ids.push_back(id);
     }
-    CHECK_EQ(t.count(), ComponentTree::kCapacity);
-    CHECK_EQ(t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1)), 0u);   // 满
+    CHECK_EQ(t.count(), UiLayoutTree::kCapacity);
+    CHECK_EQ(t.add(make_comp(0, UiLayoutKind::Leaf, 0, 0, 1, 1)), 0u);   // 满
     CHECK_TRUE(t.remove(ids[0]));
-    CHECK_TRUE(t.add(make_comp(0, CompKind::Leaf, 0, 0, 1, 1)) != 0);
+    CHECK_TRUE(t.add(make_comp(0, UiLayoutKind::Leaf, 0, 0, 1, 1)) != 0);
 }
 
 TEST(comp, child_order_is_insertion_order) {
-    ComponentTree t;
-    const uint64_t p = t.add(make_comp(0, CompKind::Column, 0, 0, 100, 100));
-    const uint64_t a = t.add(make_comp(p, CompKind::Leaf, 0, 0, 10, 10));
-    const uint64_t b = t.add(make_comp(p, CompKind::Leaf, 0, 0, 10, 10));
-    const uint64_t c = t.add(make_comp(p, CompKind::Leaf, 0, 0, 10, 10));
+    UiLayoutTree t;
+    const uint64_t p = t.add(make_comp(0, UiLayoutKind::Column, 0, 0, 100, 100));
+    const uint64_t a = t.add(make_comp(p, UiLayoutKind::Leaf, 0, 0, 10, 10));
+    const uint64_t b = t.add(make_comp(p, UiLayoutKind::Leaf, 0, 0, 10, 10));
+    const uint64_t c = t.add(make_comp(p, UiLayoutKind::Leaf, 0, 0, 10, 10));
     CHECK_EQ(t.child_at(p, 0), a);
     CHECK_EQ(t.child_at(p, 1), b);
     CHECK_EQ(t.child_at(p, 2), c);
@@ -931,12 +932,12 @@ TEST(comp, child_order_is_insertion_order) {
 }
 
 TEST(comp, set_rejects_cycles) {
-    ComponentTree t;
-    const uint64_t root = t.add(make_comp(0, CompKind::Column, 0, 0, 100, 100));
-    const uint64_t mid = t.add(make_comp(root, CompKind::Column, 0, 0, 100, 50));
-    const uint64_t leaf = t.add(make_comp(mid, CompKind::Leaf, 0, 0, 10, 10));
+    UiLayoutTree t;
+    const uint64_t root = t.add(make_comp(0, UiLayoutKind::Column, 0, 0, 100, 100));
+    const uint64_t mid = t.add(make_comp(root, UiLayoutKind::Column, 0, 0, 100, 50));
+    const uint64_t leaf = t.add(make_comp(mid, UiLayoutKind::Leaf, 0, 0, 10, 10));
 
-    Component bad = *t.find(root);
+    UiLayoutNode bad = *t.find(root);
     bad.parent = leaf;      // 挂到自己的后代下
     CHECK_FALSE(t.set(root, bad));
     bad.parent = mid;
@@ -947,7 +948,7 @@ TEST(comp, set_rejects_cycles) {
     CHECK_EQ(t.child_count(root), 1);
 
     // 合法重挂
-    Component ok = *t.find(leaf);
+    UiLayoutNode ok = *t.find(leaf);
     ok.parent = root;
     CHECK_TRUE(t.set(leaf, ok));
     CHECK_EQ(t.parent_of(leaf), root);
@@ -956,11 +957,11 @@ TEST(comp, set_rejects_cycles) {
 }
 
 TEST(comp, non_layout_parent_keeps_pos) {
-    ComponentTree t;
+    UiLayoutTree t;
     // 叶子当父级：子节点"直接写 pos"，resolve 不碰它
-    const uint64_t anchor = t.add(make_comp(0, CompKind::Leaf, 100, 100, 200, 80));
-    const uint64_t c1 = t.add(make_comp(anchor, CompKind::Leaf, 110, 120, 60, 20));
-    const uint64_t c2 = t.add(make_comp(anchor, CompKind::Leaf, 180, 150, 60, 20));
+    const uint64_t anchor = t.add(make_comp(0, UiLayoutKind::Leaf, 100, 100, 200, 80));
+    const uint64_t c1 = t.add(make_comp(anchor, UiLayoutKind::Leaf, 110, 120, 60, 20));
+    const uint64_t c2 = t.add(make_comp(anchor, UiLayoutKind::Leaf, 180, 150, 60, 20));
     t.resolve();
     CHECK_NEAR(t.rect_of(c1)->x, 110.0f, 1e-4f);
     CHECK_NEAR(t.rect_of(c1)->y, 120.0f, 1e-4f);
@@ -968,13 +969,13 @@ TEST(comp, non_layout_parent_keeps_pos) {
     CHECK_NEAR(t.rect_of(c2)->y, 150.0f, 1e-4f);
 
     // 无父级的根同样直接写 pos
-    const uint64_t root = t.add(make_comp(0, CompKind::Leaf, 5, 6, 7, 8));
+    const uint64_t root = t.add(make_comp(0, UiLayoutKind::Leaf, 5, 6, 7, 8));
     t.resolve();
     CHECK_NEAR(t.rect_of(root)->x, 5.0f, 1e-4f);
 
     // 把 anchor 换成 Column：同一个子节点立刻改由布局摆位（规则翻转）
-    Component up = *t.find(anchor);
-    up.kind = CompKind::Column;
+    UiLayoutNode up = *t.find(anchor);
+    up.kind = UiLayoutKind::Column;
     up.gap = 10.0f;
     for (int i = 0; i < 4; ++i) up.padding[i] = 4.0f;
     CHECK_TRUE(t.set(anchor, up));
@@ -988,12 +989,12 @@ TEST(comp, non_layout_parent_keeps_pos) {
 }
 
 TEST(comp, column_stack_arranges_children) {
-    ComponentTree t;
-    Component col = make_comp(0, CompKind::Column, 0, 0, 300, 200);
+    UiLayoutTree t;
+    UiLayoutNode col = make_comp(0, UiLayoutKind::Column, 0, 0, 300, 200);
     col.gap = 8.0f;
     const uint64_t cid = t.add(col);
-    const uint64_t a = t.add(make_comp(cid, CompKind::Leaf, 999, 999, 50, 30));
-    Component b = make_comp(cid, CompKind::Leaf, 999, 999, 70, 40);
+    const uint64_t a = t.add(make_comp(cid, UiLayoutKind::Leaf, 999, 999, 50, 30));
+    UiLayoutNode b = make_comp(cid, UiLayoutKind::Leaf, 999, 999, 70, 40);
     b.margin[0] = 5.0f;   // 上
     b.margin[2] = 3.0f;   // 下
     const uint64_t bid = t.add(b);
@@ -1014,18 +1015,18 @@ TEST(comp, column_stack_arranges_children) {
 }
 
 TEST(comp, row_cross_align) {
-    ComponentTree t;
-    Component row = make_comp(0, CompKind::Row, 0, 0, 300, 100);
+    UiLayoutTree t;
+    UiLayoutNode row = make_comp(0, UiLayoutKind::Row, 0, 0, 300, 100);
     const uint64_t rid = t.add(row);
-    const uint64_t s = t.add(make_comp(rid, CompKind::Leaf, 0, 0, 40, 30));
-    Component c = make_comp(rid, CompKind::Leaf, 0, 0, 40, 30);
-    c.align = CompAlign::Center;
+    const uint64_t s = t.add(make_comp(rid, UiLayoutKind::Leaf, 0, 0, 40, 30));
+    UiLayoutNode c = make_comp(rid, UiLayoutKind::Leaf, 0, 0, 40, 30);
+    c.align = UiLayoutAlign::Center;
     const uint64_t cid = t.add(c);
-    Component e = make_comp(rid, CompKind::Leaf, 0, 0, 40, 30);
-    e.align = CompAlign::End;
+    UiLayoutNode e = make_comp(rid, UiLayoutKind::Leaf, 0, 0, 40, 30);
+    e.align = UiLayoutAlign::End;
     const uint64_t eid = t.add(e);
-    Component st = make_comp(rid, CompKind::Leaf, 0, 0, 0, 0);
-    st.align = CompAlign::Stretch;
+    UiLayoutNode st = make_comp(rid, UiLayoutKind::Leaf, 0, 0, 0, 0);
+    st.align = UiLayoutAlign::Stretch;
     st.flex = 1.0f;              // 交叉轴吃满 + 主轴拿剩余：两个轴都填
     const uint64_t stid = t.add(st);
     t.resolve();
@@ -1046,14 +1047,14 @@ TEST(comp, row_cross_align) {
 }
 
 TEST(comp, flex_distributes_remaining) {
-    ComponentTree t;
-    Component col = make_comp(0, CompKind::Column, 0, 0, 200, 300);
+    UiLayoutTree t;
+    UiLayoutNode col = make_comp(0, UiLayoutKind::Column, 0, 0, 200, 300);
     const uint64_t cid = t.add(col);
-    const uint64_t fixed = t.add(make_comp(cid, CompKind::Leaf, 0, 0, 100, 50));
-    Component f1 = make_comp(cid, CompKind::Leaf, 0, 0, 100, 0);
+    const uint64_t fixed = t.add(make_comp(cid, UiLayoutKind::Leaf, 0, 0, 100, 50));
+    UiLayoutNode f1 = make_comp(cid, UiLayoutKind::Leaf, 0, 0, 100, 0);
     f1.flex = 1.0f;
     const uint64_t i1 = t.add(f1);
-    Component f3 = make_comp(cid, CompKind::Leaf, 0, 0, 100, 0);
+    UiLayoutNode f3 = make_comp(cid, UiLayoutKind::Leaf, 0, 0, 100, 0);
     f3.flex = 3.0f;
     const uint64_t i3 = t.add(f3);
     t.resolve();
@@ -1068,12 +1069,12 @@ TEST(comp, flex_distributes_remaining) {
 }
 
 TEST(comp, overflow_clamps_to_zero) {
-    ComponentTree t;
+    UiLayoutTree t;
     // 容器只有 40 高，固定子节点就要 50：放不下
-    Component col = make_comp(0, CompKind::Column, 0, 0, 100, 40);
+    UiLayoutNode col = make_comp(0, UiLayoutKind::Column, 0, 0, 100, 40);
     const uint64_t cid = t.add(col);
-    const uint64_t a = t.add(make_comp(cid, CompKind::Leaf, 0, 0, 100, 50));
-    Component b = make_comp(cid, CompKind::Leaf, 0, 0, 100, 50);
+    const uint64_t a = t.add(make_comp(cid, UiLayoutKind::Leaf, 0, 0, 100, 50));
+    UiLayoutNode b = make_comp(cid, UiLayoutKind::Leaf, 0, 0, 100, 50);
     b.flex = 1.0f;
     const uint64_t bid = t.add(b);
     t.resolve();
@@ -1085,14 +1086,14 @@ TEST(comp, overflow_clamps_to_zero) {
 }
 
 TEST(comp, grid_columns_and_row_height) {
-    ComponentTree t;
-    Component g = make_comp(0, CompKind::Grid, 0, 0, 320, 200);
+    UiLayoutTree t;
+    UiLayoutNode g = make_comp(0, UiLayoutKind::Grid, 0, 0, 320, 200);
     g.cols = 3;
     g.gap = 4.0f;
     const uint64_t gid = t.add(g);
     uint64_t ids[7] = {};
     for (int i = 0; i < 7; ++i) {
-        ids[i] = t.add(make_comp(gid, CompKind::Leaf, 0, 0, 0, (i % 3 == 0) ? 40.0f : 20.0f));
+        ids[i] = t.add(make_comp(gid, UiLayoutKind::Leaf, 0, 0, 0, (i % 3 == 0) ? 40.0f : 20.0f));
     }
     t.resolve();
 
@@ -1114,15 +1115,15 @@ TEST(comp, grid_columns_and_row_height) {
 }
 
 TEST(comp, padding_shrinks_content) {
-    ComponentTree t;
-    Component col = make_comp(0, CompKind::Column, 50, 60, 200, 100);
+    UiLayoutTree t;
+    UiLayoutNode col = make_comp(0, UiLayoutKind::Column, 50, 60, 200, 100);
     col.padding[0] = 10.0f;   // 上
     col.padding[1] = 20.0f;   // 右
     col.padding[2] = 30.0f;   // 下
     col.padding[3] = 40.0f;   // 左
     const uint64_t cid = t.add(col);
-    Component st = make_comp(cid, CompKind::Leaf, 0, 0, 0, 25);
-    st.align = CompAlign::Stretch;
+    UiLayoutNode st = make_comp(cid, UiLayoutKind::Leaf, 0, 0, 0, 25);
+    st.align = UiLayoutAlign::Stretch;
     const uint64_t sid = t.add(st);
     t.resolve();
 
@@ -1135,17 +1136,17 @@ TEST(comp, padding_shrinks_content) {
 }
 
 TEST(comp, nested_trees) {
-    ComponentTree t;
+    UiLayoutTree t;
     // 根 Column -> Row（Stretch 吃满宽）-> 两个 Leaf
-    Component col = make_comp(0, CompKind::Column, 0, 0, 400, 300);
+    UiLayoutNode col = make_comp(0, UiLayoutKind::Column, 0, 0, 400, 300);
     col.gap = 10.0f;
     const uint64_t cid = t.add(col);
-    Component row = make_comp(cid, CompKind::Row, 0, 0, 0, 60);
-    row.align = CompAlign::Stretch;   // 交叉轴（宽）吃满
+    UiLayoutNode row = make_comp(cid, UiLayoutKind::Row, 0, 0, 0, 60);
+    row.align = UiLayoutAlign::Stretch;   // 交叉轴（宽）吃满
     row.gap = 6.0f;
     const uint64_t rid = t.add(row);
-    const uint64_t l1 = t.add(make_comp(rid, CompKind::Leaf, 0, 0, 80, 20));
-    const uint64_t l2 = t.add(make_comp(rid, CompKind::Leaf, 0, 0, 80, 20));
+    const uint64_t l1 = t.add(make_comp(rid, UiLayoutKind::Leaf, 0, 0, 80, 20));
+    const uint64_t l2 = t.add(make_comp(rid, UiLayoutKind::Leaf, 0, 0, 80, 20));
     t.resolve();
 
     CHECK_NEAR(t.rect_of(rid)->y, 0.0f, 1e-4f);
@@ -1156,11 +1157,11 @@ TEST(comp, nested_trees) {
 
     // 叶子下挂布局组件：叶子不是布局组件 -> 这个 Column 直接写 pos；
     // 但它自己是布局组件 -> 它的子节点照样由它摆位
-    const uint64_t host = t.add(make_comp(0, CompKind::Leaf, 500, 400, 300, 200));
-    Component inner = make_comp(host, CompKind::Column, 10, 20, 100, 150);
+    const uint64_t host = t.add(make_comp(0, UiLayoutKind::Leaf, 500, 400, 300, 200));
+    UiLayoutNode inner = make_comp(host, UiLayoutKind::Column, 10, 20, 100, 150);
     inner.gap = 5.0f;
     const uint64_t iid = t.add(inner);
-    const uint64_t leaf2 = t.add(make_comp(iid, CompKind::Leaf, 0, 0, 30, 30));
+    const uint64_t leaf2 = t.add(make_comp(iid, UiLayoutKind::Leaf, 0, 0, 30, 30));
     t.resolve();
 
     const gryce_ui::Rect* ri = t.rect_of(iid);
@@ -1173,26 +1174,26 @@ TEST(comp, nested_trees) {
 }
 
 TEST(comp, degenerate_container_keeps_children) {
-    ComponentTree t;
+    UiLayoutTree t;
     // 容器没有内容区（padding 吃掉全部）：子节点 rect 保持原值，不崩不写坏
-    Component col = make_comp(0, CompKind::Column, 0, 0, 10, 10);
+    UiLayoutNode col = make_comp(0, UiLayoutKind::Column, 0, 0, 10, 10);
     for (int i = 0; i < 4; ++i) col.padding[i] = 8.0f;
     const uint64_t cid = t.add(col);
-    const uint64_t a = t.add(make_comp(cid, CompKind::Leaf, 33, 44, 5, 5));
+    const uint64_t a = t.add(make_comp(cid, UiLayoutKind::Leaf, 33, 44, 5, 5));
     t.resolve();
     CHECK_NEAR(t.rect_of(a)->x, 33.0f, 1e-4f);
     CHECK_NEAR(t.rect_of(a)->y, 44.0f, 1e-4f);
 
     // 空容器：resolve 不碰任何东西
-    ComponentTree t2;
-    const uint64_t empty = t2.add(make_comp(0, CompKind::Grid, 0, 0, 100, 100));
+    UiLayoutTree t2;
+    const uint64_t empty = t2.add(make_comp(0, UiLayoutKind::Grid, 0, 0, 100, 100));
     t2.resolve();
     CHECK_NEAR(t2.rect_of(empty)->w, 100.0f, 1e-4f);
     (void)empty;
 }
 
 // ===========================================================================
-// suite: compabi —— 组件树的 C ABI
+// suite: compabi —— 布局树的 C ABI
 // ===========================================================================
 
 GUiCompSpec c_spec(uint64_t parent, int kind, float x, float y, float w, float h) {
@@ -1336,6 +1337,186 @@ TEST(compabi, set_rejects_cycle_through_abi) {
     CHECK_EQ(GUi_CompSet(rid, &s), 0);
     CHECK_EQ(GUi_CompParent(rid), 0u);     // 未被破坏
     CHECK_EQ(GUi_CompCount(), 2);
+}
+
+// ===========================================================================
+// suite: layoutjson —— 布局树的 JSON 往返
+// ===========================================================================
+
+TEST(layoutjson, kind_and_align_names_roundtrip) {
+    UiLayoutKind k = UiLayoutKind::Leaf;
+    CHECK_TRUE(layout_kind_from_name("leaf", k));
+    CHECK_EQ(static_cast<int>(k), static_cast<int>(UiLayoutKind::Leaf));
+    CHECK_TRUE(layout_kind_from_name("column", k));
+    CHECK_EQ(static_cast<int>(k), static_cast<int>(UiLayoutKind::Column));
+    CHECK_TRUE(layout_kind_from_name("row", k));
+    CHECK_EQ(static_cast<int>(k), static_cast<int>(UiLayoutKind::Row));
+    CHECK_TRUE(layout_kind_from_name("grid", k));
+    CHECK_EQ(static_cast<int>(k), static_cast<int>(UiLayoutKind::Grid));
+
+    UiLayoutKind keep = UiLayoutKind::Row;
+    CHECK_FALSE(layout_kind_from_name("nonsense", keep));   // 查不到不动 out
+    CHECK_EQ(static_cast<int>(keep), static_cast<int>(UiLayoutKind::Row));
+
+    CHECK_STR(layout_kind_name(UiLayoutKind::Leaf), "leaf");
+    CHECK_STR(layout_kind_name(UiLayoutKind::Column), "column");
+    CHECK_STR(layout_align_name(UiLayoutAlign::Stretch), "stretch");
+
+    UiLayoutAlign a = UiLayoutAlign::Start;
+    CHECK_TRUE(layout_align_from_name("stretch", a));
+    CHECK_EQ(static_cast<int>(a), static_cast<int>(UiLayoutAlign::Stretch));
+    CHECK_FALSE(layout_align_from_name("", a));
+    CHECK_EQ(static_cast<int>(a), static_cast<int>(UiLayoutAlign::Stretch));
+}
+
+TEST(layoutjson, roundtrip_preserves_structure_and_geometry) {
+    UiLayoutTree t;
+    const uint64_t col = t.add(make_comp(0, UiLayoutKind::Column, 10, 20, 300, 200));
+    const uint64_t row = t.add(make_comp(col, UiLayoutKind::Row, 0, 0, 100, 40));
+    const uint64_t a   = t.add(make_comp(row, UiLayoutKind::Leaf, 0, 0, 50, 30));
+    const uint64_t b   = t.add(make_comp(row, UiLayoutKind::Leaf, 0, 0, 60, 20));
+    CHECK_EQ(t.count(), 4);
+
+    // 给容器侧 / 子侧参数都填上非默认值：往返要一个不丢
+    UiLayoutNode* n = t.find(row);
+    CHECK_TRUE(n != nullptr);
+    n->gap = 6.0f;
+    n->padding[0] = 1.0f; n->padding[1] = 2.0f; n->padding[2] = 3.0f; n->padding[3] = 4.0f;
+    n->cols = 3;
+    UiLayoutNode* la = t.find(a);
+    CHECK_TRUE(la != nullptr);
+    la->flex = 2.0f;
+    la->align = UiLayoutAlign::Stretch;
+    la->margin[0] = 5.0f; la->margin[1] = 6.0f; la->margin[2] = 7.0f; la->margin[3] = 8.0f;
+
+    const nlohmann::json j = layout_tree_to_json(t);
+    CHECK_EQ(j.at("version").get<int>(), 1);
+    CHECK_EQ(j.at("nodes").size(), 4u);
+    // id 走十进制字符串（JS 只有 53 位整数精度）
+    CHECK_TRUE(j.at("nodes").at(0).at("id").is_string());
+
+    UiLayoutTree back;
+    CHECK_TRUE(layout_tree_from_json(j, back));
+    CHECK_EQ(back.count(), 4);
+
+    // 结构一致：父子关系与插入顺序
+    CHECK_EQ(back.child_count(back.node_at(0)->id), 1);
+    CHECK_EQ(back.parent_of(back.node_at(1)->id), back.node_at(0)->id);
+    CHECK_EQ(back.parent_of(back.node_at(2)->id), back.node_at(1)->id);
+    CHECK_EQ(back.parent_of(back.node_at(3)->id), back.node_at(1)->id);
+
+    // 几何与参数一致
+    for (int i = 0; i < t.count(); ++i) {
+        const UiLayoutNode* src = t.node_at(i);
+        const UiLayoutNode* dst = back.node_at(i);
+        CHECK_TRUE(src != nullptr && dst != nullptr);
+        CHECK_EQ(static_cast<int>(dst->kind), static_cast<int>(src->kind));
+        CHECK_EQ(static_cast<int>(dst->align), static_cast<int>(src->align));
+        CHECK_EQ(dst->parent != 0, src->parent != 0);
+        CHECK_NEAR(dst->rect.x, src->rect.x, 1e-5f);
+        CHECK_NEAR(dst->rect.y, src->rect.y, 1e-5f);
+        CHECK_NEAR(dst->rect.w, src->rect.w, 1e-5f);
+        CHECK_NEAR(dst->rect.h, src->rect.h, 1e-5f);
+        CHECK_NEAR(dst->flex, src->flex, 1e-5f);
+        CHECK_NEAR(dst->gap, src->gap, 1e-5f);
+        CHECK_EQ(dst->cols, src->cols);
+        for (int m = 0; m < 4; ++m) {
+            CHECK_NEAR(dst->margin[m], src->margin[m], 1e-5f);
+            CHECK_NEAR(dst->padding[m], src->padding[m], 1e-5f);
+        }
+    }
+
+    // 解析结果也一致（resolve 是幂等的，同结构同输入 → 同矩形）
+    t.resolve();
+    back.resolve();
+    for (int i = 0; i < t.count(); ++i) {
+        const gryce_ui::Rect* rs = t.rect_of(t.node_at(i)->id);
+        const gryce_ui::Rect* rd = back.rect_of(back.node_at(i)->id);
+        CHECK_TRUE(rs != nullptr && rd != nullptr);
+        CHECK_NEAR(rd->x, rs->x, 1e-4f);
+        CHECK_NEAR(rd->y, rs->y, 1e-4f);
+        CHECK_NEAR(rd->w, rs->w, 1e-4f);
+        CHECK_NEAR(rd->h, rs->h, 1e-4f);
+    }
+}
+
+TEST(layoutjson, dump_is_a_valid_document_and_ids_are_strings) {
+    UiLayoutTree t;
+    t.add(make_comp(0, UiLayoutKind::Column, 0, 0, 100, 100));
+    t.add(make_comp(1, UiLayoutKind::Leaf, 0, 0, 10, 10));   // parent = 上面那个 id
+
+    const std::string text = layout_tree_to_json(t).dump();
+    CHECK_TRUE(text.find("\"version\"") != std::string::npos);
+    CHECK_TRUE(text.find("\"nodes\"") != std::string::npos);
+    // id / parent 必须是 JSON **字符串**（不是数字）：JS 的 JSON.parse 只有 53
+    // 位整数精度，数字形式过一轮就丢低位。这里不依赖 nlohmann 的具体间距
+    // （dump 在冒号后带一个空格），只看 key 之后第一个非空白字符是不是引号。
+    auto value_is_string = [](const std::string& s, const char* key) {
+        const std::size_t p = s.find(key);
+        if (p == std::string::npos) return false;
+        const std::size_t c = s.find(':', p);
+        if (c == std::string::npos) return false;
+        std::size_t q = c + 1;
+        while (q < s.size() && (s[q] == ' ' || s[q] == '\t' || s[q] == '\n' || s[q] == '\r')) ++q;
+        return q < s.size() && s[q] == '"';
+    };
+    CHECK_TRUE(value_is_string(text, "\"id\""));
+    CHECK_TRUE(value_is_string(text, "\"parent\""));
+
+    // 文本再解析回来，一个节点不少
+    UiLayoutTree back;
+    CHECK_TRUE(layout_tree_from_json(nlohmann::json::parse(text), back));
+    CHECK_EQ(back.count(), 2);
+}
+
+TEST(layoutjson, from_json_is_lenient_but_rejects_garbage) {
+    // 顶层不是对象 / 没有 nodes 数组：false，且不动目标树
+    UiLayoutTree t;
+    CHECK_FALSE(layout_tree_from_json(nlohmann::json::array(), t));
+    CHECK_FALSE(layout_tree_from_json(nlohmann::json::object(), t));
+    CHECK_FALSE(layout_tree_from_json(nlohmann::json::parse("{\"nodes\": 5}"), t));
+    CHECK_EQ(t.count(), 0);
+
+    // 缺字段用默认值；未知 kind / align 名按 Leaf / Start；坏条目跳过
+    const nlohmann::json j = nlohmann::json::parse(R"({
+        "nodes": [
+            { "parent": "0", "kind": "column", "rect": [0, 0, 100, 100] },
+            { "parent": "0" },
+            { "parent": "0", "kind": "wat", "align": "sideways" },
+            "not an object",
+            42
+        ]
+    })");
+    CHECK_TRUE(layout_tree_from_json(j, t));
+    CHECK_EQ(t.count(), 3);                       // 后两条坏条目被跳过
+    CHECK_EQ(static_cast<int>(t.node_at(0)->kind), static_cast<int>(UiLayoutKind::Column));
+    CHECK_EQ(static_cast<int>(t.node_at(1)->kind), static_cast<int>(UiLayoutKind::Leaf));
+    CHECK_EQ(static_cast<int>(t.node_at(2)->kind), static_cast<int>(UiLayoutKind::Leaf));
+    CHECK_EQ(static_cast<int>(t.node_at(2)->align), static_cast<int>(UiLayoutAlign::Start));
+
+    // 读回会先 clear：旧内容不残留
+    CHECK_TRUE(layout_tree_from_json(nlohmann::json::parse("{\"nodes\": []}"), t));
+    CHECK_EQ(t.count(), 0);
+}
+
+TEST(layoutjson, node_at_is_topological_and_bounded) {
+    UiLayoutTree t;
+    const uint64_t root = t.add(make_comp(0, UiLayoutKind::Column, 0, 0, 10, 10));
+    t.add(make_comp(root, UiLayoutKind::Leaf, 0, 0, 1, 1));
+    t.add(make_comp(root, UiLayoutKind::Leaf, 0, 0, 2, 2));
+
+    CHECK_TRUE(t.node_at(-1) == nullptr);
+    CHECK_TRUE(t.node_at(t.count()) == nullptr);
+    // 父先于子：第 0 个是根，它的 children 都在后面
+    CHECK_EQ(t.node_at(0)->id, root);
+    CHECK_EQ(t.node_at(0)->parent, 0u);
+    CHECK_EQ(t.node_at(1)->parent, root);
+    CHECK_EQ(t.node_at(2)->parent, root);
+
+    // 移除中间一层：node_at 只数活节点
+    t.remove(root);
+    CHECK_EQ(t.count(), 0);
+    CHECK_TRUE(t.node_at(0) == nullptr);
 }
 
 // ===========================================================================
@@ -1906,6 +2087,7 @@ namespace {
 using gryce_ui::Rect;
 using gryce_ui::UiInputFrame;
 using gryce_ui::Widget;
+using gryce_ui::WidgetClass;
 using gryce_ui::WidgetKind;
 using gryce_ui::WidgetTree;
 using gryce_ui::BuiltinUi;
@@ -2223,6 +2405,55 @@ TEST(widget, focus_moves_between_inputs_and_clears_on_blank) {
     tree.touch(2, WidgetKind::TextInput, b, "B");
     tree.end_frame();
     CHECK_STR(tree.find(2)->text, "bb");   // 没有焦点，键入被丢弃
+}
+
+TEST(widget, every_kind_has_an_explicit_class_and_only_interactive_is_hit_tested) {
+    // 分类表是命中测试的唯一真源（touch() 里那串 if 已经没了）。这张表逐 kind
+    // 列期望值：新增 kind 时 Count 变，ui_widget.h 的 static_assert 先炸；改错
+    // 分类时这里炸。两道一起保证"新 kind 不可能静默拿到错的命中策略"。
+    struct Entry { WidgetKind kind; WidgetClass cls; const char* name; };
+    static const Entry table[] = {
+        {WidgetKind::Button,     WidgetClass::Interactive, "Button"},
+        {WidgetKind::Label,      WidgetClass::Text,        "Label"},
+        {WidgetKind::Slider,     WidgetClass::Interactive, "Slider"},
+        {WidgetKind::Checkbox,   WidgetClass::Interactive, "Checkbox"},
+        {WidgetKind::TextInput,  WidgetClass::Interactive, "TextInput"},
+        {WidgetKind::Panel,      WidgetClass::Container,   "Panel"},
+        {WidgetKind::Progress,   WidgetClass::Decoration,  "Progress"},
+        {WidgetKind::Separator,  WidgetClass::Decoration,  "Separator"},
+        {WidgetKind::DragFloat,  WidgetClass::Interactive, "DragFloat"},
+        {WidgetKind::TreeNode,   WidgetClass::Interactive, "TreeNode"},
+        {WidgetKind::Header,     WidgetClass::Interactive, "Header"},
+        {WidgetKind::MenuItem,   WidgetClass::Interactive, "MenuItem"},
+        {WidgetKind::ScrollBar,  WidgetClass::Interactive, "ScrollBar"},
+        {WidgetKind::Tooltip,    WidgetClass::Decoration,  "Tooltip"},
+        {WidgetKind::ClipBegin,  WidgetClass::Container,   "ClipBegin"},
+        {WidgetKind::ClipEnd,    WidgetClass::Container,   "ClipEnd"},
+        {WidgetKind::Bar,        WidgetClass::Decoration,  "Bar"},
+        {WidgetKind::TitleBar,   WidgetClass::Interactive, "TitleBar"},
+        {WidgetKind::Frame,      WidgetClass::Container,   "Frame"},
+        {WidgetKind::Selectable, WidgetClass::Interactive, "Selectable"},
+        {WidgetKind::Image,      WidgetClass::Interactive, "Image"},
+    };
+    const int n = static_cast<int>(sizeof(table) / sizeof(table[0]));
+    CHECK_EQ(n, static_cast<int>(WidgetKind::Count));   // 一条不漏、一条不多
+
+    // 逐 kind 校表 + 实际行为（Interactive 的才该被命中）
+    for (int i = 0; i < n; ++i) {
+        const Entry& e = table[i];
+        CHECK_EQ(static_cast<int>(e.kind), i);          // 表序 == 枚举序
+        CHECK_EQ(static_cast<int>(widget_class_of(e.kind)), static_cast<int>(e.cls));
+
+        WidgetTree tree;
+        const Rect r{0.0f, 0.0f, 400.0f, 300.0f};
+        tree.begin_frame(mouse_at(100.0f, 100.0f, true, true, false));
+        Widget* w = tree.touch(1, e.kind, r, e.name);
+        CHECK_TRUE(w != nullptr);
+        const bool should_hit = (e.cls == WidgetClass::Interactive);
+        CHECK_EQ(w->hovered, should_hit);
+        CHECK_EQ(tree.active_id() != 0u, should_hit);
+        tree.end_frame();
+    }
 }
 
 TEST(widget, label_is_not_hit_testable) {
@@ -2691,6 +2922,36 @@ TEST(builtin, input_text_types_backspace_and_syncs) {
     const Widget* w = ui.tree().find(input_id);
     CHECK_TRUE(w != nullptr);
     CHECK_STR(w->text, "");
+}
+
+TEST(builtin, focus_drops_when_the_focused_widget_stops_being_submitted) {
+    // 面板被关掉 / 条件 UI 收起来时，持有焦点的输入框不再被提交。
+    // sweep 只回收槽位不清 focus_id_ 的话，那个 id 就成了野引用：
+    // GUi_WantCaptureKeyboard()（内置轨 = tree_.focus_id() != 0）恒为真，
+    // 宿主从此不再派发快捷键，直到用户随手点一下空白处才自愈。
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    char buf[64] = "";
+    const uint64_t input_id = gryce_ui::hash_label("Name", gryce_ui::hash_label("W"));
+
+    bi_frame(ui, mouse_at(100.0f, 20.0f, true, true, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.input_text("Name", buf, sizeof(buf));
+    ui.end_window();
+    ui.end_frame();
+    CHECK_EQ(ui.tree().focus_id(), input_id);
+    CHECK_TRUE(ui.wants_keyboard());
+
+    // 下一帧：窗口还在，但输入框不再提交（宿主把那个面板收起来了）
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.text("panel body only");
+    ui.end_window();
+    ui.end_frame();
+
+    CHECK_EQ(ui.tree().focus_id(), 0u);       // 焦点随控件一起消失
+    CHECK_FALSE(ui.wants_keyboard());         // 快捷键通道恢复
+    CHECK_TRUE(ui.tree().find(input_id) == nullptr);
 }
 
 TEST(builtin, focus_moves_between_inputs) {

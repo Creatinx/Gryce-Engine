@@ -164,7 +164,7 @@ target_link_libraries(GryceCore PUBLIC Jolt::Jolt)
 target_link_libraries(GryceCore PUBLIC amplitude)
 
 # 脚本引擎：QuickJS（MIT，third_party/quickjs 随仓库分发）。仅引擎内部使用，
-# PRIVATE 链接；对外脚本能力经 ScriptComponent 与 engine.* 命名空间暴露。
+# PRIVATE 链接；对外脚本能力经 ScriptUiLayoutNode 与 engine.* 命名空间暴露。
 target_link_libraries(GryceCore PRIVATE GryceQuickJS)
 
 # 模型导入：Assimp（FBX/glTF/DAE/PLY/STL/3DS/Blend）。目标由根 CMakeLists
@@ -196,7 +196,8 @@ target_sources(GryceRenderer
         api/ui_op_queue.cpp
         ui/ui_state.cpp
         ui/ui_layout.cpp
-        ui/ui_component.cpp
+        ui/ui_layout_tree.cpp
+        ui/ui_layout_tree_json.cpp
         ui/ui_drawlist.cpp
         ui/ui_theme.cpp
         ui/ui_anim.cpp

@@ -856,16 +856,13 @@ Widget* WidgetTree::touch(uint64_t id, WidgetKind kind, const Rect& rect, const 
     Widget* w = ensure(id, kind, rect, label);
     if (!w) return nullptr;
 
-    // 每帧标志先清零。Label/Panel/Progress/Separator/装饰件不参与命中测试：
-    // 面板背景一类的大矩形因此不会抢走覆盖在它上面的按钮。
+    // 每帧标志先清零。命中测试只问"这个 kind 该不该参与"（widget_is_interactive）：
+    // 面板背景、分隔线、提示、裁剪命令一类的大矩形/伪控件因此不会抢走覆盖在
+    // 它们上面的按钮。分类表见 ui_widget.h 的 WidgetClass。
     w->hovered = false;
     w->pressed = false;
     w->clicked = false;
-    if (!w->enabled || kind == WidgetKind::Label || kind == WidgetKind::Panel ||
-        kind == WidgetKind::Progress || kind == WidgetKind::Separator ||
-        kind == WidgetKind::Tooltip || kind == WidgetKind::ClipBegin ||
-        kind == WidgetKind::ClipEnd || kind == WidgetKind::Bar ||
-        kind == WidgetKind::Frame) {
+    if (!w->enabled || !widget_is_interactive(kind)) {
         return w;
     }
 
@@ -1262,6 +1259,16 @@ void WidgetTree::sweep() {
         free_head_ = i;
         --alive_count_;
     }
+    // 归属 id 跟着控件一起失效。sweep 跑在 end_frame（本帧全部提交之后），
+    // 所以"没提交"就是"这个控件没了"——面板被关掉、条件 UI 收起来都会这样。
+    // 不清的后果不是内存问题而是行为问题：focus_id_ 挂着野 id 时
+    // wants_keyboard() 恒真，宿主从此不再派发快捷键（gizmo 的 W/R/F、
+    // Ctrl+S 全灭），要等用户随手点一下空白处才自愈。
+    if (focus_id_   != 0 && find_slot(focus_id_)   == nullptr) focus_id_   = 0;
+    if (active_id_  != 0 && find_slot(active_id_)  == nullptr) active_id_  = 0;
+    if (drag_owner_ != 0 && find_slot(drag_owner_) == nullptr) drag_owner_ = 0;
+    // 拖放源消失 = 这次拖放作废（否则松手时找不到交付目标）
+    if (drag_source_ != 0 && find_slot(drag_source_) == nullptr) end_drag();
 }
 
 void WidgetTree::begin_drag(uint64_t source_id, const char* type, const char* text) {

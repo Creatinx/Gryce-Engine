@@ -303,7 +303,7 @@ for (int i = 0; i < n; ++i) apply(out[i]);   // apply 里可以放心调引擎 A
 | `ui_theme.h` | 样式 token（颜色按语义、度量按用途） | `apply()` 无 ImGui 上下文时是 no-op；换主题 = `GUi_ThemeSetPreset` + `GUi_ThemeApply` |
 | `ui_input.h` | 输入门控与快捷键表 | 修饰键精确匹配；注册期报冲突，不等用户按下去才发现 |
 | `ui_snapshot.h` | 面板视图模型（可序列化纯数据） | 64 位 id 在 JSON 里走**十进制字符串**（`JSON.parse` 只有 53 位精度）；读取侧宽容：缺字段用默认、坏行跳过 |
-| `ui_component.h` | 组件树布局（保留模式） | 定位规则唯一判据是"父级是不是布局组件"；id 单调递增永不复用；`resolve()` 幂等 |
+| `ui_layout_tree.h` | 布局树（保留模式，原名 `ui_component.h`） | 定位规则唯一判据是"父级是不是布局节点"；id 单调递增永不复用；`resolve()` 幂等 |
 
 对应 C 面已在 `ui_api.h` 打开：`GUi_MakeId` / `GUi_State*` / `GUi_Layout*` / `GUi_Theme*` / `GUi_ShouldDispatchShortcut` / `GUi_Shortcut*`。用法模式：
 
@@ -327,9 +327,11 @@ build/GryceUiSmoke.exe --ui-interval 3    # 节流截图与每帧构建逐字节
 
 `--ops-burst` 灌的是一半离散（`key=0`）+ 一半连续（`key=1`）的操作：连续项在队列里合并成一条（只落地最后的值），离散项按每帧预算分批落地——这正是"UI 低刷新率、操作受控执行"的完整闭环。
 
-## 7.7 组件树布局（保留模式）
+## 7.7 布局树（保留模式）
 
-`GUi_Layout*` 是**即时模式**的矩形栈（相同调用序列 → 相同矩形）；组件树是**保留模式**的另一半：建一次树，之后只改参数，每帧 `GUi_CompResolve()` 重算矩形。适合"界面结构稳定、内容随状态变"的面板。
+`GUi_Layout*` 是**即时模式**的矩形栈（相同调用序列 → 相同矩形）；布局树是**保留模式**的另一半：建一次树，之后只改参数，每帧 `GUi_CompResolve()` 重算矩形。适合"界面结构稳定、内容随状态变"的面板。
+
+> **命名**：这棵树的类型叫 `gryce_ui::UiLayoutNode` / `UiLayoutTree`（原 `Component` / `ComponentTree`）。改名是因为引擎的 ECS 已有 `gryce_engine::Component`，而 P0/P2 之后两者的父子语义完全不同——ECS 那条轴是**类型继承 + 实例挂载**（`engine/components/component.h`、`architecture.md` 3.1/3.2），这里只是"矩形怎么排"。C 面 `GUi_Comp*` 与 `GUI_COMP_KIND_*` 名字不动。
 
 ```c
 GUiCompSpec root{};                       // parent=0 = 无父级
@@ -337,7 +339,7 @@ root.kind = GUI_COMP_KIND_COLUMN;
 root.x = 460; root.y = 24; root.w = 320; root.h = 480;   // 根必须写 pos/size
 root.gap = 6;
 for (int i = 0; i < 4; ++i) root.padding[i] = 8;         // 上 右 下 左
-uint64_t col = GUi_CompAdd(&root);        // 返回值即组件 id（恒非 0）
+uint64_t col = GUi_CompAdd(&root);        // 返回值即节点 id（恒非 0）
 
 GUiCompSpec row{};
 row.parent = col; row.kind = GUI_COMP_KIND_ROW;
@@ -354,10 +356,10 @@ GRUiRect r;
 GUi_CompRect(leaf, &r);                   // 取解析结果
 ```
 
-**定位规则只有一条：父级是不是布局组件。**
+**定位规则只有一条：父级是不是布局节点。**
 
 * 父级是 `Column` / `Row` / `Grid` → 子节点的 `x/y/w/h` 由布局安排（调用方写的值被忽略，子项传 0 即可）。
-* 父级是 `Leaf` 或无父级 → 子节点**直接保留调用方写的 pos**，布局一个字节都不碰。所以"把一个组件从叶子换成 Column"会立刻翻转它所有子节点的定位方式——这是特性，不是 bug。
+* 父级是 `Leaf` 或无父级 → 子节点**直接保留调用方写的 pos**，布局一个字节都不碰。所以"把一个节点从叶子换成 Column"会立刻翻转它所有子节点的定位方式——这是特性，不是 bug。
 
 其余语义：
 
@@ -374,14 +376,14 @@ GUi_CompRect(leaf, &r);                   // 取解析结果
 | `set` 换父级 | 做环检查（把自己挂到自己的子孙名下会被拒绝）；父级未变时不动子列表位置 |
 | `remove` | 连带整棵子树；实现上**先收集再统一释放**——逐点释放会在已释放节点上写 `next_sib`，而空闲链表正串在这个字段上 |
 
-C 面见 `ui_api.h` 的「组件树布局（保留模式）」一节：`GUi_CompAdd/Set/Remove/Clear/Resolve/Rect/Get/Kind/Parent/ChildCount/ChildAt/Count`，容量 512，越界枚举值直接拒绝。
+C 面见 `ui_api.h` 的「布局树（保留模式）」一节：`GUi_CompAdd/Set/Remove/Clear/Resolve/Rect/Get/Kind/Parent/ChildCount/ChildAt/Count`，容量 512，越界枚举值直接拒绝。
 
-**每个组件画成一个窗口时的两条铁律**（`GryceUiSmoke` 的 Layout 页就是这么画的，见 `test/ui_smoke.cpp`）：
+**每个节点画成一个窗口时的两条铁律**（`GryceUiSmoke` 的 Layout 页就是这么画的，见 `test/ui_smoke.cpp`）：
 
 1. **不要传 `GUI_WIN_NO_BRING_TO_FRONT`。** 这个标志在 imgui 里会让新窗口创建时进显示序**队首**（画在最底层）——子窗口比父窗口创建得晚，反而被压到父窗口下面，不透明的窗口背景把整棵子树盖得只剩一个根。层级序就是创建序：子窗口创建在后，天然画在父窗口之上，这正是要的效果。
-2. **组件尺寸不要小于 32px。** imgui 的 `WindowMinSize` 默认 (32, 32)，`SetNextWindowSize` 显式给小尺寸也会被钳制。容器若要在自己的第一行画标签，用 `padding` 上边预留一行（演示里是 24），别指望窗口自己缩下去。
+2. **节点尺寸不要小于 32px。** imgui 的 `WindowMinSize` 默认 (32, 32)，`SetNextWindowSize` 显式给小尺寸也会被钳制。容器若要在自己的第一行画标签，用 `padding` 上边预留一行（演示里是 24），别指望窗口自己缩下去。
 
-演示：`--page layout`（或 `Ctrl+3`）画一棵 20 个组件的树——根 Column、flex 1:2 的标题行、交叉轴四种对齐的中间行、3×2 网格、脚注，外加一个"父级是叶子"的对照组（它的两个孩子直写 pos，布局不碰）。页内滑杆改根的 gap 与网格列数，走的是完整的"Get → 改 → Set → Resolve"保留模式闭环。
+演示：`--page layout`（或 `Ctrl+3`）画一棵 20 个节点的树——根 Column、flex 1:2 的标题行、交叉轴四种对齐的中间行、3×2 网格、脚注，外加一个"父级是叶子"的对照组（它的两个孩子直写 pos，布局不碰）。页内滑杆改根的 gap 与网格列数，走的是完整的"Get → 改 → Set → Resolve"保留模式闭环。
 
 ## 7.8 主题预设与美化
 
@@ -492,13 +494,13 @@ GUi_AnimChannelFloat("slide.x", &x);       // 读通道；返回 1 = 有该标�
 | 播放控制 | `stop` 停播但**通道保留最后的值**（画面定格）；`pause`/`resume`；`resume` 在播完之后会从头再来；`set_speed` 钳到 [0, 64] |
 | 线程 | 纯数据、无锁；`advance` 在帧循环锁外调，回调内读通道与 `GUi_CompRect` 同级 |
 
-**与组件树的配合**：动画不认识组件，组件也不依赖动画。宿主把通道值写进组件 rect（`GUi_CompGet` → 改 → `GUi_CompSet`）。注意这些组件的父级应该设为 0（无父级）——否则父布局会在 `resolve()` 时覆盖动画写进去的 pos。反过来说，7.7 的"父级不是布局组件就保留直写 pos"这条规则，正好被动画系统复用：**动画直写 pos，布局不碰**。
+**与布局树的配合**：动画不认识节点，节点也不依赖动画。宿主把通道值写进节点 rect（`GUi_CompGet` → 改 → `GUi_CompSet`）。注意这些节点的父级应该设为 0（无父级）——否则父布局会在 `resolve()` 时覆盖动画写进去的 pos。反过来说，7.7 的"父级不是布局节点就保留直写 pos"这条规则，正好被动画系统复用：**动画直写 pos，布局不碰**。
 
-演示：`--page anim`（或 `Ctrl+4`）。面板里是块一（缓动组合框 + 补间进度条 + 颜色插值色块，时间用宿主时钟）；右侧舞台是块二——一根 2 秒的片段驱动四个组件：`slide`（滑移，InOutCubic 关键帧）、`pulse`（两次脉冲）、`hop`（两段不等高弹跳）、`stag.0..3`（delay 0/0.15/0.30/0.45 错峰入场）。页内可改循环模式（不重置进度）、速度、拖动 seek，通道列表实时显示每个通道的值。
+演示：`--page anim`（或 `Ctrl+4`）。面板里是块一（缓动组合框 + 补间进度条 + 颜色插值色块，时间用宿主时钟）；右侧舞台是块二——一根 2 秒的片段驱动四个节点：`slide`（滑移，InOutCubic 关键帧）、`pulse`（两次脉冲）、`hop`（两段不等高弹跳）、`stag.0..3`（delay 0/0.15/0.30/0.45 错峰入场）。页内可改循环模式（不重置进度）、速度、拖动 seek，通道列表实时显示每个通道的值。
 
 ## 7.10 内置 UI 渲染路径（脱离 ImGui）与 UIDrawList
 
-`GUi_*` 目前经 Dear ImGui 落地。引擎在做**内置 UI 运行时**：retained 控件树（`ui_component`）+ 自绘渲染，最终不再依赖 ImGui。分四阶段推进，每阶段独立可验证：
+`GUi_*` 目前经 Dear ImGui 落地。引擎在做**内置 UI 运行时**：retained 控件树（`ui_layout_tree`）+ 自绘渲染，最终不再依赖 ImGui。分四阶段推进，每阶段独立可验证：
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
@@ -507,7 +509,7 @@ GUi_AnimChannelFloat("slide.x", &x);       // 读通道；返回 1 = 有该标�
 | 3 | retained 控件层：命中测试 + 事件分发 + 控件库（Button/Label/Slider/Checkbox/TextInput） | 完成（7.11） |
 | 4 | `GUi_*` 双轨切换，ImGui 退居可选调试后端 | 完成（7.11） |
 
-ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编辑器调试 UI 的一个后端"**。UI 模型层（7.6）与组件树（7.7）、动画（7.9）都不含 ImGui 依赖，换后端不伤它们。
+ImGui 在这条路径上的定位随之变化：**从"UI 系统本体"退为"编辑器调试 UI 的一个后端"**。UI 模型层（7.6）与布局树（7.7）、动画（7.9）都不含 ImGui 依赖，换后端不伤它们。
 
 **为什么渲染桥不需要新 shader**：光栅化载体是引擎已有的 `IRenderer2D`（`engine/render/render2d.h`）——`draw_rect` / `draw_text` / `draw_sprite_region` / `set_scissor` / `top_left_origin`（该接口的注释里就写着"UI/HUD 层"）三后端（D3D12 / Vulkan / GL）均已实现；文本用引擎自己的 `FontAtlas`（stb_truetype、多字体源 Latin+CJK 回退、glyph UV/advance）。内置 UI 只补"缺的那部分"：命令缓冲与控件语义。
 

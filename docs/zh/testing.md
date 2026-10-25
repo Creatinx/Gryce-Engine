@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. 用例清单
 
-当前共 40 条用例，分六个宿主。
+当前共 54 条用例，分七个宿主。
 
 ### 2.1 数学与资源规则（`GryceMathTests.exe`，7 条）
 
@@ -45,7 +45,7 @@ ctest --test-dir build --output-on-failure
 | `grycegc_webpack` | 单文件 HTML 打包输出结构 |
 | `grycegc_new` | 项目骨架生成：文件清单、`project.data` / 场景 JSON 合法性、立方体 OBJ 顶点法线、非空目录拒绝与 `--force` 行为 |
 
-### 2.3 脚本系统（`GryceScriptTests.exe`，5 条）
+### 2.3 脚本系统（`GryceScriptTests.exe`，6 条）
 
 被测源码（`engine/script/*` + `runtime/engine_context` + glog + `res:/` 路径解析）直编进测试可执行文件，不链接引擎 DLL。脚本源文件写在系统临时目录（`temp/gryce_script_tests/<suite>`），每个 suite 前后自行建立 / 清理。用例设计见 [scripting.md](scripting.md)。
 
@@ -56,6 +56,7 @@ ctest --test-dir build --output-on-failure
 | `script_error_isolation` | 语法错误装载失败、运行期抛错后停止执行、死循环被帧预算中断；三种情况下组件状态翻转正确、引擎不崩 |
 | `script_hot_reload` | 文件变更触发重编译且 props 跨重载保留；文件延迟出现时按轮询周期装载成功；`reload_now` 强制重载与 `set_script_path` 换脚本（命令面内核） |
 | `script_app_entry` | 入口脚本（`main.js`）的 `on_start` / `on_update` / `on_destroy` 派发、热重载换模块（mtime + 大小判据）、扩展 ABI 的 `add_function` 注册与标量往返（见 [app-entry.md](app-entry.md) / [extension.md](extension.md)） |
+| `script_component` | `engine.component.*` 脚本绑定：基类查询（`ColorRect` 能被当 `Component2D` 查到）、精确查询、父子挂载与摘除、`engine.component.children` 与 `engine.component.parent`、局部变换叠加、类型链名字 |
 
 ### 2.4 资产侧车文件（`GryceAssetTests.exe`，2 条）
 
@@ -78,7 +79,7 @@ ctest --test-dir build --output-on-failure
 | `editor_undo` | 创建后撤销回到逐字节相同的上一状态、重做精确复原、`BeginEdit`/`EndEdit` 把 5 次拖拽合并成 1 步、栈深上限、`SetUndoLimit(0)` 关闭记录、换文档清空历史 |
 | `editor_scene` | 存 → 新场景 → 读 → 再存的两次存档逐字节相同（同时覆盖"序列化丢字段"与"反序列化不还原"）、加载不存在的路径返回 -1 且场景仍可用 |
 
-### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，15 条）
+### 2.6 UI 模型层与操作队列（`GryceUiTests.exe`，18 条）
 
 被测源码（`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`）直编进测试可执行文件，不链 GryceRenderer.dll；且**不定义 `GRYCE_HAS_IMGUI`**——同时验证"关掉 ImGui 的构建里队列与模型层照样能用"（无窗口宿主也走这条路）。`GRYCE_RENDERER_BUILDING` 让导出宏变成 dllexport，静态 exe 内自链接。
 
@@ -88,11 +89,11 @@ ctest --test-dir build --output-on-failure
 
 `state` / `layout` / `theme` / `input` / `snapshot` 五个套件测 `engine/ui/` 模型层：稳定 id 与状态存储（老化边界、截断、清空、计数 ABI）、确定性布局栈（嵌套面板、行高取 `max(行高, 最高格)`、自动收行、缩进）、主题 token（5 套预设锚色、预设数量与名字、派生 token 跨预设一致性、逐项覆盖不跨预设存活、越界容忍、无 ImGui 时 apply 为 no-op、圆角/滚动条度量）、输入门控与快捷键表（精确匹配修饰键、注册期报冲突、容量）、面板视图模型的 JSON 往返（64 位 id 走十进制字符串、坏行跳过、宽容读取、容量截断）。
 
-`comp` 套件测组件树布局：add/find/remove 与子树连带删除、父级必须存在、容量上限、子节点顺序、`set` 换父级做环检查、**非布局父级保留直写 pos**、Column 堆叠、Row 交叉轴四种对齐、flex 分配主轴剩余空间、溢出钳到 0、Grid 等宽列与行高、padding 缩内容区、嵌套树、退化容器。`compabi` 套件测同一套语义经 C 面的往返（spec 字段、越界枚举拒绝、坏参数返回约定）。
+`comp` 套件测布局树：add/find/remove 与子树连带删除、父级必须存在、容量上限、子节点顺序、`set` 换父级做环检查、**非布局父级保留直写 pos**、Column 堆叠、Row 交叉轴四种对齐、flex 分配主轴剩余空间、溢出钳到 0、Grid 等宽列与行高、padding 缩内容区、嵌套树、退化容器。`compabi` 套件测同一套语义经 C 面的往返（spec 字段、越界枚举拒绝、坏参数返回约定）。`layoutjson` 套件测布局树的 JSON 往返（`ui_layout_tree_json.h`）：按存储序输出、id 走十进制字符串、节点序即 `node_at` 序、宽容读回（缺字段默认、未知 kind/align 名、坏条目跳过）、顶层结构不对才返回 false。
 
 `anim` 套件测动画系统：块一纯函数（11 种缓动的边界对齐与区间夹取、回弹过冲后回落、补间的延迟/越界/零时长、颜色插值夹取、关键帧有序插入与同刻覆盖、区间外保持、段缓动取自前一个关键帧、容量）与块二运行时（片段时长推导与同名轨道覆盖、Once 播完置 finished 且停在终点、Loop 回绕与 PingPong 折叠、速度/seek/暂停/停止、轨道 delay 期间保持初始值、颜色通道与类型纪律、换片段重建通道表、无片段时全操作 no-op）。`animabi` 套件测 C 面：缓动与名字的模型一致性（含越界枚举）、补间/颜色助手、以及"建 C 片段 → 播放 → 推进 → 读通道 → 暂停/变速/seek/停止"的完整闭环。
 
-队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节，组件树布局见第 7.7 节，主题预设与美化见第 7.8 节，动画系统两块见第 7.9 节，内置 UI 渲染路径与 UIDrawList 见第 7.10 节，双轨切换与 `GUi_*` 能力表见第 7.11 节。
+队列语义与策略的完整说明见 [ui-api.md](ui-api.md) 第 7.5 节，布局树见第 7.7 节，主题预设与美化见第 7.8 节，动画系统两块见第 7.9 节，内置 UI 渲染路径与 UIDrawList 见第 7.10 节，双轨切换与 `GUi_*` 能力表见第 7.11 节。
 
 `drawlist` 套件测 UI 自绘命令缓冲（内置 UI 渲染路径的模型层，见 ui-api.md 第 7.10 节）：命令顺序与字段往返、空文本/nullptr 不产生命令、字符串池多条互不重叠、命令带裁剪深度标记、嵌套裁剪取交集、空裁剪剔除绘制命令且 clip 命令照常记录、pop 恢复父裁剪、空栈 pop 无操作、三层嵌套交集、裁剪栈满拒绝 push 且 pop 不失衡、命令表满丢弃并计数、字符串池放不下整条丢弃不截断、reset 清空裁剪栈、负几何原样记录。
 
@@ -104,7 +105,23 @@ ctest --test-dir build --output-on-failure
 
 同一套件还覆盖内置轨的全部交互能力（`--case <子串>` 可单跑一条）：文本编辑（点击定位插入点、←/Home/End、Shift 拉选区后输入替换、Delete 与 Backspace 有/无选区、Ctrl+A/C/V 剪贴板往返、超长文本按插入点横向滚动、输入法预编辑只挂在有焦点的那个输入框上）；滚动（滚轮一格 = 两倍行高、内容溢出才出现滚动条、滚到顶/底夹取）；弹层（开弹层那一帧就返回 1、点外面同一帧返回 0、点弹层里不关、菜单项点击后自动关）；模态（点外面不关、Esc 关）；结构控件（树节点点击折叠且 `default_open` 只初始一次、子项缩进、菜单栏点开点收、子区域自有裁剪与滚轮）；拖放（拖出 4px 阈值成立并带 payload、松手交付）；`DragFloat` 按鼠标位移改值且 Ctrl 走 1/10；窗口 chrome（标题栏让出内容高度、按标题栏拖动累积位移、折叠框点击当帧生效）；提示（时钟为 0 立即显示、有钟表时延迟 0.35 秒）；HiDPI（屏幕坐标除以倍率后落进逻辑矩形，1 倍下同一像素不落进去）。
 
-`GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。Layout 页（`--page layout` / `Ctrl+3`）画一棵 20 个组件的树，每帧 `GUi_CompResolve()` 后逐组件取矩形画窗口——组件窗口**不传** `GUI_WIN_NO_BRING_TO_FRONT`，否则子窗口会被压到父窗口底下（原因见 ui-api.md 第 7.7 节）。Anim 页（`--page anim` / `Ctrl+4`）面板里是块一纯函数演示（缓动组合框 + 补间进度条 + 颜色插值色块），右侧舞台是块二：一根 2 秒片段驱动四个组件（滑移/脉冲/弹跳/错峰入场），这些组件父级为 0，动画直写 pos 不会被布局覆盖。Struct 页（`--page struct`）演示折叠头/树/可滚子区域/弹层/模态/提示，`--ui-scale N` 演示 HiDPI。加 `--ui-backend builtin` 则整场 UI 走内置渲染路径（不吃 ImGui 上下文），逐页截图应与 ImGui 后端视觉等价——这条是"双轨可切换"的唯一端到端验证手段，因为它覆盖了单元测试碰不到的 GL/D3D 状态与字体图集（例如 GL 的 `GL_SCISSOR_TEST` 只在这里才会真的打开，单元测试只能看到 drawlist 里的裁剪深度）。
+`GryceUiSmoke.exe` 是模型层的端到端演示（不进门禁，需窗口）：面板画出来、`--ops-burst N` 灌一批操作后统计里 `coalesced` 应接近连续项条数、`--ui-interval 3` 与每帧构建的截图逐字节一致。Layout 页（`--page layout` / `Ctrl+3`）画一棵 20 个节点的树，每帧 `GUi_CompResolve()` 后逐节点取矩形画窗口——节点窗口**不传** `GUI_WIN_NO_BRING_TO_FRONT`，否则子窗口会被压到父窗口底下（原因见 ui-api.md 第 7.7 节）。Anim 页（`--page anim` / `Ctrl+4`）面板里是块一纯函数演示（缓动组合框 + 补间进度条 + 颜色插值色块），右侧舞台是块二：一根 2 秒片段驱动四个节点（滑移/脉冲/弹跳/错峰入场），这些节点父级为 0，动画直写 pos 不会被布局覆盖。Struct 页（`--page struct`）演示折叠头/树/可滚子区域/弹层/模态/提示，`--ui-scale N` 演示 HiDPI。加 `--ui-backend builtin` 则整场 UI 走内置渲染路径（不吃 ImGui 上下文），逐页截图应与 ImGui 后端视觉等价——这条是"双轨可切换"的唯一端到端验证手段，因为它覆盖了单元测试碰不到的 GL/D3D 状态与字体图集（例如 GL 的 `GL_SCISSOR_TEST` 只在这里才会真的打开，单元测试只能看到 drawlist 里的裁剪深度）。
+
+### 2.7 组件模型（`GryceComponentTests.exe`，7 条）
+
+被测源码（`engine/scene/entity.cpp` + `engine/scene/scene_serializer.cpp` + `engine/scene/prefab.cpp` + `engine/components/**` + `engine/reflection/**` + `engine/api/component_api.cpp` + `engine/api/core_api.cpp` + `engine/api/edit_api.cpp`）直编进测试可执行文件，不链引擎 DLL。覆盖 ECS 的**两条正交轴**（类型继承、实例挂载），语义见 [architecture.md](architecture.md) 3.1/3.2 与 [editor-api.md](editor-api.md) 第 8 章。
+
+| 用例 | 核对内容 |
+| --- | --- |
+| `component_hierarchy` | 反射表逐条校验 `GRYCE_REFLECT_CLASS` 的 `Base` 是真实 C++ 基类；有派生类的基类（`Component2D` / `BasicRect`）必须覆写 `collect_type_views()`；`is_derived_from` 的自反 / 传递 / 非对称 |
+| `component_query` | 基类查询（`ColorRect` 能被当 `BasicRect` / `Component2D` 查到）与精确查询互不为子集；同类型多实例的视角索引互不覆盖；卸载按指针精确擦除；`component_type_chain_names` 的顺序 |
+| `component_pool` | 视角池的分配 / 释放 / 复用；池满拒绝；`view_at` 索引与池遍历一致 |
+| `component_lifecycle` | awake / start / update / destroy 钩子顺序；`is_effectively_enabled` 的父禁用传播；组件禁用不影响兄弟 |
+| `component_tree` | `set_component_parent` 防环、换父、摘除；删父组件后子组件重挂祖父且不失效；`component_root()`；局部变换叠在父组件之上（`world_transform_2d`）；`clone()` 重建树 |
+| `component_serialize` | `.gesc` v3 的组件 `parent` 槽位号与 `local_transform` 落盘 / 读回；旧档（v1/v2，无这两字段）照读为"全根 + 单位变换"；`Prefab::revert` 按槽位重建树 |
+| `component_capi` | 13 个 `engine.component.*` C API 的参数校验与返回约定；两个 setter（`SetParent` / `SetLocalTransform`）走命令缓冲而非直写，附 payload 尺寸与撤销往返断言 |
+
+`component_capi` 的撤销断言是**命令化**的回归护栏：这两个 setter 若改回直写，`GEdit_BeginEdit` 抓不到快照，断言立即失败。
 
 ## 3. 执行注意
 
@@ -120,6 +137,7 @@ CI 上各用例独立注册、由 runner 调度，不受此限。
 
 - 数学 / 资源规则套件：在根 `CMakeLists.txt` 的 `GRYCE_MATH_TEST_SUITES` 里加名字，自动注册成一条 CTest。
 - 资产 / 编辑器 / UI 套件：分别在 `GRYCE_ASSET_TEST_SUITES`、`GRYCE_EDITOR_TEST_SUITES`、`GRYCE_UI_TEST_SUITES` 里加名字。新增编辑器用例时注意两种返回约定（入队 1/0、查询与场景操作 0/-1），写错会让断言永远为真的假绿。
+- 组件套件：在根 `CMakeLists.txt` 的 `GRYCE_COMPONENT_TEST_SUITES` 里加名字。
 - 工具链套件：在 `toolchain/CMakeLists.txt` 的 `_grycegc_suites` 里加名字。
 
 ## 5. 历史：像素比对用例已删除

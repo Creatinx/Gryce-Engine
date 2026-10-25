@@ -690,7 +690,7 @@ if(BUILD_TESTING)
     # 工作"（无窗口宿主也走这条路）。GRYCE_RENDERER_BUILDING 让导出宏变成
     # dllexport，静态 exe 内自链接（否则 dllimport 会去找 __imp_ 符号）。
     # ui_snapshot.cpp 用 nlohmann/json（头文件库，与 GryceRenderer 同一份）。
-    set(GRYCE_UI_TEST_SUITES queue abi state layout comp compabi drawlist bridge widget builtin theme theme_json widget_anim input snapshot anim animabi)
+    set(GRYCE_UI_TEST_SUITES queue abi state layout comp compabi drawlist bridge widget builtin theme theme_json widget_anim input snapshot anim animabi layoutjson)
 
     add_executable(GryceUiTests
         test/ui_tests.cpp
@@ -698,7 +698,8 @@ if(BUILD_TESTING)
         engine/api/ui_api.cpp
         engine/ui/ui_state.cpp
         engine/ui/ui_layout.cpp
-        engine/ui/ui_component.cpp
+        engine/ui/ui_layout_tree.cpp
+        engine/ui/ui_layout_tree_json.cpp
         engine/ui/ui_drawlist.cpp
         engine/ui/ui_render_bridge.cpp
         engine/ui/ui_widget.cpp
@@ -749,10 +750,12 @@ if(BUILD_TESTING)
     endforeach()
 
     # 组件继承语义（基类查询 / 类型视角索引）回归测试。
-    # 链 GryceCore.dll —— Entity / ComponentStore / 反射表都在 core 内部；
+    # 链 GryceCore.dll —— Entity / 组件池 / 反射表都在 core 内部；
     # 这些路径只碰内存与反射表，不碰 GPU / 窗口，CI 仍不需要显卡。
     # 覆盖：反射表驱动的全量继承链校验、精确/基类查询、同类型多实例、
-    #       组件池的基类视角、on_awake 在两条挂载路径上的一致性。
+    #       组件池的基类视角、on_awake 在两条挂载路径上的一致性、
+    #       组件树（父子挂载 / 局部变换 / 生命周期继承）、.gesc v3 序列化、
+    #       组件 C API（含两个 setter 必须走命令缓冲的回归护栏）。
     set(GRYCE_COMPONENT_TEST_SUITES hierarchy query pool lifecycle tree serialize capi)
 
     add_executable(GryceComponentTests test/component_tests.cpp)

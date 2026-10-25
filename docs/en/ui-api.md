@@ -302,7 +302,7 @@ Verified end to end with the demo host: at `--frames 30 --ui-interval 3` the scr
 | `ui_theme.h` | Style tokens (semantic colors, purpose-named metrics) | `apply()` is a no-op without an ImGui context; switching themes = `GUi_ThemeSetPreset` + `GUi_ThemeApply` |
 | `ui_input.h` | Input gating and the shortcut table | Modifiers must match exactly; conflicts are reported at registration time, not when the user presses the key |
 | `ui_snapshot.h` | Panel view model (serializable pure data) | 64-bit ids go through JSON as **decimal strings** (`JSON.parse` has 53-bit precision); reads are tolerant — missing fields default, bad rows are skipped |
-| `ui_component.h` | Component tree layout (retained mode) | The only positioning rule is "is the parent a layout component"; ids increase monotonically and are never reused; `resolve()` is idempotent |
+| `ui_layout_tree.h` | Layout tree (retained mode, formerly `ui_component.h`) | The only positioning rule is "is the parent a layout node"; ids increase monotonically and are never reused; `resolve()` is idempotent |
 
 The C surface is already open in `ui_api.h`: `GUi_MakeId` / `GUi_State*` / `GUi_Layout*` / `GUi_Theme*` / `GUi_ShouldDispatchShortcut` / `GUi_Shortcut*`. The usage pattern:
 
@@ -326,9 +326,11 @@ build/GryceUiSmoke.exe --ui-interval 3    # throttled screenshot is byte-identic
 
 `--ops-burst` pushes half discrete (`key=0`) and half continuous (`key=1`) ops: the continuous ones coalesce into a single entry (only the last value lands) while the discrete ones land in per-frame batches — the full closed loop of "low UI refresh rate, controlled execution".
 
-## 7.7 Component tree layout (retained mode)
+## 7.7 Layout tree (retained mode)
 
-`GUi_Layout*` is the **immediate-mode** rectangle stack (same call sequence → same rects). The component tree is the **retained-mode** half: build the tree once, then only mutate parameters and call `GUi_CompResolve()` each frame to recompute rects. It suits panels whose structure is stable while their contents follow state.
+`GUi_Layout*` is the **immediate-mode** rectangle stack (same call sequence → same rects). The layout tree is the **retained-mode** half: build the tree once, then only mutate parameters and call `GUi_CompResolve()` each frame to recompute rects. It suits panels whose structure is stable while their contents follow state.
+
+> **Naming**: the tree's types are `gryce_ui::UiLayoutNode` / `UiLayoutTree` (formerly `Component` / `ComponentTree`). The rename exists because the ECS already has `gryce_engine::Component`, and after P0/P2 the two parent/child semantics are entirely different — the ECS axis is **type inheritance plus instance attachment** (`engine/components/component.h`, `architecture.md` 3.1/3.2), while this is only "how rects are arranged". The C surface keeps the `GUi_Comp*` and `GUI_COMP_KIND_*` names.
 
 ```c
 GUiCompSpec root{};                       // parent=0 = no parent
@@ -336,7 +338,7 @@ root.kind = GUI_COMP_KIND_COLUMN;
 root.x = 460; root.y = 24; root.w = 320; root.h = 480;   // a root must set pos/size
 root.gap = 6;
 for (int i = 0; i < 4; ++i) root.padding[i] = 8;         // top right bottom left
-uint64_t col = GUi_CompAdd(&root);        // the return value is the component id (never 0)
+uint64_t col = GUi_CompAdd(&root);        // the return value is the node id (never 0)
 
 GUiCompSpec row{};
 row.parent = col; row.kind = GUI_COMP_KIND_ROW;
@@ -353,10 +355,10 @@ GRUiRect r;
 GUi_CompRect(leaf, &r);                   // read the resolved rect
 ```
 
-**There is exactly one positioning rule: is the parent a layout component.**
+**There is exactly one positioning rule: is the parent a layout node.**
 
 * Parent is `Column` / `Row` / `Grid` → the children's `x/y/w/h` are arranged by the layout (caller-written values are ignored; passing 0 is fine).
-* Parent is a `Leaf`, or there is no parent → children **keep the pos the caller wrote**, untouched by the layout. So flipping a component from leaf to `Column` immediately inverts the positioning of all its children — that is a feature, not a bug.
+* Parent is a `Leaf`, or there is no parent → children **keep the pos the caller wrote**, untouched by the layout. So flipping a node from leaf to `Column` immediately inverts the positioning of all its children — that is a feature, not a bug.
 
 The rest of the semantics:
 
@@ -373,14 +375,35 @@ The rest of the semantics:
 | `set` reparenting | Cycle-checked (hanging a component under its own descendant is rejected); the child list position is untouched when the parent is unchanged |
 | `remove` | Takes the whole subtree; implemented as **collect-then-free** — freeing point by point would write `next_sib` on freed nodes, and the free list is threaded exactly through that field |
 
-The C surface lives in the "component tree layout (retained mode)" section of `ui_api.h`: `GUi_CompAdd/Set/Remove/Clear/Resolve/Rect/Get/Kind/Parent/ChildCount/ChildAt/Count`. Capacity is 512; out-of-range enum values are rejected outright.
+The C surface lives in the "layout tree (retained mode)" section of `ui_api.h`: `GUi_CompAdd/Set/Remove/Clear/Resolve/Rect/Get/Kind/Parent/ChildCount/ChildAt/Count`. Capacity is 512; out-of-range enum values are rejected outright.
 
 **Two iron rules when drawing one window per component** (this is exactly what the Layout page of `GryceUiSmoke` does, see `test/ui_smoke.cpp`):
 
 1. **Do not pass `GUI_WIN_NO_BRING_TO_FRONT`.** In imgui that flag makes a newly created window enter the display order at the **front** (drawn at the very bottom) — children are created after their parent, so they end up *below* it, and the parent's opaque window background hides the whole subtree except the root. Display order *is* creation order: children created later naturally draw above their parent, which is precisely what you want.
-2. **Do not size components below 32px.** imgui's `WindowMinSize` defaults to (32, 32); an explicit `SetNextWindowSize` smaller than that is clamped anyway. If a container draws its label on its own first line, reserve that line with the top `padding` (24 in the demo) instead of expecting the window to shrink.
+2. **Do not size nodes below 32px.** imgui's `WindowMinSize` defaults to (32, 32); an explicit `SetNextWindowSize` smaller than that is clamped anyway. If a container draws its label on its own first line, reserve that line with the top `padding` (24 in the demo) instead of expecting the window to shrink.
 
-Demo: `--page layout` (or `Ctrl+3`) draws a 20-component tree — a root Column, a flex 1:2 title row, a middle row showing all four cross-axis alignments, a 3×2 grid, a footnote, plus a "leaf parent" control group (its two children write their own pos; the layout does not touch them). The page sliders mutate the root gap and the grid column count, exercising the full "Get → mutate → Set → Resolve" retained-mode loop.
+Demo: `--page layout` (or `Ctrl+3`) draws a 20-node tree — a root Column, a flex 1:2 title row, a middle row showing all four cross-axis alignments, a 3×2 grid, a footnote, plus a "leaf parent" control group (its two children write their own pos; the layout does not touch them). The page sliders mutate the root gap and the grid column count, exercising the full "Get → mutate → Set → Resolve" retained-mode loop.
+
+### 7.7.1 JSON round-trip for the layout tree
+
+Panel definitions must persist, so `engine/ui/ui_layout_tree_json.h` offers a pure function pair (`UiLayoutTree` itself does **not** depend on nlohmann):
+
+```cpp
+nlohmann::json layout_tree_to_json(const UiLayoutTree& t);
+bool         layout_tree_from_json(const nlohmann::json& j, UiLayoutTree& out);
+```
+
+The document shape is `{ "version": 1, "nodes": [ ... ] }`, with three rules:
+
+| Topic | Rule |
+| --- | --- |
+| Node order | Nodes are emitted in `UiLayoutTree` storage order. That order is a topological order for free (`add` requires the parent to exist, so a parent always precedes its children), so reading back `add`s in the same order with **no sorting**; the i-th JSON node is also the i-th `node_at(i)` after the round-trip |
+| ids | ids go through JSON as **decimal strings** (same reason as `ui_snapshot.h`: `JSON.parse` has 53-bit precision). **ids are not read back** — the tree's policy is monotonically increasing ids that are never reused within a session; the file is for humans and diffs |
+| Tolerant reads | Missing fields fall back to defaults; unknown `kind` / `align` names become `Leaf` / `Start`; bad entries are skipped. Returning false only means the **top-level structure** is wrong (not an object, no `nodes` array, unknown `version`); partially bad nodes do not fail the whole read |
+
+Enum names map one-to-one to `GuiCompKind` / `GuiCompAlign`: `leaf` / `column` / `row` / `grid` and `start` / `center` / `end` / `stretch`; the two-way converters `layout_kind_name` / `layout_kind_from_name` / `layout_align_name` / `layout_align_from_name` share the same tables.
+
+`node_at(index)` is the matching read-only accessor: it walks live nodes in storage order and returns `nullptr` out of bounds (**a parent always precedes its children**). There is no C-side `GUi_CompNodeAt` — it exists for serialization and host traversal.
 
 ## 7.8 Theme presets and beautification
 
@@ -491,13 +514,13 @@ Semantics:
 | Transport | `stop` halts but **channels keep their last values** (the picture freezes); `pause`/`resume`; `resume` after completion restarts from the beginning; `set_speed` clamps to [0, 64] |
 | Threading | Pure data, no locks; call `advance` outside the frame loop; reading channels inside the callback is the same tier as `GUi_CompRect` |
 
-**Working with the component tree**: the animation system does not know about components, and components do not depend on animation. The host writes channel values into component rects (`GUi_CompGet` → mutate → `GUi_CompSet`). Those components should have parent 0 — otherwise a layout parent would overwrite the animation's pos on `resolve()`. Put the other way around: the 7.7 rule "no layout parent → the written pos is kept" is exactly what the animation system reuses: **animation writes pos directly; the layout does not touch it**.
+**Working with the layout tree**: the animation system does not know about nodes, and nodes do not depend on animation. The host writes channel values into node rects (`GUi_CompGet` → mutate → `GUi_CompSet`). Those nodes should have parent 0 — otherwise a layout parent would overwrite the animation's pos on `resolve()`. Put the other way around: the 7.7 rule "no layout parent → the written pos is kept" is exactly what the animation system reuses: **animation writes pos directly; the layout does not touch it**.
 
 Demo: `--page anim` (or `Ctrl+4`). The panel is block 1 (easing combo + tween progress bar + color-lerp swatch, timed by the host's own clock); the stage on the right is block 2 — one 2-second clip drives four components: `slide` (ease-in-out-cubic keyframes), `pulse` (two pulses), `hop` (two uneven bounces), `stag.0..3` (staggered entrances with delay 0/0.15/0.30/0.45). The page lets you change the loop mode (without resetting progress), the speed, and drag the seek slider, while the channel list shows every channel's live value.
 
 ## 7.10 The built-in UI render path (leaving ImGui) and UIDrawList
 
-`GUi_*` currently lands through Dear ImGui. The engine is building a **built-in UI runtime**: a retained control tree (`ui_component`) plus self-drawn rendering, with no ImGui dependency at the end. Four phases, each independently verifiable:
+`GUi_*` currently lands through Dear ImGui. The engine is building a **built-in UI runtime**: a retained control tree (`ui_layout_tree`) plus self-drawn rendering, with no ImGui dependency at the end. Four phases, each independently verifiable:
 
 | Phase | Content | Status |
 | --- | --- | --- |
@@ -506,7 +529,7 @@ Demo: `--page anim` (or `Ctrl+4`). The panel is block 1 (easing combo + tween pr
 | 3 | Retained control layer: hit testing + event dispatch + control library (Button/Label/Slider/Checkbox/TextInput) | done (7.11) |
 | 4 | `GUi_*` dual-track switch; ImGui retreats to an optional debug backend | done (7.11) |
 
-ImGui's role on this path changes accordingly: **from "the UI system itself" to "one backend for editor/debug UI"**. The UI model layer (7.6), component tree (7.7) and animation (7.9) contain no ImGui dependency, so swapping the backend does not touch them.
+ImGui's role on this path changes accordingly: **from "the UI system itself" to "one backend for editor/debug UI"**. The UI model layer (7.6), layout tree (7.7) and animation (7.9) contain no ImGui dependency, so swapping the backend does not touch them.
 
 **Why the render bridge needs no new shader**: the rasterization carrier is the engine's existing `IRenderer2D` (`engine/render/render2d.h`) — `draw_rect` / `draw_text` / `draw_sprite_region` / `set_scissor` / `top_left_origin` (that interface's comment literally says "UI/HUD layer") — already implemented on all three backends (D3D12 / Vulkan / GL); text goes through the engine's own `FontAtlas` (stb_truetype, multi-source Latin+CJK fallback, glyph UV/advance). The built-in UI only supplies what is missing: the command buffer and the control semantics.
 

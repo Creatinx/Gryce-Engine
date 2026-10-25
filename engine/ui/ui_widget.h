@@ -6,7 +6,7 @@
 // 本文件补上这一层，且**不依赖 ImGui、不依赖渲染器、不依赖窗口**：喂一份
 // 输入快照进去，就能单测"点一下滑块值变多少"。
 //
-// 与 ui_component（组件树布局）的分工：组件树回答"控件摆在哪"（结构是数据、
+// 与 ui_layout_tree（布局树）的分工：组件树回答"控件摆在哪"（结构是数据、
 // 跨帧存活），本层回答"控件是什么、怎么响应输入、画成什么样"。两者通过
 // Rect 接头——组件树算出 rect，喂给本层当几何。
 //
@@ -87,6 +87,59 @@ enum class WidgetKind : uint32_t {
     Image     = 20,
     Count,
 };
+
+// 控件分类——"这个控件是什么角色"，与"它长什么样"（外观走 theme token）正交。
+// 一条 kind 只属于一个 class。目前唯一的策略消费者是命中测试：
+// 只有 Interactive 参与（见 widget_is_interactive）。
+//
+// 为什么值得单开一个枚举而不是在 touch() 里写一串 if：那串 if 是白名单式的
+// "排除表"，新增 kind 时**默认参与命中**——一个本该纯装饰的 kind 漏进排除表，
+// 症状是它抢走覆盖在下面的控件的按下，而编译器和测试都看不出异常。改成查表后，
+// 每个 kind 都要显式表态，漏表态由 static_assert（下面钉住 Count）+ 单测
+// （逐 kind 校表）两道拦住。
+enum class WidgetClass : uint8_t {
+    Interactive = 0,  // 可交互：参与命中测试，可拿 active_id_ / 键盘焦点
+    Container   = 1,  // 容器：排版与裁剪用，不该被点中（点面板空白处要能清焦点）
+    Decoration  = 2,  // 纯装饰：画出来但不该接收任何输入
+    Text        = 3,  // 纯文本：不参与命中（点文字不该抢走底下的控件）
+};
+
+// 控件分类表。**每个 kind 都要有显式条目**（无 default）：
+// WidgetKind 增删时下面的 static_assert 先炸，逼着同步这里和测试里的校表。
+constexpr WidgetClass widget_class_of(WidgetKind k) {
+    switch (k) {
+        case WidgetKind::Button:     return WidgetClass::Interactive;
+        case WidgetKind::Label:      return WidgetClass::Text;
+        case WidgetKind::Slider:     return WidgetClass::Interactive;
+        case WidgetKind::Checkbox:   return WidgetClass::Interactive;
+        case WidgetKind::TextInput:  return WidgetClass::Interactive;
+        case WidgetKind::Panel:      return WidgetClass::Container;
+        case WidgetKind::Progress:   return WidgetClass::Decoration;
+        case WidgetKind::Separator:  return WidgetClass::Decoration;
+        case WidgetKind::DragFloat:  return WidgetClass::Interactive;
+        case WidgetKind::TreeNode:   return WidgetClass::Interactive;
+        case WidgetKind::Header:     return WidgetClass::Interactive;
+        case WidgetKind::MenuItem:   return WidgetClass::Interactive;
+        case WidgetKind::ScrollBar:  return WidgetClass::Interactive;
+        case WidgetKind::Tooltip:    return WidgetClass::Decoration;
+        case WidgetKind::ClipBegin:  return WidgetClass::Container;   // 绘制用的裁剪推入
+        case WidgetKind::ClipEnd:    return WidgetClass::Container;   // 绘制用的裁剪弹出
+        case WidgetKind::Bar:        return WidgetClass::Decoration;
+        case WidgetKind::TitleBar:   return WidgetClass::Interactive;
+        case WidgetKind::Frame:      return WidgetClass::Container;
+        case WidgetKind::Selectable: return WidgetClass::Interactive;
+        case WidgetKind::Image:      return WidgetClass::Interactive;
+    }
+    return WidgetClass::Interactive;   // 不可达（见上面的 static_assert）
+}
+
+constexpr bool widget_is_interactive(WidgetKind k) {
+    return widget_class_of(k) == WidgetClass::Interactive;
+}
+
+// WidgetKind 增删时必须同步 widget_class_of 的分类表与 builtin 套件的校表测试。
+static_assert(static_cast<int>(WidgetKind::Count) == 21,
+              "WidgetKind changed: update widget_class_of and its test table");
 
 // 控件文案 / 输入内容容量。
 // label 要容纳**整行文本**：Label 控件用它显示正文，48 字节会把一句 50 字符的

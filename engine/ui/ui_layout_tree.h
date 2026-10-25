@@ -1,11 +1,17 @@
 // ===========================================================================
-// engine/ui/ui_component.h — 组件树布局（保留模式，无 ImGui 依赖的纯逻辑）
+// engine/ui/ui_layout_tree.h — 布局树（保留模式，无 ImGui 依赖的纯逻辑）
 //
 // 解决的问题：ui_layout.h 的布局栈是即时模式——矩形按调用序列一帧一算，
 // 表达不了树形结构（父子、嵌套、重排），而"这个面板里各部分的排列规则"
 // 本来是与帧无关的事实，应该作为数据存在树上，而不是每帧重演一遍
-// imperative 代码。组件树把结构提成数据：组件是节点，布局组件
-// （Column / Row / Grid）是安排子节点几何的容器，叶子组件只画自己的内容。
+// imperative 代码。布局树把结构提成数据：节点（UiLayoutNode）是单位，
+// 布局节点（Column / Row / Grid）是安排子节点几何的容器，叶子节点只画自己的
+// 内容。
+//
+// 命名说明：早先这里叫"组件树"（Component / ComponentTree），与引擎 ECS 的
+// gryce_engine::Component 撞名，而 P0/P2 之后两者的父子/类型语义已经完全不同
+// （ECS 那边是类型继承 + 实例挂载两套正交的轴）。改名成 UiLayout* 之后，
+// 读代码时不会再"看到一个 Component 就以为是场景里挂的那个"。
 //
 // 定位规则只有一条：**父级是不是布局组件**。
 //   * 父级是布局组件      -> 子节点的 rect 由布局算出并写回（自动布局）；
@@ -21,15 +27,15 @@
 // 负尺寸。
 //
 // 与 ui_layout.h 的分工：布局栈服务"每帧 imperative 算矩形"（视口分区、
-// gizmo 原点）；本组件树服务"结构是数据、跨帧存活"（面板定义）。两者
-// 可共存——组件树算出的矩形可以直接喂给 GUi_* 画。
+// gizmo 原点）；本布局树服务"结构是数据、跨帧存活"（面板定义）。两者
+// 可共存——布局树算出的矩形可以直接喂给 GUi_* 画。
 //
 // 线程模型：只在 UI 线程使用（回调内建树 / 改树 / 解析 / 读矩形）。
 // 不带锁——跨线程传递意图请走操作队列（ui_op_queue.h）。
 // ===========================================================================
 
-#ifndef GRYCE_UI_COMPONENT_H
-#define GRYCE_UI_COMPONENT_H
+#ifndef GRYCE_UI_LAYOUT_TREE_H
+#define GRYCE_UI_LAYOUT_TREE_H
 
 #include <cstdint>
 
@@ -37,9 +43,9 @@
 
 namespace gryce_ui {
 
-// 组件种类。布局组件（Column / Row / Grid）安排子节点几何；Leaf 只画自己
+// 节点种类。布局节点（Column / Row / Grid）安排子节点几何；Leaf 只画自己
 // 的内容。"父级是不是布局组件"是定位规则的唯一判据（见文件头）。
-enum class CompKind : uint32_t {
+enum class UiLayoutKind : uint32_t {
     Leaf   = 0,
     Column = 1,   // 垂直栈：子节点沿主轴（竖直）依次排
     Row    = 2,   // 水平栈：子节点沿主轴（水平）依次排
@@ -47,26 +53,26 @@ enum class CompKind : uint32_t {
 };
 
 // 交叉轴对齐（Column 的交叉轴是水平，Row 的交叉轴是竖直）。
-enum class CompAlign : uint32_t {
+enum class UiLayoutAlign : uint32_t {
     Start   = 0,
     Center  = 1,
     End     = 2,
     Stretch = 3,   // 交叉轴吃满内容区（扣掉交叉 margin）
 };
 
-// 一个组件。同一棵树里只有这一个结构——布局组件也是组件，只是 kind 不同。
-// 全部字段有默认值：{} 出来的组件是一个无父级、零大小的叶子。
-struct Component {
+// 一个节点。同一棵树里只有这一个结构——布局节点也是节点，只是 kind 不同。
+// 全部字段有默认值：{} 出来的节点是一个无父级、零大小的叶子。
+struct UiLayoutNode {
     uint64_t id     = 0;      // 由树填写（add/set 忽略传入值），恒非 0
-    uint64_t parent = 0;      // 0 = 无父级；否则必须是已存在的组件 id
+    uint64_t parent = 0;      // 0 = 无父级；否则必须是已存在的节点 id
 
-    CompKind  kind = CompKind::Leaf;
+    UiLayoutKind  kind = UiLayoutKind::Leaf;
     Rect      rect{};         // 自身几何（绝对坐标，左上角原点）
 
     // —— 子侧参数：作为子节点时被父布局读取 ——
     float margin[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // 上 右 下 左
     float flex      = 0.0f;   // 主轴弹性权重；>0 参与剩余空间分配，0 = 用 rect 尺寸
-    CompAlign align = CompAlign::Start;
+    UiLayoutAlign align = UiLayoutAlign::Start;
 
     // —— 容器侧参数：作为布局组件时被读取 ——
     float gap        = 0.0f;   // 子节点间距
@@ -74,46 +80,52 @@ struct Component {
     int   cols       = 1;      // Grid 列数（<1 按 1，大于子节点数按子节点数）
 };
 
-class ComponentTree {
+class UiLayoutTree {
 public:
-    // 容量。装不下说明组件在泄漏（每帧新建不删），不是调大容量的理由。
+    // 容量。装不下说明节点在泄漏（每帧新建不删），不是调大容量的理由。
     static constexpr int kCapacity = 512;
 
-    // 添加组件。parent 为 0 或已存在的 id。返回新 id（恒非 0、单调递增、
-    // 不复用——移除后旧 id 永久失效，避免野引用落到新组件上）；失败返回 0
+    // 添加节点。parent 为 0 或已存在的 id。返回新 id（恒非 0、单调递增、
+    // 不复用——移除后旧 id 永久失效，避免野引用落到新节点上）；失败返回 0
     // （表满，或 parent 不存在）。
-    uint64_t add(const Component& c);
+    uint64_t add(const UiLayoutNode& c);
 
-    // 整体覆盖一个组件（parent 可改）。新父级是自己或自己的后代时拒绝。
+    // 整体覆盖一个节点（parent 可改）。新父级是自己或自己的后代时拒绝。
     // 父级未变时只改数据，不改变它在子列表里的位置。返回 1 = 成功。
-    bool set(uint64_t id, const Component& c);
+    bool set(uint64_t id, const UiLayoutNode& c);
 
-    // 移除组件及其整棵子树。返回 1 = 移除了什么，0 = 没有这个 id。
+    // 移除节点及其整棵子树。返回 1 = 移除了什么，0 = 没有这个 id。
     bool remove(uint64_t id);
     void clear();
 
-    Component*       find(uint64_t id);
-    const Component* find(uint64_t id) const;
+    UiLayoutNode*       find(uint64_t id);
+    const UiLayoutNode* find(uint64_t id) const;
+
+    // 活节点按内部存储序遍历，index 越界返回 nullptr。**父必先于子**——add
+    // 要求 parent 已存在，所以存储序天然是一份合法的拓扑序。序列化因此可以
+    // 按 index 顺序输出、再按同序读回，不需要另做拓扑排序（见
+    // ui_layout_tree_json.h）。日常枚举子节点请走 child_at / parent_of。
+    const UiLayoutNode* node_at(int index) const;
 
     // 布局解析（规则见文件头）。幂等：同一棵树解析多次结果相同。
     void resolve();
 
-    // 解析后的矩形；没有这个 id 返回 nullptr。指针在增删组件后仍有效
-    // （存储是定长数组），但对应组件被移除后内容即失效。
+    // 解析后的矩形；没有这个 id 返回 nullptr。指针在增删节点后仍有效
+    // （存储是定长数组），但对应节点被移除后内容即失效。
     const Rect* rect_of(uint64_t id) const;
 
     int  count() const { return used_; }
-    int  child_count(uint64_t id) const;             // -1 = 没有该组件
-    uint64_t child_at(uint64_t id, int index) const; // 0 = 越界或没有该组件
-    uint64_t parent_of(uint64_t id) const;           // 0 = 无父级或没有该组件
+    int  child_count(uint64_t id) const;             // -1 = 没有该节点
+    uint64_t child_at(uint64_t id, int index) const; // 0 = 越界或没有该节点
+    uint64_t parent_of(uint64_t id) const;           // 0 = 无父级或没有该节点
 
-    static bool is_layout(CompKind k) {
-        return k == CompKind::Column || k == CompKind::Row || k == CompKind::Grid;
+    static bool is_layout(UiLayoutKind k) {
+        return k == UiLayoutKind::Column || k == UiLayoutKind::Row || k == UiLayoutKind::Grid;
     }
 
 private:
     struct Node {
-        Component comp;
+        UiLayoutNode comp;
         int parent      = -1;   // 内部索引；-1 = 根
         int first_child = -1;
         int last_child  = -1;   // 子节点保持插入顺序（尾插）
@@ -143,4 +155,4 @@ private:
 
 } // namespace gryce_ui
 
-#endif // GRYCE_UI_COMPONENT_H
+#endif // GRYCE_UI_LAYOUT_TREE_H
