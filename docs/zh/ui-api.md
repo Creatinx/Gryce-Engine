@@ -735,7 +735,13 @@ Fluent 与 Flex+Blender 因此是**同一套绘制代码的两个数据点**，�
 * **字形抗锯齿**：ImGui 用 stb_truetype 的覆盖度 + 自己的 alpha 通道插值，内置轨走 Renderer2D 的字形图集；同一字形同一字号下笔画位置一致，但边缘灰阶分布不同——按像素比对时每个字都有一圈"毛边"差异，肉眼看不出。
 * **圆角弧的抗锯齿**：弧是折线多边形 + 1px alpha 环带，`radius=8` 时轮廓近似到 1.1px 阶梯；ImGui 的 `AddRect` 用 0.5px 半宽描边 + 抗锯齿填充，边缘更软。
 
-`GryceUiSmoke --page controls --ui-backend builtin|imgui --shot x.png` 可以随时采两轨同页截图做像素比对（`build/pngdiff.py`）。
+按行带实测（`--page controls`，800×600）：差异 17251px = 3.594%，**93.6% 落在含文字的行带**（每个字的边缘灰阶），其余 6% 是窗口四角的圆弧（1px 描边在拐角处是实色，ImGui 是软边）与子区域边框右端的 9px 缺段（`y=108` / `y=131` 各一处）。以下成因已用实验排除，不必再查：
+
+* **图集过采样档位**：`h/v_oversample` 从 2×2 改成 1×1，出图**逐字节相同**（14px 下 stb 的盒式预滤与直采等价）。
+* **逐字形整数吸附**：`draw_text` 关掉 `snap` 只降到 16999px（3.541%），收益 0.05pp，却会在真实界面里让 13px 小字重新粘连，不值得换。
+* **位置偏移**：整像素 (±1) 与亚像素（0.1 步长）位移搜索都以 `(0,0)` 为最优——几何完全对齐，差异只在覆盖度数值本身。
+
+`GryceUiSmoke --page controls --ui-backend builtin|imgui --shot x.png` 可以随时采两轨同页截图做像素比对（`build/pngdiff.py` 出差异图，`build/diffreport.py` 按行带聚类并给出颜色迁移）。
 
 ## 8. 与宿主输入的分工
 

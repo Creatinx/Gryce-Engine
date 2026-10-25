@@ -755,7 +755,13 @@ Known residuals (**layout, colours and geometry match**; what is left is samplin
 * **Glyph anti-aliasing**: ImGui rasterises with stb_truetype coverage plus its own alpha interpolation, the built-in track samples a Renderer2D glyph atlas. Strokes land in the same place, but the grey distribution on the edges differs -- a per-pixel diff shows a halo around every glyph that the eye does not see.
 * **Corner arc anti-aliasing**: arcs are polyline polygons plus a 1px alpha band; at `radius=8` the outline approximates to roughly 1.1px steps. ImGui strokes with a 0.5px half-width and anti-aliased fills, so its corners are softer.
 
-`GryceUiSmoke --page controls --ui-backend builtin|imgui --shot x.png` captures both tracks for pixel comparison (`build/pngdiff.py`).
+Measured per row band (`--page controls`, 800x600): 17251 px = 3.594% differ, and **93.6% of that sits on rows containing text** (the grey edges of each glyph). The other 6% is the four window corners (the 1px border is solid there while ImGui feathers it) plus a 9px gap at the right end of a child border (`y=108` and `y=131`). These causes were ruled out by experiment, so there is no point re-checking them:
+
+* **Atlas oversampling**: switching `h/v_oversample` from 2x2 to 1x1 produces a **byte-identical** frame (at 14px stb's box prefilter equals direct sampling).
+* **Per-glyph integer snapping**: disabling `snap` in `draw_text` only reaches 16999 px (3.541%) -- a 0.05pp gain -- while real UIs get the old 13px glyph-merging back. Not worth it.
+* **Position offset**: integer (+-1) and sub-pixel (0.1 step) shift searches both prefer `(0,0)`; geometry is fully aligned and only the coverage values differ.
+
+`GryceUiSmoke --page controls --ui-backend builtin|imgui --shot x.png` captures both tracks for pixel comparison (`build/pngdiff.py` writes the diff image, `build/diffreport.py` clusters changes per row band and reports colour migrations).
 
 ## 8. Sharing input with the host
 
