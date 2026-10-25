@@ -3274,13 +3274,51 @@ TEST(theme_json, shipped_files_load) {
     CHECK_TRUE(gryce_ui::theme_anim().enabled);
     CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/fluent-light.json").c_str()), 1);
     CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x005FB8FFu);
-    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/blender-dark.json").c_str()), 1);
+    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/flex-blender-dark.json").c_str()), 1);
     CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0xED9E5CFFu);
-    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 4.0f, 1e-4f);
-    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/blender-light.json").c_str()), 1);
-    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0xD9822BFFu);
+    CHECK_NEAR(GUi_ThemeMetric(GUI_THEME_METRIC_WINDOW_ROUNDING), 5.0f, 1e-4f);
+    CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/flex-blender-light.json").c_str()), 1);
+    CHECK_EQ(GUi_ThemeColor(GUI_THEME_COLOR_ACCENT), 0x2E6BD6FFu);
     CHECK_EQ(GUi_ThemeLoadFromFile((dir + "/nope.json").c_str()), 0);
     gryce_ui::set_theme_anim(gryce_ui::ThemeAnim{});
+    gryce_ui::set_theme_style(gryce_ui::ThemeStyle{});
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
+}
+
+// style 块把"怎么画"也变成主题数据：Fluent 扁平（fill_grad=0 + 强投影）与
+// Flex/Blender 光泽（fill_grad=0.12 + 弱投影）必须是同一套绘制代码的两个数据点。
+TEST(theme_json, style_block_drives_texture) {
+    // 出厂默认：Fluent 之前的旧默认值
+    const gryce_ui::ThemeStyle def = gryce_ui::theme_style();
+    CHECK_TRUE(def.fill_grad > 0.0f);
+
+    // 扁平档：渐变归零、投影拉满
+    CHECK_EQ(gryce_ui::load_theme_json(R"({"style":{"fill_grad":0,"panel_grad":0,
+                                                   "shadow_alpha":0.5,"shadow_spread":26}})"), 1);
+    CHECK_NEAR(gryce_ui::theme_style().fill_grad, 0.0f, 1e-5f);
+    CHECK_NEAR(gryce_ui::theme_style().panel_grad, 0.0f, 1e-5f);
+    CHECK_NEAR(gryce_ui::theme_style().shadow_alpha, 0.5f, 1e-5f);
+    CHECK_NEAR(gryce_ui::theme_style().shadow_spread, 26.0f, 1e-5f);
+
+    // 光泽档：渐变起来、投影收住
+    CHECK_EQ(gryce_ui::load_theme_json(R"({"style":{"fill_grad":0.12,"panel_grad":0.05,
+                                                   "shadow_alpha":0.3,"shadow_spread":10}})"), 1);
+    CHECK_NEAR(gryce_ui::theme_style().fill_grad, 0.12f, 1e-5f);
+    CHECK_NEAR(gryce_ui::theme_style().panel_grad, 0.05f, 1e-5f);
+
+    // 部分覆盖：只写 fill_grad，其余保持上一文件的值
+    CHECK_EQ(gryce_ui::load_theme_json(R"({"style":{"fill_grad":0.2}})"), 1);
+    CHECK_NEAR(gryce_ui::theme_style().fill_grad, 0.2f, 1e-5f);
+    CHECK_NEAR(gryce_ui::theme_style().shadow_spread, 10.0f, 1e-5f);
+
+    // 钳制：负渐变（画成凹坑）与 >1 的 alpha 都被夹回合法域
+    CHECK_EQ(gryce_ui::load_theme_json(R"({"style":{"fill_grad":-0.5,"shadow_alpha":2.0}})"), 1);
+    CHECK_NEAR(gryce_ui::theme_style().fill_grad, 0.0f, 1e-5f);
+    CHECK_NEAR(gryce_ui::theme_style().shadow_alpha, 1.0f, 1e-5f);
+
+    // 换预设整体重置质感（与"覆盖不跨预设存活"同语义）
+    GUi_ThemeSetPreset(GUI_THEME_PRESET_LIGHT);
+    CHECK_NEAR(gryce_ui::theme_style().fill_grad, def.fill_grad, 1e-5f);
     GUi_ThemeSetPreset(GUI_THEME_PRESET_DARK);
 }
 

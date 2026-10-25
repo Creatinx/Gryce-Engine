@@ -627,8 +627,8 @@ debug_ui_submit_locked()            主线程，锁已持有
 | --- | --- |
 | 六档圆角 | `WINDOW_ROUNDING=8`（窗口）、`POPUP_ROUNDING=8`（弹层/提示）、`CHILD_ROUNDING=8`（子区域）、`FRAME_ROUNDING=4`（按钮/输入框/进度条）、`GRAB_ROUNDING=4`（复选框/菜单高亮）、`TAB_ROUNDING=4`（页签）。Fluent 的"大面板圆、小控件方"层次。全都只用几何、不随预设变 |
 | 单控件覆盖 | `Widget::corner_radius`：`< 0` 用上面那档默认值，`0` = 明确要直角（模态遮罩铺满屏幕时必须给 0，否则四角漏出没压暗的底图） |
-| 投影开关 | `Widget::shadow`：只有浮窗（带标题栏）、弹层、工具提示打开。平铺面板互相贴着，影子画进邻居身下等于白花顶点 |
-| 渐变 | 内置 Dark / Light 预设是 Fluent（Win11）风格的现代扁平：填充基本平涂，竖直渐变只留 2%~5% 的方向感，两端色由 `shade()` 从同一个 token 推出来，不额外增加 token |
+| 投影开关 | `Widget::shadow`：只有浮窗（带标题栏）、弹层、工具提示打开。平铺面板互相贴着，影子画进邻居身下等于白花顶点。强度/扩散由主题 `style.shadow_alpha` / `shadow_spread` 决定（Fluent 0.5/26px 环境光，Flex+Blender 0.3/10px 最小离地感；`shadow_alpha=0` 时连紧影也不画） |
+| 渐变 | 竖直渐变的两端色由 `shade()` 从同一个 token 推出来，不额外增加 token。**幅度是主题数据**（`style.fill_grad` / `panel_grad`，见 7.13）：Fluent 预设归零（纯平），Flex+Blender 预设给 12% 的 Halo 光泽 |
 | 描边 | 线宽向内生长：外轮廓尺寸不因加边框变大，相邻控件的对齐不会因为有没有边框而漂 1 像素。控件日常描边用专门的 `CONTROL_BORDER` token（BUTTON 与 BORDER 的中点）——直接拿 BORDER 描边时每个控件都顶着一圈比自身底色亮两档的细线，成片控件会变成一张表格；悬停/聚焦才换 `ACCENT` |
 | 聚焦态 | 输入框聚焦时描边换成 `ACCENT` 并加粗 0.5 像素；悬停的拖拽框/复选框描边也换 `ACCENT` |
 
@@ -655,25 +655,38 @@ draw_round_shadow(x, y, w, h, radii, spread, c);           // 外阴影
 主题可以整套放在 JSON 文件里加载，不必写 C 代码、不必重编译：
 
 ```c
-GUi_ThemeLoadFromFile("assets/themes/blender-dark.json");   // 1/0
-GUi_ThemeLoadFromJson(json_text);                           // 内存中的主题文本
+GUi_ThemeLoadFromFile("assets/themes/flex-blender-dark.json");   // 1/0
+GUi_ThemeLoadFromJson(json_text);                                // 内存中的主题文本
 ```
 
-文件格式（四块全可选，缺项由出厂默认与派生规则补齐）：
+文件格式（五块全可选，缺项由出厂默认与派生规则补齐）：
 
 ```json
 {
-  "name": "Blender Dark",
-  "anchors": { "window_bg": "#303030", "accent": "#ED9E5C", "...": "..." },
-  "colors":  { "popup_bg": "#202020", "check_mark": "#E5E5E5" },
-  "metrics": { "window_rounding": 4, "frame_rounding": 2 },
+  "name": "Flex Blender Dark",
+  "anchors": { "window_bg": "#2B2B2B", "accent": "#ED9E5C", "...": "..." },
+  "colors":  { "popup_bg": "#232323", "control_border": "#6E6E6E" },
+  "metrics": { "window_rounding": 5, "frame_rounding": 3 },
+  "style":   { "fill_grad": 0.12, "panel_grad": 0.05,
+               "shadow_alpha": 0.3, "shadow_spread": 10 },
   "animation": { "enabled": true, "hover_ms": 70, "press_ms": 50, "ease": "out_cubic" }
 }
 ```
 
-加载语义：以出厂深色预设的 17 个锚色为底 → 套 `anchors` → `derive_extended()` 派生 → 套 `colors` 覆盖派生结果 → 套 `metrics`/`animation`。所以只写 `"anchors": {"window_bg": ...}` 的主题文件也是良定义的。颜色写 `"#RRGGBB"` / `"#RRGGBBAA"`（`#` 可省略）；token 名是枚举的 snake_case（`window_bg`、`control_border`、`frame_rounding` 等，全表见 `engine/ui/ui_theme.cpp` 的名字表）。类型不对的项跳过、非法 JSON 返回 0 且不动当前主题。
+加载语义：以出厂深色预设的 17 个锚色为底 → 套 `anchors` → `derive_extended()` 派生 → 套 `colors` 覆盖派生结果 → 套 `metrics`/`style`/`animation`。所以只写 `"anchors": {"window_bg": ...}` 的主题文件也是良定义的。颜色写 `"#RRGGBB"` / `"#RRGGBBAA"`（`#` 可省略）；token 名是枚举的 snake_case（`window_bg`、`control_border`、`frame_rounding` 等，全表见 `engine/ui/ui_theme.cpp` 的名字表）。类型不对的项跳过、非法 JSON 返回 0 且不动当前主题。
 
-随引擎交付四套皮肤（`assets/themes/`）：**fluent-dark / fluent-light**（Win11 Fluent，8px 面板 + 4px 控件圆角）与 **blender-dark / blender-light**（类 Blender：灰底、方形小圆角 2~4px、橙色强调色、按钮深字）。
+`style` 块把「怎么画」也变成主题数据（`ThemeStyle`，`engine/ui/ui_theme.h`）：
+
+| 字段 | 含义 | Fluent | Flex+Blender |
+| --- | --- | --- | --- |
+| `fill_grad` | 控件填充的纵向渐变幅度（上端提亮比例；0 = 纯平） | 0 | 0.12 |
+| `panel_grad` | 面板/窗口/标题栏的渐变幅度（比 `fill_grad` 收敛一档） | 0 | 0.05 |
+| `shadow_alpha` | 浮窗/弹层/提示的投影强度（0 = 不画） | 0.5 | 0.3 |
+| `shadow_spread` | 投影扩散半径（逻辑像素） | 26 | 10 |
+
+Fluent 与 Flex+Blender 因此是**同一套绘制代码的两个数据点**，不是两个绘制分支：Fluent 靠状态色（悬停/按下的亮度差）分层，光泽与投影全部关掉；Flex/Blender 靠 12% 的顶部提亮渐变做「Halo 光泽按钮」，投影只留最小的一点离地关系。渐变幅度钳制在 [0, 0.5]、投影 alpha 钳制在 [0, 1]，负值（会把画成凹坑）与越界值都被夹回合法域。
+
+随引擎交付四套皮肤（`assets/themes/`）：**fluent-dark / fluent-light**（Win11 Fluent 正宗档：Mica 近似中性底、8px 面板 + 4px 控件、无渐变、大而柔的环境光投影）与 **flex-blender-dark / flex-blender-light**（Adobe Flex Halo × Blender：灰底、亮边描边、5/3px 小圆角、Halo 光泽渐变；深色用 Blender 橙 #ED9E5C 与选中蓝 #4772B3，浅色用 Flex 经典蓝 #2E6BD6）。
 
 `animation` 块驱动内置轨的**状态过渡动画**：参与控件（按钮、拖拽框、复选框、滑杆抓柄、菜单高亮、折叠头）的主填充色在悬停/按下/勾选切换时按 `hover_ms`/`press_ms` 与缓动曲线插值；菜单高亮额外带淡入淡出。动画由 `BuiltinUi::draw` 用输入快照的 `time` 差分推进——`time == 0`（单测/截图）时一切瞬变，画面可复现。retained 宿主不调用 `advance_animations()` 即得到瞬变行为。`set_preset` 不重置动画参数；`animation` 块缺省时保持现状。
 

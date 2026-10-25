@@ -372,6 +372,34 @@ int load_theme_json(const char* json_text) {
         }
     }
 
+    // style 块：质感参数（渐变幅度/投影）。缺省项保持当前值——与 metrics
+    // 不同，这里允许"只改投影不改渐变"的部分覆盖。
+    const auto s = j.find("style");
+    if (s != j.end() && s->is_object()) {
+        ThemeStyle st = t.style;
+        if (const auto v = s->find("fill_grad"); v != s->end() && v->is_number()) {
+            st.fill_grad = v->get<float>();
+        }
+        if (const auto v = s->find("panel_grad"); v != s->end() && v->is_number()) {
+            st.panel_grad = v->get<float>();
+        }
+        if (const auto v = s->find("shadow_alpha"); v != s->end() && v->is_number()) {
+            st.shadow_alpha = v->get<float>();
+        }
+        if (const auto v = s->find("shadow_spread"); v != s->end() && v->is_number()) {
+            st.shadow_spread = v->get<float>();
+        }
+        // 渐变幅度出现负值等于把按钮画成凹坑，钳到 [0, 0.5]
+        if (st.fill_grad < 0.0f) st.fill_grad = 0.0f;
+        if (st.fill_grad > 0.5f) st.fill_grad = 0.5f;
+        if (st.panel_grad < 0.0f) st.panel_grad = 0.0f;
+        if (st.panel_grad > 0.5f) st.panel_grad = 0.5f;
+        if (st.shadow_alpha < 0.0f) st.shadow_alpha = 0.0f;
+        if (st.shadow_alpha > 1.0f) st.shadow_alpha = 1.0f;
+        if (st.shadow_spread < 0.0f) st.shadow_spread = 0.0f;
+        t.style = st;
+    }
+
     // animation 块缺省时保持现状（换主题文件不该悄悄重置宿主调过的参数）
     const auto a = j.find("animation");
     if (a != j.end() && a->is_object()) {
@@ -481,7 +509,9 @@ void set_preset(int preset) {
     const uint32_t* anchors = anchors_of(preset);
     for (int i = 0; i < THEME_ANCHOR_COUNT; ++i) t.colors[i] = anchors[i];
     // 整体重填：既刷新派生 token，也清掉上一套预设期间的个别覆盖
-    // （覆盖不跨预设存活——否则换预设换不干净）。
+    // （覆盖不跨预设存活——否则换预设换不干净）。质感参数同理：
+    // 出厂预设不带 style 信息，恢复编译器默认值。
+    t.style = ThemeStyle{};
     derive_extended(t);
 }
 
@@ -512,6 +542,14 @@ const ThemeAnim& theme_anim() {
 
 void set_theme_anim(const ThemeAnim& a) {
     const_cast<ThemeAnim&>(theme_anim()) = a;
+}
+
+const ThemeStyle& theme_style() {
+    return theme().style;
+}
+
+void set_theme_style(const ThemeStyle& s) {
+    mutable_theme().style = s;
 }
 
 void apply() {

@@ -627,8 +627,8 @@ Appearance on the built-in track comes from exactly two layers: theme tokens (`u
 | --- | --- |
 | Six rounding tiers | `WINDOW_ROUNDING=8` (windows), `POPUP_ROUNDING=8` (popups/tooltips), `CHILD_ROUNDING=8` (child regions), `FRAME_ROUNDING=4` (buttons, text fields, progress bars), `GRAB_ROUNDING=4` (checkboxes, menu highlight), `TAB_ROUNDING=4` (tabs) -- Fluent's "big panels round, small controls square" layering. Geometry only; presets never change them |
 | Per-widget override | `Widget::corner_radius`: `< 0` means "use the tier above", `0` means "square on purpose" (a full-screen modal mask must be 0, otherwise the four corners leak the undimmed scene) |
-| Shadow switch | `Widget::shadow`: on for titled floating windows, popups and tooltips only. Tiled panels sit flush against each other, so their shadow would be painted under the neighbour |
-| Gradient | The built-in Dark / Light presets are Fluent (Win11) style modern flat: fills are essentially flat, vertical gradients keep only a 2%-5% directional hint. Both ends are derived from the same token by `shade()`, so no extra tokens are needed |
+| Shadow switch | `Widget::shadow`: on for titled floating windows, popups and tooltips only. Tiled panels sit flush against each other, so their shadow would be painted under the neighbour. Strength/spread come from the theme's `style.shadow_alpha` / `style.shadow_spread` (Fluent 0.5/26px ambient, Flex+Blender 0.3/10px minimum separation; `shadow_alpha=0` skips even the tight shadow) |
+| Gradient | Both gradient ends are derived from the same token by `shade()`, so no extra tokens are needed. **The strength is theme data** (`style.fill_grad` / `style.panel_grad`, see 7.13): Fluent presets zero it out (pure flat), Flex+Blender presets give 12% of Halo gloss |
 | Stroke | Width grows inward: the outer silhouette never changes, so neighbouring controls do not shift by a pixel depending on whether a border is present. Everyday widget outlines use a dedicated `CONTROL_BORDER` token (the midpoint of BUTTON and BORDER) — stroking with plain BORDER gives every control a ring two shades brighter than its own fill, and rows of controls start looking like a spreadsheet; hover/focus switch to `ACCENT` |
 | Focus | A focused text field switches its stroke to `ACCENT` and thickens it by 0.5px; hovered drag fields and checkboxes do the same |
 
@@ -655,25 +655,38 @@ Covered widgets: buttons, panels/floating windows, progress bar (track + fill), 
 A whole theme can live in a JSON file -- no C code, no recompile:
 
 ```c
-GUi_ThemeLoadFromFile("assets/themes/blender-dark.json");   // 1/0
-GUi_ThemeLoadFromJson(json_text);                           // theme text in memory
+GUi_ThemeLoadFromFile("assets/themes/flex-blender-dark.json");   // 1/0
+GUi_ThemeLoadFromJson(json_text);                                // theme text in memory
 ```
 
-File format (all four blocks optional; missing entries fall back to the factory defaults and the derivation rules):
+File format (all five blocks optional; missing entries fall back to the factory defaults and the derivation rules):
 
 ```json
 {
-  "name": "Blender Dark",
-  "anchors": { "window_bg": "#303030", "accent": "#ED9E5C" },
-  "colors":  { "popup_bg": "#202020", "check_mark": "#E5E5E5" },
-  "metrics": { "window_rounding": 4, "frame_rounding": 2 },
+  "name": "Flex Blender Dark",
+  "anchors": { "window_bg": "#2B2B2B", "accent": "#ED9E5C" },
+  "colors":  { "popup_bg": "#232323", "control_border": "#6E6E6E" },
+  "metrics": { "window_rounding": 5, "frame_rounding": 3 },
+  "style":   { "fill_grad": 0.12, "panel_grad": 0.05,
+               "shadow_alpha": 0.3, "shadow_spread": 10 },
   "animation": { "enabled": true, "hover_ms": 70, "press_ms": 50, "ease": "out_cubic" }
 }
 ```
 
-Load semantics: start from the factory dark preset's 17 anchors, apply `anchors`, run `derive_extended()`, then apply `colors` on top of the derived values, then `metrics`/`animation`. A file that only sets `"anchors": {"window_bg": ...}` is therefore well-defined. Colors are `"#RRGGBB"` / `"#RRGGBBAA"` (`#` optional); token names are the snake_case enum names (`window_bg`, `control_border`, `frame_rounding`, ...; the full table is the name map in `engine/ui/ui_theme.cpp`). Entries of the wrong type are skipped; invalid JSON returns 0 and leaves the current theme untouched.
+Load semantics: start from the factory dark preset's 17 anchors, apply `anchors`, run `derive_extended()`, then apply `colors` on top of the derived values, then `metrics`/`style`/`animation`. A file that only sets `"anchors": {"window_bg": ...}` is therefore well-defined. Colors are `"#RRGGBB"` / `"#RRGGBBAA"` (`#` optional); token names are the snake_case enum names (`window_bg`, `control_border`, `frame_rounding`, ...; the full table is the name map in `engine/ui/ui_theme.cpp`). Entries of the wrong type are skipped; invalid JSON returns 0 and leaves the current theme untouched.
 
-Four skins ship with the engine (`assets/themes/`): **fluent-dark / fluent-light** (Win11 Fluent, 8px panels + 4px control rounding) and **blender-dark / blender-light** (Blender-like: grey base, near-square 2-4px rounding, orange accent, dark text on buttons).
+The `style` block turns "how to draw" into theme data as well (`ThemeStyle`, `engine/ui/ui_theme.h`):
+
+| Field | Meaning | Fluent | Flex+Blender |
+| --- | --- | --- | --- |
+| `fill_grad` | vertical gradient strength of control fills (top lift ratio; 0 = flat) | 0 | 0.12 |
+| `panel_grad` | gradient strength of panels/windows/title bars (tamer than `fill_grad`) | 0 | 0.05 |
+| `shadow_alpha` | shadow strength of floating windows/popups/tooltips (0 = none) | 0.5 | 0.3 |
+| `shadow_spread` | shadow spread radius (logical pixels) | 26 | 10 |
+
+Fluent and Flex+Blender are therefore **two data points of the same drawing code**, not two drawing branches: Fluent layers through state colours (hover/press luminance steps) with gloss and shadow fully switched off; Flex+Blender uses a 12% top lift for "Halo gloss buttons" and keeps only the minimum shadow that suggests separation from the surface. Gradient strengths clamp to [0, 0.5] and shadow alpha to [0, 1]; negative values (which would dent the fills) and out-of-range values are pulled back into the legal domain.
+
+Four skins ship with the engine (`assets/themes/`): **fluent-dark / fluent-light** (orthodox Win11 Fluent: Mica-approximating neutral bases, 8px panels + 4px controls, zero gradient, broad soft ambient shadows) and **flex-blender-dark / flex-blender-light** (Adobe Flex Halo x Blender: grey bases, bright border strokes, 5/3px near-square rounding, Halo gloss gradients; the dark one uses Blender orange #ED9E5C and selection blue #4772B3, the light one Flex classic blue #2E6BD6).
 
 The `animation` block drives the built-in track's **state-transition animations**: for the participating widgets (button, drag field, checkbox, slider grab, menu highlight, collapsing header) the primary fill color lerps over `hover_ms`/`press_ms` with the given easing whenever hover/press/check state changes; the menu highlight additionally fades in and out. `BuiltinUi::draw` advances the clock from the input snapshot's `time` delta -- with `time == 0` (tests, screenshots) everything is instant and therefore reproducible. Retained hosts that never call `advance_animations()` get the same instant behaviour. `set_preset` does not reset the animation params; a missing `animation` block keeps the current values.
 

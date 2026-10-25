@@ -1,0 +1,50 @@
+{
+  "name": "Flex Blender Dark",
+  "anchors": {
+    "window_bg": "#2B2B2B",
+    "child_bg": "#303030",
+    "border": "#484848",
+    "text": "#E5E5E5",
+    "text_dim": "#9A9A9A",
+    "accent": "#ED9E5C",
+    "accent_hover": "#F2B276",
+    "accent_active": "#D98348",
+    "button": "#545454",
+    "button_hover": "#5F5F5F",
+    "button_active": "#474747",
+    "header": "#232323",
+    "header_hover": "#2A2A2A",
+    "selection": "#4772B3",
+    "ok": "#70A24B",
+    "warn": "#D9A036",
+    "error": "#CF4F4F"
+  },
+  "colors": {
+    "popup_bg": "#232323",
+    "scrollbar_grab": "#545454",
+    "scrollbar_grab_hovered": "#5F5F5F",
+    "check_mark": "#E5E5E5",
+    "control_border": "#6E6E6E",
+    "separator": "#484848"
+  },
+  "metrics": {
+    "window_rounding": 5,
+    "child_rounding": 3,
+    "frame_rounding": 3,
+    "grab_rounding": 3,
+    "popup_rounding": 5,
+    "tab_rounding": 3
+  },
+  "style": {
+    "fill_grad": 0.12,
+    "panel_grad": 0.05,
+    "shadow_alpha": 0.3,
+    "shadow_spread": 10
+  },
+  "animation": {
+    "enabled": true,
+    "hover_ms": 70,
+    "press_ms": 50,
+    "ease": "out_cubic"
+  }
+}

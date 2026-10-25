@@ -153,9 +153,24 @@ enum ThemeMetric : int {
     THEME_METRIC_COUNT,
 };
 
+// ---------------------------------------------------------------------------
+// ThemeStyle — 皮肤质感参数（JSON 主题 "style" 块）
+//
+// 颜色回答"用什么色"，质感参数回答"怎么画"。Fluent 的扁平靠
+// fill_grad=0 + 强投影；Flex/Blender 的光泽靠 fill_grad=0.12 起的顶部提亮
+// 渐变。两者是同一套绘制代码的两个数据点，不是两个绘制分支。
+// ---------------------------------------------------------------------------
+struct ThemeStyle {
+    float fill_grad     = 0.04f;  // 控件填充渐变幅度（上端提亮比例；0 = 纯平）
+    float panel_grad    = 0.02f;  // 面板/窗口/标题栏渐变幅度
+    float shadow_alpha  = 0.45f;  // 浮窗/弹层投影强度（叠在 BORDER_SHADOW 色上）
+    float shadow_spread = 22.0f;  // 投影扩散半径（逻辑像素）
+};
+
 struct Theme {
-    uint32_t colors[THEME_COLOR_COUNT];
-    float    metrics[THEME_METRIC_COUNT];
+    uint32_t   colors[THEME_COLOR_COUNT];
+    float      metrics[THEME_METRIC_COUNT];
+    ThemeStyle style;
 };
 
 // ---------------------------------------------------------------------------
@@ -176,6 +191,11 @@ struct ThemeAnim {
 const ThemeAnim& theme_anim();
 void set_theme_anim(const ThemeAnim& a);
 
+// 当前主题的质感参数（存在 Theme 内，换预设/换主题文件自动跟着走，
+// 与 animation 块"宿主调过就保留"的语义不同——它是主题文件的一部分）。
+const ThemeStyle& theme_style();
+void set_theme_style(const ThemeStyle& s);
+
 // ---------------------------------------------------------------------------
 // JSON 主题加载
 //
@@ -185,12 +205,14 @@ void set_theme_anim(const ThemeAnim& a);
 //     "anchors": { "window_bg": "#202020", "accent": "#4CC2FFFF", ... },
 //     "colors":  { "control_border": "#333333", ... },   // 派生后覆盖
 //     "metrics": { "window_rounding": 8, ... },
+//     "style":   { "fill_grad": 0.04, "panel_grad": 0.02,
+//                  "shadow_alpha": 0.45, "shadow_spread": 22 },
 //     "animation": { "enabled": true, "hover_ms": 100, "press_ms": 70,
 //                    "ease": "out_cubic" }
 //   }
 // 颜色写 "#RRGGBB" / "#RRGGBBAA"（# 可省略）。语义：以深色预设的锚色为
-// 底 → 套 anchors → derive_extended → 套 colors 覆盖 → 套 metrics/animation。
-// 部分主题文件（只写 anchors）因此是良定义的。返回 1/0（0 = JSON 非法）。
+// 底 → 套 anchors → derive_extended → 套 colors 覆盖 → 套 metrics/style/
+// animation。部分主题文件（只写 anchors）因此是良定义的。返回 1/0（0 = JSON 非法）。
 // ---------------------------------------------------------------------------
 int load_theme_json(const char* json_text);
 int load_theme_file(const char* path);

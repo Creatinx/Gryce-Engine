@@ -27,6 +27,12 @@
     "popup_rounding": 8,
     "tab_rounding": 4
   },
+  "style": {
+    "fill_grad": 0.0,
+    "panel_grad": 0.0,
+    "shadow_alpha": 0.45,
+    "shadow_spread": 24
+  },
   "animation": {
     "enabled": true,
     "hover_ms": 90,
