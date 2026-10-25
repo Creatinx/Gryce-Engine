@@ -1,31 +1,31 @@
 {
   "name": "Flex Blender Light",
   "anchors": {
-    "window_bg": "#E2E2E2",
-    "child_bg": "#F5F5F5",
-    "border": "#B0B0B0",
+    "window_bg": "#D8D8D8",
+    "child_bg": "#FAFAFA",
+    "border": "#A8A8A8",
     "text": "#262626",
     "text_dim": "#6E6E6E",
     "accent": "#2E6BD6",
     "accent_hover": "#4C85E8",
     "accent_active": "#1F51B0",
-    "button": "#F0F0F0",
+    "button": "#F8F8F8",
     "button_hover": "#FFFFFF",
-    "button_active": "#D8D8D8",
-    "header": "#EAEAEA",
-    "header_hover": "#DFDFDF",
+    "button_active": "#E0E0E0",
+    "header": "#E4E4E4",
+    "header_hover": "#D2D2D2",
     "selection": "#B8D4F5",
     "ok": "#2E7D32",
     "warn": "#9A6B00",
     "error": "#B03030"
   },
   "colors": {
-    "popup_bg": "#F5F5F5",
+    "popup_bg": "#FAFAFA",
     "scrollbar_grab": "#C4C4C4",
     "scrollbar_grab_hovered": "#D2D2D2",
     "check_mark": "#262626",
-    "control_border": "#A0A0A0",
-    "separator": "#B0B0B0"
+    "control_border": "#989898",
+    "separator": "#A8A8A8"
   },
   "metrics": {
     "window_rounding": 5,
@@ -36,8 +36,8 @@
     "tab_rounding": 3
   },
   "style": {
-    "fill_grad": 0.12,
-    "panel_grad": 0.05,
+    "fill_grad": 0.16,
+    "panel_grad": 0.06,
     "shadow_alpha": 0.28,
     "shadow_spread": 10
   },

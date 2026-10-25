@@ -1615,6 +1615,11 @@ void Renderer2D::draw_text(float x, float y, const std::string& text, float font
     // 双线性采样平均成两列半灰，白白丢掉一半锐度（这正是"文字发虚"的典型成因）。
     // 缩放比明显不是 1 时不能对：那会把缩放的连续位置量化成台阶。
     const bool snap = std::fabs(scale - 1.0f) < 0.02f;
+    // pen_x 是"未量化的笔位置"，与 measure_text 同口径；snap 时每个字形画在
+    // 量化后的位置上，同时把量化差吸收回笔位——否则误差不反馈，后续字形会
+    // 整体晚半个像素累积，相邻字互相侵占：13px 下 'r'(4px 宽) 被 'n' 啃掉
+    // 1px，两字笔画粘成一个 'm' 的形状（实测 "Corner radius" 渲染成
+    // "Comer radius"）。反馈之后每个字都落在整像素且互不重叠。
     float cursor_x = x;
     float cursor_y = y;
 
@@ -1630,8 +1635,11 @@ void Renderer2D::draw_text(float x, float y, const std::string& text, float font
         float x0 = cursor_x + g->offset_x * scale;
         float y0 = cursor_y + g->offset_y * scale;
         if (snap) {
-            x0 = std::floor(x0 + 0.5f);
-            y0 = std::floor(y0 + 0.5f);
+            const float qx = std::floor(x0 + 0.5f);
+            const float qy = std::floor(y0 + 0.5f);
+            cursor_x += (qx - x0);   // 量化差反馈：后续字形跟着挪
+            x0 = qx;
+            y0 = qy;
         }
         const float x1 = x0 + g->width * scale;
         const float y1 = y0 + g->height * scale;
