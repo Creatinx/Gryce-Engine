@@ -4969,6 +4969,118 @@ TEST(builtin, drag_float_n_lays_out_one_row_and_edits_each_box) {
     CHECK_NEAR(v[2], 3.0f, 1e-4f);
 }
 
+TEST(builtin, drag_float_n_honors_set_next_item_width_and_puts_label_outside) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 400.0f, 200.0f};
+    const uint64_t win_id = gryce_ui::hash_label("W");
+    float v[3] = {1.0f, 2.0f, 3.0f};
+
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);
+    ui.set_next_item_width(-100.0f);   // 右边留 100px 给标签
+    CHECK_EQ(ui.drag_float_n("Position", v, 3, 1.0f), 0);
+    ui.end_window();
+    ui.end_frame();
+
+    // 内容区 400 - 2*8 = 384；留 100 → 组宽 284（三个框 + 两个行距都在组内）
+    const float group_right = 8.0f + (384.0f - 100.0f);
+    const Widget* b0 = ui.tree().find(gryce_ui::hash_label("Position##0", win_id));
+    const Widget* b2 = ui.tree().find(gryce_ui::hash_label("Position##2", win_id));
+    CHECK_TRUE(b0 != nullptr);
+    CHECK_TRUE(b2 != nullptr);
+    CHECK_NEAR(b2->rect.right(), group_right, 0.5f);
+
+    // 标签在组**右侧**（ImGui 的 DragScalarN 位置），不是切在组内的右端
+    int labels = 0;
+    Rect label_r{};
+    ui.tree().for_each_alive([&](const Widget& w) {
+        if (w.kind == WidgetKind::Label && std::strcmp(w.label, "Position") == 0) {
+            ++labels;
+            label_r = w.rect;
+        }
+    });
+    CHECK_EQ(labels, 1);
+    CHECK_NEAR(label_r.x, group_right + 4.0f, 0.5f);
+    CHECK_TRUE(label_r.right() <= win.right());
+}
+
+TEST(builtin, content_avail_is_the_remaining_region_from_the_cursor) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 400.0f, 300.0f};
+
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);
+    float w0 = 0.0f, h0 = 0.0f;
+    ui.content_avail(&w0, &h0);
+    CHECK_NEAR(w0, win.w - 16.0f, 0.5f);    // 内容区整宽
+    CHECK_TRUE(h0 > 0.0f);
+
+    // 提交一行之后剩余高度变少（减一行 + 行距）。若实现返回的是"整块内容区"，
+    // h1 会跟 h0 一样 —— 编辑器拿它排"底栏固定高度 + 上面撑满"就会把底栏
+    // 挤出窗口下沿（见 GUi_GetContentAvail 的注释）。
+    CHECK_EQ(ui.button("A"), 0);
+    float w1 = 0.0f, h1 = 0.0f;
+    ui.content_avail(&w1, &h1);
+    CHECK_NEAR(w1, w0, 0.5f);
+    CHECK_NEAR(h0 - h1, 26.0f, 0.5f);   // 一行 = 帧高 22 + 行距 4
+
+    ui.end_window();
+    ui.end_frame();
+}
+
+TEST(builtin, draw_order_follows_submission_even_after_slot_reuse) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+
+    // 帧 1：A、B、C —— 顺序分配槽位
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);
+    ui.button("A");
+    ui.button("B");
+    ui.button("C");
+    ui.end_window();
+    ui.end_frame();
+
+    // 帧 2：B 不再提交（帧末 sweep 回收它的槽位）
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);
+    ui.button("A");
+    ui.button("C");
+    ui.end_window();
+    ui.end_frame();
+
+    // 帧 3：新控件 D 占走 B 空出来的槽位 → 池序变成 A、D、C
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);
+    ui.button("A");
+    ui.button("C");
+    ui.button("D");
+    ui.end_window();
+    ui.end_frame();
+
+    // 绘制序必须仍是提交序（A、C、D）。池槽位序只用于"数一遍"，拿它当绘制序
+    // 会让 Panel / ClipBegin / ClipEnd 跟内容交错，内容被别的面板裁掉。
+    const Widget* order[WidgetTree::kCapacity];
+    int n = 0;
+    ui.tree().collect_in_submit_order(order, WidgetTree::kCapacity, &n);
+    std::string submit_seq;
+    for (int i = 0; i < n; ++i) {
+        if (order[i]->kind != WidgetKind::Button) continue;
+        if (!submit_seq.empty()) submit_seq += ',';
+        submit_seq += order[i]->label;
+    }
+    CHECK_TRUE(submit_seq == "A,C,D");
+
+    // 前提校验：池序确实被槽位复用打乱了（否则这条用例没考到东西）
+    std::string pool_seq;
+    ui.tree().for_each_alive([&](const Widget& w) {
+        if (w.kind != WidgetKind::Button) return;
+        if (!pool_seq.empty()) pool_seq += ',';
+        pool_seq += w.label;
+    });
+    CHECK_TRUE(pool_seq == "A,D,C");
+}
+
 TEST(builtin, image_submits_sprite_widget_and_takes_part_in_hit_testing) {
     BuiltinUi ui;
     const Rect win{0.0f, 0.0f, 300.0f, 200.0f};

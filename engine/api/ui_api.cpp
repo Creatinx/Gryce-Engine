@@ -610,6 +610,7 @@ int GUi_InputText(const char* label, char* buf, int buf_size) {
 }
 
 void GUi_SetKeyboardFocusHere(void) {
+    if (builtin_now()) { bo().set_keyboard_focus_here(); return; }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     ImGui::SetKeyboardFocusHere();
@@ -617,6 +618,7 @@ void GUi_SetKeyboardFocusHere(void) {
 }
 
 int GUi_IsItemDeactivatedAfterEdit(void) {
+    if (builtin_now()) return bo().is_item_deactivated_after_edit();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::IsItemDeactivatedAfterEdit() ? 1 : 0;

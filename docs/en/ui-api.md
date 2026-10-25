@@ -116,6 +116,8 @@ GUi_DragFloat3("Position", v, 0.02f);
 
 Only widgets without a visible label (`"##name"`) should use `-1`.
 
+`GUi_GetContentAvail` returns the **remaining** region (from the current cursor to the bottom-right of the content area, same meaning as ImGui's `GetContentRegionAvail`), not the whole content rect. Layouts of the "fixed-height bottom bar, fill the rest above" kind must use it: subtracting from the full content height silently ignores the menu bar and toolbar rows, and the bottom bar ends up hanging past the window edge.
+
 ### Drag and drop
 
 Payloads are strings only. Everything an editor needs to move around (entity handles, asset paths) already has a textual form, and text buys two things: no memory-layout dependency across the DLL boundary, and a tooltip that actually shows the content while dragging.
@@ -583,6 +585,16 @@ debug_ui_submit_locked()            main thread, lock held
 
 **Why it draws synchronously here instead of pushing a render command like ImGui**: `Renderer2D`'s members (camera, vertex batches, screen size) are written only by the main thread; the render thread only executes the commands it packs. Handing the overlay pass to the render thread races with the next frame's main-thread writes — the symptom is random heap corruption (`0xC0000374`), not a stable crash. The overlay pass itself only records vertices and packs them into commands, so GL calls still land after the scene commands and the UI still covers the final image.
 
+### Draw order = submission order (hard rule)
+
+The draw pass must **not** iterate the widget pool's slot order. Slots are an artifact of allocation and reuse: a widget that stops being submitted on some frame (panel closed, conditional UI collapsed) is reclaimed by `sweep()`, and its slot is taken by a later widget on the next frame — so the pool order becomes `A, D, C` while the submission order is still `A, C, D`.
+
+The draw pass depends on the relative order of three things: `Panel` (pushes the panel's content clip), `ClipBegin` / `ClipEnd` (push/pop a child region's clip), and ordinary widgets. When slot order scrambles that, content lands inside **another panel's** clip rect — the symptom is "one block of content vanishes entirely while the widgets next to it look fine", and it only shows up after some frames have passed and widgets have come and gone (the first few frames always look correct).
+
+So `BuiltinUi::draw()` goes through `WidgetTree::collect_in_submit_order()`: widgets are sorted by `Widget::seq` (reset to 1 at every `begin_frame`, stamped by `ensure` / `touch`) before drawing. The widget count is bounded by `kCapacity = 512`, so the sort cost is negligible against a frame of drawing. `for_each_alive()` stays for order-independent uses (counting, scanning flags); do not draw with it.
+
+A child region (`BeginChild`) whose content is taller than the visible area also gets a scrollbar (same as ImGui's `BeginChild` default). Without one the overflowing last lines are neither visible nor draggable, and a log/stats panel silently "loses a line".
+
 ### What the built-in track supports
 
 The built-in track now has the **same control set** as the ImGui track: one host code base runs the full flow on either track. Only the differences and the exact semantics are listed here.
@@ -594,7 +606,7 @@ The built-in track now has the **same control set** as the ImGui track: one host
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | Supported; `Text` **wraps** to the content width |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id). Hover and press swap the border colour instead of the fill; gradients stay at 2%-8% so text is never muddied |
 | `DragFloat` | Real dragging: while held the value follows the **mouse delta** (`speed` units per pixel, Ctrl for 1/10 fine-tuning). There is no "jump where you clicked" semantics |
-| `DragFloat2/3/4` | Supported: N equally wide number boxes side by side on one row (the row is split following `PushMultiItemsWidths`), with the label text to the right of the last box. The N boxes are N independent widgets (id derived from "label + component index"), so dragging one only changes that one; any component change returns 1 |
+| `DragFloat2/3/4` | Supported: N equally wide number boxes side by side on one row (the **widget group** is split following `PushMultiItemsWidths`), with the label text to the right of the whole group (outside it). The group width is whatever `GUi_SetNextItemWidth` asked for, otherwise `ItemWidthDefault` (65% of the window width) — so the "split width between label and widget" recipe above works for 2/3/4-component widgets too. The N boxes are N independent widgets (id derived from "label + component index"), so dragging one only changes that one; any component change returns 1 |
 | `Selectable` | Supported: full-row width, left-aligned text, selected-state highlight. `selected` is an **input** (the caller owns the selection set); the return value only means "was clicked" and never flips `selected` itself — same as `ImGui::Selectable(label, bool)` |
 | `Image` | Supported: goes through the drawlist's sprite channel into `Renderer2D`; `tex` is a **packed engine texture handle** (see "Two texture id semantics" in section 5). The difference from ImGui is only activation/navigation: ImGui's image has no id (no navigation, no `ActiveId`), the builtin one gets an id derived from the texture handle, so it can be pressed (clicking the viewport image also clears keyboard focus, which is what you want). **Both tracks report hover** — ImGui's `IsItemHovered` is a pure rect test on `LastItemData`, independent of id — so the `LastItemRect` + `IsItemHovered` picking chain is identical on both |
 | `ColorEdit4` | Swatch plus a popup with R/G/B/A sliders; edits write back immediately |

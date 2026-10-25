@@ -224,16 +224,15 @@ const BuiltinUiOps kOps = {
     []() { return rt().line_height(); },
     []() { return rt().frame_height(); },
     [](const char* text) { return rt().text_width(text); },
-    [](float w) { (void)w; },   // 内置轨没有列宽概念（控件总是撑满内容区）
+    [](float w) { rt().ui().set_next_item_width(w); },   // >0 绝对宽 / <0 右边留白
     [](float* w, float* h) {
-        // 内容区可用尺寸 = 当前窗口内缩一个内边距。无窗口时全 0。
-        const Rect r = rt().ui().current_window_rect();
-        const float pad_x = theme().metrics[THEME_METRIC_PAD_X];
-        const float pad_y = theme().metrics[THEME_METRIC_PAD_Y];
-        if (w) *w = (r.w > pad_x * 2.0f) ? (r.w - pad_x * 2.0f) : 0.0f;
-        if (h) *h = (r.h > pad_y * 2.0f) ? (r.h - pad_y * 2.0f) : 0.0f;
+        // 剩余可用尺寸 = 当前光标到内容区右下角（ImGui 的
+        // GetContentRegionAvail）。**不是**整块内容区：底栏排布局时用整块高度
+        // 会让底栏伸出窗口下沿。
+        rt().ui().content_avail(w, h);
     },
     [](float x, float y) { (void)x; (void)y; },   // 光标流由控件推进，宿主不能随意跳
+    []() { rt().ui().set_keyboard_focus_here(); },
 
     // ---- 刚提交 item 的查询 ----
     [](float* x, float* y, float* w, float* h) {
@@ -246,6 +245,7 @@ const BuiltinUiOps kOps = {
     []() { return rt().ui().is_item_hovered() ? 1 : 0; },
     []() { return rt().ui().is_item_active() ? 1 : 0; },
     [](int button) { return rt().ui().is_item_clicked(button) ? 1 : 0; },
+    []() { return rt().ui().take_item_deactivated_after_edit() ? 1 : 0; },
     []() { return rt().ui().tree().active_id() != 0 ? 1 : 0; },
 
     // ---- 原始鼠标 / 键盘状态 ----

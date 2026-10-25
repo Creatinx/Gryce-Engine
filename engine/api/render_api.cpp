@@ -87,6 +87,12 @@ struct RendererState {
 
     int viewport_w = 1280;
     int viewport_h = 720;
+    // 窗口（帧缓冲）尺寸，与上面的 3D 视口尺寸是**两件事**：编辑器把 3D 视口
+    // 缩成面板里的一块（view 输出到离屏纹理），窗口本身仍是整屏。UI 覆盖层与
+    // 2D overlay 都按"窗口"布局，用视口尺寸会让界面跟着视口一起缩 —— 面板越
+    // 缩越小，布局还会成环（每帧用上一帧缩小的结果再算一遍）。
+    int screen_w = 1280;
+    int screen_h = 720;
     int gameview_w = 1280;
     int gameview_h = 720;
     GEntityHandle viewport_camera = 0;
@@ -238,9 +244,11 @@ static World* get_world() {
 }
 
 // 2D 覆盖层 pass：begin_frame -> RenderSystem2D -> end_frame
+// 坐标系是**窗口**（screen_w/h）而不是 3D 视口：覆盖层的像素就是屏幕像素，
+// 编辑器把视口缩成面板里的一块时，覆盖层仍然铺满整窗（UI 画在它上面）。
 static void render_2d_overlay() {
     if (!g_renderer.renderer2d || !g_renderer.ctx) return;
-    g_renderer.renderer2d->begin_frame(g_renderer.viewport_w, g_renderer.viewport_h);
+    g_renderer.renderer2d->begin_frame(g_renderer.screen_w, g_renderer.screen_h);
     World* world = get_world();
     if (world && world->scene()) {
         ecs::RenderSystem2D sys(g_renderer.renderer2d.get());
@@ -812,7 +820,7 @@ static void debug_ui_submit_locked() {
     // 用 2D 覆盖层 pass 画出去（时序见 api/ui_builtin_backend.h）。
     if (gryce_ui::builtin_ui()) {
         gryce_ui::BuiltinRuntime& rt = gryce_ui::BuiltinRuntime::instance();
-        rt.set_frame_context(g_renderer.viewport_w, g_renderer.viewport_h,
+        rt.set_frame_context(g_renderer.screen_w, g_renderer.screen_h,
                              g_renderer.renderer2d.get());
         rt.set_throttle(g_renderer.ui_frame_interval, g_renderer.ui_frame_counter);
         if (rt.begin_build()) {
@@ -1243,6 +1251,10 @@ int GRender_Init(const GRenderInitDesc* desc) {
     g_renderer.viewport_h = desc->viewport_h > 0 ? desc->viewport_h : 720;
     g_renderer.gameview_w = g_renderer.viewport_w;
     g_renderer.gameview_h = g_renderer.viewport_h;
+    // 初值取 Init 的尺寸（宿主建窗时两者相同）；之后每帧在 GRender_BeginFrame
+    // 里按窗口帧缓冲刷新，宿主缩视口不会影响它。
+    g_renderer.screen_w = g_renderer.viewport_w;
+    g_renderer.screen_h = g_renderer.viewport_h;
 
     // 垂直同步：必须在渲染线程启动前下发。异步模式下 set_swap_interval 只是把
     // 命令排进建帧队列，而首帧由渲染线程的 begin_frame 应用；此处 running_ 仍为
@@ -1484,6 +1496,19 @@ void GRender_BeginFrame(void) {
                 g_renderer.gameview_w = g_renderer.pipeline->game_view_width();
                 g_renderer.gameview_h = g_renderer.pipeline->game_view_height();
             }
+        }
+    }
+
+    // 窗口尺寸：UI 覆盖层与 2D overlay 的坐标系就是它（见 screen_w 的说明）。
+    // 每帧现查，窗口被拉伸/最大化时不用等宿主通知；查询本身只是读一次平台层
+    // 的缓存值，不做同步或轮询。没有窗口的宿主（离屏跑测试）保留上次的值。
+    if (GWindow_IsValid()) {
+        int fw = 0;
+        int fh = 0;
+        GWindow_GetFramebufferSize(&fw, &fh);
+        if (fw > 0 && fh > 0) {
+            g_renderer.screen_w = fw;
+            g_renderer.screen_h = fh;
         }
     }
     // Async mode: render thread handles begin_frame

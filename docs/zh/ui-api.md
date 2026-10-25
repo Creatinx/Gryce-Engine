@@ -116,6 +116,8 @@ GUi_DragFloat3("Position", v, 0.02f);
 
 不带可见标签的控件（`"##name"`）才该用 `-1`。
 
+`GUi_GetContentAvail` 给的是**剩余**可用尺寸（从当前光标到内容区右下角，与 ImGui 的 `GetContentRegionAvail` 同义），不是整块内容区。排"底栏固定高度、上面撑满"这类布局必须用它：拿整个内容区的高度自己减，菜单栏/工具栏已经吃掉的那几十像素不会被算进去，底栏会伸出窗口下沿。
+
 ### 拖放
 
 payload 只支持字符串。编辑器要传的东西（实体句柄、资产路径）本来就有文本形式，走文本换来两件事：跨 DLL 不依赖任何内存布局，调试时 tooltip 里也能直接看到内容。
@@ -563,6 +565,16 @@ debug_ui_submit_locked()            主线程，锁已持有
 
 **为什么在同一处同步画、而不是像 ImGui 那样压成渲染命令**：`Renderer2D` 的成员（相机、顶点批次、屏幕尺寸）只由主线程写，渲染线程只执行它压进去的命令。把覆盖层 pass 打包成命令交给渲染线程执行，会与下一帧主线程的写入竞争——症状是随机的堆损坏（`0xC0000374`），不是稳定崩溃。覆盖层 pass 本身也只记录顶点、再把顶点压成命令，所以 GL 调用仍然排在场景命令之后、UI 盖在最终画面上。
 
+### 绘制序 = 提交序（硬约定）
+
+绘制遍历**不能**用控件池的槽位序。槽位是"分配 / 复用"的产物：中间某个控件某一帧不再提交（面板关掉、条件 UI 收起来）会被 `sweep()` 回收，它的槽位下一帧就被后来的控件占走，于是池序变成 `A, D, C` 而提交序仍是 `A, C, D`。
+
+绘制层依赖三件事的相对顺序：`Panel`（推入面板的内容裁剪）、`ClipBegin` / `ClipEnd`（压弹子区域裁剪）、以及普通控件。顺序一旦被池序打乱，内容就会落进**别的面板**的裁剪域——症状是"某一块内容整片消失，旁边的控件却好好的"，而且只在跑过若干帧、发生过控件增删之后才出现（前几帧永远正常）。
+
+所以 `BuiltinUi::draw()` 走 `WidgetTree::collect_in_submit_order()`：按 `Widget::seq`（`begin_frame` 每帧从 1 重新计数，`ensure` / `touch` 时落值）排序后再画。控件数受 `kCapacity = 512` 限制，排序代价相对整帧绘制可以忽略。`for_each_alive()` 保留给"与顺序无关"的用途（数一遍、扫标记），不要拿它画东西。
+
+子区域（`BeginChild`）内容超出可见高度时同样有一条滚动条（与 ImGui 的 `BeginChild` 默认行为一致）；不给的话超出的最后几行既看不见也拖不动，日志/统计面板会"少一行"。
+
 ### 内置轨的能力边界
 
 内置轨与 ImGui 轨的**控件集合已经对齐**：同一份宿主代码两条轨都能跑完整流程。下面只列差异与语义细节。
@@ -574,7 +586,7 @@ debug_ui_submit_locked()            主线程，锁已持有
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | 支持；`Text` 按内容区宽度**自动折行** |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id）。悬停/按下换描边色而非换底色，渐变幅度 2%~8% 不压文字 |
 | `DragFloat` | 支持真拖拽：按住后按**鼠标位移**改值（`speed` 单位/像素，按住 Ctrl 走 1/10 精调）；没有"点哪算哪"的语义 |
-| `DragFloat2/3/4` | 支持：一行里并排 N 个只显示数值的框（等宽，按 `PushMultiItemsWidths` 的口径切分整行），标签文本跟在最后一个框右边。N 个框是 N 个独立控件（id 由「标签 + 分量序号」派生），拖哪个改哪个；任一分量变化即返回 1 |
+| `DragFloat2/3/4` | 支持：一行里并排 N 个只显示数值的框（等宽，按 `PushMultiItemsWidths` 的口径切分**控件组宽**），标签文本跟在整组右边（不占组宽）。组宽 = `GUi_SetNextItemWidth` 指定的值，没指定时按 `ItemWidthDefault`（窗口宽 65%）——所以上面「标签与控件的宽度分摊」那套写法在 2/3/4 分量上同样成立。N 个框是 N 个独立控件（id 由「标签 + 分量序号」派生），拖哪个改哪个；任一分量变化即返回 1 |
 | `Selectable` | 支持：整行宽、左对齐文本、选中态高亮。`selected` 是**入参状态**（选中集合归调用方管），返回值只表示"被点了"，不自行改 `selected`——与 `ImGui::Selectable(label, bool)` 一致 |
 | `Image` | 支持：走 drawlist 的 sprite 通道交给 `Renderer2D` 采样，`tex` 是**打包的引擎纹理句柄**（见 5 节「纹理 id 的两套语义」）。与 ImGui 的差别只在激活/导航：ImGui 那边图片没有 id（不进导航、不进 `ActiveId`），内置轨给图片一个由纹理句柄派生的 id，于是它能被按下（点视口图会顺带清掉键盘焦点，这正是想要的行为）。**悬停两条轨都报得出来**——ImGui 的 `IsItemHovered` 是 `LastItemData` 的纯矩形判定，与 id 无关——所以 `LastItemRect` + `IsItemHovered` 的拾取链两边一致 |
 | `ColorEdit4` | 色块 + 点开的弹层（R/G/B/A 四条滑块），弹层内改动即时回写 |

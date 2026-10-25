@@ -76,6 +76,9 @@ void BuiltinUi::set_display_size(float w, float h) {
 
 void BuiltinUi::begin_frame(const UiInputFrame& input, const Theme& theme,
                             const UiTextMetrics& metrics) {
+    // 帧首清掉一次性请求：宿主若设了宽度却没提交吃宽度的控件，不能漏到下一帧
+    next_item_width_ = 0.0f;
+    focus_next_ = false;
     // HiDPI：宿主给的是像素坐标，模型层统一在逻辑坐标里算（渲染桥乘回去）
     UiInputFrame in = input;
     if (scale_ != 1.0f) {
@@ -149,6 +152,13 @@ void BuiltinUi::draw(UiDrawList& dl) {
 
     const UiDrawContext ctx{tree_.focus_id(), tree_.caret_visible()};
 
+    // 绘制序 = 本帧提交序（**不是**控件池的槽位序）。Panel 推内容裁剪、
+    // ClipBegin/ClipEnd 压弹，它们与内容的相对顺序一旦被打乱，内容就会落进
+    // 别的面板的裁剪域里被整片裁掉。
+    const Widget* order[WidgetTree::kCapacity];
+    int           order_count = 0;
+    tree_.collect_in_submit_order(order, WidgetTree::kCapacity, &order_count);
+
     // 两遍：窗口层在前、弹层在后。层内按提交序遍历；遇 Panel（窗口/弹层
     // 背景板）切换裁剪域，遇 ClipBegin/ClipEnd 压/弹子区域裁剪。
     // 用 clip_depth 记账而不是布尔：子区域可能嵌在窗口的裁剪里。
@@ -156,12 +166,13 @@ void BuiltinUi::draw(UiDrawList& dl) {
         int clip_depth = 0;
         // 最近一个面板的内容裁剪域：标题栏要用它"临时出界"（见下面的分支）
         Rect panel_clip{};
-        tree_.for_each_alive([&](const Widget& w) {
-            if (static_cast<int>(w.layer) != layer) return;
+        for (int oi = 0; oi < order_count; ++oi) {
+            const Widget& w = *order[oi];
+            if (static_cast<int>(w.layer) != layer) continue;
 
             if (w.kind == WidgetKind::ClipEnd) {
                 if (clip_depth > 0) { dl.pop_clip(); --clip_depth; }
-                return;
+                continue;
             }
             if (w.kind == WidgetKind::Panel) {
                 // 上一个面板的内容裁剪到此结束
@@ -175,7 +186,7 @@ void BuiltinUi::draw(UiDrawList& dl) {
                 panel_clip = c;
                 dl.push_clip(c.x, c.y, c.w, c.h);
                 ++clip_depth;
-                return;
+                continue;
             }
             if (w.kind == WidgetKind::TitleBar && clip_depth > 0) {
                 // 标题栏是窗口 chrome，不是内容：它占的是窗口最上面那一行，
@@ -187,15 +198,15 @@ void BuiltinUi::draw(UiDrawList& dl) {
                 ui_draw_widget(w, *theme_, *metrics_, ctx, dl);
                 dl.push_clip(panel_clip.x, panel_clip.y, panel_clip.w, panel_clip.h);
                 ++clip_depth;
-                return;
+                continue;
             }
             if (w.kind == WidgetKind::ClipBegin) {
                 dl.push_clip(w.rect.x, w.rect.y, w.rect.w, w.rect.h);
                 ++clip_depth;
-                return;
+                continue;
             }
             ui_draw_widget(w, *theme_, *metrics_, ctx, dl);
-        });
+        }
         while (clip_depth > 0) { dl.pop_clip(); --clip_depth; }
     }
 }
@@ -583,6 +594,17 @@ bool BuiltinUi::is_item_clicked(int button) const {
     return tree_.input().mouse_clicked[button];
 }
 
+bool BuiltinUi::take_item_deactivated_after_edit() {
+    if (last_id_ == 0) return false;
+    Widget* w = tree_.find(last_id_);
+    if (!w || !w->deactivated_after_edit) return false;
+    // 查询即消费：宿主每帧都会问一次，不清就会连着两帧报同一笔编辑，
+    // 落到撤销栈上就是"改一次名字出现两步"。
+    w->deactivated_after_edit = false;
+    w->deactivated_frame = 0;
+    return true;
+}
+
 void BuiltinUi::text(const char* s) {
     if (!usable()) { finish_impl(nullptr); return; }
     text_wrapped(s, 0, false);
@@ -595,7 +617,16 @@ void BuiltinUi::text_colored(uint32_t rgba, const char* s) {
 
 // 单行 Label：几何 + 着色都在这里，wrap 出来的每一行也走它。
 void BuiltinUi::emit_label(const char* s, uint32_t rgba, bool colored) {
-    const Rect r = place(content_width(), line_height());
+    // 宽度取**实测文本宽**，不是整行宽：SameLine 之后的下一个 item 是从
+    // last_rect.right() 接着摆的，Label 撑满整行就会把后面的按钮推到面板
+    // 外面去（工具栏上的 "Save | Undo | Redo" 只剩 Save 就是这么来的）。
+    // 没有度量器时退回整行宽——那时也算不出宽度，至少不改变原有布局。
+    float label_w = content_width();
+    if (metrics_) {
+        const float tw = metrics_->width(s ? s : "", kWidgetFontSize);
+        if (tw > 0.0f && tw < label_w) label_w = tw;
+    }
+    const Rect r = place(label_w, line_height());
     Widget* w = tree_.touch(item_id(s, true), WidgetKind::Label, r, s);
     if (w) {
         stamp(w);
@@ -838,10 +869,10 @@ int BuiltinUi::selectable(const char* label, int selected) {
 }
 
 // N 分量拖拽（ImGui 的 DragScalarN 语义）：一行里并排 N 个只显示数值的框，
-// 标签文本跟在最后一个框的右边。
+// 标签文本跟在**整组**的右边。
 //
 // 为什么不用 N 个独立的 drag_float 提交：那会把它们排成 N **行**，一行只
-// 能放一个框。这里改为先按整行占位（place 只推进一次光标），再把这一行
+// 能放一个框。这里改为整组占位一次（place 只推进一次光标），再把这个矩形
 // 手工切分成 N 份。
 //
 // 拖哪个改哪个由 WidgetTree 保证：drag_owner_ 按控件 id 判定归属，且
@@ -858,16 +889,16 @@ int BuiltinUi::drag_float_n(const char* label, float* inout_values, int count,
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
     const float spacing = item_spacing();
-    const float label_w = shown[0]
-        ? ((metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f) + spacing)
-        : 0.0f;
 
-    // 整行占位：place 推进光标一次（这一组只占一行），并把行首定在当前光标。
-    const Rect row = place(content_width(), frame_height());
+    // 控件组只占 item_width()，标签画在组**右侧**（与 ImGui 的 DragScalarN 一致：
+    // 组宽取 ItemWidth，标签用 ItemInnerSpacing 跟在后面，不占组宽）。这样宿主
+    // 用 SetNextItemWidth(-reserve) 就能把右边留给标签；早先这里按整行占位、
+    // 再从行内切出标签的位置，会让 SetNextItemWidth 完全失效 —— 检视器的
+    // Position 三框吃满整宽，标签被挤到面板边缘只剩半个字。
+    const Rect row = place(item_width(), frame_height());
     if (row.w <= 0.0f || row.h <= 0.0f) { finish_impl(nullptr); return 0; }
 
-    const float box_total = row.w - label_w - spacing * (count - 1);
-    const float box_w = box_total / static_cast<float>(count);
+    const float box_w = (row.w - spacing * (count - 1)) / static_cast<float>(count);
     if (box_w <= 0.0f) { finish_impl(nullptr); return 0; }
 
     int      changed = 0;
@@ -904,11 +935,11 @@ int BuiltinUi::drag_float_n(const char* label, float* inout_values, int count,
         }
     }
 
-    // 组标签：跟在最后一个框右边（ImGui 的 DragScalarN 也是这个位置）。
-    // 标签是纯显示，不参与命中测试。
+    // 组标签：纯显示，不参与命中测试。位置 = 组右沿 + ItemInnerSpacing，
+    // 与单分量 DragFloat 的 draw_label_right 同一口径（4px）。
     if (shown[0]) {
-        const Rect lr{row.x + row.w - (label_w - spacing), row.y,
-                      label_w - spacing, row.h};
+        const float tw = metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f;
+        const Rect lr{row.right() + 4.0f, row.y, tw, row.h};
         Widget* lw = tree_.touch(item_id(label, true), WidgetKind::Label, lr, shown);
         if (lw) stamp(lw);
     }
@@ -948,6 +979,13 @@ int BuiltinUi::input_text(const char* label, char* buf, int buf_size) {
     w = tree_.touch(id, WidgetKind::TextInput, r, shown);
     if (!w) { finish_impl(nullptr); return 0; }
     stamp(w);
+    // 上一行若调过 GUi_SetKeyboardFocusHere，焦点落在这个框上（插入点末尾）。
+    // 放在 touch 之后：touch 内部可能因为"点了别的控件"把焦点清掉，顺序颠倒
+    // 会让请求被自己这一步吞掉。
+    if (focus_next_) {
+        tree_.focus_widget(id);
+        focus_next_ = false;
+    }
     finish_impl(w);
 
     // 读回（同样按调用方容量截断）
@@ -1184,6 +1222,13 @@ void make_menu_popup_id(const char* label, char* out, size_t cap) {
 int BuiltinUi::begin_menu(const char* label) {
     if (!usable()) { finish_impl(nullptr); return 0; }
     WindowState& win = windows_[depth_ - 1];
+    // 菜单栏里的菜单一律横排：begin_menu_bar 只在开头置了一次"同行"，第一个
+    // 菜单会把它消费掉，第二个开始就掉到下一行（表现为菜单竖着摞起来）。
+    // 非菜单栏上下文（普通弹层里的子菜单）不加，那里本来就该换行。
+    if (win.in_menubar) {
+        win.pending_same_line = true;
+        win.same_line_spacing = 0.0f;
+    }
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
     const float tw = metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f;
@@ -1309,6 +1354,9 @@ void BuiltinUi::end_child() {
     WindowPersist* p = find_persist(win.id);
     p->content_h = win.content_h;
     p->scroll_y  = win.scroll_y;
+    // 子区域内容超出可见高度时同样给一条滚动条（ImGui 的 BeginChild 默认带
+    // 滚动条）：不给的话超出的最后几行既看不见也拖不动，日志面板会"少一行"。
+    submit_scrollbar(win);
     // 收尾的裁剪标记（与 begin_child 的 ClipBegin 配对，只在有可见高度时才有）
     const float view_h = (win.rect.bottom() - pad_y()) - win.content_top;
     if (view_h > 0.0f) {
@@ -1561,15 +1609,26 @@ float BuiltinUi::frame_height() const {
     return kWidgetFontSize + pady * 2.0f;
 }
 
-float BuiltinUi::item_width() const {
+float BuiltinUi::item_width() {
     if (!usable()) return 0.0f;
+    const float cw = content_width();
+    // SetNextItemWidth：ImGui 的语义是"下一个 item 的宽度"，>0 绝对、<0 右边
+    // 留白、一次性的。宿主用它把控件挤到标签左边、或给下拉框定死宽度；
+    // 不支持的话输入框会一直吃 65%，旁边的按钮被推到面板外面。
+    if (next_item_width_ != 0.0f) {
+        const float req = next_item_width_;
+        next_item_width_ = 0.0f;
+        float w = (req > 0.0f) ? req : (cw + req);
+        if (w < 0.0f) w = 0.0f;
+        if (w > cw)   w = cw;
+        return w;
+    }
     // ImGui 的 ItemWidthDefault = trunc(Size.x * 0.65f)，Size.x 是子窗口的整宽
     // （含它自己的 1px 边框）。这里不能用"扣掉边框"的宽度：388 宽的子窗口在
     // ImGui 里算出来是 252，扣掉 2px 只有 250，整列控件窄 2px、右侧标签跟着
     // 左移，与 ImGui 轨就再也对不齐了。
     const Rect& r = windows_[depth_ - 1].rect;
     float w = std::floor(r.w * 0.65f);
-    const float cw = content_width();
     if (w > cw) w = cw;
     return (w > 0.0f) ? w : 0.0f;
 }
@@ -1585,6 +1644,24 @@ float BuiltinUi::content_rect_h() const {
     const WindowState& win = windows_[depth_ - 1];
     const float h = (win.rect.bottom() - pad_y()) - win.content_top;
     return (h > 0.0f) ? h : 0.0f;
+}
+
+void BuiltinUi::content_avail(float* out_w, float* out_h) const {
+    if (!usable()) {
+        if (out_w) *out_w = 0.0f;
+        if (out_h) *out_h = 0.0f;
+        return;
+    }
+    // "剩余"= 内容区右下角 - 当前光标。光标含滚动位移（cursor_y 已减 scroll_y），
+    // 与 ImGui 的 ContentRegionAvail 一致：滚下去之后可用高度变大。
+    const WindowState& win = windows_[depth_ - 1];
+    const Rect& r = win.rect;
+    const float left  = r.x + pad_x() + win.indent_x;
+    const float right = r.right() - pad_x();
+    const float w = right - left;
+    const float h = (r.bottom() - pad_y()) - win.cursor_y;
+    if (out_w) *out_w = (w > 0.0f) ? w : 0.0f;
+    if (out_h) *out_h = (h > 0.0f) ? h : 0.0f;
 }
 
 // ---------------------------------------------------------------------------

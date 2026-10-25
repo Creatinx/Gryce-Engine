@@ -57,9 +57,8 @@ enum {
     GUI_WIN_MENU_BAR          = 1 << 5,
     GUI_WIN_NO_SCROLLBAR      = 1 << 6,
     GUI_WIN_NO_BRING_TO_FRONT = 1 << 7,
-    // 内置轨专有：显式要求标题栏（带折叠框，可拖动移窗）。内置轨默认不给
-    // 标题栏——引擎里的面板多是"已经排好位置的固定区域"，标题栏会白吃高度。
-    // ImGui 轨忽略这一位（它本来就有标题栏，用 NO_TITLE_BAR 关）。
+    // 历史位：显式要求标题栏。**两轨现在都默认给标题栏**（用 NO_TITLE_BAR
+    // 关掉），所以这一位等于默认行为，保留只为不破坏旧调用方；新代码不要再传。
     GUI_WIN_TITLE_BAR         = 1 << 8,
 };
 
@@ -704,6 +703,8 @@ GRYCE_UI_API void  GUi_EndDragDropTarget(void);
 
 GRYCE_UI_API void  GUi_SetCursorPos(float x, float y);
 GRYCE_UI_API void  GUi_GetCursorPos(float* out_x, float* out_y);
+// 剩余可用尺寸：从当前光标位置到内容区右下角（ImGui 的 GetContentRegionAvail）。
+// 排"底栏固定高度 + 上面撑满"这类布局要用它，别拿整个内容区的高度自己减。
 GRYCE_UI_API void  GUi_GetContentAvail(float* out_w, float* out_h);
 GRYCE_UI_API void  GUi_SetNextItemWidth(float w);
 // 缩进 / 反缩进（树形层级用）。px <= 0 = 用主题的缩进度量。

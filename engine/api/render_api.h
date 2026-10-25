@@ -160,6 +160,12 @@ GRYCE_RENDERER_API bool GRender_HasImGui(void);
 // GUi_* 的能力差异（内置轨没有的少数 API 返回 0 / 空操作）见 docs/zh/ui-api.md
 // 第 7.11 节的逐条能力表。
 // ---------------------------------------------------------------------------
+// UI 后端编号（GRender_SetUIBackend 的取值；写成常量，避免宿主里出现裸 0/1）
+enum {
+    GRYCE_UI_BACKEND_IMGUI   = 0,
+    GRYCE_UI_BACKEND_BUILTIN = 1,
+};
+
 GRYCE_RENDERER_API void GRender_SetUIBackend(int backend);
 GRYCE_RENDERER_API int  GRender_GetUIBackend(void);
 

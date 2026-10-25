@@ -84,6 +84,9 @@ public:
     float scale() const { return scale_ > 0.0f ? scale_ : 1.0f; }
     // 屏幕尺寸（逻辑像素）：弹层/提示要夹在屏幕内，遮罩要铺满。
     void  set_display_size(float w, float h);
+    // ImGui 的 SetNextItemWidth 语义：>0 绝对宽，<0 右边留 |w| 的空白，
+    // 0 = 回到默认的 65%。只作用于紧接着提交的那一个控件（一次性的）。
+    void  set_next_item_width(float w) { next_item_width_ = w; }
 
     // ---- 窗口栈 ----
     // 返回 1 = 开起来了（宿主照常提交内容）；0 = 栈满 / 矩形退化 / 已折叠，
@@ -195,6 +198,19 @@ public:
     Rect last_item_rect() const { return last_rect_; }
     bool is_item_hovered() const { return last_hovered_; }
     bool is_item_active() const { return last_pressed_; }
+    // 剩余可用尺寸（GUi_GetContentAvail）：从**当前光标**到内容区右下角，
+    // 与 ImGui 的 GetContentRegionAvail 同义。它跟 content_width() /
+    // content_rect_h() 不是一回事——后者给整块内容区，与光标无关；拿整块高度
+    // 去排"底部固定高度 + 上面撑满"的布局，底栏就会被挤出窗口。
+    void content_avail(float* out_w, float* out_h) const;
+    // 刚提交的输入框"这一激活期内改过内容、此刻已失焦"（ImGui 的
+    // IsItemDeactivatedAfterEdit）。**查询即消费**：一次编辑只报一次，宿主
+    // 在 InputText 后面紧跟 if(...) 提交，不会写成两步撤销。
+    // 回车、点别的控件、点空白三种失焦路径都覆盖；Esc 放弃不算提交。
+    bool take_item_deactivated_after_edit();
+    // 把键盘焦点交给**下一个**提交的输入框，插入点落在末尾（ImGui 的
+    // SetKeyboardFocusHere）。用来做"双击重命名 / 新建后直接打字"。
+    void set_keyboard_focus_here() { focus_next_ = true; }
     // 刚提交的 item 是否被某个鼠标键点中（1 = 右键，2 = 中键，0 = 左键）。
     bool is_item_clicked(int button) const;
 
@@ -277,7 +293,7 @@ private:
     // 带标签控件的**控件框宽度**（ImGui 的 DC.ItemWidthDefault）：
     // trunc(窗口宽 * 0.65)，再按内容区宽度钳住。标签画在框右边、不占这 65%，
     // 所以一列控件的框宽是齐的，右边缘也对齐。
-    float    item_width() const;
+    float    item_width();   // 取宽度（会消费一次性的 SetNextItemWidth）
     float    content_rect_h() const;
     float    indent_metric() const;
 
@@ -342,6 +358,13 @@ private:
 
     // 刚提交的 item 的 id（拖放源判据）
     uint64_t   last_id_ = 0;
+
+    // SetKeyboardFocusHere 的挂起请求：只对下一个提交的输入框生效，用完即清
+    bool       focus_next_ = false;
+
+    // SetNextItemWidth 的挂起值（0 = 没设）。每帧开始清零，避免宿主的设置
+    // 因为"下一个控件不吃宽度"而漏到后面的控件上。
+    float      next_item_width_ = 0.0f;
 
     float      scale_ = 1.0f;
 

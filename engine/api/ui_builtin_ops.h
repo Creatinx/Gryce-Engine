@@ -93,15 +93,20 @@ struct BuiltinUiOps {
     float (*text_line_height)();
     float (*frame_height)();
     float (*calc_text_width)(const char* text);
-    void  (*set_next_item_width)(float w);   // 内置轨暂无列宽概念：空操作
+    void  (*set_next_item_width)(float w);   // >0 绝对宽，<0 右边留白（ImGui 语义）
     void  (*get_content_avail)(float* out_w, float* out_h);
     void  (*set_cursor_pos)(float x, float y);   // 光标由控件推进：空操作
+    // 焦点交给**下一个**提交的输入框（ImGui 的 SetKeyboardFocusHere）
+    void  (*set_keyboard_focus_here)();
 
     // ---- 刚提交 item 的查询 ----
     void (*last_item_rect)(float* out_x, float* out_y, float* out_w, float* out_h);
     int  (*is_item_hovered)();
     int  (*is_item_active)();
     int  (*is_item_clicked)(int mouse_button);
+    // 刚提交的输入框是否"改过内容且已失焦"（ImGui 的 IsItemDeactivatedAfterEdit）。
+    // **查询即消费**：一次编辑只报一次。
+    int  (*is_item_deactivated_after_edit)();
     // 整棵树里有没有控件正被按住（连续编辑合并撤销的判据，见 ui-api.md）
     int  (*is_any_item_active)();
 

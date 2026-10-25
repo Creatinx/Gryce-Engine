@@ -3,6 +3,7 @@
 
 #include "ui/ui_widget.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -986,6 +987,7 @@ void WidgetTree::begin_frame(const UiInputFrame& input, const UiTextMetrics* met
     input_   = input;
     metrics_ = metrics;
     ++frame_;
+    seq_next_ = 1;
     press_claimed_ = 0;
 
     // 插入符闪烁：宿主给了时钟才闪（0 = 恒显，截图与单测可复现）
@@ -1008,6 +1010,7 @@ Widget* WidgetTree::ensure(uint64_t id, WidgetKind kind, const Rect& rect, const
     Widget& w = s->w;
     w.kind = kind;
     w.rect = rect;
+    w.seq  = seq_next_++;   // 同帧重复提交（ensure→touch）以后一次为准
     w.has_clip = clip_active_;
     w.clip = pending_clip_;
     w.label[0] = '\0';
@@ -1029,6 +1032,12 @@ Widget* WidgetTree::touch(uint64_t id, WidgetKind kind, const Rect& rect, const 
     w->hovered = false;
     w->pressed = false;
     w->clicked = false;
+    // 提交后马上查询（ImGui 的用法）要求这一帧就看得见；而"点了后面的控件
+    // 才失焦"要能活到下一帧，所以按帧号放两帧，超过就认为宿主已经查过了。
+    if (w->deactivated_after_edit && frame_ > w->deactivated_frame + 1) {
+        w->deactivated_after_edit = false;
+        w->deactivated_frame = 0;
+    }
     if (!w->enabled || !widget_is_interactive(kind)) {
         return w;
     }
@@ -1053,7 +1062,7 @@ Widget* WidgetTree::touch(uint64_t id, WidgetKind kind, const Rect& rect, const 
                 w->sel_anchor = w->caret;   // 空选区；拖动时拉开
             }
         } else if (focus_id_ != 0) {
-            focus_id_ = 0;   // 点别的控件：焦点转移走
+            drop_focus();    // 点别的控件：焦点转移走（走统一出口，记得住"改过"）
         }
     }
     if (active_id_ == id && input_.mouse_down[0]) {
@@ -1145,9 +1154,21 @@ void WidgetTree::apply_standard_interaction(Widget& w) {
             break;
         }
 
-        case WidgetKind::TextInput:
-            edit_text(w);
+        case WidgetKind::TextInput: {
+            // 只有聚焦的那个框会被编辑；记下"这一激活期内改过内容"，失焦时才
+            // 判得出该不该算一次提交（IsItemDeactivatedAfterEdit 的语义）。
+            // 比对整串而不是在每个编辑分支里打标记：编辑入口有七八处（插入、
+            // 删除、粘贴、IME 上屏…），逐个打必然漏。
+            if (focus_id_ == w.id) {
+                char keep[kWidgetTextCap];
+                std::snprintf(keep, sizeof(keep), "%s", w.text);
+                edit_text(w);
+                if (std::strcmp(keep, w.text) != 0) w.edited_while_focused = true;
+            } else {
+                w.preedit[0] = '\0';
+            }
             break;
+        }
 
         default:
             break;
@@ -1268,9 +1289,16 @@ void WidgetTree::edit_text(Widget& w) {
             case UiInputFrame::KeyDelete: delete_forward(); break;
             case UiInputFrame::KeyBackspace: delete_back(); break;
             case UiInputFrame::KeyEsc:
+                // Esc = 放弃这次编辑：先丢掉"改过"标记，失焦就不算提交。
                 w.sel_anchor = -1;
                 w.preedit[0] = '\0';
-                focus_id_ = 0;
+                w.edited_while_focused = false;
+                drop_focus();
+                break;
+            case UiInputFrame::KeyEnter:
+                // 回车 = 提交并失焦（ImGui 的默认行为）。宿主的"失焦即提交"
+                // 因此对回车与点别处是同一条路径，不用各写一遍。
+                drop_focus();
                 break;
             default:
                 break;
@@ -1417,12 +1445,40 @@ void WidgetTree::advance_animations(float dt, const Theme& theme) {
     }
 }
 
+void WidgetTree::drop_focus() {
+    if (focus_id_ == 0) return;
+    // 焦点走的这一刻才算"编辑结束"：改过内容才置 deactivated_after_edit，
+    // 只是点进来看看的那次不算。标志只活一帧（touch 每帧清零）。
+    if (Widget* w = find(focus_id_)) {
+        w->preedit[0] = '\0';
+        if (w->edited_while_focused) {
+            w->deactivated_after_edit = true;
+            w->deactivated_frame = frame_;
+            w->edited_while_focused = false;
+        }
+    }
+    focus_id_ = 0;
+}
+
+void WidgetTree::focus_widget(uint64_t id) {
+    if (id == 0 || focus_id_ == id) return;
+    drop_focus();
+    Widget* w = find(id);
+    if (!w) return;
+    focus_id_ = id;
+    // 插入点到末尾、空选区：外部请求焦点时用户是要"接着改"，不是要全选。
+    w->caret = text_len(*w);
+    w->sel_anchor = -1;
+    w->edited_while_focused = false;
+    w->preedit[0] = '\0';
+}
+
 void WidgetTree::end_frame() {
     // 松开即释放拖拽捕获。本帧的 touch 已经读过 clicked（end_frame 在全部
     // touch 之后跑），这里清掉不会吞事件；控件中途消失时也不会留下野 active。
     if (!input_.mouse_down[0]) active_id_ = 0;
     // 点击落在空白处：没有任何控件认领这次按下 → 清键盘焦点
-    if (input_.mouse_clicked[0] && press_claimed_ == 0) focus_id_ = 0;
+    if (input_.mouse_clicked[0] && press_claimed_ == 0) drop_focus();
     drag_last_x_ = input_.mouse_x;
     if (!input_.mouse_down[0]) drag_owner_ = 0;
 
@@ -1433,6 +1489,19 @@ void WidgetTree::end_frame() {
         if (!slots_[i].alive) continue;
         if (slots_[i].w.id != focus_id_) slots_[i].w.preedit[0] = '\0';
     }
+}
+
+void WidgetTree::collect_in_submit_order(const Widget** out, int cap, int* count) const {
+    int n = 0;
+    for (int i = 0; i < used_ && n < cap; ++i) {
+        if (slots_[i].alive) out[n++] = &slots_[i].w;
+    }
+    // 控件数受 kCapacity（512）限制，量级几百，排序代价相对整帧绘制可以忽略；
+    // 换来的是"绘制序 = 提交序"这条绘制层依赖的硬约定。
+    std::sort(out, out + n, [](const Widget* a, const Widget* b) {
+        return a->seq < b->seq;
+    });
+    if (count) *count = n;
 }
 
 void WidgetTree::sweep() {
@@ -1450,6 +1519,8 @@ void WidgetTree::sweep() {
     // wants_keyboard() 恒真，宿主从此不再派发快捷键（gizmo 的 W/R/F、
     // Ctrl+S 全灭），要等用户随手点一下空白处才自愈。
     if (focus_id_   != 0 && find_slot(focus_id_)   == nullptr) focus_id_   = 0;
+    // 注：这里直接清而不是 drop_focus() —— 控件已经不在表里了，没有对象可以
+    // 记 deactivated_after_edit，宿主那一帧也拿不到它的值。
     if (active_id_  != 0 && find_slot(active_id_)  == nullptr) active_id_  = 0;
     if (drag_owner_ != 0 && find_slot(drag_owner_) == nullptr) drag_owner_ = 0;
     // 拖放源消失 = 这次拖放作废（否则松手时找不到交付目标）

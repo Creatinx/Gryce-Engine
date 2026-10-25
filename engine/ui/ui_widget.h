@@ -261,6 +261,12 @@ struct Widget {
     Rect      rect{};                    // 绝对坐标（左上角原点）
     char      label[kWidgetLabelCap] = {};
 
+    // 本帧提交序号（begin_frame 每帧从 1 重新计数，touch/ensure 时落值）。
+    // 绘制必须按它排序，不能按池槽位——槽位是"分配/复用"的顺序，中间控件被
+    // 回收后槽位会被后来的控件占走，于是 Panel / ClipBegin / ClipEnd 会与内容
+    // 交错，裁剪域配错（症状：内容被别的面板的裁剪整片吃掉）。
+    uint32_t  seq = 0;
+
     // —— 值（按种类解释）——
     float value     = 0.0f;              // Slider/DragFloat/ScrollBar：当前值
     float min_value = 0.0f;              // Slider/DragFloat：最小值
@@ -329,6 +335,17 @@ struct Widget {
     bool hovered = false;
     bool pressed = false;   // 正被按住（且是按在它身上开始的）
     bool clicked = false;   // 本帧在它身上完成一次点击
+    // 本帧"刚失去焦点、且这一激活期内真的改过内容"（ImGui 的
+    // IsItemDeactivatedAfterEdit）。回车、点别处、Esc 走的都是这条；只是点
+    // 进去又点出来（没改字）不算 —— 宿主的"失焦即提交"全靠这个判据，判错
+    // 就会把没改动的名字也写成一步撤销。
+    bool deactivated_after_edit = false;
+    // 内部用：这一激活期内改过内容。由 touch() 在 edit_text 前后比对得出。
+    bool edited_while_focused = false;
+    // 内部用：deactivated_after_edit 是在哪一帧置上的。焦点可能在"本控件已经
+    // 提交过之后"才丢（用户去点了后面的控件），宿主那一帧的查询已经跑过了，
+    // 所以这个标志必须能活到下一帧；帧号用来兜住"宿主再也不查"的悬空状态。
+    uint32_t deactivated_frame = 0;
 
     // —— 状态过渡动画（主题 animation 块驱动；由 advance_animations 推进）——
     // anim_to == 0 表示"不在动画集合"：绘制走静态目标色（单测/截图路径）。
@@ -408,14 +425,20 @@ public:
     // 得到"瞬变"行为，与单测/截图路径一致。
     void advance_animations(float dt, const Theme& theme);
 
-    // 按提交序遍历存活控件（数组序 = 提交序 = 绘制序）。宿主一般不直接
-    // 遍历（用 find()）；即时模式层的窗口分组裁剪需要这个序。
+    // 遍历存活控件。**数组序不是提交序**：这里走的是池槽位序（分配/复用的
+    // 结果），只适合"数一遍"这类与顺序无关的用途。绘制一律用下面的
+    // collect_in_submit_order()，否则裁剪域会配错。
     template <typename F>
     void for_each_alive(F&& fn) const {
         for (int i = 0; i < used_; ++i) {
             if (slots_[i].alive) fn(slots_[i].w);
         }
     }
+
+    // 按本帧提交序收集存活控件指针（out 容量至少 kCapacity，按 seq 升序）。
+    // 绘制必须走这个序：Panel 推内容裁剪、ClipBegin/ClipEnd 压弹，三者与内容
+    // 的相对顺序一旦被池槽位打乱，内容就会落进别的面板的裁剪域而整片消失。
+    void collect_in_submit_order(const Widget** out, int cap, int* count) const;
 
     // 帧末：松开即释放拖拽捕获；点击落在空白处（没有控件认领）时清键盘
     // 焦点。回收本帧未提交的控件是另一件事（sweep），即时模式宿主两个都调，
@@ -427,6 +450,10 @@ public:
     uint64_t active_id() const { return active_id_; }  // 按下归属（拖拽捕获）
     uint64_t focus_id() const { return focus_id_; }    // 键盘焦点（TextInput）
     void clear_focus() { focus_id_ = 0; }
+    // 主动把键盘焦点交给某个控件，插入点落到内容末尾。"双击重命名""新建后
+    // 直接改名"这类场景必须先给焦点才能打字（等价 ImGui::SetKeyboardFocusHere）。
+    // 控件不在本帧表里时什么都不做（下一帧它提交了再由宿主重新请求）。
+    void focus_widget(uint64_t id);
 
     // ---- 拖放（即时模式层实现 drag_drop_*，状态放在这里以便跨帧存活）----
     bool  drag_active() const { return drag_active_; }
@@ -458,12 +485,16 @@ private:
     void   apply_standard_interaction(Widget& w);
     void   edit_text(Widget& w);
     void   sync_text_scroll(Widget& w) const;
+    // 唯一允许的"丢焦点"入口：顺手把 deactivated_after_edit 记到那个控件上。
+    // 直接写 focus_id_ = 0 的地方一律改走它，否则"失焦提交"会被静默吞掉。
+    void   drop_focus();
 
     Slot      slots_[kCapacity];
     int       used_ = 0;
     int       free_head_ = -1;
     int       alive_count_ = 0;
     uint32_t  frame_ = 0;
+    uint32_t  seq_next_ = 1;   // 本帧提交计数（ensure 时赋给 Widget::seq）
 
     UiInputFrame input_;
     const UiTextMetrics* metrics_ = nullptr;
