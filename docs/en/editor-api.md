@@ -362,6 +362,8 @@ int on = GComponent_IsEffectivelyEnabledAt(entity, index);  // effective state a
 * An invalid index always yields `-1` (`SetParentAt` yields `0`).
 * `SetParentAt` refuses to mount a component under itself and refuses to create a cycle (mounting under its own descendant). Return value: `1` = success, `0` = failure.
 * `IsEffectivelyEnabledAt` is the result of **lifecycle inheritance**: the component and its whole parent chain must be `enabled` — disabling a parent stalls the entire subtree.
+* `SetParentAt` goes through the **command buffer** (`ECMD_SET_COMPONENT_PARENT`) and takes effect on the next `GCore_BeginFrame`. Its return value only means "queued successfully", **not "already applied"** — reading `GetParentAt` right after the call still yields the old value. Writing through the buffer is what makes such edits undoable (undo = whole-scene JSON snapshot); a direct write is missed by the snapshot.
+* The command payload does not carry a visible index (components may be added or removed while the command waits in the queue, which would make indices drift). It carries the component's **full-name type hash plus its occurrence index among components of that type**, and the consumer re-locates it with the same rule.
 
 ### 8.5 Local transform
 
@@ -372,6 +374,8 @@ GComponent_SetLocalTransformAt(entity, index, pos, rot, scale);
 ```
 
 The local transform is **relative to the parent component**; a root component is relative to the owning entity. Return values: read `0` = success / `-1` = failure; write `1` = success / `0` = failure.
+
+`SetLocalTransformAt` goes through the **command buffer** like `SetParentAt` (`ECMD_SET_COMPONENT_LOCAL_TRANSFORM`) and takes effect on the next frame — a successful enqueue does not mean it has already been applied.
 
 ### 8.6 Type ancestor chain
 

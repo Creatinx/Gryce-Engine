@@ -24,6 +24,7 @@
 #include "api/component_api.h"
 #include "api/api_guard.h"
 #include "api/core_api.h"
+#include "api/edit_api.h"   // GCmdSetComponentParent / GCmdSetComponentLocalTransform
 
 #include "runtime/engine_context.h"
 
@@ -194,6 +195,39 @@ static int index_of_component(const std::vector<Component*>& comps, Component* t
         if (comps[i] == target) return static_cast<int>(i);
     }
     return -1;
+}
+
+// 组件的「命令定位符」。
+//
+// 命令要排队到下一帧才被消费，期间组件可能增删，可见下标会漂移；
+// 因此命令载荷不存下标，改存「类型全名 hash + 同类型序号」。
+// 消费端（core_api.cpp 的 find_component_by_hash_occurrence）用同一把尺子
+// 复算：遍历实体可见组件序列，数该类型的第几个。
+struct ComponentLocator {
+    uint64_t type_hash = 0;
+    int      occurrence = 0;
+    bool     valid = false;
+};
+
+// 在可见组件序列里定位 target 的命令定位符。
+static ComponentLocator locate_component(const std::vector<Component*>& comps, Component* target) {
+    ComponentLocator loc;
+    if (!target) return loc;
+
+    const uint64_t h = hash_type_name(component_type_name_of(target));
+    if (h == 0) return loc;
+
+    int seen = 0;
+    for (Component* c : comps) {
+        if (c == target) {
+            loc.type_hash = h;
+            loc.occurrence = seen;
+            loc.valid = true;
+            return loc;
+        }
+        if (hash_type_name(component_type_name_of(c)) == h) ++seen;
+    }
+    return loc;  // 不在可见序列里 → valid = false
 }
 
 // 组件的类型祖先链（根 → 派生），每项是「自身 + 所有祖先类型」的全名 hash。
@@ -681,12 +715,29 @@ int GComponent_SetParentAt(GEntityHandle entity, int index, int parent_index) {
 
     }
 
-    // 防环（挂到自己的后代之下）由 Component::set_component_parent 兜底
-    if (!e->set_component_parent(child, parent)) return 0;
+    // 改挂走命令缓冲：编辑唯一通道是 GCore_PushCommand → GCore_BeginFrame 消费，
+    // 直写会绕过撤销快照（撤销 = 整场 JSON 快照，抓不到这次改动）。
+    const ComponentLocator child_loc = locate_component(comps, child);
+    if (!child_loc.valid) return 0;
 
-    e->mark_dirty();
+    ComponentLocator parent_loc;
+    if (parent) {
+        parent_loc = locate_component(comps, parent);
+        if (!parent_loc.valid) return 0;
+    }
 
-    return 1;
+    GCmdSetComponentParent payload{};
+    payload.handle = entity;
+    payload.type_hash = child_loc.type_hash;
+    payload.occurrence = child_loc.occurrence;
+    payload.parent_type_hash = parent ? parent_loc.type_hash : 0;
+    payload.parent_occurrence = parent ? parent_loc.occurrence : 0;
+
+    GCommand cmd{};
+    cmd.type = ECMD_SET_COMPONENT_PARENT;
+    std::memcpy(cmd.payload, &payload, sizeof(payload));
+
+    return GCore_PushCommand(&cmd) == 0 ? 1 : 0;
 }
 
 int GComponent_GetChildCountAt(GEntityHandle entity, int index) {
@@ -808,15 +859,30 @@ int GComponent_SetLocalTransformAt(GEntityHandle entity, int index,
 
     if (index < 0 || index >= static_cast<int>(comps.size())) return 0;
 
-    Component* comp = comps[index];
+    // 写变换同样走命令缓冲：局部变换是场景内容，必须能被撤销快照捕获。
+    const ComponentLocator loc = locate_component(comps, comps[index]);
+    if (!loc.valid) return 0;
 
-    comp->set_local_position(gryce_engine::math::Vector3f(pos3[0], pos3[1], pos3[2]));
-    comp->set_local_rotation(gryce_engine::math::Quaternionf(quat4[0], quat4[1], quat4[2], quat4[3]));
-    comp->set_local_scale(gryce_engine::math::Vector3f(scale3[0], scale3[1], scale3[2]));
+    GCmdSetComponentLocalTransform payload{};
+    payload.handle = entity;
+    payload.type_hash = loc.type_hash;
+    payload.occurrence = loc.occurrence;
+    payload.position[0] = pos3[0];
+    payload.position[1] = pos3[1];
+    payload.position[2] = pos3[2];
+    payload.rotation[0] = quat4[0];
+    payload.rotation[1] = quat4[1];
+    payload.rotation[2] = quat4[2];
+    payload.rotation[3] = quat4[3];
+    payload.scale[0] = scale3[0];
+    payload.scale[1] = scale3[1];
+    payload.scale[2] = scale3[2];
 
-    e->mark_dirty();
+    GCommand cmd{};
+    cmd.type = ECMD_SET_COMPONENT_LOCAL_TRANSFORM;
+    std::memcpy(cmd.payload, &payload, sizeof(payload));
 
-    return 1;
+    return GCore_PushCommand(&cmd) == 0 ? 1 : 0;
 }
 
 int GComponent_IsDerivedFromAt(GEntityHandle entity, int index, uint64_t base_type_hash) {

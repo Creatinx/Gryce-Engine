@@ -77,6 +77,10 @@ typedef enum {
     ECMD_PAUSE_MODE,
     ECMD_STEP_FRAME,
     ECMD_IMPORT_ASSET,
+    // 组件树改挂 / 组件局部变换。两者都改变场景内容，因此进入撤销快照分组
+    // （见 core_api.cpp 的 is_mutating_command）。
+    ECMD_SET_COMPONENT_PARENT,
+    ECMD_SET_COMPONENT_LOCAL_TRANSFORM,
 
     ECMD_SET_RENDER_TARGET = 100,
     ECMD_SET_VIEWPORT_SIZE,

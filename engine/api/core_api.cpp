@@ -228,6 +228,26 @@ std::string reflection_lookup_name(const std::string& full_name) {
     return full_name;
 }
 
+// 按「类型 hash + 同类型序号」定位组件实例。
+//
+// 命令要排队到下一帧才被消费，期间组件可能增删，可见下标会漂移；类型 + 序号
+// 不会。序号在实体的**可见组件序列**里数（与 GComponent_* 的下标空间一致）。
+// 匹配一律用**全名 hash**（写入端也是按全名 hash 存的），短名 hash 只是
+// 注册表对"反射表没有的类型"的回退口径，不参与这里的匹配。
+gryce_engine::components::Component* find_component_by_hash_occurrence(
+    Entity* e, uint64_t type_hash, int occurrence) {
+    if (!e || occurrence < 0 || type_hash == 0) return nullptr;
+    const auto comps = e->user_components();
+    int seen = 0;
+    for (auto* comp : comps) {
+        const std::string type_name = get_component_type_name(comp);
+        if (reflection::type_hash_of_name(type_name) != type_hash) continue;
+        if (seen == occurrence) return comp;
+        ++seen;
+    }
+    return nullptr;
+}
+
 // ============================================================================
 // Command processing
 // ============================================================================
@@ -431,6 +451,8 @@ bool is_mutating_command(GCommandType t) {
         case ECMD_SET_PROPERTY:
         case ECMD_ADD_COMPONENT:
         case ECMD_REMOVE_COMPONENT:
+        case ECMD_SET_COMPONENT_PARENT:
+        case ECMD_SET_COMPONENT_LOCAL_TRANSFORM:
         case ECMD_SET_MATERIAL:
         case ECMD_IMPORT_ASSET:
             return true;
@@ -557,6 +579,42 @@ static void process_command(const GCommand& cmd) {
                         g_core_state.deferred_entity_list_changed = true;
                         break;
                     }
+                }
+            }
+            break;
+        }
+        case ECMD_SET_COMPONENT_PARENT: {
+            const auto* p = reinterpret_cast<const GCmdSetComponentParent*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
+            if (e) {
+                auto* child = find_component_by_hash_occurrence(e, p->type_hash, p->occurrence);
+                if (child) {
+                    auto* parent = p->parent_type_hash == 0
+                        ? nullptr
+                        : find_component_by_hash_occurrence(e, p->parent_type_hash,
+                                                           p->parent_occurrence);
+                    // 防环由 Component::set_component_parent 兜底；挂不上就保持原状
+                    e->set_component_parent(child, parent);
+                    e->mark_dirty();
+                    g_core_state.deferred_entity_list_changed = true;
+                }
+            }
+            break;
+        }
+        case ECMD_SET_COMPONENT_LOCAL_TRANSFORM: {
+            const auto* p = reinterpret_cast<const GCmdSetComponentLocalTransform*>(cmd.payload);
+            Entity* e = EntityResolver::resolve(p->handle);
+            if (e) {
+                auto* comp = find_component_by_hash_occurrence(e, p->type_hash, p->occurrence);
+                if (comp) {
+                    comp->set_local_position(gryce_engine::math::Vector3f(
+                        p->position[0], p->position[1], p->position[2]));
+                    comp->set_local_rotation(gryce_engine::math::Quaternionf(
+                        p->rotation[0], p->rotation[1], p->rotation[2], p->rotation[3]));
+                    comp->set_local_scale(gryce_engine::math::Vector3f(
+                        p->scale[0], p->scale[1], p->scale[2]));
+                    e->mark_dirty();
+                    g_core_state.deferred_entity_list_changed = true;
                 }
             }
             break;

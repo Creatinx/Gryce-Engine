@@ -359,6 +359,8 @@ int on = GComponent_IsEffectivelyEnabledAt(entity, index);  // 生命周期继�
 * 下标非法一律返回 `-1`（`SetParentAt` 返回 `0`）。
 * `SetParentAt` 会拒绝挂到自己之下，也会拒绝挂到自己的后代之下（成环）。返回值 `1` = 成功，`0` = 失败。
 * `IsEffectivelyEnabledAt` 是**生命周期继承**的结果：自身与整条父链都 `enabled` 才算有效——父组件禁用，整棵子树停摆。
+* `SetParentAt` 走**命令缓冲**（`ECMD_SET_COMPONENT_PARENT`），下一帧 `GCore_BeginFrame` 才生效。返回值只表示"是否入队成功"，**不代表已生效**——入队后立刻读 `GetParentAt` 拿到的还是旧值。因此这类写操作能进撤销栈（撤销 = 整场 JSON 快照），直写则会被快照漏掉。
+* 命令载荷不存可见下标（命令排队期间组件可能增删，下标会漂移），改存「类型全名 hash + 同类型序号」，消费时按同一把尺子复算定位。
 
 ### 8.5 局部变换
 
@@ -369,6 +371,8 @@ GComponent_SetLocalTransformAt(entity, index, pos, rot, scale);
 ```
 
 局部变换是**相对父组件**的；根组件相对宿主实体。返回值：读 `0` = 成功、`-1` = 失败；写 `1` = 成功、`0` = 失败。
+
+`SetLocalTransformAt` 与 `SetParentAt` 同理走**命令缓冲**（`ECMD_SET_COMPONENT_LOCAL_TRANSFORM`），下一帧才生效，入队成功不代表已生效。
 
 ### 8.6 类型祖先链
 

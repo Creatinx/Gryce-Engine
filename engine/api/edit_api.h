@@ -104,6 +104,33 @@ typedef struct {
     uint64_t      type_hash;
 } GCmdRemoveComponent;
 
+// ECMD_SET_COMPONENT_PARENT：改挂组件树父子关系。
+//
+// 组件用「类型 hash + 同类型序号」定位，而不是可见下标：命令要排队到下一帧
+// 才被消费，期间组件可能增删，下标会漂移；类型 + 序号不会。
+//   type_hash / parent_type_hash = 组件类型的全名 hash（口径见
+//   engine/reflection/type_name.h）；parent_type_hash = 0 表示成为组件树根。
+//   occurrence / parent_occurrence = 该类型在实体可见组件序列里的第几个
+//   （0 起）。
+typedef struct {
+    GEntityHandle handle;
+    uint64_t      type_hash;
+    int           occurrence;
+    uint64_t      parent_type_hash;
+    int           parent_occurrence;
+} GCmdSetComponentParent;
+
+// ECMD_SET_COMPONENT_LOCAL_TRANSFORM：写组件的局部变换（组件树语义）。
+// rotation 是四元数 (x, y, z, w)。定位方式同 GCmdSetComponentParent。
+typedef struct {
+    GEntityHandle handle;
+    uint64_t      type_hash;
+    int           occurrence;
+    float         position[3];
+    float         rotation[4];
+    float         scale[3];
+} GCmdSetComponentLocalTransform;
+
 // ECMD_SET_MATERIAL：给实体（无则加）MeshRenderer 并设置网格与 PBR 参数。
 typedef struct {
     GEntityHandle handle;

@@ -894,7 +894,9 @@ TEST(capi, component_tree_apis) {
     CHECK_INT(GComponent_GetChildCountAt(h, 0), 0);
 
     // 把 1 挂到 0 之下
+    // 注意：改挂走命令缓冲（编辑唯一通道），下一帧才生效 → 断言前先 pump
     CHECK_INT(GComponent_SetParentAt(h, 1, 0), 1);
+    capi_pump();
     CHECK_INT(GComponent_GetParentAt(h, 1), 0);
     CHECK_INT(GComponent_GetParentAt(h, 0), -1);
     CHECK_INT(GComponent_GetChildCountAt(h, 0), 1);
@@ -912,6 +914,7 @@ TEST(capi, component_tree_apis) {
 
     // 脱离父组件 → 重新成为根
     CHECK_INT(GComponent_SetParentAt(h, 1, -1), 1);
+    capi_pump();
     CHECK_INT(GComponent_GetParentAt(h, 1), -1);
     CHECK_INT(GComponent_GetChildCountAt(h, 0), 0);
 }
@@ -930,6 +933,7 @@ TEST(capi, local_transform_apis) {
     const float rot[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     const float scl[3] = {2.0f, 2.0f, 2.0f};
     CHECK_INT(GComponent_SetLocalTransformAt(h, 0, pos, rot, scl), 1);
+    capi_pump();  // 写变换走命令缓冲 → 下一帧生效
 
     float out_pos[3] = {0};
     float out_rot[4] = {0};
@@ -944,6 +948,46 @@ TEST(capi, local_transform_apis) {
     // 非法下标
     CHECK_INT(GComponent_GetLocalTransformAt(h, 5, out_pos, out_rot, out_scl), -1);
     CHECK_INT(GComponent_SetLocalTransformAt(h, 5, pos, rot, scl), 0);
+}
+
+// 命令载荷必须放得进 GCommand::payload（GCMD_PAYLOAD_SIZE = 256 字节）
+TEST(capi, command_payloads_fit_in_command_buffer) {
+    CHECK_TRUE(sizeof(GCmdSetComponentParent) <= GCMD_PAYLOAD_SIZE);
+    CHECK_TRUE(sizeof(GCmdSetComponentLocalTransform) <= GCMD_PAYLOAD_SIZE);
+
+    // 载荷里没有可变长字符串 → 结构体可安全 memcpy 进定长 payload
+    CHECK_TRUE(std::is_trivially_copyable<GCmdSetComponentParent>::value);
+    CHECK_TRUE(std::is_trivially_copyable<GCmdSetComponentLocalTransform>::value);
+}
+
+// 组件树编辑必须能被撤销栈捕获：改动进命令缓冲 → is_mutating_command 命中 →
+// undo_capture 抓快照 → 撤销后组件树回到原状。
+TEST(capi, component_tree_edit_is_undoable) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    const GEntityHandle h = capi_create_entity("CapiUndo");
+    CHECK_TRUE(h != 0);
+
+    const uint64_t color_rect = capi_registered_hash("ColorRect");
+    const uint64_t sprite = capi_registered_hash("Sprite2D");
+    CHECK_INT(GComponent_AddComponent(h, color_rect), 0);
+    CHECK_INT(GComponent_AddComponent(h, sprite), 0);
+    capi_pump();
+    CHECK_INT(GComponent_GetCount(h), 2);
+
+    // 初始：都是根
+    CHECK_INT(GComponent_GetParentAt(h, 1), -1);
+
+    // 改挂 → 下一帧生效
+    CHECK_INT(GComponent_SetParentAt(h, 1, 0), 1);
+    capi_pump();
+    CHECK_INT(GComponent_GetParentAt(h, 1), 0);
+
+    // 撤销 → 组件树回到原状
+    GCore_Undo();
+    capi_pump();
+    CHECK_INT(GComponent_GetParentAt(h, 1), -1);
+    CHECK_INT(GComponent_GetChildCountAt(h, 0), 0);
 }
 
 // ===========================================================================
