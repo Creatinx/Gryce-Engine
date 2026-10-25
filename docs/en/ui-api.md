@@ -590,7 +590,7 @@ The built-in track now has the **same control set** as the ImGui track: one host
 | Topic | Built-in behaviour |
 | --- | --- |
 | Appearance | Every widget and every piece of window chrome is drawn with rounded corners, a vertical gradient and a border (radius tiers and implementation in 7.12); floating windows, popups and tooltips also cast a shadow. `Widget::corner_radius = 0` turns rounding off for a single widget (the modal dimmer must do this) |
-| `BeginWindow` / `EndWindow` | Supported. `GUI_WIN_TITLE_BAR` adds a title bar (draggable, 22px collapse box on the left); `GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` are honoured. Offset, collapsed and scroll state persist per window id, even though the host re-supplies the rect every frame. With a title bar the window body gets a gradient and a shadow; the title bar is rounded on top and square at the bottom |
+| `BeginWindow` / `EndWindow` | Supported. A title bar is **on by default** (`GUI_WIN_NO_TITLE_BAR` turns it off, matching ImGui's `NoTitleBar`); it is draggable and carries a collapse box on the left (`GUI_WIN_NO_COLLAPSE` removes it). The menu bar only appears when `GUI_WIN_MENU_BAR` is passed. `GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` are honoured. Offset, collapsed and scroll state persist per window id, even though the host re-supplies the rect every frame. The title bar is rounded on top, square at the bottom, and a 1px BORDER line under it separates it from the content |
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | Supported; `Text` **wraps** to the content width |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id). Hover and press swap the border colour instead of the fill; gradients stay at 2%-8% so text is never muddied |
 | `DragFloat` | Real dragging: while held the value follows the **mouse delta** (`speed` units per pixel, Ctrl for 1/10 fine-tuning). There is no "jump where you clicked" semantics |
@@ -670,7 +670,7 @@ Appearance on the built-in track comes from exactly two layers: theme tokens (`u
 | Per-widget override | `Widget::corner_radius`: `< 0` means "use the tier above", `0` means "square on purpose" (a full-screen modal mask must be 0, otherwise the four corners leak the undimmed scene) |
 | Shadow switch | `Widget::shadow`: on for titled floating windows, popups and tooltips only. Tiled panels sit flush against each other, so their shadow would be painted under the neighbour. Strength/spread come from the theme's `style.shadow_alpha` / `style.shadow_spread` (Fluent 0.5/26px ambient, Flex+Blender 0.3/10px minimum separation; `shadow_alpha=0` skips even the tight shadow) |
 | Gradient | Both gradient ends are derived from the same token by `shade()`, so no extra tokens are needed. **The strength is theme data** (`style.fill_grad` / `style.panel_grad`, see 7.13): Fluent presets zero it out (pure flat), Flex+Blender presets give 12% of Halo gloss |
-| Stroke | Width grows inward: the outer silhouette never changes, so neighbouring controls do not shift by a pixel depending on whether a border is present. Everyday widget outlines use a dedicated `CONTROL_BORDER` token (the midpoint of BUTTON and BORDER) — stroking with plain BORDER gives every control a ring two shades brighter than its own fill, and rows of controls start looking like a spreadsheet; hover/focus switch to `ACCENT` |
+| Stroke | Width grows inward: the outer silhouette never changes, so neighbouring controls do not shift by a pixel depending on whether a border is present. **Controls, panels and child regions all stroke with the `BORDER` token** (ImGui's `RenderFrameBorder` only ever uses `ImGuiCol_Border`, and two tracks that must line up have to share the source); hover/focus switch to `ACCENT`. On the renderer side the stroke band hugs the inside of the rect, `[0, thickness]` — it used to sit half a pixel out, which made the rasteriser's top-left rule turn a 1px border into 2px on the top/right and 1px on the bottom/left |
 | Focus | A focused text field switches its stroke to `ACCENT` and thickens it by 0.5px; hovered drag fields and checkboxes do the same |
 
 Renderer side (`engine/render/render2d.h`; the default implementations degrade to rectangles, so a third-party `IRenderer2D` still compiles):
@@ -689,7 +689,7 @@ Two traps:
 * **Inner and outer outlines must have the same vertex count**, otherwise the ring is dropped entirely (symptom: only the outer half of a stroke or shadow appears, with a blank gap on the inside). The segment count is therefore derived once from the **base** radius and never from the expanded one; corners with radius 0 still emit `seg+1` coincident points (normals interpolated between the two edges), so the count is always `4*(seg+1)`.
 * **Radii must be clamped to `min(w,h)/2`**: 6px on a 22px row is fine, but capsule grabs use `radius = half width`; without clamping a narrow widget produces a self-intersecting polygon.
 
-Covered widgets: buttons, panels/floating windows, progress bar (track + fill), checkbox (including the tick), slider (track + fill + capsule grab), drag field, text field, title bar (top corners only), collapsing header, menu-item highlight, scroll bar (track + thumb), tooltip and child-region border. Square commands remain where they belong: menu-bar strip, separators, selection highlight and the caret.
+Covered widgets: buttons, panels/floating windows, progress bar (frame + fill), checkbox (square frame + three-point tick), slider (the frame *is* the track, plus a capsule grab), drag field, text field, combo (frame + arrow), color edit (four channel-tagged component frames + swatch), title bar (top corners only), collapsing header, menu-item highlight, scroll bar (track + thumb), tooltip and child-region border. Square commands remain where they belong: menu-bar strip, separators, selection highlight and the caret.
 
 ## 7.13 JSON themes and interaction animations
 
@@ -718,18 +718,44 @@ Load semantics: start from the factory dark preset's 17 anchors, apply `anchors`
 
 The `style` block turns "how to draw" into theme data as well (`ThemeStyle`, `engine/ui/ui_theme.h`):
 
-| Field | Meaning | Fluent | Flex+Blender |
-| --- | --- | --- | --- |
-| `fill_grad` | vertical gradient strength of control fills (top lift ratio; 0 = flat) | 0 | 0.12 |
-| `panel_grad` | gradient strength of panels/windows/title bars (tamer than `fill_grad`) | 0 | 0.05 |
-| `shadow_alpha` | shadow strength of floating windows/popups/tooltips (0 = none) | 0.5 | 0.3 |
-| `shadow_spread` | shadow spread radius (logical pixels) | 26 | 10 |
+| Field | Meaning | Factory | Fluent | Flex+Blender |
+| --- | --- | --- | --- | --- |
+| `fill_grad` | vertical gradient strength of control fills (top lift ratio; 0 = flat) | 0 | 0 | 0.12 |
+| `panel_grad` | gradient strength of panels/windows/title bars (tamer than `fill_grad`) | 0 | 0 | 0.05 |
+| `shadow_alpha` | shadow strength of floating windows/popups/tooltips (0 = none) | 0 | 0.5 | 0.3 |
+| `shadow_spread` | shadow spread radius (logical pixels) | 0 | 26 | 10 |
+
+**The factory look is flat** (all four fields 0): the built-in track has to look like the ImGui track by default, and ImGui draws solid panels with a 1px border and no shadow. Texture is theme data — ask for gradients/shadows in the JSON `style` block; the engine presets nothing.
 
 Fluent and Flex+Blender are therefore **two data points of the same drawing code**, not two drawing branches: Fluent layers through state colours (hover/press luminance steps) with gloss and shadow fully switched off; Flex+Blender uses a 12% top lift for "Halo gloss buttons" and keeps only the minimum shadow that suggests separation from the surface. Gradient strengths clamp to [0, 0.5] and shadow alpha to [0, 1]; negative values (which would dent the fills) and out-of-range values are pulled back into the legal domain.
 
 Four skins ship with the engine (`assets/themes/`): **fluent-dark / fluent-light** (orthodox Win11 Fluent: Mica-approximating neutral bases, 8px panels + 4px controls, zero gradient, broad soft ambient shadows) and **flex-blender-dark / flex-blender-light** (Adobe Flex Halo x Blender: grey bases, bright border strokes, 5/3px near-square rounding, Halo gloss gradients; the dark one uses Blender orange #ED9E5C and selection blue #4772B3, the light one Flex classic blue #2E6BD6).
 
 The `animation` block drives the built-in track's **state-transition animations**: for the participating widgets (button, drag field, checkbox, slider grab, menu highlight, collapsing header) the primary fill color lerps over `hover_ms`/`press_ms` with the given easing whenever hover/press/check state changes; the menu highlight additionally fades in and out. `BuiltinUi::draw` advances the clock from the input snapshot's `time` delta -- with `time == 0` (tests, screenshots) everything is instant and therefore reproducible. Retained hosts that never call `advance_animations()` get the same instant behaviour. `set_preset` does not reset the animation params; a missing `animation` block keeps the current values.
+
+## 7.14 Keeping the two tracks identical (built-in track <-> ImGui track)
+
+Running the same page through `GRender_SetUIBackend(0)` (ImGui) and `(1)` (built-in) must look identical: the same theme tokens, the same geometry rules, the same font. Do not tweak these constants locally -- change one and the two tracks start drifting exactly there.
+
+| Item | Rule |
+| --- | --- |
+| Window chrome | The title bar is **on by default** (`GUI_WIN_NO_TITLE_BAR` turns it off); the menu bar needs an explicit `GUI_WIN_MENU_BAR`. Title height = frame height = `font size + 2*(PAD_Y-1)` = **22**, with a 1px `BORDER` line under it and 5px of window background below that |
+| Row height | Control row height = **the font size itself** (14), not 1.25x the measured line height; frame height 22 = 14 + 2*4 |
+| Item width | `item_width() = trunc(child_size.x * 0.65)` (ImGui's `ItemWidthDefault`, using the child window's **full width** -- do not subtract the border). Checkbox/slider/drag field/text field/combo/color edit all use it; the label sits 4px to the right of the frame |
+| Frame | `BUTTON` fill (which is ImGui's `FrameBg` in this theme) + 1px inside `BORDER` stroke, `FRAME_ROUNDING` corners |
+| Slider | **The frame is the track** (not "thin rail + fill bar"): the value is centred inside, the grab is an 8px rounded bar placed proportionally within "2px inset on both ends, minus half a grab" |
+| Checkbox | Square frame with side = frame height (22); checked fill is `checkbox_bg`, the tick is a three-point polyline (thickness = side/5); the label sits 4px to the right |
+| Combo | Current item inside on the left (8px padding, clipped) + `RenderArrow(Down)` solid triangle on the right; label to the right of the frame |
+| Color edit | Component width = `floor((item width - (frame height + 4) - 3*4) / 4)`; a 2px channel tag hugs each frame's left edge (red/green/blue/white); the swatch is a frame-height square |
+| Stroke | Every frame uses `BORDER`, 1px, hugging the inside edge (see 7.12) |
+| Font | `kWidgetFontSize = 14` in **Cousine** for both tracks: the ImGui track embeds `kCousineRegularTtf`, the built-in track loads the same file through the Renderer2D atlas. Lookup order: `res:/fonts/Cousine-Regular.ttf` -> `res:/fonts/Roboto-Medium.ttf` (legacy projects) -> the same two files under `third_party/imgui/misc/fonts/` -> system font. **Different fonts cannot line up**: monospace vs proportional changes every word's width, so wrapping drifts |
+
+Known residuals (**layout, colours and geometry match**; what is left is sampling):
+
+* **Glyph anti-aliasing**: ImGui rasterises with stb_truetype coverage plus its own alpha interpolation, the built-in track samples a Renderer2D glyph atlas. Strokes land in the same place, but the grey distribution on the edges differs -- a per-pixel diff shows a halo around every glyph that the eye does not see.
+* **Corner arc anti-aliasing**: arcs are polyline polygons plus a 1px alpha band; at `radius=8` the outline approximates to roughly 1.1px steps. ImGui strokes with a 0.5px half-width and anti-aliased fills, so its corners are softer.
+
+`GryceUiSmoke --page controls --ui-backend builtin|imgui --shot x.png` captures both tracks for pixel comparison (`build/pngdiff.py`).
 
 ## 8. Sharing input with the host
 

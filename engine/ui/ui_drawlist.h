@@ -36,6 +36,11 @@ enum class UiCmd : uint32_t {
     RoundRect       = 5,  // 圆角填充（color2 != 0 时竖直渐变 color → color2）
     RoundRectBorder = 6,  // 圆角描边（border_w = 线宽，向内生长）
     Shadow          = 7,  // 圆角外阴影（border_w = 扩散半径，color 带 alpha）
+    // 凸多边形填充：顶点走多边形池（poly_off / poly_len）。
+    // 单独一个命令而不是"用一堆矩形拼"：勾选标记与下拉箭头都是斜线，
+    // 拼矩形既画不出斜边也没法抗锯齿。ImGui 画的勾/箭头本身就是一条
+    // 8 点凸路径（RenderCheckMark / RenderArrow），这里与它一一对应。
+    Polygon = 8,
 };
 
 // ---------------------------------------------------------------------------
@@ -72,6 +77,12 @@ struct UiCommand {
     float    radii[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float    border_w = 0.0f;     // Border：线宽；Shadow：扩散半径
     uint32_t color2 = 0;          // RoundRect：渐变下端色（0 = 纯色填充）
+
+    // ---- Polygon ----
+    // 顶点池偏移（单位 = float，成对存 x/y）与顶点数。与字符串池同一套语义：
+    // 放不下整条多边形就整条丢弃并计 dropped_，绝不画半个形状。
+    uint32_t poly_off = 0;
+    uint32_t poly_len = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +112,9 @@ public:
     static constexpr int kMaxCommands = 4096;
     static constexpr int kMaxClips     = 64;
     static constexpr int kTextPoolSize = 32768;
+    // 多边形池（单位 float）。勾/箭头各 8~10 个点，正常一帧几十个图元；
+    // 4096 float = 2048 个点，够 200 个多边形同时在场。
+    static constexpr int kPolyPoolSize = 4096;
 
     void reset();
 
@@ -133,11 +147,15 @@ public:
     void add_text(float x, float y, const char* text, float font_size, uint32_t rgba);
     void add_sprite(float x, float y, float w, float h, uint64_t texture,
                     float u0, float v0, float u1, float v1, uint32_t rgba);
+    // 凸多边形填充。xy 是 2*count 个 float（x0,y0,x1,y1,...），按给定顺序连成
+    // 闭合凸多边形——勾选标记与下拉箭头用它。少于 3 点直接忽略。
+    void add_polygon(const float* xy, int count, uint32_t rgba);
 
     // 查询
     int                command_count() const { return count_; }
     const UiCommand&   command(int index) const { return commands_[index]; }
     const char*        text_at(uint32_t off) const;      // 保证 '\0' 结尾
+    const float*       points_at(uint32_t off) const;    // Polygon 顶点池
     const UiClipRect&  clip_at(int index) const;         // index 1..clip_depth_
     int                clip_depth() const { return clip_depth_; }
     uint32_t           dropped() const { return dropped_; }  // 容量丢弃计数
@@ -152,10 +170,12 @@ private:
     UiCommand  commands_[kMaxCommands];
     UiClipRect clips_[kMaxClips];   // [0] 不用；有效区 1..clip_depth_
     char       text_pool_[kTextPoolSize];
+    float      poly_pool_[kPolyPoolSize];   // 成对存 x/y
 
     int      count_        = 0;
     int      clip_depth_   = 0;
     int      text_used_    = 0;
+    int      poly_used_    = 0;
     uint32_t dropped_      = 0;
     uint32_t culled_       = 0;
 };

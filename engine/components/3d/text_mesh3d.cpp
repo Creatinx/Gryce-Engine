@@ -22,16 +22,22 @@ namespace {
 constexpr float k_min_raster_size = 8.0f;
 constexpr float k_max_raster_size = 256.0f;
 
-// 解析字体文件路径。优先级与 Renderer2D 完全一致：显式 font_path → 项目内置 Roboto
-// → 常见系统字体；全部失败返回空，由调用方退回 FontAtlas 的色块图集。
+// 解析字体文件路径。优先级与 Renderer2D 完全一致：显式 font_path → 项目内置字体
+// （Cousine 优先，与 imgui 轨同款；再退 Roboto）→ 常见系统字体；全部失败返回空，
+// 由调用方退回 FontAtlas 的色块图集。
 // 注意 res:/ 映射到项目根，引擎仓库根的 third_party 并非资源目录，因此不能靠它找到内置字体。
 std::string resolve_font_path(const std::string& requested) {
     if (!requested.empty()) {
         const std::string resolved = resources::ResourcePath::resolve(requested);
         if (!resolved.empty() && std::filesystem::exists(resolved)) return resolved;
     }
-    std::string bundled = resources::ResourcePath::resolve("res:/fonts/Roboto-Medium.ttf");
+    std::string bundled = resources::ResourcePath::resolve("res:/fonts/Cousine-Regular.ttf");
     if (!bundled.empty() && std::filesystem::exists(bundled)) return bundled;
+    bundled = resources::ResourcePath::resolve("res:/fonts/Roboto-Medium.ttf");
+    if (!bundled.empty() && std::filesystem::exists(bundled)) return bundled;
+    bundled = resources::Project::instance().root() +
+              "/third_party/imgui/misc/fonts/Cousine-Regular.ttf";
+    if (std::filesystem::exists(bundled)) return bundled;
     bundled = resources::Project::instance().root() +
               "/third_party/imgui/misc/fonts/Roboto-Medium.ttf";
     if (std::filesystem::exists(bundled)) return bundled;

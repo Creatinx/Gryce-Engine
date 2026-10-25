@@ -296,7 +296,9 @@ void GUi_EndChild(void) {
 }
 
 int GUi_BeginMenuBar(void) {
-    if (builtin_now()) { bo().begin_menu_bar(); return 1; }
+    // 两条轨同一判据：窗口没有声明 GUI_WIN_MENU_BAR 就返回 0（不画菜单栏）。
+    // 内置轨早期无条件返回 1，于是同一个宿主在两条轨下"有没有菜单栏"不一样。
+    if (builtin_now()) return bo().begin_menu_bar();
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::BeginMenuBar() ? 1 : 0;
@@ -480,8 +482,9 @@ int GUi_Checkbox(const char* label, int* inout_value) {
 int GUi_SliderFloat(const char* label, float* inout_value,
                     float min_value, float max_value, const char* fmt) {
     if (builtin_now()) {
-        (void)fmt;   // 内置轨的滑块不显示数字（只有轨道 + 填充 + 手柄）
-        return inout_value ? bo().slider_float(label, inout_value, min_value, max_value) : 0;
+        // fmt 透传：内置轨把数值画在框内居中（与 ImGui 同一个位置），
+        // 格式串不同会让框里的字宽变化，进而影响它与 ImGui 轨的像素对齐
+        return inout_value ? bo().slider_float(label, inout_value, min_value, max_value, fmt) : 0;
     }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !inout_value) return 0;
@@ -502,7 +505,7 @@ int GUi_SliderFloat(const char* label, float* inout_value,
 static int builtin_readonly_slider(const char* label, float* v, float lo, float hi) {
     if (!v || !builtin_now()) return 0;
     float tmp = *v;
-    bo().slider_float(label, &tmp, lo, hi);
+    bo().slider_float(label, &tmp, lo, hi, nullptr);
     return 0;
 }
 
@@ -564,31 +567,14 @@ int GUi_DragFloat4(const char* label, float v[4], float speed) {
 }
 
 int GUi_ColorEdit4(const char* label, float v[4]) {
-    // 内置轨：色块 + 弹层里的 R/G/B/A 四条滑条（点色块打开）
+    // 内置轨：4 个分量框 + 色块，与 ImGui 的 ColorEdit4 同一套布局与位置
     if (builtin_now()) {
         if (!v) return 0;
-        int changed = 0;
-        char popup_id[96];
-        std::snprintf(popup_id, sizeof(popup_id), "##color_%s", label ? label : "edit");
-        char btn_id[96];
-        std::snprintf(btn_id, sizeof(btn_id), "##swatch_%s", label ? label : "edit");
-        if (bo().color_button(btn_id, v)) {
-            float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
-            bo().last_item_rect(&lx, &ly, &lw, &lh);
-            bo().open_popup(popup_id, lx, ly + lh, 220.0f, 0.0f);
-        }
-        if (bo().begin_popup(popup_id)) {
-            if (label && *label) bo().text(label);
-            if (bo().slider_float("R", &v[0], 0.0f, 1.0f)) changed = 1;
-            if (bo().slider_float("G", &v[1], 0.0f, 1.0f)) changed = 1;
-            if (bo().slider_float("B", &v[2], 0.0f, 1.0f)) changed = 1;
-            if (bo().slider_float("A", &v[3], 0.0f, 1.0f)) changed = 1;
-            bo().end_popup();
-        }
-        return changed;
+        return bo().color_edit(label, v);
     }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
+    // Float 显示模式：分量框里是 0.000~1.000，与内置轨的 "%.3f" 一致
     return ImGui::ColorEdit4(label ? label : "", v, ImGuiColorEditFlags_Float) ? 1 : 0;
 #else
     (void)label; (void)v;
@@ -640,36 +626,11 @@ int GUi_IsItemDeactivatedAfterEdit(void) {
 }
 
 int GUi_Combo(const char* label, int* current, const char* const* items, int count) {
-    // 内置轨没有弹出列表：退化成"点一下换下一个"的按钮。语义与 ImGui 的
-    // Combo 一致（变化时返回 1 并写回 *current），只是交互方式不同——
-    // 对工具栏里的少量枚举选项够用，等真需要下拉时再给内置轨加弹层。
+    // 内置轨：框内当前项 + 箭头，点开是弹层列表——形态与 ImGui 的 Combo 一致
+    // （早期是"点一下换下一个"的按钮，两条轨的控件长得完全不一样）。
     if (builtin_now()) {
         if (!current || !items || count <= 0) return 0;
-        const int cur = (*current < 0 || *current >= count) ? 0 : *current;
-
-        // 按钮显示"标签: 当前项"，点开是弹层列表
-        char buf[128];
-        std::snprintf(buf, sizeof(buf), "%s: %s", label ? label : "",
-                      items[cur] ? items[cur] : "");
-        char popup_id[96];
-        std::snprintf(popup_id, sizeof(popup_id), "##combo_%s", label ? label : "c");
-
-        int changed = 0;
-        if (bo().button(buf)) {
-            float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
-            bo().last_item_rect(&lx, &ly, &lw, &lh);
-            bo().open_popup(popup_id, lx, ly + lh, lw > 120.0f ? lw : 120.0f, 0.0f);
-        }
-        if (bo().begin_popup(popup_id)) {
-            for (int i = 0; i < count; ++i) {
-                if (bo().menu_item(items[i] ? items[i] : "", nullptr, 1)) {
-                    *current = i;
-                    changed = 1;
-                }
-            }
-            bo().end_popup();
-        }
-        return changed;
+        return bo().combo(label, current, items, count);
     }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !current || !items || count <= 0) return 0;

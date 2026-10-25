@@ -377,6 +377,9 @@ enum {
     GUI_THEME_COLOR_TAB_DIMMED,
     GUI_THEME_COLOR_TAB_DIMMED_SELECTED,
     GUI_THEME_COLOR_CONTROL_BORDER,
+    // 复选框勾选态框底色（半透明）。与 ImGuiCol_CheckboxSelectedBg 同源，
+    // 两轨共用：内置轨画勾选框、ImGui 轨画复选框，落到屏幕上的是同一个色。
+    GUI_THEME_COLOR_CHECKBOX_BG,
     GUI_THEME_COLOR_COUNT,
 };
 

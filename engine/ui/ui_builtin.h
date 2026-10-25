@@ -53,8 +53,8 @@ enum BuiltinWindowFlags : uint32_t {
     kWinNoCollapse = 1u << 3,
     kWinMenuBar    = 1u << 5,
     kWinNoScrollbar = 1u << 6,
-    // 内置轨专有：显式要求标题栏。默认不给——引擎里大多数面板是"已经排好
-    // 位置的固定区域"，多一行标题栏会白白吃掉内容高度（也与老截图不一致）。
+    // 内置轨专有（保留位，不再参与判断）：早期内置轨要求"显式要标题栏"，
+    // 现在标题栏默认就有、由 kWinNoTitleBar 关掉——与 ImGui 的语义一致。
     kWinTitleBar   = 1u << 8,
     kWinResizable  = 1u << 9,
 };
@@ -118,7 +118,8 @@ public:
     int  button(const char* label);
     int  button_size(const char* label, float w, float h);
     int  checkbox(const char* label, int* inout_value);
-    int  slider_float(const char* label, float* inout_value, float vmin, float vmax);
+    int  slider_float(const char* label, float* inout_value, float vmin, float vmax,
+                      const char* fmt = nullptr);
     int  drag_float(const char* label, float* inout_value, float speed,
                     float vmin, float vmax);
     // N 分量拖拽（2~4）：一行里并排 N 个数值框，标签跟在最后（ImGui 语义）。
@@ -130,6 +131,12 @@ public:
     int  input_text(const char* label, char* buf, int buf_size);
     void progress_bar(float fraction, const char* overlay);
     int  color_button(const char* label, const float rgba[4]);
+    // 下拉框：框内显示 items[current] + 右端箭头，点开是弹层列表。
+    // 返回 1 = 选中项变了（并把新下标写回 *current）。
+    int  combo(const char* label, int* current, const char* const* items, int count);
+    // 颜色编辑：4 个分量框 + 色块 + 右侧标签（与 ImGui ColorEdit4 同布局）。
+    // 拖动某个分量框改那一维；返回 1 = 值变了。
+    int  color_edit(const char* label, float rgba[4]);
 
     // 图片：tex 是**打包的引擎纹理句柄**（低 32 位 index、高 32 位 generation，
     // 由 GRender_GetUiTextureId 在内置轨下取得），不是 ITexture* 也不是
@@ -149,7 +156,8 @@ public:
     void tree_pop();
     int  collapsing_header(const char* label, int default_open);
     // 菜单栏：在窗口内容顶部占一行；菜单本体是弹层。
-    void begin_menu_bar();
+    // 返回 0 = 窗口没有声明 GUI_WIN_MENU_BAR，宿主应跳过菜单体（与 ImGui 一致）。
+    int  begin_menu_bar();
     void end_menu_bar();
     int  begin_menu(const char* label);   // 返回 1 = 菜单展开，配 end_menu()
     void end_menu();
@@ -266,6 +274,10 @@ private:
     float    line_height() const;
     float    frame_height() const;
     float    content_width() const;
+    // 带标签控件的**控件框宽度**（ImGui 的 DC.ItemWidthDefault）：
+    // trunc(窗口宽 * 0.65)，再按内容区宽度钳住。标签画在框右边、不占这 65%，
+    // 所以一列控件的框宽是齐的，右边缘也对齐。
+    float    item_width() const;
     float    content_rect_h() const;
     float    indent_metric() const;
 

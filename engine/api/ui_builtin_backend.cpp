@@ -160,8 +160,8 @@ const BuiltinUiOps kOps = {
     [](const char* label) { return rt().ui().button(label); },
     [](const char* label, float w, float h) { return rt().ui().button_size(label, w, h); },
     [](const char* label, int* v) { return rt().ui().checkbox(label, v); },
-    [](const char* label, float* v, float lo, float hi) {
-        return rt().ui().slider_float(label, v, lo, hi);
+    [](const char* label, float* v, float lo, float hi, const char* fmt) {
+        return rt().ui().slider_float(label, v, lo, hi, fmt);
     },
     [](const char* label, float* v, float speed, float lo, float hi) {
         return rt().ui().drag_float(label, v, speed, lo, hi);
@@ -175,13 +175,17 @@ const BuiltinUiOps kOps = {
     [](uint64_t tex, float w, float h) { rt().ui().image(tex, w, h); },
     [](const char* label, char* buf, int cap) { return rt().ui().input_text(label, buf, cap); },
     [](const char* label, const float rgba[4]) { return rt().ui().color_button(label, rgba); },
+    [](const char* label, int* cur, const char* const* items, int count) {
+        return rt().ui().combo(label, cur, items, count);
+    },
+    [](const char* label, float* rgba) { return rt().ui().color_edit(label, rgba); },
     [](float fraction, const char* overlay) { rt().ui().progress_bar(fraction, overlay); },
 
     // ---- 结构 ----
     [](const char* label, int def) { return rt().ui().tree_node(label, def); },
     []() { rt().ui().tree_pop(); },
     [](const char* label, int def) { return rt().ui().collapsing_header(label, def); },
-    []() { rt().ui().begin_menu_bar(); },
+    []() { return rt().ui().begin_menu_bar(); },
     []() { rt().ui().end_menu_bar(); },
     [](const char* label) { return rt().ui().begin_menu(label); },
     []() { rt().ui().end_menu(); },

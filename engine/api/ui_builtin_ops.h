@@ -38,7 +38,8 @@ struct BuiltinUiOps {
     int  (*button)(const char* label);
     int  (*button_size)(const char* label, float w, float h);
     int  (*checkbox)(const char* label, int* inout_value);
-    int  (*slider_float)(const char* label, float* inout_value, float vmin, float vmax);
+    int  (*slider_float)(const char* label, float* inout_value, float vmin, float vmax,
+                         const char* fmt);
     int  (*drag_float)(const char* label, float* inout_value, float speed,
                        float vmin, float vmax);
     // N 分量拖拽（2~4）：一行内 N 个数值框 + 右侧标签
@@ -49,13 +50,18 @@ struct BuiltinUiOps {
     void (*image)(uint64_t tex, float w, float h);
     int  (*input_text)(const char* label, char* buf, int buf_size);
     int  (*color_button)(const char* label, const float rgba[4]);
+    // 下拉框：框内当前项 + 箭头，点开是弹层列表（ImGui Combo 形态）
+    int  (*combo)(const char* label, int* current, const char* const* items, int count);
+    // 颜色编辑：4 个分量框 + 色块 + 右侧标签（ImGui ColorEdit4 形态）
+    int  (*color_edit)(const char* label, float rgba[4]);
     void (*progress_bar)(float fraction, const char* overlay);
 
     // ---- 结构 ----
     int  (*tree_node)(const char* label, int default_open);
     void (*tree_pop)();
     int  (*collapsing_header)(const char* label, int default_open);
-    void (*begin_menu_bar)();
+    // 返回 0 = 窗口没有声明 GUI_WIN_MENU_BAR，宿主跳过菜单体（与 ImGui 一致）
+    int  (*begin_menu_bar)();
     void (*end_menu_bar)();
     int  (*begin_menu)(const char* label);
     void (*end_menu)();

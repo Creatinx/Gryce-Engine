@@ -241,9 +241,13 @@ bool widget_anim_fill(const Widget& w, const Theme& t, uint32_t* out) {
                              : theme_color(t, THEME_COLOR_BUTTON);
             return true;
         case WidgetKind::Slider: {
-            const uint32_t base = on_fill(theme_color(t, THEME_COLOR_ACCENT), t);
-            *out = w.pressed ? mix_rgba(base, theme_color(t, THEME_COLOR_ACCENT), 0.30f)
-                             : base;
+            // 滑块是"框即轨道"（ImGui 的 SliderScalar 用 FrameBg/FrameBgHovered/
+            // FrameBgActive 画整条框），底色跟输入框完全一样，不是强调色。
+            // 注意别再用 on_fill(ACCENT)：那是老版"强调色滑条"的取值，本主题
+            // 的 ACCENT 是深色底 + 白字，on_fill 会算出纯白，整条框糊成白板。
+            *out = w.pressed ? theme_color(t, THEME_COLOR_BUTTON_ACTIVE)
+                 : w.hovered ? theme_color(t, THEME_COLOR_BUTTON_HOVER)
+                             : theme_color(t, THEME_COLOR_BUTTON);
             return true;
         }
         case WidgetKind::MenuItem: {
@@ -305,7 +309,150 @@ void draw_fold_marker(UiDrawList& dl, float x, float y, bool open,
     dl.add_text(box.x + (side - tw) * 0.5f, y, mark, fs, c);
 }
 
+// ---------------------------------------------------------------------------
+// ImGui 对齐原语
+//
+// 内置轨的目标不是"另一套好看的设计"，而是**与 ImGui 轨逐像素一致**：同一份
+// 主题 token、同一套几何规则。下面几个小函数就是那条对齐线上的公共因子——
+// 全部按 ImGui 的实现直接换算（注释里给了对应的 ImGui 源函数名），几何常数
+// 一个都不要就地魔改：改一处就会让两轨在那一处开始漂。
+// ---------------------------------------------------------------------------
+
+// ImGuiStyle::ItemInnerSpacing.x 的默认值：控件框与它右侧标签的间隙。
+constexpr float kItemInnerSpacing = 4.0f;
+
+// 控件框：填充 + 1px 边框。对应 ImGui 的 RenderFrame() + RenderFrameBorder()：
+// 先填后描、描边向内吃一圈，所以框的外轮廓尺寸不会被边框撑大。
+void draw_frame_box(UiDrawList& dl, const Rect& r, float radius, uint32_t fill,
+                    uint32_t border, float bw) {
+    dl.add_round_rect(r.x, r.y, r.w, r.h, radius, fill);
+    if (bw > 0.0f) dl.add_round_border(r.x, r.y, r.w, r.h, radius, bw, border);
+}
+
+// 框内居中的单行文字（ImGui 的 RenderTextClipped(..., align=(0.5,0.5))）。
+void draw_text_centered(UiDrawList& dl, const Rect& r, const char* s, float fs,
+                        const UiTextMetrics& metrics, uint32_t col) {
+    if (!s || !s[0]) return;
+    const float tw = metrics.width(s, fs);
+    dl.add_text(r.x + (r.w - tw) * 0.5f, r.y + (r.h - fs) * 0.5f, s, fs, col);
+}
+
+// 控件右侧的标签（ImGui 的 RenderText(bb.Max.x + ItemInnerSpacing.x, bb.Min.y + FramePadding.y)）。
+// 22 高的框 + 14 的字号下，FramePadding.y(4) 与垂直居中是同一个位置，
+// 所以这里用居中算，框高变了也不会掉出去。
+void draw_label_right(UiDrawList& dl, const Widget& w, const UiTextMetrics& metrics,
+                      float fs, uint32_t col) {
+    if (!w.label[0]) return;
+    dl.add_text(w.rect.right() + kItemInnerSpacing,
+                w.rect.y + (w.rect.h - fs) * 0.5f, w.label, fs, col);
+}
+
+// 滑块/数值框的显示文本。fmt 是 ImGui 风格的 printf 单值格式（"%.2f"）；
+// 空串按 "%.3f"——与 ImGui 的默认值一致。fmt 里若写了两个及以上 % 会被
+// 当成危险格式，直接退回默认（printf 的参数只有一个，多写会读到栈上的垃圾）。
+void format_widget_value(char* out, int cap, const char* fmt, float value) {
+    if (!out || cap <= 1) return;
+    int conversions = 0;
+    for (const char* p = fmt; p && *p; ++p) {
+        if (*p == '%') {
+            if (p[1] == '%') { ++p; continue; }
+            ++conversions;
+        }
+    }
+    const char* use = (fmt && fmt[0] && conversions == 1) ? fmt : "%.3f";
+    std::snprintf(out, static_cast<size_t>(cap), use, static_cast<double>(value));
+}
+
+// 勾选标记：复刻 ImGui::RenderCheckMark 的三点折线（线宽 = sz/5）。
+// ImGui 用 PathStroke 描边，drawlist 只有凸多边形填充，所以每段折线画成一个
+// 四边形、拐点补一个同宽的方块把接缝盖掉——16px 的框里两者是同一个像素结果。
+void draw_check_mark(UiDrawList& dl, const Rect& box, uint32_t col) {
+    const float pad = (box.w / 6.0f >= 1.0f) ? std::floor(box.w / 6.0f) : 1.0f;
+    float sz = box.w - pad * 2.0f;
+    float thickness = sz / 5.0f;
+    if (thickness < 1.0f) thickness = 1.0f;
+    sz -= thickness * 0.5f;
+    const float px = box.x + pad + thickness * 0.25f;
+    const float py = box.y + pad + thickness * 0.25f;
+
+    const float third = sz / 3.0f;
+    const float bx = px + third;
+    const float by = py + sz - third * 0.5f;
+    const float p0x = bx - third,     p0y = by - third;
+    const float p1x = bx,             p1y = by;
+    const float p2x = bx + third * 2.0f, p2y = by - third * 2.0f;
+
+    const float half = thickness * 0.5f;
+    // 每段折线 = 一个平行四边形（法线方向偏移 ±half）
+    auto stroke = [&](float x0, float y0, float x1, float y1) {
+        const float dx = x1 - x0;
+        const float dy = y1 - y0;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len <= 0.0001f) return;
+        const float nx = -dy / len * half;
+        const float ny = dx / len * half;
+        const float quad[8] = {x0 + nx, y0 + ny, x1 + nx, y1 + ny,
+                               x1 - nx, y1 - ny, x0 - nx, y0 - ny};
+        dl.add_polygon(quad, 4, col);
+    };
+    stroke(p0x, p0y, p1x, p1y);
+    stroke(p1x, p1y, p2x, p2y);
+    const float joint[8] = {p1x - half, p1y - half, p1x + half, p1y - half,
+                            p1x + half, p1y + half, p1x - half, p1y + half};
+    dl.add_polygon(joint, 4, col);
+}
+
+// 下拉箭头：复刻 ImGui::RenderArrow(ImGuiDir_Down, scale=1)。
+// (x, y) 是箭头方框左上角，方框边长 = 字号，三角形以方框中心为中心。
+void draw_arrow_down(UiDrawList& dl, float x, float y, float fs, uint32_t col) {
+    const float r = fs * 0.40f;
+    const float cx = x + fs * 0.5f;
+    const float cy = y + fs * 0.5f;
+    const float tri[6] = {cx,                cy + 0.750f * r,
+                          cx - 0.866f * r,   cy - 0.750f * r,
+                          cx + 0.866f * r,   cy - 0.750f * r};
+    dl.add_polygon(tri, 3, col);
+}
+
+// 滑块抓柄：复刻 ImGui 的 SliderBehavior 几何——左右各留 2px，抓柄宽度取
+// GrabMinSize（主题 token），位置按比例在"可滑动区间"里插值，纵向内缩 2px。
+// 返回抓柄矩形（宽高都可能为 0：区间太窄时 ImGui 也不画）。
+Rect slider_grab_rect(const Rect& frame, float frac, float grab_min, float grab_round) {
+    (void)grab_round;
+    const float grab_padding = 2.0f;
+    const float slider_sz = frame.w - grab_padding * 2.0f;
+    if (slider_sz < 1.0f) return Rect{frame.x, frame.y, 0.0f, 0.0f};
+    float grab_sz = (grab_min > 0.0f) ? grab_min : 8.0f;
+    if (grab_sz > slider_sz) grab_sz = slider_sz;
+    const float usable_min = frame.x + grab_padding + grab_sz * 0.5f;
+    const float usable_max = frame.right() - grab_padding - grab_sz * 0.5f;
+    const float pos = usable_min + (usable_max - usable_min) * clampf(frac, 0.0f, 1.0f);
+    return Rect{pos - grab_sz * 0.5f, frame.y + grab_padding,
+                grab_sz, frame.h - grab_padding * 2.0f};
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// 颜色编辑的分量框几何（导出：绘制与命中测试共用）
+// ---------------------------------------------------------------------------
+
+float ui_color_part_width(const Rect& r) {
+    const float w_button = r.h + kItemInnerSpacing;          // 色块 + 间隙
+    const float w_inputs = (r.w > w_button) ? (r.w - w_button) : r.w;
+    const float w_items  = w_inputs - kItemInnerSpacing * 3.0f;
+    const float per = std::floor(w_items / 4.0f);
+    return (per > 1.0f) ? per : 1.0f;
+}
+
+int ui_color_part_at(const Rect& r, float x) {
+    const float per = ui_color_part_width(r);
+    for (int i = 0; i < 4; ++i) {
+        const float x0 = r.x + static_cast<float>(i) * (per + kItemInnerSpacing);
+        if (x >= x0 && x <= x0 + per) return i;
+    }
+    return -1;
+}
 
 // ---------------------------------------------------------------------------
 // UTF-8 工具（导出）
@@ -462,29 +609,19 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
     const float    spread_near = st.shadow_spread * 0.35f;
     const float    spread_far  = st.shadow_spread;
     const bool     want_shadow = (w.shadow && shadow_a > 0.01f);
-    // 控件日常描边：比 BORDER 更贴近控件底色，只勾形状不画线框；悬停/聚焦换 ACCENT
-    const uint32_t edge_soft = theme_color(theme, THEME_COLOR_CONTROL_BORDER);
-    const uint32_t accent    = theme_color(theme, THEME_COLOR_ACCENT);
 
     switch (w.kind) {
         case WidgetKind::Label:
-            dl.add_text(r.x + 1.0f, ty, w.label, fs, text_col);
+            dl.add_text(r.x, ty, w.label, fs, text_col);
             break;
 
         case WidgetKind::Button: {
+            // 与 ImGui 的 Button 一致：纯色填充 + 1px 边框 + 居中标签。
+            // 状态色只换填充（BUTTON → BUTTON_HOVER → BUTTON_ACTIVE），
+            // 边框始终是 BORDER——悬停时改边框色会让按钮"跳一下"。
             const uint32_t bg = w.bg_overridden ? w.bg_color : widget_fill_now(w, theme);
-            // 渐变幅度由主题 style 决定：Fluent 归零（扁平填充，层次交给状态
-            // 色），Flex/Blender 给 0.12 起的顶部提亮做出"光泽按钮"。按下时
-            // 整体沉下去（顶亮面收掉、底暗面加深）。
-            const uint32_t b_edge = !w.enabled ? edge_soft
-                                  : w.pressed  ? theme_color(theme, THEME_COLOR_ACCENT_ACTIVE)
-                                  : w.hovered  ? accent
-                                               : edge_soft;
-            draw_round_frame_gradient(dl, r, r_frame,
-                                      shade(bg, w.pressed ? st.fill_grad * 0.25f : st.fill_grad),
-                                      shade(bg, w.pressed ? -st.fill_grad * 1.25f
-                                                          : -st.fill_grad * 0.5f),
-                                      b_edge, bw);
+            draw_frame_box(dl, r, r_frame, bg,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
             const float tw = metrics.width(w.label, fs);
             dl.add_text(r.x + (r.w - tw) * 0.5f, ty, w.label, fs, text_col);
             break;
@@ -497,130 +634,156 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                 dl.add_shadow(r.x, r.y, r.w, r.h, rad, spread_near, shadow_near);
                 dl.add_shadow(r.x, r.y, r.w, r.h, rad, spread_far, shadow_far);
             }
-            if (w.bg_overridden) {
-                draw_round_frame(dl, r, rad, w.bg_color,
-                                 theme_color(theme, THEME_COLOR_BORDER), bw);
-            } else {
-                const uint32_t base = theme_color(theme, THEME_COLOR_WINDOW_BG);
-                // 大面板的渐变比控件更收敛（panel_grad < fill_grad）：从标题栏
-                // 一路到底的强渐变会让内容区像被打了顶光，看久了累
-                draw_round_frame_gradient(dl, r, rad, shade(base, st.panel_grad),
-                                          shade(base, -st.panel_grad * 0.5f),
-                                          mix_rgba(theme_color(theme, THEME_COLOR_BORDER),
-                                                   base, 0.20f), bw);
-            }
+            const uint32_t base = w.bg_overridden
+                                ? w.bg_color
+                                : theme_color(theme, THEME_COLOR_WINDOW_BG);
+            // 渐变幅度由主题 style 决定：出厂 0（与 ImGui 的纯色窗口一致），
+            // JSON 主题要质感时才有上下差。
+            draw_round_frame_gradient(dl, r, rad, shade(base, st.panel_grad),
+                                      shade(base, -st.panel_grad * 0.5f),
+                                      theme_color(theme, THEME_COLOR_BORDER), bw);
             break;
         }
 
         case WidgetKind::Separator:
-            // 分隔线压到背景附近：满亮度的 BORDER 会在深色面板上画出一道白线
-            dl.add_rect(r.x, r.y, r.w, 1.0f,
-                        mix_rgba(theme_color(theme, THEME_COLOR_SEPARATOR),
-                                 theme_color(theme, THEME_COLOR_WINDOW_BG), 0.45f));
+            // ImGui 的 Separator 就是一条 1px 的 SEPARATOR 色横线，不混底色
+            dl.add_rect(r.x, r.y, r.w, 1.0f, theme_color(theme, THEME_COLOR_SEPARATOR));
             break;
 
         case WidgetKind::Progress: {
-            // 轨道要"凹"但不能是黑洞：比窗口底色再压一档，描边取自轨道自身
-            const uint32_t track =
-                mix_rgba(theme_color(theme, THEME_COLOR_SCROLLBAR_BG),
-                         theme_color(theme, THEME_COLOR_WINDOW_BG), 0.30f);
-            draw_round_frame(dl, r, r_frame, track,
-                             mix_rgba(track, theme_color(theme, THEME_COLOR_BORDER), 0.35f), bw);
+            // ImGui 的 ProgressBar：框底（FrameBg + 边框）+ 按比例填充的
+            // PLOT_HISTOGRAM 色条 + 居中的浮层文字。
+            const uint32_t base = widget_fill_now(w, theme);
+            draw_frame_box(dl, r, r_frame, base,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
             const float frac = clampf(w.value, 0.0f, 1.0f);
             if (frac > 0.0f && r.w > bw * 2.0f && r.h > bw * 2.0f) {
-                // 内缩一个边框，填充条跟着轨道一起圆（半径要减去边框宽度，
-                // 否则填充条的圆角会被边框盖住一半，看起来是方的）；高度小于
-                // 两倍半径时按半高走胶囊，否则短进度条会变成小方块。
                 float inner_r = clamp_radius(r_frame - bw, r);
                 const float fill_h = r.h - bw * 2.0f;
                 if (inner_r > fill_h * 0.5f) inner_r = fill_h * 0.5f;
-                const uint32_t a = theme_color(theme, THEME_COLOR_ACCENT);
+                const uint32_t a = theme_color(theme, THEME_COLOR_PLOT_HISTOGRAM);
                 dl.add_round_rect(r.x + bw, r.y + bw, (r.w - bw * 2.0f) * frac,
                                   fill_h, inner_r, a);
             }
             if (w.label[0]) {
-                const float tw = metrics.width(w.label, fs);
-                // 标签压在填充条上：用与填充色反差最大的那个主题色
-                dl.add_text(r.x + (r.w - tw) * 0.5f, ty, w.label, fs,
-                            on_fill(accent, theme));
+                draw_text_centered(dl, r, w.label, fs, metrics,
+                                   theme_color(theme, THEME_COLOR_TEXT));
             }
             break;
         }
 
         case WidgetKind::Checkbox: {
-            const float side = (r.h < 16.0f) ? r.h : 16.0f;
-            const float bx = r.x + 2.0f;
-            const float by = r.y + (r.h - side) * 0.5f;
-            const Rect   box{bx, by, side, side};
-            const uint32_t box_bg = widget_fill_now(w, theme);
-            const uint32_t box_edge = w.checked ? shade(accent, 0.30f)
-                                    : w.hovered ? accent
-                                                : edge_soft;
-            draw_round_frame_gradient(dl, box, r_grab,
-                                      shade(box_bg, st.fill_grad),
-                                      shade(box_bg, -st.fill_grad * 0.5f), box_edge, bw);
+            // ImGui 的 Checkbox：左边一个"框高见方"的方框（不是固定 16px），
+            // 勾选时框底换 CHECKBOX_BG、再叠一个 CheckMark 色的勾，标签在框右。
+            const float side = r.h;
+            const Rect  box{r.x, r.y, side, side};
+            const uint32_t box_bg = w.checked
+                                  ? theme_color(theme, THEME_COLOR_CHECKBOX_BG)
+                                  : widget_fill_now(w, theme);
+            draw_frame_box(dl, box, r_frame, box_bg,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
             if (w.checked) {
-                // 没有勾线路径可画：用一块与底色反差最大的内缩圆角块当"已选"。
-                // 块不能给大——16px 的方框里塞 10px 白方块像贴了张纸。
-                const float inset = 5.0f;
-                if (side > inset * 2.0f) {
-                    const float inner = side - inset * 2.0f;
-                    dl.add_round_rect(box.x + inset, box.y + inset, inner, inner,
-                                      inner * 0.30f, on_fill(box_bg, theme));
-                }
+                draw_check_mark(dl, box, theme_color(theme, THEME_COLOR_CHECK_MARK));
             }
-            dl.add_text(bx + side + 6.0f, ty, w.label, fs,
-                        theme_color(theme, w.enabled ? THEME_COLOR_TEXT : THEME_COLOR_TEXT_DIM));
+            if (w.label[0]) {
+                dl.add_text(box.right() + kItemInnerSpacing, ty, w.label, fs,
+                            theme_color(theme, w.enabled ? THEME_COLOR_TEXT : THEME_COLOR_TEXT_DIM));
+            }
             break;
         }
 
         case WidgetKind::Slider: {
-            const float lw = metrics.width(w.label, fs);
-            dl.add_text(r.x + 1.0f, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
-            float x0 = r.x + lw + 8.0f;
-            const float x1 = r.right() - 2.0f;
-            if (x1 - x0 < 24.0f) x0 = r.x + 2.0f;   // 标签太宽：轨道让位
+            // ImGui 的 SliderFloat：**框既是底也是轨道**，数值画在框内居中，
+            // 抓柄是一条 8px 宽的圆角竖条（不是"轨道上的胶囊"），标签在框右。
+            const uint32_t bg = widget_fill_now(w, theme);
+            draw_frame_box(dl, r, r_frame, bg,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
             const float span = (w.max_value > w.min_value) ? (w.max_value - w.min_value) : 1.0f;
             const float frac = clampf((w.value - w.min_value) / span, 0.0f, 1.0f);
-            const float track_h = 4.0f;
-            const float track_y = r.y + r.h * 0.5f - track_h * 0.5f;
-            const float track_r = track_h * 0.5f;
-            const uint32_t groove = mix_rgba(theme_color(theme, THEME_COLOR_SCROLLBAR_BG),
-                                             theme_color(theme, THEME_COLOR_WINDOW_BG), 0.30f);
-            dl.add_round_rect(x0, track_y, x1 - x0, track_h, track_r, groove);
-            if (frac > 0.0f) {
-                const uint32_t a = theme_color(theme, THEME_COLOR_ACCENT);
-                dl.add_round_rect(x0, track_y, (x1 - x0) * frac, track_h, track_r,
-                                  shade(a, st.fill_grad * 1.5f));
+
+            char val[32];
+            format_widget_value(val, sizeof(val), w.fmt, w.value);
+            draw_text_centered(dl, r, val, fs, metrics, theme_color(theme, THEME_COLOR_TEXT));
+
+            const Rect grab = slider_grab_rect(
+                r, frac, theme_metric(theme, THEME_METRIC_GRAB_MIN_SIZE, 8.0f),
+                theme_metric(theme, THEME_METRIC_GRAB_ROUNDING, 4.0f));
+            if (grab.w > 0.0f) {
+                dl.add_round_rect(grab.x, grab.y, grab.w, grab.h, r_grab,
+                                  theme_color(theme, w.pressed ? THEME_COLOR_SLIDER_GRAB_ACTIVE
+                                                               : THEME_COLOR_SLIDER_GRAB));
             }
-            const float gh = (r.h < 15.0f) ? r.h : 15.0f;
-            const float gw = gh * 0.72f;
-            const float gx = clampf(x0 + (x1 - x0) * frac - gw * 0.5f, r.x, r.right() - gw);
-            // 抓柄是胶囊：半径取半宽，缩放后也不会变成小方块。颜色要跟已经填成
-            // ACCENT 的轨道拉开——同色抓柄在那个位置等于看不见。
-            const Rect grab{gx, r.y + (r.h - gh) * 0.5f, gw, gh};
-            const uint32_t knob = widget_fill_now(w, theme);
-            draw_round_frame(dl, grab, gw * 0.5f, knob,
-                             mix_rgba(knob, accent, 0.45f), bw);
+            draw_label_right(dl, w, metrics, fs, theme_color(theme, THEME_COLOR_TEXT));
             break;
         }
 
         case WidgetKind::DragFloat: {
-            // 与 ImGui 的形态一致：一条可拖的"值框"，左标签、右数值。
+            // 与 ImGui 的 DragFloat 一致：一条可拖的"值框"，值居中、标签在框右。
             const uint32_t bg = widget_fill_now(w, theme);
-            draw_round_frame_gradient(dl, r, r_frame,
-                                      shade(bg, w.pressed ? st.fill_grad * 0.25f : st.fill_grad),
-                                      shade(bg, w.pressed ? -st.fill_grad * 1.25f
-                                                          : -st.fill_grad * 0.5f),
-                                      (w.hovered || w.pressed) ? accent : edge_soft, bw);
-            if (w.label[0]) {
-                dl.add_text(r.x + 6.0f, ty, w.label, fs, theme_color(theme, THEME_COLOR_TEXT));
-            }
+            draw_frame_box(dl, r, r_frame, bg,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
             char val[32];
-            std::snprintf(val, sizeof(val), "%.3f", w.value);
-            const float vw = metrics.width(val, fs);
-            dl.add_text(r.right() - vw - 6.0f, ty, val, fs,
-                        theme_color(theme, THEME_COLOR_TEXT));
+            format_widget_value(val, sizeof(val), w.fmt, w.value);
+            draw_text_centered(dl, r, val, fs, metrics, theme_color(theme, THEME_COLOR_TEXT));
+            draw_label_right(dl, w, metrics, fs, theme_color(theme, THEME_COLOR_TEXT));
+            break;
+        }
+
+        case WidgetKind::Combo: {
+            // ImGui 的 Combo：框内左侧当前项 + 框右侧的箭头按钮，标签在框右。
+            // 两半同色（FrameBg / Button 在本主题里是同一个 token），所以视觉上
+            // 就是一整条框；箭头部分单独画是为了 hover 时能只亮右半边。
+            const float arrow_sz = (r.h < fs ? r.h : fs * 1.0f) + 6.0f;
+            const float arrow_w = (arrow_sz < r.w) ? arrow_sz : r.w;
+            const uint32_t bg = widget_fill_now(w, theme);
+            draw_frame_box(dl, r, r_frame, bg,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
+            // 预览文字左对齐、贴着框的内边距（ImGui: bb.Min + FramePadding）
+            dl.push_clip(r.x, r.y, r.w - arrow_w, r.h);
+            dl.add_text(r.x + 8.0f, ty, w.text, fs, theme_color(theme, THEME_COLOR_TEXT));
+            dl.pop_clip();
+            draw_arrow_down(dl, r.right() - arrow_w + 4.0f, r.y + (r.h - fs) * 0.5f, fs,
+                            theme_color(theme, THEME_COLOR_TEXT));
+            draw_label_right(dl, w, metrics, fs, theme_color(theme, THEME_COLOR_TEXT));
+            break;
+        }
+
+        case WidgetKind::ColorEdit: {
+            // ImGui 的 ColorEdit4：4 个分量框（左缘一条通道色标）+ 色块，标签在右。
+            // 分量宽度按 CalcItemWidth 扣掉色块后四等分——与 ImGui 同一个算法，
+            // 所以四个框的右边缘和色块位置逐像素对齐。
+            const float sq = r.h;                       // square_sz = 框高
+            const float w_button = sq + kItemInnerSpacing;
+            const float w_inputs = (r.w > w_button) ? (r.w - w_button) : r.w;
+            const float per = ui_color_part_width(r);
+            static const uint32_t kMarker[4] = {0xFF0000FFu, 0x00FF00FFu,
+                                                0x0000FFFFu, 0xFFFFFFFFu};
+            const uint32_t bg = widget_fill_now(w, theme);
+            float x = r.x;
+            for (int i = 0; i < 4; ++i) {
+                const Rect box{x, r.y, per, r.h};
+                draw_frame_box(dl, box, r_frame, bg,
+                               theme_color(theme, THEME_COLOR_BORDER), bw);
+                // 通道色标：框左缘 2px 宽的竖条（ImGui 的 ColorMarkerSize）
+                if (per > 4.0f) {
+                    dl.add_round_rect(box.x + 1.0f, box.y + 1.0f, 2.0f, box.h - 2.0f,
+                                      1.0f, kMarker[i]);
+                }
+                char val[16];
+                std::snprintf(val, sizeof(val), "%.3f", w.color[i]);
+                draw_text_centered(dl, box, val, fs, metrics,
+                                   theme_color(theme, THEME_COLOR_TEXT));
+                x += per + kItemInnerSpacing;
+            }
+            // 色块：本身颜色 + 1px 边框（ImGui 的 ColorButton）
+            const Rect sw{r.x + w_inputs + kItemInnerSpacing, r.y, sq, r.h};
+            const uint32_t rgba = (static_cast<uint32_t>(clampf(w.color[0], 0.0f, 1.0f) * 255.0f + 0.5f) << 24)
+                                | (static_cast<uint32_t>(clampf(w.color[1], 0.0f, 1.0f) * 255.0f + 0.5f) << 16)
+                                | (static_cast<uint32_t>(clampf(w.color[2], 0.0f, 1.0f) * 255.0f + 0.5f) << 8)
+                                | static_cast<uint32_t>(clampf(w.color[3], 0.0f, 1.0f) * 255.0f + 0.5f);
+            draw_frame_box(dl, sw, r_frame, rgba,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
+            draw_label_right(dl, w, metrics, fs, theme_color(theme, THEME_COLOR_TEXT));
             break;
         }
 
@@ -714,33 +877,39 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                 const uint32_t base = w.bg_overridden
                                     ? w.bg_color
                                     : theme_color(theme, THEME_COLOR_CHILD_BG);
+                // 描边就是 BORDER 本色：不要往子区域底色里混——混过之后边框是
+                // #333333 而不是 #383838，与窗口/控件的边框不在同一档灰度上，
+                // 子区域的边看起来比窗口边"虚"。
                 draw_round_frame_gradient(dl, r, r_child, shade(base, st.panel_grad),
                                           shade(base, -st.panel_grad * 0.5f),
-                                          mix_rgba(theme_color(theme, THEME_COLOR_BORDER), base, 0.45f),
+                                          theme_color(theme, THEME_COLOR_BORDER),
                                           bw);
             }
             break;
 
         case WidgetKind::TitleBar: {
+            // ImGui 的标题栏：TITLE_BG_ACTIVE 纯色（上圆下方）、标题文字在
+            // 左内边距处、底部压一条 1px 的 BORDER 线把标题与内容分开。
             const uint32_t bg = !w.enabled ? theme_color(theme, THEME_COLOR_TITLE_BG_COLLAPSED)
-                              : w.pressed  ? theme_color(theme, THEME_COLOR_TITLE_BG_ACTIVE)
-                                           : theme_color(theme, THEME_COLOR_TITLE_BG);
-            // 标题栏只有上面两个角跟着窗口圆：下面要接内容区，圆了就露缝。
-            // 用逐角半径的渐变，一次搞定"圆角 + 纵向层次"，不再叠第二个矩形
-            //（叠加会在圆角外露出一圈方块边）。渐变幅度按面板档翻倍——标题栏
-            // 是窗口里唯一"always-on 的厚度暗示"，比内容区明显一档。
+                                           : theme_color(theme, THEME_COLOR_TITLE_BG_ACTIVE);
             const float tradii[4] = {r_window, r_window, 0.0f, 0.0f};
+            // 渐变幅度跟着面板档（出厂 0 = 与 ImGui 同一个纯色）
             dl.add_round_gradient4(r.x, r.y, r.w, r.h, tradii,
                                    shade(bg, st.panel_grad * 2.5f),
                                    shade(bg, -st.panel_grad));
-            // 标题栏自己再描一圈边。窗口底板的描边先画、被标题栏盖住，不补这一
-            // 条时窗口上沿是没有边框的，而且圆角处会露出一像素的底板色（看着
-            // 像缺口）。下沿那条边同时充当"标题栏 / 内容区"的分隔线——标题栏与
-            // 内容区同色系，没有这条线根本看不出哪一块能拖。
+            // 标题栏自己描一圈边：窗口底板的描边先画、被标题栏盖住，不补这一条
+            // 时窗口上沿没有边框，圆角处还会露出一像素底板色。下沿那条边同时
+            // 充当"标题栏 / 内容区"的分隔线。
             dl.add_round_border4(r.x, r.y, r.w, r.h, tradii, bw,
-                                 mix_rgba(theme_color(theme, THEME_COLOR_BORDER), bg, 0.25f));
-            draw_fold_marker(dl, r.x + 5.0f, ty, w.open, theme, metrics, fs);
-            dl.add_text(r.x + 12.0f + fs * 0.75f, ty, w.label, fs,
+                                 theme_color(theme, THEME_COLOR_BORDER));
+            // 折叠框只在窗口允许折叠时画（ImGui 的 NoCollapse 同理）
+            float text_x = r.x + 8.0f;
+            if (w.fold_marker) {
+                draw_fold_marker(dl, r.x + 6.0f, r.y + (r.h - fs) * 0.5f, w.open,
+                                 theme, metrics, fs);
+                text_x += fs + kItemInnerSpacing;
+            }
+            dl.add_text(text_x, r.y + (r.h - fs) * 0.5f, w.label, fs,
                         theme_color(theme, THEME_COLOR_TEXT));
             break;
         }
@@ -759,19 +928,16 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
         }
 
         case WidgetKind::TextInput: {
-            // 输入框要看起来"凹进去"：底色比按钮更沉，渐变反着走（顶暗底亮）。
-            // 平涂的输入框与按钮长得一模一样，用户看不出哪里能打字。
-            // Fluent 的扁平档（fill_grad=0）下这个方向感由更沉的底色独立承担。
-            const uint32_t base = mix_rgba(theme_color(theme, THEME_COLOR_BUTTON),
-                                           theme_color(theme, THEME_COLOR_CHILD_BG), 0.55f);
-            draw_round_frame_gradient(dl, r, r_frame,
-                                      shade(base, -st.fill_grad * 0.75f),
-                                      shade(base, st.fill_grad * 0.5f),
-                                      focused ? accent : edge_soft,
-                                      focused ? (bw + 0.5f) : bw);
+            // 与 ImGui 的 InputText 一致：框 + 框内左对齐正文（内边距 = 8）
+            // + 右侧标签。原先"反向渐变 + 更沉的底色"是为了在没有标签位置
+            // 差异时让人看出哪里能打字；现在标签在右、框宽固定，形态本身就是
+            // 输入框的样子，反向渐变反而与 ImGui 不一致。
+            const uint32_t base = widget_fill_now(w, theme);
+            draw_frame_box(dl, r, r_frame, base,
+                           theme_color(theme, THEME_COLOR_BORDER), bw);
             // 长文本不许淌出框外：裁剪 + 只画框内那一段
-            dl.push_clip(r.x, r.y, r.w, r.h);
-            const float tx = r.x + 4.0f - w.scroll_x;
+            dl.push_clip(r.x + 1.0f, r.y, r.w - 2.0f, r.h);
+            const float tx = r.x + 8.0f - w.scroll_x;
             const int   len = utf8_text_length(w.text);
 
             // 选区（只在该控件有焦点时画：失焦后不显示残留高亮）
@@ -801,6 +967,7 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
                             theme_color(theme, THEME_COLOR_ACCENT));
             }
             dl.pop_clip();
+            draw_label_right(dl, w, metrics, fs, theme_color(theme, THEME_COLOR_TEXT));
             break;
         }
 
@@ -946,6 +1113,24 @@ void WidgetTree::apply_standard_interaction(Widget& w) {
         case WidgetKind::Header:
             if (w.clicked) w.open = !w.open;
             break;
+
+        case WidgetKind::ColorEdit: {
+            // ImGui 的 ColorEdit4：按下哪个分量框就拖哪个，每像素 1/255。
+            // 分量框宽度与绘制共用 ui_color_part_at，点哪儿改哪儿。
+            if (!w.pressed) {
+                w.color_part = -1;
+                break;
+            }
+            if (drag_owner_ != w.id) w.color_part = ui_color_part_at(w.rect, input_.mouse_x);
+            if (w.color_part >= 0 && w.color_part < 4 && drag_owner_ == w.id) {
+                const float dx = input_.mouse_x - drag_last_x_;
+                w.color[w.color_part] =
+                    clampf(w.color[w.color_part] + dx * (1.0f / 255.0f), 0.0f, 1.0f);
+            }
+            drag_owner_ = w.id;
+            drag_speed_ = 1.0f / 255.0f;
+            break;
+        }
 
         case WidgetKind::ScrollBar: {
             if (!w.pressed || w.rect.h <= 0.0f) break;

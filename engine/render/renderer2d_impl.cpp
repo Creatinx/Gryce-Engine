@@ -397,18 +397,29 @@ void Renderer2D::init(RenderContext* ctx) {
     create_shadow_map();
     create_bloom_targets();
 
-    // 优先使用项目内置 TTF（Roboto），保证跨机器一致性；失败再尝试系统字体
+    // 字体查找顺序（跨机器一致性优先，其次才是系统字体）：
+    //   1. res:/fonts/Cousine-Regular.ttf  —— 项目显式给的字体。imgui 轨的调试 UI
+    //      内嵌的就是 Cousine 14px，项目想与它逐像素对齐就放这个文件；
+    //   2. res:/fonts/Roboto-Medium.ttf    —— 老项目沿用的字体名，继续认；
+    //   3. third_party 里的 Cousine        —— 引擎缺省（与 imgui 轨同款）；
+    //   4. third_party 里的 Roboto         —— 兜底；
+    //   5. 系统字体。
     {
-        std::string bundled = resources::ResourcePath::resolve("res:/fonts/Roboto-Medium.ttf");
-        if (bundled.empty() || !std::filesystem::exists(bundled)) {
-            bundled = resources::Project::instance().root() + "/third_party/imgui/misc/fonts/Roboto-Medium.ttf";
-        }
-        if (std::filesystem::exists(bundled)) {
-            GLOG_INFO("Renderer2D: trying bundled font '{}'", bundled);
-            if (font_atlas_.init(ctx_, bundled, text_raster_hint_)) {
+        const std::string root = resources::Project::instance().root();
+        const std::string candidates[] = {
+            resources::ResourcePath::resolve("res:/fonts/Cousine-Regular.ttf"),
+            resources::ResourcePath::resolve("res:/fonts/Roboto-Medium.ttf"),
+            root + "/third_party/imgui/misc/fonts/Cousine-Regular.ttf",
+            root + "/third_party/imgui/misc/fonts/Roboto-Medium.ttf",
+        };
+        for (const std::string& path : candidates) {
+            if (path.empty() || !std::filesystem::exists(path)) continue;
+            GLOG_INFO("Renderer2D: trying bundled font '{}'", path);
+            if (font_atlas_.init(ctx_, path, text_raster_hint_)) {
                 using_fallback_font_ = false;
-                font_path_ = bundled;
-                GLOG_INFO("Renderer2D: loaded bundled font '{}'", bundled);
+                font_path_ = path;
+                GLOG_INFO("Renderer2D: loaded bundled font '{}'", path);
+                break;
             }
         }
     }
@@ -1490,13 +1501,20 @@ void Renderer2D::draw_round_rect_border(float x, float y, float w, float h,
     if (thickness > (w < h ? w : h) * 0.5f) thickness = (w < h ? w : h) * 0.5f;
 
     constexpr float kAa = 0.5f;
-    std::vector<RoundPt> edge;     // 外沿（描边外边界再向内 0.5，AA 的中点）
+    // 描边带的三个轮廓（全部以"框边界"为基准）：
+    //   edge  = 框边界本身（描边开始处，实心）
+    //   outer = 边界外 0.5px（AA 起点，alpha 0）
+    //   innr  = 边界内 thickness（描边结束处）
+    // 早先 edge 放在"边界内 0.5"、innr 放在"内 1.5"，1px 边就整条落在半像素
+    // 位置上：光栅化的 top-left 规则会把上/右两侧判成 2px、下/左判成 1px，
+    // 同一圈边框四个方向不等粗。贴着边界向内取整才有真正的 1px。
+    std::vector<RoundPt> edge;     // 描边外沿（= 框边界）
     std::vector<RoundPt> outer;    // 真正的外边界（alpha 0）
     std::vector<RoundPt> innr;     // 描边内边界
     const int seg = arc_segments(radii);
-    build_round_outline(x, y, w, h, radii, -kAa, seg, edge);
+    build_round_outline(x, y, w, h, radii, 0.0f, seg, edge);
     build_round_outline(x, y, w, h, radii, kAa, seg, outer);
-    build_round_outline(x, y, w, h, radii, -kAa - thickness, seg, innr);
+    build_round_outline(x, y, w, h, radii, -thickness, seg, innr);
     if (edge.size() < 3 || innr.size() != edge.size() || outer.size() != edge.size()) return;
 
     const Color clear(color.r, color.g, color.b, 0.0f);

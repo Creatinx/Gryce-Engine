@@ -82,6 +82,11 @@ void UiRenderBridge::render(const UiDrawList& list, UiRenderer& renderer) {
                 renderer.ui_draw_shadow(c.x, c.y, c.w, c.h, c.radii, c.border_w, c.color);
                 ++draws_;
                 break;
+            case UiCmd::Polygon:
+                renderer.ui_draw_polygon(list.points_at(c.poly_off),
+                                         static_cast<int>(c.poly_len), c.color);
+                ++draws_;
+                break;
             case UiCmd::PushClip:
             case UiCmd::PopClip:
                 // 裁剪命令不产生绘制调用；它们的作用已经体现在上面的深度切换里

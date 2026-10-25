@@ -131,6 +131,11 @@ enum ThemeColor : int {
     // 控件（按钮/输入框/滑杆槽）的日常描边：比 BORDER 更贴近控件自身底色，
     // 只用来"勾出形状"而不是"画一圈亮线"。悬停/聚焦仍换 ACCENT。
     THEME_COLOR_CONTROL_BORDER,
+    // 复选框"已勾选"时的框底色（半透明蓝）。单独一个 token 而不是复用
+    // ACCENT：勾选态要"看得出选中、又不抢走旁边的正文"，满饱和的 ACCENT
+    // 会让一行控件里只剩勾选框。该槽位也映射到 ImGui 的
+    // ImGuiCol_CheckboxSelectedBg，两轨共用同一个值。
+    THEME_COLOR_CHECKBOX_BG,
     THEME_COLOR_COUNT,
 };
 
@@ -161,10 +166,14 @@ enum ThemeMetric : int {
 // 渐变。两者是同一套绘制代码的两个数据点，不是两个绘制分支。
 // ---------------------------------------------------------------------------
 struct ThemeStyle {
-    float fill_grad     = 0.04f;  // 控件填充渐变幅度（上端提亮比例；0 = 纯平）
-    float panel_grad    = 0.02f;  // 面板/窗口/标题栏渐变幅度
-    float shadow_alpha  = 0.45f;  // 浮窗/弹层投影强度（叠在 BORDER_SHADOW 色上）
-    float shadow_spread = 22.0f;  // 投影扩散半径（逻辑像素）
+    // 出厂一律**扁平**（0/0/0）：内置轨的目标是与 ImGui 轨逐像素一致，而
+    // ImGui 的控件是纯色方块、面板不投影。要质感（Fluent 的光泽按钮、
+    // Blender 的平贴面板）就由 JSON 主题的 style 块显式开口子——默认值
+    // 不替用户做决定。
+    float fill_grad     = 0.0f;   // 控件填充渐变幅度（上端提亮比例；0 = 纯平）
+    float panel_grad    = 0.0f;   // 面板/窗口/标题栏渐变幅度
+    float shadow_alpha  = 0.0f;   // 浮窗/弹层投影强度（叠在 BORDER_SHADOW 色上）
+    float shadow_spread = 0.0f;   // 投影扩散半径（逻辑像素）
 };
 
 struct Theme {

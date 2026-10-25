@@ -281,6 +281,7 @@ const TokenName kDerivedNames[] = {
     {"tab_dimmed", THEME_COLOR_TAB_DIMMED},
     {"tab_dimmed_selected", THEME_COLOR_TAB_DIMMED_SELECTED},
     {"control_border", THEME_COLOR_CONTROL_BORDER},
+    {"checkbox_bg", THEME_COLOR_CHECKBOX_BG},
 };
 
 const TokenName kMetricNames[] = {
@@ -481,6 +482,12 @@ void derive_extended(Theme& t) {
     // 直接拿 BORDER 描边时，每个控件都顶着一圈比自身底色亮两档的细线，成片的
     // 控件就变成一张表格；这个 token 是让控件靠"底色 + 微弱边缘"立住。
     t.colors[THEME_COLOR_CONTROL_BORDER]        = mix(a[THEME_ANCHOR_BUTTON], a[THEME_ANCHOR_BORDER], 0.5f);
+    // 勾选态框底：对齐 ImGui 内置暗色主题里 ImGuiCol_CheckboxSelectedBg 的
+    // 实际落色（该槽位没有 token 映射时的默认值 = Lerp(FrameBg, FrameBgHovered,
+    // 0.65) 再乘 0.45 alpha，叠在 CHILD_BG 上正好是 #325074）。写成显式值而不是
+    // 再算一遍那个 lerp：算出来的中间色（#3979CD）与 ImGui 的合成结果差着
+    // alpha 语义，直接给最终色反而不会漂。
+    t.colors[THEME_COLOR_CHECKBOX_BG]           = 0x3A7CCC73u;
 }
 
 Theme& mutable_theme() {
@@ -611,6 +618,7 @@ void apply() {
     s.Colors[ImGuiCol_ButtonHovered]        = col(THEME_COLOR_BUTTON_HOVER);
     s.Colors[ImGuiCol_ButtonActive]         = col(THEME_COLOR_BUTTON_ACTIVE);
     s.Colors[ImGuiCol_CheckMark]            = col(THEME_COLOR_CHECK_MARK);
+    s.Colors[ImGuiCol_CheckboxSelectedBg]   = col(THEME_COLOR_CHECKBOX_BG);
     s.Colors[ImGuiCol_SliderGrab]           = col(THEME_COLOR_SLIDER_GRAB);
     s.Colors[ImGuiCol_SliderGrabActive]     = col(THEME_COLOR_SLIDER_GRAB_ACTIVE);
     s.Colors[ImGuiCol_Header]               = col(THEME_COLOR_HEADER);

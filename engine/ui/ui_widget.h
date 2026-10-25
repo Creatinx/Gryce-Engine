@@ -85,6 +85,12 @@ enum class WidgetKind : uint32_t {
     // （ImGui 那边是 LastItemData 的 HoveredRect 纯矩形判定，与 id 无关），
     // 编辑器视口依赖的 LastItemRect + IsItemHovered 拾取链因此两边一致。
     Image     = 20,
+    // 下拉框：一条"框 + 框内当前项 + 右侧箭头"，标签在框右边。点开是弹层
+    // 列表（弹层由 BuiltinUi 用 popup 栈画，不是控件）。
+    Combo     = 21,
+    // 颜色编辑：4 个分量框（左边缘带通道色标）+ 色块 + 右侧标签。整行是
+    // 一个控件：按下后按"鼠标落在第几个分量框"选中通道，横向拖动改它。
+    ColorEdit = 22,
     Count,
 };
 
@@ -129,6 +135,8 @@ constexpr WidgetClass widget_class_of(WidgetKind k) {
         case WidgetKind::Frame:      return WidgetClass::Container;
         case WidgetKind::Selectable: return WidgetClass::Interactive;
         case WidgetKind::Image:      return WidgetClass::Interactive;
+        case WidgetKind::Combo:      return WidgetClass::Interactive;
+        case WidgetKind::ColorEdit:  return WidgetClass::Interactive;
     }
     return WidgetClass::Interactive;   // 不可达（见上面的 static_assert）
 }
@@ -138,7 +146,7 @@ constexpr bool widget_is_interactive(WidgetKind k) {
 }
 
 // WidgetKind 增删时必须同步 widget_class_of 的分类表与 builtin 套件的校表测试。
-static_assert(static_cast<int>(WidgetKind::Count) == 21,
+static_assert(static_cast<int>(WidgetKind::Count) == 23,
               "WidgetKind changed: update widget_class_of and its test table");
 
 // 控件文案 / 输入内容容量。
@@ -150,7 +158,11 @@ constexpr int kWidgetPreeditCap = 64;
 
 // 默认字号（逻辑像素）。主题度量里没有字号一项：行高/内边距都按它推算，
 // 换主题不换字号——要可变字号时加成主题度量（只能加在枚举末尾）。
-constexpr float kWidgetFontSize = 13.0f;
+//
+// 14 而不是 13：ImGui 轨的调试字体是 14px（render/opengl/imgui_renderer.cpp
+// 的 kDebugUIFontSize），两轨要逐像素对齐，字号必须同源。行高 = 字号、
+// 控件框高 = 字号 + 2*4 = 22，也都是从这一个数推出来的。
+constexpr float kWidgetFontSize = 14.0f;
 
 // ---------------------------------------------------------------------------
 // UiInputFrame — 一帧的输入快照
@@ -256,7 +268,18 @@ struct Widget {
     bool  checked   = false;             // Checkbox
     bool  open      = false;             // TreeNode/Header：展开态
     bool  selected  = false;             // Selectable：选中态（入参，权威在调用方）
+    bool  fold_marker = true;            // TitleBar：是否画左侧折叠框（NoCollapse 时为假）
     char  text[kWidgetTextCap] = {};     // TextInput：内容（'\0' 结尾）
+
+    // —— 数值显示（Slider / ColorEdit）——
+    // fmt 是 printf 风格的单值格式（ImGui 的 SliderFloat 的第 5 个参数）。
+    // 空串按 "%.3f"。存成定长数组而不是 const char*：Theme/控件都不持有
+    // 调用方字符串的生命周期，指针会在调用方栈帧消失后悬空。
+    char  fmt[16] = {};
+
+    // —— ColorEdit ——
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};   // 当前 RGBA（0..1）
+    int   color_part = -1;                       // 正在拖的分量（-1 = 没在拖）
 
     // —— 图片（Image）——
     // 打包纹理句柄：低 32 位 = RHI index、高 32 位 = generation，
@@ -294,8 +317,7 @@ struct Widget {
     uint32_t text_color      = 0;
 
     // 所属窗口（即时模式层打戳，用于绘制时按窗口分组裁剪；0 = 无窗口）。
-    uint64_t scope = 0;
-    // 层级：0 = 窗口层，1 = 弹层（弹层永远画在窗口之上，见 WidgetTree::draw）。
+    uint64_t scope = 0;    // 层级：0 = 窗口层，1 = 弹层（弹层永远画在窗口之上，见 WidgetTree::draw）。
     uint8_t  layer = 0;
 
     // 命中测试的有效域（窗口/弹层的内容矩形）。控件滚出可见区后不响应鼠标，
@@ -327,6 +349,12 @@ struct UiDrawContext {
 // 控件绘制（主题给颜色/度量，度量器给文本宽高）。
 void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& metrics,
                     const UiDrawContext& ctx, UiDrawList& dl);
+
+// 颜色编辑的分量框几何：绘制与命中测试**必须**走同一份算法，否则点在第 3 个
+// 分量框上却改到第 2 个。宽度按 ImGui ColorEdit4 的规则算：整行减去色块
+// （框高 + ItemInnerSpacing）后四等分（向下取整），中间留 ItemInnerSpacing。
+float ui_color_part_width(const Rect& r);
+int   ui_color_part_at(const Rect& r, float x);
 
 // 兼容旧签名（等价于 UiDrawContext{focus_id, true}）。
 void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& metrics,

@@ -570,7 +570,7 @@ debug_ui_submit_locked()            主线程，锁已持有
 | 主题 | 内置轨行为 |
 | --- | --- |
 | 外观 | 控件与窗口 chrome 全部走圆角 + 纵向渐变 + 描边（半径档位与实现见 7.12）；浮窗、弹层、提示额外带投影。`Widget::corner_radius = 0` 可对单个控件关掉圆角（模态遮罩必须这么做） |
-| `BeginWindow` / `EndWindow` | 支持。`GUI_WIN_TITLE_BAR` 给标题栏（可拖动、左侧 22px 折叠框），`GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` 生效；位移/折叠/滚动按窗口 id 跨帧存活（宿主每帧重给矩形也不丢）。带标题栏时窗口底为渐变 + 投影，标题栏上两角圆、下两角直 |
+| `BeginWindow` / `EndWindow` | 支持。**标题栏默认就有**（`GUI_WIN_NO_TITLE_BAR` 关掉，与 ImGui 的 `NoTitleBar` 同向），可拖动、左侧折叠框（`GUI_WIN_NO_COLLAPSE` 去掉）；菜单栏要显式给 `GUI_WIN_MENU_BAR`，不给就完全不画。`GUI_WIN_NO_MOVE` / `NO_COLLAPSE` / `NO_SCROLLBAR` / `NO_RESIZE` 生效；位移/折叠/滚动按窗口 id 跨帧存活（宿主每帧重给矩形也不丢）。标题栏上两角圆、下两角直，底边压 1px BORDER 当分隔线 |
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | 支持；`Text` 按内容区宽度**自动折行** |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id）。悬停/按下换描边色而非换底色，渐变幅度 2%~8% 不压文字 |
 | `DragFloat` | 支持真拖拽：按住后按**鼠标位移**改值（`speed` 单位/像素，按住 Ctrl 走 1/10 精调）；没有"点哪算哪"的语义 |
@@ -650,7 +650,7 @@ debug_ui_submit_locked()            主线程，锁已持有
 | 单控件覆盖 | `Widget::corner_radius`：`< 0` 用上面那档默认值，`0` = 明确要直角（模态遮罩铺满屏幕时必须给 0，否则四角漏出没压暗的底图） |
 | 投影开关 | `Widget::shadow`：只有浮窗（带标题栏）、弹层、工具提示打开。平铺面板互相贴着，影子画进邻居身下等于白花顶点。强度/扩散由主题 `style.shadow_alpha` / `shadow_spread` 决定（Fluent 0.5/26px 环境光，Flex+Blender 0.3/10px 最小离地感；`shadow_alpha=0` 时连紧影也不画） |
 | 渐变 | 竖直渐变的两端色由 `shade()` 从同一个 token 推出来，不额外增加 token。**幅度是主题数据**（`style.fill_grad` / `panel_grad`，见 7.13）：Fluent 预设归零（纯平），Flex+Blender 预设给 12% 的 Halo 光泽 |
-| 描边 | 线宽向内生长：外轮廓尺寸不因加边框变大，相邻控件的对齐不会因为有没有边框而漂 1 像素。控件日常描边用专门的 `CONTROL_BORDER` token（BUTTON 与 BORDER 的中点）——直接拿 BORDER 描边时每个控件都顶着一圈比自身底色亮两档的细线，成片控件会变成一张表格；悬停/聚焦才换 `ACCENT` |
+| 描边 | 线宽向内生长：外轮廓尺寸不因加边框变大，相邻控件的对齐不会因为有没有边框而漂 1 像素。**控件、面板、子区域统一用 `BORDER` token**（ImGui 的 `RenderFrameBorder` 全局只有 `ImGuiCol_Border` 一条，两轨要对齐就得同源）；悬停/聚焦才换 `ACCENT`。渲染器一侧的描边带严格贴框内缘 `[0, thickness]`——早先外沿放在「内缩 0.5」、内沿放在「内缩 1.5」，1px 边整条骑在半像素上，光栅化的 top-left 规则把上/右判成 2px、下/左判成 1px，同一圈边框四个方向不等粗 |
 | 聚焦态 | 输入框聚焦时描边换成 `ACCENT` 并加粗 0.5 像素；悬停的拖拽框/复选框描边也换 `ACCENT` |
 
 渲染器一侧（`engine/render/render2d.h`，默认实现退化成直角，所以第三方 `IRenderer2D` 实现不会因为 UI 用圆角而编不过）：
@@ -669,7 +669,7 @@ draw_round_shadow(x, y, w, h, radii, spread, c);           // 外阴影
 * **内轮廓与外轮廓的顶点数必须相等**，否则环带直接被丢（症状：描边/阴影只剩外半圈、内侧留一道空白）。所以分段数由**基准半径**算一次，不随外扩量变；半径为 0 的角也照常输出 `seg+1` 个重合点（法线沿两边插值），点数恒为 `4*(seg+1)`。
 * **半径要钳到 `min(w,h)/2`**：`22px` 的行高配 `6px` 圆角没问题，但胶囊形抓柄是 `半径 = 半宽`，不钳的话窄控件会画出翻折的自交多边形。
 
-覆盖到的控件：按钮、面板/浮窗、进度条（轨道+填充）、复选框（含勾选块）、滑块（轨道+填充+胶囊抓柄）、拖拽数值框、输入框、标题栏（只有上两角圆）、折叠头、菜单项高亮、滚动条（轨道+滑块）、工具提示、子区域边框。直角命令仍保留：菜单栏底条、分隔线、选区高亮、插入符。
+覆盖到的控件：按钮、面板/浮窗、进度条（框底+填充）、复选框（方框 + 三点折线勾）、滑块（框即轨道 + 胶囊抓柄）、拖拽数值框、输入框、组合框（框 + 右侧三角）、颜色编辑（4 个带通道色标的分量框 + 色块）、标题栏（只有上两角圆）、折叠头、菜单项高亮、滚动条（轨道+滑块）、工具提示、子区域边框。直角命令仍保留：菜单栏底条、分隔线、选区高亮、插入符。
 
 ## 7.13 JSON 主题与交互动画
 
@@ -698,18 +698,44 @@ GUi_ThemeLoadFromJson(json_text);                                // 内存中的
 
 `style` 块把「怎么画」也变成主题数据（`ThemeStyle`，`engine/ui/ui_theme.h`）：
 
-| 字段 | 含义 | Fluent | Flex+Blender |
-| --- | --- | --- | --- |
-| `fill_grad` | 控件填充的纵向渐变幅度（上端提亮比例；0 = 纯平） | 0 | 0.12 |
-| `panel_grad` | 面板/窗口/标题栏的渐变幅度（比 `fill_grad` 收敛一档） | 0 | 0.05 |
-| `shadow_alpha` | 浮窗/弹层/提示的投影强度（0 = 不画） | 0.5 | 0.3 |
-| `shadow_spread` | 投影扩散半径（逻辑像素） | 26 | 10 |
+| 字段 | 含义 | 出厂默认 | Fluent | Flex+Blender |
+| --- | --- | --- | --- | --- |
+| `fill_grad` | 控件填充的纵向渐变幅度（上端提亮比例；0 = 纯平） | 0 | 0 | 0.12 |
+| `panel_grad` | 面板/窗口/标题栏的渐变幅度（比 `fill_grad` 收敛一档） | 0 | 0 | 0.05 |
+| `shadow_alpha` | 浮窗/弹层/提示的投影强度（0 = 不画） | 0 | 0.5 | 0.3 |
+| `shadow_spread` | 投影扩散半径（逻辑像素） | 0 | 26 | 10 |
+
+**出厂风格是扁平的**（四个字段全 0）：内置轨与 ImGui 轨的默认观感必须一致，而 ImGui 那边是纯色面板 + 1px 描边 + 无影。质感是主题数据——想要渐变/投影就在 JSON 的 `style` 块里显式写，引擎不预设。
 
 Fluent 与 Flex+Blender 因此是**同一套绘制代码的两个数据点**，不是两个绘制分支：Fluent 靠状态色（悬停/按下的亮度差）分层，光泽与投影全部关掉；Flex/Blender 靠 12% 的顶部提亮渐变做「Halo 光泽按钮」，投影只留最小的一点离地关系。渐变幅度钳制在 [0, 0.5]、投影 alpha 钳制在 [0, 1]，负值（会把画成凹坑）与越界值都被夹回合法域。
 
 随引擎交付四套皮肤（`assets/themes/`）：**fluent-dark / fluent-light**（Win11 Fluent 正宗档：Mica 近似中性底、8px 面板 + 4px 控件、无渐变、大而柔的环境光投影）与 **flex-blender-dark / flex-blender-light**（Adobe Flex Halo × Blender：灰底、亮边描边、5/3px 小圆角、Halo 光泽渐变；深色用 Blender 橙 #ED9E5C 与选中蓝 #4772B3，浅色用 Flex 经典蓝 #2E6BD6）。
 
 `animation` 块驱动内置轨的**状态过渡动画**：参与控件（按钮、拖拽框、复选框、滑杆抓柄、菜单高亮、折叠头）的主填充色在悬停/按下/勾选切换时按 `hover_ms`/`press_ms` 与缓动曲线插值；菜单高亮额外带淡入淡出。动画由 `BuiltinUi::draw` 用输入快照的 `time` 差分推进——`time == 0`（单测/截图）时一切瞬变，画面可复现。retained 宿主不调用 `advance_animations()` 即得到瞬变行为。`set_preset` 不重置动画参数；`animation` 块缺省时保持现状。
+
+## 7.14 两轨一致性（内置轨 ↔ ImGui 轨）
+
+`GRender_SetUIBackend(0)`（ImGui）与 `(1)`（内置轨）跑同一份页面代码时，**观感必须一致**：同一套主题 token、同一套几何规则、同一个字体。下面这些常数和对齐口径不要就地改——改一处，两轨就在那一处开始漂。
+
+| 项 | 规则 |
+| --- | --- |
+| 窗口 chrome | 标题栏**默认有**（`GUI_WIN_NO_TITLE_BAR` 关）；菜单栏要显式 `GUI_WIN_MENU_BAR`。标题栏高 = 帧高 = `字号 + 2×(PAD_Y−1)` = **22**，底边 1px `BORDER` 当分隔线，其下 5px 窗口底色 |
+| 行高 | 控件行高 = **字号本身**（14），不按字体度量的 1.25 倍；帧高 22 = 14 + 2×4 |
+| 项宽 | `item_width() = trunc(child_size.x × 0.65)`（ImGui 的 `ItemWidthDefault`，注意用的是子窗口**整宽**，别扣边框）。复选框/滑块/拖拽框/输入框/组合框/颜色编辑都按它排；框右边 `4px` 处接标签 |
+| 框 | 填充 `BUTTON`（本主题里就是 ImGui 的 `FrameBg`）+ 1px `BORDER` 内描边；圆角 `FRAME_ROUNDING` |
+| 滑块 | **框即轨道**（不是「细轨道 + 填充条」）：框内数值居中、抓柄 8px 宽圆角竖条、位置在「左右各缩 2px + 半个抓柄」的区间里按比例插值 |
+| 复选框 | 方框边长 = 框高（22）；选中底 `checkbox_bg`、勾是三点折线（线宽 = 边长/5）；标签在框右 `+4px` |
+| 组合框 | 框内左侧当前项（内边距 8px，超出裁剪）+ 右侧 `RenderArrow(Down)` 实心三角；标签在框右 |
+| 颜色编辑 | 分量宽 = `floor((项宽 − (框高 + 4) − 3×4) / 4)`；每个分量框左缘 2px 通道色标（红/绿/蓝/白），色块 = 框高见方 |
+| 描边 | 一切框统一 `BORDER`，1px 严格贴内缘（见 7.12） |
+| 字体 | `kWidgetFontSize = 14`，两轨同款 **Cousine**：ImGui 轨内嵌的 `kCousineRegularTtf` 就是它，内置轨经 Renderer2D 图集加载。查找顺序 `res:/fonts/Cousine-Regular.ttf` → `res:/fonts/Roboto-Medium.ttf`（老项目沿用）→ `third_party/imgui/misc/fonts/` 下的同两款 → 系统字体。**字体不同就谈不上对齐**：等宽/比例的差异会让每个词的实际宽度都变，换行位置随之漂移 |
+
+已知残余差异（**布局、配色、几何无差**，剩下的是采样方式）：
+
+* **字形抗锯齿**：ImGui 用 stb_truetype 的覆盖度 + 自己的 alpha 通道插值，内置轨走 Renderer2D 的字形图集；同一字形同一字号下笔画位置一致，但边缘灰阶分布不同——按像素比对时每个字都有一圈"毛边"差异，肉眼看不出。
+* **圆角弧的抗锯齿**：弧是折线多边形 + 1px alpha 环带，`radius=8` 时轮廓近似到 1.1px 阶梯；ImGui 的 `AddRect` 用 0.5px 半宽描边 + 抗锯齿填充，边缘更软。
+
+`GryceUiSmoke --page controls --ui-backend builtin|imgui --shot x.png` 可以随时采两轨同页截图做像素比对（`build/pngdiff.py`）。
 
 ## 8. 与宿主输入的分工
 

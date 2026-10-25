@@ -11,6 +11,7 @@ void UiDrawList::reset() {
     count_      = 0;
     clip_depth_ = 0;
     text_used_  = 0;
+    poly_used_  = 0;
     dropped_    = 0;
     culled_     = 0;
 }
@@ -245,6 +246,47 @@ void UiDrawList::add_sprite(float x, float y, float w, float h, uint64_t texture
     c.v1       = v1;
     c.color    = rgba;
     emit(c);
+}
+
+void UiDrawList::add_polygon(const float* xy, int count, uint32_t rgba) {
+    if (!xy || count < 3) return;
+    if (cull_active()) {
+        ++culled_;
+        return;
+    }
+    const int need = count * 2;
+    if (poly_used_ + need > kPolyPoolSize) {
+        // 与字符串池同一策略：放不下整条就整条丢，绝不画半个形状
+        ++dropped_;
+        return;
+    }
+    UiCommand c{};
+    c.cmd      = UiCmd::Polygon;
+    c.color    = rgba;
+    c.poly_off = static_cast<uint32_t>(poly_used_);
+    c.poly_len = static_cast<uint32_t>(count);
+    // 包围盒顺手算好：渲染桥与单测都不需要自己再扫一遍顶点
+    float minx = xy[0], miny = xy[1], maxx = xy[0], maxy = xy[1];
+    for (int i = 0; i < count; ++i) {
+        const float px = xy[i * 2];
+        const float py = xy[i * 2 + 1];
+        if (px < minx) minx = px;
+        if (py < miny) miny = py;
+        if (px > maxx) maxx = px;
+        if (py > maxy) maxy = py;
+    }
+    c.x = minx;
+    c.y = miny;
+    c.w = maxx - minx;
+    c.h = maxy - miny;
+    for (int i = 0; i < need; ++i) poly_pool_[poly_used_ + i] = xy[i];
+    poly_used_ += need;
+    emit(c);
+}
+
+const float* UiDrawList::points_at(uint32_t off) const {
+    if (off >= static_cast<uint32_t>(kPolyPoolSize)) return poly_pool_;
+    return poly_pool_ + off;
 }
 
 const char* UiDrawList::text_at(uint32_t off) const {

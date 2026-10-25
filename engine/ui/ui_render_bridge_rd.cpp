@@ -27,6 +27,7 @@
 
 #include <cmath>
 #include <memory>
+#include <vector>
 
 #include "render/render2d.h"
 #include "render/rhi_handle.h"
@@ -108,6 +109,16 @@ public:
                                      r, spread * scale_, to_color(rgba));
     }
 
+    void ui_draw_polygon(const float* xy, int count, uint32_t rgba) override {
+        if (!renderer_ || !xy || count < 3) return;
+        points_.clear();
+        points_.reserve(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            points_.emplace_back(xy[i * 2] * scale_, xy[i * 2 + 1] * scale_);
+        }
+        renderer_->draw_polygon(points_, to_color(rgba));
+    }
+
     void ui_draw_text(float x, float y, const char* text, float font_size,
                       uint32_t rgba) override {
         if (!renderer_ || !text) return;
@@ -156,6 +167,8 @@ private:
 
     gryce_engine::render::IRenderer2D* renderer_;  // 不持有：生命周期归宿主
     float scale_ = 1.0f;
+    // 多边形顶点复用缓冲：勾/箭头每帧几十个，避免逐个 emplace 反复分配
+    std::vector<gryce_engine::math::Vector2f> points_;
 };
 
 } // namespace

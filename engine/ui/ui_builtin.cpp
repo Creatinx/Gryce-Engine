@@ -154,6 +154,8 @@ void BuiltinUi::draw(UiDrawList& dl) {
     // 用 clip_depth 记账而不是布尔：子区域可能嵌在窗口的裁剪里。
     for (int layer = 0; layer <= 1; ++layer) {
         int clip_depth = 0;
+        // 最近一个面板的内容裁剪域：标题栏要用它"临时出界"（见下面的分支）
+        Rect panel_clip{};
         tree_.for_each_alive([&](const Widget& w) {
             if (static_cast<int>(w.layer) != layer) return;
 
@@ -170,7 +172,20 @@ void BuiltinUi::draw(UiDrawList& dl) {
                 // 命令照记"，正是要的行为；跳过 push 反而会让内容淌出面板。
                 const Rect c{w.rect.x + pad_x(), w.rect.y + pad_y(),
                              w.rect.w - pad_x() * 2.0f, w.rect.h - pad_y() * 2.0f};
+                panel_clip = c;
                 dl.push_clip(c.x, c.y, c.w, c.h);
+                ++clip_depth;
+                return;
+            }
+            if (w.kind == WidgetKind::TitleBar && clip_depth > 0) {
+                // 标题栏是窗口 chrome，不是内容：它占的是窗口最上面那一行，
+                // 而面板推入的内容裁剪从 PAD_Y 之下才开始。不临时出界的话
+                // 标题栏上半截被自己的裁剪切掉（症状：标题栏看起来"矮了 5px"、
+                // 顶部露出窗口底色）。画完把内容裁剪补回来。
+                dl.pop_clip();
+                --clip_depth;
+                ui_draw_widget(w, *theme_, *metrics_, ctx, dl);
+                dl.push_clip(panel_clip.x, panel_clip.y, panel_clip.w, panel_clip.h);
                 ++clip_depth;
                 return;
             }
@@ -275,13 +290,15 @@ int BuiltinUi::begin_window(const char* name, const Rect& rect, uint32_t flags) 
     const uint64_t id = hash_label(name);
     WindowPersist* p = find_persist(id);
 
-    const bool want_title = (flags & kWinTitleBar) != 0;
+    // 标题栏：与 ImGui 一致——**默认就有**，只有显式传 NO_TITLE_BAR 才没有。
+    // 早期内置轨是反过来的（必须显式要），于是同一个宿主在两条轨下画出来的
+    // 窗口结构不一样：ImGui 有标题栏没菜单栏、内置轨有菜单栏没标题栏。
+    const bool want_title = (flags & kWinNoTitleBar) == 0;
 
     // 标题栏拖动：按下帧记"鼠标起点 + 当时的位移"，之后 offset = 起点位移 +
     // 鼠标位移。必须在算 eff 之前做，否则位移要晚一帧才反映到矩形上。
     if (want_title && !(flags & kWinNoMove)) {
-        const Rect tr0{rect.x + p->offset_x, rect.y + p->offset_y, rect.w,
-                       frame_height() + pad_y()};
+        const Rect tr0{rect.x + p->offset_x, rect.y + p->offset_y, rect.w, frame_height()};
         const UiInputFrame& in0 = tree_.input();
         if (in0.mouse_clicked[0] && rect_contains(tr0, in0.mouse_x, in0.mouse_y) &&
             (in0.mouse_x >= tr0.x + 22.0f || (flags & kWinNoCollapse))) {
@@ -309,7 +326,7 @@ int BuiltinUi::begin_window(const char* name, const Rect& rect, uint32_t flags) 
     if (!win) return 0;
     win->host_rect = rect;
 
-    win->title_h = want_title ? (frame_height() + pad_y()) : 0.0f;
+    win->title_h = want_title ? frame_height() : 0.0f;
     win->content_top = eff.y + win->title_h + pad_y();
 
     const float view_h = (eff.bottom() - pad_y()) - win->content_top;
@@ -356,13 +373,14 @@ int BuiltinUi::begin_window(const char* name, const Rect& rect, uint32_t flags) 
         return 1;
     }
 
-    // 标题栏：可拖动、左侧折叠框
+    // 标题栏：可拖动；窗口允许折叠时左侧才有折叠框（ImGui 的 NoCollapse 同理）。
     if (win->collapsed) win->title_h = 0.0f;
-    const Rect tr{eff.x, eff.y, eff.w, frame_height() + pad_y()};
+    const Rect tr{eff.x, eff.y, eff.w, frame_height()};
     const uint64_t tid = id ^ 0x7E11ull;
     Widget* title = tree_.touch(tid, WidgetKind::TitleBar, tr, name);
     if (title) {
         title->open = !p->collapsed;
+        title->fold_marker = (flags & kWinNoCollapse) == 0;
         title->scope = id;
         title->layer = win->layer;
         // 折叠：点在左侧小方块上
@@ -481,8 +499,10 @@ void BuiltinUi::same_line(float spacing) {
 void BuiltinUi::spacing(float px) {
     if (!usable()) return;
     // px < 0 = "用主题的行间距"（GUi_Spacing 的语义：空一行）；px == 0 是空操作。
+    // 空一行走两步：ImGui 的 Spacing() 是 ItemSize(ItemSpacing)，即"一个高
+    // ItemSpacing 的空行"再加上它后面那一条 ItemSpacing，所以是两倍。
     if (px < 0.0f) {
-        windows_[depth_ - 1].cursor_y += item_spacing();
+        windows_[depth_ - 1].cursor_y += item_spacing() * 2.0f;
         return;
     }
     if (px == 0.0f) return;
@@ -716,7 +736,7 @@ int BuiltinUi::checkbox(const char* label, int* inout_value) {
     if (!usable()) { finish_impl(nullptr); return 0; }
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
-    const Rect r = place(content_width(), frame_height());
+    const Rect r = place(item_width(), frame_height());
     const uint64_t id = item_id(label, false);
     const bool was = (inout_value != nullptr && *inout_value != 0);
 
@@ -737,11 +757,12 @@ int BuiltinUi::checkbox(const char* label, int* inout_value) {
     return 0;
 }
 
-int BuiltinUi::slider_float(const char* label, float* inout_value, float vmin, float vmax) {
+int BuiltinUi::slider_float(const char* label, float* inout_value, float vmin, float vmax,
+                            const char* fmt) {
     if (!usable()) { finish_impl(nullptr); return 0; }
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
-    const Rect r = place(content_width(), frame_height());
+    const Rect r = place(item_width(), frame_height());
     const uint64_t id = item_id(label, false);
     const float was = inout_value ? *inout_value : 0.0f;
 
@@ -751,6 +772,7 @@ int BuiltinUi::slider_float(const char* label, float* inout_value, float vmin, f
     w->min_value = vmin;
     w->max_value = (vmax > vmin) ? vmax : vmin + 1.0f;
     w->value = was;
+    std::snprintf(w->fmt, sizeof(w->fmt), "%s", (fmt && fmt[0]) ? fmt : "%.3f");
     w = tree_.touch(id, WidgetKind::Slider, r, shown);
     if (!w) { finish_impl(nullptr); return 0; }
     stamp(w);
@@ -768,7 +790,7 @@ int BuiltinUi::drag_float(const char* label, float* inout_value, float speed,
     if (depth_ == 0 || !inout_value) { finish_impl(nullptr); return 0; }
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
-    const Rect r = place(content_width(), frame_height());
+    const Rect r = place(item_width(), frame_height());
     const uint64_t id = item_id(label, false);
     const float was = *inout_value;
 
@@ -903,7 +925,7 @@ int BuiltinUi::input_text(const char* label, char* buf, int buf_size) {
     if (depth_ == 0 || !buf || buf_size <= 1) { finish_impl(nullptr); return 0; }
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
-    const Rect r = place(content_width(), frame_height());
+    const Rect r = place(item_width(), frame_height());
     const uint64_t id = item_id(label, false);
 
     Widget* w = tree_.ensure(id, WidgetKind::TextInput, r, shown);
@@ -999,9 +1021,74 @@ int BuiltinUi::color_button(const char* label, const float rgba[4]) {
 }
 
 // ---------------------------------------------------------------------------
-// 结构：树 / 折叠头 / 菜单 / 子区域
+// 下拉框 / 颜色编辑（与 ImGui 的 Combo / ColorEdit4 同布局）
 // ---------------------------------------------------------------------------
 
+int BuiltinUi::combo(const char* label, int* current, const char* const* items, int count) {
+    if (!usable() || !current || !items || count <= 0) { finish_impl(nullptr); return 0; }
+    char shown[kWidgetLabelCap];
+    copy_display_label(label, shown, sizeof(shown));
+    const Rect r = place(item_width(), frame_height());
+    const uint64_t id = item_id(label, false);
+    const int cur = (*current < 0 || *current >= count) ? 0 : *current;
+
+    Widget* w = tree_.touch(id, WidgetKind::Combo, r, shown);
+    if (!w) { finish_impl(nullptr); return 0; }
+    stamp(w);
+    // 框内显示当前项（ImGui 的 preview_value）
+    std::snprintf(w->text, sizeof(w->text), "%s", items[cur] ? items[cur] : "");
+    finish_impl(w);
+
+    // 弹层列表：位置贴框的下沿、宽度取框宽（ImGui 的 BeginComboPopup 同理）
+    char popup_id[96];
+    std::snprintf(popup_id, sizeof(popup_id), "##combo_%s", label ? label : "c");
+    if (w->clicked) {
+        open_popup(popup_id, r.x, r.bottom(), r.w, 0.0f);
+    }
+
+    int changed = 0;
+    if (begin_popup(popup_id)) {
+        for (int i = 0; i < count; ++i) {
+            if (menu_item(items[i] ? items[i] : "", nullptr, 1)) {
+                *current = i;
+                changed = 1;
+            }
+        }
+        end_popup();
+    }
+    return changed;
+}
+
+int BuiltinUi::color_edit(const char* label, float rgba[4]) {
+    if (!usable() || !rgba) { finish_impl(nullptr); return 0; }
+    char shown[kWidgetLabelCap];
+    copy_display_label(label, shown, sizeof(shown));
+    const Rect r = place(item_width(), frame_height());
+    const uint64_t id = item_id(label, false);
+    float was[4] = {rgba[0], rgba[1], rgba[2], rgba[3]};
+
+    // 先 ensure + 同步调用方的颜色（权威在调用方），再 touch 跑交互
+    Widget* w = tree_.ensure(id, WidgetKind::ColorEdit, r, shown);
+    if (!w) { finish_impl(nullptr); return 0; }
+    stamp(w);
+    for (int i = 0; i < 4; ++i) w->color[i] = was[i];
+    w = tree_.touch(id, WidgetKind::ColorEdit, r, shown);
+    if (!w) { finish_impl(nullptr); return 0; }
+    stamp(w);
+    finish_impl(w);
+
+    int changed = 0;
+    for (int i = 0; i < 4; ++i) {
+        const float v = clampf(w->color[i], 0.0f, 1.0f);
+        rgba[i] = v;
+        if (v != was[i]) changed = 1;
+    }
+    return changed;
+}
+
+// ---------------------------------------------------------------------------
+// 结构：树 / 折叠头 / 菜单 / 子区域
+// ---------------------------------------------------------------------------
 int BuiltinUi::tree_node(const char* label, int default_open) {
     if (!usable()) { finish_impl(nullptr); return 0; }
     WindowState& win = windows_[depth_ - 1];
@@ -1063,9 +1150,13 @@ int BuiltinUi::collapsing_header(const char* label, int default_open) {
     return open ? 1 : 0;
 }
 
-void BuiltinUi::begin_menu_bar() {
-    if (!usable()) return;
+int BuiltinUi::begin_menu_bar() {
+    if (!usable()) return 0;
     WindowState& win = windows_[depth_ - 1];
+    // 与 ImGui 同一条规则：窗口**没有** MenuBar 标志时整条菜单栏不画，
+    // 返回 0 让调用方跳过菜单体。ImGui 的 BeginMenuBar 也是这么做的
+    // （它是"这个窗口有没有声明菜单栏"的判据，不是"现在要不要画"）。
+    if ((win.flags & kWinMenuBar) == 0) return 0;
     win.in_menubar = true;
     const Rect bar = place(content_width(), frame_height());
     Widget* w = tree_.touch(item_id("##menubar", true), WidgetKind::Bar, bar, nullptr);
@@ -1074,6 +1165,7 @@ void BuiltinUi::begin_menu_bar() {
     win.last_rect = Rect{bar.x, bar.y, 0.0f, bar.h};
     win.pending_same_line = true;
     win.same_line_spacing = 0.0f;
+    return 1;
 }
 
 void BuiltinUi::end_menu_bar() {
@@ -1456,11 +1548,30 @@ float BuiltinUi::item_spacing() const {
 }
 
 float BuiltinUi::line_height() const {
-    return metrics_ ? metrics_->line_height(kWidgetFontSize) : kWidgetFontSize * 1.25f;
+    // 单行文本的行高 = 字号（ImGui 的 DC.CursorPos.y 一行正好走 FontSize，
+    // 行距由 ItemSpacing 单独给）。度量器的 1.25 倍行高只用于多行正文的
+    // 排版估算，不能拿来当控件行高——那会让每一行比 ImGui 高出 3.5px。
+    return kWidgetFontSize;
 }
 
 float BuiltinUi::frame_height() const {
-    return line_height() + pad_y() * 2.0f;
+    // 控件框高 = 字号 + 2×纵向内边距。内边距用 PAD_Y-1：这与 ImGui 的
+    // FramePadding（= PAD_Y-1）同源，14px 字号下正好 22px。
+    const float pady = (pad_y() > 1.0f) ? (pad_y() - 1.0f) : pad_y();
+    return kWidgetFontSize + pady * 2.0f;
+}
+
+float BuiltinUi::item_width() const {
+    if (!usable()) return 0.0f;
+    // ImGui 的 ItemWidthDefault = trunc(Size.x * 0.65f)，Size.x 是子窗口的整宽
+    // （含它自己的 1px 边框）。这里不能用"扣掉边框"的宽度：388 宽的子窗口在
+    // ImGui 里算出来是 252，扣掉 2px 只有 250，整列控件窄 2px、右侧标签跟着
+    // 左移，与 ImGui 轨就再也对不齐了。
+    const Rect& r = windows_[depth_ - 1].rect;
+    float w = std::floor(r.w * 0.65f);
+    const float cw = content_width();
+    if (w > cw) w = cw;
+    return (w > 0.0f) ? w : 0.0f;
 }
 
 float BuiltinUi::content_width() const {

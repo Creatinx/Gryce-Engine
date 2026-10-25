@@ -2116,17 +2116,6 @@ UiInputFrame typing(const char* chars, bool backspace = false) {
     return in;
 }
 
-// 与 ui_widget.cpp 的 shade(c, +0.04f) 同公式：按钮渐变填充命令的顶端色。
-// 断言"填充命令颜色"时必须用它换算——命令里装的是渐变端点，不是 token 原值。
-uint32_t shade_top_4(uint32_t c) {
-    auto adj = [](uint32_t v) {
-        const float t = static_cast<float>(v) / 255.0f;
-        return static_cast<uint32_t>((t + (1.0f - t) * 0.04f) * 255.0f + 0.5f);
-    };
-    return (adj((c >> 24) & 0xFFu) << 24) | (adj((c >> 16) & 0xFFu) << 16) |
-           (adj((c >> 8) & 0xFFu) << 8) | (c & 0xFFu);
-}
-
 // 统计 drawlist 里某类命令的条数
 int count_cmd(const gryce_ui::UiDrawList& dl, gryce_ui::UiCmd kind) {    int n = 0;
     for (int i = 0; i < dl.command_count(); ++i) {
@@ -2434,6 +2423,8 @@ TEST(widget, every_kind_has_an_explicit_class_and_only_interactive_is_hit_tested
         {WidgetKind::Frame,      WidgetClass::Container,   "Frame"},
         {WidgetKind::Selectable, WidgetClass::Interactive, "Selectable"},
         {WidgetKind::Image,      WidgetClass::Interactive, "Image"},
+        {WidgetKind::Combo,      WidgetClass::Interactive, "Combo"},
+        {WidgetKind::ColorEdit,  WidgetClass::Interactive, "ColorEdit"},
     };
     const int n = static_cast<int>(sizeof(table) / sizeof(table[0]));
     CHECK_EQ(n, static_cast<int>(WidgetKind::Count));   // 一条不漏、一条不多
@@ -2591,20 +2582,19 @@ TEST(widget, draw_emits_commands_per_kind) {
     gryce_ui::UiDrawList dl;
     tree.draw(dl, gryce_ui::theme(), metrics);
 
-    // 美化后的形态：填充与描边各是一条**圆角**命令（不再是"底 + 四条边"）。
-    // Button: 渐变底 + 圆角描边 + 标签 = 3；Label: 1 文本；
-    // Checkbox: 底 + 描边 + 标签 = 3；Slider: 标签 + 轨道 + 填充 + 手柄(底+边) = 5；
-    // TextInput: 底 + 描边 + push/pop 裁剪 + 文本 = 5
-    CHECK_EQ(dl.command_count(), 3 + 1 + 3 + 5 + 5);
+    // 对齐 ImGui 后的形态：每个控件 = 一条圆角填充 + 一条圆角描边 + 框内文字
+    // （+ 框右侧标签）。Button: 底 + 描边 + 标签 = 3；Label: 1 文本；
+    // Checkbox: 底 + 描边 + 标签 = 3；Slider: 底 + 描边 + 框内数值 + 抓柄 + 标签 = 5；
+    // TextInput: 底 + 描边 + push/pop 裁剪 + 正文 + 标签 = 6
+    CHECK_EQ(dl.command_count(), 3 + 1 + 3 + 5 + 6);
     // 直角矩形一个都不该有：边框全走圆角描边命令
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Rect), 0);
-    // 圆角填充：Button 1 + Checkbox 1 + Slider 轨道 1 + Slider 填充 1 + Slider 手柄 1
-    //           + TextInput 1 = 6
-    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRect), 6);
-    // 圆角描边：Button 1 + Checkbox 1 + Slider 手柄 1 + TextInput 1 = 4
+    // 圆角填充：Button 1 + Checkbox 1 + Slider 底 1 + Slider 抓柄 1 + TextInput 1 = 5
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRect), 5);
+    // 圆角描边：Button 1 + Checkbox 1 + Slider 1 + TextInput 1 = 4
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::RoundRectBorder), 4);
-    // Text：每个控件各一条
-    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Text), 5);
+    // Text：Label 1 + Button 1 + Checkbox 1 + Slider 2（框内数值 + 右标签）+ TextInput 2 = 7
+    CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::Text), 7);
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::PushClip), 1);   // 只有 TextInput 裁剪
     CHECK_EQ(count_cmd(dl, gryce_ui::UiCmd::PopClip), 1);
     CHECK_EQ(dl.clip_depth(), 0);                            // 绘制后裁剪栈必须归零
@@ -2621,17 +2611,20 @@ TEST(widget, draw_follows_theme_preset) {
     ApproxMetrics metrics;
     gryce_ui::UiDrawList dl;
     tree.draw(dl, gryce_ui::theme(), metrics);
-    // 按钮底现在是竖直渐变：一条 RoundRect + color2
+    // 出厂预设是扁平的（与 ImGui 一致的纯色面）：按钮底就是 BUTTON token 的
+    // 单色，color2 == 0 表示这条填充不带渐变。质感（渐变/投影/描边强度）由
+    // JSON 主题的 style 块显式打开，出厂不预设。
     CHECK_EQ(dl.command(0).cmd, gryce_ui::UiCmd::RoundRect);
-    CHECK_TRUE(dl.command(0).color2 != 0u);
-    CHECK_TRUE(dl.command(0).color != dl.command(0).color2);
+    CHECK_EQ(dl.command(0).color2, 0u);
     const uint32_t dark_top = dl.command(0).color;
-    // 描边取"控件描边"token（不参与渐变）——换成浅色后它必须换，且角半径不变。
-    // 控件描边不是 BORDER：BORDER 是面板/弹层的强边界，控件日常只勾形状。
+    CHECK_EQ(dark_top, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BUTTON]);
+    // 描边取 BORDER token（不参与渐变）——换成浅色后它必须换，且角半径不变。
+    // 控件框的描边与面板/弹层用的是同一个 Border 色：ImGui 的 RenderFrameBorder
+    // 全局只用 ImGuiCol_Border 一条，两轨要逐像素对齐就得同源。
     const gryce_ui::UiCommand* dark_edge =
         first_cmd(dl, gryce_ui::UiCmd::RoundRectBorder);
     CHECK_TRUE(dark_edge != nullptr);
-    CHECK_EQ(dark_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_CONTROL_BORDER]);
+    CHECK_EQ(dark_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BORDER]);
     CHECK_TRUE(dark_edge->radii[0] > 0.0f);
 
     // 换预设重画：颜色跟着 token 表走（调用方只引用 token）
@@ -2642,7 +2635,7 @@ TEST(widget, draw_follows_theme_preset) {
     const gryce_ui::UiCommand* light_edge =
         first_cmd(dl, gryce_ui::UiCmd::RoundRectBorder);
     CHECK_TRUE(light_edge != nullptr);
-    CHECK_EQ(light_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_CONTROL_BORDER]);
+    CHECK_EQ(light_edge->color, gryce_ui::theme().colors[gryce_ui::THEME_COLOR_BORDER]);
     CHECK_NEAR(light_edge->radii[0], dark_edge->radii[0], 1e-6f);   // 几何不随主题变
     gryce_ui::set_preset(gryce_ui::THEME_PRESET_DARK);   // 别影响后续用例
 }
@@ -2657,8 +2650,9 @@ TEST(widget, draw_text_positions_are_deterministic) {
     gryce_ui::UiDrawList dl;
     tree.draw(dl, gryce_ui::theme(), metrics);
     CHECK_EQ(dl.command_count(), 1);
-    // 行盒在控件里垂直居中：y = (20 - 1.25*13)/2 ≈ 1.875
-    CHECK_NEAR(dl.command(0).y, 1.875f, 1e-4f);
+    // 行盒在控件里垂直居中：y = (20 - 1.25*14)/2 = 1.25
+    // （1.25 是 ApproxMetrics 的行高倍数；控件行高 = 字号，不再是 1.25 倍字号）
+    CHECK_NEAR(dl.command(0).y, 1.25f, 1e-4f);
     CHECK_NEAR(dl.command(0).font_size, gryce_ui::kWidgetFontSize, 1e-6f);
 }
 
@@ -2684,6 +2678,16 @@ void bi_frame(BuiltinUi& ui, const UiInputFrame& in) {
     ui.begin_frame(in, gryce_ui::theme(), metrics);
 }
 
+// 开窗口。标题栏现在**默认就有**（与 ImGui 的 Begin 一致），但绝大多数用例
+// 考的是光标流 / 控件语义，不是 chrome 本身——它们的历史坐标也都按"内容从
+// pad_y 起"写死。统一在这里关掉标题栏，用例保持原样；标题栏本身的行为由
+// title_bar_is_on_by_default / title_bar_can_be_disabled /
+// title_bar_drag_moves_window_and_box_collapses 三条用例专门覆盖。
+int bi_window(BuiltinUi& ui, const char* name, const Rect& rect,
+              uint32_t flags = gryce_ui::kWinNoTitleBar) {
+    return ui.begin_window(name, rect, flags);
+}
+
 } // namespace
 
 TEST(builtin, window_stack_depth_and_limits) {
@@ -2694,12 +2698,12 @@ TEST(builtin, window_stack_depth_and_limits) {
     for (int i = 0; i < BuiltinUi::kMaxWindows; ++i) {
         char name[8];
         std::snprintf(name, sizeof(name), "W%d", i);
-        CHECK_EQ(ui.begin_window(name, Rect{0.0f, 0.0f, 100.0f, 100.0f}), 1);
+        CHECK_EQ(bi_window(ui, name, Rect{0.0f, 0.0f, 100.0f, 100.0f}), 1);
         CHECK_EQ(ui.window_depth(), i + 1);
     }
     // 栈满：第 9 个进不来，且不提交 chrome
     const int before = ui.tree().count();
-    CHECK_EQ(ui.begin_window("overflow", Rect{0.0f, 0.0f, 100.0f, 100.0f}), 0);
+    CHECK_EQ(bi_window(ui, "overflow", Rect{0.0f, 0.0f, 100.0f, 100.0f}), 0);
     CHECK_EQ(ui.window_depth(), BuiltinUi::kMaxWindows);
     CHECK_EQ(ui.tree().count(), before);
 
@@ -2713,43 +2717,75 @@ TEST(builtin, window_stack_depth_and_limits) {
 TEST(builtin, degenerate_window_rejected) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("zero_w", Rect{0.0f, 0.0f, 0.0f, 100.0f}), 0);
+    CHECK_EQ(bi_window(ui, "zero_w", Rect{0.0f, 0.0f, 0.0f, 100.0f}), 0);
     // 被拒窗口里提交内容 = no-op；Begin/End 仍要配对（退化态占一个栈位）
     ui.text("invisible");
     CHECK_EQ(ui.tree().count(), 0);
     ui.end_window();
     CHECK_EQ(ui.window_depth(), 0);
 
-    CHECK_EQ(ui.begin_window("neg", Rect{0.0f, 0.0f, -5.0f, 10.0f}), 0);
+    CHECK_EQ(bi_window(ui, "neg", Rect{0.0f, 0.0f, -5.0f, 10.0f}), 0);
     ui.end_window();
-    CHECK_EQ(ui.begin_window("flat", Rect{0.0f, 0.0f, 100.0f, 0.0f}), 0);
+    CHECK_EQ(bi_window(ui, "flat", Rect{0.0f, 0.0f, 100.0f, 0.0f}), 0);
     ui.end_window();
     CHECK_EQ(ui.window_depth(), 0);
     CHECK_EQ(ui.tree().count(), 0);
     ui.end_frame();
 }
 
+TEST(builtin, title_bar_is_on_by_default) {
+    // 与 ImGui 的 Begin 一致：不传 flag 也有标题栏，内容起点让出帧高 + PAD_Y。
+    BuiltinUi ui;
+    const Rect win{10.0f, 10.0f, 300.0f, 200.0f};
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);          // 默认（不带任何 flag）
+    const int chrome = ui.tree().count();            // 底板 + 标题栏
+    ui.text("body");
+    const float body_y = ui.last_item_rect().y;
+    ui.end_window();
+    ui.end_frame();
+
+    CHECK_EQ(chrome, 2);
+    // 帧高 = 行高 + (PAD_Y-1)*2 = 14 + 8 = 22，正文再让出 PAD_Y
+    CHECK_NEAR(body_y, win.y + 22.0f + 5.0f, 1e-5f);
+}
+
+TEST(builtin, title_bar_can_be_disabled) {
+    BuiltinUi ui;
+    const Rect win{10.0f, 10.0f, 300.0f, 200.0f};
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);            // bi_window 默认 kWinNoTitleBar
+    const int chrome = ui.tree().count();            // 只有底板
+    ui.text("body");
+    const float body_y = ui.last_item_rect().y;
+    ui.end_window();
+    ui.end_frame();
+
+    CHECK_EQ(chrome, 1);
+    CHECK_NEAR(body_y, win.y + 5.0f, 1e-5f);
+}
+
 TEST(builtin, items_flow_downwards) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{10.0f, 10.0f, 200.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{10.0f, 10.0f, 200.0f, 200.0f}), 1);
 
-    // PAD_X=8 / PAD_Y=5 / ITEM_SPACING=4 / 字号 13 / 行高 16.25 / 帧高 26.25
-    ui.text("hello");                                   // y = 10+5 = 15，高 16.25
+    // PAD_X=8 / PAD_Y=5 / ITEM_SPACING=4 / 字号 14 / 行高 14 / 帧高 22
+    ui.text("hello");                                   // y = 10+5 = 15，高 14
     CHECK_NEAR(ui.last_item_rect().y, 15.0f, 1e-5f);
-    CHECK_NEAR(ui.last_item_rect().h, 16.25f, 1e-5f);
+    CHECK_NEAR(ui.last_item_rect().h, 14.0f, 1e-5f);
 
-    ui.button("OK");                                    // y = 15+16.25+4 = 35.25
-    CHECK_NEAR(ui.last_item_rect().y, 35.25f, 1e-5f);
-    CHECK_NEAR(ui.last_item_rect().h, 26.25f, 1e-5f);
-    CHECK_NEAR(ui.last_item_rect().w, 13.0f + 16.0f, 1e-5f);   // "OK"=1em + 2*PAD_X
+    ui.button("OK");                                    // y = 15+14+4 = 33
+    CHECK_NEAR(ui.last_item_rect().y, 33.0f, 1e-5f);
+    CHECK_NEAR(ui.last_item_rect().h, 22.0f, 1e-5f);
+    CHECK_NEAR(ui.last_item_rect().w, 14.0f + 16.0f, 1e-5f);   // "OK"=1em + 2*PAD_X
 
-    ui.separator();                                     // y = 35.25+26.25+4 = 65.5，高 1
-    CHECK_NEAR(ui.last_item_rect().y, 65.5f, 1e-5f);
+    ui.separator();                                     // y = 33+22+4 = 59，高 1
+    CHECK_NEAR(ui.last_item_rect().y, 59.0f, 1e-5f);
     CHECK_NEAR(ui.last_item_rect().h, 1.0f, 1e-5f);
 
-    ui.text("world");                                   // y = 65.5+1+4 = 70.5
-    CHECK_NEAR(ui.last_item_rect().y, 70.5f, 1e-5f);
+    ui.text("world");                                   // y = 59+1+4 = 64
+    CHECK_NEAR(ui.last_item_rect().y, 64.0f, 1e-5f);
     ui.end_window();
     ui.end_frame();
 }
@@ -2757,7 +2793,7 @@ TEST(builtin, items_flow_downwards) {
 TEST(builtin, same_line_places_to_the_right) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
 
     ui.button_size("A", 40.0f, 20.0f);                  // (8,5,40,20)
     const Rect a = ui.last_item_rect();
@@ -2789,20 +2825,20 @@ TEST(builtin, button_click_roundtrip) {
     const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
 
     bi_frame(ui, mouse_at(20.0f, 20.0f, true, true, false));    // 按下（按钮宽 29：x∈[8,37]）
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.button("OK"), 0);                                // 按下帧不算点击
     CHECK_TRUE(ui.is_item_active());
     ui.end_window();
     ui.end_frame();
 
     bi_frame(ui, mouse_at(20.0f, 20.0f, false, false, true));    // 松开
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.button("OK"), 1);                                // 本帧完成点击
     ui.end_window();
     ui.end_frame();
 
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));     // 无事
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.button("OK"), 0);                                // 不重复触发
     ui.end_window();
     ui.end_frame();
@@ -2814,7 +2850,7 @@ TEST(builtin, checkbox_roundtrips_caller_value) {
     int v = 1;
 
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.checkbox("Shadows", &v), 0);                     // 没交互就不报变化
     CHECK_EQ(v, 1);                                              // 调用方的值不动
     ui.end_window();
@@ -2822,12 +2858,12 @@ TEST(builtin, checkbox_roundtrips_caller_value) {
 
     // 点一下：勾态翻转并写回调用方
     bi_frame(ui, mouse_at(100.0f, 20.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.checkbox("Shadows", &v), 0);
     ui.end_window();
     ui.end_frame();
     bi_frame(ui, mouse_at(100.0f, 20.0f, false, false, true));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.checkbox("Shadows", &v), 1);
     ui.end_window();
     ui.end_frame();
@@ -2836,7 +2872,7 @@ TEST(builtin, checkbox_roundtrips_caller_value) {
     // 外部改值（undo/重置）：不被控件里的旧值盖掉
     v = 1;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.checkbox("Shadows", &v), 0);
     ui.end_window();
     ui.end_frame();
@@ -2850,32 +2886,36 @@ TEST(builtin, slider_drag_and_external_sync) {
 
     // 悬停不改值
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.slider_float("Opacity", &v, 0.0f, 1.0f), 0);
     CHECK_NEAR(v, 0.5f, 1e-6f);
+    // 滑块框宽 = item_width()（ImGui 的 ItemWidthDefault = trunc(300*0.65) = 195），
+    // 不再是整个内容宽——按下位置要按它算比例。
+    const Rect sr = ui.last_item_rect();
+    CHECK_NEAR(sr.w, 195.0f, 1e-5f);
     ui.end_window();
     ui.end_frame();
 
     // 外部改成 0.9（模拟撤销）：同步进控件，不拖就不动
     v = 0.9f;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.slider_float("Opacity", &v, 0.0f, 1.0f), 0);
     ui.end_window();
     ui.end_frame();
     CHECK_NEAR(v, 0.9f, 1e-6f);
 
     // 按在 30% 处：值直接跳过去并写回
-    bi_frame(ui, mouse_at(8.0f + 284.0f * 0.3f, 20.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    bi_frame(ui, mouse_at(sr.x + sr.w * 0.3f, sr.y + sr.h * 0.5f, true, true, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.slider_float("Opacity", &v, 0.0f, 1.0f), 1);
     ui.end_window();
     ui.end_frame();
     CHECK_NEAR(v, 0.3f, 1e-5f);
 
     // 按住拖到 80%（拖出框外也钳住）
-    bi_frame(ui, mouse_at(8.0f + 284.0f * 0.8f, 20.0f, true, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    bi_frame(ui, mouse_at(sr.x + sr.w * 0.8f, sr.y + sr.h * 0.5f, true, false, false));
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.slider_float("Opacity", &v, 0.0f, 1.0f), 1);
     ui.end_window();
     ui.end_frame();
@@ -2890,7 +2930,7 @@ TEST(builtin, input_text_types_backspace_and_syncs) {
 
     // 点一下聚焦
     bi_frame(ui, mouse_at(100.0f, 20.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.input_text("Name", buf, sizeof(buf)), 0);
     ui.end_window();
     ui.end_frame();
@@ -2898,7 +2938,7 @@ TEST(builtin, input_text_types_backspace_and_syncs) {
 
     // 打字：进缓冲区并报一次变化
     bi_frame(ui, typing("Hi"));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.input_text("Name", buf, sizeof(buf)), 1);
     ui.end_window();
     ui.end_frame();
@@ -2906,7 +2946,7 @@ TEST(builtin, input_text_types_backspace_and_syncs) {
 
     // 退格
     bi_frame(ui, typing("", true));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.input_text("Name", buf, sizeof(buf)), 1);
     ui.end_window();
     ui.end_frame();
@@ -2915,7 +2955,7 @@ TEST(builtin, input_text_types_backspace_and_syncs) {
     // 外部清空（重置）：同步进控件
     std::strcpy(buf, "");
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.input_text("Name", buf, sizeof(buf)), 0);
     ui.end_window();
     ui.end_frame();
@@ -2935,7 +2975,7 @@ TEST(builtin, focus_drops_when_the_focused_widget_stops_being_submitted) {
     const uint64_t input_id = gryce_ui::hash_label("Name", gryce_ui::hash_label("W"));
 
     bi_frame(ui, mouse_at(100.0f, 20.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.input_text("Name", buf, sizeof(buf));
     ui.end_window();
     ui.end_frame();
@@ -2944,7 +2984,7 @@ TEST(builtin, focus_drops_when_the_focused_widget_stops_being_submitted) {
 
     // 下一帧：窗口还在，但输入框不再提交（宿主把那个面板收起来了）
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.text("panel body only");
     ui.end_window();
     ui.end_frame();
@@ -2962,7 +3002,7 @@ TEST(builtin, focus_moves_between_inputs) {
 
     // 聚焦第一个输入框（y = 15..41.25）
     bi_frame(ui, mouse_at(100.0f, 20.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.input_text("A", a, sizeof(a));
     ui.end_window();
     ui.end_frame();
@@ -2970,7 +3010,7 @@ TEST(builtin, focus_moves_between_inputs) {
 
     // 点第二个输入框（y = 45.25..71.5）：焦点转移
     bi_frame(ui, mouse_at(100.0f, 50.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.input_text("A", a, sizeof(a));
     ui.input_text("B", b, sizeof(b));
     ui.end_window();
@@ -2979,7 +3019,7 @@ TEST(builtin, focus_moves_between_inputs) {
 
     // 点按钮（y 75.5..101.75）：焦点清空
     bi_frame(ui, mouse_at(100.0f, 90.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.input_text("A", a, sizeof(a));
     ui.input_text("B", b, sizeof(b));
     ui.button("OK");
@@ -2992,7 +3032,7 @@ TEST(builtin, two_separators_are_two_widgets) {
     // 同标签的无状态控件必须各占一个 slot（帧内序号进 id），否则只能画出一个
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
     ui.separator();
     ui.separator();
     ui.text("same");
@@ -3013,7 +3053,7 @@ TEST(builtin, two_separators_are_two_widgets) {
 TEST(builtin, progress_bar_emits_fill) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
     ui.progress_bar(0.5f, "50%");
     ui.end_window();
     ui.end_frame();
@@ -3030,7 +3070,7 @@ TEST(builtin, progress_bar_emits_fill) {
     // 0 进度不画填充
     ui.tree().clear();
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
     ui.progress_bar(0.0f, nullptr);
     ui.end_window();
     ui.end_frame();
@@ -3045,7 +3085,7 @@ TEST(builtin, progress_bar_emits_fill) {
 TEST(builtin, label_text_composes_string) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
     ui.label_text("Position", "1.00");
     ui.end_window();
     ui.end_frame();
@@ -3064,7 +3104,7 @@ TEST(builtin, color_button_packs_rgba) {
     BuiltinUi ui;
     const float red[4] = {1.0f, 0.0f, 0.0f, 1.0f};
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
     CHECK_EQ(ui.color_button("swatch", red), 0);
     ui.end_window();
     ui.end_frame();
@@ -3073,8 +3113,8 @@ TEST(builtin, color_button_packs_rgba) {
     CHECK_TRUE(w != nullptr);
     CHECK_TRUE(w->bg_overridden);
     CHECK_EQ(w->bg_color, 0xFF0000FFu);
-    CHECK_NEAR(w->rect.w, 26.25f, 1e-5f);      // 方形 = 帧高
-    CHECK_NEAR(w->rect.h, 26.25f, 1e-5f);
+    CHECK_NEAR(w->rect.w, 22.0f, 1e-5f);       // 方形 = 帧高（14 + 2*(PAD_Y-1)）
+    CHECK_NEAR(w->rect.h, 22.0f, 1e-5f);
 }
 
 TEST(builtin, hash_id_suffix_is_hidden_from_text) {
@@ -3082,7 +3122,7 @@ TEST(builtin, hash_id_suffix_is_hidden_from_text) {
     // 显示不能带 ##，id 不能撞（同一窗口里两个 "Save##…" 是两个控件）。
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
     CHECK_EQ(ui.button("Save##toolbar"), 0);
     CHECK_EQ(ui.button("Save##inspector"), 0);
     ui.end_window();
@@ -3095,7 +3135,7 @@ TEST(builtin, hash_id_suffix_is_hidden_from_text) {
     CHECK_TRUE(b != nullptr);
     CHECK_TRUE(a != b);
     CHECK_STR(a->label, "Save");                    // ## 之后不显示
-    CHECK_NEAR(a->rect.w, 26.0f + 16.0f, 1e-4f);    // 宽度按 "Save" 算，不含 id
+    CHECK_NEAR(a->rect.w, 28.0f + 16.0f, 1e-4f);    // 宽度按 "Save" 算（0.5em/字符），不含 id
     CHECK_EQ(ui.tree().count(), 3);                 // chrome + 两个按钮
 }
 
@@ -3103,7 +3143,7 @@ TEST(builtin, long_text_wraps_instead_of_clipping) {
     // 内容宽 200-16 = 184；ASCII 估算 6.5px/字符 -> 每行最多 28 字符。
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 200.0f, 300.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 200.0f, 300.0f}), 1);
     ui.text("aaaa bbbb cccc dddd eeee ffff");
     ui.end_window();
     ui.end_frame();
@@ -3118,7 +3158,7 @@ TEST(builtin, long_text_wraps_instead_of_clipping) {
         ++labels;
     });
     CHECK_TRUE(labels >= 2);                       // 一行装不下 -> 折行
-    CHECK_NEAR(ys[1] - ys[0], 16.25f + 4.0f, 1e-4f);   // 行高 + 行间距
+    CHECK_NEAR(ys[1] - ys[0], 14.0f + 4.0f, 1e-4f);    // 行高 + 行间距
     // 折行不丢字：每行的可见字符拼起来（去掉空格）等于原文（去掉空格）
     std::string joined;
     for (int i = 0; i < labels; ++i) {
@@ -3132,7 +3172,7 @@ TEST(builtin, long_text_wraps_instead_of_clipping) {
 TEST(builtin, spacing_negative_advances_one_row) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 300.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 300.0f}), 1);
     ui.text("a");
     const float y0 = ui.last_item_rect().y;
     ui.spacing(0.0f);                    // 0 = 空操作
@@ -3144,8 +3184,10 @@ TEST(builtin, spacing_negative_advances_one_row) {
     ui.end_window();
     ui.end_frame();
 
-    CHECK_NEAR(y1 - y0, 16.25f + 4.0f, 1e-4f);
-    CHECK_NEAR(y2 - y1, 16.25f + 4.0f + 4.0f, 1e-4f);
+    // 行高 14 + 行间距 4 = 18；spacing(<0) 走 ImGui 的 Spacing()：
+    // 先 ItemSize（吃掉一条行间距）再加一条行间距，所以多让 2×4 = 8
+    CHECK_NEAR(y1 - y0, 14.0f + 4.0f, 1e-4f);
+    CHECK_NEAR(y2 - y1, 14.0f + 4.0f + 8.0f, 1e-4f);
 }
 
 TEST(builtin, capture_flags_follow_mouse_and_focus) {
@@ -3155,7 +3197,7 @@ TEST(builtin, capture_flags_follow_mouse_and_focus) {
 
     // 鼠标在面板里 -> wants_mouse；还没聚焦输入框 -> 不吃键盘
     bi_frame(ui, mouse_at(100.0f, 20.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.text("no inputs yet");
     ui.end_window();
     ui.end_frame();
@@ -3165,7 +3207,7 @@ TEST(builtin, capture_flags_follow_mouse_and_focus) {
 
     // 点一下输入框 -> 焦点落在它身上 -> wants_keyboard
     bi_frame(ui, mouse_at(100.0f, 20.0f, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.input_text("Name", buf, (int)sizeof(buf)), 0);
     ui.end_window();
     ui.end_frame();
@@ -3174,7 +3216,7 @@ TEST(builtin, capture_flags_follow_mouse_and_focus) {
 
     // 鼠标移出面板 -> wants_mouse 假；焦点还在，键盘仍被 UI 吃
     bi_frame(ui, mouse_at(500.0f, 500.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.input_text("Name", buf, (int)sizeof(buf));
     ui.end_window();
     ui.end_frame();
@@ -3185,7 +3227,7 @@ TEST(builtin, capture_flags_follow_mouse_and_focus) {
 TEST(builtin, draw_orders_chrome_first_and_clips_content) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{10.0f, 10.0f, 200.0f, 100.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{10.0f, 10.0f, 200.0f, 100.0f}), 1);
     ui.text("a");
     ui.button("B");
     ui.end_window();
@@ -3214,7 +3256,7 @@ TEST(builtin, draw_orders_chrome_first_and_clips_content) {
 TEST(builtin, content_is_clipped_to_window) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{10.0f, 10.0f, 200.0f, 100.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{10.0f, 10.0f, 200.0f, 100.0f}), 1);
     ui.text("a");
     ui.text("b");
     ui.end_window();
@@ -3241,7 +3283,7 @@ TEST(builtin, content_is_clipped_to_window) {
     // 退化窗口（比内边距还小）：内容区高度 0 → 整批绘制命令被裁，chrome 除外
     ui.tree().clear();
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{10.0f, 10.0f, 200.0f, 10.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{10.0f, 10.0f, 200.0f, 10.0f}), 1);
     ui.text("a");
     ui.text("b");
     ui.end_window();
@@ -3283,10 +3325,10 @@ TEST(builtin, same_label_different_windows_independent) {
     int vb = 0;
 
     auto submit = [&](int* pa, int* pb) {
-        CHECK_EQ(ui.begin_window("A", wa), 1);
+        CHECK_EQ(bi_window(ui, "A", wa), 1);
         ui.checkbox("X", pa);
         ui.end_window();
-        CHECK_EQ(ui.begin_window("B", wb), 1);
+        CHECK_EQ(bi_window(ui, "B", wb), 1);
         ui.checkbox("X", pb);
         ui.end_window();
     };
@@ -3306,7 +3348,7 @@ TEST(builtin, same_label_different_windows_independent) {
 TEST(builtin, sweep_reclaims_unsubmitted) {
     BuiltinUi ui;
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
+    CHECK_EQ(bi_window(ui, "W", Rect{0.0f, 0.0f, 300.0f, 200.0f}), 1);
     ui.text("a");
     ui.button("B");
     ui.end_window();
@@ -3323,7 +3365,7 @@ TEST(builtin, last_item_queries) {
     BuiltinUi ui;
     const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
     bi_frame(ui, mouse_at(20.0f, 20.0f, false, false, false));   // 悬停在按钮上（x∈[8,37]）
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.button("OK"), 0);
     CHECK_TRUE(ui.is_item_hovered());
     CHECK_FALSE(ui.is_item_active());
@@ -3550,9 +3592,12 @@ TEST(theme_json, shipped_files_load) {
 // style 块把"怎么画"也变成主题数据：Fluent 扁平（fill_grad=0 + 强投影）与
 // Flex/Blender 光泽（fill_grad=0.12 + 弱投影）必须是同一套绘制代码的两个数据点。
 TEST(theme_json, style_block_drives_texture) {
-    // 出厂默认：Fluent 之前的旧默认值
+    // 出厂默认：扁平（与 ImGui 轨的纯色面一致）——质感是"主题数据"，
+    // 要渐变/投影就在 JSON 的 style 块里显式开，引擎不预设。
     const gryce_ui::ThemeStyle def = gryce_ui::theme_style();
-    CHECK_TRUE(def.fill_grad > 0.0f);
+    CHECK_NEAR(def.fill_grad, 0.0f, 1e-6f);
+    CHECK_NEAR(def.panel_grad, 0.0f, 1e-6f);
+    CHECK_NEAR(def.shadow_alpha, 0.0f, 1e-6f);
 
     // 扁平档：渐变归零、投影拉满
     CHECK_EQ(gryce_ui::load_theme_json(R"({"style":{"fill_grad":0,"panel_grad":0,
@@ -3617,12 +3662,12 @@ TEST(widget_anim, hover_transition_lerps_and_lands) {
     tree.draw(dl, theme, metrics);
     const gryce_ui::UiCommand* fill = first_cmd(dl, gryce_ui::UiCmd::RoundRect);
     CHECK_TRUE(fill != nullptr);
-    CHECK_TRUE(fill->color != shade_top_4(normal));      // 还在半路
-    CHECK_TRUE(fill->color != shade_top_4(hover));
+    CHECK_TRUE(fill->color != normal);      // 还在半路
+    CHECK_TRUE(fill->color != hover);
     tree.end_frame();
 
-    // 时间走满：精确落到常态色（端点不受缓动形状影响）。注意填充命令装的是
-    // shade(bg,+4%) 的渐变端点——它恰好等于 hover token 原值，别直接拿 token 比
+    // 时间走满：精确落到常态色（端点不受缓动形状影响）。出厂预设扁平，
+    // 填充命令里装的就是 BUTTON token 原值，不经过任何渐变换算
     tree.begin_frame(mouse_at(400.0f, 400.0f, false, false, false));
     tree.touch(1, WidgetKind::Button, r, "OK");
     tree.advance_animations(1.0f, theme);
@@ -3630,7 +3675,7 @@ TEST(widget_anim, hover_transition_lerps_and_lands) {
     tree.draw(dl, theme, metrics);
     fill = first_cmd(dl, gryce_ui::UiCmd::RoundRect);
     CHECK_TRUE(fill != nullptr);
-    CHECK_EQ(fill->color, shade_top_4(normal));
+    CHECK_EQ(fill->color, normal);
     tree.end_frame();
 
     gryce_ui::set_theme_anim(gryce_ui::ThemeAnim{});
@@ -3652,8 +3697,8 @@ TEST(widget_anim, disabled_snaps_to_static_path) {
     tree.draw(dl, theme, metrics);
     const gryce_ui::UiCommand* fill = first_cmd(dl, gryce_ui::UiCmd::RoundRect);
     CHECK_TRUE(fill != nullptr);
-    // 静态路径：填充 = shade(hover 目标, +4%) 的渐变端点，不是 token 原值
-    CHECK_EQ(fill->color, shade_top_4(theme.colors[gryce_ui::THEME_COLOR_BUTTON_HOVER]));
+    // 静态路径：填充 = hover 目标 token 原值（扁平预设没有渐变端点）
+    CHECK_EQ(fill->color, theme.colors[gryce_ui::THEME_COLOR_BUTTON_HOVER]);
     tree.end_frame();
 }
 
@@ -4265,7 +4310,7 @@ namespace {
 template <typename F>
 void bi_window_frame(BuiltinUi& ui, const UiInputFrame& in, const Rect& win, F&& body) {
     bi_frame(ui, in);
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     body();
     ui.end_window();
     ui.end_frame();
@@ -4411,13 +4456,18 @@ TEST(builtin, text_clipboard_copy_and_paste) {
 
 TEST(builtin, text_long_content_scrolls_to_caret) {
     BuiltinUi ui;
-    const Rect win{0.0f, 0.0f, 100.0f, 200.0f};   // 内容区 84 宽
-    char buf[64] = "0123456789abcdefghij";        // 20 字符 = 130px，装不下
-    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 90.0f);
+    const Rect win{0.0f, 0.0f, 100.0f, 200.0f};   // 输入框宽 = trunc(100*0.65) = 65
+    char buf[64] = "0123456789abcdefghij";        // 20 字符 = 140px，装不下
+    // 点在输入框内靠右（框是 x∈[8,73]，别点到框外）
+    const uint64_t id = focus_input(ui, win, buf, sizeof(buf), 68.0f);
 
-    // 点在最右边 → 插入点靠右 → 必须横向滚动才能看见插入符
+    // 插入点移到末尾（End）→ 插入符落在框外 → 必须横向滚动才看得见
+    bi_window_frame(ui, key_frame(UiInputFrame::KeyEnd), win, [&] {
+        ui.input_text("Name", buf, sizeof(buf));
+    });
     const Widget* w = ui.tree().find(id);
     CHECK_TRUE(w != nullptr);
+    CHECK_EQ(w->caret, 20);
     CHECK_TRUE(w->scroll_x > 0.0f);
 
     // 回家：插入点回到 0，滚动跟着回 0
@@ -4468,7 +4518,7 @@ TEST(builtin, wheel_scrolls_and_scrollbar_appears) {
         in.wheel = wheel;
         float scroll = 0.0f;
         bi_frame(ui, in);
-        ui.begin_window("W", win);
+        bi_window(ui, "W", win);
         for (int i = 0; i < 10; ++i) ui.button("B");
         scroll = ui.window_scroll_y();
         ui.end_window();
@@ -4483,7 +4533,7 @@ TEST(builtin, wheel_scrolls_and_scrollbar_appears) {
 
     const float after = frame(-1.0f);            // 向下滚一格
     CHECK_TRUE(after > 0.0f);
-    CHECK_NEAR(after, 16.25f * 2.0f, 1e-3f);     // 一格 = 两倍行高
+    CHECK_NEAR(after, 14.0f * 2.0f, 1e-3f);      // 一格 = 两倍行高（行高 = 字号 14）
 
     // 滚到底再滚：夹在最大值（不会无限滚）
     for (int i = 0; i < 40; ++i) frame(-10.0f);
@@ -4500,7 +4550,7 @@ TEST(builtin, popup_opens_draws_on_top_and_closes_outside) {
 
     // 打开弹层：面板与菜单项都打上 layer 1（绘制第二遍）
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.text("under");
     ui.end_window();
     ui.open_popup("p", 100.0f, 100.0f, 140.0f, 0.0f);
@@ -4592,7 +4642,7 @@ TEST(builtin, tree_node_toggles_and_indents_children) {
     float open_x = 0.0f, child_x = 0.0f;
     auto one = [&](bool down, bool pressed, bool released) {
         bi_frame(ui, mouse_at(20.0f, 16.0f, down, pressed, released));
-        ui.begin_window("W", win);
+        bi_window(ui, "W", win);
         const int open = ui.tree_node("root", 1);
         open_x = ui.last_item_rect().x;
         if (open) {
@@ -4627,7 +4677,7 @@ TEST(builtin, menu_bar_and_menu_items) {
     // 菜单按钮的点击 = 按下 + 松开；弹层在"松开"那一帧打开
     auto frame = [&](bool down, bool pressed, bool released, int& opened) {
         bi_frame(ui, mouse_at(20.0f, 16.0f, down, pressed, released));
-        ui.begin_window("W", win);
+        bi_window(ui, "W", win);
         ui.begin_menu_bar();
         opened = ui.begin_menu("File");
         if (opened) {
@@ -4654,7 +4704,7 @@ TEST(builtin, child_region_clips_and_scrolls_independently) {
 
     // 两层嵌套：外层 (0,0) = 占满剩余空间（与 ImGui 同义），内层固定 110 高
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.begin_child("outer", 0.0f, 0.0f, 1);
     ui.text("head");
     ui.begin_child("list", 200.0f, 110.0f, 1);
@@ -4719,14 +4769,14 @@ TEST(builtin, drag_drop_payload_roundtrip) {
 
     // 按下源
     bi_frame(ui, mouse_at(20.0f, 20.0f, true, true, false));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.button("Src");
     ui.end_window();
     ui.end_frame();
 
     // 拖出阈值：拖拽成立并带上 payload
     bi_frame(ui, mouse_at(60.0f, 20.0f, true, false, false));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.button("Src");
     CHECK_EQ(ui.begin_drag_drop_source(), 1);
     ui.set_drag_drop_payload_string("NODE", "17");
@@ -4743,7 +4793,7 @@ TEST(builtin, drag_drop_payload_roundtrip) {
     char got[32] = {};
     int deliver = 0;
     bi_frame(ui, mouse_at(60.0f, 60.0f, false, false, true));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.button("Src");
     ui.button("Dst");
     if (ui.begin_drag_drop_target()) {
@@ -4763,14 +4813,14 @@ TEST(builtin, drag_float_tracks_mouse_delta) {
     float v = 10.0f;
 
     bi_frame(ui, mouse_at(50.0f, 20.0f, true, true, false));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.drag_float("Speed", &v, 1.0f, 0.0f, 0.0f);
     ui.end_window();
     ui.end_frame();
     CHECK_NEAR(v, 10.0f, 1e-4f);       // 按下不改值
 
     bi_frame(ui, mouse_at(70.0f, 20.0f, true, false, false));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.drag_float("Speed", &v, 1.0f, 0.0f, 0.0f);
     ui.end_window();
     ui.end_frame();
@@ -4780,7 +4830,7 @@ TEST(builtin, drag_float_tracks_mouse_delta) {
     UiInputFrame in = mouse_at(90.0f, 20.0f, true, false, false);
     in.mods = UiInputFrame::ModCtrl;
     bi_frame(ui, in);
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.drag_float("Speed", &v, 1.0f, 0.0f, 0.0f);
     ui.end_window();
     ui.end_frame();
@@ -4798,7 +4848,7 @@ TEST(builtin, selectable_reports_click_and_keeps_caller_owned_selection) {
 
     // 帧 1：两个列表项，第一个选中。没有点击 → 都返回 0
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.selectable("Item A", 1), 0);
     CHECK_EQ(ui.selectable("Item B", 0), 0);
     ui.end_window();
@@ -4822,7 +4872,7 @@ TEST(builtin, selectable_reports_click_and_keeps_caller_owned_selection) {
     const float ax = ar.x + ar.w * 0.5f;
     const float ay = ar.y + ar.h * 0.5f;
     bi_frame(ui, mouse_at(ax, ay, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.selectable("Item A", 1), 0);
     CHECK_EQ(ui.selectable("Item B", 0), 0);
     ui.end_window();
@@ -4830,7 +4880,7 @@ TEST(builtin, selectable_reports_click_and_keeps_caller_owned_selection) {
 
     // 帧 3：原地松开 → A 返回 1；选中态仍是入参给的值（权威在调用方）
     bi_frame(ui, mouse_at(ax, ay, false, false, true));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.selectable("Item A", 1), 1);
     CHECK_EQ(ui.selectable("Item B", 0), 0);
     ui.end_window();
@@ -4842,7 +4892,7 @@ TEST(builtin, selectable_reports_click_and_keeps_caller_owned_selection) {
 
     // 帧 3：同一个 id 换成未选中 → 高亮态跟随入参，不留上一帧的残影
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.selectable("Item A", 0), 0);
     ui.end_window();
     ui.end_frame();
@@ -4858,7 +4908,7 @@ TEST(builtin, drag_float_n_lays_out_one_row_and_edits_each_box) {
     float v[3] = {1.0f, 2.0f, 3.0f};
 
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.drag_float_n("Position", v, 3, 1.0f), 0);
     ui.end_window();
     ui.end_frame();
@@ -4902,7 +4952,7 @@ TEST(builtin, drag_float_n_lays_out_one_row_and_edits_each_box) {
     const float cx = r1.x + r1.w * 0.5f;
     const float cy = r1.y + r1.h * 0.5f;
     bi_frame(ui, mouse_at(cx, cy, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.drag_float_n("Position", v, 3, 1.0f), 0);
     ui.end_window();
     ui.end_frame();
@@ -4910,7 +4960,7 @@ TEST(builtin, drag_float_n_lays_out_one_row_and_edits_each_box) {
 
     // 帧 3：右移 12px → 只有 v[1] 变，整组返回 1
     bi_frame(ui, mouse_at(cx + 12.0f, cy, true, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     CHECK_EQ(ui.drag_float_n("Position", v, 3, 1.0f), 1);
     ui.end_window();
     ui.end_frame();
@@ -4925,7 +4975,7 @@ TEST(builtin, image_submits_sprite_widget_and_takes_part_in_hit_testing) {
 
     // 空纹理 / 非正尺寸：不提交任何控件（只剩窗口 chrome）
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.image(0, 64.0f, 48.0f);
     ui.image(0x1234u, 0.0f, 48.0f);
     ui.image(0x1234u, 64.0f, -1.0f);
@@ -4935,7 +4985,7 @@ TEST(builtin, image_submits_sprite_widget_and_takes_part_in_hit_testing) {
 
     const uint64_t tex = 0x0000000200000001ull;   // index=1, generation=2
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.image(tex, 64.0f, 48.0f);
     ui.end_window();
     ui.end_frame();
@@ -4959,7 +5009,7 @@ TEST(builtin, image_submits_sprite_widget_and_takes_part_in_hit_testing) {
     // Image 要参与命中测试（ImGui 那边靠 LastItemData 的矩形判定，一样能拾取）。
     const Rect ir = w->rect;
     bi_frame(ui, mouse_at(ir.x + 8.0f, ir.y + 8.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.image(tex, 64.0f, 48.0f);
     ui.end_window();
     ui.end_frame();
@@ -4968,7 +5018,7 @@ TEST(builtin, image_submits_sprite_widget_and_takes_part_in_hit_testing) {
 
     // 帧 3：鼠标移出图外 → 不再 hovered
     bi_frame(ui, mouse_at(ir.x + 200.0f, ir.y + 8.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.image(tex, 64.0f, 48.0f);
     ui.end_window();
     ui.end_frame();
@@ -4976,7 +5026,7 @@ TEST(builtin, image_submits_sprite_widget_and_takes_part_in_hit_testing) {
 
     // 两张不同的图 = 两个控件（id 由纹理句柄派生，跨帧稳定）
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.image(tex, 32.0f, 32.0f);
     ui.image(tex + 1u, 32.0f, 32.0f);
     ui.end_window();
@@ -4997,7 +5047,7 @@ TEST(builtin, image_flips_v_when_backend_asks_for_it) {
     // v 要反过来取，否则视口画面上下颠倒。
     gryce_ui::set_texture_v_flip(true);
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(bi_window(ui, "W", win), 1);
     ui.image(tex, 64.0f, 48.0f);
     ui.end_window();
     ui.end_frame();
@@ -5019,11 +5069,12 @@ TEST(builtin, image_flips_v_when_backend_asks_for_it) {
 TEST(builtin, title_bar_drag_moves_window_and_box_collapses) {
     BuiltinUi ui;
     const Rect win{10.0f, 10.0f, 300.0f, 200.0f};
-    const uint32_t flags = gryce_ui::kWinTitleBar;
+    // 标题栏默认就有；kWinTitleBar 只是保留位（老的调用方还在传），不影响行为
+    const uint32_t flags = 0;
 
     // 帧 1：有标题栏，内容起点下移
     bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
-    CHECK_EQ(ui.begin_window("W", win, flags), 1);
+    CHECK_EQ(bi_window(ui, "W", win, flags), 1);
     ui.text("body");
     const float body_y = ui.last_item_rect().y;
     ui.end_window();
@@ -5032,12 +5083,12 @@ TEST(builtin, title_bar_drag_moves_window_and_box_collapses) {
 
     // 帧 2：按住标题栏右侧拖动 → 窗口位移累积
     bi_frame(ui, mouse_at(200.0f, 18.0f, true, true, false));
-    ui.begin_window("W", win, flags);
+    bi_window(ui, "W", win, flags);
     ui.end_window();
     ui.end_frame();
 
     bi_frame(ui, mouse_at(230.0f, 33.0f, true, false, false));
-    ui.begin_window("W", win, flags);
+    bi_window(ui, "W", win, flags);
     const Rect moved = ui.current_window_rect();
     ui.end_window();
     ui.end_frame();
@@ -5046,7 +5097,7 @@ TEST(builtin, title_bar_drag_moves_window_and_box_collapses) {
 
     // 帧 4：松手，拖动结束
     bi_frame(ui, mouse_at(230.0f, 33.0f, false, false, true));
-    ui.begin_window("W", win, flags);
+    bi_window(ui, "W", win, flags);
     ui.end_window();
     ui.end_frame();
 
@@ -5055,11 +5106,11 @@ TEST(builtin, title_bar_drag_moves_window_and_box_collapses) {
     const float cx = moved.x + 8.0f;
     const float cy = moved.y + 10.0f;
     bi_frame(ui, mouse_at(cx, cy, true, true, false));
-    CHECK_EQ(ui.begin_window("W", win, flags), 1);
+    CHECK_EQ(bi_window(ui, "W", win, flags), 1);
     ui.end_window();
     ui.end_frame();
     bi_frame(ui, mouse_at(cx, cy, false, false, true));
-    CHECK_EQ(ui.begin_window("W", win, flags), 0);   // 松开帧：折叠当帧生效
+    CHECK_EQ(bi_window(ui, "W", win, flags), 0);   // 松开帧：折叠当帧生效
     ui.end_window();
     ui.end_frame();
 }
@@ -5072,7 +5123,7 @@ TEST(builtin, tooltip_delays_by_clock_and_shows_at_mouse) {
         UiInputFrame in = mouse_at(50.0f, 20.0f, false, false, false);
         in.time = t;
         bi_frame(ui, in);
-        ui.begin_window("W", win);
+        bi_window(ui, "W", win);
         ui.button("Hover");
         ui.set_tooltip("hint");
         ui.end_window();
@@ -5110,7 +5161,7 @@ TEST(builtin, ui_scale_maps_mouse_into_logical_space) {
 
     // 屏幕像素 (40,40) 在 2 倍缩放下是逻辑 (20,20)：按钮就在那个位置
     bi_frame(ui, mouse_at(40.0f, 40.0f, false, false, false));
-    ui.begin_window("W", win);
+    bi_window(ui, "W", win);
     ui.button("Hit");
     const Rect r = ui.last_item_rect();
     ui.end_window();
@@ -5125,7 +5176,7 @@ TEST(builtin, ui_scale_maps_mouse_into_logical_space) {
     // 换 1 倍缩放：同一屏幕像素 (40,40) 现在是逻辑 (40,40)，落在按钮外
     BuiltinUi ui2;
     bi_frame(ui2, mouse_at(40.0f, 40.0f, false, false, false));
-    ui2.begin_window("W", win);
+    bi_window(ui2, "W", win);
     ui2.button("Hit");
     ui2.end_window();
     ui2.end_frame();

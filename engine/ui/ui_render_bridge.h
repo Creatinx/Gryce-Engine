@@ -81,6 +81,22 @@ public:
                                 const float radii[4], float spread, uint32_t rgba) {
         (void)x; (void)y; (void)w; (void)h; (void)radii; (void)spread; (void)rgba;
     }
+    // 凸多边形填充（勾选标记 / 下拉箭头）。xy = 2*count 个 float。
+    // 默认实现退化成包围盒矩形：没有多边形能力的自定义渲染器也会画出
+    // "一块该有东西的地方"，而不是整条命令消失。
+    virtual void ui_draw_polygon(const float* xy, int count, uint32_t rgba) {
+        if (!xy || count < 3) return;
+        float minx = xy[0], miny = xy[1], maxx = xy[0], maxy = xy[1];
+        for (int i = 1; i < count; ++i) {
+            const float px = xy[i * 2];
+            const float py = xy[i * 2 + 1];
+            if (px < minx) minx = px;
+            if (py < miny) miny = py;
+            if (px > maxx) maxx = px;
+            if (py > maxy) maxy = py;
+        }
+        ui_draw_rect(minx, miny, maxx - minx, maxy - miny, rgba);
+    }
     virtual void ui_draw_text(float x, float y, const char* text, float font_size,
                               uint32_t rgba) = 0;
     virtual void ui_draw_sprite(float x, float y, float w, float h, uint64_t texture,

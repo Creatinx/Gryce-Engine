@@ -186,16 +186,21 @@ void VulkanRenderer2D::init(RenderContext* ctx) {
         return;
     }
 
-    // 优先使用项目内置 TTF（Roboto），保证跨机器一致性；失败再尝试系统字体
+    // 字体查找顺序与 GL 版 Renderer2D 保持一致（Cousine 优先 = 与 imgui 轨同款）
     {
-        std::string bundled = resources::ResourcePath::resolve("res:/fonts/Roboto-Medium.ttf");
-        if (bundled.empty() || !std::filesystem::exists(bundled)) {
-            bundled = resources::Project::instance().root() + "/third_party/imgui/misc/fonts/Roboto-Medium.ttf";
-        }
-        if (std::filesystem::exists(bundled)) {
-            if (font_atlas_.init(ctx_, bundled, 32.0f)) {
+        const std::string root = resources::Project::instance().root();
+        const std::string candidates[] = {
+            resources::ResourcePath::resolve("res:/fonts/Cousine-Regular.ttf"),
+            resources::ResourcePath::resolve("res:/fonts/Roboto-Medium.ttf"),
+            root + "/third_party/imgui/misc/fonts/Cousine-Regular.ttf",
+            root + "/third_party/imgui/misc/fonts/Roboto-Medium.ttf",
+        };
+        for (const std::string& path : candidates) {
+            if (path.empty() || !std::filesystem::exists(path)) continue;
+            if (font_atlas_.init(ctx_, path, 32.0f)) {
                 using_fallback_font_ = false;
-                GLOG_INFO("VulkanRenderer2D: loaded bundled font '{}'", bundled);
+                GLOG_INFO("VulkanRenderer2D: loaded bundled font '{}'", path);
+                break;
             }
         }
     }
