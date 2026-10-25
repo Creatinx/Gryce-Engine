@@ -381,6 +381,12 @@ void RenderContext::shutdown() {
         backend_.reset();
     }
 
+    // backend 没了，反查表里的指针全部作废
+    {
+        std::lock_guard<std::mutex> lock(texture_handles_mutex_);
+        texture_handles_.clear();
+    }
+
     initialized_ = false;
     running_ = false;
     lifetime_->alive.store(false);
@@ -471,7 +477,18 @@ RHIShaderHandle RenderContext::create_shader() {
 }
 
 RHITextureHandle RenderContext::create_texture() {
-    return backend_ ? backend_->create_texture() : RHITextureHandle{};
+    if (!backend_) return RHITextureHandle{};
+    RHITextureHandle handle = backend_->create_texture();
+    // 登记指针 → 句柄：池在 allocate 时就把对象建好了，这里能立刻取到指针。
+    // 取不到就跳过（该纹理此后无法被 GUi_Image 内置轨引用，但绘制路径用的是
+    // 句柄，不受影响）。
+    if (handle.is_valid()) {
+        if (ITexture* tex = backend_->texture(handle)) {
+            std::lock_guard<std::mutex> lock(texture_handles_mutex_);
+            texture_handles_[tex] = handle;
+        }
+    }
+    return handle;
 }
 
 RHIFramebufferHandle RenderContext::create_framebuffer() {
@@ -495,6 +512,13 @@ IShader* RenderContext::shader(RHIShaderHandle handle) const {
 
 ITexture* RenderContext::texture(RHITextureHandle handle) const {
     return backend_ ? backend_->texture(handle) : nullptr;
+}
+
+RHITextureHandle RenderContext::texture_handle(const ITexture* tex) const {
+    if (!tex) return RHITextureHandle{};
+    std::lock_guard<std::mutex> lock(texture_handles_mutex_);
+    auto it = texture_handles_.find(tex);
+    return it != texture_handles_.end() ? it->second : RHITextureHandle{};
 }
 
 IFramebuffer* RenderContext::framebuffer(RHIFramebufferHandle handle) const {
@@ -595,6 +619,20 @@ void RenderContext::destroy_shader(RHIShaderHandle handle) {
 
 void RenderContext::destroy_texture(RHITextureHandle handle) {
     if (!handle.is_valid()) return;
+    // 反查表**立即**摘除，不等延迟销毁跑完：调用返回后这张纹理就该视为消失，
+    // 之后的反查必须失败，绝不能把即将被复用的槽位当成活纹理交出去。
+    // 指针已失效（槽位被复用成别的纹理）时按指针找不到条目，同样安全。
+    {
+        std::lock_guard<std::mutex> lock(texture_handles_mutex_);
+        if (backend_) {
+            if (ITexture* tex = backend_->texture(handle)) {
+                auto it = texture_handles_.find(tex);
+                if (it != texture_handles_.end() && it->second == handle) {
+                    texture_handles_.erase(it);
+                }
+            }
+        }
+    }
     if (running_) {
         enqueue_destroy([this, handle]() {
             if (backend_) backend_->destroy_texture(handle);

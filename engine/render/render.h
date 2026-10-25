@@ -282,6 +282,14 @@ public:
     // Factory for ImGui render backend.
     virtual std::unique_ptr<IImGuiBackend> create_imgui_backend() { return nullptr; }
 
+    // 本后端的纹理/render-target 采样约定：纹理第 0 行是图像的**下**边时为 true
+    // （OpenGL 的 framebuffer 原点在左下，Vulkan/D3D12 在左上）。
+    //
+    // 这个判据同时服务两条 UI 轨的 GUi_Image：ImGui 轨经 IImGuiBackend::
+    // texture_needs_v_flip 间接拿到（那边是 ImGui 自己的覆写），内置轨直接问后端
+    // —— 内置轨不建 ImGui 后端，拿不到前者。新增后端时两处必须一起改。
+    virtual bool texture_needs_v_flip() const { return false; }
+
     // Enable backend validation (Vulkan validation layers). Must be called before init().
     virtual void set_validation_enabled(bool enabled) { (void)enabled; }
 };

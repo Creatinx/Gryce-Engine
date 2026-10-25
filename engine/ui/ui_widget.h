@@ -74,6 +74,17 @@ enum class WidgetKind : uint32_t {
     Bar       = 16,  // 装饰性横条（菜单栏底/分组标题底），不参与命中测试
     TitleBar  = 17,  // 窗口标题栏：可拖动、左侧折叠框（交互在 BuiltinUi 里）
     Frame     = 18,  // 纯框：填充 + 边框，不参与命中测试、不切裁剪（子区域用）
+    // 列表项：可点击的一行文本 + 选中态高亮。selected 是**入参状态**
+    // （调用方持有选中集合），点击只产生 clicked，不自行改 selected——
+    // 与 ImGui::Selectable(label, bool) 语义一致。
+    Selectable = 19,
+    // 图片：texture 为打包纹理句柄，uv 取整张（GUI_Image 语义）。
+    // 与 ImGui 的 Image 的差别只在**激活/导航**：ImGui 用 ItemAdd(bb, 0) 让图片
+    // 没有 id（不进导航、不进 ActiveId、不 KeepAliveID），内置轨给图片一个由
+    // 纹理句柄派生的 id，于是它能被按下/成为 ActiveId。悬停两条轨都报得出来
+    // （ImGui 那边是 LastItemData 的 HoveredRect 纯矩形判定，与 id 无关），
+    // 编辑器视口依赖的 LastItemRect + IsItemHovered 拾取链因此两边一致。
+    Image     = 20,
     Count,
 };
 
@@ -191,7 +202,16 @@ struct Widget {
     float max_value = 1.0f;              // Slider/DragFloat：最大值
     bool  checked   = false;             // Checkbox
     bool  open      = false;             // TreeNode/Header：展开态
+    bool  selected  = false;             // Selectable：选中态（入参，权威在调用方）
     char  text[kWidgetTextCap] = {};     // TextInput：内容（'\0' 结尾）
+
+    // —— 图片（Image）——
+    // 打包纹理句柄：低 32 位 = RHI index、高 32 位 = generation，
+    // 与 UiCommand.texture / GRender_GetUiTextureId（内置轨）同一约定。
+    uint64_t texture = 0;
+    // uv 区域（归一化）。默认整张；V 翻转在各后端采样约定不同时由 BuiltinUi
+    // 在建控件时算好填进来（绘制端不再判断后端）。
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
 
     // —— 文本编辑态（TextInput）——
     int   caret      = 0;    // 插入点（字节偏移，恒落在码点边界上）

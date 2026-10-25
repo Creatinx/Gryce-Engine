@@ -8,10 +8,15 @@
 #include <cstring>
 
 #include "ui/ui_id.h"
+#include "ui/ui_texture_v_flip.h"
 
 namespace gryce_ui {
 
 namespace {
+
+// 后端纹理采样约定（见 ui_texture_v_flip.h）。默认 false = D3D12 / Vulkan 约定；
+// GRender_Init 按后端覆写。内置轨的 image() 读它算 sprite 的 uv。
+bool g_texture_v_flip = false;
 
 inline float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -786,6 +791,114 @@ int BuiltinUi::drag_float(const char* label, float* inout_value, float speed,
     return 0;
 }
 
+int BuiltinUi::selectable(const char* label, int selected) {
+    if (!usable()) { finish_impl(nullptr); return 0; }
+    char shown[kWidgetLabelCap];
+    copy_display_label(label, shown, sizeof(shown));
+    // 整行宽（ImGui 的 Selectable 默认填满可用宽度）：列表项靠左对齐成一列，
+    // 宽度不齐的话选中高亮块长短不一，看着像没对齐。
+    const Rect r = place(content_width(), frame_height());
+    const uint64_t id = item_id(label, false);
+    const bool was = (selected != 0);
+
+    // 先 ensure + 同步调用方的选中态（权威在调用方），再 touch 跑交互
+    Widget* w = tree_.ensure(id, WidgetKind::Selectable, r, shown);
+    if (!w) { finish_impl(nullptr); return 0; }
+    stamp(w);
+    w->selected = was;
+    w = tree_.touch(id, WidgetKind::Selectable, r, shown);
+    if (!w) { finish_impl(nullptr); return 0; }
+    stamp(w);
+    finish_impl(w);
+
+    // 返回值只表示"被点了"，不改选中态（与 ImGui::Selectable(label, bool) 一致）。
+    return (w->clicked) ? 1 : 0;
+}
+
+// N 分量拖拽（ImGui 的 DragScalarN 语义）：一行里并排 N 个只显示数值的框，
+// 标签文本跟在最后一个框的右边。
+//
+// 为什么不用 N 个独立的 drag_float 提交：那会把它们排成 N **行**，一行只
+// 能放一个框。这里改为先按整行占位（place 只推进一次光标），再把这一行
+// 手工切分成 N 份。
+//
+// 拖哪个改哪个由 WidgetTree 保证：drag_owner_ 按控件 id 判定归属，且
+// active_id_ 全树唯一（同一帧只有一个控件能 pressed）——N 个并排的框天然
+// 互不干扰。
+int BuiltinUi::drag_float_n(const char* label, float* inout_values, int count,
+                            float speed) {
+    if (!usable() || !inout_values || count < 1 || count > 4) {
+        finish_impl(nullptr);
+        return 0;
+    }
+    if (count == 1) return drag_float(label, inout_values, speed, 0.0f, 0.0f);
+
+    char shown[kWidgetLabelCap];
+    copy_display_label(label, shown, sizeof(shown));
+    const float spacing = item_spacing();
+    const float label_w = shown[0]
+        ? ((metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f) + spacing)
+        : 0.0f;
+
+    // 整行占位：place 推进光标一次（这一组只占一行），并把行首定在当前光标。
+    const Rect row = place(content_width(), frame_height());
+    if (row.w <= 0.0f || row.h <= 0.0f) { finish_impl(nullptr); return 0; }
+
+    const float box_total = row.w - label_w - spacing * (count - 1);
+    const float box_w = box_total / static_cast<float>(count);
+    if (box_w <= 0.0f) { finish_impl(nullptr); return 0; }
+
+    int      changed = 0;
+    bool     any_hovered = false;
+    bool     any_pressed = false;
+
+    for (int i = 0; i < count; ++i) {
+        // id 由「标签 + 分量序号」派生：同一组里的 N 个框必须是 N 个不同控件，
+        // 且跨帧稳定（否则拖到一半丢状态）。
+        char idbuf[kWidgetLabelCap + 16];
+        std::snprintf(idbuf, sizeof(idbuf), "%s##%d", label ? label : "", i);
+        const uint64_t id = item_id(idbuf, false);
+
+        const Rect sub{row.x + static_cast<float>(i) * (box_w + spacing),
+                       row.y, box_w, row.h};
+        float* vp = inout_values + i;
+        const float was = *vp;
+
+        Widget* w = tree_.ensure(id, WidgetKind::DragFloat, sub, "");
+        if (!w) continue;
+        stamp(w);
+        w->value     = was;
+        w->min_value = 0.0f;
+        w->max_value = 0.0f;   // 不限幅（与 GUi_DragFloat 的内置轨行为一致）
+        tree_.set_drag_speed((speed > 0.0f) ? speed : 1.0f);
+        w = tree_.touch(id, WidgetKind::DragFloat, sub, "");
+        if (!w) continue;
+        stamp(w);
+        if (w->hovered) any_hovered = true;
+        if (w->pressed) any_pressed = true;
+        if (w->value != was) {
+            *vp = w->value;
+            changed = 1;
+        }
+    }
+
+    // 组标签：跟在最后一个框右边（ImGui 的 DragScalarN 也是这个位置）。
+    // 标签是纯显示，不参与命中测试。
+    if (shown[0]) {
+        const Rect lr{row.x + row.w - (label_w - spacing), row.y,
+                      label_w - spacing, row.h};
+        Widget* lw = tree_.touch(item_id(label, true), WidgetKind::Label, lr, shown);
+        if (lw) stamp(lw);
+    }
+
+    // 收尾状态按"整组"报：ImGui 的 group 语义下 LastItem 是组本身。
+    last_rect_    = row;
+    last_hovered_ = any_hovered;
+    last_pressed_ = any_pressed;
+    last_id_      = 0;   // 组不是拖放源（避免误判成拖起来的 item）
+    return changed;
+}
+
 int BuiltinUi::input_text(const char* label, char* buf, int buf_size) {
     if (depth_ == 0 || !buf || buf_size <= 1) { finish_impl(nullptr); return 0; }
     char shown[kWidgetLabelCap];
@@ -831,6 +944,42 @@ void BuiltinUi::progress_bar(float fraction, const char* overlay) {
         w->value = fraction;
     }
     finish_impl(w);
+}
+
+// 图片（内置轨的 GUi_Image）。tex 是打包的引擎纹理句柄，由
+// GRender_GetUiTextureId 在内置轨下取得——与 ImGui 轨的 ImTextureID 是两套
+// id 空间，宿主必须按当前 UI 轨取对应的那个（见 ui-api.md 7.11）。
+void BuiltinUi::image(uint64_t tex, float w, float h) {
+    if (!usable() || tex == 0 || w <= 0.0f || h <= 0.0f) {
+        finish_impl(nullptr);
+        return;
+    }
+
+    // id 由纹理句柄派生：同一窗口里同一张图必须是同一个控件（悬停/按下状态才
+    // 跨帧连续），不同图天然是不同控件。同窗口重复贴同一张图会共用一个 id
+    // （后提交的覆盖几何）——ImGui 那边更退化（Image 的 id 恒为 0，全靠
+    // LastItemRect 兜底），编辑器一帧只贴一张视口图，不触及这个角落。
+    char idbuf[kWidgetLabelCap];
+    std::snprintf(idbuf, sizeof(idbuf), "__img:%llu",
+                  static_cast<unsigned long long>(tex));
+    const Rect r = place(w, h);
+    const uint64_t id = item_id(idbuf, false);
+
+    Widget* iw = tree_.ensure(id, WidgetKind::Image, r, "");
+    if (!iw) { finish_impl(nullptr); return; }
+    stamp(iw);
+    iw->texture = tex;
+    // V 方向按后端采样约定在建控件时算好（OpenGL 的 framebuffer 原点在左下，
+    // 纹理第 0 行是图像的下边；Vulkan / D3D12 在上边）。绘制端不再判断后端。
+    // 判据只能在这里读：UI 回调运行在渲染锁已持有的路径上，不能反查渲染器。
+    iw->u0 = 0.0f;
+    iw->v0 = texture_v_flip() ? 1.0f : 0.0f;
+    iw->u1 = 1.0f;
+    iw->v1 = texture_v_flip() ? 0.0f : 1.0f;
+    iw = tree_.touch(id, WidgetKind::Image, r, "");
+    if (!iw) { finish_impl(nullptr); return; }
+    stamp(iw);
+    finish_impl(iw);
 }
 
 int BuiltinUi::color_button(const char* label, const float rgba[4]) {
@@ -1325,6 +1474,19 @@ float BuiltinUi::content_rect_h() const {
     const WindowState& win = windows_[depth_ - 1];
     const float h = (win.rect.bottom() - pad_y()) - win.content_top;
     return (h > 0.0f) ? h : 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// 后端纹理采样约定（见 ui_texture_v_flip.h）
+// ---------------------------------------------------------------------------
+
+void set_texture_v_flip(bool flip) {
+    // 只在 GRender_Init 里写一次：UI 回调路径持 g_renderer.mutex，不能反查渲染器。
+    g_texture_v_flip = flip;
+}
+
+bool texture_v_flip() {
+    return g_texture_v_flip;
 }
 
 } // namespace gryce_ui

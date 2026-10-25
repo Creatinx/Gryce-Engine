@@ -166,6 +166,13 @@ const BuiltinUiOps kOps = {
     [](const char* label, float* v, float speed, float lo, float hi) {
         return rt().ui().drag_float(label, v, speed, lo, hi);
     },
+    [](const char* label, float* v, int count, float speed) {
+        return rt().ui().drag_float_n(label, v, count, speed);
+    },
+    [](const char* label, int selected) {
+        return rt().ui().selectable(label, selected);
+    },
+    [](uint64_t tex, float w, float h) { rt().ui().image(tex, w, h); },
     [](const char* label, char* buf, int cap) { return rt().ui().input_text(label, buf, cap); },
     [](const char* label, const float rgba[4]) { return rt().ui().color_button(label, rgba); },
     [](float fraction, const char* overlay) { rt().ui().progress_bar(fraction, overlay); },

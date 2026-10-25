@@ -16,19 +16,17 @@
 #include "ui/ui_input.h"
 #include "ui/ui_layout.h"
 #include "ui/ui_state.h"
+#include "ui/ui_texture_v_flip.h"
 
 namespace gryce_ui {
 
 void enter_callback();
 void leave_callback();
 
-// 由 render_api.cpp 在 ImGui 后端建好后告知：本后端的纹理第一行是图像的
-// 下边（OpenGL）还是上边（D3D12 / Vulkan）。GUi_Image 据此决定要不要翻 V。
-//
-// 为什么在这里缓存而不是让 GUi_Image 直接问渲染器：UI 回调运行在
-// g_renderer.mutex 已持有的路径上，回调内调任何 GRender_* 都会二次加锁
-// 而死锁。建后端时写一次、绘制时只读，是唯一安全的做法。
-void set_texture_v_flip(bool flip);
+// 后端纹理采样约定（OpenGL 的第 0 行是图像下边）由 render_api.cpp 在
+// GRender_Init 里写进 gryce_ui::set_texture_v_flip，声明见 ui_texture_v_flip.h。
+// UI 回调运行在 g_renderer.mutex 已持有的路径上，回调内调任何 GRender_* 都会
+// 二次加锁而死锁，所以判据只能初始化期落一次、绘制时只读。
 
 // 跨帧控件状态（渲染层每帧 begin_frame 推进帧号 / 老化）。
 StateStore& state();

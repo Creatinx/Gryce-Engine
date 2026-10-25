@@ -121,9 +121,27 @@ public:
     int  slider_float(const char* label, float* inout_value, float vmin, float vmax);
     int  drag_float(const char* label, float* inout_value, float speed,
                     float vmin, float vmax);
+    // N 分量拖拽（2~4）：一行里并排 N 个数值框，标签跟在最后（ImGui 语义）。
+    // 任一分量的值变化即返回 1。
+    int  drag_float_n(const char* label, float* inout_values, int count, float speed);
+    // 列表项：整行宽（ImGui 的 Selectable 默认填满可用宽度），左对齐文本。
+    // selected 是**入参状态**（选中集合归调用方管），返回值只表示"被点了"。
+    int  selectable(const char* label, int selected);
     int  input_text(const char* label, char* buf, int buf_size);
     void progress_bar(float fraction, const char* overlay);
     int  color_button(const char* label, const float rgba[4]);
+
+    // 图片：tex 是**打包的引擎纹理句柄**（低 32 位 index、高 32 位 generation，
+    // 由 GRender_GetUiTextureId 在内置轨下取得），不是 ITexture* 也不是
+    // ImTextureID——三种 id 空间互不通用，见 ui-api.md 的能力边界表。
+    // w / h 必须都 > 0（与 ImGui 的 Image 一样只收显式尺寸；贴视口时由宿主按
+    // 面板内容区算好再传）。V 方向按后端采样约定自动处理，调用方不要自己传 UV。
+    //
+    // 与 ImGui 的 Image 的差别只在激活/导航：ImGui 那边图片没有 id（不进导航、
+    // 不进 ActiveId），内置轨给图片一个由纹理句柄派生的 id，于是它能被按下。
+    // 悬停两条轨都报得出来（ImGui 的 IsItemHovered 是 LastItemData 的纯矩形
+    // 判定，与 id 无关），所以 LastItemRect + IsItemHovered 的拾取链两边一致。
+    void image(uint64_t tex, float w, float h);
 
     // ---- 结构 ----
     // 返回 1 = 展开（宿主照常提交子项，结束时必须调 tree_pop()）。

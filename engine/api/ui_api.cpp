@@ -21,6 +21,7 @@
 #include "ui/ui_input.h"
 #include "ui/ui_layout.h"
 #include "ui/ui_state.h"
+#include "ui/ui_texture_v_flip.h"
 #include "ui/ui_theme.h"
 
 #include <cstddef>
@@ -45,12 +46,6 @@ int g_ui_backend = 0;
 // 宿主的常见误用（顺手算尺寸），那时不能往控件表里塞控件。
 inline bool builtin_now() { return g_in_frame && g_builtin_ops != nullptr; }
 inline const gryce_ui::BuiltinUiOps& bo() { return *g_builtin_ops; }
-
-#ifdef GRYCE_HAS_IMGUI
-// 本后端的纹理是否需要翻 V 才与 ImGui 的 uv 约定一致（见 ui_api_internal.h）。
-// 默认 false = D3D12 / Vulkan 约定。render_api.cpp 在建好 ImGui 后端后会覆盖。
-bool g_texture_v_flip = false;
-#endif
 
 // 语义文本色取自主题 token（ui_theme.h）：换主题时这些颜色一起换，不再有
 // 散落在控件实现里的硬编码色值。两条轨共用这一个映射——ImGui 轨再包成
@@ -118,14 +113,6 @@ bool builtin_ui() { return g_ui_backend == 1; }
 
 const BuiltinUiOps* builtin_ops() { return g_builtin_ops; }
 void install_builtin_ops(const BuiltinUiOps* ops) { g_builtin_ops = ops; }
-
-void set_texture_v_flip(bool flip) {
-#ifdef GRYCE_HAS_IMGUI
-    g_texture_v_flip = flip;
-#else
-    (void)flip;
-#endif
-}
 
 // 进程内唯一实例。函数局部 static：首次调用时初始化，C++11 起线程安全。
 StateStore& state() {
@@ -455,8 +442,10 @@ int GUi_SmallButton(const char* label) {
 }
 
 int GUi_Selectable(const char* label, int selected) {
-    // 内置轨没有选中态高亮：当成按钮用，返回值语义一致（点中了=1）。
-    if (builtin_now()) { (void)selected; return bo().button(label); }
+    // 内置轨：整行宽的列表项 + 选中态高亮。selected 是入参（选中集合归
+    // 调用方管），返回值只表示"被点了"——与 ImGui::Selectable(label, bool)
+    // 语义一致。
+    if (builtin_now()) return bo().selectable(label, selected);
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return 0;
     return ImGui::Selectable(label ? label : "", selected != 0) ? 1 : 0;
@@ -533,7 +522,10 @@ int GUi_DragFloat(const char* label, float* inout_value, float speed) {
 }
 
 int GUi_DragFloat2(const char* label, float v[2], float speed) {
-    if (builtin_now()) { (void)label; (void)v; (void)speed; return 0; }
+    if (builtin_now()) {
+        if (!v) return 0;
+        return bo().drag_float_n(label, v, 2, speed);
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
     return ImGui::DragFloat2(label ? label : "", v, speed) ? 1 : 0;
@@ -544,7 +536,10 @@ int GUi_DragFloat2(const char* label, float v[2], float speed) {
 }
 
 int GUi_DragFloat3(const char* label, float v[3], float speed) {
-    if (builtin_now()) { (void)label; (void)v; (void)speed; return 0; }
+    if (builtin_now()) {
+        if (!v) return 0;
+        return bo().drag_float_n(label, v, 3, speed);
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
     return ImGui::DragFloat3(label ? label : "", v, speed) ? 1 : 0;
@@ -555,7 +550,10 @@ int GUi_DragFloat3(const char* label, float v[3], float speed) {
 }
 
 int GUi_DragFloat4(const char* label, float v[4], float speed) {
-    if (builtin_now()) { (void)label; (void)v; (void)speed; return 0; }
+    if (builtin_now()) {
+        if (!v) return 0;
+        return bo().drag_float_n(label, v, 4, speed);
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready() || !v) return 0;
     return ImGui::DragFloat4(label ? label : "", v, speed) ? 1 : 0;
@@ -738,14 +736,22 @@ int GUi_CollapsingHeader(const char* label, int default_open) {
 // ---------------------------------------------------------------------------
 
 void GUi_Image(uint64_t tex, float w, float h) {
+    // 内置轨：直接产出一条 sprite 绘制命令。tex 在内置轨下是**打包的引擎纹理
+    // 句柄**（GRender_GetUiTextureId 的返回值），与 ImGui 轨的 ImTextureID
+    // 不是一套 id 空间——宿主必须按当前 UI 轨取对应的那个（见 ui-api.md 5 节）。
+    // V 方向由 BuiltinUi::image 按后端采样约定算好，调用方不要自己传 UV。
+    if (builtin_now()) {
+        bo().image(tex, w, h);
+        return;
+    }
 #ifdef GRYCE_HAS_IMGUI
     if (!ready()) return;
     // 必须显式给 uv，不能用 Image() 的默认值：这版 ImGui 的默认是
     // (0,0)-(1,1)（"第一行在 v=0"，字体图集按这个约定上传），而 OpenGL 的
     // 渲染目标纹理第一行是图像的**下**边 —— 用默认值会把视口画面上下颠倒。
     // 详见 IImGuiBackend::texture_needs_v_flip 的注释。
-    const ImVec2 uv0 = g_texture_v_flip ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
-    const ImVec2 uv1 = g_texture_v_flip ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+    const ImVec2 uv0 = gryce_ui::texture_v_flip() ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+    const ImVec2 uv1 = gryce_ui::texture_v_flip() ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
     ImGui::Image(static_cast<ImTextureID>(tex), ImVec2(w, h), uv0, uv1);
 #else
     (void)tex; (void)w; (void)h;

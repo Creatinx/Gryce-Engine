@@ -117,6 +117,9 @@ public:
     bool capture_frame_rgba(std::vector<uint8_t>& out, int& w, int& h) override;
     std::unique_ptr<IRenderer2D> create_renderer2d() override;
     std::unique_ptr<IImGuiBackend> create_imgui_backend() override;
+    // 与 GLImGuiBackend::texture_needs_v_flip 同一判据：GL 的 framebuffer 原点
+    // 在左下，纹理第 0 行是图像的下边。内置 UI 轨（不建 ImGui 后端）靠这个覆写。
+    bool texture_needs_v_flip() const override { return true; }
     void set_validation_enabled(bool enabled) override;
     // ---- GPU 分段计时（GL_TIME_ELAPSED query，异步读回，不等 GPU）----
     bool gpu_profile_supported() const override;

@@ -186,6 +186,15 @@ GRYCE_RENDERER_API int  GRender_GetUiFrameInterval(void);
 // 句柄；返回 0 表示当前后端不可用或引擎没有接管 ImGui。
 GRYCE_RENDERER_API uint64_t GRender_GetImGuiTextureId(GTextureHandle texture);
 
+// 取得可传给 GUi_Image 的纹理 id。与 GRender_GetImGuiTextureId 的区别是
+// **按当前 UI 轨（GRender_GetUIBackend）返回对应语义**，宿主只需存这一个值：
+//   * ImGui 轨（0，默认）：等价于 GRender_GetImGuiTextureId —— 后端
+//     ImTextureID（OpenGL=纹理名 / Vulkan=VkDescriptorSet / D3D12=SRV 句柄）；
+//   * 内置轨（1）：打包的引擎纹理句柄，低 32 位 = RHI index、高 32 位 =
+//     generation，由内置 UI 的 drawlist 直接交给 Renderer2D 采样。
+// 纹理为空、已销毁或后端不可用时返回 0。
+GRYCE_RENDERER_API uint64_t GRender_GetUiTextureId(GTextureHandle texture);
+
 // 让引擎丢弃该纹理的 ImGui 侧缓存（纹理被销毁或重建后必须调用，
 // 否则 ImGui 会继续引用已经释放的描述符）。
 GRYCE_RENDERER_API void GRender_InvalidateImGuiTexture(GTextureHandle texture);

@@ -162,13 +162,17 @@ else ...                                   // 替换
 
 ## 5. 视口图片与坐标
 
-视口是一张 ImGui 图片，但**图片实际占多大**只有画完才知道（窗口缩放、面板拖动都会变）。`GUi_LastItemRect` 是唯一可靠来源：
+视口是一张图片（ImGui 轨走 `ImGui::Image`，内置轨走 drawlist 的 sprite 通道），但**图片实际占多大**只有画完才知道（窗口缩放、面板拖动都会变）。`GUi_LastItemRect` 是唯一可靠来源：
 
 ```c
+// tex 在 tick 里（锁外）按当前 UI 轨取：ImGui 轨用 GRender_GetImGuiTextureId，
+// 内置轨用 GRender_GetUiTextureId（见下面「纹理 id 的两套语义」）。
 GUi_Image(tex, avail_w, avail_h);
 float x, y, w, h;
 GUi_LastItemRect(&x, &y, &w, &h);   // 绝对坐标，左上角原点
 ```
+
+两条轨上 `LastItemRect` 都可靠，`GUi_Image` 之后紧跟 `GUi_IsItemHovered()` 也都拾取得到这张图（ImGui 的 `IsItemHovered` 走 `LastItemData` 的矩形判定，与 id 无关）——视口拾取因此不用分叉写两份。唯一的差别在激活：ImGui 的 `Image` 没有 id，内置轨的图片有（点它会顺带清掉键盘焦点）。
 
 拿到矩形后要把它送回引擎，否则两处会错位：
 
@@ -192,6 +196,19 @@ GViewport_SetSize((int)w, (int)h);  // 视口内坐标的除数
 |---|---|---|
 | OpenGL | 图像的**下**边（GL 原点在左下） | 翻 |
 | D3D12 / Vulkan | 图像的**上**边 | 不翻 |
+
+### 纹理 id 的两套语义（按 UI 轨区分）
+
+`GUi_Image(tex, w, h)` 的 `tex` **不是一套通用的 id**，要按当前 UI 轨（`GRender_GetUIBackend` 可查）取对应的那个：
+
+| UI 轨 | 取 id 的函数 | id 的实际内容 |
+|---|---|---|
+| ImGui（0，默认） | `GRender_GetImGuiTextureId` | 后端 `ImTextureID`：OpenGL = GL 纹理名、Vulkan = `VkDescriptorSet`、D3D12 = SRV 句柄 |
+| 内置（1） | `GRender_GetUiTextureId` | 打包的引擎纹理句柄：低 32 位 = RHI `index`、高 32 位 = `generation` |
+
+混用在内置轨下的症状是"图不显示"：句柄解出来是别的槽位或直接无效（`draw_sprite_region` 对无效句柄静默跳过）。两个函数都在锁外（tick）调用——它们内部要拿 `g_renderer.mutex`，UI 回调里调会自锁。
+
+`GRender_GetUiTextureId` 在 ImGui 轨下等价于 `GRender_GetImGuiTextureId`，所以"一份宿主代码两条轨都能跑"仍然成立，只是取 id 的那一行要换成它。
 
 ImGui 的 `Image()` 默认 UV 是 `(0,0)-(1,1)`，语义是"数据的第一行在 v=0"。GL 的渲染目标第一行是下边，直接采样就把画面上下颠倒 —— 症状是地面跑到天上、立方体的受光顶面显示在底边，而面板文字与图标一切正常（文字走字体图集，与渲染目标无关）。
 
@@ -555,7 +572,9 @@ debug_ui_submit_locked()            主线程，锁已持有
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | 支持；`Text` 按内容区宽度**自动折行** |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | 支持（`SmallButton` = 普通按钮；`ColorButton` 只画色块，标签只当 id）。悬停/按下换描边色而非换底色，渐变幅度 2%~8% 不压文字 |
 | `DragFloat` | 支持真拖拽：按住后按**鼠标位移**改值（`speed` 单位/像素，按住 Ctrl 走 1/10 精调）；没有"点哪算哪"的语义 |
-| `DragFloat2/3/4` | 退化成第一个分量的 `DragFloat`；其余分量只读显示 |
+| `DragFloat2/3/4` | 支持：一行里并排 N 个只显示数值的框（等宽，按 `PushMultiItemsWidths` 的口径切分整行），标签文本跟在最后一个框右边。N 个框是 N 个独立控件（id 由「标签 + 分量序号」派生），拖哪个改哪个；任一分量变化即返回 1 |
+| `Selectable` | 支持：整行宽、左对齐文本、选中态高亮。`selected` 是**入参状态**（选中集合归调用方管），返回值只表示"被点了"，不自行改 `selected`——与 `ImGui::Selectable(label, bool)` 一致 |
+| `Image` | 支持：走 drawlist 的 sprite 通道交给 `Renderer2D` 采样，`tex` 是**打包的引擎纹理句柄**（见 5 节「纹理 id 的两套语义」）。与 ImGui 的差别只在激活/导航：ImGui 那边图片没有 id（不进导航、不进 `ActiveId`），内置轨给图片一个由纹理句柄派生的 id，于是它能被按下（点视口图会顺带清掉键盘焦点，这正是想要的行为）。**悬停两条轨都报得出来**——ImGui 的 `IsItemHovered` 是 `LastItemData` 的纯矩形判定，与 id 无关——所以 `LastItemRect` + `IsItemHovered` 的拾取链两边一致 |
 | `ColorEdit4` | 色块 + 点开的弹层（R/G/B/A 四条滑块），弹层内改动即时回写 |
 | `Combo` | 真下拉：点开弹层 + 菜单项，选中后回写并关闭 |
 | `BeginChild` / `EndChild` | 支持：自有裁剪域（超出不可见也不可点）、自有滚轮与滚动偏移。`size=(0,0)` = 占满剩余空间（与 ImGui 同义）。`border = true` 画圆角描边（裁剪仍按矩形，四角不会切进内容） |
@@ -711,5 +730,6 @@ if (GUi_WantCaptureKeyboard()) return;   // 不派发任何快捷键
 * 窗口只能拖动/折叠，没有可拉的边框（`GUI_WIN_NO_RESIZE` 恒生效：尺寸由宿主的布局决定）。
 * 字体图集按字节走 ASCII 与 CJK 回退，没有富文本/多字号混排；一个控件只有一种字号。
 * 主题内置 5 套预设（Dark / Light / Midnight / Nord / HighContrast，见 7.8）；调用方只引用 token，不要在调用方硬编码色值。
-* `GUi_Image` 不接受自定义 UV / 边框着色，视口只显示完整纹理。
+* `GUi_Image` 不接受自定义 UV / 边框着色，视口只显示完整纹理；`w` / `h` 必须都 > 0（与 ImGui 的 `Image` 一致，只收显式尺寸）。
+* `GUi_Image` 的 `tex` 有两套语义，按 UI 轨区分（见 5 节「纹理 id 的两套语义」）：内置轨传打包的引擎纹理句柄，不是 `ImTextureID`。
 * 中文等非 ASCII 文本依赖引擎加载的字体图集；字体缺失时显示为方块，不会崩。

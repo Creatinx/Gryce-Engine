@@ -111,6 +111,8 @@ GRender_InvalidateImGuiTexture(tex);              // 重建渲染目标后必须
 
 `GTextureHandle` 就是 `ITexture*`，因此句柄可以跨后端直接喂给 `IImGuiBackend::imgui_texture_id`。
 
+如果 UI 走**内置轨**（`GRender_SetUIBackend(1)`），取 id 要换成 `GRender_GetUiTextureId`——它按当前 UI 轨返回对应语义，内置轨下是打包的引擎纹理句柄（低 32 位 index、高 32 位 generation），ImGui 轨下与 `GRender_GetImGuiTextureId` 等价。两套 id 空间互不通用，混用的症状是"图不显示"。详见 [ui-api.md](ui-api.md) 第 5 节。
+
 ImGui 上下文归属：引擎只在 `ImGui::GetCurrentContext() == nullptr` 时接管（条件为 `debug_ui_enabled || ui_callback`）。宿主自持上下文时改用回调，让引擎在自己的 ImGui 帧里画 UI：
 
 ```c

@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "render/export.h"
@@ -102,6 +103,12 @@ public:
     ITexture* texture(RHITextureHandle handle) const;
     IFramebuffer* framebuffer(RHIFramebufferHandle handle) const;
     IBuffer* buffer(RHIBufferHandle handle) const;
+
+    // ITexture* → RHITextureHandle 反查（UI 内置轨的 GUi_Image 需要：宿主持有的
+    // 是 GTextureHandle 即 ITexture*，而内置轨 drawlist 的 sprite 命令要的是打包
+    // 句柄）。表由 create_texture / destroy_texture 同步维护，指针不是本 context
+    // 创建的活纹理时返回无效句柄。与 create/destroy 同线程（主线程）调用。
+    RHITextureHandle texture_handle(const ITexture* tex) const;
 
     // 渲染命令（必须在 start() 之后调用，push 到 CMDBUFFER）
     // -----------------------------------------------------------------------
@@ -298,6 +305,12 @@ private:
     // 因此把真实删除推迟到 safe_seq 之前的所有帧都被渲染线程处理完后。
     std::vector<PendingDestroy> pending_destroys_;
     std::mutex pending_destroys_mutex_;
+
+    // 指针 → 句柄反查表（见 texture_handle 的声明）。只在 create/destroy_texture
+    // 与反查时加锁，都是冷路径；渲染线程不碰这张表。mutable 是为了让反查接口
+    // 保持 const（调用方多是持 ITexture* 的只读路径）。
+    mutable std::unordered_map<const ITexture*, RHITextureHandle> texture_handles_;
+    mutable std::mutex texture_handles_mutex_;
 
     uint64_t safe_destroy_seq() const;
     void enqueue_destroy(std::function<void()>&& deleter);

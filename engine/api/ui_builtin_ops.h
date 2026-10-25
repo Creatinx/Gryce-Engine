@@ -41,6 +41,12 @@ struct BuiltinUiOps {
     int  (*slider_float)(const char* label, float* inout_value, float vmin, float vmax);
     int  (*drag_float)(const char* label, float* inout_value, float speed,
                        float vmin, float vmax);
+    // N 分量拖拽（2~4）：一行内 N 个数值框 + 右侧标签
+    int  (*drag_float_n)(const char* label, float* inout_values, int count, float speed);
+    // 列表项：整行宽、选中态高亮。selected 是入参状态，返回值表示"被点了"
+    int  (*selectable)(const char* label, int selected);
+    // 图片：tex 是打包的引擎纹理句柄（GRender_GetUiTextureId 在内置轨下的返回值）
+    void (*image)(uint64_t tex, float w, float h);
     int  (*input_text)(const char* label, char* buf, int buf_size);
     int  (*color_button)(const char* label, const float rgba[4]);
     void (*progress_bar)(float fraction, const char* overlay);

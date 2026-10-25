@@ -258,6 +258,20 @@ bool widget_anim_fill(const Widget& w, const Theme& t, uint32_t* out) {
             *out = w.hovered ? theme_color(t, THEME_COLOR_HEADER_HOVER)
                              : theme_color(t, THEME_COLOR_HEADER);
             return true;
+        case WidgetKind::Selectable: {
+            // 列表项的底色：选中恒亮、悬停淡入、其余透明（不画底）。
+            // 与 ImGui 的 Selectable 一致：选中项即使鼠标不在上面也保持高亮。
+            uint32_t c = theme_color(t, THEME_COLOR_HEADER);
+            if (w.hovered) c = theme_color(t, THEME_COLOR_HEADER_HOVER);
+            if (w.pressed && w.hovered) c = theme_color(t, THEME_COLOR_HEADER_ACTIVE);
+            if (!w.selected && !w.hovered) c &= 0xFFFFFF00u;
+            *out = c;
+            return true;
+        }
+        case WidgetKind::Image:
+            // 图片没有底色：画了会把视口/贴图预览盖住。返回 false 让调用方
+            // 连淡入淡出都不做（Image 也没有 anim 目标色）。
+            return false;
         default:
             return false;
     }
@@ -646,7 +660,28 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
             break;
         }
 
+        case WidgetKind::Selectable: {
+            // 列表项：底色（选中/悬停）+ 左对齐文本。文本左对齐而不是居中——
+            // 列表里一列文字要对齐才好扫读。
+            const uint32_t hl = widget_fill_now(w, theme);
+            if ((hl & 0xFFu) != 0) {
+                dl.add_round_rect(r.x, r.y, r.w, r.h, r_frame, hl);
+            }
+            dl.add_text(r.x + 8.0f, ty, w.label, fs, text_col);
+            break;
+        }
 
+        case WidgetKind::Image: {
+            // 图片：直接走 drawlist 的 sprite 通道（UiCmd::Sprite），
+            // 由 ui_render_bridge 交给 Renderer2D::draw_sprite_region 采样。
+            // uv 在建控件时就按后端采样约定算好（见 BuiltinUi::image），
+            // 绘制端不再判断后端。纹理句柄为 0 时跳过（调用方给了空纹理）。
+            if (w.texture != 0) {
+                dl.add_sprite(r.x, r.y, r.w, r.h, w.texture,
+                              w.u0, w.v0, w.u1, w.v1, 0xFFFFFFFFu);
+            }
+            break;
+        }
 
         case WidgetKind::ScrollBar: {
             // rect 就是轨道本身（调用方给出窄条，命中测试才只落在条上）

@@ -1301,6 +1301,13 @@ int GRender_Init(const GRenderInitDesc* desc) {
         gryce_ui::BuiltinRuntime::instance().reset();
     }
 
+    // GUi_Image 的 V 翻转判据：问渲染后端而不是 ImGui 后端 —— 内置轨根本不建
+    // ImGui 后端，而两条轨的采样约定是同一个（后端纹理第 0 行在上还是在下）。
+    // 这个标志由 ui_api 在初始化期落一次，绘制时只读（回调路径持锁，不能反查）。
+    if (g_renderer.ctx && g_renderer.ctx->backend()) {
+        gryce_ui::set_texture_v_flip(g_renderer.ctx->backend()->texture_needs_v_flip());
+    }
+
     // 调试 UI：宿主没有自己的 ImGui 上下文时，引擎接管一套（左上角 FPS/帧时间
     // 叠加 + F1 调试窗口）。必须在渲染线程启动**之前**完成 —— ImGui 后端会建
     // 自己的 PSO/SRV 堆与字体纹理，放到渲染线程跑起来之后再建容易和首帧抢资源。
@@ -1317,6 +1324,8 @@ int GRender_Init(const GRenderInitDesc* desc) {
         if (imgui_backend) {
             // 采样约定必须在**移动**之前问出来：之后 imgui_backend 已归
             // ImGuiRenderer 所有。GUi_Image 靠这个标志决定要不要翻 V。
+            // 上面已按渲染后端设过一次（服务内置轨），这里用真正建出来的
+            // ImGui 后端的答案覆盖——两条轨各取自己的权威源。
             gryce_ui::set_texture_v_flip(imgui_backend->texture_needs_v_flip());
             auto renderer = std::make_unique<render::ImGuiRenderer>();
             auto* glfw_window = static_cast<GLFWwindow*>(desc->native_window);
@@ -2378,6 +2387,25 @@ float GRender_GetUIScale(void) {
     return gryce_ui::BuiltinRuntime::instance().scale();
 }
 
+namespace {
+
+// 假定调用方已持有 g_renderer.mutex：问当前 ImGui 后端要纹理 id。
+// GRender_GetImGuiTextureId 与 GRender_GetUiTextureId 共用（后者不能反过来调
+// 前者——g_renderer.mutex 不是递归锁，会自锁）。
+uint64_t imgui_texture_id_locked(render::ITexture* tex) {
+#ifdef GRYCE_HAS_IMGUI
+    if (!g_renderer.debug_imgui) return 0;
+    auto* backend = g_renderer.debug_imgui->backend();
+    if (!backend) return 0;
+    return backend->imgui_texture_id(tex);
+#else
+    (void)tex;
+    return 0;
+#endif
+}
+
+} // namespace
+
 uint64_t GRender_GetImGuiTextureId(GTextureHandle texture) {
     GRYCE_API_GUARD();
 #ifndef GRYCE_HAS_IMGUI
@@ -2386,12 +2414,27 @@ uint64_t GRender_GetImGuiTextureId(GTextureHandle texture) {
 #else
     if (!texture) return 0;
     std::lock_guard lock(g_renderer.mutex);
-    if (!g_renderer.debug_imgui) return 0;
-    auto* backend = g_renderer.debug_imgui->backend();
-    if (!backend) return 0;
     // 契约：GTextureHandle 就是 ITexture*（见 GRender_GetViewportTexture）。
-    return backend->imgui_texture_id(static_cast<render::ITexture*>(texture));
+    return imgui_texture_id_locked(static_cast<render::ITexture*>(texture));
 #endif
+}
+
+uint64_t GRender_GetUiTextureId(GTextureHandle texture) {
+    GRYCE_API_GUARD();
+    if (!texture) return 0;
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.ctx) return 0;
+    // 契约：GTextureHandle 就是 ITexture*（见 GRender_GetViewportTexture）。
+    auto* tex = static_cast<render::ITexture*>(texture);
+    // 分派只看 UI 轨，不看构建有没有编入 ImGui：没编入时 imgui_texture_id_locked
+    // 恒返回 0（那条轨本来也画不出东西），内置轨仍能拿到打包句柄。
+    if (!gryce_ui::builtin_ui()) return imgui_texture_id_locked(tex);
+    // 内置轨：打包的引擎纹理句柄。低 32 位 index、高 32 位 generation，
+    // 与内置 UI drawlist 的 UiCommand.texture 解包约定一致
+    // （见 ui_render_bridge_rd.cpp 的 to_handle）。
+    const render::RHITextureHandle handle = g_renderer.ctx->texture_handle(tex);
+    if (!handle.is_valid()) return 0;
+    return (static_cast<uint64_t>(handle.generation) << 32) | handle.index;
 }
 
 void GRender_InvalidateImGuiTexture(GTextureHandle texture) {

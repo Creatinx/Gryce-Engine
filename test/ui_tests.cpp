@@ -36,6 +36,7 @@
 #include "ui/ui_render_bridge.h"
 #include "ui/ui_snapshot.h"
 #include "ui/ui_state.h"
+#include "ui/ui_texture_v_flip.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_widget.h"
 #include "ui/ui_builtin.h"
@@ -4523,6 +4524,235 @@ TEST(builtin, drag_float_tracks_mouse_delta) {
     ui.end_window();
     ui.end_frame();
     CHECK_NEAR(v, 32.0f, 1e-4f);       // +20px × 0.1
+}
+
+// ---------------------------------------------------------------------------
+// P3a：内置轨补齐的三个缺口控件
+// ---------------------------------------------------------------------------
+
+TEST(builtin, selectable_reports_click_and_keeps_caller_owned_selection) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    const uint64_t win_id = gryce_ui::hash_label("W");
+
+    // 帧 1：两个列表项，第一个选中。没有点击 → 都返回 0
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(ui.selectable("Item A", 1), 0);
+    CHECK_EQ(ui.selectable("Item B", 0), 0);
+    ui.end_window();
+    ui.end_frame();
+
+    const Widget* a = ui.tree().find(gryce_ui::hash_label("Item A", win_id));
+    const Widget* b = ui.tree().find(gryce_ui::hash_label("Item B", win_id));
+    CHECK_TRUE(a != nullptr);
+    CHECK_TRUE(b != nullptr);
+    CHECK_EQ(a->kind, WidgetKind::Selectable);
+    CHECK_TRUE(a->selected);            // 入参态落到控件上（画高亮用）
+    CHECK_FALSE(b->selected);
+    // 整行宽：两项左右边缘对齐，选中高亮块才是一列（ImGui 的 Selectable 默认
+    // 填满可用宽度）
+    CHECK_NEAR(a->rect.w, b->rect.w, 1e-4f);
+    CHECK_NEAR(a->rect.w, 300.0f - 16.0f, 1e-4f);
+    CHECK_TRUE(b->rect.y > a->rect.bottom());
+
+    // 帧 2：按住 A → pressed，但点击要等松开那一帧才完成
+    const Rect ar = a->rect;
+    const float ax = ar.x + ar.w * 0.5f;
+    const float ay = ar.y + ar.h * 0.5f;
+    bi_frame(ui, mouse_at(ax, ay, true, true, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(ui.selectable("Item A", 1), 0);
+    CHECK_EQ(ui.selectable("Item B", 0), 0);
+    ui.end_window();
+    ui.end_frame();
+
+    // 帧 3：原地松开 → A 返回 1；选中态仍是入参给的值（权威在调用方）
+    bi_frame(ui, mouse_at(ax, ay, false, false, true));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(ui.selectable("Item A", 1), 1);
+    CHECK_EQ(ui.selectable("Item B", 0), 0);
+    ui.end_window();
+    ui.end_frame();
+
+    a = ui.tree().find(gryce_ui::hash_label("Item A", win_id));
+    CHECK_TRUE(a != nullptr);
+    CHECK_TRUE(a->selected);            // 点击不会自己翻转选中态
+
+    // 帧 3：同一个 id 换成未选中 → 高亮态跟随入参，不留上一帧的残影
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(ui.selectable("Item A", 0), 0);
+    ui.end_window();
+    ui.end_frame();
+    a = ui.tree().find(gryce_ui::hash_label("Item A", win_id));
+    CHECK_TRUE(a != nullptr);
+    CHECK_FALSE(a->selected);
+}
+
+TEST(builtin, drag_float_n_lays_out_one_row_and_edits_each_box) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 400.0f, 200.0f};
+    const uint64_t win_id = gryce_ui::hash_label("W");
+    float v[3] = {1.0f, 2.0f, 3.0f};
+
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(ui.drag_float_n("Position", v, 3, 1.0f), 0);
+    ui.end_window();
+    ui.end_frame();
+
+    // 三个框 = 三个独立控件：id 由「标签 + 分量序号」派生，互不相同
+    const Widget* b0 = ui.tree().find(gryce_ui::hash_label("Position##0", win_id));
+    const Widget* b1 = ui.tree().find(gryce_ui::hash_label("Position##1", win_id));
+    const Widget* b2 = ui.tree().find(gryce_ui::hash_label("Position##2", win_id));
+    CHECK_TRUE(b0 != nullptr);
+    CHECK_TRUE(b1 != nullptr);
+    CHECK_TRUE(b2 != nullptr);
+    CHECK_TRUE(b0 != b1 && b1 != b2 && b0 != b2);
+    CHECK_EQ(b0->kind, WidgetKind::DragFloat);
+    CHECK_NEAR(b0->value, 1.0f, 1e-4f);
+    CHECK_NEAR(b1->value, 2.0f, 1e-4f);
+    CHECK_NEAR(b2->value, 3.0f, 1e-4f);
+    // 同一行：y 相同、x 递增、宽度相等（place 只推进一次光标）
+    CHECK_NEAR(b0->rect.y, b1->rect.y, 1e-4f);
+    CHECK_NEAR(b1->rect.y, b2->rect.y, 1e-4f);
+    CHECK_NEAR(b0->rect.w, b1->rect.w, 1e-4f);
+    CHECK_NEAR(b1->rect.w, b2->rect.w, 1e-4f);
+    CHECK_TRUE(b1->rect.x > b0->rect.right());
+    CHECK_TRUE(b2->rect.x > b1->rect.right());
+    // 三个框都在内容区里（没被右边界裁掉）
+    CHECK_TRUE(b2->rect.right() <= win.x + win.w - 8.0f + 1e-3f);
+
+    // 组标签：纯显示的 Label，跟在最后一个框右边
+    int labels = 0;
+    Rect label_r{};
+    ui.tree().for_each_alive([&](const Widget& w) {
+        if (w.kind == WidgetKind::Label && std::strcmp(w.label, "Position") == 0) {
+            ++labels;
+            label_r = w.rect;
+        }
+    });
+    CHECK_EQ(labels, 1);
+    CHECK_TRUE(label_r.x >= b2->rect.right());
+
+    // 帧 2：按住第 1 个框（按下不改值）
+    const Rect r1 = b1->rect;
+    const float cx = r1.x + r1.w * 0.5f;
+    const float cy = r1.y + r1.h * 0.5f;
+    bi_frame(ui, mouse_at(cx, cy, true, true, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(ui.drag_float_n("Position", v, 3, 1.0f), 0);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_NEAR(v[1], 2.0f, 1e-4f);
+
+    // 帧 3：右移 12px → 只有 v[1] 变，整组返回 1
+    bi_frame(ui, mouse_at(cx + 12.0f, cy, true, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    CHECK_EQ(ui.drag_float_n("Position", v, 3, 1.0f), 1);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_NEAR(v[0], 1.0f, 1e-4f);
+    CHECK_NEAR(v[1], 14.0f, 1e-4f);     // +12px × 1.0
+    CHECK_NEAR(v[2], 3.0f, 1e-4f);
+}
+
+TEST(builtin, image_submits_sprite_widget_and_takes_part_in_hit_testing) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+
+    // 空纹理 / 非正尺寸：不提交任何控件（只剩窗口 chrome）
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.image(0, 64.0f, 48.0f);
+    ui.image(0x1234u, 0.0f, 48.0f);
+    ui.image(0x1234u, 64.0f, -1.0f);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_EQ(ui.tree().count(), 1);
+
+    const uint64_t tex = 0x0000000200000001ull;   // index=1, generation=2
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.image(tex, 64.0f, 48.0f);
+    ui.end_window();
+    ui.end_frame();
+
+    // 默认（不翻 V）：uv 取整张，纹理句柄原样带到控件上
+    const Widget* w = nullptr;
+    ui.tree().for_each_alive([&](const Widget& x) {
+        if (x.kind == WidgetKind::Image) w = &x;
+    });
+    CHECK_TRUE(w != nullptr);
+    CHECK_EQ(w->texture, tex);
+    CHECK_NEAR(w->rect.w, 64.0f, 1e-4f);
+    CHECK_NEAR(w->rect.h, 48.0f, 1e-4f);
+    CHECK_NEAR(w->u0, 0.0f, 1e-6f);
+    CHECK_NEAR(w->v0, 0.0f, 1e-6f);
+    CHECK_NEAR(w->u1, 1.0f, 1e-6f);
+    CHECK_NEAR(w->v1, 1.0f, 1e-6f);
+
+    // 帧 2：鼠标在图上 → is_item_hovered()。编辑器视口靠
+    // GUi_Image → GUi_LastItemRect → GUi_IsItemHovered 拾取，所以内置轨的
+    // Image 要参与命中测试（ImGui 那边靠 LastItemData 的矩形判定，一样能拾取）。
+    const Rect ir = w->rect;
+    bi_frame(ui, mouse_at(ir.x + 8.0f, ir.y + 8.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.image(tex, 64.0f, 48.0f);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_TRUE(ui.is_item_hovered());
+    CHECK_NEAR(ui.last_item_rect().w, 64.0f, 1e-4f);
+
+    // 帧 3：鼠标移出图外 → 不再 hovered
+    bi_frame(ui, mouse_at(ir.x + 200.0f, ir.y + 8.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.image(tex, 64.0f, 48.0f);
+    ui.end_window();
+    ui.end_frame();
+    CHECK_FALSE(ui.is_item_hovered());
+
+    // 两张不同的图 = 两个控件（id 由纹理句柄派生，跨帧稳定）
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.image(tex, 32.0f, 32.0f);
+    ui.image(tex + 1u, 32.0f, 32.0f);
+    ui.end_window();
+    ui.end_frame();
+    int images = 0;
+    ui.tree().for_each_alive([&](const Widget& x) {
+        if (x.kind == WidgetKind::Image) ++images;
+    });
+    CHECK_EQ(images, 2);
+}
+
+TEST(builtin, image_flips_v_when_backend_asks_for_it) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 200.0f};
+    const uint64_t tex = 0x0000000200000001ull;
+
+    // OpenGL 的 framebuffer 原点在左下：纹理第 0 行是图像的下边，sprite 的
+    // v 要反过来取，否则视口画面上下颠倒。
+    gryce_ui::set_texture_v_flip(true);
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    CHECK_EQ(ui.begin_window("W", win), 1);
+    ui.image(tex, 64.0f, 48.0f);
+    ui.end_window();
+    ui.end_frame();
+
+    const Widget* w = nullptr;
+    ui.tree().for_each_alive([&](const Widget& x) {
+        if (x.kind == WidgetKind::Image) w = &x;
+    });
+    CHECK_TRUE(w != nullptr);
+    CHECK_NEAR(w->u0, 0.0f, 1e-6f);
+    CHECK_NEAR(w->v0, 1.0f, 1e-6f);     // 屏幕上方采样图像的顶行
+    CHECK_NEAR(w->u1, 1.0f, 1e-6f);
+    CHECK_NEAR(w->v1, 0.0f, 1e-6f);
+
+    // 复位：标志是进程级的，别污染同进程其它用例
+    gryce_ui::set_texture_v_flip(false);
 }
 
 TEST(builtin, title_bar_drag_moves_window_and_box_collapses) {

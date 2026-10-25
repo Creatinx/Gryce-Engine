@@ -114,6 +114,8 @@ GRender_InvalidateImGuiTexture(tex);              /* required after target resiz
 
 `GTextureHandle` is just `ITexture*`, so the handle can be fed straight into `IImGuiBackend::imgui_texture_id` on any backend.
 
+If the UI runs on the **builtin track** (`GRender_SetUIBackend(1)`), fetch the id with `GRender_GetUiTextureId` instead — it returns the semantics matching the current UI track: a packed engine texture handle on the builtin track (low 32 bits index, high 32 bits generation), equivalent to `GRender_GetImGuiTextureId` on the ImGui track. The two id spaces are not interchangeable; mixing them shows nothing at all. See [ui-api.md](ui-api.md) section 5.
+
 ImGui ownership: the engine only takes over when `ImGui::GetCurrentContext() == nullptr` (guarded by `debug_ui_enabled || ui_callback`). A host that owns the context uses the callback instead and lets the engine draw inside the host's ImGui frame:
 
 ```c

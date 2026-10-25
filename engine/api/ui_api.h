@@ -619,12 +619,23 @@ GRYCE_UI_API int   GUi_CollapsingHeader(const char* label, int default_open);
 // 图片（视口）
 // ---------------------------------------------------------------------------
 
-// tex 是 GRender_GetImGuiTextureId 的返回值。回调内不能调 GRender_*，
-// 所以这个 ID 要在回调外（tick）取好再传进来。
+// tex 是纹理 id，**按当前 UI 轨取不同的那个**（GRender_GetUIBackend 可查）：
+//   * ImGui 轨（默认）：GRender_GetImGuiTextureId 的返回值（ImTextureID）；
+//   * 内置轨：GRender_GetUiTextureId 的返回值（打包的引擎纹理句柄）。
+// 两者的 id 空间互不通用，混用在内置轨下表现为"图不显示"（句柄解出来是别的
+// 槽位或直接无效）。回调内不能调 GRender_*，所以 id 要在回调外（tick）取好。
 //
 // 上下方向由引擎按后端自动处理（OpenGL 的渲染目标第一行是图像下边，需要翻 V；
 // D3D12 / Vulkan 不翻），调用方不用也不该自己传 UV —— 传了就等于替引擎做了
 // 一件它已经做过的事，GL 下会翻两次。
+//
+// w / h 必须都 > 0（与 ImGui 的 Image 一致，只收显式尺寸）。
+//
+// 与 ImGui 的 Image 的差别只在激活/导航：ImGui 那边图片没有 id（不进导航、不进
+// ActiveId），内置轨给图片一个由纹理句柄派生的 id。悬停两条轨都报得出来
+// （ImGui 的 IsItemHovered 是 LastItemData 的纯矩形判定，与 id 无关），所以
+// GUi_Image 之后紧跟 GUi_LastItemRect / GUi_IsItemHovered 的拾取链两边一致
+// （编辑器视口就是这么做的）。
 GRYCE_UI_API void  GUi_Image(uint64_t tex, float w, float h);
 
 // ---------------------------------------------------------------------------

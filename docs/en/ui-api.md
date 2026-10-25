@@ -162,9 +162,12 @@ The hierarchy tree uses this to distinguish replace / add / toggle, matching wha
 
 ## 5. The viewport image and coordinates
 
-The viewport is an ImGui image, but **how large it actually is** is only known after drawing (window resize, panel drag). `GUi_LastItemRect` is the only reliable source:
+The viewport is an image (an `ImGui::Image` on the ImGui track, a drawlist sprite on the builtin track), but **how large it actually is** is only known after drawing (window resize, panel drag). `GUi_LastItemRect` is the only reliable source:
 
 ```c
+/* tex is fetched in tick, outside the lock, for the current UI track:
+   ImGui track -> GRender_GetImGuiTextureId, builtin track -> GRender_GetUiTextureId
+   (see "Two texture id semantics" below). */
 GUi_Image(tex, avail_w, avail_h);
 float x, y, w, h;
 GUi_LastItemRect(&x, &y, &w, &h);   /* absolute coords, top-left origin */
@@ -192,6 +195,19 @@ Also call `GRender_InvalidateImGuiTexture(tex)` on resize: the old `ImTextureID`
 |---|---|---|
 | OpenGL | the image's **bottom** row (GL origin is bottom-left) | yes |
 | D3D12 / Vulkan | the image's **top** row | no |
+
+### Two texture id semantics (per UI track)
+
+`GUi_Image(tex, w, h)`'s `tex` is **not one universal id**. Take the one that matches the current UI track (`GRender_GetUIBackend` tells you which):
+
+| UI track | Function to fetch the id | What the id actually is |
+|---|---|---|
+| ImGui (0, default) | `GRender_GetImGuiTextureId` | the backend `ImTextureID`: OpenGL = GL texture name, Vulkan = `VkDescriptorSet`, D3D12 = SRV handle |
+| Builtin (1) | `GRender_GetUiTextureId` | a packed engine texture handle: low 32 bits = RHI `index`, high 32 bits = `generation` |
+
+Mixing them on the builtin track shows nothing: the handle unpacks to the wrong slot or to nothing at all (`draw_sprite_region` silently skips invalid handles). Both functions must be called outside the lock (in tick) — they take `g_renderer.mutex` internally, so calling them from a UI callback self-deadlocks.
+
+`GRender_GetUiTextureId` is equivalent to `GRender_GetImGuiTextureId` on the ImGui track, so "one host codebase, both tracks" still holds; only the line that fetches the id changes.
 
 ImGui's `Image()` defaults to UV `(0,0)-(1,1)`, meaning "row 0 of the data is at v=0". A GL render target's row 0 is the bottom row, so sampling it as-is turns the picture upside down — the symptom is the ground flying into the sky and the lit top face of a cube appearing along its bottom edge, while all panel text and icons look perfectly normal (glyphs come from the font atlas, which has nothing to do with render targets).
 
@@ -555,7 +571,9 @@ The built-in track now has the **same control set** as the ImGui track: one host
 | `Text` / `TextColored` / `Separator` / `Spacing` / `SameLine` / `LabelText` / `Indent` / `Unindent` | Supported; `Text` **wraps** to the content width |
 | `Button` / `ButtonSize` / `SmallButton` / `Checkbox` / `SliderFloat` / `InputText` / `ColorButton` / `ProgressBar` | Supported (`SmallButton` = a normal button; `ColorButton` draws only the swatch, its label is an id). Hover and press swap the border colour instead of the fill; gradients stay at 2%-8% so text is never muddied |
 | `DragFloat` | Real dragging: while held the value follows the **mouse delta** (`speed` units per pixel, Ctrl for 1/10 fine-tuning). There is no "jump where you clicked" semantics |
-| `DragFloat2/3/4` | Degrades to a `DragFloat` on the first component; the rest are read-only |
+| `DragFloat2/3/4` | Supported: N equally wide number boxes side by side on one row (the row is split following `PushMultiItemsWidths`), with the label text to the right of the last box. The N boxes are N independent widgets (id derived from "label + component index"), so dragging one only changes that one; any component change returns 1 |
+| `Selectable` | Supported: full-row width, left-aligned text, selected-state highlight. `selected` is an **input** (the caller owns the selection set); the return value only means "was clicked" and never flips `selected` itself — same as `ImGui::Selectable(label, bool)` |
+| `Image` | Supported: goes through the drawlist's sprite channel into `Renderer2D`; `tex` is a **packed engine texture handle** (see "Two texture id semantics" in section 5). The difference from ImGui is only activation/navigation: ImGui's image has no id (no navigation, no `ActiveId`), the builtin one gets an id derived from the texture handle, so it can be pressed (clicking the viewport image also clears keyboard focus, which is what you want). **Both tracks report hover** — ImGui's `IsItemHovered` is a pure rect test on `LastItemData`, independent of id — so the `LastItemRect` + `IsItemHovered` picking chain is identical on both |
 | `ColorEdit4` | Swatch plus a popup with R/G/B/A sliders; edits write back immediately |
 | `Combo` | Real dropdown: popup plus menu items, a selection writes back and closes it |
 | `BeginChild` / `EndChild` | Supported: own clip rect (out-of-view items are invisible *and* unclickable), own wheel scrolling and offset. `size=(0,0)` fills the remaining space, as in ImGui. `border = true` draws a rounded border while clipping stays rectangular, so corners never eat content |
@@ -711,5 +729,6 @@ Missing the keyboard guard looks like: renaming an entity, pressing `W` starts t
 * Windows can be dragged and collapsed but not resized by their border (`GUI_WIN_NO_RESIZE` always applies: the host layout owns the size).
 * The font atlas covers ASCII plus a CJK fallback; there is no rich text or mixed font sizes — one control has one font size.
 * Five built-in theme presets (Dark / Light / Midnight / Nord / HighContrast, see 7.8); callers reference tokens only — do not hardcode colours in callers.
-* `GUi_Image` takes no custom UVs or border tinting; the viewport shows the full texture.
+* `GUi_Image` takes no custom UVs or border tinting; the viewport shows the full texture. `w` / `h` must both be > 0 (as with ImGui's `Image`, only explicit sizes are accepted).
+* `GUi_Image`'s `tex` has two semantics depending on the UI track (see "Two texture id semantics" in section 5): the builtin track takes a packed engine texture handle, not an `ImTextureID`.
 * Non-ASCII text depends on the font atlas the engine loaded; missing glyphs render as boxes rather than crashing.
