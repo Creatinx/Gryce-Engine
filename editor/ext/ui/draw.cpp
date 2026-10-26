@@ -168,6 +168,14 @@ void item_width_for(const char* label) {
 
 std::string ascii_lower(const char* s);
 
+// 去掉扩展名："cube.obj" → "cube"。菜单里显示的是"摆什么"，不是文件名。
+std::string asset_stem(const char* name) {
+    const std::string full = name ? name : "";
+    const std::size_t dot = full.find_last_of('.');
+    if (dot == std::string::npos || dot == 0) return full;
+    return full.substr(0, dot);
+}
+
 // 把文本截到给定像素宽（超出时尾部用 "..." 收尾）。不截的话长路径会把
 // 右侧的按钮挤出面板 —— 面板右边没有滚动条，被推出去的按钮就再也点不到。
 std::string fit_text(const char* s, float max_w) {
@@ -275,6 +283,33 @@ void draw_menu_bar(DrawState& st) {
             it.a = "Entity";
             it.other = stats().selected;
             push(it);
+        }
+
+        // 网格：把资产目录里的网格直接列出来，点一下就在场景根下建一个
+        // 指向它的实体（等价于"把一个 cube 拖进场景"）。空实体看不见，
+        // 要摆东西还得再挂 MeshRenderer 再填路径 —— 那条路太长。
+        const AssetList& list = assets();
+        int meshes = 0;
+        for (std::size_t i = 0; i < list.items.size(); ++i) {
+            const AssetItem& item = list.items[i];
+            if (item.kind != "mesh") continue;
+            ++meshes;
+            // 标签去掉扩展名（"cube.obj" → "cube"），并带隐藏 id 免得同名
+            // 资产在不同目录下撞成同一个菜单项。
+            char label[256];
+            std::snprintf(label, sizeof(label), "%s##mesh%zu",
+                          asset_stem(item.name.c_str()).c_str(), i);
+            if (GUi_MenuItem(label, nullptr, 1)) {
+                Intent it = make(kImportAsset);
+                it.a = item.path;
+                push(it);
+            }
+        }
+        if (meshes == 0) {
+            char note[320];
+            std::snprintf(note, sizeof(note), "(no mesh in %s)",
+                          list.dir.c_str());
+            GUi_TextColored(GUI_TEXT_DIM, note);
         }
         GUi_EndMenu();
     }
