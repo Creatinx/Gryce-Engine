@@ -66,7 +66,6 @@ constexpr float kToolbarHeight = 34.0f;
 constexpr float kLeftWidth = 236.0f;
 constexpr float kRightWidth = 306.0f;
 constexpr float kBottomHeight = 168.0f;
-constexpr float kIndentStep = 13.0f;
 
 const char* const kDisplayModes[] = {"Shaded", "Wireframe"};
 const char* const kGizmoNames[] = {"Move", "Rotate", "Scale"};
@@ -300,126 +299,112 @@ void draw_toolbar(DrawState& st) {
 void draw_nodes(DrawState& st, const std::vector<HierarchyNode>& nodes,
                 const session::Selection& sel) {
     for (const HierarchyNode& node : nodes) {
-        float cx = 0.0f;
-        float cy = 0.0f;
-        GUi_GetCursorPos(&cx, &cy);
-        if (node.depth > 0) {
-            // 没有 Indent/Unindent 接口，直接按深度偏移光标。
-            GUi_SetCursorPos(cx + static_cast<float>(node.depth) * kIndentStep, cy);
-        }
-
         const bool has_children = !node.children.empty();
-        const bool open = is_expanded(node.handle);
 
-        if (has_children) {
-            char arrow[24];
-            std::snprintf(arrow, sizeof(arrow), "%s##a%lld", open ? "v" : ">",
-                          static_cast<long long>(node.handle));
-            if (GUi_SmallButton(arrow)) toggle_expanded(node.handle);
-            GUi_SameLine(4.0f);
+        // 一行 = 一个原生树节点控件：箭头 + 标签 + 整行高亮。以前是
+        // SmallButton 拼箭头 + Selectable 拼行体，两个控件的命中域要手工对齐，
+        // 缩进还得自己按 depth 摆光标（而 SetCursorPos 在内置轨是空操作，
+        // 那段偏移其实一直没生效）。现在展开态归控件自己持有，缩进由它推。
+        int flags = GUI_TREE_SPAN_AVAIL | GUI_TREE_OPEN_ON_ARROW;
+        if (!has_children) {
+            flags |= GUI_TREE_LEAF;
+        } else if (node.depth == 0) {
+            // 顶层分组默认展开：场景一打开就能看到它下面有什么。深层的保持
+            // 收起，否则一个几百实体的场景会直接铺满整棵树。
+            flags |= GUI_TREE_DEFAULT_OPEN;
+        }
+        // 选中态看的是整个选择集，不只是主选中：多选之后树里要能同时亮起
+        // 多行，否则用户不知道"删除"会删掉什么。
+        if (sel.contains(node.handle)) flags |= GUI_TREE_SELECTED;
+
+        char label[192];
+        std::snprintf(label, sizeof(label), "%s##h%lld", node.name.c_str(),
+                      static_cast<long long>(node.handle));
+
+        const bool open = GUi_TreeNodeEx(label, flags) != 0;
+
+        if (GUi_IsItemClicked(GUI_MOUSE_LEFT)) {
+            const int mods = GUi_GetModifiers();
+            if ((mods & GUI_MOD_SHIFT) != 0) {
+                push_select(kSelectAdd, node.handle);
+            } else if ((mods & GUI_MOD_CTRL) != 0) {
+                push_select(kSelectToggle, node.handle);
+            } else {
+                push_select(kSelect, node.handle);
+            }
         }
 
-        if (st.rename_requested && st.rename_handle == node.handle) {
-            GUi_SetNextItemWidth(-1.0f);
-            if (st.rename_focus) {
-                GUi_SetKeyboardFocusHere();
-                st.rename_focus = false;
-            }
-            GUi_InputText("##rename", st.rename_buf, static_cast<int>(sizeof(st.rename_buf)));
-            // 回车或失焦后提交；中途按 Esc 放弃（值没变时不提交，等于放弃）。
-            if (GUi_IsItemDeactivatedAfterEdit()) {
-                Intent it = make(kRename);
-                it.handle = node.handle;
-                it.a = st.rename_buf;
+        // 拖放源：拖到别的节点上就是重挂。payload 用句柄的十进制文本，
+        // 跨 DLL 不依赖任何内存布局，调试时 tooltip 里也能直接看到。
+        if (GUi_BeginDragDropSource()) {
+            char payload[24];
+            std::snprintf(payload, sizeof(payload), "%lld",
+                          static_cast<long long>(node.handle));
+            GUi_SetDragDropPayloadString(kEntityPayload, payload);
+            GUi_EndDragDropSource();
+        }
+
+        // 拖放目标：接手别人的句柄，挂到自己下面。
+        // 防环不在这里做 —— 界面只知道"树长什么样"，判断祖先关系要问
+        // 引擎，而回调里不能问。命令层会拒并以 reparent_rejected 事件回报。
+        if (GUi_BeginDragDropTarget()) {
+            char payload[24] = {};
+            if (GUi_AcceptDragDropPayloadString(kEntityPayload, payload,
+                                                static_cast<int>(sizeof(payload))) ==
+                GUI_DRAG_DELIVER) {
+                Intent it = make(kReparent);
+                it.handle = static_cast<GEntityHandle>(std::atoll(payload));
+                it.other = node.handle;
                 push(it);
-                st.rename_requested = false;
-                st.rename_handle = 0;
             }
-        } else {
-            char label[192];
-            std::snprintf(label, sizeof(label), "%s##h%lld", node.name.c_str(),
-                          static_cast<long long>(node.handle));
-            // 选中态看的是整个选择集，不只是主选中：多选之后树里要能同时
-            // 亮起多行，否则用户不知道"删除"会删掉什么。
-            if (GUi_Selectable(label, sel.contains(node.handle))) {
-                const int mods = GUi_GetModifiers();
-                if ((mods & GUI_MOD_SHIFT) != 0) {
-                    push_select(kSelectAdd, node.handle);
-                } else if ((mods & GUI_MOD_CTRL) != 0) {
-                    push_select(kSelectToggle, node.handle);
-                } else {
-                    push_select(kSelect, node.handle);
-                }
-            }
-
-            // 拖放源：拖到别的节点上就是重挂。payload 用句柄的十进制文本，
-            // 跨 DLL 不依赖任何内存布局，调试时 tooltip 里也能直接看到。
-            if (GUi_BeginDragDropSource()) {
-                char payload[24];
-                std::snprintf(payload, sizeof(payload), "%lld",
-                              static_cast<long long>(node.handle));
-                GUi_SetDragDropPayloadString(kEntityPayload, payload);
-                GUi_EndDragDropSource();
-            }
-
-            // 拖放目标：接手别人的句柄，挂到自己下面。
-            // 防环不在这里做 —— 界面只知道"树长什么样"，判断祖先关系要问
-            // 引擎，而回调里不能问。命令层会拒并以 reparent_rejected 事件回报。
-            if (GUi_BeginDragDropTarget()) {
-                char payload[24] = {};
-                if (GUi_AcceptDragDropPayloadString(kEntityPayload, payload,
-                                                    static_cast<int>(sizeof(payload))) ==
-                    GUI_DRAG_DELIVER) {
-                    Intent it = make(kReparent);
-                    it.handle = static_cast<GEntityHandle>(std::atoll(payload));
-                    it.other = node.handle;
-                    push(it);
-                }
-                GUi_EndDragDropTarget();
-            }
-
-            char popup[48];
-            std::snprintf(popup, sizeof(popup), "node_menu##%lld",
-                          static_cast<long long>(node.handle));
-            GUi_OpenPopupOnItemClick(popup, GUI_MOUSE_RIGHT);
-            if (GUi_BeginPopup(popup)) {
-                if (GUi_MenuItem("Rename", "F2", 1)) {
-                    st.rename_requested = true;
-                    st.rename_focus = true;
-                    st.rename_handle = node.handle;
-                    std::snprintf(st.rename_buf, sizeof(st.rename_buf), "%s",
-                                  node.name.c_str());
-                }
-                if (GUi_MenuItem("Create Child", nullptr, 1)) {
-                    Intent it = make(kCreate);
-                    it.a = "Entity";
-                    it.other = node.handle;
-                    push(it);
-                }
-                if (GUi_MenuItem("Focus", "F", 1)) {
-                    // 视角调整在 JS 侧做（它持有相机状态），这里只请求选中。
-                    push_select(kSelect, node.handle);
-                }
-                // 拖放只能"挂到某个节点下"，这个菜单补齐另一半：把子节点
-                // 提回根级。没有拖放目标放在空白处是因为 ImGui 的目标必须
-                // 绑定到一个条目上，凭空造一块空白区反而会吃掉滚动。
-                if (GUi_MenuItem("Move to Root", nullptr, node.depth > 0)) {
-                    Intent it = make(kReparent);
-                    it.handle = node.handle;
-                    it.other = 0;
-                    push(it);
-                }
-                GUi_Separator();
-                if (GUi_MenuItem("Delete", "Del", 1)) {
-                    Intent it = make(kDestroy);
-                    it.handle = node.handle;
-                    push(it);
-                }
-                GUi_EndPopup();
-            }
+            GUi_EndDragDropTarget();
         }
 
-        if (has_children && open) draw_nodes(st, node.children, sel);
+        char popup[48];
+        std::snprintf(popup, sizeof(popup), "node_menu##%lld",
+                      static_cast<long long>(node.handle));
+        GUi_OpenPopupOnItemClick(popup, GUI_MOUSE_RIGHT);
+        if (GUi_BeginPopup(popup)) {
+            if (GUi_MenuItem("Rename", nullptr, 1)) {
+                // 改名走检视器的名字框（那里已经是"回车/失焦才提交"），
+                // 不在树里再长一个行内输入框：树行是整行一个控件，行内输入
+                // 要么叠在控件上、要么另起一行，两种都不像树。
+                push_select(kSelect, node.handle);
+                st.rename_requested = true;
+                st.rename_handle = node.handle;
+            }
+            if (GUi_MenuItem("Create Child", nullptr, 1)) {
+                Intent it = make(kCreate);
+                it.a = "Entity";
+                it.other = node.handle;
+                push(it);
+            }
+            if (GUi_MenuItem("Focus", "F", 1)) {
+                // 视角调整在 JS 侧做（它持有相机状态），这里只请求选中。
+                push_select(kSelect, node.handle);
+            }
+            // 拖放只能"挂到某个节点下"，这个菜单补齐另一半：把子节点
+            // 提回根级。没有拖放目标放在空白处是因为目标必须绑定到一个
+            // 条目上，凭空造一块空白区反而会吃掉滚动。
+            if (GUi_MenuItem("Move to Root", nullptr, node.depth > 0)) {
+                Intent it = make(kReparent);
+                it.handle = node.handle;
+                it.other = 0;
+                push(it);
+            }
+            GUi_Separator();
+            if (GUi_MenuItem("Delete", "Del", 1)) {
+                Intent it = make(kDestroy);
+                it.handle = node.handle;
+                push(it);
+            }
+            GUi_EndPopup();
+        }
+
+        if (has_children && open) {
+            draw_nodes(st, node.children, sel);
+            GUi_TreePop();
+        }
     }
 }
 
@@ -657,6 +642,12 @@ void draw_inspector(DrawState& st) {
     if (st.name_handle != in.handle) {
         st.name_handle = in.handle;
         std::snprintf(st.name_buf, sizeof(st.name_buf), "%s", in.name.c_str());
+    }
+    // 层级树右键的 "Rename" 把焦点交给这个输入框：改名只有这一处编辑点，
+    // 不再在树里长一个行内输入框（树行是整行一个控件，行内输入没法嵌进去）。
+    if (st.rename_requested && st.rename_handle == in.handle) {
+        GUi_SetKeyboardFocusHere();
+        st.rename_requested = false;
     }
     GUi_SetNextItemWidth(-1.0f);
     GUi_InputText("##name", st.name_buf, static_cast<int>(sizeof(st.name_buf)));

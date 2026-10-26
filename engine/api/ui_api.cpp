@@ -684,6 +684,27 @@ int GUi_TreeNode(const char* label, int default_open) {
 #endif
 }
 
+int GUi_TreeNodeEx(const char* label, int flags) {
+    // 内置轨：旗标位与 engine/ui/ui_widget.h 的 kTreeNode* 一一对应，直接透传。
+    if (builtin_now()) return bo().tree_node_ex(label ? label : "", flags);
+#ifdef GRYCE_HAS_IMGUI
+    if (!ready()) return 0;
+    // 两轨的默认行为对齐老 GUi_TreeNode（OpenOnArrow + SpanAvailWidth）：
+    // 只有显式不带 GUI_TREE_SPAN_AVAIL 时才让行宽按内容走。
+    ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_None;
+    if (flags & GUI_TREE_SELECTED)      f |= ImGuiTreeNodeFlags_Selected;
+    if (flags & GUI_TREE_LEAF)          f |= ImGuiTreeNodeFlags_Leaf |
+                                               ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    if (flags & GUI_TREE_DEFAULT_OPEN)  f |= ImGuiTreeNodeFlags_DefaultOpen;
+    if (flags & GUI_TREE_OPEN_ON_ARROW) f |= ImGuiTreeNodeFlags_OpenOnArrow;
+    if (flags & GUI_TREE_SPAN_AVAIL)    f |= ImGuiTreeNodeFlags_SpanAvailWidth;
+    return ImGui::TreeNodeEx(label ? label : "", f) ? 1 : 0;
+#else
+    (void)label; (void)flags;
+    return 0;
+#endif
+}
+
 void GUi_TreePop(void) {
     if (builtin_now()) { bo().tree_pop(); return; }
 #ifdef GRYCE_HAS_IMGUI

@@ -20,6 +20,7 @@
 #include <memory>
 
 #include "api/input_api.h"
+#include "api/ui_api.h"
 #include "render/render2d.h"
 #include "ui/ui_render_bridge.h"
 #include "ui/ui_theme.h"
@@ -136,6 +137,15 @@ UiInputFrame collect_input() {
 
 BuiltinRuntime& rt() { return BuiltinRuntime::instance(); }
 
+// C 面的 GUI_TREE_* 与控件层的 kTreeNode* 是同一组位：内置轨把它们直接透传
+// 给 tree_node_ex，两边一旦漂开就是"点箭头展开了、点行体也展开了"这种最难查
+// 的症状。位值只能改一处——两张表必须同时改。
+static_assert(GUI_TREE_SELECTED      == kTreeNodeSelected,    "tree flag drift");
+static_assert(GUI_TREE_LEAF          == kTreeNodeLeaf,        "tree flag drift");
+static_assert(GUI_TREE_DEFAULT_OPEN  == kTreeNodeDefaultOpen, "tree flag drift");
+static_assert(GUI_TREE_OPEN_ON_ARROW == kTreeNodeOpenOnArrow, "tree flag drift");
+static_assert(GUI_TREE_SPAN_AVAIL    == kTreeNodeSpanAvail,   "tree flag drift");
+
 // ---------------------------------------------------------------------------
 // 实现表：把 GUi_* 的 C 签名翻到模型层
 // ---------------------------------------------------------------------------
@@ -184,6 +194,7 @@ const BuiltinUiOps kOps = {
 
     // ---- 结构 ----
     [](const char* label, int def) { return rt().ui().tree_node(label, def); },
+    [](const char* label, int flags) { return rt().ui().tree_node_ex(label, flags); },
     []() { rt().ui().tree_pop(); },
     [](const char* label, int def) { return rt().ui().collapsing_header(label, def); },
     []() { return rt().ui().begin_menu_bar(); },

@@ -617,6 +617,26 @@ GRYCE_UI_API void  GUi_ProgressBar(float fraction, float w, float h, const char*
 
 // 返回 1 = 当前是展开的（需要配套 GUi_TreePop）。default_open 控制初始状态。
 GRYCE_UI_API int   GUi_TreeNode(const char* label, int default_open);
+// 树节点旗标（GUi_TreeNodeEx）。位值必须与 engine/ui/ui_widget.h 的
+// kTreeNode* 一致（内置轨直接透传）。
+enum {
+    GUI_TREE_SELECTED      = 1 << 0,  // 整行高亮（层级树的"当前选中"）
+    GUI_TREE_LEAF          = 1 << 1,  // 叶子：不画箭头、不展开、不推缩进
+    GUI_TREE_DEFAULT_OPEN  = 1 << 2,  // 首次出现时的展开态
+    GUI_TREE_OPEN_ON_ARROW = 1 << 3,  // 只有点箭头才展开；点行体算"点了这一行"
+    GUI_TREE_SPAN_AVAIL    = 1 << 4,  // 行宽铺满内容区（高亮整行）
+};
+// 带旗标的树节点：一行 = 箭头 + 标签 + 整行高亮，是一个控件，不用
+// 「小按钮拼箭头 + Selectable 拼行体」。返回 1 = 子树可见（叶子恒为 1，
+// 且不推缩进）；返回 0 时调用方不该画子树。
+//
+// 选中与展开的分工：选中态是入参（GUI_TREE_SELECTED，权威在调用方——多选
+// 之类的语义只有它知道）；展开态归控件自己持有，default_open 只在首次
+// 创建时生效，之后不再被参数覆盖。
+//
+// 点在哪里的判据：带 GUI_TREE_OPEN_ON_ARROW 时只有落在箭头位上才切换展开，
+// 落在其余位置只是"点了这一行"，用 GUi_IsItemClicked 取。
+GRYCE_UI_API int   GUi_TreeNodeEx(const char* label, int flags);
 GRYCE_UI_API void  GUi_TreePop(void);
 // 不带缩进的折叠头（检视器的组件分组用它）。
 GRYCE_UI_API int   GUi_CollapsingHeader(const char* label, int default_open);

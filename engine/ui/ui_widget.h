@@ -182,6 +182,22 @@ constexpr float kWidgetFontSize = 14.0f;
 // 绘制（ui_widget.cpp）共用这一个数——各写一份就会在改主题时错位。
 constexpr float kItemInnerSpacing = 4.0f;
 
+// 树节点的箭头位宽度：折叠标记（fs*0.75 的方框）+ 两侧留白。布局、绘制、命中
+// 三处共用——箭头既是"展开开关"的命中域又是文字的左边距，各写一份就会变成
+// "点箭头其实是点标签"。
+constexpr float kTreeNodeArrowW = kWidgetFontSize * 0.75f + 6.0f;
+
+// 树节点旗标（GUi_TreeNodeEx）。数值必须与 api/ui_api.h 的 GUI_TREE_* 对齐，
+// ui_builtin.cpp 里有 static_assert 兜底。放在这里是因为绘制与交互都要读它，
+// 而那个头是给宿主用的 C 面。
+enum : uint32_t {
+    kTreeNodeSelected     = 1u << 0,   // 整行高亮（层级树的"当前选中"）
+    kTreeNodeLeaf         = 1u << 1,   // 叶子：不画箭头、不展开、不缩进子层
+    kTreeNodeDefaultOpen  = 1u << 2,   // 首次出现时的展开态
+    kTreeNodeOpenOnArrow  = 1u << 3,   // 只有点箭头才展开，点行体算"点了这一行"
+    kTreeNodeSpanAvail    = 1u << 4,   // 行宽铺满内容区（高亮要整行）
+};
+
 // ---------------------------------------------------------------------------
 // UiInputFrame — 一帧的输入快照
 //
@@ -291,7 +307,10 @@ struct Widget {
     float max_value = 1.0f;              // Slider/DragFloat：最大值
     bool  checked   = false;             // Checkbox
     bool  open      = false;             // TreeNode/Header：展开态
-    bool  selected  = false;             // Selectable：选中态（入参，权威在调用方）
+    bool  selected  = false;             // Selectable/TreeNode：选中态（入参，权威在调用方）
+    // TreeNode 的旗标（kTreeNode* 位或）。open / selected 是"当前状态"，这里是
+    // "这一行怎么表现"——叶子不画箭头、点行体不展开都靠它，绘制与交互共读。
+    uint32_t node_flags = 0;
     bool  fold_marker = true;            // TitleBar：是否画左侧折叠框（NoCollapse 时为假）
     char  text[kWidgetTextCap] = {};     // TextInput：内容（'\0' 结尾）
 

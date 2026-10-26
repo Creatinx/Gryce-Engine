@@ -1203,31 +1203,40 @@ int BuiltinUi::color_edit(const char* label, float rgba[4]) {
 // 结构：树 / 折叠头 / 菜单 / 子区域
 // ---------------------------------------------------------------------------
 int BuiltinUi::tree_node(const char* label, int default_open) {
+    return tree_node_ex(label, default_open ? kTreeNodeDefaultOpen : 0);
+}
+
+int BuiltinUi::tree_node_ex(const char* label, int flags) {
     if (!usable()) { finish_impl(nullptr); return 0; }
     WindowState& win = windows_[depth_ - 1];
     char shown[kWidgetLabelCap];
     copy_display_label(label, shown, sizeof(shown));
     const float tw = metrics_ ? metrics_->width(shown, kWidgetFontSize) : 0.0f;
-    const Rect r = place(4.0f + kWidgetFontSize * 0.75f + 6.0f + tw, line_height());
+    // 铺满整行的高亮：宽度取内容区剩余宽（place 会再按 avail 夹一次）。
+    const float w = (flags & kTreeNodeSpanAvail) ? content_width()
+                                                 : (kTreeNodeArrowW + tw);
+    const Rect r = place(w, line_height());
     const uint64_t id = item_id(label, false);
 
     // open 是"树自己持有的状态"：只有首次创建时才用 default_open 初始化，
     // 之后不再覆盖（否则宿主每帧传同一个 default 会把展开态按回去）。
     if (!tree_.find(id)) {
         Widget* fresh = tree_.ensure(id, WidgetKind::TreeNode, r, shown);
-        if (fresh) { stamp(fresh); fresh->open = default_open != 0; }
+        if (fresh) { stamp(fresh); fresh->open = (flags & kTreeNodeDefaultOpen) != 0; }
     }
-    Widget* w = tree_.touch(id, WidgetKind::TreeNode, r, shown);
-    if (!w) { finish_impl(nullptr); return 0; }
-    stamp(w);
-    finish_impl(w);
+    Widget* node = tree_.touch(id, WidgetKind::TreeNode, r, shown);
+    if (!node) { finish_impl(nullptr); return 0; }
+    stamp(node);
+    node->node_flags = static_cast<uint32_t>(flags);
+    node->selected   = (flags & kTreeNodeSelected) != 0;
+    finish_impl(node);
 
-    const bool open = w->open;
-    if (open) {
-        win.indent_x += indent_metric();
-        ++win.indent_depth;
-    }
-    return open ? 1 : 0;
+    const bool leaf = (flags & kTreeNodeLeaf) != 0;
+    if (leaf) return 1;           // 叶子恒"可见"，也不推缩进
+    if (!node->open) return 0;
+    win.indent_x += indent_metric();
+    ++win.indent_depth;
+    return 1;
 }
 
 void BuiltinUi::tree_pop() {

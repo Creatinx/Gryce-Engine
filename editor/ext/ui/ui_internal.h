@@ -49,10 +49,6 @@ struct DrawState {
     ViewRect view;
     ViewInput input;
 
-    // 层级树的展开集合（句柄）。存数组而不是 std::set：树节点数是几十个，
-    // 线性查找比分配红黑树节点便宜。
-    std::vector<GEntityHandle> expanded;
-
     // ImGui 控件要可写的 char*，所以这些缓冲必须跨帧存活。
     char name_buf[128] = {};
     GEntityHandle name_handle = 0;
@@ -73,11 +69,10 @@ struct DrawState {
     bool capture_mouse = false;
     bool pointer_in_view = false;
 
-    // 待重命名的实体（层级树右键 → 重命名）。
+    // 层级树右键 → "Rename"：把焦点交给检视器的名字框（下一帧生效）。
+    // 展开态不在这里 —— 树节点控件自己持有（GUI_TREE_DEFAULT_OPEN 只管初始）。
     bool rename_requested = false;
-    bool rename_focus = false;
     GEntityHandle rename_handle = 0;
-    char rename_buf[128] = {};
 
     // 检视器里变换控件的本地副本。引擎的当前值比界面晚一帧到达，直接拿
     // 模型值喂 DragFloat3 会在拖拽中被旧值回写，表现为"拖一下弹回去"。
@@ -104,9 +99,6 @@ DrawState& state();
 
 // 绘制整帧（在 UI 回调内调用，只能读状态、只能入队意图）。
 void draw_all(void* user);
-
-bool is_expanded(GEntityHandle handle);
-void toggle_expanded(GEntityHandle handle);
 
 } // namespace gryce::editor::ui
 

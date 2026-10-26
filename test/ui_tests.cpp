@@ -4672,6 +4672,57 @@ TEST(builtin, tree_node_toggles_and_indents_children) {
     CHECK_EQ(one(false, false, false), 0);           // 收起态保持（default_open 只初始一次）
 }
 
+TEST(builtin, tree_node_ex_separates_arrow_from_row_body) {
+    BuiltinUi ui;
+    const Rect win{0.0f, 0.0f, 300.0f, 300.0f};
+    const uint64_t node = gryce_ui::hash_label("row", gryce_ui::hash_label("W"));
+
+    // 节点矩形从 pad_x(8) 起，箭头位宽 = fs*0.75 + 6 = 16.5
+    const float arrow_x = 8.0f + 6.0f;
+    const float label_x = 8.0f + 80.0f;
+
+    int opened = 0;
+    int clicked = 0;
+    float node_w = 0.0f;
+    float next_x = 0.0f;
+    auto frame = [&](float mx, bool down, bool pressed, bool released, int flags) {
+        bi_frame(ui, mouse_at(mx, 16.0f, down, pressed, released));
+        bi_window(ui, "W", win);
+        opened  = ui.tree_node_ex("row", flags);
+        clicked = ui.is_item_clicked(0) ? 1 : 0;
+        node_w  = ui.last_item_rect().w;
+        if (opened) ui.tree_pop();
+        ui.text("next");
+        next_x = ui.last_item_rect().x;
+        ui.end_window();
+        ui.end_frame();
+    };
+
+    const int kRow = gryce_ui::kTreeNodeSpanAvail | gryce_ui::kTreeNodeOpenOnArrow;
+    frame(label_x, false, false, false, kRow);
+    CHECK_EQ(opened, 0);                              // 没给 DefaultOpen 就是收起的
+
+    // 点行体：不展开（OpenOnArrow），但这一行确实"被点了"——宿主拿它做选中。
+    // IsItemClicked 报的是按下那一帧，展开态变化发生在松开那一帧。
+    frame(label_x, true, true, false, kRow);
+    CHECK_EQ(clicked, 1);
+    frame(label_x, false, false, true, kRow);
+    CHECK_EQ(opened, 0);
+
+    // 点箭头：展开。铺满整行（SpanAvail）的节点要能整行亮起。
+    frame(arrow_x, true, true, false, kRow | gryce_ui::kTreeNodeSelected);
+    CHECK_TRUE(ui.tree().find(node)->selected);
+    CHECK_TRUE(node_w > 200.0f);                      // 行宽铺满内容区
+    frame(arrow_x, false, false, true, kRow | gryce_ui::kTreeNodeSelected);
+    CHECK_EQ(opened, 1);
+    CHECK_TRUE(ui.tree().find(node)->open);
+
+    // 叶子：恒"可见"，点了不展开，也不推缩进（后面那行的起点与它齐平）。
+    frame(label_x, false, false, false, gryce_ui::kTreeNodeLeaf);
+    CHECK_EQ(opened, 1);
+    CHECK_NEAR(next_x, 8.0f, 0.51f);
+}
+
 TEST(builtin, menu_bar_and_menu_items) {
     BuiltinUi ui;
     ui.set_display_size(800.0f, 600.0f);

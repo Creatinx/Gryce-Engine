@@ -88,24 +88,6 @@ void apply_view_input() {
 
 DrawState& state() { return g_state; }
 
-bool is_expanded(GEntityHandle handle) {
-    for (GEntityHandle h : g_state.expanded) {
-        if (h == handle) return true;
-    }
-    return false;
-}
-
-void toggle_expanded(GEntityHandle handle) {
-    for (std::size_t i = 0; i < g_state.expanded.size(); ++i) {
-        if (g_state.expanded[i] == handle) {
-            g_state.expanded.erase(g_state.expanded.begin() +
-                                   static_cast<std::ptrdiff_t>(i));
-            return;
-        }
-    }
-    g_state.expanded.push_back(handle);
-}
-
 void reset() {
     g_state = DrawState{};
     intent::reset();

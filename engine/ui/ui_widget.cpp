@@ -292,6 +292,17 @@ bool widget_anim_fill(const Widget& w, const Theme& t, uint32_t* out) {
             *out = c;
             return true;
         }
+        case WidgetKind::TreeNode: {
+            // 树节点整行高亮，三档与 Selectable 完全一致（ImGui 的
+            // TreeNodeEx(Selected) 用的也是 Header 系颜色）。叶子节点同样参与：
+            // 层级树里叶子也要能"整行亮起"。
+            uint32_t c = theme_color(t, THEME_COLOR_HEADER);
+            if (w.hovered) c = theme_color(t, THEME_COLOR_HEADER_HOVER);
+            if (w.pressed && w.hovered) c = theme_color(t, THEME_COLOR_HEADER_ACTIVE);
+            if (!w.selected && !w.hovered) c &= 0xFFFFFF00u;
+            *out = c;
+            return true;
+        }
         case WidgetKind::Image:
             // 图片没有底色：画了会把视口/贴图预览盖住。返回 false 让调用方
             // 连淡入淡出都不做（Image 也没有 anim 目标色）。
@@ -809,11 +820,17 @@ void ui_draw_widget(const Widget& w, const Theme& theme, const UiTextMetrics& me
         }
 
         case WidgetKind::TreeNode: {
-            draw_fold_marker(dl, r.x + 2.0f, ty, w.open, theme, metrics, fs);
-            const float ox = r.x + 4.0f + fs * 0.75f + 4.0f;
-            dl.add_text(ox, ty, w.label, fs,
-                        w.hovered ? theme_color(theme, THEME_COLOR_TEXT)
-                                  : theme_color(theme, THEME_COLOR_TEXT));
+            // 整行树节点：底色（选中/悬停）铺满，箭头只给非叶子。叶子也留出
+            // 箭头位——同级的标签要在一条竖线上，否则"有子节点/没子节点"的
+            // 兄弟行文字会错开半个箭头。
+            const uint32_t bg = widget_fill_now(w, theme);
+            if ((bg & 0xFFu) != 0) {
+                dl.add_round_rect(r.x, r.y, r.w, r.h, r_frame, bg);
+            }
+            const bool leaf = (w.node_flags & kTreeNodeLeaf) != 0;
+            if (!leaf) draw_fold_marker(dl, r.x + 2.0f, ty, w.open, theme, metrics, fs);
+            dl.add_text(r.x + kTreeNodeArrowW, ty, w.label, fs,
+                        theme_color(theme, THEME_COLOR_TEXT));
             break;
         }
 
@@ -1186,7 +1203,16 @@ void WidgetTree::apply_standard_interaction(Widget& w) {
             break;
         }
 
-        case WidgetKind::TreeNode:
+        case WidgetKind::TreeNode: {
+            // 点箭头 = 展开/收起；点行体 = "选中这一行"（OpenOnArrow 语义），
+            // 由宿主通过 IsItemClicked 接走。叶子不展开，点了只报点击。
+            if (!w.clicked) break;
+            if ((w.node_flags & kTreeNodeLeaf) != 0) break;
+            const bool on_arrow = input_.mouse_x <= w.rect.x + kTreeNodeArrowW;
+            if (on_arrow || (w.node_flags & kTreeNodeOpenOnArrow) == 0) w.open = !w.open;
+            break;
+        }
+
         case WidgetKind::Header:
             if (w.clicked) w.open = !w.open;
             break;

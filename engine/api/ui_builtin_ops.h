@@ -61,6 +61,7 @@ struct BuiltinUiOps {
 
     // ---- 结构 ----
     int  (*tree_node)(const char* label, int default_open);
+    int  (*tree_node_ex)(const char* label, int flags);
     void (*tree_pop)();
     int  (*collapsing_header)(const char* label, int default_open);
     // 返回 0 = 窗口没有声明 GUI_WIN_MENU_BAR，宿主跳过菜单体（与 ImGui 一致）

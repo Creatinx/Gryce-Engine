@@ -160,6 +160,9 @@ public:
     // ---- 结构 ----
     // 返回 1 = 展开（宿主照常提交子项，结束时必须调 tree_pop()）。
     int  tree_node(const char* label, int default_open);
+    // 带旗标的树节点（GUI_TREE_*）。叶子不推缩进、点行体只报点击；
+    // 其余展开时推一级缩进，调用方据此递归子树。
+    int  tree_node_ex(const char* label, int flags);
     void tree_pop();
     int  collapsing_header(const char* label, int default_open);
     // 菜单栏：在窗口内容顶部占一行；菜单本体是弹层。
