@@ -199,6 +199,13 @@ build/GryceEditor.exe --project D:/somewhere/else
   （ImGui 的 `GetContentRegionAvail` 语义），所以底栏不会被挤出窗口。
 - 带标签的控件用 `GUi_SetNextItemWidth(-reserve)` 把右边留给标签，`reserve` 由
   `GUi_CalcTextWidth` 算（见 `ui/draw.cpp` 的 `item_width_for`）。
+- **资源路径字段给选择器，不给输入框**（`mesh_path` 这类）。路径敲错一个字符
+  就是"物体消失"，而且没有任何地方会报错。检视器里这一行是"字段名 + 当前值
+  + 一个 `...` 按钮"，按钮弹出候选资产（过滤框 + 列表）。候选在
+  `panel/model.cpp` 的 `rebuild_inspector` 里扫好 —— UI 回调跑在渲染器锁内，
+  回调里扫盘会死锁。字段名决定种类（带 mesh / texture / script 的才是路径），
+  候选目录优先取当前值所在目录。写入走 `kSetPropertyString` 意图 →
+  `commands::set_property_string` → `GEdit_SetProperty`（字段不是字符串时拒绝）。
 
 ---
 

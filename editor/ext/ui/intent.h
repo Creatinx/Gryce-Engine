@@ -33,7 +33,7 @@ enum IntentKind : int {
     // 变换
     kSetPosition, kSetRotation, kSetScale,
     // 组件
-    kSetPropertyNumber, kSetPropertyBool, kSetPropertyVec,
+    kSetPropertyNumber, kSetPropertyBool, kSetPropertyVec, kSetPropertyString,
     kRemoveComponent, kAddComponent,
     // 资产
     kImportAsset,

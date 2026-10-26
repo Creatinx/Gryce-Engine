@@ -190,6 +190,11 @@ int set_property_vec(GEntityHandle handle, uint64_t type_hash,
     return commands::set_property_vec(handle, type_hash, prop, values, count);
 }
 
+int set_property_string(GEntityHandle handle, uint64_t type_hash,
+                        const char* prop, const char* value) {
+    return commands::set_property_string(handle, type_hash, prop, value);
+}
+
 int add_component(GEntityHandle handle, const char* type_name) {
     return commands::add_component(handle, type_name);
 }

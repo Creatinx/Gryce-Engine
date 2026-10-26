@@ -32,6 +32,7 @@ let savedPos = [0, 0, 0];
 let cube = 0;
 let ground = 0;
 let lightHash = '';
+let meshHash = '';
 
 function check(name, ok, detail) {
     ++checks;
@@ -132,14 +133,27 @@ export function on_start() {
           'components=' + ins.components.length);
 
     let meshValue = null;
+    let meshProp = null;
     for (let c = 0; c < ins.components.length; ++c) {
         const comp = ins.components[c];
         if (comp.name !== 'MeshRenderer') continue;
         for (let p = 0; p < comp.properties.length; ++p) {
-            if (comp.properties[p].name === 'mesh_path') meshValue = comp.properties[p].value;
+            if (comp.properties[p].name === 'mesh_path') {
+                meshValue = comp.properties[p].value;
+                meshProp = comp.properties[p];
+            }
         }
     }
     check('inspector.property', meshValue === 'res:/models/cube.obj', 'mesh_path=' + meshValue);
+
+    // 资源路径字段要带候选资产（资产选择器的数据源）：扫描在 tick 里做，
+    // 候选必须随检视器数据一起送到界面上。
+    check('inspector.assetPath', meshProp !== null && meshProp.assetKind === 'mesh',
+          meshProp ? String(meshProp.assetKind) : 'no mesh_path');
+    check('inspector.candidates', meshProp !== null && Array.isArray(meshProp.candidates)
+          && meshProp.candidates.length >= 1
+          && meshProp.candidates[0].path === 'res:/models/cube.obj',
+          meshProp && meshProp.candidates ? String(meshProp.candidates.length) : 'none');
 
     // --- 资产 ---------------------------------------------------------------
     const scan = JSON.parse(E.asset_scan('res:/models', 0));
@@ -396,13 +410,52 @@ export function on_update(dt) {
         check('prop.vecReject',
               E.setPropertyVec(cube, lightHash, 'direction', 1, 2) === false);
 
-        // 重挂：把 Cube 挂到 Ground 下。
-        check('reparent', E.reparent(cube, ground) === true);
+        // 字符串属性（资源路径）写入：先写空，再写回原值。字段不是字符串时
+        // 必须拒绝 —— 写进去会被按字段类型解读，界面上看不出是自己写错了。
+        const mesh = ins.components.find(function (c) { return c.name === 'MeshRenderer'; });
+        meshHash = mesh ? mesh.hash : '';
+        check('prop.stringReject',
+              E.setPropertyString(cube, lightHash, 'direction', 'x') === false);
+        check('prop.string', E.setPropertyString(cube, meshHash, 'mesh_path', '') === true);
         phase = 15;
         return;
     }
 
     if (phase === 15) {
+        const ins = JSON.parse(E.panel_inspector(cube));
+        const mesh = ins.components.find(function (c) { return c.name === 'MeshRenderer'; });
+        let path = null;
+        if (mesh) {
+            for (let i = 0; i < mesh.properties.length; ++i) {
+                if (mesh.properties[i].name === 'mesh_path') path = mesh.properties[i].value;
+            }
+        }
+        check('prop.stringApplied', path === '', 'mesh_path=' + path);
+        // 写回原值：后面还有存档往返的用例，场景得保持原样。
+        check('prop.stringRestore',
+              E.setPropertyString(cube, meshHash, 'mesh_path', 'res:/models/cube.obj') === true);
+        phase = 16;
+        return;
+    }
+
+    if (phase === 16) {
+        const ins = JSON.parse(E.panel_inspector(cube));
+        const mesh = ins.components.find(function (c) { return c.name === 'MeshRenderer'; });
+        let path = null;
+        if (mesh) {
+            for (let i = 0; i < mesh.properties.length; ++i) {
+                if (mesh.properties[i].name === 'mesh_path') path = mesh.properties[i].value;
+            }
+        }
+        check('prop.stringRestored', path === 'res:/models/cube.obj', 'mesh_path=' + path);
+
+        // 重挂：把 Cube 挂到 Ground 下。
+        check('reparent', E.reparent(cube, ground) === true);
+        phase = 17;
+        return;
+    }
+
+    if (phase === 17) {
         const ins = JSON.parse(E.panel_inspector(cube));
         check('reparent.applied', ins.parent === ground, 'parent=' + ins.parent);
 
@@ -412,11 +465,11 @@ export function on_update(dt) {
 
         // 组件删除：删掉刚才加的 Light，它应当回到候选里。
         check('comp.remove', E.removeComponent(cube, lightHash) === true);
-        phase = 16;
+        phase = 18;
         return;
     }
 
-    if (phase === 16) {
+    if (phase === 18) {
         const ins = JSON.parse(E.panel_inspector(cube));
         const names = ins.components.map(function (c) { return c.name; });
         check('comp.removed', names.indexOf('Light') < 0, names.join(','));

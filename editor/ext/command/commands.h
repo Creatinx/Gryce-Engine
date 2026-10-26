@@ -51,6 +51,9 @@ int set_property_bool(GEntityHandle handle, uint64_t type_hash,
 // 与实际字段类型不符时返回 0，不写一半。
 int set_property_vec(GEntityHandle handle, uint64_t type_hash,
                      const char* prop, const float* values, int count);
+// 字符串属性（资源路径这类）。字段不是字符串时返回 0。
+int set_property_string(GEntityHandle handle, uint64_t type_hash,
+                        const char* prop, const char* value);
 
 int add_component(GEntityHandle handle, const char* type_name);
 int remove_component(GEntityHandle handle, uint64_t type_hash);

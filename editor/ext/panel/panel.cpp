@@ -92,6 +92,21 @@ void write_property(Json& j, const PropertyValue& p) {
             j.value("");
             break;
     }
+    // 资源路径字段带上候选资产（资产选择器的数据源）。非路径字段没有候选，
+    // 不写这个键 —— 免得每个属性都拖一个空数组。
+    if (p.asset_path) {
+        j.kv("assetKind", p.asset_kind);
+        j.key("candidates");
+        j.begin_array();
+        for (const AssetItem& item : p.candidates) {
+            j.begin_object();
+            j.kv("name", item.name);
+            j.kv("path", item.path);
+            j.kv("kind", item.kind);
+            j.end_object();
+        }
+        j.end_array();
+    }
     j.end_object();
 }
 

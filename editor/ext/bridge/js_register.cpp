@@ -316,6 +316,20 @@ FN(js_set_property_vec) {
     return ret_bool(gryce::editor::set_property_vec(h, hash, prop.c_str(), v, count));
 }
 
+FN(js_set_property_string) {
+    Args a = args_of(argc, argv);
+    GEntityHandle h = 0;
+    uint64_t hash = 0;
+    std::string prop;
+    std::string value;
+    if (!want_handle(a, 0, &h, "editor.setPropertyString")
+        || !a.u64(1, &hash) || !a.str(2, &prop) || !a.str(3, &value)) {
+        return fail("editor.setPropertyString(handle, typeHash, propName, value) "
+                    "expects (id, hash, string, string)");
+    }
+    return ret_bool(gryce::editor::set_property_string(h, hash, prop.c_str(), value.c_str()));
+}
+
 FN(js_add_component) {
     Args a = args_of(argc, argv);
     GEntityHandle h = 0;
@@ -702,6 +716,7 @@ GRYCE_EXTENSION_ENTRY {
     bind("translate", &js_translate, 4);
     bind("setProperty", &js_set_property_number, 4);
     bind("setPropertyBool", &js_set_property_bool, 4);
+    bind("setPropertyString", &js_set_property_string, 4);
     // 第三个参数只是 JS 侧 f.length 的提示值（不影响可变实参），按最长的
     // 四分量形式写 7，读的人一眼知道最多接几个。
     bind("setPropertyVec", &js_set_property_vec, 7);

@@ -81,6 +81,79 @@ std::string short_component_name(const char* qualified) {
     return sep == std::string::npos ? full : full.substr(sep + 2);
 }
 
+std::string lower_ascii(const char* s) {
+    std::string out = s ? s : "";
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
+// 资源路径字段的种类。约定：字段名里带 mesh / texture / script 的才是
+// "能从资产库里选出来"的路径；其余字符串（名字、标签、枚举名）不给选择器，
+// 仍然只读显示。
+const char* asset_kind_for(const char* prop_name) {
+    const std::string n = lower_ascii(prop_name);
+    if (n.find("mesh") != std::string::npos) return "mesh";
+    if (n.find("texture") != std::string::npos || n.find("albedo") != std::string::npos ||
+        n.find("normal_map") != std::string::npos || n.find("roughness_map") != std::string::npos) {
+        return "texture";
+    }
+    if (n.find("script") != std::string::npos) return "script";
+    return nullptr;
+}
+
+// 候选目录：优先用当前值所在的目录（值形如 res:/models/cube.obj），没有值
+// 就用该种类的默认目录。
+std::string asset_dir_for(const char* kind, const std::string& current) {
+    const std::size_t slash = current.find_last_of('/');
+    if (slash != std::string::npos) {
+        if (slash == 4) return "res:/";           // "res:/x" —— 目录就是 res:/
+        if (slash > 4) return current.substr(0, slash);
+    }
+    if (std::strcmp(kind, "mesh") == 0) return "res:/models";
+    if (std::strcmp(kind, "texture") == 0) return "res:/textures";
+    if (std::strcmp(kind, "script") == 0) return "res:/scripts";
+    return "res:/";
+}
+
+// 候选资产：按 (目录, 种类) 缓存 250ms。扫盘必须发生在 tick 里（UI 回调
+// 持着渲染器锁，回调里扫盘会死锁），所以候选在 rebuild_inspector 阶段备好。
+int collect_asset(void* user, const GAssetEntry* entry);
+
+struct CandidateCache {
+    std::string dir;
+    std::string kind;
+    AssetList list;        // 收集回调只认 AssetList*，不能直接传 vector
+    double stamp_ms = 0.0;
+    bool valid = false;
+};
+
+const std::vector<AssetItem>& scan_candidates(const std::string& dir, const char* kind) {
+    static CandidateCache cache;
+    const double t = now_ms();
+    if (cache.valid && cache.dir == dir && cache.kind == kind &&
+        (t - cache.stamp_ms) < 250.0) {
+        return cache.list.items;
+    }
+    cache.dir = dir;
+    cache.kind = kind ? kind : "";
+    cache.stamp_ms = t;
+    cache.list = AssetList{};
+    cache.list.dir = dir;
+    GAsset_ScanDirectoryEach(dir.c_str(), 0, &collect_asset, &cache.list);
+    if (kind && kind[0]) {
+        std::vector<AssetItem> filtered;
+        filtered.reserve(cache.list.items.size());
+        for (const AssetItem& item : cache.list.items) {
+            if (item.kind == kind) filtered.push_back(item);
+        }
+        cache.list.items.swap(filtered);
+    }
+    cache.valid = true;
+    return cache.list.items;
+}
+
 void build_children(HierarchyNode& node, int depth,
                     const std::unordered_map<GEntityHandle, std::vector<GEntityHandle>>& tree) {
     if (depth > 64) return;   // 深度上限兜底：真出环时也不把栈打爆
@@ -324,6 +397,16 @@ void rebuild_inspector(GEntityHandle handle) {
             }
             PropertyValue value;
             read_property(handle, hash, prop_name, type, size, &value);
+            // 资源路径字段顺带备好候选资产：UI 回调里不能扫盘（持着渲染器锁），
+            // 候选必须在这里（tick 路径）备好。
+            if (value.type == kString) {
+                const char* kind = asset_kind_for(prop_name);
+                if (kind) {
+                    value.asset_path = true;
+                    value.asset_kind = kind;
+                    value.candidates = scan_candidates(asset_dir_for(kind, value.text), kind);
+                }
+            }
             comp.properties.push_back(std::move(value));
         }
         g_inspector.components.push_back(std::move(comp));

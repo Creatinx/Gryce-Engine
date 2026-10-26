@@ -166,6 +166,82 @@ void item_width_for(const char* label) {
     GUi_SetNextItemWidth(-reserve);
 }
 
+std::string ascii_lower(const char* s);
+
+// 把文本截到给定像素宽（超出时尾部用 "..." 收尾）。不截的话长路径会把
+// 右侧的按钮挤出面板 —— 面板右边没有滚动条，被推出去的按钮就再也点不到。
+std::string fit_text(const char* s, float max_w) {
+    if (!s || !s[0] || max_w <= 0.0f) return std::string();
+    const std::string full = s;
+    if (GUi_CalcTextWidth(full.c_str()) <= max_w) return full;
+    int lo = 0;
+    int hi = static_cast<int>(full.size());
+    while (lo < hi) {
+        const int mid = (lo + hi + 1) / 2;
+        const std::string cut = full.substr(0, static_cast<std::size_t>(mid)) + "...";
+        if (GUi_CalcTextWidth(cut.c_str()) <= max_w) lo = mid; else hi = mid - 1;
+    }
+    return full.substr(0, static_cast<std::size_t>(lo)) + "...";
+}
+
+// 资源路径字段的一行：字段名 + 当前值 + 一个"..."按钮。
+// 按钮弹出的选择器只列库里真有的资产 —— 路径是拼出来的字符串，写错一个
+// 字符的后果是"物体消失"且没有任何地方会报错。
+void draw_asset_path_row(DrawState& st, GEntityHandle handle, uint64_t hash,
+                         const PropertyValue& p) {
+    float avail = 0.0f;
+    float unused = 0.0f;
+    GUi_GetContentAvail(&avail, &unused);
+    const float label_w = GUi_CalcTextWidth(p.name.c_str());
+    const float btn_w = 30.0f;      // "..." 按钮的宽度（含内边距）
+    const float value_max = avail - label_w - btn_w - 16.0f;
+
+    GUi_Text(p.name.c_str());
+    GUi_SameLine(4.0f);
+    GUi_TextColored(GUI_TEXT_DIM, fit_text(p.text.c_str(), value_max).c_str());
+    GUi_SameLine(6.0f);
+
+    char popup[128];
+    std::snprintf(popup, sizeof(popup), "##pick_%llx_%s",
+                  static_cast<unsigned long long>(hash), p.name.c_str());
+    if (GUi_SmallButton("...")) {
+        GUi_OpenPopup(popup);
+        st.prop_filter[0] = '\0';
+    }
+    if (!GUi_BeginPopup(popup)) return;
+
+    GUi_SetNextItemWidth(-1.0f);
+    GUi_InputText("##pick_filter", st.prop_filter,
+                  static_cast<int>(sizeof(st.prop_filter)));
+    GUi_Separator();
+    GUi_BeginChild("##pick_list", 0, 180.0f, 0);
+    const std::string filter = ascii_lower(st.prop_filter);
+    int shown = 0;
+    for (std::size_t i = 0; i < p.candidates.size(); ++i) {
+        const AssetItem& item = p.candidates[i];
+        if (!filter.empty() &&
+            ascii_lower(item.name.c_str()).find(filter) == std::string::npos) {
+            continue;
+        }
+        char label[512];
+        std::snprintf(label, sizeof(label), "%s##pick%zu", item.name.c_str(), i);
+        if (GUi_Selectable(label, false)) {
+            Intent it = make(kSetPropertyString);
+            it.handle = handle;
+            it.hash = hash;
+            it.a = p.name;
+            it.b = item.path;
+            ensure_edit_open(st, "property");
+            push(it);
+            GUi_CloseCurrentPopup();
+        }
+        ++shown;
+    }
+    if (shown == 0) GUi_TextColored(GUI_TEXT_DIM, "(no assets)");
+    GUi_EndChild();
+    GUi_EndPopup();
+}
+
 // ---------------------------------------------------------------------------
 // 菜单栏 / 工具栏
 // ---------------------------------------------------------------------------
@@ -512,12 +588,17 @@ void draw_property(DrawState& st, GEntityHandle handle, uint64_t hash,
             }
             break;
         }
-        case kString:
-            // 只读。字符串字段几乎都是资源路径（网格、贴图、脚本），写错一个
-            // 字符就是"物体消失"且没有任何地方会报错；等有一条带校验的
-            // 资产选择器再说，不先给一个能随便敲的输入框。
-            read_only_line(p.name.c_str(), p.text.c_str());
+        case kString: {
+            // 资源路径（mesh_path 之类）给一个选择器，而不是输入框：路径敲错
+            // 一个字符就是"物体消失"，而且没有任何地方会报错。有选择器就只会
+            // 出现库里真有的路径。
+            if (!p.asset_path) {
+                read_only_line(p.name.c_str(), p.text.c_str());
+                break;
+            }
+            draw_asset_path_row(st, handle, hash, p);
             break;
+        }
         case kVec2: {
             float* b = prop_buf_sync(st, handle, hash, p);
             item_width_for(p.name.c_str());

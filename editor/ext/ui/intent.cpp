@@ -53,6 +53,9 @@ void run(const Intent& it) {
         case kSetPropertyVec:
             commands::set_property_vec(it.handle, it.hash, it.a.c_str(), it.vec, it.flag);
             break;
+        case kSetPropertyString:
+            commands::set_property_string(it.handle, it.hash, it.a.c_str(), it.b.c_str());
+            break;
         case kRemoveComponent:
             commands::remove_component(it.handle, it.hash);
             break;

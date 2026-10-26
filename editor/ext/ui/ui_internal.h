@@ -93,6 +93,9 @@ struct DrawState {
 
     // "Add Component" 弹窗里的过滤框。
     char comp_filter[64] = {};
+
+    // 资源路径选择器（"mesh_path" 这类字段）里的过滤框。
+    char prop_filter[64] = {};
 };
 
 DrawState& state();

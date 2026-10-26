@@ -31,6 +31,18 @@ enum PropertyType : int {
     kVec2 = 5, kVec3 = 6, kVec3i = 7, kVec4 = 8, kQuat = 9, kColor = 10,
 };
 
+// 资产条目（资产面板列表 / 资源选择器的候选项）。
+struct AssetItem {
+    std::string path;
+    std::string name;
+    std::string ext;
+    std::string kind;
+    std::string guid;
+    unsigned long long size = 0;
+    bool has_meta = false;
+    bool stale = false;
+};
+
 // 一个属性值。用"宽字段 + 有效个数"而不是 union：属性总数在千级以内，
 // 多占几十字节换掉一整类错位 bug 是划算的。
 struct PropertyValue {
@@ -42,6 +54,12 @@ struct PropertyValue {
     std::string text;         // string
     float vec[4] = {0, 0, 0, 0};  // vec2 / vec3 / vec3i / vec4 / quat / color
     int count = 0;            // vec 的有效元素个数
+    // 资源路径字段（mesh_path 之类）的候选项，由 rebuild_inspector 在 tick 里
+    // 扫好。UI 回调内不能扫盘（渲染器锁已持有），所以候选必须提前备好。
+    std::vector<AssetItem> candidates;
+    // 该字段是不是"能从资产库里选出来"的路径（决定 UI 给不给选择器）。
+    bool asset_path = false;
+    std::string asset_kind;    // "mesh" / "texture" / "script"
 };
 
 struct ComponentData {
@@ -82,17 +100,6 @@ struct InspectorData {
     std::vector<ComponentData> components;
     // 还没挂到这个实体上的组件类型（已按分类分组前的扁平列表）。
     std::vector<ComponentTypeInfo> available_components;
-};
-
-struct AssetItem {
-    std::string path;
-    std::string name;
-    std::string ext;
-    std::string kind;
-    std::string guid;
-    unsigned long long size = 0;
-    bool has_meta = false;
-    bool stale = false;
 };
 
 struct AssetList {

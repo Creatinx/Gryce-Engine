@@ -304,6 +304,19 @@ int set_property_vec(GEntityHandle handle, uint64_t type_hash,
                              static_cast<int>(sizeof(float) * static_cast<std::size_t>(count)));
 }
 
+int set_property_string(GEntityHandle handle, uint64_t type_hash,
+                        const char* prop, const char* value) {
+    if (handle <= 0 || type_hash == 0 || !prop || !prop[0]) return 0;
+    if (!value) return 0;
+    if (!session::handle_alive(handle)) return 0;
+    // 字段不是字符串就拒：写进去会被引擎按字段类型解读，字符串字面量被当成
+    // 数值就是一段乱码，而界面上看不出是自己写错了类型。
+    if (property_type_of(handle, type_hash, prop) != 4) return 0;
+    // 传的是 C 字符串的原始字节（含结尾的 0）。
+    return GEdit_SetProperty(handle, type_hash, prop, value,
+                             static_cast<int>(std::strlen(value) + 1));
+}
+
 int add_component(GEntityHandle handle, const char* type_name) {
     if (handle <= 0 || !type_name || !type_name[0]) return 0;
     if (!session::handle_alive(handle)) return 0;

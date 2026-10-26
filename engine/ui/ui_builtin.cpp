@@ -243,8 +243,13 @@ BuiltinUi::WindowState* BuiltinUi::push_state(uint64_t id, const Rect& rect, uin
     win.is_child = is_child;
     win.layer   = is_popup ? 1 : ((depth_ > 0) ? windows_[depth_ - 1].layer : 0);
     win.title_h = 0.0f;
-    // 继承父级缩进（子区域里的条目从父级缩进处起算）
-    win.indent_x = (depth_ > 0) ? windows_[depth_ - 1].indent_x : 0.0f;
+    // 缩进的继承分两种：
+    //   子区域（BeginChild）从父级的缩进处起算 —— 嵌在折叠块里的子区域要
+    //   跟着缩进走。
+    //   弹层是**独立的窗口**，不继承调用点的缩进。检视器里"MeshRenderer"
+    //   折叠块内的属性行会带一级缩进，弹层继承它的话，整个弹层内容会整体
+    //   右移一格（表现为过滤框和列表没有贴着弹层左边）。
+    win.indent_x = (depth_ > 0 && !is_popup) ? windows_[depth_ - 1].indent_x : 0.0f;
     ++depth_;
     return &windows_[depth_ - 1];
 }
@@ -1574,6 +1579,12 @@ int BuiltinUi::begin_popup_id(uint64_t id) {
     // 自适应高度时贴着屏幕底边往上收
     if (display_h_ > 0.0f && r.bottom() > display_h_) {
         r.y = (display_h_ - h > 0.0f) ? (display_h_ - h) : 0.0f;
+    }
+    // 水平方向也要留在屏幕内。弹层锚在触发它的控件下沿，而那个控件可能贴着
+    // 窗口右缘（检视器里的"..."按钮就在最右）：不夹的话弹层有一半跑到屏幕
+    // 外，内容被裁掉，看起来像"列表是空的"。
+    if (display_w_ > 0.0f && r.right() > display_w_) {
+        r.x = (display_w_ - w > 0.0f) ? (display_w_ - w) : 0.0f;
     }
 
     if (popup_.modal) {

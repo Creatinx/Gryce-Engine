@@ -4615,6 +4615,46 @@ TEST(builtin, popup_menu_item_click_closes) {
     ui.end_frame();
 }
 
+// 弹层必须留在屏幕内。触发它的控件可能贴着窗口右缘（检视器里的"..."按钮
+// 就在最右），不夹的话弹层有一半跑到屏幕外，内容被裁掉 —— 看起来像"列表
+// 是空的"，而不是"弹层跑到屏幕外了"。
+TEST(builtin, popup_is_clamped_inside_the_display) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    ui.open_popup("p", 760.0f, 100.0f, 160.0f, 0.0f);
+    CHECK_EQ(ui.begin_popup("p"), 1);
+    const Rect r = ui.current_window_rect();
+    CHECK_TRUE(r.right() <= 800.0f);
+    CHECK_NEAR(r.x, 640.0f, 0.5f);          // 800 - 160
+    ui.end_popup();
+    ui.end_frame();
+}
+
+// 弹层是独立窗口：不继承调用点的缩进。检视器里折叠块内的属性行带一级缩进，
+// 弹层继承它的话内容整体右移一格（过滤框和列表不贴弹层左边）。
+TEST(builtin, popup_does_not_inherit_the_callers_indent) {
+    BuiltinUi ui;
+    ui.set_display_size(800.0f, 600.0f);
+    const Rect win{0.0f, 0.0f, 400.0f, 400.0f};
+
+    bi_frame(ui, mouse_at(0.0f, 0.0f, false, false, false));
+    bi_window(ui, "W", win);
+    ui.collapsing_header("Block", 1);      // 展开 → 推一级缩进
+    ui.text("inside");
+    ui.open_popup("p", 100.0f, 100.0f, 160.0f, 0.0f);
+    CHECK_EQ(ui.begin_popup("p"), 1);
+    ui.text("item");
+    const Rect in_popup = ui.last_item_rect();   // 弹层里的第一个 item
+    ui.end_popup();
+    ui.end_window();
+    ui.end_frame();
+
+    // 弹层内容从弹层自己的内容原点起（弹层 x=100 + 内边距 8）
+    CHECK_NEAR(in_popup.x, 108.0f, 0.5f);
+}
+
 TEST(builtin, modal_ignores_outside_click_and_closes_on_esc) {
     BuiltinUi ui;
     ui.set_display_size(800.0f, 600.0f);

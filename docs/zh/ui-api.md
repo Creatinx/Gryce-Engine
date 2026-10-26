@@ -605,9 +605,9 @@ debug_ui_submit_locked()            主线程，锁已持有
 | `ColorEdit4` | 色块 + 点开的弹层（R/G/B/A 四条滑块），弹层内改动即时回写 |
 | `Combo` | 真下拉：点开弹层 + 菜单项，选中后回写并关闭 |
 | `BeginChild` / `EndChild` | 支持：自有裁剪域（超出不可见也不可点）、自有滚轮与滚动偏移。`size=(0,0)` = 占满剩余空间（与 ImGui 同义）。`border = true` 画圆角描边（裁剪仍按矩形，四角不会切进内容） |
-| `TreeNode` / `TreePop` / `CollapsingHeader` | 支持：展开态跨帧存活，子项自动缩进 |
+| `TreeNode` / `TreePop` / `CollapsingHeader` | 支持：展开态跨帧存活，子项自动缩进。`GUi_TreeNodeEx(label, flags)` 另带旗标：`GUI_TREE_SELECTED`（整行高亮）、`GUI_TREE_LEAF`（叶子：不画箭头、不展开）、`GUI_TREE_DEFAULT_OPEN`（只管首次创建时的展开态）、`GUI_TREE_OPEN_ON_ARROW`（只有点箭头才展开，点行体交给宿主当"选中"）、`GUI_TREE_SPAN_AVAIL`（行宽铺满内容区，高亮整行）。**展开态归控件持有**，宿主每帧传同一个 default 不会把展开态按回去；缩进由 `TreeNode` 进、`TreePop` 退，不靠宿主摆光标 |
 | `BeginMenuBar` / `BeginMenu` / `EndMenu` / `MenuItem` | 支持，且是**原生控件**：整条菜单栏是一个 `MenuBar`（`menubar_bg` 纯色底、无描边），每个标题是一个 `Menu`（平时纯文字、悬停/展开才出现 Header 系底色块）。标题的横排由菜单栏自己摆（紧密相接，不借 `SameLine`）。已经是菜单栏的前提下，**有菜单展开时把鼠标移到同级标题上会直接换过去**（ImGui 的菜单栏行为）。菜单弹层宽度按最宽的条目自适应（含右对齐的快捷键），下限是标题宽，并跨帧缓存——第二次打开就是准的。点条目自动关闭 |
-| 弹层：`OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | 支持。弹层画在第二层（永远盖住窗口），自适应高度；点外面或 Esc 关闭（同一帧 `BeginPopup` 即返回 0，与 ImGui 的 NewFrame 语义一致） |
+| 弹层：`OpenPopup` / `OpenPopupOnItemClick` / `BeginPopup` / `EndPopup` / `CloseCurrentPopup` / `IsPopupOpen` | 支持。弹层画在第二层（永远盖住窗口），自适应高度；点外面或 Esc 关闭（同一帧 `BeginPopup` 即返回 0，与 ImGui 的 NewFrame 语义一致）。弹层**留在显示范围内**：触发它的控件贴着窗口右缘时，弹层整体左移而不是有一半跑到屏幕外；弹层是独立窗口，**不继承调用点的缩进**（在折叠块里打开的弹层内容仍贴着弹层左边） |
 | 模态：`OpenModal` / `BeginModal` | 支持：居中、铺一层暗底遮罩、**点外面不关**，Esc 或 `CloseCurrentPopup` 才关 |
 | 提示：`SetTooltip` | 支持：贴在鼠标位置，`time > 0` 时延迟 0.35 秒出现（单测里 `time = 0` 立即出现，便于截图复现） |
 | 拖放：`BeginDragDropSource` / `SetDragDropPayloadString` / `EndDragDropSource` / `BeginDragDropTarget` / `AcceptDragDropPayloadString` | 支持：拖出 4px 阈值才成立，payload = (类型串, 文本)，松手在目标上时交付 |

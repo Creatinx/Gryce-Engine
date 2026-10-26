@@ -189,6 +189,11 @@ int set_property_bool(GEntityHandle handle, uint64_t type_hash,
 int set_property_vec(GEntityHandle handle, uint64_t type_hash,
                      const char* prop, const float* values, int count);
 
+// 字符串属性（资源路径这类）。字段不是字符串时返回 0。
+// @owner wrapper
+int set_property_string(GEntityHandle handle, uint64_t type_hash,
+                        const char* prop, const char* value);
+
 // 组件增删。type_name 用引擎注册表里的名字（"Light" / "Camera" / ...）。
 // remove 用 type_hash（名字已经拿到过就没必要再查一次表）。
 // @owner wrapper
