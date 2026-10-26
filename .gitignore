@@ -1,6 +1,8 @@
 # ---- 构建产物 ----
 /build/
 build_*/
+# editor/ 的独立构建目录（editor 自带 CMake 工程，见 editor/CMakeLists.txt）
+/editor/build/
 out/
 # CLion 默认构建目录名
 cmake-build-*/

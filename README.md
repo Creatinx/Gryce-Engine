@@ -236,7 +236,7 @@ build/GryceApp.exe --project MyGame
 build/GryceApp.exe --project test/demo_project --api opengl
 ```
 
-引擎里已经实现、但脚本层还没开放的能力，用 `extension.cpp` 包成 `engine.*` 接口即可（扩展是接口层，不是业务层；样例 `test/demo_project/extension.cpp` 补了 `engine.entity.toJson` / `engine.entity.path` / `engine.scene.pick`）。
+引擎里已经实现、但脚本层还没开放的能力，用 `extension.cpp` 包成 `engine.*` 接口即可（扩展是接口层，不是业务层；参考实现见 [docs/zh/extension.md](docs/zh/extension.md)，编辑器自身的 `editor/ext/` 就是这套 ABI 的完整用例）。
 
 无窗口验证与截图：
 

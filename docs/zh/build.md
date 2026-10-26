@@ -97,7 +97,7 @@ Vulkan SDK 为可选项：装好 LunarG SDK 后 `VULKAN_SDK` 环境变量会指�
 | `GryceRenderer.dll` | 渲染管线与 OpenGL / Vulkan / D3D12 后端 |
 | `GrycePlatform.dll` | 窗口、输入、光标 |
 | `GryceRenderSmoke.exe` | 渲染演示台（人工运行，非 CTest 用例） |
-| `GryceApp.exe` | 应用运行时（`--project <dir>` 启动，入口 `res:/main.js`，见 [app-entry.md](app-entry.md)）；同目录的 `GryceDemoExtension.dll` 是扩展 ABI 样例（见 [extension.md](extension.md)） |
+| `GryceApp.exe` | 应用运行时（`--project <dir>` 启动，入口 `res:/main.js`，见 [app-entry.md](app-entry.md)） |
 | `GryceMathTests.exe` | 数学与资源规则测试宿主，仅 `BUILD_TESTING=ON` 时构建 |
 | `GryceGC.exe` | 工具链可执行文件，仅 `GRYCE_BUILD_TOOLCHAIN=ON` 时构建 |
 
@@ -108,6 +108,19 @@ Vulkan SDK 为可选项：装好 LunarG SDK 后 `VULKAN_SDK` 环境变量会指�
 ```bash
 cmake -S toolchain -B toolchain/build -G Ninja
 ```
+
+编辑器同样可独立构建（先构建好引擎，它需要引擎的导入库）：
+
+```bash
+cmake -S . -B build -G Ninja && cmake --build build   # 先有引擎树
+cmake -S editor -B editor/build -G Ninja                # 再单独构建编辑器
+cmake --build editor/build --target GryceEditor
+```
+
+`editor/` 自带一整套 CMake 工程，与 `toolchain/` 同构：既能单独配置（上面那条），
+也能通过根工程的 `GRYCE_BUILD_EDITOR=ON` 接进根构建树（此时目标名与产物位置
+完全一致）。日常迭代编辑器只改 `editor/ext/` 下的源码时，独立构建不用重配整个
+引擎。
 
 ## 5. CI
 

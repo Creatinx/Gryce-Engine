@@ -64,7 +64,7 @@ The extension's own statics (counters, handles, caches) are **not** reset by re-
 
 ## 3. Example: exposing existing engine capability as JS interfaces
 
-The repository sample `test/demo_project/extension.cpp` exposes three functions that **the engine already implements and the JS bindings do not**:
+The sample extension below exposes three functions that **the engine already implements and the JS bindings do not**:
 
 | Extension interface | Engine implementation | Notes |
 | --- | --- | --- |
@@ -163,18 +163,15 @@ export function on_start() {
 }
 ```
 
-Build and run:
+Build and run (save the code above as `extension.cpp` inside your project directory):
 
 ```bash
 # Calling engine capability needs the import library; headers only need <engine>/engine
-g++ -shared -O2 test/demo_project/extension.cpp -I engine -L build -lGryceCore \
-    -o test/demo_project/extension.dll
-
-# Or use the repository sample target (output goes to the build directory)
-cmake --build build --target GryceDemoExtension
+g++ -shared -O2 <project>/extension.cpp -I engine -L build -lGryceCore \
+    -o <project>/extension.dll
 
 # The host looks for <project>/extension.dll by default; an explicit path also works
-build/GryceApp.exe --project test/demo_project --extension build/GryceDemoExtension.dll
+build/GryceApp.exe --project <project> --extension <project>/extension.dll
 ```
 
 An extension may also link nothing at all and register purely computational functions through the vtable; the ABI allows it. That shape moves game logic into C++ and should only be used when the engine genuinely lacks the capability — anything mappable to an engine C API takes the adapter form above.
@@ -291,7 +288,6 @@ Contrast with script components: each entity's component context is separate and
 | --- | --- |
 | MinGW / GCC (same shape on Linux) | `g++ -shared -O2 extension.cpp -I <engine> -L <build> -lGryceCore -o extension.dll` |
 | MSVC | `cl /nologo /LD /O2 /I <engine> extension.cpp /link /LIBPATH:<build> GryceCore.lib /Fe:extension.dll` |
-| Repository sample target | `cmake --build build --target GryceDemoExtension` |
 
 Notes:
 

@@ -64,7 +64,7 @@ GRYCE_EXTENSION_ENTRY {
 
 ## 3. 示例：把引擎已有能力接成 JS 接口
 
-仓库样例 `test/demo_project/extension.cpp` 暴露三项**引擎里已经实现、JS 绑定没有**的功能：
+下面这份示例扩展暴露三项**引擎里已经实现、JS 绑定没有**的功能：
 
 | 扩展接口 | 引擎实现 | 说明 |
 | --- | --- | --- |
@@ -163,18 +163,15 @@ export function on_start() {
 }
 ```
 
-编译与运行：
+编译与运行（把上面的代码存成 `extension.cpp` 放在项目目录下）：
 
 ```bash
 # 调引擎能力 → 需要链接引擎导入库；头文件只需 <engine>/engine
-g++ -shared -O2 test/demo_project/extension.cpp -I engine -L build -lGryceCore \
-    -o test/demo_project/extension.dll
-
-# 或直接用仓库样例目标（输出到构建目录）
-cmake --build build --target GryceDemoExtension
+g++ -shared -O2 <project>/extension.cpp -I engine -L build -lGryceCore \
+    -o <project>/extension.dll
 
 # 宿主默认找 <project>/extension.dll；也可显式指定
-build/GryceApp.exe --project test/demo_project --extension build/GryceDemoExtension.dll
+build/GryceApp.exe --project <project> --extension <project>/extension.dll
 ```
 
 扩展也可以完全不链接引擎（只经虚表注册纯计算函数），ABI 允许这样做。但那种写法等于把业务逻辑搬进 C++，只在「引擎确实没有、又必须用 C++」时才考虑；能映射到引擎 C API 的需求，一律走上面的适配形态。
@@ -291,7 +288,6 @@ typedef struct GryceExtensionApi {
 | --- | --- |
 | MinGW / GCC（Linux 同构） | `g++ -shared -O2 extension.cpp -I <engine> -o extension.dll` |
 | MSVC | `cl /nologo /LD /O2 /I <engine> extension.cpp /Fe:extension.dll` |
-| 仓库样例目标 | `cmake --build build --target GryceDemoExtension` |
 
 要点：
 

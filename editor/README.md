@@ -143,6 +143,43 @@ ext 是**声明**，不是"什么东西都往这塞"。新增一项能力时按�
 
 ## 4. 跑起来
 
+`editor/` **自带一整套 CMake 工程**，两种构建方式随便挑。
+
+### 方式一：独立构建（日常迭代编辑器用这个）
+
+独立工程不经过根 `CMakeLists.txt`，改 `editor/ext/` 下的源码不必重配整个引擎。
+它需要一份**已构建好的引擎树**（要引擎的导入库），所以顺序是"先引擎、后编辑器"：
+
+```bash
+# 1. 先把引擎构建出来（一次即可，之后引擎改了再回来重建）
+cmake -S . -B build -G Ninja
+cmake --build build
+
+# 2. 单独配置并构建编辑器
+cmake -S editor -B editor/build -G Ninja
+cmake --build editor/build --target GryceEditor
+
+# 3. 启动
+editor/build/GryceEditor.exe
+```
+
+引擎树不在默认位置（`<engine-root>/build`）时显式指定：
+
+```bash
+cmake -S editor -B editor/build -G Ninja \
+    -DGRYCE_ENGINE_BUILD=D:/somewhere/else/build \
+    -DGRYCE_ENGINE_ROOT=D:/somewhere/else
+```
+
+`GRYCE_ENGINE_ROOT` 是引擎**源码**树根（提供 `engine/` 与 `third_party/` 头文件），
+`GRYCE_ENGINE_BUILD` 是引擎**构建**树（提供 `libGryceCore.dll.a` 等导入库）。
+两个默认值都指向 `editor/` 的上一级，正常布局下不用传。
+
+独立构建的产物落在 `editor/build/`，三个引擎 DLL 会自动拷到 exe 同目录，
+脱离 MSYS2 终端也能直接跑。
+
+### 方式二：接进根构建树
+
 ```bash
 # 1. 配置（首次）。编辑器默认不构建：它是开发期工具，产物不进运行时目录，
 #    也不参与门禁。要构建必须显式打开这个选项。
@@ -155,7 +192,13 @@ cmake --build build --target GryceEditor
 
 # 3. 启动（项目根已烧进二进制，无需参数）
 build/GryceEditor.exe
+```
 
+两种方式的目标名、产物内容、运行行为完全一致，只是产物落在哪个构建目录不同。
+
+### 启动参数
+
+```bash
 # 无窗口跑 N 帧做逻辑验证（CI 用这条）
 build/GryceEditor.exe --frames 60
 

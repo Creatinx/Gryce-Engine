@@ -97,7 +97,7 @@ Other common variables: `GRYCE_DEP_FETCH`, `GRYCE_DEP_PREFIX`, `GRYCE_DEP_GIT_BA
 | `GryceRenderer.dll` | Render pipeline and OpenGL / Vulkan / D3D12 backends |
 | `GrycePlatform.dll` | Window, input, cursor |
 | `GryceRenderSmoke.exe` | Renderer harness (manual runs, not a CTest case) |
-| `GryceApp.exe` | Application runtime (started with `--project <dir>`, entry `res:/main.js`, see [app-entry.md](app-entry.md)); `GryceDemoExtension.dll` next to it is the extension ABI sample (see [extension.md](extension.md)) |
+| `GryceApp.exe` | Application runtime (started with `--project <dir>`, entry `res:/main.js`, see [app-entry.md](app-entry.md)) |
 | `GryceMathTests.exe` | Math and resource-rule test host, built only with `BUILD_TESTING=ON` |
 | `GryceGC.exe` | Toolchain executable, built only with `GRYCE_BUILD_TOOLCHAIN=ON` |
 
@@ -108,6 +108,20 @@ The toolchain can also be built standalone (no Python needed):
 ```bash
 cmake -S toolchain -B toolchain/build -G Ninja
 ```
+
+The editor can be built standalone as well (it needs the engine's import libraries,
+so build the engine first):
+
+```bash
+cmake -S . -B build -G Ninja && cmake --build build   # engine tree first
+cmake -S editor -B editor/build -G Ninja                # then the editor alone
+cmake --build editor/build --target GryceEditor
+```
+
+`editor/` carries its own CMake project, structured like `toolchain/`: it can be
+configured standalone (the command above) or pulled into the root build tree via
+`GRYCE_BUILD_EDITOR=ON` (identical target names and output locations). When you
+only touch `editor/ext/`, the standalone build avoids reconfiguring the engine.
 
 ## 5. CI
 

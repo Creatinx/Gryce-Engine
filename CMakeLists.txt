@@ -96,8 +96,14 @@ endif()
 # 编辑器：editor/ 整套（GryceEditor.exe + GryceEditorExtension.dll + 项目）。
 # 默认 OFF —— 它是开发期工具，产物不进运行时目录，也不参与门禁。开启后
 # 界面走引擎**内置轨**（GRender_SetUIBackend），不依赖 ImGui 上下文。
+#
+# editor/ 自带一整套 CMake 工程，可以脱离本根工程单独配置与构建：
+#     cmake -S editor -B editor/build -G Ninja
+#     cmake --build editor/build --target GryceEditor
+# 详见 editor/CMakeLists.txt 头注释。这个选项控制的只是"是否把编辑器接进
+# 根构建树"，与独立构建互不冲突。
 # ===========================================================================
-option(GRYCE_BUILD_EDITOR "构建编辑器（GryceEditor.exe + 扩展）" OFF)
+option(GRYCE_BUILD_EDITOR "把编辑器接进根构建树（编辑器也可独立配置，见 editor/CMakeLists.txt）" OFF)
 
 # 使用 LLVM lld 链接，避免 GNU ld 处理大型对象崩溃
 find_program(LLD_LINKER ld.lld)
@@ -512,24 +518,17 @@ if(NOT EMSCRIPTEN)
 
     add_executable(GryceApp engine/app/app_main.cpp)
     target_link_libraries(GryceApp PRIVATE GryceAppHost)
-
-    # 扩展样例：把引擎已实现、脚本层未开放的 C API 包成 JS 接口，因此链接
-    # GryceCore 的导入库（只走 engine/api/*.h 的 C ABI，不碰 C++ 内部类型）。
-    # ABI 本身不要求链接引擎——只做纯 JS 桥的扩展仍可零依赖构建，但那种写法
-    # 等于把业务逻辑搬进 C++，不符合扩展的定位。
-    add_library(GryceDemoExtension SHARED test/demo_project/extension.cpp)
-    target_include_directories(GryceDemoExtension PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/engine
-    )
-    target_link_libraries(GryceDemoExtension PRIVATE GryceCore)
-    set_target_properties(GryceDemoExtension PROPERTIES
-        PREFIX "" OUTPUT_NAME "GryceDemoExtension")
 endif()
 
 # ===========================================================================
 # 编辑器（可选）：editor/ 里自带 exe + 扩展 + 项目三件套。
 # 放在 GryceAppHost 之后 —— 编辑器的 exe 复用它，不做第二套宿主逻辑。
 # 只做扩展时（改 ext/ 下的源码）也可以只 build GryceEditorExtension。
+#
+# editor/ 自带一整套 CMake 工程，可以脱离根工程单独配置
+# （cmake -S editor -B editor/build），详见 editor/CMakeLists.txt 头注释。
+# 这里的 add_subdirectory 只是把同一套定义接进根构建树：编辑器迭代时改
+# ext/ 下的源码不必重配整个引擎，根构建树里的目标名也保持一致。
 # ===========================================================================
 if(GRYCE_BUILD_EDITOR AND NOT EMSCRIPTEN)
     add_subdirectory(editor)

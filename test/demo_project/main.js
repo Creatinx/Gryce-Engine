@@ -72,16 +72,6 @@ function view_quat() {
 export function on_start() {
     engine.log.info('main.js: start');
 
-    // 原生扩展（extension.cpp）是"接口层"：把引擎已实现、脚本层还没开放的
-    // 能力包成 engine.* 接口。样例补的是 entity.toJson / entity.path /
-    // scene.pick，都是引擎 C API 里现成、JS 绑定没暴露的功能。
-    // 缺扩展时同一份脚本照常运行，所以统一按 typeof 探测。
-    const has_engine_ext = typeof engine.ext === 'object' &&
-                           typeof engine.ext.info === 'function';
-    if (has_engine_ext) {
-        engine.log.info('main.js: ' + engine.ext.info());
-    }
-
     if (!engine.window.create({ title: 'Gryce Demo', width: 1280, height: 720 })) {
         engine.log.error('main.js: window.create failed');
         return;
@@ -106,21 +96,6 @@ export function on_start() {
     position = camera.position();
 
     engine.input.set_mouse_locked(true);
-
-    // 扩展暴露的引擎能力：层级路径与子树序列化（引擎 C API 现成，JS 未开放）。
-    if (has_engine_ext && typeof engine.entity.path === 'function') {
-        engine.log.info('main.js: camera path=' + engine.entity.path(camera.id()));
-        const json = engine.entity.toJson(camera.id());
-        engine.log.info('main.js: camera json bytes=' + json.length);
-    }
-
-    // 屏幕中心拾取：命中返回实体句柄，0 表示没打到东西。
-    if (has_engine_ext && typeof engine.scene.pick === 'function') {
-        const size = engine.window.size();
-        const hit = engine.scene.pick(size[0] / 2, size[1] / 2, size[0], size[1], camera.id());
-        engine.log.info('main.js: pick center -> ' +
-                        (hit > 0 ? engine.entity.path(hit) : '(miss)'));
-    }
 
     engine.log.info('main.js: camera ready, entities=' + engine.entity.count());
 }
