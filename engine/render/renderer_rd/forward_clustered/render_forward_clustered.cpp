@@ -242,6 +242,15 @@ void RenderForwardClustered::render_scene(RenderData& data) {
     frame_index_ = data.frame_index;
     ambient_light_ = data.ambient_light;
 
+    // 相机不连续跳变标记：取走后清除（值拷贝随渲染数据传入，这里写回源）。
+    // 置位帧的 prev_view_proj_ 视为与当前帧相同，运动矢量归零。
+    camera_reset_pending_ = current_camera_.has_discontinuity();
+    if (camera_reset_pending_) {
+        current_camera_.clear_discontinuity();
+        data.camera->clear_discontinuity();
+        prev_view_proj_valid_ = false;
+    }
+
     // 确保 framebuffer 大小匹配
     if (fb_.width != viewport_width_ || fb_.height != viewport_height_) {
         _create_internal_framebuffers(viewport_width_, viewport_height_);
@@ -305,7 +314,7 @@ void RenderForwardClustered::render_scene(RenderData& data) {
     // 11. 体积雾（渲染 fog 体积并合成到场景颜色）
     if (fog_ && fog_->valid()) {
         math::Matrix4f view = current_camera_.get_view_matrix();
-        math::Matrix4f proj = current_camera_.get_projection_matrix();
+        math::Matrix4f proj = scene_projection();
         math::Matrix4f inv_vp = (proj * view).inverse();
 
         // 先渲染 fog 体积到内部纹理
@@ -340,6 +349,18 @@ void RenderForwardClustered::render_scene(RenderData& data) {
 
     // 12. 后处理
     _render_post_processing(ctx_);
+
+    // 13. 跨帧状态落盘：本帧的 unjittered view-projection 与各 Transform 的
+    // 本地矩阵，供下一帧的运动矢量 pass 使用。必须在本帧全部 pass 完成后
+    // 更新——渲染列表在帧首读的是上一帧的快照。
+    prev_view_proj_ = current_camera_.get_projection_matrix() *
+                      current_camera_.get_view_matrix();
+    prev_view_proj_valid_ = true;
+    prev_transforms_.clear();
+    prev_transforms_.reserve(captured_transforms_.size());
+    for (const auto* t : captured_transforms_) {
+        prev_transforms_.emplace(t, t->local_matrix());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +540,7 @@ void RenderForwardClustered::_render_depth_prepass(RenderContext* ctx) {
     //   1) uNormalMatrix 从未被设置（=0），法线全无效，GTAO 拿到的世界法线是垃圾；
     //   2) uMVP 残留为上一次阴影 pass 的光照矩阵，prepass 会用错误矩阵写 fb_.depth_tex。
     const math::Matrix4f view = current_camera_.get_view_matrix();
-    const math::Matrix4f view_proj = current_camera_.get_projection_matrix() * view;
+    const math::Matrix4f view_proj = scene_projection() * view;
 
     for (const auto& elem : render_lists_[RENDER_LIST_OPAQUE]) {
         uint32_t variant = elem.variant_key | SHADER_VARIANT_DEPTH_NORMAL;
@@ -550,7 +571,14 @@ void RenderForwardClustered::_render_motion_vectors(RenderContext* ctx) {
     ctx->set_blend(false);
     ctx->set_cull_face(CullMode::Back);
 
-    const math::Matrix4f view_proj = current_camera_.get_projection_matrix() * current_camera_.get_view_matrix();
+    // MV 基于 unjittered 投影计算（DLSS 约定）：抖动由几何 pass 的
+    // scene_projection() 单独施加，若这里用 jittered 投影，MV 会混入
+    // 抖动位移，时域重建会把它当成真实运动。
+    const math::Matrix4f view = current_camera_.get_view_matrix();
+    const math::Matrix4f view_proj = current_camera_.get_projection_matrix() * view;
+    // 上一帧 VP：相机跳变帧（或首帧）退化为 prev = cur，全帧 MV 归零。
+    const math::Matrix4f prev_view_proj =
+        (prev_view_proj_valid_ && !camera_reset_pending_) ? prev_view_proj_ : view_proj;
 
     for (const auto& elem : render_lists_[RENDER_LIST_MOTION]) {
         uint32_t variant = elem.variant_key | SHADER_VARIANT_MOTION_VECTORS;
@@ -559,12 +587,43 @@ void RenderForwardClustered::_render_motion_vectors(RenderContext* ctx) {
         if (!shader.is_valid()) continue;
 
         math::Matrix4f mvp = view_proj * elem.transform;
-        math::Matrix4f prev_mvp = view_proj * elem.prev_transform;
+        math::Matrix4f prev_mvp = prev_view_proj * elem.prev_transform;
         ctx->set_uniform_mat4(shader, "uModelMatrix", elem.transform);
         ctx->set_uniform_mat4(shader, "uMVP", mvp);
         ctx->set_uniform_mat4(shader, "uPrevMVP", prev_mvp);
+        // NDC → 像素的换算基准（DLSS 像素空间编码，[0,0] 在左上）
+        ctx->set_uniform_vec2(shader, "uRenderTargetSize",
+                              math::Vector2f(static_cast<float>(viewport_width_),
+                                             static_cast<float>(viewport_height_)));
         ctx->draw_mesh(elem.mesh, shader);
     }
+}
+
+math::Matrix4f RenderForwardClustered::scene_projection() const {
+    math::Matrix4f proj = current_camera_.get_projection_matrix();
+    if (!pp_params_.temporal_jitter_enabled) return proj;
+
+    float jx = 0.0f, jy = 0.0f;
+    get_frame_jitter(viewport_width_, viewport_height_, jx, jy);
+    // 像素偏移 → NDC 偏移：NDC [-1,1] 跨度对应整个视口宽/高。
+    return proj * math::Matrix4f::translate(
+        2.0f * jx / static_cast<float>(viewport_width_),
+        2.0f * jy / static_cast<float>(viewport_height_), 0.0f);
+}
+
+void RenderForwardClustered::get_frame_jitter(int render_w, int render_h,
+                                              float& jitter_x, float& jitter_y) const {
+    // Halton(2,3) 16 项低差异序列（Godot TAA 同款 8 项的扩展，4K 下
+    // 8 项的重复感明显）。返回值单位为像素，范围 (-0.5, 0.5)。
+    static const float kHalton2[16] = {
+        0.0f, 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f,
+        0.0625f, 0.5625f, 0.3125f, 0.8125f, 0.1875f, 0.6875f, 0.4375f, 0.9375f};
+    static const float kHalton3[16] = {
+        0.0f, 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f,
+        0.888889f, 0.037037f, 0.370370f, 0.703704f, 0.148148f, 0.481481f, 0.814815f, 0.259259f};
+    const int idx = static_cast<int>(frame_index_ % 16);
+    jitter_x = (kHalton2[idx] - 0.5f) / static_cast<float>(render_w);
+    jitter_y = (kHalton3[idx] - 0.5f) / static_cast<float>(render_h);
 }
 
 void RenderForwardClustered::_render_opaque_pass(RenderContext* ctx) {
@@ -575,7 +634,7 @@ void RenderForwardClustered::_render_opaque_pass(RenderContext* ctx) {
     ctx->set_cull_face(CullMode::Back);
 
     const math::Matrix4f view = current_camera_.get_view_matrix();
-    const math::Matrix4f proj = current_camera_.get_projection_matrix();
+    const math::Matrix4f proj = scene_projection();
     const math::Matrix4f view_proj = proj * view;
 
     // ---- 绑定阴影贴图纹理（全局 bind）----
@@ -754,7 +813,7 @@ void RenderForwardClustered::_render_sky(RenderContext* ctx) {
 
     // 计算逆 VP 矩阵
     math::Matrix4f view = current_camera_.get_view_matrix();
-    math::Matrix4f proj = current_camera_.get_projection_matrix();
+    math::Matrix4f proj = scene_projection();
     math::Matrix4f inv_vp = (proj * view).inverse();
 
     ctx->set_uniform_mat4(shader, "uInvViewProj", inv_vp);
@@ -794,7 +853,7 @@ void RenderForwardClustered::_render_alpha_pass(RenderContext* ctx) {
     ctx->set_cull_face(CullMode::None);
 
     const math::Matrix4f view = current_camera_.get_view_matrix();
-    const math::Matrix4f proj = current_camera_.get_projection_matrix();
+    const math::Matrix4f proj = scene_projection();
     const math::Matrix4f view_proj = proj * view;
 
     for (const auto& elem : render_lists_[RENDER_LIST_ALPHA]) {
@@ -838,7 +897,7 @@ void RenderForwardClustered::_render_decals(RenderContext* ctx) {
     ctx->set_cull_face(CullMode::None);
 
     const math::Matrix4f view = current_camera_.get_view_matrix();
-    const math::Matrix4f proj = current_camera_.get_projection_matrix();
+    const math::Matrix4f proj = scene_projection();
     const math::Matrix4f inv_vp = (proj * view).inverse();
 
     RHIShaderHandle shader = decal_shader_;
@@ -885,6 +944,11 @@ void RenderForwardClustered::_render_decals(RenderContext* ctx) {
 
 void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
     // 后处理链（与 Godot 顺序一致）
+    //
+    // DLSS SR 插桩锚点：NVIDIA 集成清单要求超分尽量靠前——插在本链的
+    // Bloom 之前（Bloom 若在低分辨率结果上提取/合成，上采样后会出现
+    // 光晕伪影）。接入点：SR 输出替换 fb_.color_tex 后继续走原链。
+    // UI 不在此链内（独立 overlay pass），天然满足"HUD 不经过超分"。
     // 0. SSS（次表面散射：深度加权可分离模糊）
     if (pp_params_.sss_enabled && subsurface_scattering_ && subsurface_scattering_->valid()) {
         subsurface_scattering_->render(ctx, fb_.color_tex, fb_.depth_tex, fb_.color_fbo,
@@ -935,8 +999,10 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
                             pp_params_.fsr2_render_width > 0 ? pp_params_.fsr2_render_width : viewport_width_,
                             pp_params_.fsr2_render_height > 0 ? pp_params_.fsr2_render_height : viewport_height_,
                             jx, jy);
+        // 曝光贴图无效时不做任何替代——把颜色纹理当曝光喂给超分会得到
+        // 无意义的结果；DLSS/FSR 类算法需要真实曝光值，缺失就该显式缺失。
         RHITextureHandle exp_tex = (exposure_tex_[current_exposure_idx_].is_valid() && auto_exposure_targets_valid_)
-            ? exposure_tex_[current_exposure_idx_] : fb_.color_tex;
+            ? exposure_tex_[current_exposure_idx_] : RHITextureHandle{};
         fsr2_->render(ctx, fb_.color_tex, fb_.depth_tex, fb_.motion_vectors_tex, exp_tex,
                       pp_params_, jx, jy);
     }
@@ -987,12 +1053,13 @@ const std::vector<RenderForwardClustered::RenderElement>& RenderForwardClustered
 
 void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
     clear_render_lists();
+    captured_transforms_.clear();
 
     // 相机视锥体：剔除视锥外物体，避免其白耗 depth prepass / 主 pass / 阴影 pass。
-    // 与不透明 pass 使用同一投影矩阵（current_camera_.get_projection_matrix()），
+    // 与不透明 pass 使用同一投影矩阵（scene_projection()，含时域抖动），
     // 保证剔除依据与实际渲染一致，不会剔掉可见物体。
     const math::Matrix4f camera_vp =
-        current_camera_.get_projection_matrix() * current_camera_.get_view_matrix();
+        scene_projection() * current_camera_.get_view_matrix();
     const CullFrustum camera_frustum = extract_cull_frustum(camera_vp);
 
     data.scene->foreach([&](scene::Entity* entity) {
@@ -1001,8 +1068,13 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
 
         // 计算世界矩阵（简化：暂用本地矩阵，父级传播后续补齐）
         math::Matrix4f world = t->local_matrix();
-        math::Matrix4f prev_world = world; // 暂用当前矩阵充当上一帧（跨帧变换存储后续补齐）
+        // 上一帧矩阵：从快照取（首帧或新出现的实体按静止处理）。
+        // 与当前帧同口径（local_matrix），保证运动矢量自洽。
+        auto prev_it = prev_transforms_.find(t);
+        math::Matrix4f prev_world =
+            (prev_it != prev_transforms_.end()) ? prev_it->second : world;
         math::Vector3f world_pos = t->position;
+        captured_transforms_.push_back(t);
 
         // 收集 MeshRenderer
         auto* mesh_renderer = entity->get_component<components::MeshRenderer>();

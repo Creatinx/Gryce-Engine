@@ -2,6 +2,12 @@
 
 // 从深度重建世界位置，计算屏幕空间运动向量
 // 输出：RG16F — (motion_x, motion_y) 在 NDC 空间
+//
+// 语义定位：这是"深度重建的相机运动代理"，只覆盖相机运动（物体自身运动
+// 不经过深度重建，天然不在输出里）。仅供 motion blur / TAA 一类把 MV 当
+// 近似量用的后处理消费；DLSS 类时域重建的输入走主路径的
+// forward_clustered/scene_motion_vectors（像素空间、含物体运动），不要
+// 把本 pass 的输出接给它们——空间约定（半 NDC）与内容（缺物体运动）都不满足。
 
 in vec2 vUV;
 layout(location = 0) out vec2 FragColor;

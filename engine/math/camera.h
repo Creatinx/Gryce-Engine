@@ -51,6 +51,16 @@ public:
     float near_plane() const { return near_; }
     float far_plane() const { return far_; }
 
+    // 位置/朝向不连续跳变标记（场景切换、传送、镜头剪切）。供运动矢量的
+    // 消费方判断"上一帧矩阵与当前帧不可比"：置位后当帧应把运动矢量视为零，
+    // 或向 DLSS 类时域重建传递 reset 标记。
+    // 注意：不在 set_position/set_yaw/set_pitch/look_at 里自动置位——场景相机
+    // 每帧都从 Transform 重建并走这些 setter（GEntity_GetCamera 的同步路径），
+    // 自动置位会让运动矢量永远失效。只有显式 mark_discontinuity 才算跳变。
+    void mark_discontinuity() { discontinuity_ = true; }
+    bool has_discontinuity() const { return discontinuity_; }
+    void clear_discontinuity() { discontinuity_ = false; }
+
 private:
     void update_vectors();
 
@@ -69,6 +79,8 @@ private:
     float move_speed_         = 5.0f;
     float sprint_multiplier_  = 2.5f;
     float mouse_sensitivity_  = 0.1f;
+
+    bool discontinuity_ = false;
 };
 
 } // namespace gryce_engine::math

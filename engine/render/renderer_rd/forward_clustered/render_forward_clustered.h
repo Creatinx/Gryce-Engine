@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "render/export.h"
@@ -23,6 +24,10 @@
 #include "render/storage_rd/decal_storage.h"
 #include "math/camera.h"
 #include "scene/entity.h"
+
+namespace gryce_engine {
+namespace components { class Transform; }
+}
 
 namespace gryce_engine::render {
 
@@ -139,6 +144,18 @@ private:
     // 创建内部 framebuffer
     bool _create_internal_framebuffers(int width, int height);
 
+    // 场景几何 pass 统一使用的投影矩阵：temporal_jitter_enabled 时叠加
+    // Halton 亚像素抖动（NDC 偏移），关闭时与相机投影矩阵完全一致。
+    // 深度 prepass / 不透明 / 透明 / 天空 / 贴花 / 体积雾 / 运动向量之外
+    // 的消费方（从深度反投影的 inv_vp）都必须取同一份，避免与几何错位。
+    // 运动向量 pass 是唯一例外：DLSS 约定 MV 基于 unjittered 投影计算。
+    math::Matrix4f scene_projection() const;
+
+    // Halton(2,3) 16 项亚像素抖动，单位为像素（渲染分辨率）。供
+    // scene_projection() 与 DLSS 类时域重建共用，保证抖动与 MV 一致。
+    void get_frame_jitter(int render_w, int render_h,
+                          float& jitter_x, float& jitter_y) const;
+
     RenderContext* ctx_ = nullptr;
     bool initialized_ = false;
 
@@ -189,6 +206,22 @@ private:
     float delta_time_ = 0.0f;
     uint32_t frame_index_ = 0;
     math::Vector3f ambient_light_ = math::Vector3f(0.15f, 0.15f, 0.15f);
+
+    // --- 跨帧状态（运动矢量 / 时域重建的地基，均在渲染线程私有） ---
+    // 上一帧的 view-projection（unjittered）。DLSS 约定 MV 基于 unjittered
+    // 投影计算；相机跳变（has_discontinuity）时当帧 prev = cur，MV 归零。
+    math::Matrix4f prev_view_proj_;
+    bool prev_view_proj_valid_ = false;
+    // 本帧相机是否发生不连续跳变（由 math::Camera 的标记随值拷贝传入）。
+    bool camera_reset_pending_ = false;
+    // 上一帧的 Transform 本地矩阵快照（键为 Transform 指针）。渲染线程
+    // 私有：渲染线程读、渲染线程写，不与主线程的 Transform 修改竞争。
+    // 实体销毁后残留条目在下一帧查不到，自然按静止处理。
+    // 注意：与当前帧同样使用 local_matrix 口径（父级世界矩阵传播未接入，
+    // 两者同口径保证运动矢量自洽），父级运动产生的 MV 缺失在传播接入后补齐。
+    std::unordered_map<const components::Transform*, math::Matrix4f> prev_transforms_;
+    // 本帧实际参与渲染的 Transform（帧末据此写 prev_transforms_ 快照）。
+    std::vector<const components::Transform*> captured_transforms_;
 
     // 后处理参数
     PostProcessParams pp_params_;

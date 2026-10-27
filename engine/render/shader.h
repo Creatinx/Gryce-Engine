@@ -164,6 +164,12 @@ struct PostProcessParams {
     int fsr2_render_width = 0;
     int fsr2_render_height = 0;
 
+    // 时域亚像素抖动（Halton 序列，作用于场景几何 pass 的投影矩阵）。
+    // 供 TAA / DLSS 类时域重建使用；默认关闭，不改变既有画面。
+    // 抖动值由 RenderForwardClustered::get_frame_jitter 统一产出，
+    // 场景几何 pass 经 scene_projection() 消费，保证全 pass 用同一份抖动。
+    int temporal_jitter_enabled = 0;
+
     // SSS（次表面散射，默认关闭）
     int sss_enabled = 0;
     float sss_strength = 1.0f;
