@@ -267,7 +267,8 @@ bool VulkanDevice::pick_physical_device(VkInstance instance, VkSurfaceKHR surfac
             graphics_family_ = graphics;
             present_family_ = present;
 
-            // 检查 VK_EXT_extended_dynamic_state 支持
+            // 检查设备扩展支持：extended_dynamic_state + 光追三件套
+            // （acceleration_structure / ray_query / deferred_host_operations）。
             uint32_t ext_count = 0;
             vkEnumerateDeviceExtensionProperties(device, nullptr, &ext_count, nullptr);
             std::vector<VkExtensionProperties> exts(ext_count);
@@ -275,7 +276,13 @@ bool VulkanDevice::pick_physical_device(VkInstance instance, VkSurfaceKHR surfac
             for (const auto& ext : exts) {
                 if (std::strcmp(ext.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME) == 0) {
                     supports_extended_dynamic_state_ = true;
-                    break;
+                } else if (std::strcmp(ext.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0) {
+                    supports_acceleration_structure_ = true;
+                } else if (std::strcmp(ext.extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME) == 0) {
+                    supports_ray_query_ = true;
+                } else if (std::strcmp(ext.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) {
+                    // deferred_host_operations 是 AS 构建的依赖，单独记一下，
+                    // 真正启用与否由 create_logical_device 的特性查询决定。
                 }
             }
 
@@ -284,9 +291,10 @@ bool VulkanDevice::pick_physical_device(VkInstance instance, VkSurfaceKHR surfac
             max_sampler_anisotropy_ = props.limits.maxSamplerAnisotropy;
             supports_anisotropy_ = max_sampler_anisotropy_ > 1.0f;
             max_push_constants_size_ = props.limits.maxPushConstantsSize;
-            GLOG_INFO("VulkanDevice selected GPU: {} (extended_dynamic_state={}, anisotropy={}, max_push_constants={})",
+            GLOG_INFO("VulkanDevice selected GPU: {} (extended_dynamic_state={}, anisotropy={}, max_push_constants={}, as_ext={}, rq_ext={})",
                       props.deviceName, supports_extended_dynamic_state_, supports_anisotropy_,
-                      max_push_constants_size_);
+                      max_push_constants_size_, supports_acceleration_structure_,
+                      supports_ray_query_);
             return true;
         }
     }
@@ -317,12 +325,29 @@ bool VulkanDevice::create_logical_device() {
 
     std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-    // Query descriptor indexing support (Vulkan 1.2).
+    // 特性探测（Vulkan 1.2）：descriptor indexing + buffer device address（1.2 核心）
+    // + 光追（acceleration structure / ray query，KHR 扩展）。所有节点都挂进探测链，
+    // vkGetPhysicalDeviceFeatures2 一次性回填，再按结果决定是否启用。
     VkPhysicalDeviceDescriptorIndexingFeatures indexing_features{};
     indexing_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+
+    VkPhysicalDeviceBufferDeviceAddressFeatures bda_features{};
+    bda_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features{};
+    as_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+
+    VkPhysicalDeviceRayQueryFeaturesKHR rq_features{};
+    rq_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+
+    bda_features.pNext = &as_features;
+    as_features.pNext = &rq_features;
+    rq_features.pNext = &indexing_features;
+    indexing_features.pNext = nullptr;
+
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features2.pNext = &indexing_features;
+    features2.pNext = &bda_features;
     vkGetPhysicalDeviceFeatures2(physical_device_, &features2);
 
     bool supports_descriptor_indexing =
@@ -339,6 +364,24 @@ bool VulkanDevice::create_logical_device() {
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT dynamic_state_features{};
     dynamic_state_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
 
+    // 光追可用条件：AS + ray query 扩展存在，且设备特性位为真。buffer device
+    // address 在 1.2 为内核特性（bda_features），AS / ray query 为 KHR 扩展。
+    bool rt_supported = supports_acceleration_structure_ && supports_ray_query_ &&
+                        as_features.accelerationStructure == VK_TRUE &&
+                        rq_features.rayQuery == VK_TRUE;
+    if (rt_supported) {
+        device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        bda_features.bufferDeviceAddress = VK_TRUE;
+        as_features.accelerationStructure = VK_TRUE;
+        rq_features.rayQuery = VK_TRUE;
+        supports_ray_tracing_ = true;
+        GLOG_INFO("VulkanDevice: ray tracing (AS + ray query) enabled");
+    } else if (supports_acceleration_structure_ || supports_ray_query_) {
+        GLOG_INFO("VulkanDevice: RT extensions present but features unsupported; ray tracing disabled");
+    }
+
     if (supports_extended_dynamic_state_) {
         device_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
     }
@@ -351,16 +394,30 @@ bool VulkanDevice::create_logical_device() {
     create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
     create_info.ppEnabledExtensionNames = device_extensions.data();
 
-    if (supports_descriptor_indexing) {
-        create_info.pNext = &indexing_features;
-        indexing_features.pNext = supports_extended_dynamic_state_ ? &dynamic_state_features : nullptr;
-    } else if (supports_extended_dynamic_state_) {
-        create_info.pNext = &dynamic_state_features;
-    }
-
+    // 组装设备特性 pNext 链：仅挂"启用"的节点，避免驱动解析未启用扩展的 pNext。
+    // 特性结构体在链中的顺序无关紧要，逐个尾接即可。
     if (supports_extended_dynamic_state_) {
         dynamic_state_features.extendedDynamicState = VK_TRUE;
     }
+    VkBaseOutStructure* chain_head = nullptr;
+    auto link = [&](VkBaseOutStructure* node) {
+        node->pNext = nullptr;
+        if (!chain_head) {
+            chain_head = node;
+        } else {
+            VkBaseOutStructure* tail = chain_head;
+            while (tail->pNext) tail = tail->pNext;
+            tail->pNext = node;
+        }
+    };
+    if (supports_descriptor_indexing) link(reinterpret_cast<VkBaseOutStructure*>(&indexing_features));
+    if (supports_extended_dynamic_state_) link(reinterpret_cast<VkBaseOutStructure*>(&dynamic_state_features));
+    if (rt_supported) {
+        link(reinterpret_cast<VkBaseOutStructure*>(&bda_features));
+        link(reinterpret_cast<VkBaseOutStructure*>(&as_features));
+        link(reinterpret_cast<VkBaseOutStructure*>(&rq_features));
+    }
+    create_info.pNext = chain_head;
 
     if (vkCreateDevice(physical_device_, &create_info, nullptr, &device_) != VK_SUCCESS) {
         GLOG_ERROR("VulkanDevice: failed to create logical device");

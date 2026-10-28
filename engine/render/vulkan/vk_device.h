@@ -30,6 +30,10 @@ public:
     // 是否支持 VK_EXT_extended_dynamic_state
     bool supports_extended_dynamic_state() const { return supports_extended_dynamic_state_; }
 
+    // 硬件光追能力：acceleration_structure / ray_query 同时可用时才为真。
+    // 仅用于决定上层是否走 RT 反射（否则回退 SSR）。
+    bool supports_ray_tracing() const { return supports_ray_tracing_; }
+
     // 最大各向异性过滤倍数；若不支持则返回 0
     float max_sampler_anisotropy() const { return max_sampler_anisotropy_; }
 
@@ -56,6 +60,11 @@ private:
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
     bool supports_extended_dynamic_state_ = false;
+    // 硬件光追：acceleration_structure / ray_query / deferred_host_operations
+    // 三项扩展 + 对应特性同时可用时 supports_ray_tracing_ 才为真。
+    bool supports_acceleration_structure_ = false;
+    bool supports_ray_query_ = false;
+    bool supports_ray_tracing_ = false;
     bool supports_anisotropy_ = false;
     float max_sampler_anisotropy_ = 0.0f;
     // allocator_ 保持在类布局末尾（历史位置），避免 ABI 偏移变化导致

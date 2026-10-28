@@ -53,6 +53,11 @@ struct RenderBackendCapabilities {
     //   Vulkan / D3D12 允许颜色多样本 + 深度单样本混合 → false（深度直接
     //   共用单样本附件，省一份多样本深度显存，也无需深度 resolve）。
     bool msaa_depth_must_match_samples = false;
+
+    // 硬件光追（Vulkan ray query / D3D12 DXR）：仅 Vulkan 后端在设备支持
+    // VK_KHR_acceleration_structure + VK_KHR_ray_query 时为真；GL/WebGL/D3D12
+    // 一律为假。上层据此决定是否走 RT 反射、否则回退 SSR。
+    bool supports_ray_tracing = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -137,6 +142,11 @@ public:
     // 逐步在 OpenGL / Vulkan 后端实现后即可支撑 GPU 剔除（遮挡剔除）与
     // vkCmdDrawIndexedIndirect / glDrawElementsIndirect 的间接提交。
     virtual bool supports_compute_shaders() const { return false; }
+
+    // 硬件光追能力查询：默认关闭（GL/WebGL/D3D12 走默认）。Vulkan 后端在
+    // 设备支持 VK_KHR_acceleration_structure + VK_KHR_ray_query 时覆盖为真。
+    // 上层据此选择 RT 反射（可用时优先）或回退 SSR（屏幕空间反射）。
+    virtual bool supports_ray_tracing() const { return false; }
 
     // 创建计算管线：加载并编译 {shader_dir}/{name}.comp。
     // 不支持时返回无效句柄（is_valid() == false），调用方必须据此回退到 CPU 路径。
