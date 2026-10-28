@@ -985,9 +985,22 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
     // 注意：此时自动曝光尚未计算（见 step 6），exposure 暂以无效句柄传入；真实接入时
     // 需把曝光计算前移或复用上一帧曝光，否则 DLSS 拿不到正确曝光值。
     if (pp_params_.dlss_enabled) {
+        float jnx = 0.0f, jny = 0.0f;
+        get_frame_jitter(viewport_width_, viewport_height_, jnx, jny);
+        DLSSFrameInputs f{};
+        // 当前/上一帧的 view*proj 必须是不含 jitter 的基矩阵（jitter 单独给 SL）。
+        f.current_view_proj = current_camera_.get_projection_matrix() * current_camera_.get_view_matrix();
+        f.prev_view_proj = prev_view_proj_;
+        f.camera_pos = current_camera_.position();
+        // jitter 与几何 pass 同口径（get_frame_jitter 返回的值与 scene_projection
+        // 使用的抖动一致），保证 DLSS 重建时相机位移与几何对齐。
+        f.jitter_x_px = jnx;
+        f.jitter_y_px = jny;
+        // TODO: 接相机跳变检测（renderer 需感知场景切换/切镜），当前恒 false。
+        f.camera_reset = false;
         fb_.color_tex = StreamlineInterface::instance().dlss_sr_render(
             ctx, fb_.color_tex, fb_.depth_tex, fb_.motion_vectors_tex,
-            RHITextureHandle{}, pp_params_, viewport_width_, viewport_height_);
+            RHITextureHandle{}, pp_params_, f, viewport_width_, viewport_height_);
     }
 
     // 4. Bloom（阈值提取 → 降采样 → 上采样合成）
