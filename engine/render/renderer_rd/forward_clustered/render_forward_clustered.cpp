@@ -8,6 +8,7 @@
 #include "render/material.h"
 #include "render/buffer.h"
 #include "render/storage_rd/light_storage.h"
+#include "render/streamline/sl_interface.h"
 #include "scene/scene.h"
 #include "scene/entity.h"
 #include "components/transform.h"
@@ -945,10 +946,8 @@ void RenderForwardClustered::_render_decals(RenderContext* ctx) {
 void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
     // 后处理链（与 Godot 顺序一致）
     //
-    // DLSS SR 插桩锚点：NVIDIA 集成清单要求超分尽量靠前——插在本链的
-    // Bloom 之前（Bloom 若在低分辨率结果上提取/合成，上采样后会出现
-    // 光晕伪影）。接入点：SR 输出替换 fb_.color_tex 后继续走原链。
-    // UI 不在此链内（独立 overlay pass），天然满足"HUD 不经过超分"。
+    // UI 不在此链内（独立 overlay pass），天然满足 DLSS 集成清单的
+    // "HUD 不经过超分" 要求。
     // 0. SSS（次表面散射：深度加权可分离模糊）
     if (pp_params_.sss_enabled && subsurface_scattering_ && subsurface_scattering_->valid()) {
         subsurface_scattering_->render(ctx, fb_.color_tex, fb_.depth_tex, fb_.color_fbo,
@@ -978,6 +977,17 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
                       current_camera_.aspect(),
                       1.0f, 0.6f, 8,   // 强度 / 半径 / 步数（RD 路径用默认值）
                       viewport_width_, viewport_height_);
+    }
+
+    // 3.5 DLSS 超分辨率（NVIDIA）：插在 Bloom 之前（NVIDIA 集成清单要求超分尽量靠前；
+    // Bloom 若在低分辨率结果上提取/合成，上采样后会出现光晕伪影）。未启用 / 未就绪
+    // （无 SDK 或非 D3D12）时 dlss_sr_render 原样返回 color_tex，本链无变化。
+    // 注意：此时自动曝光尚未计算（见 step 6），exposure 暂以无效句柄传入；真实接入时
+    // 需把曝光计算前移或复用上一帧曝光，否则 DLSS 拿不到正确曝光值。
+    if (pp_params_.dlss_enabled) {
+        fb_.color_tex = StreamlineInterface::instance().dlss_sr_render(
+            ctx, fb_.color_tex, fb_.depth_tex, fb_.motion_vectors_tex,
+            RHITextureHandle{}, pp_params_, viewport_width_, viewport_height_);
     }
 
     // 4. Bloom（阈值提取 → 降采样 → 上采样合成）

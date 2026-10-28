@@ -454,6 +454,50 @@ if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # ---------------------------------------------------------------------------
+# NVIDIA Streamline（DLSS 超分 / 帧生成 / Reflex 低延迟）
+#
+# 集成范式：Streamline 2.x 是单例式 C API（slInit / slEvaluateFeature 等），
+# 由本引擎的 sl_interface 包装层统一调用。二进制 SDK（sl.common / sl.interposer /
+# nvngx_dlss 等 .dll）不入库（SL 2.7.32 起需从 NVIDIA Releases 下载），故采用
+# "路径探测 + 编译期宏" 的写法，与 GRYCE_HAS_VULKAN / GRYCE_HAS_D3D12 同一套：
+#   * 默认 GRYCE_ENABLE_STREAMLINE=OFF，全树零侵入、构建不受影响；
+#   * 开启后，仅在 D3D12 后端存在（GRYCE_HAS_D3D12）时才尝试探测 SDK；
+#   * 探测到 include 目录时设 GRYCE_HAS_STREAMLINE=TRUE 并加入 include；
+#     否则 STATUS 警告并静默关闭，配置不失败。
+# DLSS 官方只支持 D3D11/12（Vulkan 支持未就绪），所以 Streamline 路径只挂在
+# D3D12 后端。sl_interface.cpp 本身 SDK 无关（无 SDK 时全是 no-op），始终编入。
+# ---------------------------------------------------------------------------
+option(GRYCE_ENABLE_STREAMLINE "启用 NVIDIA Streamline（DLSS/Reflex）集成" OFF)
+set(GRYCE_HAS_STREAMLINE FALSE)
+if(GRYCE_ENABLE_STREAMLINE)
+    if(NOT GRYCE_HAS_D3D12)
+        message(STATUS "Gryce: Streamline requested but D3D12 backend disabled; Streamline disabled (DLSS requires D3D11/12)")
+    else()
+        # SDK 探测：允许通过 -DSTREAMLINE_SDK_DIR=<path> 显式指定，否则回退
+        # third_party/streamline。两者都没有时静默关闭。
+        set(_gryce_sl_dir "${STREAMLINE_SDK_DIR}")
+        if(NOT _gryce_sl_dir)
+            set(_gryce_sl_dir "${CMAKE_SOURCE_DIR}/third_party/streamline")
+        endif()
+        if(EXISTS "${_gryce_sl_dir}/include")
+            set(GRYCE_HAS_STREAMLINE TRUE)
+            target_include_directories(GryceRenderer PRIVATE "${_gryce_sl_dir}/include")
+            # 真实 SDK 的链接在 SDK 就位后补：sl.common / sl.interposer / nvngx_dlss
+            # 等 .dll 的导入库（.lib）。当前 stub 阶段不链，避免缺库配置失败。
+            message(STATUS "Gryce: Streamline enabled (SDK at ${_gryce_sl_dir})")
+        else()
+            message(STATUS "Gryce: Streamline requested but SDK not found at ${_gryce_sl_dir}; disabled (download from NVIDIA Streamline Releases)")
+        endif()
+    endif()
+endif()
+if(GRYCE_HAS_STREAMLINE)
+    target_compile_definitions(GryceRenderer PUBLIC GRYCE_HAS_STREAMLINE)
+endif()
+
+# sl_interface 是 SDK 无关的包装层（无 SDK 时 no-op），始终编入 GryceRenderer。
+target_sources(GryceRenderer PRIVATE render/streamline/sl_interface.cpp)
+
+# ---------------------------------------------------------------------------
 # GLSL → SPIR-V 编译单元（render/glsl_compiler.cpp，shaderc 运行时动态加载）
 #
 # 该文件自身不依赖任何后端头文件，但 Vulkan 的 vk_spirv_cache 与 D3D12 的

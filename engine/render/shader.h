@@ -164,6 +164,17 @@ struct PostProcessParams {
     int fsr2_render_width = 0;
     int fsr2_render_height = 0;
 
+    // DLSS 超分辨率（NVIDIA，默认关闭）。仅在 D3D12 + Streamline 接入且 SDK 就绪时
+    // 生效；未就绪时后处理链静默跳过，画面与现状零差异。dlss_render_width/height
+    // 为引擎实际渲染分辨率（上采样目标为 viewport 分辨率），0 表示沿用 viewport。
+    int dlss_enabled = 0;
+    int dlss_render_width = 0;
+    int dlss_render_height = 0;
+
+    // NVIDIA Reflex 低延迟（默认关闭）。需在 D3D12 present 前后插钩子，当前为
+    // 管线级开关占位，真实接线在 D3D12 后端 present 路径（见执行计划 P1.2）。
+    int reflex_enabled = 0;
+
     // 时域亚像素抖动（Halton 序列，作用于场景几何 pass 的投影矩阵）。
     // 供 TAA / DLSS 类时域重建使用；默认关闭，不改变既有画面。
     // 抖动值由 RenderForwardClustered::get_frame_jitter 统一产出，
