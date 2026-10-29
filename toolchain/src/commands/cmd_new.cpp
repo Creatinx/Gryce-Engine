@@ -187,7 +187,6 @@ std::string make_project_data(const std::string& name, int width, int height,
     s += "  \"name\": \"" + n + "\",\n";
     s += "  \"version\": \"0.1.0\",\n";
     s += "  \"engine_version\": \">=0.1.0\",\n";
-    s += "  \"entry_scene\": \"res:/scenes/main.gesc\",\n";
     s += "  \"main_scene\": \"res:/scenes/main.gesc\",\n";
     s += "  \"window\": { \"width\": " + std::to_string(width) + ", \"height\": " +
          std::to_string(height) + ", \"title\": \"" + n + "\" },\n";
@@ -403,7 +402,9 @@ export function on_start() {
         return;
     }
 
-    if (!engine.scene.load('res:/scenes/main.gesc')) {
+    // 不传参数 = 载入 project.data 的 main_scene。场景路径只有配置那一处，
+    // 换场景改 project.data 即可，不要在脚本里写死。
+    if (!engine.scene.load()) {
         engine.log.error('main.js: scene load failed');
         return;
     }

@@ -294,6 +294,14 @@ GRYCE_RENDERER_API bool  GRender_IsHDR(void);
 // framebufferColorSampleCounts / D3D12 CheckFeatureSupport），创建失败自动降级。
 GRYCE_RENDERER_API void  GRender_SetMSAASamples(int samples);
 GRYCE_RENDERER_API int   GRender_GetMSAASamples(void);
+// TAA（时域抗锯齿：抖动采样 + 历史帧 + 邻域钳制）。MSAA 只能抗几何轮廓，
+// 反射、后处理、高光细节这类"每个像素各算各的"高频信号它管不到，要靠时域
+// 累积。默认关闭；开启后画面细节会略微变软，属于时域累积的正常代价。
+GRYCE_RENDERER_API void  GRender_SetTAAEnabled(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsTAAEnabled(void);
+// 历史帧权重（0~0.95）：越大越稳但运动拖影越明显，默认 0.85。
+GRYCE_RENDERER_API void  GRender_SetTAAWeight(float weight);
+GRYCE_RENDERER_API float GRender_GetTAAWeight(void);
 GRYCE_RENDERER_API void  GRender_SetToneMapMode(int mode);   // 0=None, 1=Reinhard, 2=ACES
 GRYCE_RENDERER_API int   GRender_GetToneMapMode(void);
 GRYCE_RENDERER_API void  GRender_SetExposure(float exposure);

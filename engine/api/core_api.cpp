@@ -22,6 +22,7 @@
 #include "components/mesh_renderer.h"
 #include "script/script_component.h"
 #include "resources/project.h"
+#include "resources/project_data.h"
 #include "resources/pak_bundle.h"
 #include "resources/gpack_bundle.h"
 #include "utils/glog/glog_lib.h"
@@ -50,10 +51,9 @@ void load_pak_crypto_key(const std::string& root) {
     if (root.empty()) return;
     try {
         // 解密密钥现在与项目配置合并于根目录唯一的 project.data（JSON）中。
-        std::ifstream in(root + "/project.data");
-        if (!in) return;
-        nlohmann::json j;
-        in >> j;
+        const resources::ProjectDataResult pd = resources::read_project_data(root);
+        if (!pd.ok) return;   // 语法错误已由 load_project_settings 统一报错
+        const nlohmann::json& j = pd.data;
         if (!j.contains("enc_key_hex") || !j["enc_key_hex"].is_string()) return;
         const std::string hex = j["enc_key_hex"].get<std::string>();
         if (hex.size() != 64) return;
@@ -107,17 +107,42 @@ void mount_project_bundles(const std::string& root) {
 void load_project_settings(const std::string& root) {
     if (root.empty()) return;
     try {
-        std::ifstream in(root + "/project.data");
-        if (!in) return;
-        nlohmann::json j;
-        in >> j;
+        const resources::ProjectDataResult pd = resources::read_project_data(root);
+        if (!pd.found) return;
+        if (!pd.ok) {
+            // 整份配置读不进来时，启动场景与所有运行设置都会退回默认值 ——
+            // 这种"改了没效果"的现场极难自查，必须用 ERROR 而不是 WARN。
+            GLOG_ERROR("GCore: project.data 解析失败，本次运行全部使用默认值：{}",
+                       pd.error);
+            return;
+        }
+        if (!pd.tolerant_note.empty()) GLOG_WARN("GCore: {}", pd.tolerant_note);
+        const nlohmann::json& j = pd.data;
+        // 启动场景只有一个键：main_scene。
+        // entry_scene 是历史遗留的重复键（早期模板同时写了两个，两个键语义
+        // 完全一样，改 entry_scene 不会有任何效果）。这里保留读取只为兼容老
+        // 项目，并明确告警，避免继续被误解成"另一个入口"。
+        bool from_legacy_key = false;
+        std::string scene_path;
         if (j.contains("main_scene") && j["main_scene"].is_string()) {
-            Project::instance().set_main_scene(j["main_scene"].get<std::string>());
-            GLOG_INFO("GCore: main scene set to '{}'",
-                      Project::instance().main_scene());
+            scene_path = j["main_scene"].get<std::string>();
+        } else if (j.contains("entry_scene") && j["entry_scene"].is_string()) {
+            scene_path = j["entry_scene"].get<std::string>();
+            from_legacy_key = true;
+        }
+        if (!scene_path.empty()) {
+            Project::instance().set_main_scene(scene_path);
+            if (from_legacy_key) {
+                GLOG_WARN("GCore: project.data 里的 'entry_scene' 已废弃，请改名为 "
+                          "'main_scene'（当前按兼容规则读入 '{}'）",
+                          Project::instance().main_scene());
+            } else {
+                GLOG_INFO("GCore: main scene set to '{}'",
+                          Project::instance().main_scene());
+            }
         }
     } catch (const std::exception& e) {
-        GLOG_WARN("GCore: failed to read project.data ({})", e.what());
+        GLOG_ERROR("GCore: project.data 读取异常：{}", e.what());
     }
 }
 

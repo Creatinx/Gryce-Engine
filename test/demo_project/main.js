@@ -10,10 +10,13 @@
 //   on_destroy()      进程退出前一次
 //
 // 操作：鼠标转视角（窗口有焦点时锁定指针），WASD 移动，空格/左Ctrl 升降，
-//       Shift 加速，Esc 退出。
+//       Shift 加速，Esc 退出；R 切换硬件光追反射，T 切换 SSR（Vulkan 下可对比）。
+//
+// 场景从 project.data 的 main_scene 读，脚本里不写死路径：同一个入口既跑普通
+// 演示场景也跑 rt_showcase，换场景只改配置。一个项目只应有一个入口脚本。
 
 const KEY = {
-    SPACE: 32, A: 65, D: 68, E: 69, Q: 81, S: 83, W: 87,
+    SPACE: 32, A: 65, D: 68, E: 69, Q: 81, S: 83, W: 87, R: 82, T: 84,
     ESC: 256, LEFT_SHIFT: 340, LEFT_CONTROL: 341,
 };
 
@@ -21,6 +24,8 @@ const DEG2RAD = Math.PI / 180.0;
 const RAD2DEG = 180.0 / Math.PI;
 
 let camera = null;
+let rt_toggle_prev = false;
+let ssr_toggle_prev = false;
 let yaw = 0.0;
 let pitch = 0.0;
 let position = [0, 0, 0];
@@ -69,6 +74,11 @@ function view_quat() {
     return qmul(qy, qp);
 }
 
+function log_render_state() {
+    engine.log.info('reflection: RT=' + (engine.render.is_rt_reflection() ? 'ON' : 'off') +
+                    '  SSR=' + (engine.render.is_ssr() ? 'ON' : 'off'));
+}
+
 export function on_start() {
     engine.log.info('main.js: start');
 
@@ -77,7 +87,8 @@ export function on_start() {
         return;
     }
 
-    if (!engine.scene.load('res:/scenes/main.gesc')) {
+    // 不传参 = 载入 project.data 的 main_scene；改配置就换场景。
+    if (!engine.scene.load()) {
         engine.log.error('main.js: scene load failed');
         return;
     }
@@ -98,6 +109,7 @@ export function on_start() {
     engine.input.set_mouse_locked(true);
 
     engine.log.info('main.js: camera ready, entities=' + engine.entity.count());
+    log_render_state();
 }
 
 export function on_update(dt) {
@@ -107,6 +119,21 @@ export function on_update(dt) {
         engine.app.quit();
         return;
     }
+
+    // engine.input 只有电平接口（key_down），用上一帧状态做边沿检测。
+    const rt_now = engine.input.key_down(KEY.R);
+    if (rt_now && !rt_toggle_prev) {
+        engine.render.set_rt_reflection(!engine.render.is_rt_reflection());
+        log_render_state();
+    }
+    rt_toggle_prev = rt_now;
+
+    const ssr_now = engine.input.key_down(KEY.T);
+    if (ssr_now && !ssr_toggle_prev) {
+        engine.render.set_ssr(!engine.render.is_ssr());
+        log_render_state();
+    }
+    ssr_toggle_prev = ssr_now;
 
     // 只在指针锁定时转视角；解锁时保持朝向（和 Alt-Tab 切回来的体验一致）
     if (engine.input.mouse_locked()) {

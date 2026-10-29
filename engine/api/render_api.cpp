@@ -189,6 +189,9 @@ struct RendererState {
     bool  gpu_culling_enabled = true;   // 调试 UI 勾选框状态（与管线保持同步）
     // MSAA 采样数（前向 HDR pass；1 = 关闭）。init 前下发即生效。
     int   msaa_samples = 4;
+    // TAA（时域抗锯齿）。MSAA 抗不到的（反射/后处理/高光）靠它累积。
+    bool  taa_enabled = false;
+    float taa_weight = 0.85f;
     bool  ssil_enabled = false;
     // Scene View 网格线：编辑器辅助显示，默认关闭，由编辑器显式开启。
     bool  grid_enabled = false;
@@ -1117,6 +1120,8 @@ static void apply_screen_space_settings(RenderPipeline* pipeline) {
     pipeline->set_ssil_enabled(g_renderer.ssil_enabled);
     pipeline->set_rt_reflection_enabled(g_renderer.rt_reflection_enabled);
     pipeline->set_rt_reflection_denoise(g_renderer.rt_reflection_denoise);
+    pipeline->set_taa_enabled(g_renderer.taa_enabled);
+    pipeline->set_taa_weight(g_renderer.taa_weight);
     pipeline->set_grid_enabled(g_renderer.grid_enabled);
     pipeline->set_ssr_quality(g_renderer.ssr_max_steps, g_renderer.ssr_max_roughness,
                               g_renderer.ssr_thickness, g_renderer.ssr_bilateral);
@@ -2049,6 +2054,28 @@ int GRender_GetMSAASamples(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.pipeline ? g_renderer.pipeline->msaa_samples() : g_renderer.msaa_samples;
+}
+void GRender_SetTAAEnabled(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.taa_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_taa_enabled(enabled);
+}
+bool GRender_IsTAAEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.pipeline ? g_renderer.pipeline->taa_enabled() : g_renderer.taa_enabled;
+}
+void GRender_SetTAAWeight(float weight) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.taa_weight = weight;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_taa_weight(weight);
+}
+float GRender_GetTAAWeight(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.taa_weight;
 }
 void GRender_SetToneMapMode(int mode) {
     GRYCE_API_GUARD();

@@ -59,6 +59,7 @@ target_sources(GryceCore
         utils/crypto/chacha20.cpp
         utils/crypto/random.cpp
         resources/project.cpp
+        resources/project_data.cpp
         resources/resource_path.cpp
         resources/gpack_bundle.cpp
         resources/pak_bundle.cpp

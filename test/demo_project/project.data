@@ -2,7 +2,6 @@
   "name": "GryceDemo",
   "version": "0.1.0",
   "engine_version": ">=0.1.0",
-  "entry_scene": "res:/scenes/main.gesc",
   "window": {
     "width": 1920,
     "height": 1080,
@@ -18,7 +17,7 @@
   "ambient_g": 0.22,
   "ambient_b": 0.26,
   "ibl_intensity": 0.6,
-  "_comment_ibl_intensity": "摄影测量资产：albedo 贴图里已经烘进了天空/太阳光，实时 IBL 再按 1.0 叠满会二次照明 -> 对比度掉一半、颜色发灰、看着像金属。0.6 是这台模型上不双计的折中值。",
+
   "default_environment": true,
   "ssao_enabled": true,
   "ssr_enabled": true,
@@ -28,17 +27,21 @@
   "ssr_max_steps": 96,
   "pcss_enabled": true,
   "pcss_light_size": 0.3,
-  "_comment_pcss_light_size": "0.3 时半影恒被 PCF 半径夹住 -> 引擎自动退回 PCF（画面与 PCSS 完全一致，省 16 次 blocker 采样）。要看真正的接触硬化阴影，把这里提到 10~100，并确认 pcss_enabled=true。",
+
   "pcss_max_radius": 8.0,
   "pcss_blocker_scale": 0.5,
-  "_comment_ssr_max_roughness": "城市模型的石材材质 roughness=0.8586（文件里的 roughnessFactor），高于这个阈值就不做屏幕空间反射 —— 粗糙石墙去跑 SSR 只会平白涂一层天空色高光，正是它被看成金属的主要原因之一。",
+
   "ssr_max_roughness": 0.6,
   "ssr_thickness": 0.01,
   "ssr_bilateral_filter": 0.5,
   "ssr_env_fallback": 1.0,
   "ssr_resolution_scale": 0.5,
-  "main_scene": "res:/scenes/main.gesc",
+  "main_scene": "res:/scenes/rt_showcase.gesc",
   "rt_reflection_denoise": true,
-  "super_resolution": "temporal",
-  "_comment_super_resolution": "画面重建模式：off 原生 / temporal 引擎内置时域重建 / dlss 需要 Streamline+NGX 运行时（缺失自动降级为 temporal）。"
+  "msaa_samples": 4,
+  "_comment_antialiasing": "MSAA 只抗几何轮廓；反射边缘与高光细节靠 TAA 时域累积。taa_enabled 打开后细节略软，快速运动物体可能有轻微拖影。",
+  "taa_enabled": false,
+  "taa_weight": 0.85,
+  "super_resolution": "temporal"
+
 }

@@ -337,11 +337,21 @@ JSValue js_entity_destroy(JSContext* ctx, JSValueConst, int argc, JSValueConst* 
 // ---------------------------------------------------------------------------
 // engine.scene.*
 // ---------------------------------------------------------------------------
+// engine.scene.load([path])
+//   不传参 = 载入 project.data 的 main_scene（启动场景的唯一真源）；
+//   传参   = 载入指定场景。脚本不要再写死场景路径，否则改配置等于没改。
 JSValue js_scene_load(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
-    if (argc < 1) return throw_type_error(ctx, "engine.scene.load(path) expects 1 argument");
-    std::string path;
-    if (!from_js(ctx, argv[0], path)) return throw_type_error(ctx, "engine.scene.load(path)");
     if (!g_services) return throw_type_error(ctx, "engine.scene: no host services");
+    std::string path;
+    if (argc < 1 || JS_IsUndefined(argv[0]) || JS_IsNull(argv[0])) {
+        path = g_services->main_scene();
+        if (path.empty()) {
+            return throw_type_error(ctx,
+                                    "engine.scene.load(): project.data has no main_scene");
+        }
+    } else if (!from_js(ctx, argv[0], path)) {
+        return throw_type_error(ctx, "engine.scene.load(path)");
+    }
     const bool ok = g_services->load_scene(path);
     if (!ok) GLOG_ERROR("[script] engine.scene.load('{}') failed", path);
     return to_js(ctx, ok);

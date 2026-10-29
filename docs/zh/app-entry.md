@@ -25,8 +25,8 @@
 
 ## 2. 启动顺序
 
-1. 解析命令行（`--project` / `--entry` / `--api` / `--w` / `--h` / `--frames` / `--shot` / `--extension` / `--fps` / `--debug-ui`），读 `<project>/project.data`。
-2. `GCore_Init`（`GCore_SetAutoLoadMainScene(false)`：不自动载主场景），压入 `ECMD_PLAY_MODE`，使组件 `on_update`、动画、物理在第一帧就生效。
+1. 解析命令行（`--project` / `--entry` / `--scene` / `--api` / `--w` / `--h` / `--frames` / `--shot` / `--extension` / `--fps` / `--debug-ui`），读 `<project>/project.data`。
+2. `GCore_Init`：按 `project.data` 的 `main_scene` 载入启动场景（见 2.1 的优先级），压入 `ECMD_PLAY_MODE`，使组件 `on_update`、动画、物理在第一帧就生效。
 3. 创建 `ScriptApplication`，注册 `on_context_created` 回调：安装应用绑定 → 加载扩展动态库（若存在）。
 4. 读取并求值 `main.js`（ES module 语义），提取 `on_start` / `on_update` / `on_destroy`，然后派发 `on_start()`。
 5. 每帧循环：
@@ -45,6 +45,24 @@
 6. 退出时派发 `on_destroy()`，然后按 **先拆场景（`GCore_Shutdown`）、再拆渲染器（`GRender_Shutdown`）、最后销毁窗口** 的顺序收尾。顺序反了会对已释放的渲染上下文做析构。
 
 `dt` 由 `std::chrono::steady_clock` 计算并夹到 `[0.0005, 0.1]` 秒，避免断点或长卡顿后出现巨型 dt。
+
+### 2.1 启动场景从哪来
+
+启动场景只有一个键：`project.data` 的 **`main_scene`**。优先级从高到低：
+
+| 来源 | 生效条件 | 说明 |
+| --- | --- | --- |
+| `--scene <path>` | 命令行显式给出 | 覆盖 `main_scene`；脚本里的无参 `engine.scene.load()` 也返回这个值，不会被配置再覆盖回去 |
+| 入口脚本 | 显式给了 `--entry` | 场景归脚本管（脚本自己调 `engine.scene.load`），宿主不自动载 |
+| `project.data` 的 `main_scene` | 默认 | 宿主在 `GCore_Init` 时自动载入 |
+
+编辑态（`--edit-mode` 或 `start_in_play: false`）一律不自动载：文档层自己管场景。
+
+两个容易踩的点：
+
+- **`entry_scene` 已废弃**。早期模板同时写了 `entry_scene` 与 `main_scene`，两个键语义完全一样、只有 `main_scene` 被读取，改 `entry_scene` 不会有任何效果。现在仍兼容读取（并打 WARN），但新项目不要再写。
+- **脚本不要写死场景路径**。写死的话改 `main_scene` 等于没改；用无参 `engine.scene.load()` 让它跟随配置。
+- `project.data` 必须是严格 JSON。带尾随逗号/注释时宿主会容错并告警；真解析不了时会以 **ERROR** 报出并说明"本次运行全部使用默认值"——曾经因为这条只打 WARN，出现过"改了配置没反应"的排查黑洞。
 
 ## 3. 生命周期钩子
 
@@ -95,7 +113,7 @@
 
 | 签名 | 返回 | 说明 |
 | --- | --- | --- |
-| `engine.scene.load(path)` | `bool` | **同步**载入场景，替换当前场景。失败返回 `false` 并记 error 日志。`path` 支持 `res:/` 与绝对路径 |
+| `engine.scene.load([path])` | `bool` | **同步**载入场景，替换当前场景。失败返回 `false` 并记 error 日志。`path` 支持 `res:/` 与绝对路径；**省略参数 = 载入 `project.data` 的 `main_scene`**（推荐，跟随配置）。与当前场景同路径时直接返回 `true`，不重复解析 |
 | `engine.scene.current()` | `string` | 当前场景路径；未载入时为空串 |
 
 载入会清掉旧场景的实体：之前拿到的实体代理全部失效（`valid()` 返回 `false`，其余方法抛 `stale handle` 或操作失败）。载入后重新 `find`。
@@ -182,7 +200,8 @@
 | 参数 | 说明 |
 | --- | --- |
 | `--project <dir>` | 项目根（默认进程当前目录；`res:/` 由此解析，也是 `project.data` 与默认扩展的查找位置） |
-| `--entry <path>` | 入口脚本（默认 `res:/main.js`） |
+| `--entry <path>` | 入口脚本（默认 `res:/main.js`）。显式给出时启动场景交由脚本决定 |
+| `--scene <path>` | 显式启动场景，覆盖 `project.data` 的 `main_scene` |
 | `--api <name>` | `opengl` / `vulkan` / `dx12`，优先于 `project.data.render_api` |
 | `--w` / `--h <px>` | 窗口尺寸覆盖（注意是**两个独立参数**，`--w 1920 --h 1080`） |
 | `--frames <N>` | 跑满 N 帧后退出；`0`（默认）表示不限帧 |
@@ -228,7 +247,7 @@ export function on_start() {
         engine.log.error('window.create failed');
         return;
     }
-    if (!engine.scene.load('res:/scenes/main.gesc')) {
+    if (!engine.scene.load()) {   // 无参 = 载入 project.data 的 main_scene
         engine.log.error('scene load failed');
         return;
     }

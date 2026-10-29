@@ -25,8 +25,8 @@ Division of labour with `ScriptComponent`: components live on entities and start
 
 ## 2. Startup Order
 
-1. Parse the command line (`--project` / `--entry` / `--api` / `--w` / `--h` / `--frames` / `--shot` / `--extension` / `--fps` / `--debug-ui`) and read `<project>/project.data`.
-2. `GCore_Init` with `GCore_SetAutoLoadMainScene(false)` (no automatic main-scene load), then push `ECMD_PLAY_MODE` so component `on_update`, animation, and physics are live on the first frame.
+1. Parse the command line (`--project` / `--entry` / `--scene` / `--api` / `--w` / `--h` / `--frames` / `--shot` / `--extension` / `--fps` / `--debug-ui`) and read `<project>/project.data`.
+2. `GCore_Init`: loads the startup scene from `project.data` `main_scene`, then pushes `ECMD_PLAY_MODE` so component `on_update`, animation and physics are live on frame one.
 3. Create the `ScriptApplication` and register `on_context_created`: install app bindings, then load the extension library if present.
 4. Read and evaluate `main.js` (ES module semantics), extract `on_start` / `on_update` / `on_destroy`, then dispatch `on_start()`.
 5. Frame loop:
@@ -95,7 +95,7 @@ Semantics:
 
 | Signature | Returns | Notes |
 | --- | --- | --- |
-| `engine.scene.load(path)` | `bool` | **Synchronously** loads a scene, replacing the current one. Returns `false` and logs an error on failure. `path` accepts `res:/` and absolute paths |
+| `engine.scene.load([path])` | `bool` | Synchronously loads a scene, replacing the current one. Returns `false` and logs an error on failure. `path` accepts `res:/` and absolute paths; **omitting it loads `main_scene` from `project.data`** (recommended). Same path as the current scene returns `true` without re-parsing |
 | `engine.scene.current()` | `string` | Current scene path; empty when nothing is loaded |
 
 Loading clears the previous scene's entities: previously obtained entity proxies all become invalid (`valid()` returns `false`, other methods throw `stale handle` or fail). Call `find` again afterwards.
@@ -182,7 +182,8 @@ Priority: explicit command-line value > `project.data` > built-in default. A mis
 | Argument | Notes |
 | --- | --- |
 | `--project <dir>` | Project root (defaults to the process working directory; resolves `res:/` and is where `project.data` and the default extension are looked up) |
-| `--entry <path>` | Entry script (default `res:/main.js`) |
+| `--entry <path>` | Entry script (default `res:/main.js`). Passing it explicitly hands scene control to the script |
+| `--scene <path>` | Explicit startup scene, overriding `main_scene` from `project.data` |
 | `--api <name>` | `opengl` / `vulkan` / `dx12`; takes priority over `project.data.render_api` |
 | `--w` / `--h <px>` | Window size overrides (**two separate arguments**: `--w 1920 --h 1080`) |
 | `--frames <N>` | Exit after N frames; `0` (default) means unlimited |

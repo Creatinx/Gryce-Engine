@@ -989,6 +989,23 @@ void run_new() {
         EXPECT(!j.is_discarded() && j["name"] == "DemoOne", "name defaults to dir name");
         EXPECT(!j.is_discarded() && j["render_api"] == "opengl", "api defaults to opengl");
         EXPECT(!j.is_discarded() && j["window"]["width"] == 1280, "default width 1280");
+        // 启动场景只有一个键：main_scene。曾经模板同时写 entry_scene 与
+        // main_scene，两者语义相同但只有 main_scene 被读取，改另一个等于没改。
+        EXPECT(!j.is_discarded() && j.contains("main_scene"), "main_scene present");
+        EXPECT(!j.is_discarded() && j["main_scene"] == "res:/scenes/main.gesc",
+               "main_scene points at the generated scene");
+        EXPECT(!j.is_discarded() && !j.contains("entry_scene"),
+               "no deprecated entry_scene key");
+    }
+    {
+        // 入口脚本不能写死场景路径，否则改 main_scene 不生效：必须用无参
+        // engine.scene.load() 跟随配置。且一个项目只应有一个入口脚本。
+        const std::string js = read_text(p1 / "main.js");
+        EXPECT(js.find("engine.scene.load()") != std::string::npos,
+               "main.js loads the scene with no hardcoded path");
+        EXPECT(js.find("engine.scene.load('res:/scenes") == std::string::npos,
+               "main.js does not hardcode a scene path");
+        EXPECT(!fs::exists(p1 / "rt_main.js"), "only one entry script is generated");
     }
     {
         auto j = nlohmann::json::parse(read_text(p1 / "scenes" / "main.gesc"), nullptr, false);

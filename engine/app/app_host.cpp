@@ -31,6 +31,8 @@
 #include "script/extension_host.h"
 #include "script/js_app_bindings.h"
 #include "script/script_app.h"
+#include "resources/project.h"
+#include "resources/project_data.h"
 #include "utils/glog/glog_lib.h"
 
 namespace gryce_engine::app {
@@ -74,6 +76,11 @@ struct ProjectConfig {
     bool pcss_enabled = false;
     float pcss_light_size = 0.06f;
     float pcss_max_radius = 12.0f;
+    // 抗锯齿：MSAA 抗几何轮廓（默认 4x，1 = 关）；TAA 抗 MSAA 管不到的
+    // 反射/后处理/高光细节（默认关，开启后细节略软是时域累积的代价）。
+    int msaa_samples = 4;
+    bool taa_enabled = false;
+    float taa_weight = 0.85f;
     // 启动态：true = 进 Play（运行时语义，组件 on_update 生效）；
     // false = 停在编辑态（编辑器语义，撤销栈才记账）。
     // Play 态下 undo_capture 直接跳过，所以编辑器项目必须显式关掉它，
@@ -91,11 +98,20 @@ std::string trim(std::string s) {
 
 ProjectConfig load_project_config(const std::string& project_root) {
     ProjectConfig c;
-    std::ifstream in(std::filesystem::path(project_root) / "project.data");
-    if (!in) return c;
+    const resources::ProjectDataResult pd = resources::read_project_data(project_root);
+    if (!pd.found) return c;
+    if (!pd.ok) {
+        // 读不进来等于配置全丢：用 stderr 直出（此时日志系统可能还没起），
+        // 再让所有字段走内置默认值。
+        std::fprintf(stderr, "[app] project.data parse failed: %s\n", pd.error.c_str());
+        c.loaded = false;
+        return c;
+    }
+    if (!pd.tolerant_note.empty()) {
+        std::fprintf(stderr, "[app] %s\n", pd.tolerant_note.c_str());
+    }
     try {
-        nlohmann::json j;
-        in >> j;
+        const nlohmann::json& j = pd.data;
         if (j.contains("name") && j["name"].is_string()) c.title = j["name"].get<std::string>();
         if (j.contains("window") && j["window"].is_object()) {
             c.width = j["window"].value("width", c.width);
@@ -132,6 +148,9 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.pcss_enabled = j.value("pcss_enabled", c.pcss_enabled);
         c.pcss_light_size = j.value("pcss_light_size", c.pcss_light_size);
         c.pcss_max_radius = j.value("pcss_max_radius", c.pcss_max_radius);
+        c.msaa_samples = j.value("msaa_samples", c.msaa_samples);
+        c.taa_enabled = j.value("taa_enabled", c.taa_enabled);
+        c.taa_weight = j.value("taa_weight", c.taa_weight);
         c.start_in_play = j.value("start_in_play", c.start_in_play);
         c.loaded = true;
     } catch (const std::exception& e) {
@@ -167,6 +186,7 @@ class HostServices final : public AppHostServices {
 public:
     ProjectConfig cfg;
     std::string api_override;   // 命令行 --api
+    std::string main_scene_override;  // 命令行 --scene（同步给脚本的 main_scene）
     bool show_fps = false;
     bool debug_ui = false;
     bool quit_requested = false;
@@ -240,13 +260,31 @@ public:
     void set_cursor_locked(bool locked) override { GInput_SetMouseLocked(locked); }
 
     bool load_scene(const std::string& path) override {
+        // 幂等：路径与当前场景相同时直接成功。宿主启动时会按 project.data
+        // 的 main_scene 先载一次，脚本惯例上还会再 load 一次同一个场景，没有
+        // 这道判断就会白解析一遍（大场景是肉眼可见的启动延迟）。
+        // 注意 GScene_GetCurrentPath 返回的是写入长度（仿 GetName 的约定），
+        // 不是 0/-1 的成功码。
+        char current[512] = {};
+        if (GScene_GetCurrentPath(current, static_cast<int>(sizeof(current))) > 0 &&
+            path == current) {
+            return true;
+        }
         return GScene_Load(path.c_str()) == 0;
     }
 
     std::string current_scene() override {
         char buf[512] = {};
-        if (GScene_GetCurrentPath(buf, static_cast<int>(sizeof(buf))) != 0) return {};
+        // 同样按"返回长度"解释：<=0 表示没有当前场景。
+        if (GScene_GetCurrentPath(buf, static_cast<int>(sizeof(buf))) <= 0) return {};
         return buf;
+    }
+
+    std::string main_scene() override {
+        // --scene 覆盖时一律返回覆盖值：脚本无参 load() 拿到的是同一个路径，
+        // 于是"命令行指定场景"不会被脚本按配置再载一遍覆盖掉。
+        if (!main_scene_override.empty()) return main_scene_override;
+        return resources::Project::instance().main_scene();
     }
 
     void request_quit() override { quit_requested = true; }
@@ -280,6 +318,10 @@ private:
         GRender_SetHDR(cfg.hdr);
         GRender_SetToneMapMode(cfg.tone_map_mode);
         GRender_SetExposure(cfg.exposure);
+        // 抗锯齿在其它渲染开关之前下发：MSAA 会重建 HDR 目标，越早越省一次重建。
+        GRender_SetMSAASamples(cfg.msaa_samples);
+        GRender_SetTAAEnabled(cfg.taa_enabled);
+        GRender_SetTAAWeight(cfg.taa_weight);
         GRender_SetShadowEnabled(cfg.shadow_enabled);
         GRender_SetAmbient(cfg.ambient[0], cfg.ambient[1], cfg.ambient[2]);
         GRender_SetIBLIntensity(cfg.ibl_intensity);
@@ -313,6 +355,8 @@ private:
 struct AppOptions {
     std::string project_root;
     std::string entry = "res:/main.js";
+    std::string scene;        // --scene：显式启动场景（优先于 project.data）
+    bool entry_explicit = false;  // --entry 是否由用户显式给出
     std::string api;          // 空 = project.data
     std::string extension;    // 空 = <project>/extension.dll（存在才加载）
     std::string shot;         // --shot：跑满帧数后截图
@@ -338,6 +382,7 @@ void print_usage(const char* argv0) {
         // 这里的缺省值随宿主而变。
         "  --project <dir>      项目根（缺省用宿主内置值或当前目录；res:/ 由此解析）\n"
         "  --entry <path>       入口脚本（默认 res:/main.js）\n"
+        "  --scene <path>       显式启动场景，覆盖 project.data 的 main_scene\n"
         "  --api <name>         渲染后端：opengl|vulkan|dx12（默认取 project.data）\n"
         "  --w / --h <px>       窗口尺寸覆盖（默认取 project.data）\n"
         "  --frames <N>         跑满 N 帧后退出（无窗口时用于逻辑验证；0=不限）\n"
@@ -371,7 +416,8 @@ int run(int argc, char** argv) {
             return argv[++i];
         };
         if (std::strcmp(a, "--project") == 0) opts.project_root = need_value(a);
-        else if (std::strcmp(a, "--entry") == 0) opts.entry = need_value(a);
+        else if (std::strcmp(a, "--entry") == 0) { opts.entry = need_value(a); opts.entry_explicit = true; }
+        else if (std::strcmp(a, "--scene") == 0) opts.scene = need_value(a);
         else if (std::strcmp(a, "--api") == 0) opts.api = need_value(a);
         else if (std::strcmp(a, "--w") == 0) opts.width = std::atoi(need_value(a));
         else if (std::strcmp(a, "--h") == 0) opts.height = std::atoi(need_value(a));
@@ -399,6 +445,7 @@ int run(int argc, char** argv) {
     host.show_fps = opts.show_fps;
     host.debug_ui = opts.debug_ui;
     if (!opts.api.empty()) host.api_override = opts.api;
+    host.main_scene_override = opts.scene;
 
     std::printf("[app] project='%s' entry='%s' api=%s\n", opts.project_root.c_str(),
                 opts.entry.c_str(),
@@ -410,11 +457,36 @@ int run(int argc, char** argv) {
     core_desc.version = sizeof(GCoreInitDesc);
     core_desc.project_root = opts.project_root.c_str();
     core_desc.enable_reflection = true;
-    // 场景由 main.js 决定：engine.scene.load(...)，宿主不自动载主场景。
-    GCore_SetAutoLoadMainScene(false);
+
+    // 启动场景的优先级（从高到低）：
+    //   1) --scene <path>     显式命令行覆盖，载入后忽略 project.data；
+    //   2) --entry <script>   显式指定脚本 -> 场景归脚本管（脚本自己 scene.load）；
+    //   3) project.data "main_scene"  默认启动场景，宿主自动载入。
+    // 编辑态（--edit-mode 或 start_in_play:false）不自动载：文档层自己管场景，
+    // 否则会与编辑器打开文档的动作重复解析。
+    const bool play_mode = !opts.edit_mode && host.cfg.start_in_play;
+    const bool auto_load_scene =
+        opts.scene.empty() && !opts.entry_explicit && play_mode;
+    if (!opts.scene.empty()) {
+        std::printf("[app] scene override: %s\n", opts.scene.c_str());
+    } else if (opts.entry_explicit) {
+        std::printf("[app] entry script given: scene comes from the script\n");
+    } else if (!play_mode) {
+        std::printf("[app] edit mode: scene managed by the document layer\n");
+    }
+    GCore_SetAutoLoadMainScene(auto_load_scene);
     if (GCore_Init(&core_desc) != 0) {
         std::fprintf(stderr, "[app] GCore_Init failed\n");
         return 1;
+    }
+
+    // --scene 在 core 初始化之后载入（此时项目根/res: 已挂载）。
+    if (!opts.scene.empty()) {
+        if (GScene_Load(opts.scene.c_str()) != 0) {
+            std::fprintf(stderr, "[app] failed to load scene '%s'\n", opts.scene.c_str());
+            return 1;
+        }
+        std::printf("[app] scene loaded '%s'\n", opts.scene.c_str());
     }
 
     // 启动态：默认进 Play（运行时语义，组件 on_update 生效）。

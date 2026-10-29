@@ -58,6 +58,9 @@ struct AppHostServices {
 
     virtual bool load_scene(const std::string& path) = 0;
     virtual std::string current_scene() = 0;
+    /// project.data "main_scene"：启动场景的唯一真源。脚本用
+    /// engine.scene.load() 不传参时载入的就是它，从而让改配置真的换场景。
+    virtual std::string main_scene() = 0;
 
     virtual void request_quit() = 0;
     virtual bool has_renderer() const = 0;

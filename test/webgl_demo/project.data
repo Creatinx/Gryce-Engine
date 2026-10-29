@@ -2,7 +2,6 @@
   "name": "GryceWebGLDemo",
   "version": "0.1.0",
   "engine_version": ">=0.1.0",
-  "entry_scene": "res:/scenes/main.gesc",
   "window": { "width": 960, "height": 540, "title": "Gryce WebGL Demo" },
   "render_api": "webgl",
   "hdr": true,
