@@ -87,6 +87,20 @@ public:
 
     virtual uint32_t vertex_count() const = 0;
     virtual uint32_t index_count() const = 0;
+
+    // 光追几何导出（可选能力）：后端按需实现，默认 false（不参与光追的后端直接
+    // 返回 false）。成功后 out_positions 指向紧凑 xyz 数组（长度 3*vertex_count），
+    // out_indices 指向 uint32 三角形索引（长度 3*triangle_count）。引擎默认在
+    // 设备支持光追时才保留 CPU 几何，故非 RT 后端/设备不会付出内存成本。
+    virtual bool get_ray_tracing_geometry(const float*& out_positions, uint32_t& out_vertex_count,
+                                          const uint32_t*& out_indices,
+                                          uint32_t& out_index_count) const {
+        out_positions = nullptr;
+        out_vertex_count = 0;
+        out_indices = nullptr;
+        out_index_count = 0;
+        return false;
+    }
 };
 
 } // namespace gryce_engine::render

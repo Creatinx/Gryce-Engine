@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -68,12 +69,11 @@ public:
     // ---- 计算着色器 / 间接绘制（GPU-driven 基础设施）----
     bool supports_compute_shaders() const override;
     bool supports_ray_tracing() const override;
-    // 硬件光追反射（Vulkan ray query）。仅在支持且开启时生效；否则空实现（默认）。
     void apply_ray_query_reflection(RHITextureHandle color_tex, RHITextureHandle depth_tex,
                                    int width, int height, const math::Matrix4f& view_proj,
                                    const math::Matrix4f& inv_view_proj,
-                                   const math::Vector3f& camera_pos,
-                                   const PostProcessParams& pp) override;
+                                   const math::Vector3f& camera_pos, const PostProcessParams& pp,
+                                   const std::vector<RayTracingInstance>& instances) override;
     RHIShaderHandle create_compute_shader(const char* name, const char* shader_dir) override;
     void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) override;
     void bind_storage_buffer(RHIShaderHandle shader, const char* name,
@@ -202,12 +202,12 @@ private:
     // 因此用 generation 的最高位做类型标记，让句柄自身携带类型信息。
     RHIResourcePool<VulkanComputePipeline> compute_pool_;
 
-    // 硬件光追反射（P2.2）：ray query 通道 + 场景 TLAS。
-    // rt_ready_ 标志表示已登记至少一份几何实例（需 IMesh CPU 数据导出，当前尚未
-    // 接线）；未就绪时 apply_ray_query_reflection 直接 no-op，画面与现状零差异。
+    // 硬件光追反射（Vulkan ray query）：自管 pass + 每帧 TLAS + 按 mesh 缓存的 BLAS。
+    // 仅设备支持光追且 rt_reflection_enabled 时使用；其余情况为 no-op，画面与现状零差异。
     VkRayQueryPass ray_query_pass_;
     VkTopLevelAccelerationStructure rt_tlas_;
-    bool rt_ready_ = false;
+    std::unordered_map<IMesh*, std::unique_ptr<VkBottomLevelAccelerationStructure>> rt_blas_cache_;
+
     // 生成时或上 kComputeShaderFlag，查池前必须用 this->pool_generation() 剥掉。
     static constexpr uint32_t kComputeShaderFlag = 0x80000000u;
 

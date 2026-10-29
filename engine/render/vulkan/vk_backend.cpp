@@ -191,6 +191,7 @@ void VulkanBackend::shutdown() {
         gpu_profiling_ready_ = false;
     }
     if (rt_tlas_.is_valid()) rt_tlas_.destroy();
+    rt_blas_cache_.clear();
     ray_query_pass_.shutdown();
     device_.shutdown();
 
@@ -1287,12 +1288,68 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                                               const math::Matrix4f& view_proj,
                                               const math::Matrix4f& inv_view_proj,
                                               const math::Vector3f& camera_pos,
-                                              const PostProcessParams& pp) {
-    // 门控：不支持光追 / 未开启 / 通道无效 / 无场景几何实例（TLAS 未就绪）时
-    // 直接 no-op，画面与现状零差异。rt_ready_ 需要 IMesh CPU 数据导出（P2.2 接线），
-    // 当前尚未接通，故本路径在桌面也不会真正跑——保留完整结构供后续接线使用。
+                                              const PostProcessParams& pp,
+                                              const std::vector<RayTracingInstance>& instances) {
+    // 门控：不支持光追 / 未开启 / 通道无效 / 无可见实例时直接 no-op，画面与现状
+    // 零差异（回退 SSR）。
     if (!supports_ray_tracing() || !pp.rt_reflection_enabled) return;
-    if (!ray_query_pass_.valid() || !rt_ready_ || !rt_tlas_.is_valid()) return;
+    if (!ray_query_pass_.valid()) return;
+    if (instances.empty()) return;
+
+    // 由本帧可见网格实例构建 TLAS：BLAS 按 mesh 缓存（几何不变，仅建一次），
+    // TLAS 每帧重建（实例变换随帧变化）。任意一个实例缺 CPU 几何则跳过该实例。
+    std::vector<VkAccelerationStructureInstanceKHR> vk_instances;
+    vk_instances.reserve(instances.size());
+    for (const auto& inst : instances) {
+        IMesh* imesh = mesh(inst.mesh);
+        if (!imesh) continue;
+        const float* pos = nullptr;
+        const uint32_t* idx = nullptr;
+        uint32_t vcount = 0, icount = 0;
+        if (!imesh->get_ray_tracing_geometry(pos, vcount, idx, icount)) continue;
+        if (!pos || !idx || vcount == 0 || icount == 0) continue;
+
+        auto it = rt_blas_cache_.find(imesh);
+        VkBottomLevelAccelerationStructure* blas = nullptr;
+        if (it == rt_blas_cache_.end()) {
+            auto owned = std::make_unique<VkBottomLevelAccelerationStructure>();
+            AccelerationStructureGeometry geo{};
+            geo.positions = pos;
+            geo.vertex_count = vcount;
+            geo.indices = idx;
+            geo.index_count = icount;
+            if (!owned->build(&device_, geo)) continue;
+            blas = owned.get();
+            rt_blas_cache_.emplace(imesh, std::move(owned));
+        } else {
+            blas = it->second.get();
+        }
+        if (!blas->is_valid()) continue;
+
+        // 世界矩阵（引擎列主序 m[col*4+row]）→ VkTransformMatrixKHR 行主序 3×4。
+        VkAccelerationStructureInstanceKHR vi{};
+        const math::Matrix4f& t = inst.transform;
+        vi.transform.matrix[0][0] = t.m[0];
+        vi.transform.matrix[0][1] = t.m[4];
+        vi.transform.matrix[0][2] = t.m[8];
+        vi.transform.matrix[0][3] = t.m[12];
+        vi.transform.matrix[1][0] = t.m[1];
+        vi.transform.matrix[1][1] = t.m[5];
+        vi.transform.matrix[1][2] = t.m[9];
+        vi.transform.matrix[1][3] = t.m[13];
+        vi.transform.matrix[2][0] = t.m[2];
+        vi.transform.matrix[2][1] = t.m[6];
+        vi.transform.matrix[2][2] = t.m[10];
+        vi.transform.matrix[2][3] = t.m[14];
+        vi.instanceCustomIndex = 0;
+        vi.mask = 0xFF;
+        vi.instanceShaderBindingTableRecordOffset = 0;
+        vi.flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+        vi.accelerationStructureReference = blas->device_address();
+        vk_instances.push_back(vi);
+    }
+    if (vk_instances.empty()) return;
+    if (!rt_tlas_.build(&device_, vk_instances)) return;
 
     auto* color = texture_pool_.get_if_alive(color_tex.index, color_tex.generation);
     auto* depth = texture_pool_.get_if_alive(depth_tex.index, depth_tex.generation);
@@ -1566,7 +1623,12 @@ RHIFramebufferHandle VulkanBackend::create_framebuffer() {
 }
 
 void VulkanBackend::destroy_mesh(RHIMeshHandle handle) {
-    // 带 generation 校验，防止过期句柄二次销毁误杀复用槽位的新资源
+    // 带 generation 校验，防止过期句柄二次销毁误杀复用槽位的新资源。
+    // 同步摘除该 mesh 的光追 BLAS 缓存（否则缓存里会残留悬空 IMesh* 指针）。
+    if (auto* imesh = mesh_pool_.get_if_alive(handle.index, handle.generation)) {
+        auto it = rt_blas_cache_.find(imesh);
+        if (it != rt_blas_cache_.end()) rt_blas_cache_.erase(it);
+    }
     mesh_pool_.deallocate(handle.index, handle.generation);
 }
 

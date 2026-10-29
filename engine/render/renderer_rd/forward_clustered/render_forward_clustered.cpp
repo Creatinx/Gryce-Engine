@@ -969,18 +969,29 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
     }
 
     // 2.5 硬件光追反射（Vulkan ray query）。仅在后端支持且开启时生效；否则
-    // apply_ray_query_reflection 走 no-op 分支，行为与现状零差异。场景几何实例
-    // 登记（rt_ready_）尚未接线，故当前不会真正跑——保留完整结构供后续接线使用。
+    // apply_ray_query_reflection 走 no-op 分支，行为与现状零差异。可见网格实例
+    // 收集后交给后端（Vulkan 支持时在内部建 BLAS/TLAS 并跑 ray query）。
     if (pp_params_.rt_reflection_enabled) {
         const math::Matrix4f rt_vp = current_camera_.get_projection_matrix() *
                                      current_camera_.get_view_matrix();
         const math::Matrix4f rt_inv_vp = rt_vp.inverse();
         const math::Vector3f rt_cam = current_camera_.position();
+
+        // 收集不透明渲染列表中的可见网格作为光追场景实例（mesh 句柄 + 世界矩阵）。
+        std::vector<RayTracingInstance> rt_instances;
+        rt_instances.reserve(render_lists_[RENDER_LIST_OPAQUE].size());
+        for (const auto& elem : render_lists_[RENDER_LIST_OPAQUE]) {
+            if (elem.mesh.is_valid()) {
+                rt_instances.push_back({elem.mesh, elem.transform});
+            }
+        }
+
         ctx->push_command([color = fb_.color_tex, depth = fb_.depth_tex,
                            w = viewport_width_, h = viewport_height_,
                            vp = rt_vp, inv_vp = rt_inv_vp, cam = rt_cam,
-                           pp = pp_params_](IRenderBackend* backend) {
-            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp);
+                           pp = pp_params_,
+                           insts = std::move(rt_instances)](IRenderBackend* backend) {
+            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp, insts);
         });
     }
 
