@@ -73,7 +73,9 @@ public:
                                    int width, int height, const math::Matrix4f& view_proj,
                                    const math::Matrix4f& inv_view_proj,
                                    const math::Vector3f& camera_pos, const PostProcessParams& pp,
-                                   const std::vector<RayTracingInstance>& instances) override;
+                                   const std::vector<RayTracingInstance>& instances,
+                                   RHITextureHandle env_tex,
+                                   RHITextureHandle env_prefilter_tex) override;
     RHIShaderHandle create_compute_shader(const char* name, const char* shader_dir) override;
     void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) override;
     void bind_storage_buffer(RHIShaderHandle shader, const char* name,
@@ -207,6 +209,10 @@ private:
     VkRayQueryPass ray_query_pass_;
     VkTopLevelAccelerationStructure rt_tlas_;
     std::unordered_map<IMesh*, std::unique_ptr<VkBottomLevelAccelerationStructure>> rt_blas_cache_;
+    // 每实例材质参数（roughness/metallic，shader 里按 instanceCustomIndex 索引）。
+    // 持久 host-visible 缓冲，实例数增长时整体重建。
+    VulkanBuffer rt_params_buffer_;
+    uint32_t rt_params_capacity_ = 0;
 
     // 生成时或上 kComputeShaderFlag，查池前必须用 this->pool_generation() 剥掉。
     static constexpr uint32_t kComputeShaderFlag = 0x80000000u;

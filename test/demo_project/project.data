@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "engine_version": ">=0.1.0",
   "entry_scene": "res:/scenes/main.gesc",
-  "window": { "width": 1920, "height": 1080, "title": "Gryce Renderer" },
+  "window": {
+    "width": 1920,
+    "height": 1080,
+    "title": "Gryce Renderer"
+  },
   "render_api": "vulkan",
   "hdr": true,
   "tone_map_mode": 1,
@@ -20,6 +24,7 @@
   "ssr_enabled": true,
   "ssil_enabled": false,
   "rt_reflection_enabled": true,
+  "rt_reflection_resolution_scale": 0.5,
   "ssr_max_steps": 96,
   "pcss_enabled": true,
   "pcss_light_size": 0.3,

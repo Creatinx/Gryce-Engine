@@ -2192,6 +2192,11 @@ bool GRender_IsRTReflectionEnabled(void) {
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.rt_reflection_enabled;
 }
+void GRender_SetRTReflectionResolutionScale(float scale) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.pipeline) g_renderer.pipeline->set_rt_reflection_resolution_scale(scale);
+}
 
 // --- Scene View 网格线（编辑器辅助显示，默认关闭）---
 

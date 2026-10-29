@@ -192,6 +192,8 @@ void VulkanBackend::shutdown() {
     }
     if (rt_tlas_.is_valid()) rt_tlas_.destroy();
     rt_blas_cache_.clear();
+    rt_params_buffer_.shutdown();
+    rt_params_capacity_ = 0;
     ray_query_pass_.shutdown();
     device_.shutdown();
 
@@ -1289,7 +1291,9 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                                               const math::Matrix4f& inv_view_proj,
                                               const math::Vector3f& camera_pos,
                                               const PostProcessParams& pp,
-                                              const std::vector<RayTracingInstance>& instances) {
+                                              const std::vector<RayTracingInstance>& instances,
+                                              RHITextureHandle env_tex_h,
+                                              RHITextureHandle env_prefilter_h) {
     // 门控：不支持光追 / 未开启 / 通道无效 / 无可见实例时直接 no-op，画面与现状
     // 零差异（回退 SSR）。
     if (!supports_ray_tracing() || !pp.rt_reflection_enabled) return;
@@ -1297,9 +1301,13 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
     if (instances.empty()) return;
 
     // 由本帧可见网格实例构建 TLAS：BLAS 按 mesh 缓存（几何不变，仅建一次），
-    // TLAS 每帧重建（实例变换随帧变化）。任意一个实例缺 CPU 几何则跳过该实例。
+    // TLAS 持久缓冲 + 帧内构建（实例变换随帧变化）。任意一个实例缺 CPU 几何
+    // 则跳过该实例。
     std::vector<VkAccelerationStructureInstanceKHR> vk_instances;
     vk_instances.reserve(instances.size());
+    // 每实例材质参数（roughness, metallic），着色器经 instanceCustomIndex 索引。
+    std::vector<float> mat_params;
+    mat_params.reserve(instances.size() * 2);
     for (const auto& inst : instances) {
         IMesh* imesh = mesh(inst.mesh);
         if (!imesh) continue;
@@ -1341,19 +1349,55 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
         vi.transform.matrix[2][1] = t.m[6];
         vi.transform.matrix[2][2] = t.m[10];
         vi.transform.matrix[2][3] = t.m[14];
-        vi.instanceCustomIndex = 0;
+        vi.instanceCustomIndex =
+            static_cast<uint32_t>(mat_params.size() / 2);  // 材质参数数组下标
         vi.mask = 0xFF;
         vi.instanceShaderBindingTableRecordOffset = 0;
         vi.flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
         vi.accelerationStructureReference = blas->device_address();
         vk_instances.push_back(vi);
+        mat_params.push_back(inst.roughness);
+        mat_params.push_back(inst.metallic);
     }
     if (vk_instances.empty()) return;
-    if (!rt_tlas_.build(&device_, vk_instances)) return;
+
+    // 材质参数 SSBO：持久 host-visible 缓冲，实例数增长时整体重建。
+    const uint32_t param_count = static_cast<uint32_t>(mat_params.size());
+    if (rt_params_capacity_ < param_count) {
+        rt_params_buffer_.shutdown();
+        const uint32_t cap = param_count + param_count / 2 > 64 ? param_count + param_count / 2
+                                                                : 64;
+        if (!rt_params_buffer_.init(&device_,
+                static_cast<VkDeviceSize>(cap) * sizeof(float),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            GLOG_WARN("VulkanBackend: RT material params buffer init failed");
+            return;
+        }
+        rt_params_capacity_ = cap;
+    }
+    rt_params_buffer_.upload(mat_params.data(),
+                             static_cast<VkDeviceSize>(param_count) * sizeof(float));
+
+    // TLAS：持久缓冲容量按需增长，实例数据直接写 host-visible 缓冲。
+    const uint32_t inst_count = static_cast<uint32_t>(vk_instances.size());
+    if (!rt_tlas_.ensure_capacity(&device_, inst_count)) return;
+    if (!rt_tlas_.update_instances(vk_instances)) return;
 
     auto* color = texture_pool_.get_if_alive(color_tex.index, color_tex.generation);
     auto* depth = texture_pool_.get_if_alive(depth_tex.index, depth_tex.generation);
     if (!color || !depth) return;
+
+    // IBL 环境立方体贴图（P2.3）：未命中方向采样环境，粗糙命中走 prefilter mip。
+    // 句柄无效（未设置环境）时着色器按 uniform 门控跳过环境项。
+    VulkanTexture* env_tex =
+        env_tex_h.is_valid()
+            ? texture_pool_.get_if_alive(env_tex_h.index, env_tex_h.generation)
+            : nullptr;
+    VulkanTexture* prefilter_tex =
+        env_prefilter_h.is_valid()
+            ? texture_pool_.get_if_alive(env_prefilter_h.index, env_prefilter_h.generation)
+            : nullptr;
 
     // vkCmdDispatch / vkCmdBlitImage 都不能录在 render pass 内（VUID-*renderpass）。
     // 仿 dispatch_compute：先结束当前 pass，结束后在**主命令缓冲**上派发与拷贝，
@@ -1415,11 +1459,20 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                   color_aspect);
 
+    // TLAS 构建录在本帧命令缓冲上（与当帧工作一起排队，无主机端 fence 等待）。
+    const bool rt_build_ok = rt_tlas_.record_build(cmd, inst_count);
+    if (!rt_build_ok) return;
+
     ray_query_pass_.render(cmd, rt_tlas_.handle(), depth->image_view(), color->image_view(),
+                          env_tex ? env_tex->image_view() : VK_NULL_HANDLE,
+                          env_tex ? env_tex->sampler() : VK_NULL_HANDLE,
+                          prefilter_tex ? prefilter_tex->image_view() : VK_NULL_HANDLE,
+                          prefilter_tex ? prefilter_tex->sampler() : VK_NULL_HANDLE,
+                          rt_params_buffer_.buffer(), prefilter_tex ? prefilter_tex->mip_levels() : 0,
                           static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                           view_proj, inv_view_proj, camera_pos, pp);
 
-    // 颜色转入 TRANSFER_DST，准备接收反射图（反射图在 render() 末尾已是 TRANSFER_SRC）。
+    // 颜色转入 TRANSFER_DST，准备接收合成图（合成图在 render() 末尾已是 TRANSFER_SRC）。
     image_barrier(color->image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -1434,7 +1487,7 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
     blit.srcOffsets[1] = {width, height, 1};
     blit.dstOffsets[0] = {0, 0, 0};
     blit.dstOffsets[1] = {width, height, 1};
-    vkCmdBlitImage(cmd, ray_query_pass_.reflection_image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    vkCmdBlitImage(cmd, ray_query_pass_.composite_image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    color->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    VK_FILTER_NEAREST);
 

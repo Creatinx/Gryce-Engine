@@ -2885,7 +2885,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     // 硬件光追反射（Vulkan ray query）：SSR 之后、SSIL/后处理之前。仅当后端支持
     // ray tracing 且 rt_reflection_enabled 开启时真正执行；否则
     // apply_ray_query_reflection 走 no-op，画面与现状零差异（回退 SSR）。
-    // 实例取自本帧不透明渲染列表（mesh 句柄 + 世界矩阵），交后端建/更新 TLAS。
+    // 实例取自本帧不透明渲染列表（mesh 句柄 + 世界矩阵 + 材质参数），交后端
+    // 建/更新 TLAS；IBL 环境立方体贴图一并下发（未命中方向采样环境，P2.3）。
     if (pp_params_.rt_reflection_enabled && camera_) {
         math::Matrix4f rt_vp = get_projection_matrix() * camera_->get_view_matrix();
         math::Matrix4f rt_inv_vp = rt_vp.inverse();
@@ -2894,15 +2895,24 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         std::vector<RayTracingInstance> rt_instances;
         rt_instances.reserve(opaque_items_.size());
         for (const auto& item : opaque_items_) {
-            if (item.mesh.is_valid()) rt_instances.push_back({item.mesh, item.model});
+            if (!item.mesh.is_valid()) continue;
+            RayTracingInstance rt{item.mesh, item.model};
+            if (item.material) {
+                rt.roughness = item.material->roughness;
+                rt.metallic = item.material->metallic;
+            }
+            rt_instances.push_back(rt);
         }
 
+        RHITextureHandle env_tex = ibl_radiance_texture_;
+        RHITextureHandle env_prefilter_tex = ibl_prefilter_texture_;
         ctx.push_command([color = hdr_color_, depth = hdr_depth_,
                           w = viewport_width_, h = viewport_height_,
                           vp = rt_vp, inv_vp = rt_inv_vp, cam = rt_cam,
-                          pp = pp_params_,
+                          pp = pp_params_, env = env_tex, prefilter = env_prefilter_tex,
                           insts = std::move(rt_instances)](IRenderBackend* backend) {
-            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp, insts);
+            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp, insts,
+                                                env, prefilter);
         });
     }
 

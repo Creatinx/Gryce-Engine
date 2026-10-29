@@ -67,6 +67,10 @@ struct RenderBackendCapabilities {
 struct RayTracingInstance {
     RHIMeshHandle mesh;
     math::Matrix4f transform;
+    // 命中着色用材质参数（来自该实例的 Material，P2.3）：roughness 决定反射的
+    // 清晰度与强度衰减，metallic 决定菲涅尔基准反射率（0.04 绝缘体 → 1 金属）。
+    float roughness = 0.15f;
+    float metallic = 0.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -171,7 +175,12 @@ public:
                                            const math::Matrix4f& /*inv_view_proj*/,
                                            const math::Vector3f& /*camera_pos*/,
                                            const PostProcessParams& /*pp*/,
-                                           const std::vector<RayTracingInstance>& /*instances*/ = {}) {}
+                                           const std::vector<RayTracingInstance>& /*instances*/ = {},
+                                           RHITextureHandle /*env_tex*/ = {},
+                                           RHITextureHandle /*env_prefilter_tex*/ = {}) {}
+    // env_tex / env_prefilter_tex：IBL 环境立方体贴图（P2.3）。反射射线未命中
+    // 场景时采样 env_tex（锐利天空），粗糙命中按 prefilter 的 mip 链取模糊环境；
+    // 句柄无效时着色器走 uniform 门控跳过环境项，行为与只有屏幕空间反射一致。
 
     // 创建计算管线：加载并编译 {shader_dir}/{name}.comp。
     // 不支持时返回无效句柄（is_valid() == false），调用方必须据此回退到 CPU 路径。

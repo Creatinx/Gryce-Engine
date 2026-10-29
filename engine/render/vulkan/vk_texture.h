@@ -57,6 +57,7 @@ public:
     VkSampler sampler() const { return sampler_; }
     // 非比较 sampler（仅深度贴图）：PCSS 需要用 sampler2D 读原始深度
     VkSampler depth_sampler() const { return depth_sampler_; }
+    uint32_t mip_levels() const { return mip_levels_; }
     VkImageLayout layout() const { return layout_; }
     VkFormat format() const { return format_; }
     bool is_depth() const;

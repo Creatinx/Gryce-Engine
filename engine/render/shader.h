@@ -180,6 +180,10 @@ struct PostProcessParams {
     // 零差异。rt_reflection_max_distance 为单条反射射线的最大追踪距离（世界单位）。
     int rt_reflection_enabled = 0;
     float rt_reflection_max_distance = 100.0f;
+    // 追踪分辨率档（0.25~1.0）：光线查询在 width*scale × height*scale 的网格上
+    // 派发，命中信息经全分辨率 composite 双线性混合回主图。光线数按 scale² 下降，
+    // 反射内容本身是低频信号，0.5 是画质与开销的折中。
+    float rt_reflection_resolution_scale = 0.5f;
 
     // 时域亚像素抖动（Halton 序列，作用于场景几何 pass 的投影矩阵）。
     // 供 TAA / DLSS 类时域重建使用；默认关闭，不改变既有画面。

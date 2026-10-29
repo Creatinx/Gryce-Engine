@@ -401,6 +401,10 @@ public:
         pp_params_.rt_reflection_enabled = enabled ? 1 : 0;
     }
     bool rt_reflection_enabled() const { return rt_reflection_enabled_; }
+    // 追踪分辨率档（0.25~1.0，默认 0.5）
+    void set_rt_reflection_resolution_scale(float scale) {
+        pp_params_.rt_reflection_resolution_scale = math::clamp(scale, 0.25f, 1.0f);
+    }
     // SSIL 强度（间接光整体缩放）
     void set_ssil_intensity(float intensity) { ssil_intensity_ = intensity; }
     float ssil_intensity() const { return ssil_intensity_; }

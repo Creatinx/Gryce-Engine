@@ -61,6 +61,7 @@ struct ProjectConfig {
     bool ssr_enabled = false;
     bool ssil_enabled = false;
     bool rt_reflection_enabled = false;
+    float rt_reflection_resolution_scale = 0.5f;
     float ssr_max_steps = 64.0f;
     float ssr_max_roughness = 0.6f;
     float ssr_thickness = 0.1f;
@@ -115,6 +116,8 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.ssr_enabled = j.value("ssr_enabled", c.ssr_enabled);
         c.ssil_enabled = j.value("ssil_enabled", c.ssil_enabled);
         c.rt_reflection_enabled = j.value("rt_reflection_enabled", c.rt_reflection_enabled);
+        c.rt_reflection_resolution_scale =
+            j.value("rt_reflection_resolution_scale", c.rt_reflection_resolution_scale);
         c.ssr_max_steps = j.value("ssr_max_steps", c.ssr_max_steps);
         c.ssr_max_roughness = j.value("ssr_max_roughness", c.ssr_max_roughness);
         c.ssr_thickness = j.value("ssr_thickness", c.ssr_thickness);
@@ -286,6 +289,7 @@ private:
         GRender_SetSSR(cfg.ssr_enabled);
         GRender_SetSSIL(cfg.ssil_enabled);
         GRender_SetRTReflection(cfg.rt_reflection_enabled);
+        GRender_SetRTReflectionResolutionScale(cfg.rt_reflection_resolution_scale);
     }
 
     bool renderer_ = false;

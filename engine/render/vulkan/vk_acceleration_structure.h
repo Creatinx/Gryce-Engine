@@ -80,6 +80,15 @@ public:
                const std::vector<VkAccelerationStructureInstanceKHR>& instances);
     void destroy();
 
+    // ---- 帧内增量更新（P2.3 性能路径）----
+    // 每帧 TLAS 走一次性提交 + fence 等待会在帧中央强制 GPU 全同步（症状：
+    // 开反射后帧数腰斩）。改为三步式：预分配持久缓冲（容量按需增长）→ 实例
+    // 数据直接写入 host-visible 缓冲 → 构建命令记录在调用方的帧命令缓冲上，
+    // 与当帧其余工作一起排队提交，不再有任何主机端等待。
+    bool ensure_capacity(VulkanDevice* device, uint32_t instance_count);
+    bool update_instances(const std::vector<VkAccelerationStructureInstanceKHR>& instances);
+    bool record_build(VkCommandBuffer cmd, uint32_t instance_count);
+
     VkAccelerationStructureKHR handle() const { return as_; }
     VkDeviceAddress device_address() const { return device_address_; }
     bool is_valid() const { return as_ != VK_NULL_HANDLE; }
@@ -87,10 +96,13 @@ public:
 private:
     bool build_internal(VulkanDevice* device, uint32_t instance_count,
                        const VkAccelerationStructureInstanceKHR* instances);
+    // 按容量创建 AS 存储 / scratch / 实例缓冲（持久，容量增长时整体重建）。
+    bool allocate_persistent(VulkanDevice* device, uint32_t capacity);
 
     VulkanDevice* device_ = nullptr;
     VkAccelerationStructureKHR as_ = VK_NULL_HANDLE;
     VkDeviceAddress device_address_ = 0;
+    uint32_t capacity_ = 0;          // 持久缓冲容纳的最大实例数
 
     VulkanBuffer as_buffer_;
     VulkanBuffer scratch_buffer_;

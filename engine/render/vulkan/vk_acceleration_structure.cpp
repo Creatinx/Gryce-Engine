@@ -320,12 +320,14 @@ VkTopLevelAccelerationStructure::VkTopLevelAccelerationStructure(
     : device_(other.device_)
     , as_(other.as_)
     , device_address_(other.device_address_)
+    , capacity_(other.capacity_)
     , as_buffer_(std::move(other.as_buffer_))
     , scratch_buffer_(std::move(other.scratch_buffer_))
     , instance_buffer_(std::move(other.instance_buffer_)) {
     other.device_ = nullptr;
     other.as_ = VK_NULL_HANDLE;
     other.device_address_ = 0;
+    other.capacity_ = 0;
 }
 
 VkTopLevelAccelerationStructure& VkTopLevelAccelerationStructure::operator=(
@@ -335,12 +337,14 @@ VkTopLevelAccelerationStructure& VkTopLevelAccelerationStructure::operator=(
         device_ = other.device_;
         as_ = other.as_;
         device_address_ = other.device_address_;
+        capacity_ = other.capacity_;
         as_buffer_ = std::move(other.as_buffer_);
         scratch_buffer_ = std::move(other.scratch_buffer_);
         instance_buffer_ = std::move(other.instance_buffer_);
         other.device_ = nullptr;
         other.as_ = VK_NULL_HANDLE;
         other.device_address_ = 0;
+        other.capacity_ = 0;
     }
     return *this;
 }
@@ -452,10 +456,155 @@ void VkTopLevelAccelerationStructure::destroy() {
         as_ = VK_NULL_HANDLE;
     }
     device_address_ = 0;
+    capacity_ = 0;
     as_buffer_.shutdown();
     scratch_buffer_.shutdown();
     instance_buffer_.shutdown();
     device_ = nullptr;
+}
+
+// ===========================================================================
+// VkTopLevelAccelerationStructure — 帧内增量更新（P2.3 性能路径）
+// ===========================================================================
+
+bool VkTopLevelAccelerationStructure::allocate_persistent(VulkanDevice* device,
+                                                          uint32_t capacity) {
+    VkDevice dev = device->device();
+
+    VkASDispatch d;
+    if (!d.resolve(dev)) {
+        GLOG_ERROR("VkAccelerationStructure: failed to resolve KHR functions (driver lacks RT?)");
+        return false;
+    }
+
+    // 尺寸按容量上限查询一次，缓冲与 AS 对象全程复用（容量增长才重建）。
+    VkAccelerationStructureGeometryKHR geo_khr{};
+    geo_khr.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geo_khr.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geo_khr.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    geo_khr.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geo_khr.geometry.instances.arrayOfPointers = VK_FALSE;
+
+    VkAccelerationStructureBuildGeometryInfoKHR build_info{};
+    build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+    build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    build_info.geometryCount = 1;
+    build_info.pGeometries = &geo_khr;
+
+    VkAccelerationStructureBuildSizesInfoKHR build_sizes{};
+    build_sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    d.vkGetAccelerationStructureBuildSizesKHR(dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                                            &build_info, &capacity, &build_sizes);
+
+    if (!as_buffer_.init(device, build_sizes.accelerationStructureSize,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        return false;
+    }
+    if (!scratch_buffer_.init(device, build_sizes.buildScratchSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        return false;
+    }
+    // 实例缓冲走 host-visible：每帧 memcpy 即可更新，无需 staging 往返。
+    if (!instance_buffer_.init(device,
+            static_cast<VkDeviceSize>(capacity) * sizeof(VkAccelerationStructureInstanceKHR),
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        return false;
+    }
+
+    VkAccelerationStructureCreateInfoKHR create_info{};
+    create_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    create_info.buffer = as_buffer_.buffer();
+    create_info.size = build_sizes.accelerationStructureSize;
+    create_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    if (d.vkCreateAccelerationStructureKHR(dev, &create_info, nullptr, &as_) != VK_SUCCESS) {
+        GLOG_ERROR("VkAccelerationStructure: failed to create TLAS");
+        return false;
+    }
+    device_address_ = acceleration_structure_device_address(d, dev, as_);
+    capacity_ = capacity;
+    return true;
+}
+
+bool VkTopLevelAccelerationStructure::ensure_capacity(VulkanDevice* device,
+                                                      uint32_t instance_count) {
+    if (!device || !device->is_valid() || instance_count == 0) return false;
+    if (device_ == device && capacity_ >= instance_count && as_ != VK_NULL_HANDLE) return true;
+
+    // 容量不足或换了设备：整体重建（销毁旧资源后按 1.5 倍余量分配，减少抖动）。
+    destroy();
+    device_ = device;
+    const uint32_t grown = instance_count + instance_count / 2;
+    const uint32_t capacity = grown > 16 ? grown : 16;
+    return allocate_persistent(device, capacity);
+}
+
+bool VkTopLevelAccelerationStructure::update_instances(
+    const std::vector<VkAccelerationStructureInstanceKHR>& instances) {
+    if (!device_ || instances.empty() ||
+        instances.size() > static_cast<size_t>(capacity_)) {
+        return false;
+    }
+    return instance_buffer_.upload(instances.data(),
+                                   static_cast<VkDeviceSize>(instances.size()) *
+                                       sizeof(VkAccelerationStructureInstanceKHR));
+}
+
+bool VkTopLevelAccelerationStructure::record_build(VkCommandBuffer cmd,
+                                                   uint32_t instance_count) {
+    if (!device_ || cmd == VK_NULL_HANDLE || instance_count == 0 ||
+        instance_count > capacity_ || as_ == VK_NULL_HANDLE) {
+        return false;
+    }
+    VkDevice dev = device_->device();
+
+    VkASDispatch d;
+    if (!d.resolve(dev)) return false;
+
+    VkAccelerationStructureGeometryKHR geo_khr{};
+    geo_khr.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geo_khr.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geo_khr.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    geo_khr.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geo_khr.geometry.instances.arrayOfPointers = VK_FALSE;
+    geo_khr.geometry.instances.data.deviceAddress =
+        buffer_device_address(dev, instance_buffer_.buffer());
+
+    VkAccelerationStructureBuildGeometryInfoKHR build_info{};
+    build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+    build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    build_info.geometryCount = 1;
+    build_info.pGeometries = &geo_khr;
+    build_info.dstAccelerationStructure = as_;
+    build_info.scratchData.deviceAddress = buffer_device_address(dev, scratch_buffer_.buffer());
+
+    VkAccelerationStructureBuildRangeInfoKHR range{};
+    range.primitiveCount = instance_count;
+    range.primitiveOffset = 0;
+    range.firstVertex = 0;
+    range.transformOffset = 0;
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges[] = { &range };
+    d.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &build_info, ranges);
+
+    // 构建完成 → 本帧 compute（ray query）可读。构建与查询在同一命令缓冲内，
+    // 由这条 barrier 串起执行顺序，无需主机端同步。
+    VkMemoryBarrier bar{};
+    bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    bar.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    bar.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &bar, 0, nullptr, 0, nullptr);
+    return true;
 }
 
 } // namespace gryce_engine::render

@@ -1,5 +1,6 @@
 #include "vk_instance.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -9,7 +10,9 @@
 
 namespace gryce_engine::render {
 
-bool VulkanInstance::enable_validation_ = false;
+// Vulkan validation 层开关：默认关，设 GRYCE_VK_VALIDATION=1 开启（调试渲染
+// 管线时定位非法描述符/布局/同步问题用）。
+bool VulkanInstance::enable_validation_ = std::getenv("GRYCE_VK_VALIDATION") != nullptr;
 
 namespace {
 
