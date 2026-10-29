@@ -9,6 +9,7 @@
 #include "api/ui_op_queue_internal.h"
 #include "api/viewport_api.h"
 #include "api/core_api.h"
+#include <algorithm>
 #include "api/edit_api.h"
 #include "api/entity_api.h"
 #include "api/window_api.h"
@@ -137,6 +138,7 @@ struct RendererState {
     // 屏幕空间效果（默认关闭；SSR/SSIL 需要管线自动跑 depth+normal 预通道）
     bool  ssao_enabled = false;
     bool  ssr_enabled = false;
+    bool  rt_reflection_enabled = false;   // 硬件光追反射（Vulkan ray query）
     bool  show_fps = false;      // 左上角白色 FPS 叠加
     float fps = 0.0f;            // 由 GRender_EndFrame 平滑更新
     // ---- 帧统计（调试 UI 读数 + 自动化验证）----
@@ -1109,6 +1111,7 @@ static void apply_screen_space_settings(RenderPipeline* pipeline) {
     pipeline->set_ssao_enabled(g_renderer.ssao_enabled);
     pipeline->set_ssr_enabled(g_renderer.ssr_enabled);
     pipeline->set_ssil_enabled(g_renderer.ssil_enabled);
+    pipeline->set_rt_reflection_enabled(g_renderer.rt_reflection_enabled);
     pipeline->set_grid_enabled(g_renderer.grid_enabled);
     pipeline->set_ssr_quality(g_renderer.ssr_max_steps, g_renderer.ssr_max_roughness,
                               g_renderer.ssr_thickness, g_renderer.ssr_bilateral);
@@ -1445,6 +1448,10 @@ bool GRender_IsInitialized(void) {
     return g_renderer.initialized;
 }
 
+// 前向声明：定义见文件末尾（GRender_SetUIScale 区域）。在 GRender_BeginFrame
+// 的互斥持有路径内复用同一份缩放逻辑，避免两处发散。
+static void apply_ui_scale_locked(float scale);
+
 void GRender_BeginFrame(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
@@ -1509,6 +1516,26 @@ void GRender_BeginFrame(void) {
         if (fw > 0 && fh > 0) {
             g_renderer.screen_w = fw;
             g_renderer.screen_h = fh;
+        }
+    }
+
+    // HiDPI：每帧按窗口内容缩放跟随 UI 倍率。进程已在 Window::init_sdk 声明
+    // DPI 感知，Windowed 窗口也在创建时按显示器内容缩放放大到物理像素，这里
+    // 直接取"显示器真实内容缩放"（glfwGetWindowContentScale，经
+    // GWindow_GetContentScale 暴露）作为 UI 倍率——它就是 DPI 比值（100% = 1，
+    // 200% = 2），与 GLFW 的窗口尺寸报告语义无关，因此稳定不漂移。UI 逻辑
+    // 布局尺寸 = 设备帧缓冲 / 此倍率，渲染时再乘回设备像素：高 DPI 屏上既
+    // 不被 DWM 拉伸发虚、比例也不缩水。100% DPI 下倍率为 1，与改动前完全
+    // 一致，安全。只在倍率变化时写内置轨并补字形档——幂等，无变化的帧零开销。
+    {
+        float csx = 1.0f, csy = 1.0f;
+        GWindow_GetContentScale(&csx, &csy);
+        float want = (csx > 0.5f) ? csx : 1.0f;     // 异常值回退
+        if (want > 4.0f) want = 4.0f;               // 极端倍率夹制
+        const float cur = gryce_ui::BuiltinRuntime::instance().scale();
+        const float diff = want - cur;
+        if (diff > 1e-3f || diff < -1e-3f) {
+            apply_ui_scale_locked(want);
         }
     }
     // Async mode: render thread handles begin_frame
@@ -2154,6 +2181,17 @@ bool GRender_IsSSILEnabled(void) {
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.ssil_enabled;
 }
+void GRender_SetRTReflection(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.rt_reflection_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_rt_reflection_enabled(enabled);
+}
+bool GRender_IsRTReflectionEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.rt_reflection_enabled;
+}
 
 // --- Scene View 网格线（编辑器辅助显示，默认关闭）---
 
@@ -2393,18 +2431,25 @@ int GRender_GetUIBackend(void) {
     return gryce_ui::ui_backend();
 }
 
-void GRender_SetUIScale(float scale) {
-    GRYCE_API_GUARD();
+// 假定调用方已持有 g_renderer.mutex：把 UI 逻辑→设备像素的倍率写到内置轨，
+// 并顺带把字形图集补到对应的物理字号档。GRender_SetUIScale（显式设置）与
+// GRender_BeginFrame（每帧按窗口内容缩放自动跟随）共用这一份，避免两处逻辑
+// 漂移。运行期重建纹理由 ensure_text_raster_size 走 GPU 上下文同步，幂等。
+static void apply_ui_scale_locked(float scale) {
     // 只影响内置轨：ImGui 轨的缩放由后端自己按 DPI 处理。
     gryce_ui::BuiltinRuntime::instance().set_scale(scale);
     // 缩放变了，界面文字的**物理**字号也变了：字形图集要补上那一档，否则
     // 2 倍屏上是把 13px 的图放大两倍（边缘马赛克），1.5 倍屏上是 19.5→20 的
-    // 半像素缩放（笔画发虚）。运行期重建纹理由 ensure_text_raster_size 走
-    // GPU 上下文同步，宿主在帧间调用即可（别在 UI 回调里调）。
+    // 半像素缩放（笔画发虚）。
     if (g_renderer.renderer2d) {
         g_renderer.renderer2d->ensure_text_raster_size(
             gryce_ui::ui_text_physical_size(gryce_ui::kWidgetFontSize, scale));
     }
+}
+
+void GRender_SetUIScale(float scale) {
+    GRYCE_API_GUARD();
+    apply_ui_scale_locked(scale);
 }
 
 float GRender_GetUIScale(void) {

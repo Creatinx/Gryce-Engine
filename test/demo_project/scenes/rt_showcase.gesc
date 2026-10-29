@@ -1,0 +1,270 @@
+{
+  "version": 2,
+  "name": "RTReflectionShowcase",
+  "entities": [
+    {
+      "name": "MainCamera",
+      "uuid": "1f2d9a10-0001-4a01-9001-000000000001",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [3.2, 2.2, 4.2],
+        "rotation": [-0.154516, 0.309031, 0.0, 0.938416],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "Camera",
+          "enabled": true,
+          "fov": 55.0,
+          "near_plane": 0.1,
+          "far_plane": 100.0,
+          "is_main": true,
+          "background_color": [0.10, 0.11, 0.14, 1.0]
+        }
+      ]
+    },
+    {
+      "name": "Sun",
+      "uuid": "1f2d9a10-0002-4a02-9002-000000000002",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [5.0, 7.0, -4.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "Light",
+          "enabled": true,
+          "light_type": 0,
+          "color": [1.0, 0.96, 0.9],
+          "intensity": 4.0,
+          "direction": [-0.7, -1.0, 0.55],
+          "range": 30.0,
+          "spot_angle": 45.0,
+          "spot_softness": 0.2
+        }
+      ]
+    },
+    {
+      "name": "MirrorFloor",
+      "uuid": "1f2d9a10-0003-4a03-9003-000000000003",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [8.0, 1.0, 8.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "MirrorFloorMat",
+            "preset_name": "Chrome"
+          }
+        }
+      ]
+    },
+    {
+      "name": "CubeChrome",
+      "uuid": "1f2d9a10-0004-4a04-9004-000000000004",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [-1.6, 0.5, 0.6],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "ChromeCube",
+            "preset_name": "Chrome"
+          }
+        }
+      ]
+    },
+    {
+      "name": "CubeGold",
+      "uuid": "1f2d9a10-0005-4a05-9005-000000000005",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [1.3, 0.5, -0.8],
+        "rotation": [0.0, 0.382683, 0.0, 0.923880],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "GoldCube",
+            "preset_name": "Gold"
+          }
+        }
+      ]
+    },
+    {
+      "name": "CubeGlossyRed",
+      "uuid": "1f2d9a10-0006-4a06-9006-000000000006",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [0.2, 0.5, 1.9],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "GlossyRed",
+            "albedo_color": [0.85, 0.28, 0.24],
+            "roughness": 0.18,
+            "metallic": 0.0,
+            "ao": 1.0,
+            "emissive_color": [0.0, 0.0, 0.0],
+            "opacity": 1.0,
+            "blend_mode": 0,
+            "two_sided": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "SphereChrome",
+      "uuid": "1f2d9a10-0007-4a07-9007-000000000007",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [2.5, 0.6, 1.4],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/sphere.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "ChromeSphere",
+            "preset_name": "Chrome"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SpinnerChrome",
+      "uuid": "1f2d9a10-0008-4a08-9008-000000000008",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [0.0, 1.3, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.8, 0.8, 0.8]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "SpinnerMat",
+            "preset_name": "Chrome"
+          }
+        },
+        {
+          "type": "Script",
+          "script": "res:/scripts/demo_spin.js",
+          "props": { "speed": 1.2 }
+        }
+      ]
+    },
+    {
+      "name": "EmissiveBlue",
+      "uuid": "1f2d9a10-0009-4a09-9009-000000000009",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [-2.3, 0.4, -1.8],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.6, 1.6, 0.6]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "BlueGlow",
+            "albedo_color": [0.02, 0.02, 0.05],
+            "roughness": 0.5,
+            "metallic": 0.0,
+            "ao": 1.0,
+            "emissive_color": [0.15, 0.35, 1.0],
+            "opacity": 1.0,
+            "blend_mode": 0,
+            "two_sided": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "EmissiveMagenta",
+      "uuid": "1f2d9a10-000a-4a0a-900a-00000000000a",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [2.1, 0.4, -2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.6, 1.6, 0.6]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "billboard": false,
+          "depth_test": true,
+          "material": {
+            "name": "MagentaGlow",
+            "albedo_color": [0.05, 0.02, 0.05],
+            "roughness": 0.5,
+            "metallic": 0.0,
+            "ao": 1.0,
+            "emissive_color": [1.0, 0.15, 0.7],
+            "opacity": 1.0,
+            "blend_mode": 0,
+            "two_sided": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -60,6 +60,7 @@ struct ProjectConfig {
     bool ssao_enabled = false;
     bool ssr_enabled = false;
     bool ssil_enabled = false;
+    bool rt_reflection_enabled = false;
     float ssr_max_steps = 64.0f;
     float ssr_max_roughness = 0.6f;
     float ssr_thickness = 0.1f;
@@ -113,6 +114,7 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.ssao_enabled = j.value("ssao_enabled", c.ssao_enabled);
         c.ssr_enabled = j.value("ssr_enabled", c.ssr_enabled);
         c.ssil_enabled = j.value("ssil_enabled", c.ssil_enabled);
+        c.rt_reflection_enabled = j.value("rt_reflection_enabled", c.rt_reflection_enabled);
         c.ssr_max_steps = j.value("ssr_max_steps", c.ssr_max_steps);
         c.ssr_max_roughness = j.value("ssr_max_roughness", c.ssr_max_roughness);
         c.ssr_thickness = j.value("ssr_thickness", c.ssr_thickness);
@@ -252,6 +254,19 @@ public:
         return true;
     }
 
+    void set_rt_reflection(bool enabled) override {
+        if (renderer_) GRender_SetRTReflection(enabled);
+    }
+    bool rt_reflection_enabled() const override {
+        return renderer_ ? GRender_IsRTReflectionEnabled() : false;
+    }
+    void set_ssr(bool enabled) override {
+        if (renderer_) GRender_SetSSR(enabled);
+    }
+    bool ssr_enabled() const override {
+        return renderer_ ? GRender_IsSSREnabled() : false;
+    }
+
 private:
     void apply_render_settings() {
         GRender_SetHDR(cfg.hdr);
@@ -270,6 +285,7 @@ private:
         GRender_SetSSAO(cfg.ssao_enabled);
         GRender_SetSSR(cfg.ssr_enabled);
         GRender_SetSSIL(cfg.ssil_enabled);
+        GRender_SetRTReflection(cfg.rt_reflection_enabled);
     }
 
     bool renderer_ = false;

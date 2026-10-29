@@ -63,6 +63,13 @@ struct AppHostServices {
     virtual bool has_renderer() const = 0;
     virtual float fps() = 0;
     virtual bool screenshot(const std::string& path) = 0;
+
+    // 渲染效果开关（DEMO / 编辑器运行时对比反射方案）。宿主实现直接调
+    // GRender_*（app_host 链接渲染器），绑定层本身不碰渲染器符号。
+    virtual void set_rt_reflection(bool enabled) = 0;
+    virtual bool rt_reflection_enabled() const = 0;
+    virtual void set_ssr(bool enabled) = 0;
+    virtual bool ssr_enabled() const = 0;
 };
 
 // 在已安装基础绑定的 context 上追加应用绑定（幂等：每次新建 context 调用一次）。

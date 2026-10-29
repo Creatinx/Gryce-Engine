@@ -19,6 +19,7 @@
   "ssao_enabled": true,
   "ssr_enabled": true,
   "ssil_enabled": false,
+  "rt_reflection_enabled": true,
   "ssr_max_steps": 96,
   "pcss_enabled": true,
   "pcss_light_size": 0.3,

@@ -449,6 +449,35 @@ JSValue js_input_set_mouse_locked(JSContext* ctx, JSValueConst, int argc, JSValu
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// engine.render.* —— 渲染效果开关（DEMO 与编辑器在运行时对比不同反射方案）
+// 通过 AppHostServices 反向注入，绑定层本身不链接渲染器。
+// ---------------------------------------------------------------------------
+namespace {
+
+JSValue js_render_set_rt_reflection(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 1) return throw_type_error(ctx, "engine.render.set_rt_reflection(bool)");
+    bool v = false;
+    from_js(ctx, argv[0], v);
+    if (g_services) g_services->set_rt_reflection(v);
+    return JS_UNDEFINED;
+}
+JSValue js_render_is_rt_reflection(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    return to_js(ctx, g_services ? g_services->rt_reflection_enabled() : false);
+}
+JSValue js_render_set_ssr(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 1) return throw_type_error(ctx, "engine.render.set_ssr(bool)");
+    bool v = false;
+    from_js(ctx, argv[0], v);
+    if (g_services) g_services->set_ssr(v);
+    return JS_UNDEFINED;
+}
+JSValue js_render_is_ssr(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    return to_js(ctx, g_services ? g_services->ssr_enabled() : false);
+}
+
+} // namespace
+
 void install_app_bindings(JSContext* ctx, ScriptApplication* app, AppHostServices* services) {
     g_services = services;
     g_app = app;
@@ -499,6 +528,13 @@ void install_app_bindings(JSContext* ctx, ScriptApplication* app, AppHostService
         set_fn(ctx, input_obj, "set_mouse_locked", &js_input_set_mouse_locked, 1);
     }
     JS_FreeValue(ctx, input_obj);
+
+    JSValue render_obj = JS_NewObject(ctx);
+    set_fn(ctx, render_obj, "set_rt_reflection", &js_render_set_rt_reflection, 1);
+    set_fn(ctx, render_obj, "is_rt_reflection", &js_render_is_rt_reflection, 0);
+    set_fn(ctx, render_obj, "set_ssr", &js_render_set_ssr, 1);
+    set_fn(ctx, render_obj, "is_ssr", &js_render_is_ssr, 0);
+    JS_SetPropertyStr(ctx, engine, "render", render_obj);
 
     JS_FreeValue(ctx, engine);
     JS_FreeValue(ctx, global);

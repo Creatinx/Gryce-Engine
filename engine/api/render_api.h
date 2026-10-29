@@ -324,6 +324,10 @@ GRYCE_RENDERER_API void  GRender_SetSSR(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsSSREnabled(void);
 GRYCE_RENDERER_API void  GRender_SetSSIL(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsSSILEnabled(void);
+// 硬件光追反射（Vulkan ray query）。仅 Vulkan 后端且设备支持时生效；其余情况
+// 为无操作，画面与未开启时零差异。用于 DEMO 与编辑器在支持的设备上对比 SSR。
+GRYCE_RENDERER_API void  GRender_SetRTReflection(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsRTReflectionEnabled(void);
 // Scene View 网格线：编辑器辅助显示，默认关闭。游戏运行时/打包版本不要打开，
 // 只有编辑器视口需要地面尺度参照时才由编辑器显式开启。
 GRYCE_RENDERER_API void  GRender_SetGrid(bool enabled);

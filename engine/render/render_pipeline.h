@@ -389,6 +389,18 @@ public:
         pp_params_.ssil_enabled = enabled ? 1 : 0;
     }
     bool ssil_enabled() const { return ssil_enabled_; }
+
+    // -----------------------------------------------------------------------
+    // 硬件光追反射（Vulkan ray query，默认关闭）
+    // -----------------------------------------------------------------------
+    // 仅 Vulkan 后端且设备支持 ray tracing 时真正生效；其余后端/设备走
+    // apply_ray_query_reflection 的 no-op 分支，画面与现状零差异。pp_params_.
+    // rt_reflection_enabled 同时被 Vulkan 后端读取用于决定是否跑 ray query pass。
+    void set_rt_reflection_enabled(bool enabled) {
+        rt_reflection_enabled_ = enabled;
+        pp_params_.rt_reflection_enabled = enabled ? 1 : 0;
+    }
+    bool rt_reflection_enabled() const { return rt_reflection_enabled_; }
     // SSIL 强度（间接光整体缩放）
     void set_ssil_intensity(float intensity) { ssil_intensity_ = intensity; }
     float ssil_intensity() const { return ssil_intensity_; }
@@ -1402,6 +1414,7 @@ private:
     std::vector<math::Vector3f> sdfgi_light_colors_;
     bool voxel_gi_enabled_ = false;
     bool ssil_enabled_ = false;
+    bool rt_reflection_enabled_ = false;
     // SSIL 参数：采样半径（世界单位）/ 每根光线步进数 / 强度
     float ssil_radius_ = 0.6f;
     int   ssil_steps_ = 8;
