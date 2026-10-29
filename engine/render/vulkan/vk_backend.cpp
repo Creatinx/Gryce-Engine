@@ -112,6 +112,15 @@ bool VulkanBackend::init(void* native_window) {
         return false;
     }
 
+    // 光追反射通道：仅当设备支持 VK_KHR_acceleration_structure + ray_query 时构建。
+    // 不支持则 ray_query_pass_ 保持无效，apply_ray_query_reflection 走 no-op 分支。
+    if (device_.supports_ray_tracing()) {
+        if (!ray_query_pass_.init(&device_)) {
+            GLOG_WARN("VulkanBackend: ray-query reflection pass init failed; "
+                      "reflection will fall back to SSR");
+        }
+    }
+
     int width = 0, height = 0;
     glfwGetFramebufferSize(window_, &width, &height);
     if (!swapchain_.init(instance_.handle(), &device_, surface_,
@@ -181,6 +190,8 @@ void VulkanBackend::shutdown() {
         gpu_query_pool_ = VK_NULL_HANDLE;
         gpu_profiling_ready_ = false;
     }
+    if (rt_tlas_.is_valid()) rt_tlas_.destroy();
+    ray_query_pass_.shutdown();
     device_.shutdown();
 
     if (surface_ != VK_NULL_HANDLE && instance_.handle()) {
@@ -1264,6 +1275,133 @@ void VulkanBackend::draw_indexed(RHIMeshHandle mesh, RHIShaderHandle shader) {
 
 bool VulkanBackend::supports_compute_shaders() const {
     return initialized_ && device_.is_valid();
+}
+
+bool VulkanBackend::supports_ray_tracing() const {
+    return initialized_ && device_.is_valid() && device_.supports_ray_tracing();
+}
+
+void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
+                                              RHITextureHandle depth_tex,
+                                              int width, int height,
+                                              const math::Matrix4f& view_proj,
+                                              const math::Matrix4f& inv_view_proj,
+                                              const math::Vector3f& camera_pos,
+                                              const PostProcessParams& pp) {
+    // 门控：不支持光追 / 未开启 / 通道无效 / 无场景几何实例（TLAS 未就绪）时
+    // 直接 no-op，画面与现状零差异。rt_ready_ 需要 IMesh CPU 数据导出（P2.2 接线），
+    // 当前尚未接通，故本路径在桌面也不会真正跑——保留完整结构供后续接线使用。
+    if (!supports_ray_tracing() || !pp.rt_reflection_enabled) return;
+    if (!ray_query_pass_.valid() || !rt_ready_ || !rt_tlas_.is_valid()) return;
+
+    auto* color = texture_pool_.get_if_alive(color_tex.index, color_tex.generation);
+    auto* depth = texture_pool_.get_if_alive(depth_tex.index, depth_tex.generation);
+    if (!color || !depth) return;
+
+    // vkCmdDispatch / vkCmdBlitImage 都不能录在 render pass 内（VUID-*renderpass）。
+    // 仿 dispatch_compute：先结束当前 pass，结束后在**主命令缓冲**上派发与拷贝，
+    // 必要时恢复 forward/swapchain pass。
+    bool reopen_forward = false;
+    if (current_render_pass_ != VK_NULL_HANDLE) {
+        reopen_forward = in_forward_pass_ && !current_framebuffer_.is_valid();
+        end_geometry_secondary();
+        end_and_execute_inline_secondary();
+        end_current_render_pass();
+        current_render_pass_ = VK_NULL_HANDLE;
+        current_render_pass_samples_ = VK_SAMPLE_COUNT_1_BIT;
+        current_framebuffer_vk_ = VK_NULL_HANDLE;
+        render_pass_contents_secondary_ = false;
+    }
+    VkCommandBuffer cmd = primary_command_buffer();
+    if (cmd == VK_NULL_HANDLE) {
+        if (reopen_forward) {
+        VkClearValue clears[2]{};
+        clears[0].color = {{clear_r_, clear_g_, clear_b_, clear_a_}};
+        clears[1].depthStencil = {1.0f, 0};
+        begin_render_pass_secondary(swapchain_.render_pass_load(),
+                                    swapchain_.framebuffer(current_image_), clears, 2,
+                                    swapchain_.extent());
+        in_forward_pass_ = true;
+    }
+        return;
+    }
+
+    auto image_barrier = [&](VkImage img, VkImageLayout old_l, VkImageLayout new_l,
+                            VkAccessFlags src_a, VkAccessFlags dst_a,
+                            VkPipelineStageFlags src_s, VkPipelineStageFlags dst_s,
+                            VkImageAspectFlags aspect) {
+        VkImageMemoryBarrier bar{};
+        bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bar.oldLayout = old_l;
+        bar.newLayout = new_l;
+        bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.srcAccessMask = src_a;
+        bar.dstAccessMask = dst_a;
+        bar.image = img;
+        bar.subresourceRange.aspectMask = aspect;
+        bar.subresourceRange.levelCount = 1;
+        bar.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(cmd, src_s, dst_s, 0, 0, nullptr, 0, nullptr, 1, &bar);
+    };
+
+    const VkImageAspectFlags depth_aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+    const VkImageAspectFlags color_aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    // 深度 / 颜色转入"可被 compute 采样"的布局（采样前需先切出 attach 布局）。
+    image_barrier(depth->image(), depth->layout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  depth_aspect);
+    image_barrier(color->image(), color->layout(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  color_aspect);
+
+    ray_query_pass_.render(cmd, rt_tlas_.handle(), depth->image_view(), color->image_view(),
+                          static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                          view_proj, inv_view_proj, camera_pos, pp);
+
+    // 颜色转入 TRANSFER_DST，准备接收反射图（反射图在 render() 末尾已是 TRANSFER_SRC）。
+    image_barrier(color->image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, color_aspect);
+
+    VkImageBlit blit{};
+    blit.srcSubresource.aspectMask = color_aspect;
+    blit.srcSubresource.layerCount = 1;
+    blit.dstSubresource.aspectMask = color_aspect;
+    blit.dstSubresource.layerCount = 1;
+    blit.srcOffsets[0] = {0, 0, 0};
+    blit.srcOffsets[1] = {width, height, 1};
+    blit.dstOffsets[0] = {0, 0, 0};
+    blit.dstOffsets[1] = {width, height, 1};
+    vkCmdBlitImage(cmd, ray_query_pass_.reflection_image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   color->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   VK_FILTER_NEAREST);
+
+    // 颜色 / 深度回到后续 pass 使用的 attach 布局（layout 跟踪同步更新）。
+    image_barrier(color->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, color_aspect);
+    image_barrier(depth->image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, depth_aspect);
+    color->set_layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    depth->set_layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+    if (reopen_forward) {
+        VkClearValue clears[2]{};
+        clears[0].color = {{clear_r_, clear_g_, clear_b_, clear_a_}};
+        clears[1].depthStencil = {1.0f, 0};
+        begin_render_pass_secondary(swapchain_.render_pass_load(),
+                                    swapchain_.framebuffer(current_image_), clears, 2,
+                                    swapchain_.extent());
+        in_forward_pass_ = true;
+    }
 }
 
 RHIShaderHandle VulkanBackend::create_compute_shader(const char* name, const char* shader_dir) {

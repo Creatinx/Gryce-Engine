@@ -968,6 +968,22 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
                      pp_params_, viewport_width_, viewport_height_);
     }
 
+    // 2.5 硬件光追反射（Vulkan ray query）。仅在后端支持且开启时生效；否则
+    // apply_ray_query_reflection 走 no-op 分支，行为与现状零差异。场景几何实例
+    // 登记（rt_ready_）尚未接线，故当前不会真正跑——保留完整结构供后续接线使用。
+    if (pp_params_.rt_reflection_enabled) {
+        const math::Matrix4f rt_vp = current_camera_.get_projection_matrix() *
+                                     current_camera_.get_view_matrix();
+        const math::Matrix4f rt_inv_vp = rt_vp.inverse();
+        const math::Vector3f rt_cam = current_camera_.position();
+        ctx->push_command([color = fb_.color_tex, depth = fb_.depth_tex,
+                           w = viewport_width_, h = viewport_height_,
+                           vp = rt_vp, inv_vp = rt_inv_vp, cam = rt_cam,
+                           pp = pp_params_](IRenderBackend* backend) {
+            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp);
+        });
+    }
+
     // 3. SSIL（屏幕空间间接光照）
     if (pp_params_.ssil_enabled) {
         ssil_->render(ctx, fb_.color_tex, fb_.depth_tex, fb_.depth_normal_tex,

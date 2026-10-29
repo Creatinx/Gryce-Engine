@@ -175,6 +175,12 @@ struct PostProcessParams {
     // 管线级开关占位，真实接线在 D3D12 后端 present 路径（见执行计划 P1.2）。
     int reflex_enabled = 0;
 
+    // 硬件光追反射（Vulkan ray query，默认关闭）。需 supports_ray_tracing() 为真
+    // 且驱动/设备支持 VK_KHR_ray_query；未就绪时后处理链静默跳过，画面与现状
+    // 零差异。rt_reflection_max_distance 为单条反射射线的最大追踪距离（世界单位）。
+    int rt_reflection_enabled = 0;
+    float rt_reflection_max_distance = 100.0f;
+
     // 时域亚像素抖动（Halton 序列，作用于场景几何 pass 的投影矩阵）。
     // 供 TAA / DLSS 类时域重建使用；默认关闭，不改变既有画面。
     // 抖动值由 RenderForwardClustered::get_frame_jitter 统一产出，

@@ -292,6 +292,7 @@ if(Vulkan_FOUND)
             render/vulkan/vk_compute.cpp
             render/vulkan/vk_device.cpp
             render/vulkan/vk_acceleration_structure.cpp
+            render/vulkan/vk_ray_query_pass.cpp
             render/vulkan/vk_framebuffer.cpp
             render/vulkan/vk_imgui_backend.cpp
             render/vulkan/vk_instance.cpp

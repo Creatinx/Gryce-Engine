@@ -148,6 +148,19 @@ public:
     // 上层据此选择 RT 反射（可用时优先）或回退 SSR（屏幕空间反射）。
     virtual bool supports_ray_tracing() const { return false; }
 
+    // 硬件光追反射（Vulkan ray query）应用入口。默认空实现：不支持光追或未开启
+    // 的后端什么都不做，画面与现状零差异。Vulkan 后端覆盖：在支持设备上用 TLAS
+    // 做 ray query，把反射合成回 color_tex。
+    // color_tex/depth_tex = HDR 颜色 / 深度纹理句柄；view_proj/inv_view_proj =
+    // 渲染用视图投影矩阵；camera_pos = 世界空间相机位置；pp 携带开关与参数。
+    virtual void apply_ray_query_reflection(RHITextureHandle /*color_tex*/,
+                                           RHITextureHandle /*depth_tex*/,
+                                           int /*width*/, int /*height*/,
+                                           const math::Matrix4f& /*view_proj*/,
+                                           const math::Matrix4f& /*inv_view_proj*/,
+                                           const math::Vector3f& /*camera_pos*/,
+                                           const PostProcessParams& /*pp*/) {}
+
     // 创建计算管线：加载并编译 {shader_dir}/{name}.comp。
     // 不支持时返回无效句柄（is_valid() == false），调用方必须据此回退到 CPU 路径。
     virtual RHIShaderHandle create_compute_shader(const char* /*name*/,
