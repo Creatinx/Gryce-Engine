@@ -181,9 +181,13 @@ struct PostProcessParams {
     int rt_reflection_enabled = 0;
     float rt_reflection_max_distance = 100.0f;
     // 追踪分辨率档（0.25~1.0）：光线查询在 width*scale × height*scale 的网格上
-    // 派发，命中信息经全分辨率 composite 双线性混合回主图。光线数按 scale² 下降，
-    // 反射内容本身是低频信号，0.5 是画质与开销的折中。
-    float rt_reflection_resolution_scale = 0.5f;
+    // 派发，命中信息经 composite 双边上采样混合回主图。默认 1.0（逐像素追踪，
+    // 不做上采样）；实测全分辨率与半分辨率的开销差在噪声范围内（瓶颈不在光追），
+    // 因此默认不再牺牲精度。降档留给弱 GPU 或高分辨率屏。
+    float rt_reflection_resolution_scale = 1.0f;
+    // 时域降噪（默认开启）：追踪结果先经重投影累积（方差裁剪）再用深度引导的
+    // 双边上采样混合回主图。关闭后退化为单帧追踪 + 纯双线性上采样，用于 A/B 对比。
+    int rt_reflection_denoise = 1;
 
     // 时域亚像素抖动（Halton 序列，作用于场景几何 pass 的投影矩阵）。
     // 供 TAA / DLSS 类时域重建使用；默认关闭，不改变既有画面。

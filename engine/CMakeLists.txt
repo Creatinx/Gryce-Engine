@@ -242,6 +242,7 @@ target_sources(GryceRenderer
         render/compositor_effect.cpp
         render/rendering_server_default.cpp
         render/render_pipeline.cpp
+        render/super_resolution.cpp
         render/shadow_pass.cpp
         render/postprocess_pass.cpp
         render/renderer_compositor.cpp

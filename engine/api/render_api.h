@@ -329,6 +329,25 @@ GRYCE_RENDERER_API bool  GRender_IsSSILEnabled(void);
 GRYCE_RENDERER_API void  GRender_SetRTReflection(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsRTReflectionEnabled(void);
 GRYCE_RENDERER_API void  GRender_SetRTReflectionResolutionScale(float scale);
+// 光追反射的时域降噪开关（默认开启）。关闭后退化为单帧追踪 + 双线性上采样，
+// 便于 A/B 对比画质与开销。仅影响反射合成链，其余画面不变。
+GRYCE_RENDERER_API void  GRender_SetRTReflectionDenoise(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsRTReflectionDenoiseEnabled(void);
+// 画面重建（超分）模式。OFF = 原生；TEMPORAL = 引擎内置时域重建（抖动 + 重投影
+// 累积 + 深度引导双边上采样，无需第三方运行时）；DLSS = NVIDIA DLSS，需要
+// Streamline 与 NGX 运行时同时到位，缺失时自动降级为 TEMPORAL 并打日志。
+// 当前内置时域重建的落地位置是硬件光追反射链；其余画面仍按原生分辨率渲染。
+typedef enum GRenderSuperResolutionMode {
+    GRENDER_SR_OFF = 0,
+    GRENDER_SR_TEMPORAL = 1,
+    GRENDER_SR_DLSS = 2
+} GRenderSuperResolutionMode;
+GRYCE_RENDERER_API void GRender_SetSuperResolutionMode(GRenderSuperResolutionMode mode);
+// 返回实际生效的模式（请求 DLSS 但不可用时会返回 TEMPORAL）。
+GRYCE_RENDERER_API GRenderSuperResolutionMode GRender_GetSuperResolutionMode(void);
+// 把探测结论写进 buf（一行人类可读文本，含缺失项与获取途径），返回写入长度
+// （不含结尾 0）；buf 为空或 cap <= 0 时只返回所需长度。
+GRYCE_RENDERER_API int  GRender_GetSuperResolutionStatus(char* buf, int cap);
 // Scene View 网格线：编辑器辅助显示，默认关闭。游戏运行时/打包版本不要打开，
 // 只有编辑器视口需要地面尺度参照时才由编辑器显式开启。
 GRYCE_RENDERER_API void  GRender_SetGrid(bool enabled);

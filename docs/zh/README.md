@@ -9,6 +9,7 @@
 | 总览 | [architecture.md](architecture.md) | DLL 分层、C API 边界、ECS 与反射、场景序列化、资源系统、运行期模型 |
 | 构建 | [build.md](build.md) | 依赖发现与来源策略、构建选项、产物清单、DLL 同步、CI |
 | 渲染 | [renderer.md](renderer.md) | 四后端、Clustered Forward 管线、阴影、屏幕空间与环境效果、调试工具 |
+| 光追反射 | [rt-reflection.md](rt-reflection.md) | 硬件光追反射（BLAS/TLAS、三段式追踪/降噪/合成）、精度手段、超分与 DLSS 接入、参数与排障 |
 | 着色器 | [shader-conventions.md](shader-conventions.md) | 源码组织、后端变体、宏定义规则、ESSL300 转换约束 |
 | 资源导入 | [model-import.md](model-import.md) | 贴图解析、PBR 材质推导、表面类型、色彩空间 |
 | LOD | [lod.md](lod.md) | 误差驱动的自动 LOD 与空间分块 LOD |

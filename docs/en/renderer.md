@@ -33,6 +33,8 @@ Backends plug in through the `IRenderBackend` interface in `render/render.h`. Mi
 
 SSR (reflections), SSAO, SSIL, toggled individually with `--ssr` / `--no-ssr`, `--ssao` / `--no-ssao`, `--ssil` / `--no-ssil`.
 
+Hardware ray-traced reflections (Vulkan ray query, `GRender_SetRTReflection`) run in a dedicated pass and are mutually exclusive with SSR; per-pixel tracing, temporal denoising and IBL environment reflections are covered in [rt-reflection.md](rt-reflection.md).
+
 ## 5. Global Illumination and Environment
 
 SDFGI, VoxelGI, reflection probes, IBL (prefiltered environment maps + BRDF LUT), volumetric fog. The IBL specular convention (`F0*A + B`; `fresnel(NdotV)*A + B` is forbidden) is documented in [model-import.md](model-import.md) section 6.1.

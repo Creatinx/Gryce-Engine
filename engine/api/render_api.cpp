@@ -10,6 +10,7 @@
 #include "api/viewport_api.h"
 #include "api/core_api.h"
 #include <algorithm>
+#include <cstring>
 #include "api/edit_api.h"
 #include "api/entity_api.h"
 #include "api/window_api.h"
@@ -21,6 +22,7 @@
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
 #include "render/render.h"
+#include "render/super_resolution.h"
 #include "render/render2d.h"
 // 引擎自带的调试 UI（左上角 FPS/帧时间 + ImGui 调试窗口）。
 // ImGuiRenderer 是引擎对 ImGui 的封装（GLFW 平台层 + 每后端 IImGuiBackend），
@@ -139,6 +141,8 @@ struct RendererState {
     bool  ssao_enabled = false;
     bool  ssr_enabled = false;
     bool  rt_reflection_enabled = false;   // 硬件光追反射（Vulkan ray query）
+    bool  rt_reflection_denoise = true;    // 光追反射时域降噪（默认开）
+    GRenderSuperResolutionMode sr_mode = GRENDER_SR_TEMPORAL;  // 实际生效的超分模式
     bool  show_fps = false;      // 左上角白色 FPS 叠加
     float fps = 0.0f;            // 由 GRender_EndFrame 平滑更新
     // ---- 帧统计（调试 UI 读数 + 自动化验证）----
@@ -1112,6 +1116,7 @@ static void apply_screen_space_settings(RenderPipeline* pipeline) {
     pipeline->set_ssr_enabled(g_renderer.ssr_enabled);
     pipeline->set_ssil_enabled(g_renderer.ssil_enabled);
     pipeline->set_rt_reflection_enabled(g_renderer.rt_reflection_enabled);
+    pipeline->set_rt_reflection_denoise(g_renderer.rt_reflection_denoise);
     pipeline->set_grid_enabled(g_renderer.grid_enabled);
     pipeline->set_ssr_quality(g_renderer.ssr_max_steps, g_renderer.ssr_max_roughness,
                               g_renderer.ssr_thickness, g_renderer.ssr_bilateral);
@@ -1291,6 +1296,10 @@ int GRender_Init(const GRenderInitDesc* desc) {
         g_renderer.pipeline->set_ibl_intensity(g_renderer.ibl_intensity);
         apply_screen_space_settings(g_renderer.pipeline.get());
     }
+
+    // 超分后端探测（DLSS 运行时是否存在）只做一次，结论写日志；缺失即降级为
+    // 内置时域重建，不改变任何渲染路径。
+    render::probe_super_resolution();
 
     // 2D 覆盖层渲染器：编辑器视口在 3D 场景之上绘制 2D（Sprite2D/UI 等）。
     // init 必须在 RenderContext::start()（渲染线程）之前调用。
@@ -2196,6 +2205,63 @@ void GRender_SetRTReflectionResolutionScale(float scale) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     if (g_renderer.pipeline) g_renderer.pipeline->set_rt_reflection_resolution_scale(scale);
+}
+void GRender_SetRTReflectionDenoise(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.rt_reflection_denoise = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_rt_reflection_denoise(enabled);
+}
+bool GRender_IsRTReflectionDenoiseEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.rt_reflection_denoise;
+}
+
+// --- 画面重建（超分 / DLSS）---
+
+namespace {
+// 请求模式 → 实际可用的模式。DLSS 在运行时缺失时降级为内置时域重建，
+// 降级会打一次日志（说明缺什么），绝不静默假装成功。
+GRenderSuperResolutionMode resolve_sr_mode(GRenderSuperResolutionMode requested) {
+    if (requested == GRENDER_SR_OFF) return GRENDER_SR_OFF;
+    if (requested == GRENDER_SR_DLSS) {
+        const auto& caps = render::probe_super_resolution();
+        if (caps.dlss_usable) return GRENDER_SR_DLSS;
+        GLOG_WARN("GRender_SetSuperResolutionMode: DLSS 不可用，降级为内置时域重建 — {}",
+                  caps.detail);
+        return GRENDER_SR_TEMPORAL;
+    }
+    return GRENDER_SR_TEMPORAL;
+}
+}  // namespace
+
+void GRender_SetSuperResolutionMode(GRenderSuperResolutionMode mode) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    const GRenderSuperResolutionMode effective = resolve_sr_mode(mode);
+    g_renderer.sr_mode = effective;
+    // 内置时域重建与光追反射的降噪是同一套链路：OFF 时关闭累积，其余保持开启。
+    const bool denoise = effective != GRENDER_SR_OFF;
+    g_renderer.rt_reflection_denoise = denoise;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_rt_reflection_denoise(denoise);
+}
+
+GRenderSuperResolutionMode GRender_GetSuperResolutionMode(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.sr_mode;
+}
+
+int GRender_GetSuperResolutionStatus(char* buf, int cap) {
+    GRYCE_API_GUARD();
+    const auto& caps = render::probe_super_resolution();
+    const int need = static_cast<int>(caps.detail.size());
+    if (!buf || cap <= 0) return need;
+    const int n = need < cap - 1 ? need : cap - 1;
+    std::memcpy(buf, caps.detail.data(), static_cast<size_t>(n));
+    buf[n] = '\0';
+    return n;
 }
 
 // --- Scene View 网格线（编辑器辅助显示，默认关闭）---

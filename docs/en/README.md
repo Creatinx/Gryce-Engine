@@ -9,6 +9,7 @@ Documents are organized by module and cover architecture, build, rendering, asse
 | Overview | [architecture.md](architecture.md) | DLL layering, C API boundary, ECS and reflection, scene serialization, resource system, runtime model |
 | Build | [build.md](build.md) | Dependency discovery and source strategies, build options, artifacts, DLL sync, CI |
 | Rendering | [renderer.md](renderer.md) | Four backends, clustered forward pipeline, shadows, screen-space and environment effects, debug tooling |
+| Ray-traced reflections | [rt-reflection.md](rt-reflection.md) | Hardware ray-traced reflections (BLAS/TLAS, trace/denoise/composite stages), precision techniques, super resolution and DLSS integration, parameters and troubleshooting |
 | Shaders | [shader-conventions.md](shader-conventions.md) | Source layout, backend variants, macro rules, ESSL300 conversion constraints |
 | Asset import | [model-import.md](model-import.md) | Texture resolution, PBR material derivation, surface types, color space |
 | LOD | [lod.md](lod.md) | Error-driven automatic LOD and chunked LOD |

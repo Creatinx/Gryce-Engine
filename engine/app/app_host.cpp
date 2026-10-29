@@ -61,7 +61,10 @@ struct ProjectConfig {
     bool ssr_enabled = false;
     bool ssil_enabled = false;
     bool rt_reflection_enabled = false;
-    float rt_reflection_resolution_scale = 0.5f;
+    float rt_reflection_resolution_scale = 1.0f;
+    bool rt_reflection_denoise = true;
+    // 画面重建模式：off / temporal / dlss（见 docs/zh/rt-reflection.md）
+    std::string super_resolution = "temporal";
     float ssr_max_steps = 64.0f;
     float ssr_max_roughness = 0.6f;
     float ssr_thickness = 0.1f;
@@ -118,6 +121,8 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.rt_reflection_enabled = j.value("rt_reflection_enabled", c.rt_reflection_enabled);
         c.rt_reflection_resolution_scale =
             j.value("rt_reflection_resolution_scale", c.rt_reflection_resolution_scale);
+        c.rt_reflection_denoise = j.value("rt_reflection_denoise", c.rt_reflection_denoise);
+        c.super_resolution = j.value("super_resolution", c.super_resolution);
         c.ssr_max_steps = j.value("ssr_max_steps", c.ssr_max_steps);
         c.ssr_max_roughness = j.value("ssr_max_roughness", c.ssr_max_roughness);
         c.ssr_thickness = j.value("ssr_thickness", c.ssr_thickness);
@@ -290,6 +295,16 @@ private:
         GRender_SetSSIL(cfg.ssil_enabled);
         GRender_SetRTReflection(cfg.rt_reflection_enabled);
         GRender_SetRTReflectionResolutionScale(cfg.rt_reflection_resolution_scale);
+        GRender_SetRTReflectionDenoise(cfg.rt_reflection_denoise);
+        // 超分模式：DLSS 缺失时引擎侧自动降级为内置时域重建并打日志。
+        // 这里按字符串直接映射（超分模块在渲染 DLL 内不导出，宿主只走 C ABI）。
+        if (cfg.super_resolution == "off" || cfg.super_resolution == "native") {
+            GRender_SetSuperResolutionMode(GRENDER_SR_OFF);
+        } else if (cfg.super_resolution == "dlss") {
+            GRender_SetSuperResolutionMode(GRENDER_SR_DLSS);
+        } else {
+            GRender_SetSuperResolutionMode(GRENDER_SR_TEMPORAL);
+        }
     }
 
     bool renderer_ = false;

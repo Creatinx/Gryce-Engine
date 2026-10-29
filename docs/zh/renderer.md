@@ -33,6 +33,8 @@
 
 SSR（反射）、SSAO、SSIL，可经 `--ssr` / `--no-ssr`、`--ssao` / `--no-ssao`、`--ssil` / `--no-ssil` 逐项开关。
 
+硬件光追反射（Vulkan ray query，`GRender_SetRTReflection`）走独立通道，与 SSR 二选一；含逐像素追踪、时域降噪与 IBL 环境反射，详见 [rt-reflection.md](rt-reflection.md)。
+
 ## 5. 全局光照与环境
 
 SDFGI、VoxelGI、Reflection Probe、IBL（预滤波环境贴图 + BRDF LUT）、体积雾。IBL 的镜面项口径（`F0*A + B`，禁用 `fresnel(NdotV)*A + B`）见 [model-import.md](model-import.md) 第 6.1 节。
