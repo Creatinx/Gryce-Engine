@@ -23,6 +23,9 @@ namespace gryce_engine::render {
 static const char* k_ray_query_glsl = R"GLSL(
 #version 460
 #extension GL_EXT_ray_query : require
+// 直接对 texture2D 做 texelFetch（不带 sampler）需要此扩展；缺了它 shaderc 会
+// 报 "required extension not requested: GL_EXT_samplerless_texture_functions"。
+#extension GL_EXT_samplerless_texture_functions : require
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(binding = 0) uniform accelerationStructureEXT uTlas;
@@ -64,25 +67,34 @@ void main() {
     vec3 wU = reconstructWorld(uv + vec2(0.0, 1.0 / float(res.y)), dU);
     vec3 n = normalize(cross(wR - world, wU - world));
     vec3 vdir = normalize(world - camPosMaxDist.xyz);
+    // 法线一律朝向相机：重建出的叉积方向取决于屏幕坐标手性，不统一的话
+    // 反射射线会扎进表面自相交，命中恒为自身、反射等于原色，等于没效果。
+    if (dot(n, vdir) > 0.0) n = -n;
     vec3 rdir = reflect(vdir, n);
 
+    // 沿法线外推一点起点，避免与发射像素所在三角形自相交。
+    vec3 origin = world + n * 0.02;
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, uTlas, gl_RayFlagsOpaqueEXT, 0xFF,
-                          world + n * 0.01, 0.01, rdir, camPosMaxDist.w);
+                          origin, 0.02, rdir, camPosMaxDist.w);
     while (rayQueryProceedEXT(rq)) {}
 
     vec3 outCol = lit;
     if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-        vec3 ro = rayQueryGetIntersectionWorldRayOriginEXT(rq, true);
-        vec3 rd = rayQueryGetIntersectionWorldRayDirectionEXT(rq, true);
         float t = rayQueryGetIntersectionTEXT(rq, true);
-        vec3 hit = ro + rd * t;
+        vec3 hit = origin + rdir * t;
         vec4 hc = viewProj * vec4(hit, 1.0);
-        vec2 huv = (hc.xy / hc.w) * 0.5 + 0.5;
-        huv.y = 1.0 - huv.y;
-        ivec2 hp = ivec2(clamp(huv, 0.0, 1.0) * resolutionStrength.xy);
-        vec3 refl = texelFetch(uLit, hp, 0).rgb;
-        outCol = mix(lit, refl, resolutionStrength.z);
+        if (hc.w > 0.0) {
+            vec2 huv = (hc.xy / hc.w) * 0.5 + 0.5;
+            huv.y = 1.0 - huv.y;
+            // 命中点必须在屏幕内才有屏幕空间颜色可取；否则保留原色（passthrough）。
+            if (huv.x >= 0.0 && huv.x <= 1.0 && huv.y >= 0.0 && huv.y <= 1.0) {
+                ivec2 hp = clamp(ivec2(huv * resolutionStrength.xy), ivec2(0), res - ivec2(1));
+                vec3 refl = texelFetch(uLit, hp, 0).rgb;
+                float k = clamp(resolutionStrength.z * 0.85, 0.0, 1.0);
+                outCol = mix(lit, refl, k);
+            }
+        }
     }
     imageStore(uOut, px, vec4(outCol, 1.0));
 }
@@ -108,6 +120,7 @@ VkRayQueryPass& VkRayQueryPass::operator=(VkRayQueryPass&& other) noexcept {
         refl_w_ = other.refl_w_;
         refl_h_ = other.refl_h_;
         refl_format_ = other.refl_format_;
+        refl_layout_ = other.refl_layout_;
         tlas_bound_ = other.tlas_bound_;
 
         other.device_ = nullptr;
@@ -190,6 +203,21 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
     layout_info.pSetLayouts = &desc_layout_;
     if (vkCreatePipelineLayout(dev, &layout_info, nullptr, &layout_) != VK_SUCCESS) {
         GLOG_ERROR("VkRayQueryPass: vkCreatePipelineLayout failed");
+        return false;
+    }
+
+    // 计算管线：把编译好的 ray query 着色器与上面这套描述符布局绑定起来。
+    // 缺了这一步 pipeline_ 恒为 VK_NULL_HANDLE，vkCmdBindPipeline 会直接崩在驱动里。
+    VkComputePipelineCreateInfo pipe_info{};
+    pipe_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipe_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipe_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipe_info.stage.module = module_;
+    pipe_info.stage.pName = "main";
+    pipe_info.layout = layout_;
+    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipe_info, nullptr, &pipeline_) !=
+        VK_SUCCESS) {
+        GLOG_ERROR("VkRayQueryPass: vkCreateComputePipelines failed");
         return false;
     }
 
@@ -374,6 +402,7 @@ bool VkRayQueryPass::create_reflection_target(uint32_t width, uint32_t height) {
     // 初始布局：UNDEFINED → GENERAL（存储图可直接写入）
     transition_image(refl_image_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                     0, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    refl_layout_ = VK_IMAGE_LAYOUT_GENERAL;
 
     refl_w_ = static_cast<int>(width);
     refl_h_ = static_cast<int>(height);
@@ -387,6 +416,7 @@ void VkRayQueryPass::destroy_reflection_target() {
         refl_view_ = VK_NULL_HANDLE;
         refl_w_ = 0;
         refl_h_ = 0;
+        refl_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
         return;
     }
     VkDevice dev = device_->device();
@@ -397,6 +427,7 @@ void VkRayQueryPass::destroy_reflection_target() {
     refl_view_ = VK_NULL_HANDLE;
     refl_w_ = 0;
     refl_h_ = 0;
+    refl_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 bool VkRayQueryPass::ensure_reflection_target(uint32_t width, uint32_t height) {
@@ -418,6 +449,27 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
                             const PostProcessParams& pp) {
     if (!valid_ || cmd == VK_NULL_HANDLE || tlas == VK_NULL_HANDLE) return;
     if (!ensure_reflection_target(width, height)) return;
+
+    // 反射图上一帧末尾被转成 TRANSFER_SRC（供后端拷回）；复用时先转回 GENERAL
+    // 才能作为存储图写入，否则 old layout 不匹配、写入被丢弃。
+    if (refl_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
+        VkImageMemoryBarrier b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout = refl_layout_;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        b.image = refl_image_;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                            &b);
+        refl_layout_ = VK_IMAGE_LAYOUT_GENERAL;
+    }
 
     // 上传 uniform
     RayQueryUniforms u{};
@@ -513,6 +565,7 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     bar.subresourceRange.layerCount = 1;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &bar);
+    refl_layout_ = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
     tlas_bound_ = true;
 }

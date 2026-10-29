@@ -107,6 +107,9 @@ private:
     int refl_w_ = 0;
     int refl_h_ = 0;
     VkFormat refl_format_ = VK_FORMAT_R16G16B16A16_SFLOAT;
+    // 反射图当前布局：每帧 render() 先转回 GENERAL（存储写入），派发后再转
+    // TRANSFER_SRC 交给后端拷回。不跟踪的话第二帧起 old layout 会对不上。
+    VkImageLayout refl_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     bool tlas_bound_ = false;
 };

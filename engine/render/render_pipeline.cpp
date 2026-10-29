@@ -2882,6 +2882,30 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             }
     }
 
+    // 硬件光追反射（Vulkan ray query）：SSR 之后、SSIL/后处理之前。仅当后端支持
+    // ray tracing 且 rt_reflection_enabled 开启时真正执行；否则
+    // apply_ray_query_reflection 走 no-op，画面与现状零差异（回退 SSR）。
+    // 实例取自本帧不透明渲染列表（mesh 句柄 + 世界矩阵），交后端建/更新 TLAS。
+    if (pp_params_.rt_reflection_enabled && camera_) {
+        math::Matrix4f rt_vp = get_projection_matrix() * camera_->get_view_matrix();
+        math::Matrix4f rt_inv_vp = rt_vp.inverse();
+        math::Vector3f rt_cam = camera_->position();
+
+        std::vector<RayTracingInstance> rt_instances;
+        rt_instances.reserve(opaque_items_.size());
+        for (const auto& item : opaque_items_) {
+            if (item.mesh.is_valid()) rt_instances.push_back({item.mesh, item.model});
+        }
+
+        ctx.push_command([color = hdr_color_, depth = hdr_depth_,
+                          w = viewport_width_, h = viewport_height_,
+                          vp = rt_vp, inv_vp = rt_inv_vp, cam = rt_cam,
+                          pp = pp_params_,
+                          insts = std::move(rt_instances)](IRenderBackend* backend) {
+            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp, insts);
+        });
+    }
+
     // 3. SSIL 屏幕空间间接光照（SSR 后、SSAO 前）
         if (ssil_enabled_ && ssil_.valid()) {
             // 前向路径由上面的预通道填入，deferred 由 GBuffer 填入，语义一致。

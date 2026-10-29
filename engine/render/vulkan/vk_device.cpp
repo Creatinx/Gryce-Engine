@@ -126,6 +126,13 @@ bool VulkanDevice::init(VkInstance instance, VkSurfaceKHR surface) {
     allocator_info.device = device_;
     allocator_info.instance = instance;
     allocator_info.pVulkanFunctions = &vulkan_functions;
+    // 光追加速结构（BLAS/TLAS）的存储/scratch/实例缓冲都带
+    // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT。VMA 只有在创建分配器时声明了
+    // 该能力，才会为这类缓冲分配内存；否则 vmaCreateBuffer 直接失败（症状：
+    // "VulkanBuffer: failed to create buffer"，随后光追静默退化）。
+    if (supports_ray_tracing_) {
+        allocator_info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
     if (vmaCreateAllocator(&allocator_info, &allocator_) != VK_SUCCESS) {
         GLOG_ERROR("VulkanDevice: failed to create VMA allocator");
         return false;
