@@ -89,6 +89,10 @@ void main() {
     // 的覆盖度压到 1/25 附近，合成时反射只剩百分之几、其余仍是最初的 IBL 镜面，
     // 整片反射因此发白变淡。改成 max(., center.a) 保留满覆盖，只在邻域更密时
     // 抬高；未命中像素开头已 early-out，覆盖率不会外溢到命中区之外。
-    float cov = clamp(max(cov_blur, center.a), 0.0, 1.0);
+    // 孤点抑制：邻域几乎没有别的命中（cov_blur 低于 2/25）时，本像素大概率是
+    // 步进在薄物体/掠射边缘的临界误命中。这类像素保留下来就是反射区里散落的
+    // 1px 亮点（"满天星"），远看比漏掉这点反射更刺眼，所以只有在邻域给出
+    // 支撑时才允许把覆盖度抬到满值。
+    float cov = clamp(max(cov_blur, center.a * step(0.08, cov_blur)), 0.0, 1.0);
     FragColor = vec4(mix(center.rgb, blurred, blur_w), cov);
 }

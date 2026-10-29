@@ -222,12 +222,17 @@ void main() {
     // 模糊去不掉；噪点不是）。抖动幅度不超过一个像素，不改变命中位置。
     float px_acc = hash12(gl_FragCoord.xy);
     float step_px = 1.0;
+    // 步长上限随射线长度自适应：短射线用 4px 精扫（远处小物体在屏幕上只有
+    // 几个像素厚，粗步进会整段跳过，出现"虚线状残缺反射"）；极长射线放宽到
+    // px_total/max_steps，保证步数用尽前仍能走到终点（否则末段退化成环境色）。
+    float step_cap = max(4.0, px_total / float(pc.max_steps));
 
     for (int i = 0; i < pc.max_steps; ++i) {
         if (px_acc >= px_total - 0.5) break;
-        // 步长增长放慢（1.18）并压低上限（12 像素）：与 GL 版 ssr_trace.frag 一致
-        // —— 粗步进会让相邻列的射线在不同深度对处被判命中，竖着排成栅格纹。
-        step_px = min(step_px * 1.18, 12.0);
+        // 步长增长放慢到 1.08、上限交给 step_cap（与 GL 版 ssr_trace.frag 一致）：
+        // 粗步进会让相邻列的射线在不同深度处被判命中而竖着排成栅格纹，也会让远处
+        // 只有几个像素厚的物体整段被跳过（反射残缺成一串虚线）。
+        step_px = min(step_px * 1.08, step_cap);
         px_acc = min(px_acc + step_px, px_total);
 
         vec2 uv;

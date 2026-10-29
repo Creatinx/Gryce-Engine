@@ -81,6 +81,10 @@ void main() {
     // 像"反射没生效"。改成 max(., center.a)：命中像素保持满覆盖，只有邻域更密时
     // 才会被抬高（等效向内侧轻微膨胀），未命中像素在函数开头已 early-out，
     // 覆盖率仍不会外溢到命中区之外。
-    float cov = clamp(max(cov_blur, center.a), 0.0, 1.0);
+    // 孤点抑制：邻域几乎没有别的命中（cov_blur 低于 2/25）时，本像素大概率是
+    // 步进在薄物体/掠射边缘的临界误命中。这类像素保留下来就是反射区里散落的
+    // 1px 亮点（"满天星"），远看比漏掉这点反射更刺眼，所以只有在邻域给出
+    // 支撑时才允许把覆盖度抬到满值。
+    float cov = clamp(max(cov_blur, center.a * step(0.08, cov_blur)), 0.0, 1.0);
     FragColor = vec4(mix(center.rgb, blurred, blur_w), cov);
 }

@@ -99,7 +99,7 @@ struct PostProcessParams {
     // SSR（屏幕空间反射，默认关闭）
     int ssr_enabled = 0;
     float ssr_max_roughness = 0.6f;
-    int ssr_max_steps = 64;
+    int ssr_max_steps = 96;
     // 屏幕空间反射的深度容差下限（世界单位）。这个值直接决定命中点沿射线
     // "越过"表面的距离：掠射角下 0.1 会换算成 ~35 像素的反射错位，
     // 0.01 时约 3 像素（CPU 复核：命中率 90.9% → 99.3%）。
