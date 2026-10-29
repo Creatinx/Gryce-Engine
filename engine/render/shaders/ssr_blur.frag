@@ -75,12 +75,12 @@ void main() {
     }
     vec3 blurred = wsum > 1e-4 ? acc / wsum : center.rgb;
     float cov_blur = acc_cov / max(cov_wsum, 1e-4);
-    // 覆盖度只允许向命中区"内侧"软化：min(., center.a) 把上界夹在逐像素值上，
-    // 未命中像素在函数开头已经 early-out，因此 5x5 平滑绝不会把覆盖率摊到命中
-    // 区之外。效果是命中区边缘的 cover 从 1 平滑降到 0，消除"贴上去一块"的
-    // 硬切，而反射区边界严格落在真实命中边界之内。
-    // 颜色与覆盖度同源（都只在命中像素非零），合成时不会出现"减了 IBL 镜面项
-    // 却补不回反射"的黑边，也就不需要再把邻域 RGB 灌进未命中像素。
-    float cov = min(cov_blur, center.a);
+    // 覆盖度以逐像素值为下界：min(., center.a) 的写法会把"四周都是未命中"的
+    // 命中像素压到 1/25 附近，合成时这些像素只剩下约 4% 的反射、其余仍是最初的
+    // IBL 镜面 —— 稀疏命中区（掠射反射、细长物体的倒影）因此整体发白发淡，看着
+    // 像"反射没生效"。改成 max(., center.a)：命中像素保持满覆盖，只有邻域更密时
+    // 才会被抬高（等效向内侧轻微膨胀），未命中像素在函数开头已 early-out，
+    // 覆盖率仍不会外溢到命中区之外。
+    float cov = clamp(max(cov_blur, center.a), 0.0, 1.0);
     FragColor = vec4(mix(center.rgb, blurred, blur_w), cov);
 }

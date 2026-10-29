@@ -108,6 +108,13 @@ RaySample ray_sample(float V0z_local, float Dvz_local, float V0x_local, float Dv
     return RaySample(invz_exact, uv, z_view);
 }
 
+// 逐像素哈希（0..1）：只用于打散步进起始相位，不参与命中判定。
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 void main() {
     ivec2 self = self_texel(vec2(textureSize(uDepthTex, 0)));
     vec4 nr = texelFetch(uNormalRoughTex, self, 0);
@@ -209,12 +216,18 @@ void main() {
     float invz_prev = invz0;
     float prev_ray_depth = lin;
     float prev_scene = scene_depth(uv0);
-    float px_acc = 0.0;
+    // 起始步进相位按像素抖动一格：所有像素从同一点出发时，步长增长会让相邻列
+    // 恰好落在同一批深度上，命中/未命中的分布沿列方向对齐，形成等距梳状条纹。
+    // 相位打散后条纹退化为高频噪点，再由后续双边模糊抹平（条纹是相干图案，
+    // 模糊去不掉；噪点不是）。抖动幅度不超过一个像素，不改变命中位置。
+    float px_acc = hash12(gl_FragCoord.xy);
     float step_px = 1.0;
 
     for (int i = 0; i < pc.max_steps; ++i) {
         if (px_acc >= px_total - 0.5) break;
-        step_px = min(step_px * 1.35, 32.0);
+        // 步长增长放慢（1.18）并压低上限（12 像素）：与 GL 版 ssr_trace.frag 一致
+        // —— 粗步进会让相邻列的射线在不同深度对处被判命中，竖着排成栅格纹。
+        step_px = min(step_px * 1.18, 12.0);
         px_acc = min(px_acc + step_px, px_total);
 
         vec2 uv;
@@ -258,9 +271,14 @@ void main() {
             // 深度后是一张垂直于视轴的等深薄片，远处地面像素的反射射线扫过其屏幕
             // 足迹时深度已远在薄片之后却满足穿越条件，会把整条竖列涂成粒子颜色。
             // 这里复核射线深度与表面深度之差是否落在厚度内，超出则继续步进。
+            // 容差必须带上"本步自身跨过的深度"：掠射角下单步跨过的深度可达
+            // cand_dist 的百分之几，固定容差正好卡在这个量级，相邻像素会一半
+            // 落在容差内、一半刚好超出，整片反射因此呈等距梳状条纹（与 GL 版
+            // ssr_trace.frag 同步修改，两端口径必须一致）。
             float cand_dist = 1.0 / iz_hi;
             float overshoot = cand_dist - scene_depth(uv_hi);
-            if (overshoot <= max(pc.thickness * 4.0, cand_dist * 0.05)) {
+            float step_dz = abs(ray_depth - prev_ray_depth);
+            if (overshoot <= max(pc.thickness * 4.0, min(step_dz * 1.5, cand_dist * 0.35))) {
                 hit_uv = uv_hi;
                 hit_dist = cand_dist;
                 hit = true;

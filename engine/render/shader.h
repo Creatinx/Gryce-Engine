@@ -117,7 +117,9 @@ struct PostProcessParams {
     // 反射，半分辨率再线性放大在视觉上几乎不可分辨（实测 1280x720：mean 差
     // 0.2/255、非背景像素占比差 0.06%），但省掉 SSR 约 3/4 的 GPU 时间。
     // 需要满分辨率 Reflex 的项目可以显式调回 1.0。
-    float ssr_resolution_scale = 0.5f;
+    // SSR 追踪分辨率相对视口的比例。默认全分辨率：半分辨率缓冲再双线性放大后，
+    // 镜面地板上的物体轮廓会错开 1~2 像素、细长高光被拉成"双份"，观感像反射错位。
+    float ssr_resolution_scale = 1.0f;
     // SSR 调试视图（0=正常合成；1=原始反射颜色；2=命中覆盖度；3=场景 alpha=IBL 镜面项）
     int ssr_debug_view = 0;
 

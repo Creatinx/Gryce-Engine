@@ -85,8 +85,10 @@ void main() {
     }
     vec3 blurred = wsum > 1e-4 ? acc / wsum : center.rgb;
     float cov_blur = acc_cov / max(cov_wsum, 1e-4);
-    // 覆盖度只向命中区内侧软化（与 GL 版一致）：min(., center.a) 夹住上界，
-    // 未命中像素已在开头 early-out，5x5 平滑不会外溢到命中区之外。
-    float cov = min(cov_blur, center.a);
+    // 覆盖度以逐像素值为下界（与 GL 版一致）：min(., center.a) 会把稀疏命中区
+    // 的覆盖度压到 1/25 附近，合成时反射只剩百分之几、其余仍是最初的 IBL 镜面，
+    // 整片反射因此发白变淡。改成 max(., center.a) 保留满覆盖，只在邻域更密时
+    // 抬高；未命中像素开头已 early-out，覆盖率不会外溢到命中区之外。
+    float cov = clamp(max(cov_blur, center.a), 0.0, 1.0);
     FragColor = vec4(mix(center.rgb, blurred, blur_w), cov);
 }

@@ -1126,6 +1126,12 @@ bool RenderPipeline::screen_space_effects_supported() const {
     return true;
 }
 
+bool RenderPipeline::rt_reflection_active() const {
+    if (pp_params_.rt_reflection_enabled == 0) return false;
+    if (!ctx_ || !ctx_->backend()) return false;
+    return ctx_->backend()->supports_ray_tracing();
+}
+
 void RenderPipeline::set_fog_params(const math::Vector3f& color, float density, float height) {
     fog_color_ = color;
     fog_density_ = density;
@@ -2135,7 +2141,15 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     // 时，从相机位置把场景重绘进 3x2 面图集。SSR 未命中射线随后按反射方向采样它，
     // 避免"贴近反射物"时反射不到周围物体（退化成一整片天空色）。必须发生在 HDR
     // 前向 pass 之前（此处尚未绘制场景）。
-    if (probe_targets_valid_ && ssr_enabled_ && hdr_enabled_) {
+    //
+    // 当前关闭：图集是"从相机位置重绘一遍场景"得到的近似，同一物体在镜面里会同时
+    // 出现两次 —— 一次来自屏幕空间命中（位置正确），一次来自探针按方向查表
+    // （位置偏移、随视角滑动），这就是"反射错位/多个重影"的来源；相机移动时偏移
+    // 还会漂移。未命中的射线改为保留前向 pass 已经算好的 IBL 环境镜面，与硬件
+    // 光追通道的兜底口径完全一致（见 vk_ray_query_pass 的 env 分支），画面稳定且
+    // 不再有第二份拷贝。捕获本身是 6 次整场景重绘，一并省掉。
+    constexpr bool k_ssr_probe_fallback = false;
+    if (k_ssr_probe_fallback && probe_targets_valid_ && ssr_enabled_ && hdr_enabled_) {
         // 网格上传是排队到渲染线程的命令，首帧通常尚未执行完；此时抓取得到
         // 的图集只有天空与清屏色，而相机静止时不会再抓 → 探针永久为空。
         // 这里要求"场景里所有待上传网格都已就绪"才抓：上传命令按实体顺序
@@ -2669,7 +2683,10 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         }
 
         // SSR 屏幕空间反射（HDR 渲染后、SSIL/SSAO 前）
-        if (ssr_enabled_ && ssr_.valid() && camera_ && screen_space_effects_supported()) {
+        // 硬件光追反射开启时跳过 SSR：两者都在替换同一份 IBL 镜面项，叠加会让
+        // 同一物体出现两份来源不同、位置略有差异的反射（表现为"重影/错位"）。
+        if (ssr_enabled_ && !rt_reflection_active() && ssr_.valid() && camera_ &&
+            screen_space_effects_supported()) {
             pp_params_.ssr_near = camera_->near_plane();
             pp_params_.ssr_far = camera_->far_plane();
             pp_params_.ssr_tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
@@ -2861,7 +2878,10 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             (ssr_enabled_ || ssil_enabled_ || pp_params_.ssao_enabled != 0)) {
             render_normal_prepass(scene, ctx, camera_frustum);
         }
-        if (ssr_enabled_ && ssr_.valid() && camera_ && screen_space_effects_supported()) {
+        // 硬件光追反射开启时跳过 SSR：两者都在替换同一份 IBL 镜面项，叠加会让
+        // 同一物体出现两份来源不同、位置略有差异的反射（表现为"重影/错位"）。
+        if (ssr_enabled_ && !rt_reflection_active() && ssr_.valid() && camera_ &&
+            screen_space_effects_supported()) {
             pp_params_.ssr_near = camera_->near_plane();
             pp_params_.ssr_far = camera_->far_plane();
             pp_params_.ssr_tan_half = std::tan(math::to_radians(camera_->fov()) * 0.5f);
@@ -2887,7 +2907,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     // apply_ray_query_reflection 走 no-op，画面与现状零差异（回退 SSR）。
     // 实例取自本帧不透明渲染列表（mesh 句柄 + 世界矩阵 + 材质参数），交后端
     // 建/更新 TLAS；IBL 环境立方体贴图一并下发（未命中方向采样环境，P2.3）。
-    if (pp_params_.rt_reflection_enabled && camera_) {
+    if (rt_reflection_active() && camera_) {
         math::Matrix4f rt_vp = get_projection_matrix() * camera_->get_view_matrix();
         math::Matrix4f rt_inv_vp = rt_vp.inverse();
         math::Vector3f rt_cam = camera_->position();
@@ -3341,6 +3361,8 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
         ctx.gpu_profile_end();   // scene（submit 路径）
 
         // 后处理（与 render_scene 相同；水面反射/贴花需要 Scene，submit 路径跳过）
+        // 这里不加"光追接管就跳过 SSR"的条件：submit 路径不派发光追反射，
+        // 跳过 SSR 会让这条路彻底没有反射（render_scene 路径才有该互斥）。
         if (ssr_enabled_ && ssr_.valid() && camera_ && screen_space_effects_supported()) {
             pp_params_.ssr_near = camera_->near_plane();
             pp_params_.ssr_far = camera_->far_plane();

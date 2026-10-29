@@ -24,15 +24,16 @@ namespace gryce_engine::render {
 
 // 内联 ray query 计算着色器（GLSL，Vulkan 语义 + GL_EXT_ray_query）。
 // 同一着色器包含三个模式（UBO 的 resolutionStrength.w 分支）：
-//   0 trace —— 从深度重建世界坐标与法线，沿反射方向做 ray query；命中按实例
-//     材质（roughness/metallic，经 instanceCustomIndex 索引 SSBO）做菲涅尔
-//     衰减，光滑命中重投影回屏幕双线性采样 HDR，粗糙命中走 prefilter 环境
-//     mip，未命中采样环境立方体贴图；粗糙表面的反射方向按 roughness 圆锥扰动，
-//     抖动噪声由后续时域累积收敛（等效多采样）。同时写辅助图（法线 + 线性深度）。
+//   0 trace —— 从深度重建世界坐标与法线，沿反射方向做 ray query；写"看见什么"
+//     （命中 → 屏幕 HDR 双线性 / 屏幕外与环境未命中 → 环境立方体贴图）与覆盖率，
+//     并由后续时域累积收敛抖动噪声。
 //   1 temporal —— 用上一帧 view-proj 把当前像素重投影到历史帧，按线性深度做
 //     几何校验、按 3×3 邻域做方差裁剪，再按系数混合，输出累积结果。
 //   2 composite —— 以线性深度为引导做双边上采样（深度断开的邻域不参与插值），
-//     再与全分辨率 HDR 颜色混合。
+//     再按反射面自身的 BRDF 镜面占比与 HDR 颜色混合。
+// 反射强度（谁该像镜子）只在 composite 决定：取前向着色器写进 HDR alpha 的 IBL
+// 镜面亮度 / 总亮度。trace 只给覆盖率，这样金属镜面整块替换、绝缘体只加一丝，
+// 与屏幕空间 SSR 的合成口径完全一致。
 static const char* k_ray_query_glsl = R"GLSL(
 #version 460
 #extension GL_EXT_ray_query : require
@@ -158,51 +159,42 @@ void main() {
                               origin, 0.02, rdir, camPosMaxDist.w);
         while (rayQueryProceedEXT(rq)) {}
 
+        // 反射内容只回答"这个方向上看见什么"，不再决定"这个表面反射多强"：
+        // 强度由合成段的 BRDF 占比（IBL 镜面亮度 / 总亮度）给出，与 SSR 合成同一
+        // 口径。此处用命中实例的材质做权重会在物理上说不通 —— 反射强弱取决于
+        // *反射面* 的 F0/粗糙度，而不是被反射物体的材质；旧实现据此把掠射角下的
+        // 绝缘体（f0≈0.04）按命中金属（f0≈1）算成整块镜面，画面因此整体发灰、
+        // 每个盒子的下半截都被"替换"成地面颜色。
         vec3 reflCol = vec3(0.0);
-        float k = 0.0;
+        float cover = 0.0;
         if (rayQueryGetIntersectionTypeEXT(rq, true) !=
             gl_RayQueryCommittedIntersectionNoneEXT) {
             float t = rayQueryGetIntersectionTEXT(rq, true);
             vec3 hit = origin + rdir * t;
 
-            // 命中实例的材质参数（instanceCustomIndex 由后端填实例序号）：
-            // roughness 决定反射强度衰减与环境模糊档位，metallic 决定菲涅尔基准。
-            uint idx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
-            vec2 mp = mat_params[idx];
-            float rough = clamp(mp.x, 0.0, 1.0);
-            float metal = clamp(mp.y, 0.0, 1.0);
-
-            // 菲涅尔-史利克：掠射角反射增强；绝缘体基准 0.04，金属趋近 1。
-            float ndv = clamp(dot(n, -vdir), 0.0, 1.0);
-            float f0 = mix(0.04, 1.0, metal);
-            float fres = f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0);
-            k = clamp(strength * fres * (1.0 - rough * 0.75), 0.0, 1.0);
-
-            // 反射内容三选一：光滑命中 → 屏幕空间 HDR（真实场景色）；
-            // 粗糙命中 → prefilter 环境 mip（模糊环境光）；命中点在屏幕外 → 环境。
-            vec3 envHit = vec3(0.0);
-            if (envParams.z > 0.0) {
-                envHit = textureLod(uPrefilter, rdir, rough * envParams.y).rgb;
-            }
-            vec3 ssCol = envHit;
+            // 命中点在屏幕内 → 取该点的 HDR 颜色（与主画面同分辨率）；
+            // 命中点在屏幕外（相机背后 / 视锥外）→ 退回环境贴图，避免采到被
+            // clamp 到屏幕边缘的地面色。
             vec4 hc = viewProj * vec4(hit, 1.0);
+            bool on_screen = false;
             if (hc.w > 0.0) {
                 vec2 huv = (hc.xy / hc.w) * 0.5 + 0.5;
                 huv.y = 1.0 - huv.y;
-                if (huv.x >= 0.0 && huv.x <= 1.0 && huv.y >= 0.0 && huv.y <= 1.0) {
-                    vec3 ss = bilinear(uLit, huv * vec2(fullRes), fullRes).rgb;
-                    // 越粗糙越信任环境贴图（屏幕空间只有一个平面的信息）
-                    ssCol = mix(envHit, ss, smoothstep(0.15, 0.45, rough));
+                if (all(greaterThanEqual(huv, vec2(0.0))) &&
+                    all(lessThanEqual(huv, vec2(1.0)))) {
+                    reflCol = bilinear(uLit, huv * vec2(fullRes), fullRes).rgb;
+                    on_screen = true;
                 }
             }
-            reflCol = ssCol;
+            if (!on_screen && envParams.z > 0.0) reflCol = texture(uEnv, rdir).rgb;
+            cover = 1.0;
         } else if (envParams.z > 0.0) {
             // 未命中 = 反射方向射向环境（天空）：直接采样环境立方体贴图。
             // 这是屏幕空间方案永远给不出的内容（P2.3 环境反射）。
             reflCol = texture(uEnv, rdir).rgb;
-            k = clamp(strength * 0.9, 0.0, 1.0);
+            cover = 1.0;
         }
-        imageStore(uOut, px, vec4(reflCol, k));
+        imageStore(uOut, px, vec4(reflCol, cover * strength));
         imageStore(uAuxOut, px, vec4(n, length(world - camPos)));
     } else if (mode == 1) {
         // ---- 模式 1：temporal（时域累积降噪）----
@@ -297,7 +289,22 @@ void main() {
             }
         }
         vec4 r = wsum > 1e-6 ? sum / wsum : vec4(0.0);
-        imageStore(uOut, px, vec4(mix(lit, r.rgb, clamp(r.a, 0.0, 1.0)), 1.0));
+        float cover = clamp(r.a, 0.0, 1.0);
+        if (cover <= 0.0) {
+            imageStore(uOut, px, vec4(lit, 1.0));
+            return;
+        }
+        // 与 SSR 合成分解同一套 BRDF 权重：uLit.a 是前向着色器写入的 IBL 镜面项
+        // 亮度（见 vulkan_pbr.frag / pbr.frag），镜面占比 = 镜面亮度 / 总亮度。
+        // 金属 ≈ 1（整块被反射替换，并按表面色相着色），绝缘体 ≈ 0.04（只加一丝）。
+        // 旧实现直接 mix(lit, refl, cover)，等于把所有材质一律当镜面，画面发灰、
+        // 盒子/球下半截被反射内容整块覆盖。
+        float lum = dot(lit, vec3(0.2126, 0.7152, 0.0722));
+        float spec_share = lum > 1e-4 ? clamp(texelFetch(uLit, px, 0).a / lum, 0.0, 1.0) : 0.0;
+        vec3 tint = lit / max(lum, 1e-4);
+        float w = cover * spec_share;
+        vec3 color = lit * (1.0 - w) + tint * r.rgb * w;
+        imageStore(uOut, px, vec4(color, 1.0));
     }
 }
 )GLSL";

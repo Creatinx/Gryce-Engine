@@ -35,7 +35,7 @@
   "ssr_thickness": 0.01,
   "ssr_bilateral_filter": 0.5,
   "ssr_env_fallback": 1.0,
-  "ssr_resolution_scale": 0.5,
+  "ssr_resolution_scale": 1.0,
   "main_scene": "res:/scenes/rt_showcase.gesc",
   "rt_reflection_denoise": true,
   "msaa_samples": 4,

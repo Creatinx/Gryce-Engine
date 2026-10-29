@@ -106,6 +106,13 @@ RaySample ray_sample(float V0z_local, float Dvz_local, float V0x_local, float Dv
     return RaySample(invz_exact, uv, z_view);
 }
 
+// 逐像素哈希（0..1）：只用于打散步进起始相位，不参与命中判定。
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 void main() {
     vec2 nd = vec2(textureSize(uDepthTex, 0));
     ivec2 self = self_texel(nd);
@@ -215,12 +222,20 @@ void main() {
     float invz_prev = invz0;
     float prev_ray_depth = lin;
     float prev_scene = scene_depth(uv0_exact);
-    float px_acc = 0.0;
+    // 起始步进相位按像素抖动一格：所有像素从同一点出发时，步长增长会让相邻列
+    // 恰好落在同一批深度上，命中/未命中的分布沿列方向对齐，形成等距梳状条纹。
+    // 相位打散后条纹退化为高频噪点，再由后续双边模糊抹平（条纹是相干图案，
+    // 模糊去不掉；噪点不是）。抖动幅度不超过一个像素，不改变命中位置。
+    float px_acc = hash12(gl_FragCoord.xy);
     float step_px = 1.0;
 
     for (int i = 0; i < uSSRMaxSteps; ++i) {
         if (px_acc >= px_total - 0.5) break;
-        step_px = min(step_px * 1.35, 32.0);
+        // 步长增长放慢（1.18→1.35）并压低上限（32→12 像素）：粗步进在镜面地板
+        // 上会让相邻列的射线在不同深度对处被判命中，竖着排成一条条"栅格纹"，
+        // 观感像贴着一排竖条反射。步进越均匀，邻列采样路径越一致，条纹越少；
+        // 远端（步长已到上限）仍靠厚度复核挡掉穿过式假命中。
+        step_px = min(step_px * 1.18, 12.0);
         px_acc = min(px_acc + step_px, px_total);
 
         vec2 uv;
@@ -269,9 +284,17 @@ void main() {
             // 前一个样本落在背景（远平面）而满足"由前越到后"，于是整条竖列都被
             // 判为命中、涂上粒子颜色。二分收敛后复核射线深度与表面深度之差，
             // 超出厚度即视为"穿过"而非命中，继续步进。
+            //
+            // 容差必须带上"本步自身跨过的深度"：掠射角下（反射射线几乎平行于
+            // 被反射的平面）单步跨过的深度可达 cand_dist 的百分之几，而原先的
+            // 固定容差 max(thickness*4, 5%) 正好卡在这个量级 —— 相邻像素有的
+            // 落在容差内、有的刚好超出，于是整片反射呈等距梳状条纹。越过幅度
+            // 在几何上不可能超过本步深度增量（表面连续时），故用它作上限；
+            // 再乘 cand_dist*0.35 封顶，避免退化成"穿过薄片也算命中"。
             float cand_dist = 1.0 / iz_hi;
             float overshoot = cand_dist - scene_depth(uv_hi);
-            if (overshoot <= max(uSSRThickness * 4.0, cand_dist * 0.05)) {
+            float step_dz = abs(ray_depth - prev_ray_depth);
+            if (overshoot <= max(uSSRThickness * 4.0, min(step_dz * 1.5, cand_dist * 0.35))) {
                 hit_uv = uv_hi;
                 hit_dist = cand_dist;
                 hit = true;

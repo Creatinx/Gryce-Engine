@@ -160,5 +160,27 @@ Ray-tracing cost is within noise (<1%): this scene is limited by geometry and po
 | Reflections equal the surface color | Reconstructed normal points inward, so rays self-hit. Flip the normal toward the camera, offset the origin, raise `tmin` |
 | GLSL failures on `texelFetch` / `rayQueryGetIntersectionWorldRay*` | Requires `GL_EXT_samplerless_texture_functions`; `rayQuery*WorldRayOriginEXT` does not exist in GLSL — compute `origin + rdir * t` yourself |
 | Need Vulkan validation | Set `GRYCE_VK_VALIDATION=1` |
+| The same object appears twice in a mirror, slightly offset ("double image") | Screen-space hits and the reflection-probe fallback were both active: the probe is looked up by direction and has parallax, so the copy slides with the view. `k_ssr_probe_fallback` in `render_pipeline.cpp` is now off; a miss keeps the IBL environment specular |
+| Reflections show evenly spaced comb stripes | The hit-validation tolerance was fixed at `cand_dist * 5%`, the same order as the depth covered by one grazing step, so neighbouring pixels alternated between accept and reject. The tolerance now scales with the step delta (`step_dz * 1.5`), capped at `cand_dist * 0.35`, and the starting march phase is per-pixel jittered |
+| Every material looks like a mirror | Compositing must blend by the reflecting surface's own BRDF specular share, not replace whole pixels by hit coverage (section 9) |
+
+## 9. SSR and ray tracing share one compositing rule
+
+Both paths only answer "what is visible along this direction"; "how strongly does this surface reflect" is decided once, in the compositing step, with identical math:
+
+```
+share = IBL specular luminance / total pixel luminance   // written to HDR alpha by the forward shader
+tint  = pixel color / total pixel luminance              // surface hue (gold stays gold, chrome stays white)
+color = pixel color * (1 - cover * share) + tint * reflected color * (cover * share)
+```
+
+`cover` only means "this path produced credible reflection content"; it no longer drives strength. The old `mix(color, reflection, cover)` treated every roughness as a mirror: at grazing angles a dielectric's `brdf.y` term is 0.1–0.3, so the lower half of every box was replaced by floor color and the whole frame went grey.
+
+The two paths now differ only in the miss fallback:
+
+- **Ray tracing**: miss → sample the environment cubemap along the true direction, no parallax.
+- **Screen space**: miss → zero coverage, keep the IBL environment specular the forward pass already computed. Physically equivalent to the ray-traced fallback (both are environment irradiance) and there is no second copy.
+
+`ssr_env_fallback` (`GRender_SetSSREnvFallback`) remains as an overall reflection-strength multiplier; 0 disables replacement entirely.
 
 For "crashes inside the driver" or "silent black image" issues, converge with logging at key checkpoints — and remove the probes before committing.

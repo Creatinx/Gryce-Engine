@@ -425,6 +425,9 @@ public:
     // Vulkan 侧的屏幕空间链路（深度采样/描述符与 render pass 绑定）尚未打通：
     // 开启后会把整帧压成单色，因此这里显式屏蔽，避免后端产出错误画面。
     bool screen_space_effects_supported() const;
+    // 硬件光追反射是否接管了反射（开关打开 + 后端支持 ray query）。为真时 SSR
+    // 不再执行 —— 两条链路都会替换 IBL 镜面项，同时跑等于在同一处叠两份反射。
+    bool rt_reflection_active() const;
     SDFGI_RD& sdfgi() { return sdfgi_; }
     VoxelGI_RD& voxel_gi() { return voxel_gi_; }
     SSIL_RD& ssil() { return ssil_; }
