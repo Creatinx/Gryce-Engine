@@ -675,6 +675,10 @@ void main() {
     // IBL 镜面项（供 SSR 合成做"反射替换"）：未命中 SSR 的方向保留它，
     // 命中处按亮度占比替换成屏幕空间反射，避免双重计能。
     vec3 ibl_specular = vec3(0.0);
+    // 反射率 ρ = F0·(BRDF LUT 的 A) + B（含 AO）。与 IBL 强度无关，
+    // 是材质本身的镜面权重，SSR / 光追合成按它决定替换多少，
+    // 用「镜面亮度 / 总亮度」会让暗面被环境亮度放大成镜面。
+    vec3 ibl_reflectance = vec3(0.0);
     // SSAO 因子：只作用于间接漫反射（平坦环境光 + IBL 漫反射）。
     // 屏幕空间 AO 是漫反射遮蔽的近似，把它乘到镜面项（IBL 反射 / SSR 合成）上
     // 在物理上不成立：金属 kD≈0，其亮度几乎只剩镜面反射，一旦 AO 在面/地面
@@ -699,6 +703,7 @@ void main() {
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
         vec3 specular = prefiltered * (F0 * brdf.x + brdf.y);
         ibl_specular = specular * ao * uIBLIntensity;
+        ibl_reflectance = (F0 * brdf.x + brdf.y) * ao;
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
         // 漫反射乘 ssao_factor，镜面不乘：见上方注释。
@@ -768,7 +773,7 @@ void main() {
     // SSR 的粗糙度门控会把它们排除，读到的数值不会参与合成。
     float out_alpha = alpha;
     if (alpha >= 0.999) {
-        out_alpha = dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722));
+        out_alpha = clamp(dot(ibl_reflectance, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
         // 直接光高光也属于"环境反射之外"的部分，不参与替换。
     }
     FragColor = vec4(color, out_alpha);

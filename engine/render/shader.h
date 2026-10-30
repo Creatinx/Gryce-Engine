@@ -110,6 +110,11 @@ struct PostProcessParams {
     //         未命中处保留 IBL/探针 —— 屏幕外方向也有反射，且不再双重计能）
     //   0.0 = 旧行为（SSR 叠加在 IBL 之上）
     float ssr_env_fallback = 1.0f;
+    // 光追反射里"未命中/命中点屏幕外"回退到环境贴图时的强度，每帧由管线从
+    // ibl_intensity 同步。环境贴图本身不经过前向着色器的 uIBLIntensity 缩放，
+    // 不在这里乘一遍的话，压暗过环境的场景里反射会比周围亮出一整个数量级
+    // （封闭房间里铬球反而映出明亮的天空）。
+    float env_intensity = 1.0f;
     // SSR 内部渲染分辨率缩放（0.25~1.0）：光线步进/模糊按 scale×viewport 渲染，
     // 合成仍在全分辨率，用线性采样放大。0.5 大致省 4 倍 SSR 的 GPU 时间。
     //

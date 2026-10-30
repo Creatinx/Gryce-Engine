@@ -1,0 +1,1086 @@
+{
+  "version": 2,
+  "name": "PinholeChamber",
+  "entities": [
+    {
+      "name": "Floor",
+      "uuid": "58f0ea0b-dd42-4908-81ca-4ef8fb5273c8",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          2.4,
+          1,
+          2.4
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "PolishedGranite",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.07,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/marble_albedo.png",
+            "use_albedo_map": true,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              3.0,
+              3.0
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ceiling",
+      "uuid": "59b50c20-b22f-4b21-b934-4796b70d6efe",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0,
+          2.7,
+          0
+        ],
+        "rotation": [
+          1.0,
+          0.0,
+          0.0,
+          6.123233995736766e-17
+        ],
+        "scale": [
+          2.4,
+          1,
+          2.4
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "Plaster",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.88,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/plaster_albedo.png",
+            "normal_map_path": "res:/textures/plaster_normal.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": false,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              2.0,
+              2.0
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "LeftWall",
+      "uuid": "173ec26f-ce12-40da-a4f5-fed5ff62c6f3",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          -2.4,
+          1.35,
+          0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          -0.7071067811865476,
+          0.7071067811865476
+        ],
+        "scale": [
+          1.35,
+          0.06,
+          2.4
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "RedBrick",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.92,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/brick_albedo.png",
+            "normal_map_path": "res:/textures/brick_normal.png",
+            "roughness_map_path": "res:/textures/brick_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              3.8028169014084514,
+              5.0
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "RightWall",
+      "uuid": "4d9ddb0e-6e86-4a83-90f5-fde842d4103d",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          2.4,
+          1.35,
+          0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.7071067811865476,
+          0.7071067811865476
+        ],
+        "scale": [
+          1.35,
+          0.06,
+          2.4
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "RedBrick",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.92,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/brick_albedo.png",
+            "normal_map_path": "res:/textures/brick_normal.png",
+            "roughness_map_path": "res:/textures/brick_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              3.8028169014084514,
+              5.0
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "FrontWall",
+      "uuid": "17231460-8291-4e8b-b8ee-1b486f9674e7",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0,
+          1.35,
+          2.4
+        ],
+        "rotation": [
+          -0.7071067811865476,
+          0.0,
+          0.0,
+          0.7071067811865476
+        ],
+        "scale": [
+          2.4,
+          0.06,
+          1.35
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "RedBrick",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.92,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/brick_albedo.png",
+            "normal_map_path": "res:/textures/brick_normal.png",
+            "roughness_map_path": "res:/textures/brick_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              5.0,
+              3.8028169014084514
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BackWallLower",
+      "uuid": "daf6f5bb-80f0-4f34-b923-6a7466442ec6",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.0,
+          0.6799999999999999,
+          -2.4
+        ],
+        "rotation": [
+          0.7071067811865476,
+          0.0,
+          0.0,
+          0.7071067811865476
+        ],
+        "scale": [
+          2.4,
+          0.06,
+          0.6799999999999999
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "RedBrick",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.92,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/brick_albedo.png",
+            "normal_map_path": "res:/textures/brick_normal.png",
+            "roughness_map_path": "res:/textures/brick_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              5.0,
+              1.9154929577464788
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BackWallUpper",
+      "uuid": "da862b74-2954-4191-a77e-7ecc3e8e41ae",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.0,
+          2.09,
+          -2.4
+        ],
+        "rotation": [
+          0.7071067811865476,
+          0.0,
+          0.0,
+          0.7071067811865476
+        ],
+        "scale": [
+          2.4,
+          0.06,
+          0.6100000000000001
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "RedBrick",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.92,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/brick_albedo.png",
+            "normal_map_path": "res:/textures/brick_normal.png",
+            "roughness_map_path": "res:/textures/brick_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              5.0,
+              1.71830985915493
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BackWallLeft",
+      "uuid": "8bb79d89-f813-41c2-8764-aa6851e5093b",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          -1.23,
+          1.42,
+          -2.4
+        ],
+        "rotation": [
+          0.7071067811865476,
+          0.0,
+          0.0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1.17,
+          0.06,
+          0.06
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "RedBrick",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.92,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/brick_albedo.png",
+            "normal_map_path": "res:/textures/brick_normal.png",
+            "roughness_map_path": "res:/textures/brick_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              2.4375,
+              0.16901408450704225
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "BackWallRight",
+      "uuid": "dd7ab488-14d4-4213-aec6-4d506b7ad811",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          1.23,
+          1.42,
+          -2.4
+        ],
+        "rotation": [
+          0.7071067811865476,
+          0.0,
+          0.0,
+          0.7071067811865476
+        ],
+        "scale": [
+          1.17,
+          0.06,
+          0.06
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "RedBrick",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.92,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/brick_albedo.png",
+            "normal_map_path": "res:/textures/brick_normal.png",
+            "roughness_map_path": "res:/textures/brick_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              2.4375,
+              0.16901408450704225
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ChromeSphere",
+      "uuid": "22881e8e-ff67-4d87-9acc-c97185765692",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          -1.28,
+          0.5,
+          -0.62
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/sphere.obj",
+          "material": {
+            "name": "Chrome",
+            "preset_name": "Chrome"
+          }
+        }
+      ]
+    },
+    {
+      "name": "GoldBlock",
+      "uuid": "92b0c6da-1913-4455-acf9-f6f203452ad0",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.95,
+          0.23,
+          -1.62
+        ],
+        "rotation": [
+          0.0,
+          0.1908089953765448,
+          0.0,
+          0.981627183447664
+        ],
+        "scale": [
+          0.46,
+          0.46,
+          0.46
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "material": {
+            "name": "Gold",
+            "preset_name": "Gold"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SteelBlock",
+      "uuid": "c34c5889-84a5-4651-af21-9ffc76aa1bad",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          1.62,
+          0.44,
+          -0.3
+        ],
+        "rotation": [
+          0.0,
+          -0.12186934340514748,
+          0.0,
+          0.992546151641322
+        ],
+        "scale": [
+          0.42,
+          0.88,
+          0.42
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "material": {
+            "name": "RivetedSteel",
+            "albedo_color": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "roughness": 0.24,
+            "metallic": 1.0,
+            "albedo_map_path": "res:/textures/panel_albedo.png",
+            "normal_map_path": "res:/textures/panel_normal.png",
+            "roughness_map_path": "res:/textures/panel_rough.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": true,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              1.0,
+              2.1
+            ],
+            "uv_offset": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ReliefPanel",
+      "uuid": "d8c3a3fc-6b0b-442a-a058-6cb76dcca7dd",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          -2.335,
+          1.05,
+          -0.2
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          -0.7071067811865476,
+          0.7071067811865476
+        ],
+        "scale": [
+          0.62,
+          0.06,
+          0.88
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/quad.obj",
+          "material": {
+            "name": "ReliefPlaster",
+            "albedo_color": [
+              0.85,
+              0.78,
+              0.7
+            ],
+            "roughness": 0.55,
+            "metallic": 0.0,
+            "albedo_map_path": "res:/textures/plaster_albedo.png",
+            "normal_map_path": "res:/textures/plaster_normal.png",
+            "use_albedo_map": true,
+            "use_normal_map": true,
+            "use_roughness_map": false,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false,
+            "uv_scale": [
+              1.2,
+              1.6
+            ],
+            "uv_offset": [
+              3.1,
+              7.4
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "LampRed",
+      "uuid": "47c88815-6e8b-4102-b659-b978435e341b",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          -0.3,
+          1.52,
+          -2.62
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          0.09,
+          0.09,
+          0.09
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/sphere.obj",
+          "material": {
+            "name": "LampRedMat",
+            "albedo_color": [
+              0.02,
+              0.02,
+              0.02
+            ],
+            "roughness": 0.4,
+            "metallic": 0.0,
+            "emissive_color": [
+              12.0,
+              0.55,
+              0.3
+            ],
+            "use_albedo_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "LampGreen",
+      "uuid": "533b0c3f-5e51-4fbc-8b64-5861fc3d371e",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.34,
+          1.38,
+          -2.62
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          0.08,
+          0.08,
+          0.08
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/sphere.obj",
+          "material": {
+            "name": "LampGreenMat",
+            "albedo_color": [
+              0.02,
+              0.02,
+              0.02
+            ],
+            "roughness": 0.4,
+            "metallic": 0.0,
+            "emissive_color": [
+              0.5,
+              10.0,
+              1.3
+            ],
+            "use_albedo_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "LampBlue",
+      "uuid": "4a46d500-7c26-42cb-94bf-67f0fa656140",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.02,
+          1.2,
+          -2.66
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          0.1,
+          0.1,
+          0.1
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/sphere.obj",
+          "material": {
+            "name": "LampBlueMat",
+            "albedo_color": [
+              0.02,
+              0.02,
+              0.02
+            ],
+            "roughness": 0.4,
+            "metallic": 0.0,
+            "emissive_color": [
+              0.45,
+              1.6,
+              10.0
+            ],
+            "use_albedo_map": false,
+            "use_normal_map": false,
+            "use_roughness_map": false,
+            "use_metallic_map": false,
+            "use_ao_map": false,
+            "use_emissive_map": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "LightRed",
+      "uuid": "f8e5da64-9733-4d53-bb9f-a1280522ab58",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          -0.08,
+          1.48,
+          -2.28
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": [
+        {
+          "type": "Light",
+          "enabled": true,
+          "light_type": 1,
+          "color": [
+            1.0,
+            0.42,
+            0.26
+          ],
+          "intensity": 7.0,
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "range": 2.3,
+          "spot_angle": 45.0,
+          "spot_softness": 0.2
+        }
+      ]
+    },
+    {
+      "name": "LightGreen",
+      "uuid": "67f77f0e-c598-4ca3-820f-2c3fe615ecec",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.06,
+          1.4,
+          -2.28
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": [
+        {
+          "type": "Light",
+          "enabled": true,
+          "light_type": 1,
+          "color": [
+            0.38,
+            1.0,
+            0.46
+          ],
+          "intensity": 4.9,
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "range": 1.95,
+          "spot_angle": 45.0,
+          "spot_softness": 0.2
+        }
+      ]
+    },
+    {
+      "name": "LightBlue",
+      "uuid": "b923cdda-87b7-4ea3-a4ae-e43330d81450",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.03,
+          1.34,
+          -2.28
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": [
+        {
+          "type": "Light",
+          "enabled": true,
+          "light_type": 1,
+          "color": [
+            0.36,
+            0.56,
+            1.0
+          ],
+          "intensity": 5.6,
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "range": 2.07,
+          "spot_angle": 45.0,
+          "spot_softness": 0.2
+        }
+      ]
+    },
+    {
+      "name": "Sun",
+      "uuid": "b0e47196-6b5a-4ba9-8e00-8dec6f9a7458",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.0,
+          5.0,
+          -9.0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": [
+        {
+          "type": "Light",
+          "enabled": true,
+          "light_type": 0,
+          "color": [
+            1.0,
+            0.93,
+            0.82
+          ],
+          "intensity": 22.0,
+          "direction": [
+            0.12,
+            -0.62,
+            1.0
+          ],
+          "range": 40.0,
+          "spot_angle": 40.0,
+          "spot_softness": 0.2
+        }
+      ]
+    },
+    {
+      "name": "MainCamera",
+      "uuid": "b51d507b-ee79-48e4-9a54-dd7bb14b043c",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.0,
+          1.24,
+          1.95
+        ],
+        "rotation": [
+          -0.043619387365336,
+          0.0,
+          0.0,
+          0.9990482215818578
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": [
+        {
+          "type": "Camera",
+          "enabled": true,
+          "fov": 60.0,
+          "near_plane": 0.05,
+          "far_plane": 60.0,
+          "is_main": true,
+          "background_color": [
+            0.008,
+            0.009,
+            0.012,
+            1.0
+          ]
+        }
+      ]
+    }
+  ]
+}

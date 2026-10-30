@@ -75,7 +75,8 @@ public:
                                    const math::Vector3f& camera_pos, const PostProcessParams& pp,
                                    const std::vector<RayTracingInstance>& instances,
                                    RHITextureHandle env_tex,
-                                   RHITextureHandle env_prefilter_tex) override;
+                                   RHITextureHandle env_prefilter_tex,
+                                   RHITextureHandle normal_tex) override;
     RHIShaderHandle create_compute_shader(const char* name, const char* shader_dir) override;
     void dispatch_compute(RHIShaderHandle shader, uint32_t gx, uint32_t gy, uint32_t gz) override;
     void bind_storage_buffer(RHIShaderHandle shader, const char* name,

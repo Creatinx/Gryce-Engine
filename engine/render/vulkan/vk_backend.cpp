@@ -1293,7 +1293,8 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                                               const PostProcessParams& pp,
                                               const std::vector<RayTracingInstance>& instances,
                                               RHITextureHandle env_tex_h,
-                                              RHITextureHandle env_prefilter_h) {
+                                              RHITextureHandle env_prefilter_h,
+                                              RHITextureHandle normal_tex_h) {
     // 门控：不支持光追 / 未开启 / 通道无效 / 无可见实例时直接 no-op，画面与现状
     // 零差异（回退 SSR）。
     if (!supports_ray_tracing() || !pp.rt_reflection_enabled) return;
@@ -1398,6 +1399,12 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
         env_prefilter_h.is_valid()
             ? texture_pool_.get_if_alive(env_prefilter_h.index, env_prefilter_h.generation)
             : nullptr;
+    // 深度+法线预通道的法线缓冲：反射方向优先取它（见 render.h 的同名参数注释），
+    // 无效句柄时着色器退回从深度重建。
+    VulkanTexture* normal_tex =
+        normal_tex_h.is_valid()
+            ? texture_pool_.get_if_alive(normal_tex_h.index, normal_tex_h.generation)
+            : nullptr;
 
     // vkCmdDispatch / vkCmdBlitImage 都不能录在 render pass 内（VUID-*renderpass）。
     // 仿 dispatch_compute：先结束当前 pass，结束后在**主命令缓冲**上派发与拷贝，
@@ -1458,6 +1465,17 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                   color_aspect);
+    // 法线缓冲同样转成可采样布局，退出时恢复原布局（后续 pass 的用法不变）。
+    const VkImageLayout normal_orig_layout =
+        normal_tex ? normal_tex->layout() : VK_IMAGE_LAYOUT_UNDEFINED;
+    if (normal_tex) {
+        image_barrier(normal_tex->image(), normal_orig_layout,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, color_aspect);
+        normal_tex->set_layout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
 
     // TLAS 构建录在本帧命令缓冲上（与当帧工作一起排队，无主机端 fence 等待）。
     const bool rt_build_ok = rt_tlas_.record_build(cmd, inst_count);
@@ -1470,7 +1488,8 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                           prefilter_tex ? prefilter_tex->sampler() : VK_NULL_HANDLE,
                           rt_params_buffer_.buffer(), prefilter_tex ? prefilter_tex->mip_levels() : 0,
                           static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                          view_proj, inv_view_proj, camera_pos, pp);
+                          view_proj, inv_view_proj, camera_pos, pp,
+                          normal_tex ? normal_tex->image_view() : VK_NULL_HANDLE);
 
     // 颜色转入 TRANSFER_DST，准备接收合成图（合成图在 render() 末尾已是 TRANSFER_SRC）。
     image_barrier(color->image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1502,6 +1521,14 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, depth_aspect);
     color->set_layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     depth->set_layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    if (normal_tex && normal_orig_layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+        image_barrier(normal_tex->image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      normal_orig_layout, VK_ACCESS_SHADER_READ_BIT,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, color_aspect);
+        normal_tex->set_layout(normal_orig_layout);
+    }
 
     if (reopen_forward) {
         VkClearValue clears[2]{};

@@ -989,9 +989,10 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
         ctx->push_command([color = fb_.color_tex, depth = fb_.depth_tex,
                            w = viewport_width_, h = viewport_height_,
                            vp = rt_vp, inv_vp = rt_inv_vp, cam = rt_cam,
-                           pp = pp_params_,
+                           pp = pp_params_, normal = fb_.depth_normal_tex,
                            insts = std::move(rt_instances)](IRenderBackend* backend) {
-            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp, insts);
+            backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp, insts,
+                                                RHITextureHandle{}, RHITextureHandle{}, normal);
         });
     }
 

@@ -92,7 +92,8 @@ public:
                 const math::Matrix4f& view_proj,
                 const math::Matrix4f& inv_view_proj,
                 const math::Vector3f& camera_pos,
-                const PostProcessParams& pp);
+                const PostProcessParams& pp,
+                VkImageView normal_view = VK_NULL_HANDLE);
 
     // 最终合成图（全分辨率），供后端拷回 HDR 颜色。仅在 valid() 且一次
     // render() 成功之后有效。
@@ -134,6 +135,10 @@ private:
     VulkanBuffer* ubo_ = nullptr;          // uniform 缓冲（camera + 参数）
 
     VkCommandPool one_shot_pool_ = VK_NULL_HANDLE;
+    // 环境缺失时的兜底采样器：组合图像采样器描述符不能留空（空视图/空采样器
+    // 会让驱动在 vkCmdDispatch 内部崩），着色器按 env_params.z == 0 门控，
+    // 不会真的采样绑上去的那张图。
+    VkSampler fallback_sampler_ = VK_NULL_HANDLE;
 
     // trace 结果图（追踪分辨率，RGBA16F：RGB=反射色 A=混合系数；
     // STORAGE + SAMPLED，供 temporal / composite 采样）

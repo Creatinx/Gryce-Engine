@@ -51,9 +51,9 @@ layout(std140, binding = 1) uniform UBO {
     vec4 resolutionStrength;    // xy = 本段派发分辨率, z = 反射强度,
                                 // w = 模式(0 trace / 1 temporal / 2 composite)
     vec4 envParams;             // x = 深度纹素缩放(全/追踪), y = prefilter 最大 mip,
-                                // z = 环境强度(0 = 无环境), w = 帧序号
+                                // z = 环境强度(0 = 无环境，采样值要乘它), w = 帧序号
     vec4 temporalParams;        // x = 时域混合系数(1 = 纯当前帧), yz = 亚像素抖动,
-                                // w = 保留
+                                // w = G-buffer 法线可用(1)/否则从深度重建(0)
 };
 layout(binding = 2) uniform texture2D uDepth;    // 全分辨率 HDR 深度
 layout(binding = 3) uniform texture2D uLit;      // 全分辨率 HDR 颜色
@@ -66,6 +66,7 @@ layout(binding = 9) uniform texture2D uAux;      // 本帧辅助(法线+线性�
 layout(binding = 10) uniform texture2D uHistCol; // 历史累积反射
 layout(binding = 11) uniform texture2D uHistAux; // 历史辅助
 layout(binding = 12, rgba16f) uniform image2D uAuxOut;  // trace 写辅助
+layout(binding = 13) uniform texture2D uNormal;   // 深度+法线预通道：RGB=世界法线 [0,1], A=粗糙度
 
 vec3 reconstructWorld(vec2 uv, float depth) {
     vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
@@ -131,22 +132,36 @@ void main() {
         vec3 world = reconstructWorld(uv, depth);
         vec3 camPos = camPosMaxDist.xyz;
 
-        // 法线：全分辨率 1 纹素的对称中心差分（基线 = 2 纹素 ≈ 一个追踪纹素）。
-        // 不用「逐轴挑深度更连续的一侧」——在斜面/透视渐变下这种选择会随亚像素
-        // 位置周期翻转，重建法线跟着抖，镜面地板上表现为规则的横向条纹。
-        // 邻居落在背景或跨轮廓（深度跳变）时用中心点顶替，退化为半基线但不跳向。
-        const ivec2 offs[4] = {ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1)};
-        vec3 nb[4];
-        for (int i = 0; i < 4; ++i) {
-            ivec2 q = clamp(dp + offs[i], ivec2(0), fullRes - ivec2(1));
-            float dn = texelFetch(uDepth, q, 0).r;
-            bool ok = dn < 1.0 && abs(dn - depth) <= depth * 0.05;
-            nb[i] = ok ? reconstructWorld((vec2(q) + 0.5) / vec2(fullRes), dn) : world;
-        }
-        vec3 n = normalize(cross(nb[0] - nb[1], nb[2] - nb[3]));
         vec3 vdir = normalize(world - camPos);
-        // 法线一律朝向相机：重建出的叉积方向取决于屏幕坐标手性，不统一的话
-        // 反射射线会扎进表面自相交，命中恒为自身、反射等于原色，等于没效果。
+        vec3 n = vec3(0.0);
+        // 法线优先取深度+法线预通道的 G-buffer（世界空间，RGB = N*0.5+0.5）：
+        // 它是光栅化时逐顶点插值出来的解析法线，曲面（球）上也连续。
+        // 从深度重建的法线精度受深度缓冲位数与差分基线限制，曲面上逐像素抖动，
+        // 反射方向跟着跳 —— 反射图里物体轮廓被切成阶梯、平面上倒影整体偏一两个
+        // 像素，这正是"反射有些许错位"的来源。G-buffer 不可用时才退回重建。
+        if (temporalParams.w > 0.5) {
+            vec3 cand = texelFetch(uNormal, dp, 0).rgb * 2.0 - 1.0;
+            // 只有解出来确实接近单位向量才采用：缓冲未被渲染过时读到全零，解码成
+            // (-1,-1,-1)（长度 sqrt(3)），拿它当法线会让整片表面反射同一个方向。
+            if (abs(dot(cand, cand) - 1.0) < 0.25) n = cand;
+        }
+        if (dot(n, n) < 0.25) {
+            // 兜底：全分辨率 1 纹素的对称中心差分（基线 = 2 纹素 ≈ 一个追踪纹素）。
+            // 不用「逐轴挑深度更连续的一侧」——在斜面/透视渐变下这种选择会随亚
+            // 像素位置周期翻转，重建法线跟着抖，镜面地板上表现为规则横向条纹。
+            const ivec2 offs[4] = {ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1)};
+            vec3 nb[4];
+            for (int i = 0; i < 4; ++i) {
+                ivec2 q = clamp(dp + offs[i], ivec2(0), fullRes - ivec2(1));
+                float dn = texelFetch(uDepth, q, 0).r;
+                bool ok = dn < 1.0 && abs(dn - depth) <= depth * 0.05;
+                nb[i] = ok ? reconstructWorld((vec2(q) + 0.5) / vec2(fullRes), dn) : world;
+            }
+            n = cross(nb[0] - nb[1], nb[2] - nb[3]);
+        }
+        n = normalize(n);
+        // 法线一律朝向相机：交叉积的方向取决于屏幕坐标手性，不统一的话反射射线
+        // 会扎进表面自相交，命中恒为自身、反射等于原色，等于没效果。
         if (dot(n, vdir) > 0.0) n = -n;
         if (any(isnan(n))) n = -vdir;
 
@@ -186,12 +201,23 @@ void main() {
                     on_screen = true;
                 }
             }
-            if (!on_screen && envParams.z > 0.0) reflCol = texture(uEnv, rdir).rgb;
-            cover = 1.0;
+            if (!on_screen) {
+                // 命中点在屏幕外：该点没被着色过，拿不到颜色。这里取**预过滤环境
+                // 最粗的一级 mip**（≈ 全方向平均辐射）当兜底，而不是锐利的天空采样：
+                // 封闭空间里天花板方向采到"蓝天 + 地平线"，会在镜面球上凭空画出一个
+                // 室外天空，比一块平稳的环境色更离谱。没有环境时保持 cover = 0，
+                // 保留被替换项（IBL 镜面项），否则合成阶段会按反射率把这块压黑。
+                if (envParams.z > 0.0) {
+                    reflCol = textureLod(uPrefilter, rdir, envParams.y).rgb * envParams.z;
+                    cover = 1.0;
+                }
+            } else {
+                cover = 1.0;
+            }
         } else if (envParams.z > 0.0) {
             // 未命中 = 反射方向射向环境（天空）：直接采样环境立方体贴图。
             // 这是屏幕空间方案永远给不出的内容（P2.3 环境反射）。
-            reflCol = texture(uEnv, rdir).rgb;
+            reflCol = texture(uEnv, rdir).rgb * envParams.z;
             cover = 1.0;
         }
         imageStore(uOut, px, vec4(reflCol, cover * strength));
@@ -294,16 +320,22 @@ void main() {
             imageStore(uOut, px, vec4(lit, 1.0));
             return;
         }
-        // 与 SSR 合成分解同一套 BRDF 权重：uLit.a 是前向着色器写入的 IBL 镜面项
-        // 亮度（见 vulkan_pbr.frag / pbr.frag），镜面占比 = 镜面亮度 / 总亮度。
-        // 金属 ≈ 1（整块被反射替换，并按表面色相着色），绝缘体 ≈ 0.04（只加一丝）。
-        // 旧实现直接 mix(lit, refl, cover)，等于把所有材质一律当镜面，画面发灰、
-        // 盒子/球下半截被反射内容整块覆盖。
+        // 与 SSR 合成同口径：uLit.a 是前向着色器写入的**反射率 ρ**
+        // （F0·A + B，含 AO），与场景/环境亮度无关。
+        // 金属 ρ≈1（整块换成反射并按自身色相着色），砖墙 ρ≈0.05（只加一丝），
+        // 掠射角的绝缘体 ρ 自然抬升，不需要任何额外分支。
+        // 早先这里用 ρ' = 镜面亮度/总亮度 再乘 tint（单位亮度色相，量级被放大
+        // 1/lum），暗面上的反射被整体放大几十倍 —— 那是"全场像抛光瓷砖"的来源。
         float lum = dot(lit, vec3(0.2126, 0.7152, 0.0722));
-        float spec_share = lum > 1e-4 ? clamp(texelFetch(uLit, px, 0).a / lum, 0.0, 1.0) : 0.0;
-        vec3 tint = lit / max(lum, 1e-4);
-        float w = cover * spec_share;
-        vec3 color = lit * (1.0 - w) + tint * r.rgb * w;
+        float rho = clamp(texelFetch(uLit, px, 0).a, 0.0, 1.0);
+        float w = cover * rho;
+        if (w <= 0.0) {
+            imageStore(uOut, px, vec4(lit, 1.0));
+            return;
+        }
+        vec3 hue = lum > 1e-4 ? lit / lum : vec3(1.0);
+        float refl_lum = dot(r.rgb, vec3(0.2126, 0.7152, 0.0722));
+        vec3 color = mix(lit, hue * refl_lum, w);
         imageStore(uOut, px, vec4(color, 1.0));
     }
 }
@@ -347,6 +379,7 @@ VkRayQueryPass& VkRayQueryPass::operator=(VkRayQueryPass&& other) noexcept {
         composite_set_ = other.composite_set_;
         ubo_ = other.ubo_;
         one_shot_pool_ = other.one_shot_pool_;
+        fallback_sampler_ = other.fallback_sampler_;
         refl_image_ = other.refl_image_;
         refl_alloc_ = other.refl_alloc_;
         refl_view_ = other.refl_view_;
@@ -396,6 +429,7 @@ VkRayQueryPass& VkRayQueryPass::operator=(VkRayQueryPass&& other) noexcept {
         other.composite_set_ = VK_NULL_HANDLE;
         other.ubo_ = nullptr;
         other.one_shot_pool_ = VK_NULL_HANDLE;
+        other.fallback_sampler_ = VK_NULL_HANDLE;
         other.refl_image_ = VK_NULL_HANDLE;
         other.refl_alloc_ = nullptr;
         other.refl_view_ = VK_NULL_HANDLE;
@@ -432,6 +466,23 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
         return false;
     }
 
+    // 兜底采样器（无环境贴图时占住组合图像采样器槽位，见 fallback_sampler_ 注释）。
+    if (fallback_sampler_ == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter = VK_FILTER_LINEAR;
+        si.minFilter = VK_FILTER_LINEAR;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.maxLod = VK_LOD_CLAMP_NONE;
+        if (vkCreateSampler(dev, &si, nullptr, &fallback_sampler_) != VK_SUCCESS) {
+            GLOG_WARN("VkRayQueryPass: fallback sampler creation failed");
+            fallback_sampler_ = VK_NULL_HANDLE;
+        }
+    }
+
     // 描述符集布局：TLAS / uniform / 深度 / HDR / 存储输出 / 环境 cube /
     // prefilter cube / 材质参数 SSBO / 反射采样 / 辅助图 / 历史色 / 历史辅助 /
     // 辅助输出。
@@ -453,6 +504,7 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
         {10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
         {11, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
         {12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+        {13, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
     };
     constexpr uint32_t k_binding_count = sizeof(k_bindings) / sizeof(k_bindings[0]);
     VkDescriptorSetLayoutBinding bindings[k_binding_count]{};
@@ -512,7 +564,7 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
     pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     pool_sizes[1].descriptorCount = k_slots;
     pool_sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    pool_sizes[2].descriptorCount = k_slots * 6;
+    pool_sizes[2].descriptorCount = k_slots * 7;
     pool_sizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     pool_sizes[3].descriptorCount = k_slots * 2;
     pool_sizes[4].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -593,6 +645,7 @@ void VkRayQueryPass::shutdown() {
         composite_set_ = VK_NULL_HANDLE;
         ubo_ = nullptr;
         one_shot_pool_ = VK_NULL_HANDLE;
+        fallback_sampler_ = VK_NULL_HANDLE;
         refl_image_ = VK_NULL_HANDLE;
         refl_alloc_ = nullptr;
         refl_view_ = VK_NULL_HANDLE;
@@ -621,6 +674,8 @@ void VkRayQueryPass::shutdown() {
     if (desc_layout_) vkDestroyDescriptorSetLayout(dev, desc_layout_, nullptr);
     if (pool_) vkDestroyDescriptorPool(dev, pool_, nullptr);
     if (module_) vkDestroyShaderModule(dev, module_, nullptr);
+    if (fallback_sampler_) vkDestroySampler(dev, fallback_sampler_, nullptr);
+    fallback_sampler_ = VK_NULL_HANDLE;
     if (one_shot_pool_) vkDestroyCommandPool(dev, one_shot_pool_, nullptr);
     if (ubo_) {
         ubo_->shutdown();
@@ -866,7 +921,8 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
                             const math::Matrix4f& view_proj,
                             const math::Matrix4f& inv_view_proj,
                             const math::Vector3f& camera_pos,
-                            const PostProcessParams& pp) {
+                            const PostProcessParams& pp,
+                            VkImageView normal_view) {
     if (!valid_ || cmd == VK_NULL_HANDLE || tlas == VK_NULL_HANDLE) return;
 
     // 追踪分辨率档：光线数按 scale² 下降。trace 网格独立于输出分辨率。
@@ -910,9 +966,20 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     }
 
     // ---- uniform：三个区域，分别给 trace / temporal / composite ----
-    const bool env_valid = env_view != VK_NULL_HANDLE && env_sampler != VK_NULL_HANDLE &&
-                           prefilter_view != VK_NULL_HANDLE &&
-                           prefilter_sampler != VK_NULL_HANDLE;
+    // 环境是否真实存在必须在填兜底视图之前判定：兜底视图非空，
+    // 判晚了会把 env_params.z 错置成 1，着色器就去采样一张 2D 图当 cube。
+    const bool env_available = env_view != VK_NULL_HANDLE && env_sampler != VK_NULL_HANDLE &&
+                               prefilter_view != VK_NULL_HANDLE &&
+                               prefilter_sampler != VK_NULL_HANDLE;
+    // 组合图像采样器不能留空视图/空采样器：空了驱动在 vkCmdDispatch 里直接崩。
+    // 用 HDR 颜色 + 兜底采样器占位，着色器按 env_params.z == 0 跳过采样。
+    if (!env_available) {
+        env_view = lit_view;
+        env_sampler = fallback_sampler_;
+        prefilter_view = lit_view;
+        prefilter_sampler = fallback_sampler_;
+    }
+    const bool env_valid = env_available;
     const float texel_scale = static_cast<float>(width) / static_cast<float>(trace_w);
     const float jitter_x = halton(static_cast<uint32_t>(frame_index_ % 64u) + 1u, 2u) - 0.5f;
     const float jitter_y = halton(static_cast<uint32_t>(frame_index_ % 64u) + 1u, 3u) - 0.5f;
@@ -927,13 +994,16 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
         texel_scale,
         env_valid ? static_cast<float>(prefilter_mip_levels > 0 ? prefilter_mip_levels - 1 : 0)
                   : 0.0f,
-        env_valid ? 1.0f : 0.0f,
+        env_valid ? pp.env_intensity : 0.0f,
         static_cast<float>(frame_index_ % 4096u));
 
     RayQueryUniforms u_trace = base;
     u_trace.resolution_strength =
         math::Vector4f(static_cast<float>(trace_w), static_cast<float>(trace_h), 1.0f, 0.0f);
-    u_trace.temporal_params = math::Vector4f(1.0f, jitter_x, jitter_y, 0.0f);
+    // temporal_params.w 存放"法线缓冲可用"标志：trace 阶段据此决定用 G-buffer
+    // 法线还是退回从深度重建（1/0 由这里写入）。
+    u_trace.temporal_params = math::Vector4f(1.0f, jitter_x, jitter_y,
+                                             normal_view != VK_NULL_HANDLE ? 1.0f : 0.0f);
 
     // 时域混合系数：默认 0.12（约 8 帧收敛）；首帧 / 关降噪时为 1（纯当前帧）。
     constexpr float k_temporal_blend = 0.12f;
@@ -970,6 +1040,12 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     VkDescriptorImageInfo lit_info{};
     lit_info.imageView = lit_view;
     lit_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // 法线缓冲：没有可用视图时绑 HDR 颜色顶替（描述符不能为空），着色器按
+    // temporal_params.w 门控，不会真的采样它。
+    VkDescriptorImageInfo normal_info{};
+    normal_info.imageView = normal_view != VK_NULL_HANDLE ? normal_view : lit_view;
+    normal_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo env_info{};
     env_info.imageView = env_view;
@@ -1024,8 +1100,8 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     accel_write.pAccelerationStructures = &tlas;
 
     const VkDescriptorSet sets[k_stage_count] = {trace_set_, temporal_set_, composite_set_};
-    // 每段最多写 13 个描述符（binding 0..12）。
-    constexpr uint32_t k_writes = 13;
+    // 每段最多写 14 个描述符（binding 0..13）。
+    constexpr uint32_t k_writes = 14;
     VkWriteDescriptorSet writes[k_stage_count][k_writes]{};
 
     const auto set_write = [](VkWriteDescriptorSet& w, VkDescriptorSet set, uint32_t binding,
@@ -1065,6 +1141,8 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
         w[11].pImageInfo = &hist_aux_infos[s];
         set_write(w[12], sets[s], 12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         w[12].pImageInfo = &aux_out_infos[s];
+        set_write(w[13], sets[s], 13, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+        w[13].pImageInfo = &normal_info;
     }
     for (uint32_t s = 0; s < k_stage_count; ++s) {
         vkUpdateDescriptorSets(device_->device(), k_writes, writes[s], 0, nullptr);

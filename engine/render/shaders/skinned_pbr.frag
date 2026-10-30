@@ -440,7 +440,11 @@ void main() {
     }
 
     vec3 ambient = uAmbient * albedo * ao;
-    vec3 ibl_specular = vec3(0.0);  // 记录 IBL 镜面项，给 alpha 通道 / SSR 合成
+    vec3 ibl_specular = vec3(0.0);  // IBL 镜面项（直接叠加进 ambient）
+    // 反射率 ρ = F0·(BRDF LUT 的 A) + B（含 AO）。与 IBL 强度无关，
+    // 是材质本身的镜面权重，SSR / 光追合成按它决定替换多少，
+    // 用「镜面亮度 / 总亮度」会让暗面被环境亮度放大成镜面。
+    vec3 ibl_reflectance = vec3(0.0);
     // SSAO 因子：同时作用于平坦环境光与 IBL 环境光。
     // 注意 IBL 分支会整体重写 ambient，因子必须先算好再在两边都乘上，
     // 否则 IBL 开启后 AO 完全不生效。
@@ -463,6 +467,7 @@ void main() {
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(Nsafe, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(Nsafe, V), 0.0), F0);
         ibl_specular = prefiltered * (F0 * brdf.x + brdf.y);
+        ibl_reflectance = (F0 * brdf.x + brdf.y) * ao;
 
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
         ambient = (kD * diffuse + ibl_specular) * ao * uIBLIntensity * ssao_factor;
@@ -520,7 +525,7 @@ void main() {
     // 半透明材质仍写不透明度（混合需要）。
     float out_alpha = alpha;
     if (alpha >= 0.999) {
-        out_alpha = dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722));
+        out_alpha = clamp(dot(ibl_reflectance, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
     }
     FragColor = vec4(color, out_alpha);
 }

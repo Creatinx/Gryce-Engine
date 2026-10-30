@@ -492,7 +492,10 @@ void main() {
 
     // 环境光 + IBL
     vec3 ambient = uAmbient * albedo * ao;
-    vec3 ibl_specular = vec3(0.0);  // 记录 IBL 镜面项，给 alpha 通道 / SSR 合成
+    vec3 ibl_specular = vec3(0.0);  // IBL 镜面项（直接叠加进 ambient）
+    // 反射率 ρ = F0·(BRDF LUT 的 A) + B（含 AO）：材质属性，与 IBL 亮度无关，
+    // 写进 alpha 给 SSR / 光追合成当替换权重（见 ssr_composite.frag）。
+    vec3 ibl_reflectance = vec3(0.0);
     if (uUseSSAO != 0) {
         vec2 ssao_uv = vUV + 0.5 / vec2(textureSize(uSSAOTexture, 0));
         float ssao = texture(uSSAOTexture, ssao_uv).r;
@@ -506,6 +509,7 @@ void main() {
         vec2 brdf = texture(uBRDFLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
         vec3 F_ibl = fresnel_schlick(max(dot(N, V), 0.0), F0);
         ibl_specular = prefiltered * (F0 * brdf.x + brdf.y);
+        ibl_reflectance = (F0 * brdf.x + brdf.y) * ao;
         vec3 kD = (vec3(1.0) - F_ibl) * (1.0 - metallic);
         ambient = (kD * diffuse + ibl_specular) * ao * uIBLIntensity;
     }
@@ -518,5 +522,5 @@ void main() {
     }
 
     vec3 color = ambient + Lo + emissive;
-    FragColor = vec4(color, dot(ibl_specular, vec3(0.2126, 0.7152, 0.0722)));
+    FragColor = vec4(color, clamp(dot(ibl_reflectance, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
 }

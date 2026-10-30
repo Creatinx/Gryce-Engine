@@ -177,10 +177,15 @@ public:
                                            const PostProcessParams& /*pp*/,
                                            const std::vector<RayTracingInstance>& /*instances*/ = {},
                                            RHITextureHandle /*env_tex*/ = {},
-                                           RHITextureHandle /*env_prefilter_tex*/ = {}) {}
+                                           RHITextureHandle /*env_prefilter_tex*/ = {},
+                                           RHITextureHandle /*normal_tex*/ = {}) {}
     // env_tex / env_prefilter_tex：IBL 环境立方体贴图（P2.3）。反射射线未命中
     // 场景时采样 env_tex（锐利天空），粗糙命中按 prefilter 的 mip 链取模糊环境；
     // 句柄无效时着色器走 uniform 门控跳过环境项，行为与只有屏幕空间反射一致。
+    // normal_tex：深度+法线预通道写的 RGBA16F（RGB=世界法线 [0,1] 编码，A=粗糙度）。
+    // 反射方向必须用它而不是从深度重建：重建法线的噪声在曲面上会让反射方向逐像素
+    // 抖动，反射图里的物体轮廓被切成阶梯、平面上的倒影整体偏一两个像素。
+    // 无效句柄时着色器退回深度重建（旧行为）。
 
     // 创建计算管线：加载并编译 {shader_dir}/{name}.comp。
     // 不支持时返回无效句柄（is_valid() == false），调用方必须据此回退到 CPU 路径。

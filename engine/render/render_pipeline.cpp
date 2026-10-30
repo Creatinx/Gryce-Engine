@@ -2874,8 +2874,12 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         // GTAO 也依赖 gbuffer_normal_roughness_（无法线则 horizon 检测退化），
         // 所以 SSAO 开启时同样必须跑预通道 —— 否则此纹理从未被渲染过，
         // GTAO 读到的是清空值/上一帧残留，AO 会出现在错误的侧面甚至没有效果。
+        // 光追反射同样要读这张法线缓冲（用它代替从深度重建的法线），所以
+        // rt_reflection_active() 也算一个触发条件 —— 漏掉它时缓冲从未被渲染，
+        // 光追拿到的是一片清屏值（法线恒为 +Z），反射退化成整片环境渐变。
         if (!deferred_enabled_ && screen_space_effects_supported() &&
-            (ssr_enabled_ || ssil_enabled_ || pp_params_.ssao_enabled != 0)) {
+            (ssr_enabled_ || ssil_enabled_ || pp_params_.ssao_enabled != 0 ||
+             rt_reflection_active())) {
             render_normal_prepass(scene, ctx, camera_frustum);
         }
         // 硬件光追反射开启时跳过 SSR：两者都在替换同一份 IBL 镜面项，叠加会让
@@ -2926,13 +2930,20 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
         RHITextureHandle env_tex = ibl_radiance_texture_;
         RHITextureHandle env_prefilter_tex = ibl_prefilter_texture_;
+        RHITextureHandle normal_tex = gbuffer_normal_roughness_;
+        // 环境强度要跟着 ibl_intensity 走：光追着色器直接采样环境立方体贴图，
+        // 不经过前向着色器的 uIBLIntensity，不在这里同步就会出现"环境压暗了、
+        // 反射仍是满亮度天空"的割裂（封闭房间里尤其明显）。
+        PostProcessParams pp_rt = pp_params_;
+        pp_rt.env_intensity = ibl_intensity_ * (1.0f + light_probe_ibl_boost_);
         ctx.push_command([color = hdr_color_, depth = hdr_depth_,
                           w = viewport_width_, h = viewport_height_,
                           vp = rt_vp, inv_vp = rt_inv_vp, cam = rt_cam,
-                          pp = pp_params_, env = env_tex, prefilter = env_prefilter_tex,
+                          pp = pp_rt, env = env_tex, prefilter = env_prefilter_tex,
+                          normal = normal_tex,
                           insts = std::move(rt_instances)](IRenderBackend* backend) {
             backend->apply_ray_query_reflection(color, depth, w, h, vp, inv_vp, cam, pp, insts,
-                                                env, prefilter);
+                                                env, prefilter, normal);
         });
     }
 

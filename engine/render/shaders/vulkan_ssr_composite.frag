@@ -1,6 +1,6 @@
 #version 450 core
 
-// SSR 合成：把反射颜色叠加回 HDR 场景颜色。
+// SSR 合成：把反射颜色叠加回 HDR 场景颜色（与 ssr_composite.frag 逐行等价）。
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 FragColor;
@@ -39,21 +39,20 @@ void main() {
         FragColor = vec4(vec3(scene.a), 1.0);
         return;
     }
-    // 与 GL 版逐行一致：按 BRDF 权重替换 IBL 镜面项（说明见 ssr_composite.frag）。
-    // 关键点是移除项与补入项用同一个权重，且补入项带镜面色相，
-    // 否则金属以外的材质会被叠加一整份明亮反射而发白。
-    float scene_lum = dot(scene.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float env_ratio = scene_lum > 1e-4 ? clamp(scene.a / scene_lum, 0.0, 1.0) : 0.0;
-    vec3  spec_rgb = scene.rgb * env_ratio;
-    vec3  spec_hue = scene.a > 1e-5 ? spec_rgb / scene.a : vec3(1.0);
 
-    // 与 GL 版一致：补入项强度同样带 env_ratio（金属≈1 完整镜面，
-    // 非金属≈0.01 只加一点点反射），env_fallback=0 时退回旧的纯叠加行为。
+    // 与 GL 版逐行一致：同一权重进出，见 ssr_composite.frag 的推导。
+    // scene.a = 反射率 ρ（材质属性，与环境亮度无关），不是"镜面项占总亮度比例"。
+    float rho = clamp(scene.a, 0.0, 1.0);
     float cover = clamp(ssr.a, 0.0, 1.0);
-    float replace = clamp(pc.env_fallback, 0.0, 1.0);
-    float add_w = cover * mix(1.0, env_ratio, replace);
-    vec3 color = scene.rgb
-               - spec_rgb * (cover * replace)
-               + spec_hue * ssr.rgb * add_w;
-    FragColor = vec4(color, 1.0);
+    float w = cover * rho * clamp(pc.env_fallback, 0.0, 1.0);
+    if (w <= 0.0) {
+        FragColor = vec4(scene.rgb, 1.0);
+        return;
+    }
+
+    float scene_lum = dot(scene.rgb, vec3(0.2126, 0.7152, 0.0722));
+    vec3  hue = scene_lum > 1e-4 ? scene.rgb / scene_lum : vec3(1.0);
+    float refl_lum = dot(ssr.rgb, vec3(0.2126, 0.7152, 0.0722));
+
+    FragColor = vec4(mix(scene.rgb, hue * refl_lum, w), 1.0);
 }
