@@ -6384,14 +6384,19 @@ bool RenderPipeline::create_point_shadow_targets(RenderContext* ctx) {
 
     const int count = static_cast<int>(k_max_point_shadows);
     point_shadow_tex_.resize(count);
+    point_shadow_depth_.resize(count);
     point_shadow_fbo_.resize(count);
 
     for (int i = 0; i < count; ++i) {
         // 创建 RGBA16F 纹理存储双抛物面深度
         point_shadow_tex_[i] = ctx->create_texture();
         ITexture* tex = ctx->texture(point_shadow_tex_[i]);
+        // 宽度是两倍：双抛物面的正面（+Z 半球）和背面（-Z 半球）各占一半。
+        // 两个半球若共用同一块区域会互相覆盖（片元阶段无法区分读到的是哪一面），
+        // 表现为场景里凭空多出一块阴影。
         if (!point_shadow_tex_[i].is_valid() || !tex ||
-            !tex->create(TextureFormat::RGBA16F, point_shadow_size_, point_shadow_size_, nullptr)) {
+            !tex->create(TextureFormat::RGBA16F, point_shadow_size_ * 2, point_shadow_size_,
+                         nullptr)) {
             GLOG_ERROR("RenderPipeline: point shadow tex {} failed", i);
             destroy_point_shadow_targets();
             return false;
@@ -6399,16 +6404,33 @@ bool RenderPipeline::create_point_shadow_targets(RenderContext* ctx) {
         tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
         tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
 
-        // 创建 FBO（无深度附件，深度写入颜色附件）
+        // 深度附件：颜色附件里存的是"归一化距离"，顶点着色器把同一个值写进
+        // gl_Position.z，所以用 LESS 深度测试即可得到逐纹素的最小距离。
+        // 没有深度测试时，每个纹素的最终值取决于绘制顺序（后画的覆盖先画的），
+        // 遮挡体会被后面的物体（尤其是它自己）覆盖掉 —— 表现为暗室里的道具
+        // 全被照亮、而墙面正常：墙在前墙上之后才画，道具在前墙之后才画。
+        point_shadow_depth_[i] = ctx->create_texture();
+        ITexture* depth = ctx->texture(point_shadow_depth_[i]);
+        if (!point_shadow_depth_[i].is_valid() || !depth ||
+            !depth->create_depth(point_shadow_size_ * 2, point_shadow_size_)) {
+            GLOG_ERROR("RenderPipeline: point shadow depth {} failed", i);
+            destroy_point_shadow_targets();
+            return false;
+        }
+        depth->set_filter(TextureFilter::Nearest, TextureFilter::Nearest);
+        depth->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+        // 创建 FBO（颜色附件存距离，深度附件只用于深度测试）
         point_shadow_fbo_[i] = ctx->create_framebuffer();
         IFramebuffer* fbo = ctx->framebuffer(point_shadow_fbo_[i]);
         if (!point_shadow_fbo_[i].is_valid() || !fbo ||
-            !fbo->create(point_shadow_size_, point_shadow_size_)) {
+            !fbo->create(point_shadow_size_ * 2, point_shadow_size_)) {
             GLOG_ERROR("RenderPipeline: point shadow fbo {} failed", i);
             destroy_point_shadow_targets();
             return false;
         }
         fbo->attach_color_texture(tex);
+        fbo->attach_depth_texture(depth);
         if (!fbo->is_complete()) {
             GLOG_ERROR("RenderPipeline: point shadow fbo {} incomplete", i);
             destroy_point_shadow_targets();
@@ -6427,6 +6449,13 @@ void RenderPipeline::destroy_point_shadow_targets() {
         }
     }
     point_shadow_fbo_.clear();
+    for (auto& depth : point_shadow_depth_) {
+        if (depth.is_valid()) {
+            ctx_->destroy_texture(depth);
+            depth = RHITextureHandle{};
+        }
+    }
+    point_shadow_depth_.clear();
     for (auto& tex : point_shadow_tex_) {
         if (tex.is_valid()) {
             ctx_->destroy_texture(tex);
@@ -6466,13 +6495,22 @@ void RenderPipeline::render_point_shadows(RenderContext& ctx, scene::Scene& scen
         for (int face = 0; face < 2; ++face) {
             ctx.set_shader(point_shadow_shader_);
             ctx.set_framebuffer(point_shadow_fbo_[s]);
-            ctx.set_viewport(0, 0, point_shadow_size_, point_shadow_size_);
-            // 不清除，直接覆盖（双抛物面两 face 共用一个纹理）
+            // 每个半球占纹理的一半宽度（见 create_point_shadow_targets 的注释）。
+            // 清屏必须覆盖整个目标：set_viewport 会同步设置 scissor，只在 face 0
+            // 的半边范围内清，另一半（face 1 用的）就永远是未初始化内容，
+            // 表现为「-Z 半空间的物体一律被当成遮挡」或随机漏光。
             if (face == 0) {
+                ctx.set_viewport(0, 0, point_shadow_size_ * 2, point_shadow_size_);
                 ctx.clear(1.0f, 0.0f, 0.0f, 1.0f); // 默认深度 1.0（远）
             }
-            ctx.set_depth_test(false); // 无深度缓冲，直接写入颜色
-            ctx.set_depth_write(false);
+            ctx.set_viewport(face * point_shadow_size_, 0, point_shadow_size_,
+                             point_shadow_size_);
+            // 深度附件已就绪：开启 LESS 深度测试，使每个纹素记录"最近表面"的
+            // 归一化距离（颜色附件里的值正是该距离，由片元着色器写回）。
+            // 关闭深度测试时，最终值取决于绘制顺序（后画覆盖先画），
+            // 会导致暗室里道具自遮挡判定错误、整体被照白。
+            ctx.set_depth_test(true);
+            ctx.set_depth_write(true);
             ctx.set_cull_face(CullMode::None);
 
             ctx.set_uniform_int(point_shadow_shader_, "uParaboloidFace", face);
@@ -6547,12 +6585,18 @@ void RenderPipeline::bind_point_shadow_uniforms(RenderContext& ctx, RHIShaderHan
                         "uPointShadowMap0");
         ctx.set_uniform_int(shader, "uPointShadowMap0", TextureSlots::kPointShadow0);
     }
-    if (shadow_count > 1 && point_shadow_tex_.size() > 1 && point_shadow_tex_[1].is_valid()) {
-        ITexture* tex1 = ctx_->texture(point_shadow_tex_[1]);
-        if (tex1) tex1->bind(TextureSlots::kPointShadow1);
-        ctx.set_texture(shader, point_shadow_tex_[1], TextureSlots::kPointShadow1,
-                        "uPointShadowMap1");
-        ctx.set_uniform_int(shader, "uPointShadowMap1", TextureSlots::kPointShadow1);
+    // 后两张只给 Vulkan 用（GL 的 pbr.frag 只声明了 uPointShadowMap0/1）。
+    static constexpr int k_slots[k_max_point_shadows] = {
+        TextureSlots::kPointShadow0, TextureSlots::kPointShadow1,
+        TextureSlots::kPointShadow2, TextureSlots::kPointShadow3};
+    static constexpr const char* k_names[k_max_point_shadows] = {
+        "uPointShadowMap0", "uPointShadowMap1", "uPointShadowMap2", "uPointShadowMap3"};
+    for (int i = 1; i < shadow_count && i < static_cast<int>(point_shadow_tex_.size()); ++i) {
+        if (!point_shadow_tex_[i].is_valid()) continue;
+        ITexture* tex = ctx_->texture(point_shadow_tex_[i]);
+        if (tex) tex->bind(k_slots[i]);
+        ctx.set_texture(shader, point_shadow_tex_[i], k_slots[i], k_names[i]);
+        ctx.set_uniform_int(shader, k_names[i], k_slots[i]);
     }
 
     // 上传点光源位置和范围

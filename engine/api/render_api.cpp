@@ -122,6 +122,9 @@ struct RendererState {
     float exposure = 1.0f;
     bool  shadow_enabled = true;
     int   shadow_map_size = 2048;
+    // 点光源双抛物面阴影的单面分辨率（纹理宽度是它的两倍，两个半球各占一半）。
+    // 只影响渲染质量/开销，重启生效。
+    int   point_shadow_size = 512;
     bool  shadow_map_size_dirty = false;
     // 垂直同步是"重启生效"的持久化配置：GRender_SetVSync 可能在 GRender_Init
     // 之前被调用（此时 ctx 尚不存在），必须先把期望值存下来，init 时再应用。
@@ -1182,6 +1185,7 @@ static void apply_backend_switch() {
     g_renderer.pipeline = std::make_unique<RenderPipeline>();
     g_renderer.pipeline->set_viewport_output_enabled(false);
     g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
+    g_renderer.pipeline->set_point_shadow_size(g_renderer.point_shadow_size);
     g_renderer.pipeline->set_msaa_samples(g_renderer.msaa_samples);
     if (!g_renderer.pipeline->init(g_renderer.ctx.get(), "res:/shaders")) {
         GLOG_WARN("GRender: backend switch pipeline init failed, clear-only");
@@ -1285,6 +1289,7 @@ int GRender_Init(const GRenderInitDesc* desc) {
     // 应用 Project Settings（阴影贴图尺寸 / MSAA 必须在 init 之前 ——
     // 两者都决定 init 时创建的 GPU 目标形态）
     g_renderer.pipeline->set_shadow_map_size(g_renderer.shadow_map_size);
+    g_renderer.pipeline->set_point_shadow_size(g_renderer.point_shadow_size);
     g_renderer.pipeline->set_msaa_samples(g_renderer.msaa_samples);
     // 离屏视口输出也必须在 init 之前：tonemap 的 render pass 与目标 FBO 绑定。
     g_renderer.pipeline->set_viewport_output_enabled(g_renderer.viewport_output_requested);
@@ -2122,6 +2127,18 @@ void GRender_SetShadowMapSize(int size) {
     // 异步模式下（渲染线程持有 GL 上下文）该重建会先销毁旧级联 FBO 再创建
     // 失败，结果是阴影彻底消失 —— 表现为"配置了阴影却看不到阴影"。
     g_renderer.shadow_map_size_dirty = (g_renderer.pipeline != nullptr);
+}
+// 点光源双抛物面阴影分辨率（单面边长）。只能在 GRender_Init 之前调用，
+// 因为纹理与 FBO 在管线初始化时一次性创建（旧值下的目标是 init 时创建的）。
+void GRender_SetPointShadowSize(int size) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (size < 128) size = 128;
+    if (size > 2048) size = 2048;
+    g_renderer.point_shadow_size = size;
+    if (g_renderer.pipeline) {
+        GLOG_WARN("GRender_SetPointShadowSize({}) ignored: pipeline already initialized", size);
+    }
 }
 int GRender_GetShadowMapSize(void) {
     GRYCE_API_GUARD();

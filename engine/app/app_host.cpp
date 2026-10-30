@@ -56,6 +56,7 @@ struct ProjectConfig {
     float exposure = 1.0f;
     bool shadow_enabled = true;
     int shadow_map_size = 2048;
+    int point_shadow_size = 512;
     float ambient[3] = {0.2f, 0.22f, 0.26f};
     float ibl_intensity = 1.0f;
     bool default_environment = false;
@@ -126,6 +127,7 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.exposure = j.value("exposure", c.exposure);
         c.shadow_enabled = j.value("shadow_enabled", c.shadow_enabled);
         c.shadow_map_size = j.value("shadow_map_size", c.shadow_map_size);
+        c.point_shadow_size = j.value("point_shadow_size", c.point_shadow_size);
         c.ambient[0] = j.value("ambient_r", c.ambient[0]);
         c.ambient[1] = j.value("ambient_g", c.ambient[1]);
         c.ambient[2] = j.value("ambient_b", c.ambient[2]);
@@ -207,6 +209,7 @@ public:
 
         // 渲染器里"init 前生效"的项
         GRender_SetShadowMapSize(cfg.shadow_map_size);
+        GRender_SetPointShadowSize(cfg.point_shadow_size);
         GRender_SetVSync(opts.vsync);
         GRender_SetFPSOverlay(show_fps);
         // 运行时默认不挂 ImGui 调试面板（那是冒烟台/编辑器的东西）

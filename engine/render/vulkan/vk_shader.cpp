@@ -45,6 +45,11 @@ int slot_to_binding(int slot) {
         case TextureSlots::kPBRShadowDepth2: return 17;
         case TextureSlots::kPBRShadowDepth3: return 18;
         case TextureSlots::kPBRSSAO:     return 19;
+        // 点光源双抛物面阴影（最多 4 个，与 k_max_point_shadows 一致）
+        case TextureSlots::kPointShadow0: return 21;
+        case TextureSlots::kPointShadow1: return 22;
+        case TextureSlots::kPointShadow2: return 23;
+        case TextureSlots::kPointShadow3: return 24;
         // 粒子贴图复用 PBR albedo 的 binding（粒子 pass 与 PBR pass 不同时执行）
         case TextureSlots::kParticleTexture: return 1;
         case TextureSlots::kIBLIrradiance: return 9;
@@ -594,7 +599,7 @@ bool VulkanShader::create_pipeline() {
     } else {
         // 描述符布局：UBO(0) + PBR 贴图(1-7) + IBL 贴图(9-11) + palette UBO(8, skinned)
         std::vector<VkDescriptorSetLayoutBinding> bindings;
-        bindings.reserve(skinned_ ? 20 : 19);
+        bindings.reserve(skinned_ ? 22 : 21);
 
         VkDescriptorSetLayoutBinding ubo_binding{};
         ubo_binding.binding = 0;
@@ -656,6 +661,16 @@ bool VulkanShader::create_pipeline() {
             palette_binding.descriptorCount = 1;
             palette_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             bindings.push_back(palette_binding);
+        }
+
+        // 点光源双抛物面阴影贴图（RGBA16F 颜色附件，非比较采样）
+        for (int i = 21; i <= 24; ++i) {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = i;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = 1;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings.push_back(b);
         }
 
         // 特效 pass 共享参数 UBO（binding 20，顶点+片元）：阴影/贴花/点光源/水体等
@@ -1087,6 +1102,7 @@ void VulkanShader::set_int(const std::string& name, int value) {
     else if (name == "uPCSSEnabled") ubo_data_.pcss_enabled = value;
     else if (name == "uDebugMode") ubo_data_.debug_mode = value;
     else if (name == "uUseSSAO") ubo_data_.use_ssao = value;
+    else if (name == "uPointShadowCount") ubo_data_.point_shadow_count = value;
     else if (name == "uParaboloidFace") pass_params_.point_params.y = static_cast<float>(value);
     else if (parse_light_index(name, "uLightType", light_index)) {
         ubo_data_.lights[light_index].pos_type.w = static_cast<float>(value);
@@ -1709,8 +1725,9 @@ void VulkanShader::prepare_draw(VkCommandBuffer cmd) {
 
     VkDescriptorImageInfo image_infos[k_max_texture_bindings]{};
     for (int binding = 1; binding < k_max_texture_bindings; ++binding) {
-        // binding 8 是 skinned palette UBO，不是采样器；跳过避免误写成 image。
-        if (binding == 8) continue;
+        // binding 8 是 skinned palette UBO、binding 20 是特效 pass 参数 UBO，
+        // 都不是采样器；跳过避免把它们误写成 image。
+        if (binding == 8 || binding == 20) continue;
         VulkanTexture* vk_tex = current_textures_[binding];
         if (!vk_tex || !vk_tex->image_view() || !vk_tex->sampler()) {
             // IBL binding 9/10 在 shader 中是 samplerCube：回退必须用立方体贴图，

@@ -1440,6 +1440,7 @@ private:
     int point_shadow_size_ = k_default_point_shadow_size;
     bool point_shadow_enabled_ = true;
     std::vector<RHITextureHandle> point_shadow_tex_;       // 每点光源 1 张纹理
+    std::vector<RHITextureHandle> point_shadow_depth_;     // 每点光源 1 张深度附件（见下方注释）
     std::vector<RHIFramebufferHandle> point_shadow_fbo_;    // 每点光源 1 个 FBO（双抛物面共享）
     bool create_point_shadow_targets(RenderContext* ctx);
     void destroy_point_shadow_targets();

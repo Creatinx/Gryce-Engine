@@ -101,6 +101,8 @@ namespace TextureSlots {
     // 点光源双抛物面阴影（最多 k_max_point_shadows 个）
     constexpr int kPointShadow0       = 43;
     constexpr int kPointShadow1       = 44;
+    constexpr int kPointShadow2       = 48;
+    constexpr int kPointShadow3       = 49;
 
     // GI 全局光照
     constexpr int kGITexture           = 45; // SDFGI/VoxelGI 共享纹理槽

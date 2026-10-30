@@ -305,7 +305,10 @@ private:
         // 屏幕空间环境光遮蔽（GTAO/SSAO 结果）
         int use_ssao;
         float ssao_strength;
-        float _pad_ssao[2];
+        // 点光源双抛物面阴影：参与阴影的点光源数量（0 = 全部按无遮挡处理）。
+        // 复用原 _pad_ssao[0] 的 4 字节，std140 偏移不变（见下方 static_assert）。
+        int point_shadow_count;
+        float _pad_ssao1;
     };
     // layout 必须与 vulkan_pbr.frag / vulkan_skinned_pbr.frag 的 MaterialLightUBO 一致
     // （追加字段会破坏偏移，故不再扩展本结构；特效 pass 参数统一走 PassParamsUBO）
@@ -317,6 +320,8 @@ private:
     static_assert(offsetof(UBOData, sheen_tint) == 1104,
                   "std140: sheen_tint must start at offset 1104");
     static_assert(sizeof(UBOData) == 1136, "std140: UBOData size mismatch (ssao)");
+    static_assert(offsetof(UBOData, point_shadow_count) == 1128,
+                  "std140: point_shadow_count must sit in the old _pad_ssao[0] slot");
 
     // ---- 特效 pass 共享参数（阴影/贴花/点光源等）。绑定 binding=20，顶点+片元双阶段。
     // C++ 与各 vulkan_* 着色器的 PassParams 块 std140 逐字段一致。所有偏移 16 对齐。
@@ -346,7 +351,7 @@ private:
     // 每 draw 分配独立描述符集，避免"同一 shader 一帧内换贴图"时后一次写入
     // 覆盖前一次（Vulkan 描述符集是 GPU 执行时读取的最终状态）。
     static constexpr uint32_t k_max_post_process_draws = 64;
-    static constexpr int k_max_texture_bindings = 20;
+    static constexpr int k_max_texture_bindings = 25;
 
     std::vector<std::unique_ptr<VulkanBuffer>> ubo_buffers_;      // 每帧一个大 UBO
     std::vector<VkDescriptorPool> descriptor_pools_;              // 每帧一个池

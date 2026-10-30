@@ -63,7 +63,7 @@ layout(set = 0, binding = 0) uniform MaterialLightUBO {
     vec4 uSheenTint;
     int uUseSSAO;
     float uSSAOStrength;
-    float _pad_ssao0;
+    int uPointShadowCount;   // 参与双抛物面阴影的点光源数量（0 = 全部无遮挡）
     float _pad_ssao1;
 } ubo;
 
@@ -87,6 +87,12 @@ layout(set = 0, binding = 16) uniform sampler2D uShadowMapDepth1;
 layout(set = 0, binding = 17) uniform sampler2D uShadowMapDepth2;
 layout(set = 0, binding = 18) uniform sampler2D uShadowMapDepth3;
 layout(set = 0, binding = 19) uniform sampler2D uSSAOTexture;
+
+// 点光源双抛物面阴影（RGBA16F，存归一化到 range 的距离，非比较采样）
+layout(set = 0, binding = 21) uniform sampler2D uPointShadowMap0;
+layout(set = 0, binding = 22) uniform sampler2D uPointShadowMap1;
+layout(set = 0, binding = 23) uniform sampler2D uPointShadowMap2;
+layout(set = 0, binding = 24) uniform sampler2D uPointShadowMap3;
 
 const float PI = 3.14159265359;
 
@@ -303,6 +309,45 @@ float cascade_shadow(vec3 frag_pos, vec3 normal, vec3 light_dir, out int out_cas
     return lit;
 }
 
+// ---------------------------------------------------------------------------
+// 点光源双抛物面阴影 + 16-tap 旋转 Poisson PCF
+// 阴影图里存的是「到光源的归一化距离」（见 vulkan_point_shadow_map.vert：
+// gl_Position.z = dist/range*2-1，片元阶段写 gl_FragCoord.z），因此比较的是
+// 归一化距离而非深度投影，和 GL 版 pbr.frag 完全一致。
+// ---------------------------------------------------------------------------
+float point_shadow_sample(vec3 frag_pos, vec3 light_pos, float range, sampler2D shadow_tex) {
+    vec3 to_light = frag_pos - light_pos;
+    float dist = length(to_light);
+    if (dist >= range || range <= 0.0) return 1.0;
+    vec3 dir = to_light / dist;
+
+    float a = 1.0 / (1.0 + abs(dir.z));
+    vec2 uv = dir.xy * a * 0.5 + 0.5;
+    // 双抛物面图按半球分左右两半存储：dir.z >= 0 在左半，dir.z < 0 在右半
+    //（见 create_point_shadow_targets 与 render_point_shadows 的视口偏移）。
+    uv.x = uv.x * 0.5 + (dir.z < 0.0 ? 0.5 : 0.0);
+    float depth = dist / range;
+
+    vec2 texel = 1.0 / vec2(textureSize(shadow_tex, 0));
+    float lit = 0.0;
+    for (int i = 0; i < 16; ++i) {
+        vec2 offset = k_shadow_poisson[i] * texel * 2.0;
+        float d = texture(shadow_tex, uv + offset).r;
+        lit += (depth - 0.004 < d) ? 1.0 : 0.0;
+    }
+    return lit / 16.0;
+}
+
+float point_shadow(vec3 frag_pos, int point_index, vec3 light_pos, float range) {
+    if (ubo.uPointShadowCount <= 0 || point_index < 0 || point_index >= ubo.uPointShadowCount) {
+        return 1.0;
+    }
+    if (point_index == 0) return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap0);
+    if (point_index == 1) return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap1);
+    if (point_index == 2) return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap2);
+    return point_shadow_sample(frag_pos, light_pos, range, uPointShadowMap3);
+}
+
 void main() {
     vec2 uv = vTexCoord * ubo.uUVTransform.xy + ubo.uUVTransform.zw;
 
@@ -327,6 +372,9 @@ void main() {
     vec3 Lo = vec3(0.0);
     float shadow_factor = 1.0;
     int shadow_cascade = 0;
+    // 点光源阴影图按「第几个点光源」编号（与 render_point_shadows 的上传顺序一致），
+    // 而循环下标 i 还包含方向光，所以这里单独维护一个点光序号。
+    int point_ordinal = 0;
     for (int i = 0; i < ubo.uLightCount; ++i) {
         Light light = ubo.uLights[i];
         int light_type = int(light.pos_type.w + 0.5);
@@ -343,6 +391,7 @@ void main() {
             }
         } else {
             // 点光 / 聚光：inverse-square 衰减 + 平滑截止
+            int this_point = point_ordinal++;
             vec3 to_light = light.pos_type.xyz - vFragPos;
             float dist = length(to_light);
             float range = light.dir_range.w;
@@ -351,6 +400,7 @@ void main() {
             float attenuation = 1.0 / max(dist * dist, 1e-3);
             float cutoff = 1.0 - smoothstep(range * 0.7, range, dist);
             radiance = light.color_intensity.xyz * light.color_intensity.w * attenuation * cutoff;
+            shadow = point_shadow(vFragPos, this_point, light.pos_type.xyz, range);
 
             if (light_type == 2) {
                 float cos_angle = dot(-L, normalize(light.dir_range.xyz));

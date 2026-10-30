@@ -309,6 +309,7 @@ GRYCE_RENDERER_API float GRender_GetExposure(void);
 GRYCE_RENDERER_API void  GRender_SetShadowEnabled(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsShadowEnabled(void);
 GRYCE_RENDERER_API void  GRender_SetShadowMapSize(int size); // 重启生效
+GRYCE_RENDERER_API void  GRender_SetPointShadowSize(int size); // 点光阴影单面分辨率，重启生效
 GRYCE_RENDERER_API int   GRender_GetShadowMapSize(void);
 GRYCE_RENDERER_API void  GRender_SetAmbient(float r, float g, float b);
 GRYCE_RENDERER_API void  GRender_GetAmbient(float* r, float* g, float* b);
