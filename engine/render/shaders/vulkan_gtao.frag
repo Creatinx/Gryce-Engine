@@ -78,6 +78,10 @@ void main() {
     // 采样跨度（世界单位）：屏幕半径被上限召回后 AO 的实际世界尺度随之缩小，
     // 后面的"采样距离拒绝"必须用这个实际跨度，而不是配置的 pc.radius。
     float sample_span_world = screen_radius_texels * texel_world;
+    // 距离拒绝用平方比较：内层每个 tap 都要跑一次拒绝，length() 的 sqrt
+    // 在这里没有任何用处（只与常数阈值比大小），24 个 tap 就是 24 次多余的
+    // 开方。阈值取平方后语义完全等价。
+    const float span_reject_sq = sample_span_world * sample_span_world * 2.25;
 
     // ---- 法线：从 G-buffer / depth prepass 取世界法线，转到视图空间 ----
     vec3 N_view = vec3(0.0, 0.0, -1.0);
@@ -122,7 +126,7 @@ void main() {
             // 地面、背景墙）时深度差会把世界距离推远。竖立面的近轮廓像素就是这样
             // 被轮廓外的地面"遮蔽"到 AO=0，金属面 kD≈0 时环境光镜面项再乘这个
             // 因子就成了硬边黑带。超过 1.5 倍实际跨度判为跨几何，丢弃该采样点。
-            if (length(diff) > sample_span_world * 1.5) continue;
+            if (dot(diff, diff) > span_reject_sq) continue;
 
             // 用法线投影 diff 到切平面，避免斜面误判为自我遮蔽
             vec3 diff_parallel = diff - dot(diff, N_view) * N_view;

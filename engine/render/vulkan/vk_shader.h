@@ -155,7 +155,7 @@ private:
     bool create_post_process_pools();
     bool create_ubo();
     // 解析 "uLightPos[3]" 形式的光源数组下标
-    static bool parse_light_index(const std::string& name, const char* field, int& index);
+    static bool parse_light_index(const char* name, const char* field, int& index);
 
     VulkanDevice* device_ = nullptr;
     VulkanSwapchain* swapchain_ = nullptr;

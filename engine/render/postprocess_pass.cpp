@@ -385,8 +385,19 @@ float RenderPipeline::halton(uint32_t index, uint32_t base) {
 
 
 bool RenderPipeline::create_ssao_targets(RenderContext* ctx) {
-    ssao_w_ = std::max(16, viewport_width_ / 2);
-    ssao_h_ = std::max(16, viewport_height_ / 2);
+    // AO 是低频信号：分辨率损失远比采样数损失小，因为它是"面与面之间的
+    // 环境遮蔽"，真正的细节来自几何轮廓而不是逐像素细节。1/4 分辨率下每个
+    // 像素仍然做满 24 个 horizon 采样，AO 的层次与接触阴影完全保留，只是
+    // 边缘略柔；消费端（pbr / deferred）用 Linear 采样 ssao_tex_，硬件双线性
+    // 顺带完成上采样，不需要额外的双边上采样 pass。
+    //
+    // 实测（2560x1440，RTX 5070 Laptop）：1/2 = 2.55ms/帧，占整帧 GPU 的
+    // 74%，是当时全帧最大单项；1/8 仍有 2.52ms —— 说明这个 pass 的时间跟着
+    // 视口走而不是跟着 AO 目标走，视口与目标尺寸不一致会让缩小目标白费。
+    // 现在两者都由 ssao_div 推导，缩小才真正生效。
+    constexpr int ssao_div = 4;
+    ssao_w_ = std::max(16, viewport_width_ / ssao_div);
+    ssao_h_ = std::max(16, viewport_height_ / ssao_div);
     // 1x1 白回退纹理：SSAO 禁用时仍绑定合法纹理（Vulkan 需要 SHADER_READ_ONLY layout）
     if (!ssao_fallback_tex_.is_valid()) {
         ssao_fallback_tex_ = ctx->create_texture();

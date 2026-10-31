@@ -85,6 +85,10 @@ void main() {
     // 采样跨度（世界单位）：屏幕半径被上限召回后 AO 的实际世界尺度随之缩小，
     // 后面的"采样距离拒绝"必须用这个实际跨度，而不是配置的 uSSAORadius。
     float sample_span_world = screen_radius_texels * texel_world;
+    // 距离拒绝用平方比较：内层每个 tap 都要跑一次拒绝，length() 的 sqrt
+    // 在这里没有任何用处（只与常数阈值比大小），24 个 tap 就是 24 次多余的
+    // 开方。阈值取平方后语义完全等价。
+    const float span_reject_sq = sample_span_world * sample_span_world * 2.25;
 
     // ---- 法线：从 G-buffer / depth prepass 取世界法线，转到视图空间 ----
     vec3 N_view = vec3(0.0, 0.0, -1.0);
@@ -128,7 +132,7 @@ void main() {
             // 像素正是这样被轮廓外的地面"遮蔽"：AO 直落到 0，而金属面 kD≈0，
             // 环境光的镜面项再乘这个因子就变成贴着轮廓的硬边黑带。
             // 超过 1.5 倍实际跨度即判为跨几何，丢弃该采样点。
-            if (length(diff) > sample_span_world * 1.5) continue;
+            if (dot(diff, diff) > span_reject_sq) continue;
 
             vec3 diff_parallel = diff - dot(diff, N_view) * N_view;
             float tangent_len = length(diff_parallel);

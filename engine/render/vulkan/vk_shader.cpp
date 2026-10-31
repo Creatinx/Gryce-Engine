@@ -1060,184 +1060,193 @@ void VulkanShader::set_pipeline_blending(bool enabled) {
 void VulkanShader::bind() const {}
 void VulkanShader::unbind() const {}
 
+// uniform 名的比较每帧被调用数百次。原来走 std::string 重载，名字超过
+// SSO 上限（15 字符）就为每条 uniform 命令分配一次堆内存 —— 而
+// uCascadeLightSpace、uCascadeFarBlend 这些正是逐帧重发的。直接 strcmp。
+static inline bool eq(const char* a, const char* b) {
+    return std::strcmp(a, b) == 0;
+}
+
 // name 必须以 field 开头、以 [i] 结尾（如 "uLightPos[3]"）。
-bool VulkanShader::parse_light_index(const std::string& name, const char* field, int& index) {
+bool VulkanShader::parse_light_index(const char* name, const char* field, int& index) {
     const size_t flen = std::strlen(field);
-    if (name.compare(0, flen, field) != 0) return false;
-    if (name.size() <= flen + 2 || name[flen] != '[' || name.back() != ']') return false;
-    index = std::atoi(name.c_str() + flen + 1);
+    if (std::strncmp(name, field, flen) != 0) return false;
+    const size_t len = std::strlen(name);
+    if (len <= flen + 2 || name[flen] != '[' || name[len - 1] != ']') return false;
+    index = std::atoi(name + flen + 1);
     return index >= 0 && index < k_max_lights;
 }
 
-void VulkanShader::set_int(const std::string& name, int value) {
+void VulkanShader::set_int(const char* name, int value) {
+    if (!name) return;
     // ---- 特效 push 块 ----
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
-        if (name == "uFogSliceCount") fog_push_.slice_count = value;
-        else if (name == "uFogSliceIndex") fog_push_.slice_index = value;
+        if (eq(name, "uFogSliceCount")) fog_push_.slice_count = value;
+        else if (eq(name, "uFogSliceIndex")) fog_push_.slice_index = value;
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::SSIL) {
-        if (name == "uSSILSteps") ssil_push_.steps = value;
+        if (eq(name, "uSSILSteps")) ssil_push_.steps = value;
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::SSR) {
         // 退化射线探针兜底开关（trace pass 用；其余 SSR pass 忽略）
-        if (name == "uSSRProbeValid") ssr_push_.probe_valid = value;
+        if (eq(name, "uSSRProbeValid")) ssr_push_.probe_valid = value;
         return;
     }
     int light_index = -1;
-    if (name == "uUseAlbedoMap") ubo_data_.use_albedo_map = value;
-    else if (name == "uUseNormalMap") ubo_data_.use_normal_map = value;
-    else if (name == "uUseRoughnessMap") ubo_data_.use_roughness_map = value;
-    else if (name == "uUseMetallicMap") ubo_data_.use_metallic_map = value;
-    else if (name == "uUseAOMap") ubo_data_.use_ao_map = value;
-    else if (name == "uUseEmissiveMap") ubo_data_.use_emissive_map = value;
-    else if (name == "uUseShadowMap") ubo_data_.use_shadow_map = value;
-    else if (name == "uHDREnabled") ubo_data_.hdr_enabled = value;
-    else if (name == "uLightCount") ubo_data_.light_count = value;
-    else if (name == "uShadowLightIndex") ubo_data_.shadow_light_index = value;
-    else if (name == "uUseIBL") ubo_data_.use_ibl = value;
-    else if (name == "uTwoSided") ubo_data_.two_sided = value;
-    else if (name == "uCascadeCount") ubo_data_.cascade_count = value;
-    else if (name == "uPCSSEnabled") ubo_data_.pcss_enabled = value;
-    else if (name == "uDebugMode") ubo_data_.debug_mode = value;
-    else if (name == "uUseSSAO") ubo_data_.use_ssao = value;
-    else if (name == "uPointShadowCount") ubo_data_.point_shadow_count = value;
-    else if (name == "uParaboloidFace") pass_params_.point_params.y = static_cast<float>(value);
+    if (eq(name, "uUseAlbedoMap")) ubo_data_.use_albedo_map = value;
+    else if (eq(name, "uUseNormalMap")) ubo_data_.use_normal_map = value;
+    else if (eq(name, "uUseRoughnessMap")) ubo_data_.use_roughness_map = value;
+    else if (eq(name, "uUseMetallicMap")) ubo_data_.use_metallic_map = value;
+    else if (eq(name, "uUseAOMap")) ubo_data_.use_ao_map = value;
+    else if (eq(name, "uUseEmissiveMap")) ubo_data_.use_emissive_map = value;
+    else if (eq(name, "uUseShadowMap")) ubo_data_.use_shadow_map = value;
+    else if (eq(name, "uHDREnabled")) ubo_data_.hdr_enabled = value;
+    else if (eq(name, "uLightCount")) ubo_data_.light_count = value;
+    else if (eq(name, "uShadowLightIndex")) ubo_data_.shadow_light_index = value;
+    else if (eq(name, "uUseIBL")) ubo_data_.use_ibl = value;
+    else if (eq(name, "uTwoSided")) ubo_data_.two_sided = value;
+    else if (eq(name, "uCascadeCount")) ubo_data_.cascade_count = value;
+    else if (eq(name, "uPCSSEnabled")) ubo_data_.pcss_enabled = value;
+    else if (eq(name, "uDebugMode")) ubo_data_.debug_mode = value;
+    else if (eq(name, "uUseSSAO")) ubo_data_.use_ssao = value;
+    else if (eq(name, "uPointShadowCount")) ubo_data_.point_shadow_count = value;
+    else if (eq(name, "uParaboloidFace")) pass_params_.point_params.y = static_cast<float>(value);
     else if (parse_light_index(name, "uLightType", light_index)) {
         ubo_data_.lights[light_index].pos_type.w = static_cast<float>(value);
     }
     ubo_dirty_ = true;
 }
-void VulkanShader::set_int(const char* name, int value) {
-    if (!name) return;
-    set_int(std::string(name), value);
+void VulkanShader::set_int(const std::string& name, int value) {
+    set_int(name.c_str(), value);
 }
 
-void VulkanShader::set_float(const std::string& name, float value) {
+void VulkanShader::set_float(const char* name, float value) {
+    if (!name) return;
     // ---- 水性材质参数 ----
     if (water_) {
-        if (name == "uWaterHeight") water_push_.water_height = value;
-        else if (name == "uFoamAmount") water_push_.foam_amount = value;
-        else if (name == "uTime") water_push_.time = value;
-        else if (name == "uWaveAmplitude") water_push_.wave_amplitude = value;
-        else if (name == "uWaveFrequency") water_push_.wave_frequency = value;
-        else if (name == "uWaveSpeed") water_push_.wave_speed = value;
-        else if (name == "uWaveSteepness") water_push_.wave_steepness = value;
+        if (eq(name, "uWaterHeight")) water_push_.water_height = value;
+        else if (eq(name, "uFoamAmount")) water_push_.foam_amount = value;
+        else if (eq(name, "uTime")) water_push_.time = value;
+        else if (eq(name, "uWaveAmplitude")) water_push_.wave_amplitude = value;
+        else if (eq(name, "uWaveFrequency")) water_push_.wave_frequency = value;
+        else if (eq(name, "uWaveSpeed")) water_push_.wave_speed = value;
+        else if (eq(name, "uWaveSteepness")) water_push_.wave_steepness = value;
         return;
     }
     // ---- 特效 push 块 ----
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
-        if (name == "uFogDensity") fog_push_.density = value;
-        else if (name == "uFogHeight") fog_push_.height = value;
+        if (eq(name, "uFogDensity")) fog_push_.density = value;
+        else if (eq(name, "uFogHeight")) fog_push_.height = value;
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::Motion) {
-        if (name == "uMotionBlurAmount") motion_push_.amount = value;
+        if (eq(name, "uMotionBlurAmount")) motion_push_.amount = value;
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::SSIL) {
-        if (name == "uSSILNear") ssil_push_.near_plane = value;
-        else if (name == "uSSILFar") ssil_push_.far_plane = value;
-        else if (name == "uSSILTanHalfFov") ssil_push_.tan_half_fov = value;
-        else if (name == "uSSILAspect") ssil_push_.aspect = value;
-        else if (name == "uSSILRadius") ssil_push_.radius = value;
-        else if (name == "uSSILIntensity") ssil_push_.intensity = value;
+        if (eq(name, "uSSILNear")) ssil_push_.near_plane = value;
+        else if (eq(name, "uSSILFar")) ssil_push_.far_plane = value;
+        else if (eq(name, "uSSILTanHalfFov")) ssil_push_.tan_half_fov = value;
+        else if (eq(name, "uSSILAspect")) ssil_push_.aspect = value;
+        else if (eq(name, "uSSILRadius")) ssil_push_.radius = value;
+        else if (eq(name, "uSSILIntensity")) ssil_push_.intensity = value;
         return;
     }
     int light_index = -1;
-    if (name == "uRoughness") ubo_data_.roughness = value;
-    else if (name == "uMetallic") ubo_data_.metallic = value;
-    else if (name == "uAO") ubo_data_.ao = value;
-    else if (name == "uOpacity") ubo_data_.emissive_opacity.w = value;
-    else if (name == "uIBLIntensity") ubo_data_.ibl_intensity = value;
-    else if (name == "uPCSSLightSize") ubo_data_.pcss_light_size = value;
-    else if (name == "uPCSSMaxRadius") ubo_data_.pcss_max_radius = value;
-    else if (name == "uPCSSBlockerScale") ubo_data_.pcss_tap_scale = value;
-    else if (name == "uShadowFilterScale") ubo_data_.shadow_filter_scale = value;
-    else if (name == "uNormalOffset") shadow_normal_offset_ = value;
-    else if (name == "uClearcoat") ubo_data_.clearcoat = value;
-    else if (name == "uClearcoatRoughness") ubo_data_.clearcoat_roughness = value;
-    else if (name == "uSheen") ubo_data_.sheen = value;
-    else if (name == "uAnisotropy") ubo_data_.anisotropy = value;
-    else if (name == "uAnisotropyRotation") ubo_data_.anisotropy_rotation = value;
-    else if (name == "uSSAOStrength") ubo_data_.ssao_strength = value;
-    else if (name == "uLightIntensity") ubo_data_.lights[0].color_intensity.w = value; // 旧版单光 API
+    if (eq(name, "uRoughness")) ubo_data_.roughness = value;
+    else if (eq(name, "uMetallic")) ubo_data_.metallic = value;
+    else if (eq(name, "uAO")) ubo_data_.ao = value;
+    else if (eq(name, "uOpacity")) ubo_data_.emissive_opacity.w = value;
+    else if (eq(name, "uIBLIntensity")) ubo_data_.ibl_intensity = value;
+    else if (eq(name, "uPCSSLightSize")) ubo_data_.pcss_light_size = value;
+    else if (eq(name, "uPCSSMaxRadius")) ubo_data_.pcss_max_radius = value;
+    else if (eq(name, "uPCSSBlockerScale")) ubo_data_.pcss_tap_scale = value;
+    else if (eq(name, "uShadowFilterScale")) ubo_data_.shadow_filter_scale = value;
+    else if (eq(name, "uNormalOffset")) shadow_normal_offset_ = value;
+    else if (eq(name, "uClearcoat")) ubo_data_.clearcoat = value;
+    else if (eq(name, "uClearcoatRoughness")) ubo_data_.clearcoat_roughness = value;
+    else if (eq(name, "uSheen")) ubo_data_.sheen = value;
+    else if (eq(name, "uAnisotropy")) ubo_data_.anisotropy = value;
+    else if (eq(name, "uAnisotropyRotation")) ubo_data_.anisotropy_rotation = value;
+    else if (eq(name, "uSSAOStrength")) ubo_data_.ssao_strength = value;
+    else if (eq(name, "uLightIntensity")) ubo_data_.lights[0].color_intensity.w = value; // 旧版单光 API
     else if (parse_light_index(name, "uLightIntensity", light_index)) {
         ubo_data_.lights[light_index].color_intensity.w = value;
     }
     // ---- 特效 pass 共享参数（shadow/decal/point）----
-    else if (name == "uESMExponent") pass_params_.esm_param.x = value;
-    else if (name == "uPointLightRange") pass_params_.point_params.x = value;
-    else if (name == "uScreenWidth") pass_params_.screen_size.x = value;
-    else if (name == "uScreenHeight") pass_params_.screen_size.y = value;
-    else if (name == "uDecalOpacity") pass_params_.decal_albedo.w = value;
+    else if (eq(name, "uESMExponent")) pass_params_.esm_param.x = value;
+    else if (eq(name, "uPointLightRange")) pass_params_.point_params.x = value;
+    else if (eq(name, "uScreenWidth")) pass_params_.screen_size.x = value;
+    else if (eq(name, "uScreenHeight")) pass_params_.screen_size.y = value;
+    else if (eq(name, "uDecalOpacity")) pass_params_.decal_albedo.w = value;
     ubo_dirty_ = true;
 }
-void VulkanShader::set_float(const char* name, float value) {
-    if (!name) return;
-    set_float(std::string(name), value);
+void VulkanShader::set_float(const std::string& name, float value) {
+    set_float(name.c_str(), value);
 }
 
-void VulkanShader::set_vec2(const std::string& name, const math::Vector2f& value) {
+void VulkanShader::set_vec2(const char* name, const math::Vector2f& value) {
+    if (!name) return;
     // ---- 特效 push 块 ----
-    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uScreenSize") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && eq(name, "uScreenSize")) {
         ssr_push_.screen_size = value;
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
-        if (name == "uScreenSize") fog_push_.screen_size = value;
-        else if (name == "uFogRange") fog_push_.fog_range = value;
+        if (eq(name, "uScreenSize")) fog_push_.screen_size = value;
+        else if (eq(name, "uFogRange")) fog_push_.fog_range = value;
         return;
     }
-    if (post_process_ && push_kind_ == PostProcessPushKind::Motion && name == "uScreenSize") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::Motion && eq(name, "uScreenSize")) {
         motion_push_.screen_size = value;
         return;
     }
-    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && name == "uScreenSize") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && eq(name, "uScreenSize")) {
         ssil_push_.screen_size = value;
         return;
     }
-    if (name == "uBlurDirection") {
+    if (eq(name, "uBlurDirection")) {
         pp_blur_direction_ = value;
     }
 }
-void VulkanShader::set_vec2(const char* name, const math::Vector2f& value) {
-    if (!name) return;
-    set_vec2(std::string(name), value);
+void VulkanShader::set_vec2(const std::string& name, const math::Vector2f& value) {
+    set_vec2(name.c_str(), value);
 }
 
-void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value) {
+void VulkanShader::set_vec3(const char* name, const math::Vector3f& value) {
+    if (!name) return;
     auto to_vec4 = [](const math::Vector3f& v) { return math::Vector4f(v.x, v.y, v.z, 0.0f); };
     // ---- 特效 push 块 / 水性材质 ----
     if (water_) {
-        if (name == "uCameraPos") { water_push_.camera_pos = value; return; }
-        if (name == "uWaterColor") { water_push_.water_color = to_vec4(value); return; }
+        if (eq(name, "uCameraPos")) { water_push_.camera_pos = value; return; }
+        if (eq(name, "uWaterColor")) { water_push_.water_color = to_vec4(value); return; }
     }
-    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uCameraPos") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && eq(name, "uCameraPos")) {
         ssr_push_.camera_pos = value;
         return;
     }
-    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && name == "uCameraPos") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && eq(name, "uCameraPos")) {
         ssil_push_.camera_pos = value;
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
-        if (name == "uCameraPos") { fog_push_.camera_pos = value; return; }
-        if (name == "uFogColor") { fog_push_.fog_color = value; return; }
+        if (eq(name, "uCameraPos")) { fog_push_.camera_pos = value; return; }
+        if (eq(name, "uFogColor")) { fog_push_.fog_color = value; return; }
     }
     int light_index = -1;
-    if (name == "uAlbedoColor") ubo_data_.albedo_color = to_vec4(value);
-    else if (name == "uSheenTint") ubo_data_.sheen_tint = to_vec4(value);
-    else if (name == "uCameraPos") ubo_data_.camera_pos = to_vec4(value);
-    else if (name == "uAmbient") ubo_data_.ambient = to_vec4(value);
-    else if (name == "uEmissiveColor") {
+    if (eq(name, "uAlbedoColor")) ubo_data_.albedo_color = to_vec4(value);
+    else if (eq(name, "uSheenTint")) ubo_data_.sheen_tint = to_vec4(value);
+    else if (eq(name, "uCameraPos")) ubo_data_.camera_pos = to_vec4(value);
+    else if (eq(name, "uAmbient")) ubo_data_.ambient = to_vec4(value);
+    else if (eq(name, "uEmissiveColor")) {
         ubo_data_.emissive_opacity.x = value.x;
         ubo_data_.emissive_opacity.y = value.y;
         ubo_data_.emissive_opacity.z = value.z;
     }
-    else if (name == "uLightDir") ubo_data_.lights[0].dir_range = to_vec4(value);      // 旧版单光 API
-    else if (name == "uLightColor") ubo_data_.lights[0].color_intensity = to_vec4(value); // 旧版单光 API
+    else if (eq(name, "uLightDir")) ubo_data_.lights[0].dir_range = to_vec4(value);      // 旧版单光 API
+    else if (eq(name, "uLightColor")) ubo_data_.lights[0].color_intensity = to_vec4(value); // 旧版单光 API
     else if (parse_light_index(name, "uLightPos", light_index)) {
         ubo_data_.lights[light_index].pos_type.x = value.x;
         ubo_data_.lights[light_index].pos_type.y = value.y;
@@ -1254,34 +1263,34 @@ void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value
         ubo_data_.lights[light_index].color_intensity.z = value.z;
     }
     // ---- 特效 pass 共享参数 ----
-    else if (name == "uPointLightPos") {
+    else if (eq(name, "uPointLightPos")) {
         pass_params_.point_light_pos.x = value.x;
         pass_params_.point_light_pos.y = value.y;
         pass_params_.point_light_pos.z = value.z;
     }
-    else if (name == "uDecalAlbedo") {
+    else if (eq(name, "uDecalAlbedo")) {
         pass_params_.decal_albedo.x = value.x;
         pass_params_.decal_albedo.y = value.y;
         pass_params_.decal_albedo.z = value.z;
     }
     ubo_dirty_ = true;
 }
-void VulkanShader::set_vec3(const char* name, const math::Vector3f& value) {
-    if (!name) return;
-    set_vec3(std::string(name), value);
+void VulkanShader::set_vec3(const std::string& name, const math::Vector3f& value) {
+    set_vec3(name.c_str(), value);
 }
 
-void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value) {
+void VulkanShader::set_vec4(const char* name, const math::Vector4f& value) {
+    if (!name) return;
     int light_index = -1;
-    if (name == "uUVTransform") {
+    if (eq(name, "uUVTransform")) {
         ubo_data_.uv_transform = value;
-    } else if (name == "uCascadeSplits") {
+    } else if (eq(name, "uCascadeSplits")) {
         ubo_data_.cascade_splits = value;
-    } else if (name == "uCascadeBias") {
+    } else if (eq(name, "uCascadeBias")) {
         ubo_data_.cascade_bias = value;
-    } else if (name == "uCascadeFarBlend") {
+    } else if (eq(name, "uCascadeFarBlend")) {
         ubo_data_.cascade_far_blend = value;
-    } else if (name == "uAtlasOffset") {
+    } else if (eq(name, "uAtlasOffset")) {
         pass_params_.atlas_offset = value;
     } else if (parse_light_index(name, "uLightParams", light_index)) {
         // x=range, y=cos(outer), z=cos(inner)
@@ -1290,42 +1299,42 @@ void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value
     }
     ubo_dirty_ = true;
 }
-void VulkanShader::set_vec4(const char* name, const math::Vector4f& value) {
-    if (!name) return;
-    set_vec4(std::string(name), value);
+void VulkanShader::set_vec4(const std::string& name, const math::Vector4f& value) {
+    set_vec4(name.c_str(), value);
 }
 
-void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value) {
+void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) {
+    if (!name) return;
     // ---- 特效 push 块 / 水性材质 ----
     if (water_) {
-        if (name == "uModel") water_push_.model = value;
-        else if (name == "uViewProj") water_push_.view_proj = value;
+        if (eq(name, "uModel")) water_push_.model = value;
+        else if (eq(name, "uViewProj")) water_push_.view_proj = value;
         return;
     }
-    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && name == "uView") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSR && eq(name, "uView")) {
         ssr_push_.view = value;
         return;
     }
-    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && name == "uView") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::SSIL && eq(name, "uView")) {
         ssil_push_.view = value;
         return;
     }
-    if (post_process_ && push_kind_ == PostProcessPushKind::GTAO && name == "uView") {
+    if (post_process_ && push_kind_ == PostProcessPushKind::GTAO && eq(name, "uView")) {
         gtao_push_.view = value;
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
-        if (name == "uInvViewProj") fog_push_.inv_view_proj = value;
-        else if (name == "uViewMatrix") fog_push_.view_matrix = value;
+        if (eq(name, "uInvViewProj")) fog_push_.inv_view_proj = value;
+        else if (eq(name, "uViewMatrix")) fog_push_.view_matrix = value;
         return;
     }
-    if (name == "uModel") model_ = value;
-    else if (name == "uView") {
+    if (eq(name, "uModel")) model_ = value;
+    else if (eq(name, "uView")) {
         view_ = value;
         ubo_data_.view_matrix = value;
         ubo_dirty_ = true;
     }
-    else if (name == "uProjection") {
+    else if (eq(name, "uProjection")) {
         // Z 行不再在这里重映射：RenderPipeline::get_projection_matrix() 已经针对
         // Vulkan 把 z 从 [-1,1] 映射到 [0,1]（这是唯一的投影来源，见该函数的注释）。
         // 之前两处都做，等于把映射做了两遍，深度缓冲里存的值变成
@@ -1335,7 +1344,7 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
         // 被推远、AO 判定失败，这正是 GL 与 Vulkan 效果不一致的根源。
         projection_ = value;
     }
-    else if (name == "uLightSpaceMatrix") {
+    else if (eq(name, "uLightSpaceMatrix")) {
         // Shadow map 的投影矩阵同样使用 OpenGL 风格 [-1,1] Z，
         // 在 Vulkan NDC [0,1] 下会导致深度范围与采样值不一致，
         // 因此需要做与 uProjection 相同的 Z 行重映射。
@@ -1345,12 +1354,11 @@ void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value
         light_space_matrix_ = vk_light;
     }
     // ---- 特效 pass 共享矩阵（decal）----
-    else if (name == "uInvViewProj") pass_params_.decal_inv_view_proj = value;
-    else if (name == "uWorldToDecal") pass_params_.decal_world_to_decal = value;
+    else if (eq(name, "uInvViewProj")) pass_params_.decal_inv_view_proj = value;
+    else if (eq(name, "uWorldToDecal")) pass_params_.decal_world_to_decal = value;
 }
-void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) {
-    if (!name) return;
-    set_mat4(std::string(name), value);
+void VulkanShader::set_mat4(const std::string& name, const math::Matrix4f& value) {
+    set_mat4(name.c_str(), value);
 }
 
 void VulkanShader::set_mat4_array(const char* name, const math::Matrix4f* data, uint32_t count) {

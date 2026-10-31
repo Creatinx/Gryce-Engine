@@ -1,6 +1,10 @@
 #include "render_thread.h"
 
 #include <array>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -226,6 +230,49 @@ struct CommandStateCache {
     };
     std::vector<std::pair<IntUniformKey, int>> int_uniform_cache_;
 
+    // float / vec2 / vec3 / vec4 / mat4 的值缓存。键同上：名是字面量，指针即身份。
+    // 场景 pass 里每个物体都会重发一遍相机矩阵、环境光、PCSS 参数、级联阴影
+    // 矩阵等 —— 这些值在整帧内恒定，只有 uModelMatrix / uMVP / uNormalMatrix 真正
+    // 逐物体变化。缓存命中即跳过整条后端调用（含 VulkanShader 内部的
+    // std::string 构造与名字比较），这一层把逐物体 uniform 从 30+ 条压到 4 条。
+    //
+    // 正确性：VulkanShader 在每个 draw 时把整份 ubo_data_ 拷进该 draw 的槽位，
+    // 所以"上一 draw 已写入同值"意味着本 draw 的槽位同样能拿到该值，跳过安全。
+    struct ValueUniformKey {
+        RHIShaderHandle shader;
+        const char* name;
+        uint8_t kind;  // 0=float 1=vec2 2=vec3 3=vec4 4=mat4
+        bool operator==(const ValueUniformKey& o) const {
+            return shader == o.shader && name == o.name && kind == o.kind;
+        }
+    };
+    struct ValueUniformEntry {
+        ValueUniformKey key;
+        float value[16];
+    };
+    static constexpr size_t kMaxValueUniformCache = 192;
+    std::vector<ValueUniformEntry> value_uniform_cache_;
+
+    // 返回 true 表示"值变了、需要下发"。
+    bool value_changed(const RenderCommandTyped& cmd, uint8_t kind, const float* value,
+                       size_t count) {
+        const ValueUniformKey key{cmd.shader, cmd.uniform_name, kind};
+        for (auto& e : value_uniform_cache_) {
+            if (e.key == key) {
+                if (std::memcmp(e.value, value, count * sizeof(float)) == 0) return false;
+                std::memcpy(e.value, value, count * sizeof(float));
+                return true;
+            }
+        }
+        if (value_uniform_cache_.size() < kMaxValueUniformCache) {
+            ValueUniformEntry e{};
+            e.key = key;
+            std::memcpy(e.value, value, count * sizeof(float));
+            value_uniform_cache_.push_back(e);
+        }
+        return true;
+    }
+
     bool should_dispatch(const RenderCommandTyped& cmd) {
         switch (cmd.type) {
             case RenderCommandType::SetDepthTest: {
@@ -308,8 +355,9 @@ struct CommandStateCache {
                 if (initialized && has_shader && bound_shader == cmd.shader) return false;
                 bound_shader = cmd.shader;
                 has_shader = true;
-                // shader 变了，之前缓存的 uniform 值全部作废（不同 shader 的
-                // 同名 uniform 是独立状态）。
+                // shader 变了，int 值缓存作废（不同 shader 的同名 uniform 是
+                // 独立状态）。值缓存不用清：它的键里带 shader，天然不会串到
+                // 别的 shader 上，清了反而丢掉来回切换时的命中。
                 int_uniform_cache_.clear();
                 break;
             }
@@ -333,10 +381,34 @@ struct CommandStateCache {
                 }
                 break;
             }
-            // 其他命令（draw, clear, float/vec/mat uniform, swap）不做缓存，总是执行
+            case RenderCommandType::SetUniformFloat: {
+                if (!cmd.uniform_name) return true;
+                if (!value_changed(cmd, 0, &cmd.uniform_float, 1)) return false;
+                break;
+            }
+            case RenderCommandType::SetUniformVec2: {
+                if (!cmd.uniform_name) return true;
+                if (!value_changed(cmd, 1, &cmd.uniform_vec2.x, 2)) return false;
+                break;
+            }
+            case RenderCommandType::SetUniformVec3: {
+                if (!cmd.uniform_name) return true;
+                if (!value_changed(cmd, 2, &cmd.uniform_vec3.x, 3)) return false;
+                break;
+            }
+            case RenderCommandType::SetUniformVec4: {
+                if (!cmd.uniform_name) return true;
+                if (!value_changed(cmd, 3, &cmd.uniform_vec4.x, 4)) return false;
+                break;
+            }
+            case RenderCommandType::SetUniformMat4: {
+                if (!cmd.uniform_name) return true;
+                if (!value_changed(cmd, 4, cmd.uniform_mat4.m, 16)) return false;
+                break;
+            }
+            // 其他命令（draw, clear, swap）不做缓存，总是执行
             default:
-                return true;
-        }
+                return true;        }
         initialized = true;
         return true;
     }
@@ -347,6 +419,7 @@ struct CommandStateCache {
         texture_slots_initialized = false;
         has_shader = false;
         int_uniform_cache_.clear();
+        value_uniform_cache_.clear();
     }
 };
 
@@ -435,13 +508,21 @@ void RenderThread::thread_loop() {
     GLOG_INFO("RenderThread thread_loop entered");
     ready_.store(true);
 
+    // 渲染线程分段计时（GRYCE_RT_PROF=1）。开关只在这里读一次 —— Windows CRT
+    // 的 getenv 单次约 5us，放进每帧路径会把被测量的东西自己改掉。
+    const bool rt_prof = std::getenv("GRYCE_RT_PROF") != nullptr;
+    double rt_acc[4] = {0, 0, 0, 0};  // wait / begin / exec / end
+    int rt_frames = 0;
+
     while (!stop_requested_.load()) {
         if (!cmd_buffer_ || !backend_) {
             GLOG_ERROR("RenderThread: cmd_buffer or backend became null, exiting");
             break;
         }
         GLOG_DEBUG("RenderThread: waiting for commands");
+        const auto w0 = std::chrono::steady_clock::now();
         auto* commands = cmd_buffer_->acquire();
+        const auto w1 = std::chrono::steady_clock::now();
         if (!commands) {
             // shutdown 信号
             GLOG_INFO("RenderThread: acquire returned null, exiting");
@@ -450,6 +531,7 @@ void RenderThread::thread_loop() {
         GLOG_DEBUG("RenderThread: acquired {} commands", commands->size());
 
         backend_->begin_frame();
+        const auto w2 = std::chrono::steady_clock::now();
         CommandStateCache state_cache;
         for (auto& item : *commands) {
             if (item.is_typed()) {
@@ -466,7 +548,25 @@ void RenderThread::thread_loop() {
             }
         }
 
+        const auto w3 = std::chrono::steady_clock::now();
+
         backend_->end_frame();
+        const auto w4 = std::chrono::steady_clock::now();
+
+        if (rt_prof) {
+            rt_acc[0] += std::chrono::duration<double, std::milli>(w1 - w0).count();
+            rt_acc[1] += std::chrono::duration<double, std::milli>(w2 - w1).count();
+            rt_acc[2] += std::chrono::duration<double, std::milli>(w3 - w2).count();
+            rt_acc[3] += std::chrono::duration<double, std::milli>(w4 - w3).count();
+            if (++rt_frames >= 120) {
+                std::fprintf(stderr,
+                             "[rtprof] wait=%.3f begin=%.3f exec=%.3f end=%.3f cmds=%zu\n",
+                             rt_acc[0] / rt_frames, rt_acc[1] / rt_frames,
+                             rt_acc[2] / rt_frames, rt_acc[3] / rt_frames, commands->size());
+                for (double& v : rt_acc) v = 0.0;
+                rt_frames = 0;
+            }
+        }
 
         cmd_buffer_->release();
         GLOG_DEBUG("RenderThread: frame released");
