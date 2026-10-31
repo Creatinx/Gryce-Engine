@@ -227,6 +227,9 @@ public:
     // 由调用方使用，见 render_api.cpp 的实现）。
     void set_gpu_profiling(bool enabled);
     bool gpu_profiling_supported() const;
+    // 离屏基准模式开关（不 present，帧末等 GPU 完成）。与后端调用同在渲染
+    // 线程执行，避免跨线程切 present 状态。
+    void set_offscreen_benchmark(bool enabled);
     IRenderBackend* gpu_profiling_backend() const { return backend_.get(); }
 
     // 把一段 GPU 计时区间排进命令流。

@@ -274,6 +274,12 @@ GRYCE_RENDERER_API void  GRender_SetSSRDebugView(int mode);
 GRYCE_RENDERER_API void  GRender_SetGPUProfiling(int enabled);
 GRYCE_RENDERER_API int   GRender_GPUProfilingSupported(void);
 GRYCE_RENDERER_API void  GRender_DumpGPUProfiling(void);
+// 离屏基准模式（默认关）：1 = 每帧照常录制并提交，但**跳过 present**
+// （Vulkan/D3D12 不把图像送上屏、GL 不 swap buffers），帧末阻塞等 GPU 完成。
+// 用来量"纯渲染上限"：开着 present 时帧率会被 WSI 队列深度与桌面合成器节流，
+// 即使关掉 vsync 也测不到真实峰值。1 = 开，0 = 恢复呈现。
+// init 之前调用同样有效（值先记录，GRender_Init 时下发）。
+GRYCE_RENDERER_API void  GRender_SetBenchmarkMode(int enabled);
 GRYCE_RENDERER_API int   GRender_SaveScreenshot(const char* path);
 GRYCE_RENDERER_API void GRender_SetDisplayMode(const char* mode);
 // 查询某个显示模式在当前后端是否真的能渲染（1 = 支持）。

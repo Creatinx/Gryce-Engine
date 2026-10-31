@@ -132,6 +132,9 @@ struct RendererState {
     // 两次 vblank 之间空转（典型表现就是 "GPU 跑不满 / 帧率被显示器封顶"）。
     // 目标高帧率（如 240fps）或竞技/基准场景应默认 off；需要防撕裂时再显式开启。
     bool  vsync_enabled = false;
+    // 离屏基准模式：跳过 present（见 IRenderBackend::set_offscreen_benchmark）。
+    // 与 vsync 同口径先在状态里存一份，init 时应用，允许在 GRender_Init 之前设置。
+    bool  benchmark_mode = false;
     bool  backend_pending = false;
     bool  pipeline_reload_pending = false;
     GRenderAPI pending_backend_api = GRYCE_RENDER_API_OPENGL;
@@ -1283,6 +1286,9 @@ int GRender_Init(const GRenderInitDesc* desc) {
     // 旧实现里 GRender_SetVSync 在 init 之前调用会因 ctx 为空被静默丢弃，
     // 交换链始终停留在 FIFO（垂直同步），帧率被锁死在显示器刷新率上。
     g_renderer.ctx->set_swap_interval(g_renderer.vsync_enabled ? 1 : 0);
+    // 离屏基准模式同样要在渲染线程启动前下发：此刻 running_ 为 false，
+    // 调用直接落到后端，首帧起就不 present。
+    if (g_renderer.benchmark_mode) g_renderer.ctx->set_offscreen_benchmark(true);
 
     // Init render pipeline for 3D scene rendering
     g_renderer.pipeline = std::make_unique<RenderPipeline>();
@@ -2775,6 +2781,14 @@ bool GRender_IsPowerSaverActive() {
     GRYCE_API_GUARD();
     if (g_renderer.pipeline) return g_renderer.pipeline->power_saver_active();
     return false;
+}
+
+void GRender_SetBenchmarkMode(int enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.benchmark_mode = enabled != 0;
+    if (!g_renderer.ctx) return;
+    g_renderer.ctx->set_offscreen_benchmark(g_renderer.benchmark_mode);
 }
 
 void GRender_SetGPUProfiling(int enabled) {

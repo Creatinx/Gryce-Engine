@@ -73,6 +73,12 @@ public:
     VkSemaphore current_image_available_semaphore() const { return image_available_semaphores_[current_frame_]; }
     VkSemaphore current_render_finished_semaphore() const { return render_finished_semaphores_[current_image_]; }
     VkFence current_fence() const { return frame_fences_[current_frame_]; }
+    // 离屏基准模式：acquire 退化为"等上一帧 fence + 固定 image 0"，
+    // 提交只 signal fence 不 present。不 present 时交换链图像不会被归还，
+    // 真正的 acquire 会在第二次调用时永久阻塞 —— 所以基准模式必须绕开它。
+    void set_benchmark(bool enabled) { benchmark_ = enabled; }
+    bool benchmark() const { return benchmark_; }
+
     int frames_in_flight() const { return frames_in_flight_; }
 
 private:
@@ -118,6 +124,7 @@ private:
     // 提高 CPU/GPU 重叠度，避免 GPU 在渲染线程录制命令时空转。
     // 实际值取 min(交换链图像数, kMaxFramesInFlight)。
     int frames_in_flight_ = 3;
+    bool benchmark_ = false;
     int current_frame_ = 0;
     uint32_t current_image_ = 0;
     std::vector<VkSemaphore> image_available_semaphores_;

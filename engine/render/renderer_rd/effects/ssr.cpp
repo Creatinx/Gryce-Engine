@@ -209,10 +209,11 @@ void SSR_RD::render(RenderContext* ctx,
 
     // 分辨率缩放变化（每帧由 params 同步）→ 重建目标
     if (std::abs(params.ssr_resolution_scale - resolution_scale_) > 1e-4f) {
-        // 半分辨率路径目前 GL 与 Vulkan 的命中覆盖率不一致（实测 scale=0.5 时
-        // GL 3.65% / VK 0.49%，已确认门控、步长换算、步进中的深度采样三者两端完全
-        // 一致，差异出在 HiZ 粗层跳过这一环，尚未收敛）。这里强制 1.0，
-        // 保证两个后端输出一致；收敛后再放开。
+        // 步进与模糊目标、以及两者的视口都由同一个 resolution_scale_ 推导
+        // （见 create_targets 与下面的 set_viewport），所以 0.5 / 0.25 都是自洽的：
+        // 目标变小、视口同比变小、合成仍按全分辨率采样线性放大。
+        // 早先这里曾把 scale 强置为 1.0，原因已不成立（当时的错配是视口没跟着
+        // 目标一起缩，表现为半分辨率下命中覆盖率骤降）。
         resolution_scale_ = params.ssr_resolution_scale;
         if (resolution_scale_ < 0.25f) resolution_scale_ = 0.25f;
         if (resolution_scale_ > 1.0f) resolution_scale_ = 1.0f;

@@ -195,6 +195,7 @@ public:
     std::string main_scene_override;  // 命令行 --scene（同步给脚本的 main_scene）
     bool show_fps = false;
     bool debug_ui = false;
+    bool bench = false;        // --bench：离屏基准模式
     bool quit_requested = false;
     int shot_flush_frames = 0;
     int vsync_override = -1;   // 命令行覆盖：-1 跟随脚本
@@ -216,6 +217,10 @@ public:
         GRender_SetShadowMapSize(cfg.shadow_map_size);
         GRender_SetPointShadowSize(cfg.point_shadow_size);
         GRender_SetVSync(vsync_override < 0 ? opts.vsync : (vsync_override != 0));
+        // 基准模式必须在 GRender_Init 之前设置：此时只记录期望值，init 在渲染
+        // 线程启动前下发，首帧起就不 present（init 之后再设也能生效，但要白
+        // 等一帧 present）。
+        if (bench) GRender_SetBenchmarkMode(1);
         GRender_SetFPSOverlay(show_fps);
         // 运行时默认不挂 ImGui 调试面板（那是冒烟台/编辑器的东西）
         GRender_SetDebugUI(debug_ui);
@@ -241,6 +246,8 @@ public:
 
         renderer_ = true;
         apply_render_settings();
+        // GPU 分段计时（GRYCE_GPU_PROF=1 或 --bench）：开关读一次即可，dump 在退出时做。
+        if (bench || std::getenv("GRYCE_GPU_PROF")) GRender_SetGPUProfiling(1);
 
         GLOG_INFO("[app] window ready: '{}' {}x{} backend={}", opts.title, opts.width, opts.height,
                   api_name(api));
@@ -378,6 +385,7 @@ struct AppOptions {
     bool debug_ui = false;
     bool edit_mode = false;   // --edit-mode：强制停在编辑态（覆盖 project.data）
     int vsync = -1;           // --vsync/--no-vsync：-1 = 跟随脚本/配置
+    bool bench = false;       // --bench：离屏基准（不 present，帧末等 GPU）
 };
 
 // 用法文本里的程序名取自 argv[0]：现在有两个宿主（GryceApp 通用入口、
@@ -406,6 +414,9 @@ void print_usage(const char* argv0) {
         "                       覆盖 project.data 的 start_in_play\n"
         "  --vsync              开垂直同步（帧率被钉在刷新率上，默认关）\n"
         "  --no-vsync           关垂直同步（默认）\n"
+        "  --bench              离屏基准：不 present（不上屏），帧末等 GPU 完成，\n"
+        "                       并自动开 GPU 分段计时。用来量纯渲染上限，\n"
+        "                       与 --frames 配合使用\n"
         "  --help               显示本帮助\n",
         exe.c_str());
 }
@@ -443,6 +454,7 @@ int run(int argc, char** argv) {
         else if (std::strcmp(a, "--edit-mode") == 0) opts.edit_mode = true;
         else if (std::strcmp(a, "--vsync") == 0) opts.vsync = 1;
         else if (std::strcmp(a, "--no-vsync") == 0) opts.vsync = 0;
+        else if (std::strcmp(a, "--bench") == 0) opts.bench = true;
         else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -454,12 +466,15 @@ int run(int argc, char** argv) {
     }
 
     if (!opts.shot.empty() && opts.max_frames <= 0) opts.max_frames = 60;
+    // 基准模式要有终点的帧数，否则只能人肉 Ctrl+C；默认 600 帧够稳定。
+    if (opts.bench && opts.max_frames <= 0) opts.max_frames = 600;
 
     HostServices host;
     host.cfg = load_project_config(opts.project_root);
     host.show_fps = opts.show_fps;
     host.vsync_override = opts.vsync;
     host.debug_ui = opts.debug_ui;
+    host.bench = opts.bench;
     if (!opts.api.empty()) host.api_override = opts.api;
     host.main_scene_override = opts.scene;
 
@@ -555,7 +570,19 @@ int run(int argc, char** argv) {
     int frames = 0;
     bool shot_taken = false;
 
+    // 帧耗时拆分开关。环境变量在进入循环前读一次：Windows CRT 的 getenv 是
+    // 线性扫环境块（实测单次约 5us），逐帧调用会直接改写被测量的那个数。
+    const bool frame_prof = std::getenv("GRYCE_FRAME_PROF") != nullptr;
+    double prof_acc[6] = {0, 0, 0, 0, 0, 0};  // poll / begin / world / gizmo / end / frame
+    int prof_frames = 0;
+
+    // 基准统计：前 60 帧是预热（shader 编译、资源上传、缓存填充），只统计稳态。
+    constexpr int kBenchWarmup = 60;
+    double bench_acc_ms = 0.0;
+    int bench_frames = 0;
+
     while (true) {
+        const auto f0 = std::chrono::steady_clock::now();
         if (GWindow_IsValid()) {
             GWindow_PollEvents();
             // 平台输入 -> 命令队列；没有这一步 engine.input.* 永远是空状态。
@@ -566,18 +593,52 @@ int run(int argc, char** argv) {
         float dt = std::chrono::duration<float>(now - last_time).count();
         last_time = now;
         dt = std::max(0.0005f, std::min(dt, 0.1f));
+        if (frame_prof) {
+            prof_acc[0] += std::chrono::duration<double, std::milli>(now - f0).count();
+        }
 
         GCore_BeginFrame(dt);
         app_script.tick(dt);
 
         if (host.has_renderer()) {
+            const auto r0 = std::chrono::steady_clock::now();
             GRender_BeginFrame();
+            const auto r1 = std::chrono::steady_clock::now();
             GRender_RenderWorld();
+            const auto r2 = std::chrono::steady_clock::now();
             GRender_RenderGizmo();
+            const auto r3 = std::chrono::steady_clock::now();
             GRender_EndFrame();
+            const auto r4 = std::chrono::steady_clock::now();
+            if (frame_prof) {
+                prof_acc[1] += std::chrono::duration<double, std::milli>(r1 - f0).count();
+                prof_acc[2] += std::chrono::duration<double, std::milli>(r2 - r1).count();
+                prof_acc[3] += std::chrono::duration<double, std::milli>(r3 - r2).count();
+                prof_acc[4] += std::chrono::duration<double, std::milli>(r4 - r3).count();
+            }
         }
         GCore_EndFrame();
         ++frames;
+
+        if (frame_prof) {
+            prof_acc[5] += std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - f0).count();
+        }
+        if (opts.bench && frames > kBenchWarmup) {
+            bench_acc_ms += std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - f0).count();
+            ++bench_frames;
+        }
+        if (frame_prof && ++prof_frames >= 120) {
+            std::fprintf(stderr,
+                         "[fprof] poll=%.3f begin=%.3f world=%.3f gizmo=%.3f end=%.3f "
+                         "frame=%.3fms\n",
+                         prof_acc[0] / prof_frames, prof_acc[1] / prof_frames,
+                         prof_acc[2] / prof_frames, prof_acc[3] / prof_frames,
+                         prof_acc[4] / prof_frames, prof_acc[5] / prof_frames);
+            for (double& v : prof_acc) v = 0.0;
+            prof_frames = 0;
+        }
 
         if (host.shot_flush_frames > 0) --host.shot_flush_frames;
 
@@ -606,8 +667,19 @@ int run(int argc, char** argv) {
     GInput_SetMouseLocked(false);
 
     // 顺序不能反：先拆场景（World 持有 GPU 资源句柄），再拆渲染器。
+    if (host.bench || std::getenv("GRYCE_GPU_PROF")) GRender_DumpGPUProfiling();
     GCore_Shutdown();
     if (host.has_renderer()) host.destroy_window();
+
+    if (opts.bench) {
+        if (bench_frames > 0) {
+            const double ms = bench_acc_ms / bench_frames;
+            std::printf("[bench] offscreen: frames=%d avg=%.3fms fps=%.1f\n", bench_frames, ms,
+                        ms > 0.0 ? 1000.0 / ms : 0.0);
+        } else {
+            std::printf("[bench] offscreen: 帧数不足（--frames 需 > %d）\n", kBenchWarmup);
+        }
+    }
 
     std::printf("[app] exit: frames=%d elapsed=%.2fs avg_fps=%.1f\n", frames,
                 static_cast<double>(elapsed),

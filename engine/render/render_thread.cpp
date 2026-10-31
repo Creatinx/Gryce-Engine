@@ -230,47 +230,66 @@ struct CommandStateCache {
     };
     std::vector<std::pair<IntUniformKey, int>> int_uniform_cache_;
 
-    // float / vec2 / vec3 / vec4 / mat4 的值缓存。键同上：名是字面量，指针即身份。
-    // 场景 pass 里每个物体都会重发一遍相机矩阵、环境光、PCSS 参数、级联阴影
-    // 矩阵等 —— 这些值在整帧内恒定，只有 uModelMatrix / uMVP / uNormalMatrix 真正
-    // 逐物体变化。缓存命中即跳过整条后端调用（含 VulkanShader 内部的
-    // std::string 构造与名字比较），这一层把逐物体 uniform 从 30+ 条压到 4 条。
+    // float / vec2 / vec3 / vec4 / mat4 的值缓存。键=(shader, 名字指针, 类型)：
+    // 名是字面量，指针即身份。场景 pass 里每个物体都会重发一遍相机矩阵、环境光、
+    // PCSS 参数、级联阴影矩阵等 —— 这些值在整帧内恒定，只有 uModelMatrix /
+    // uMVP / uNormalMatrix 真正逐物体变化。缓存命中即跳过整条后端调用（含
+    // VulkanShader 内部的名字比较）。
     //
     // 正确性：VulkanShader 在每个 draw 时把整份 ubo_data_ 拷进该 draw 的槽位，
     // 所以"上一 draw 已写入同值"意味着本 draw 的槽位同样能拿到该值，跳过安全。
-    struct ValueUniformKey {
-        RHIShaderHandle shader;
-        const char* name;
-        uint8_t kind;  // 0=float 1=vec2 2=vec3 3=vec4 4=mat4
-        bool operator==(const ValueUniformKey& o) const {
-            return shader == o.shader && name == o.name && kind == o.kind;
-        }
-    };
+    //
+    // 结构用**开放寻址哈希表**而不是线性 vector：跨帧保留后条目数会涨到几百，
+    // 线性查找的代价会超过它省下的字符串比较，缓存反而变成负债。
+    static constexpr size_t kValueCacheCap = 1024;  // 2 的幂
     struct ValueUniformEntry {
-        ValueUniformKey key;
-        float value[16];
+        RHIShaderHandle shader;
+        const char* name = nullptr;
+        uint8_t kind = 0xFF;
+        bool used = false;
+        float value[16] = {};
     };
-    static constexpr size_t kMaxValueUniformCache = 192;
-    std::vector<ValueUniformEntry> value_uniform_cache_;
+    std::array<ValueUniformEntry, kValueCacheCap> value_cache_{};
+
+    static size_t value_slot_hash(const RHIShaderHandle& s, const char* name, uint8_t kind) {
+        uint64_t x = (static_cast<uint64_t>(s.index) << 32) | s.generation;
+        x ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(name));
+        x ^= static_cast<uint64_t>(kind) << 56;
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdull;
+        x ^= x >> 33;
+        x *= 0xc4ceb9fe1a85ec53ull;
+        x ^= x >> 33;
+        return static_cast<size_t>(x);
+    }
 
     // 返回 true 表示"值变了、需要下发"。
     bool value_changed(const RenderCommandTyped& cmd, uint8_t kind, const float* value,
                        size_t count) {
-        const ValueUniformKey key{cmd.shader, cmd.uniform_name, kind};
-        for (auto& e : value_uniform_cache_) {
-            if (e.key == key) {
+        const size_t mask = kValueCacheCap - 1;
+        size_t i = value_slot_hash(cmd.shader, cmd.uniform_name, kind) & mask;
+        for (size_t probe = 0; probe < 32; ++probe, i = (i + 1) & mask) {
+            ValueUniformEntry& e = value_cache_[i];
+            if (!e.used) {
+                e.used = true;
+                e.shader = cmd.shader;
+                e.name = cmd.uniform_name;
+                e.kind = kind;
+                std::memcpy(e.value, value, count * sizeof(float));
+                return true;
+            }
+            if (e.shader == cmd.shader && e.name == cmd.uniform_name && e.kind == kind) {
                 if (std::memcmp(e.value, value, count * sizeof(float)) == 0) return false;
                 std::memcpy(e.value, value, count * sizeof(float));
                 return true;
             }
         }
-        if (value_uniform_cache_.size() < kMaxValueUniformCache) {
-            ValueUniformEntry e{};
-            e.key = key;
-            std::memcpy(e.value, value, count * sizeof(float));
-            value_uniform_cache_.push_back(e);
-        }
+        // 探测窗口内没有空槽：宁可多下发一次，也不破坏正确性。
         return true;
+    }
+
+    void clear_value_cache() {
+        for (auto& e : value_cache_) e.used = false;
     }
 
     bool should_dispatch(const RenderCommandTyped& cmd) {
@@ -413,13 +432,15 @@ struct CommandStateCache {
         return true;
     }
 
-    void reset() {
+    void reset(bool keep_uniform_values) {
         initialized = false;
         has_framebuffer = false;
         texture_slots_initialized = false;
         has_shader = false;
         int_uniform_cache_.clear();
-        value_uniform_cache_.clear();
+        // 只有值缓存能跨帧：状态类命令（framebuffer/viewport/blend/纹理槽）
+        // 每帧都会重新下发一遍，留着缓存只会让首条命令被误判为"已设置"。
+        if (!keep_uniform_values) clear_value_cache();
     }
 };
 
@@ -513,6 +534,9 @@ void RenderThread::thread_loop() {
     const bool rt_prof = std::getenv("GRYCE_RT_PROF") != nullptr;
     double rt_acc[4] = {0, 0, 0, 0};  // wait / begin / exec / end
     int rt_frames = 0;
+    // 状态缓存提到循环外：uniform 值缓存要跨帧存活（见 reset 的说明）。
+    CommandStateCache state_cache;
+    const bool keep_uniform_values = backend_->uniform_state_persistent();
 
     while (!stop_requested_.load()) {
         if (!cmd_buffer_ || !backend_) {
@@ -532,7 +556,7 @@ void RenderThread::thread_loop() {
 
         backend_->begin_frame();
         const auto w2 = std::chrono::steady_clock::now();
-        CommandStateCache state_cache;
+        state_cache.reset(keep_uniform_values);
         for (auto& item : *commands) {
             if (item.is_typed()) {
                 if (state_cache.should_dispatch(item.typed())) {
@@ -543,8 +567,9 @@ void RenderThread::thread_loop() {
                 // 非类型化 lambda 可任意调用后端状态接口（如 Renderer2D 直接调
                 // set_blend_func），缓存无法跟踪其副作用；执行后整体失效，
                 // 保证后续类型化状态命令至少重新下发一次，避免误跳过导致
-                // 实际后端状态与缓存不一致。
-                state_cache.reset();
+                // 实际后端状态与缓存不一致。lambda 可能改写了任意 shader 的
+                // uniform，值缓存也一并丢弃（它很少出现，不承担性能作用）。
+                state_cache.reset(false);
             }
         }
 

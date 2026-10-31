@@ -171,11 +171,24 @@ bool D3D12Backend::init(void* native_window) {
         return false;
     }
 
-    // 6) 交换链（FLIP_DISCARD，3 缓冲）。尺寸取 HWND 客户区。
+    // 6) 交换链（FLIP_DISCARD，3 缓冲）。尺寸取 HWND 客户区的**物理像素**：
+    // 进程已声明 per-monitor v2 DPI 感知，GetClientRect 返回逻辑像素（DIP），
+    // 必须乘窗口 DPI 翻到物理像素，否则 HiDPI 屏上后台缓冲是逻辑尺寸、UI 覆盖层
+    // 按物理尺寸绘制会整屏溢出。与 begin_frame 里每一帧的尺寸检测口径一致。
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    const uint32_t w = static_cast<uint32_t>(rc.right - rc.left);
-    const uint32_t h = static_cast<uint32_t>(rc.bottom - rc.top);
+    const int init_logical_w = rc.right - rc.left;
+    const int init_logical_h = rc.bottom - rc.top;
+    int init_dpi = 96;
+    if (HDC dc = GetDC(hwnd_)) {
+        init_dpi = GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(hwnd_, dc);
+    }
+    const float kInitDpiScale = (init_dpi > 0) ? static_cast<float>(init_dpi) / 96.0f : 1.0f;
+    const uint32_t w = std::max(1u, static_cast<uint32_t>(
+        static_cast<float>(init_logical_w) * kInitDpiScale + 0.5f));
+    const uint32_t h = std::max(1u, static_cast<uint32_t>(
+        static_cast<float>(init_logical_h) * kInitDpiScale + 0.5f));
     if (!swapchain_.init(loader_, device_, queue_, hwnd_, w, h, 3)) {
         GLOG_ERROR("D3D12::init: swapchain init failed");
         release_device_objects();
@@ -331,11 +344,28 @@ void D3D12Backend::begin_frame() {
         }
     }
 
-    // 尺寸变化检测：客户区尺寸与交换链不一致则重建。
+    // 尺寸变化检测：客户区**物理像素**与交换链不一致则重建。
+    // 进程已声明 per-monitor v2 DPI 感知：GetClientRect 返回的是**逻辑**像素
+    // （DIP），但交换链/后台缓冲必须按**物理像素**建立——UI 覆盖层
+    // （begin_overlay_pass 用的 screen_w/h 来自 GLFW 帧缓冲，也是物理像素）
+    // 以物理像素为坐标系。HiDPI 屏上若交换链仍用逻辑尺寸，覆盖层按物理尺寸绘制
+    // 就会整屏向右下溢出（设备尺寸画进逻辑尺寸的后台缓冲）。这里用窗口 DC 的
+    // LOGPIXELSX 把逻辑客户区换算成物理像素，与 GL/VK 后端经由 GLFW/表面能力
+    // 拿到的帧缓冲尺寸口径一致。100% DPI 下 scale=1，与改动前完全等价。
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    const uint32_t w = static_cast<uint32_t>(rc.right - rc.left);
-    const uint32_t h = static_cast<uint32_t>(rc.bottom - rc.top);
+    const int logical_w = rc.right - rc.left;
+    const int logical_h = rc.bottom - rc.top;
+    int dpi = 96;
+    if (HDC dc = GetDC(hwnd_)) {
+        dpi = GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(hwnd_, dc);
+    }
+    const float kDpiScale = (dpi > 0) ? static_cast<float>(dpi) / 96.0f : 1.0f;
+    const uint32_t w = std::max(1u, static_cast<uint32_t>(
+        static_cast<float>(logical_w) * kDpiScale + 0.5f));
+    const uint32_t h = std::max(1u, static_cast<uint32_t>(
+        static_cast<float>(logical_h) * kDpiScale + 0.5f));
     if (w > 0 && h > 0 && (w != swapchain_.width() || h != swapchain_.height())) {
         if (!swapchain_.recreate(w, h)) {
             GLOG_ERROR("D3D12Backend::begin_frame: swapchain recreate failed");
@@ -1184,6 +1214,12 @@ void D3D12Backend::set_swap_interval(int interval) {
     // sync interval 是 Present(interval, flags) 的参数，改它不需要重建交换链 ——
     // 记到 swapchain 上，下一帧 Present 生效（比 Vulkan 少一次 recreate）。
     swapchain_.set_vsync_enabled(interval != 0);
+}
+
+void D3D12Backend::set_offscreen_benchmark(bool enabled) {
+    // 不 present 就没有 sync interval 可等，vsync 期望值一并对齐到 off。
+    if (enabled) swapchain_.set_vsync_enabled(false);
+    swapchain_.set_benchmark(enabled);
 }
 
 // ---------------------------------------------------------------------------

@@ -101,6 +101,9 @@ public:
 
     // 帧率 / 呈现控制
     void set_swap_interval(int interval) override;
+    void set_offscreen_benchmark(bool enabled) override;
+    // glUniform* 写的是上下文状态，跨帧持久。
+    bool uniform_state_persistent() const override { return true; }
     void set_gpu_busy_spin(bool enabled, int iterations) override;
     void set_nv_delay_before_swap(float seconds) override;
     bool supports_nv_delay_before_swap() const override;
@@ -137,6 +140,7 @@ public:
     std::string screenshot_path_;
     int screenshot_frame_ = -1;
     int frame_count_ = 0;
+    bool benchmark_ = false;
     // GL_MAX_TEXTURE_IMAGE_UNITS（片段阶段可用纹理单元数，Intel 集显为 32）
     int max_texture_units_ = 32;
 

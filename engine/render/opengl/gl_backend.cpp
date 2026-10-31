@@ -227,8 +227,15 @@ void GLBackend::end_frame() {
         // NVIDIA 特定帧率控制 + GPU busy-spin
         frame_pacing_.before_swap();
 
-        GLOG_DEBUG("GLBackend::end_frame: glfwSwapBuffers");
-        glfwSwapBuffers(window_);
+        if (benchmark_) {
+            // 基准模式：不 swap（交换缓冲会等 vblank 并把帧率压在刷新率上），
+            // 改成阻塞到 GPU 真正画完 —— 否则命令会无界堆积在驱动队列里，
+            // 测出来的"帧时间"只是提交耗时，和真实渲染开销无关。
+            glFinish();
+        } else {
+            GLOG_DEBUG("GLBackend::end_frame: glfwSwapBuffers");
+            glfwSwapBuffers(window_);
+        }
     }
     ++frame_count_;
 }
@@ -291,6 +298,10 @@ void save_bgr_bmp(const std::string& path, const unsigned char* bgr_data,
 }
 
 } // namespace
+
+void GLBackend::set_offscreen_benchmark(bool enabled) {
+    benchmark_ = enabled;
+}
 
 void GLBackend::set_swap_interval(int interval) {
     if (!window_) return;

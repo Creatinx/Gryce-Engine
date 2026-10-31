@@ -112,6 +112,9 @@ public:
     IBuffer* buffer(RHIBufferHandle handle) override;
 
     void set_swap_interval(int interval) override;
+    void set_offscreen_benchmark(bool enabled) override;
+    // uniform 值存在 VulkanShader 的 ubo_data_ 里，帧边界之外存活。
+    bool uniform_state_persistent() const override { return true; }
     void set_gpu_busy_spin(bool enabled, int iterations) override {}
     void set_nv_delay_before_swap(float seconds) override {}
     bool supports_nv_delay_before_swap() const override { return false; }
@@ -340,6 +343,16 @@ private:
 
     // 每帧临时分配的 secondary command buffers（draw_mesh 专用），在 end_frame 后统一重置
     std::vector<VkCommandBuffer> per_frame_secondary_cbs_;
+
+    // secondary CB 复用池（按帧槽）。
+    // vkResetCommandPool 只是把 CB 放回 initial 状态，句柄仍然有效、可以重新
+    // begin —— 每帧重新 vkAllocateCommandBuffers 是纯浪费（一次 ~5us，一帧要
+    // 分配十几个，正好对应一个 pass 的开销）。这里按帧槽缓存句柄，帧初把游标
+    // 归零后顺序复用；交换链重建会连带换掉 command pool，那时必须整体清空。
+    static constexpr int kSecondaryCacheSlots = 8;
+    std::vector<VkCommandBuffer> secondary_cache_[kSecondaryCacheSlots];
+    uint32_t secondary_cache_used_[kSecondaryCacheSlots] = {};
+    void clear_secondary_cache();
 
     void save_screenshot(const std::string& path);
 };

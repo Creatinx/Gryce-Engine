@@ -245,6 +245,13 @@ void VulkanBackend::set_swap_interval(int interval) {
     desired_vsync_ = interval != 0;
 }
 
+void VulkanBackend::set_offscreen_benchmark(bool enabled) {
+    // 基准模式与 vsync 互斥：不上屏就不存在 vblank 节流，保持 vsync 期望值会让
+    // begin_frame 每次比对失败、反复 recreate 交换链。
+    if (enabled) desired_vsync_ = false;
+    swapchain_.set_benchmark(enabled);
+}
+
 void VulkanBackend::begin_frame() {
     if (!initialized_) return;
 
@@ -276,6 +283,8 @@ void VulkanBackend::begin_frame() {
             return;
         }
         GLOG_INFO("VulkanBackend: swapchain recreated to {}x{}", width, height);
+        // 交换链重建会连带换掉 secondary command pool，缓存里的句柄全部失效。
+        clear_secondary_cache();
     }
 
     // VSync 变更在安全点应用：此处在 begin_frame 开头、acquire 之前，主命令
@@ -283,6 +292,7 @@ void VulkanBackend::begin_frame() {
     if (swapchain_.vsync_enabled() != desired_vsync_) {
         GLOG_INFO("VulkanBackend: applying vsync change (desired={})", desired_vsync_);
         swapchain_.set_vsync_enabled(desired_vsync_);
+        clear_secondary_cache();
     }
 
     GLOG_DEBUG("VulkanBackend::begin_frame: acquiring image, current_frame={}", swapchain_.current_frame_index());
@@ -297,6 +307,7 @@ void VulkanBackend::begin_frame() {
             return;
         }
         acquire_result = swapchain_.acquire_next_image(&current_image_);
+        clear_secondary_cache();
         GLOG_INFO("VulkanBackend::begin_frame: after recreate acquire_result={}", static_cast<int>(acquire_result));
     }
     if (acquire_result == VK_NOT_READY || acquire_result == VK_TIMEOUT) {
@@ -310,6 +321,7 @@ void VulkanBackend::begin_frame() {
             acquire_fail_streak_ = 0;
             if (width > 0 && height > 0) {
                 swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+                clear_secondary_cache();
             }
         }
         frame_aborted_ = true;
@@ -348,11 +360,13 @@ void VulkanBackend::begin_frame() {
     }
     // 只 reset 当前帧槽的 secondary command pool：该帧槽上一周期的提交已被
     // frame fence 保证完成，而共享池会把其他帧槽仍在 pending 的 CB 一并失效。
-    // pool 中已有的 CB 在 reset 后失效，下一帧会重新 allocate。
+    // pool reset 后池里的 CB 回到 initial 状态，句柄仍可复用，游标归零即可。
     VkCommandPool secondary_pool = swapchain_.secondary_command_pool(swapchain_.current_frame_index());
     if (device_.device() != VK_NULL_HANDLE && secondary_pool != VK_NULL_HANDLE) {
         vkResetCommandPool(device_.device(), secondary_pool, 0);
     }
+    const int sec_slot = swapchain_.current_frame_index();
+    if (sec_slot >= 0 && sec_slot < kSecondaryCacheSlots) secondary_cache_used_[sec_slot] = 0;
     per_frame_secondary_cbs_.clear();
     inline_secondary_cb_ = VK_NULL_HANDLE;
     inline_secondary_recording_ = false;
@@ -625,6 +639,7 @@ void VulkanBackend::end_frame() {
         glfwGetFramebufferSize(window_, &width, &height);
         if (width > 0 && height > 0) {
             swapchain_.recreate(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            clear_secondary_cache();
         }
     }
 
@@ -887,7 +902,13 @@ void VulkanBackend::end_geometry_secondary() {
 }
 
 VkCommandBuffer VulkanBackend::allocate_secondary_cb() {
-    VkCommandPool pool = swapchain_.secondary_command_pool(swapchain_.current_frame_index());
+    const int slot = swapchain_.current_frame_index();
+    if (slot < 0 || slot >= kSecondaryCacheSlots) return VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer>& cache = secondary_cache_[slot];
+    uint32_t& used = secondary_cache_used_[slot];
+    if (used < cache.size()) return cache[used++];
+
+    VkCommandPool pool = swapchain_.secondary_command_pool(slot);
     if (pool == VK_NULL_HANDLE) return VK_NULL_HANDLE;
     VkCommandBufferAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -898,8 +919,15 @@ VkCommandBuffer VulkanBackend::allocate_secondary_cb() {
     vkAllocateCommandBuffers(device_.device(), &alloc_info, &cb);
     if (cb != VK_NULL_HANDLE) {
         per_frame_secondary_cbs_.push_back(cb);
+        cache.push_back(cb);
+        ++used;
     }
     return cb;
+}
+
+void VulkanBackend::clear_secondary_cache() {
+    for (auto& cache : secondary_cache_) cache.clear();
+    for (uint32_t& used : secondary_cache_used_) used = 0;
 }
 
 void VulkanBackend::reset_inline_secondary_state() {

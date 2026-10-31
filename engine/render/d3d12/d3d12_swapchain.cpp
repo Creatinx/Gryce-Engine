@@ -279,6 +279,14 @@ bool D3D12Swapchain::end_frame() {
     ID3D12CommandList* lists[] = { command_list_ };
     queue_->ExecuteCommandLists(1, lists);
 
+    if (benchmark_) {
+        // 基准模式：只交命令、不上屏。帧槽照常推进，下一帧 begin_frame 的围栏
+        // 等待因此仍然限住在途帧数（不 present 会失去引擎自身的节流）。
+        signal_and_advance();
+        current_frame_ = (current_frame_ + 1) % frame_count_;
+        return true;
+    }
+
     // ★ Present 绝不能无界阻塞调用线程（这里是**渲染线程**）。
     //
     //   为什么（实测的 DEVICE_HUNG 根因）：vsync 下 `Present(1, 0)` 会一直等到

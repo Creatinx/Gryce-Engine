@@ -58,6 +58,11 @@ public:
     uint32_t buffer_count() const { return static_cast<uint32_t>(back_buffers_.size()); }
     bool vsync_enabled() const { return vsync_; }
     void set_vsync_enabled(bool enabled) { vsync_ = enabled; }
+    // 离屏基准模式：仍然 Close/Execute 每条命令列表，只是不调用 Present。
+    // 帧槽照常推进（signal_and_advance），所以下一帧 begin_frame 的围栏等待
+    // 仍然约束在途帧数，不会因为不 present 而无界堆积。
+    void set_benchmark(bool enabled) { benchmark_ = enabled; }
+    bool benchmark() const { return benchmark_; }
 
     // 等待所有在途帧完成（销毁资源 / shutdown 前调用）。
     void wait_all();
@@ -107,6 +112,7 @@ private:
     uint32_t current_frame_ = 0;
     uint32_t current_index_ = 0; // back buffer index
     bool vsync_ = true;
+    bool benchmark_ = false;
     bool recording_ = false;
 };
 

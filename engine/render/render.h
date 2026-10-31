@@ -291,6 +291,17 @@ public:
 
     // 帧率 / 呈现控制
     virtual void set_swap_interval(int interval) { (void)interval; }
+    // 离屏基准模式：仍然完整录制并提交每帧，但跳过 present（Vulkan 不调
+    // vkQueuePresentKHR / D3D12 不调 Present / GL 不 swap buffers），改为在
+    // 帧末阻塞等 GPU 完成。用于量出"不含呈现与合成窗口"的纯渲染上限——
+    // 开着 present 时帧率会被 WSI 的队列深度与合成器节流，测不到真实上限。
+    virtual void set_offscreen_benchmark(bool enabled) { (void)enabled; }
+    // uniform 状态是否跨帧持久。GL 的 glUniform* 存在上下文里、Vulkan 的
+    // uniform 值存在 shader 对象的 ubo_data_ 里（每个 draw 整份拷进槽位），
+    // 两者都在帧边界之外存活，所以命令流里的值缓存可以跨帧命中；
+    // D3D12 的 uniform 影子内存按帧复位（on_begin_frame），缓存必须每帧丢弃，
+    // 否则恒定值会被误判为"已下发"而整帧丢失。
+    virtual bool uniform_state_persistent() const { return false; }
     virtual void set_gpu_busy_spin(bool enabled, int iterations) {
         (void)enabled; (void)iterations;
     }

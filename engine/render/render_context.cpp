@@ -1048,6 +1048,17 @@ bool RenderContext::gpu_profiling_supported() const {
     return backend_ && backend_->gpu_profile_supported();
 }
 
+void RenderContext::set_offscreen_benchmark(bool enabled) {
+    if (!backend_) return;
+    if (running_) {
+        cmd_buffer_->push([enabled](IRenderBackend* b) {
+            if (b) b->set_offscreen_benchmark(enabled);
+        });
+    } else {
+        backend_->set_offscreen_benchmark(enabled);
+    }
+}
+
 void RenderContext::gpu_profile_begin(const char* name) {
     if (!backend_ || !gpu_profiling_enabled_.load()) return;
     if (!cmd_buffer_) return;

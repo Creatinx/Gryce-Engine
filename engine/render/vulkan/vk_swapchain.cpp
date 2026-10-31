@@ -505,6 +505,18 @@ VkResult VulkanSwapchain::acquire_next_image(uint32_t* image_index) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
+    if (benchmark_) {
+        // 基准模式不 present，交换链图像不会归还，vkAcquireNextImageKHR 第二次
+        // 就会永久阻塞。这里只保留"等上一轮该帧槽的 GPU 工作完成"这一必需的
+        // 同步部分，image 固定用 0（所有帧写同一张图，反正不上屏）。
+        VkFence frame_fence = frame_fences_[current_frame_];
+        vkWaitForFences(device_->device(), 1, &frame_fence, VK_TRUE, UINT64_MAX);
+        vkResetFences(device_->device(), 1, &frame_fence);
+        *image_index = 0;
+        current_image_ = 0;
+        return VK_SUCCESS;
+    }
+
     // 等待当前 frame 上一帧的 GPU 工作完成，避免信号量/UBO/命令缓冲被复用时还在使用。
     VkFence frame_fence = frame_fences_[current_frame_];
     vkWaitForFences(device_->device(), 1, &frame_fence, VK_TRUE, UINT64_MAX);
@@ -560,6 +572,18 @@ VkResult VulkanSwapchain::submit_and_present(uint32_t image_index, VkCommandBuff
 
     VkSubmitInfo submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    if (benchmark_) {
+        // 基准模式：无 acquire 信号量可等、也无需 render_finished 信号，
+        // 只提交 + signal fence，帧末由下一帧 acquire 等待它。
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        if (vkQueueSubmit(device_->graphics_queue(), 1, &submit, fence) != VK_SUCCESS) {
+            return VK_ERROR_DEVICE_LOST;
+        }
+        current_frame_ = (current_frame_ + 1) % frames_in_flight_;
+        return VK_SUCCESS;
+    }
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     submit.waitSemaphoreCount = 1;

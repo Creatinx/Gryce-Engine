@@ -96,6 +96,7 @@ public:
 
     // ---- 帧率控制 ----
     void set_swap_interval(int interval) override;
+    void set_offscreen_benchmark(bool enabled) override;
 
     // ---- 资源工厂 / 句柄解析（M3 已接线）----
     RHIMeshHandle create_mesh() override;
