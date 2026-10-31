@@ -29,6 +29,7 @@ namespace math { class Camera; }
 namespace scene { class Scene; }
 namespace assets { struct TextureData; }
 namespace components { class ParticleSystem3D; }
+namespace components { class SPHFluid3D; }
 namespace components { class LineRenderer3D; }
 namespace components { class TrailRenderer; }
 namespace components { class InstancedMeshRenderer; }
@@ -401,6 +402,15 @@ public:
         pp_params_.rt_reflection_enabled = enabled ? 1 : 0;
     }
     bool rt_reflection_enabled() const { return rt_reflection_enabled_; }
+    // 硬件光追折射/透射开关：同上，仅 Vulkan RT 设备生效，其余零差异回退。
+    // pp_params_.rt_transmission_enabled 被 Vulkan 后端读取决定是否跑透射通道。
+    void set_rt_transmission_enabled(bool enabled) {
+        pp_params_.rt_transmission_enabled = enabled ? 1 : 0;
+    }
+    // RT 路径追踪 GI 开关（P2）：同上，仅 Vulkan RT 设备生效，其余零差异回退。
+    void set_rt_gi_enabled(bool enabled) {
+        pp_params_.rt_gi_enabled = enabled ? 1 : 0;
+    }
     // 追踪分辨率档（0.25~1.0，默认 1.0 = 逐像素追踪）
     void set_rt_reflection_resolution_scale(float scale) {
         pp_params_.rt_reflection_resolution_scale = math::clamp(scale, 0.25f, 1.0f);
@@ -870,6 +880,8 @@ private:
     // 因此单独补这一遍把粒子放进深度缓冲。必须在主粒子绘制之后、SSR 之前调用。
     void draw_particles_depth(RenderContext& ctx, const math::Matrix4f& view, const math::Matrix4f& proj);
     std::vector<components::ParticleSystem3D*> particle_items_;
+    // SPH 流体复用同一份粒子着色器与实例流布局，单独收集、同批绘制
+    std::vector<components::SPHFluid3D*> sph_items_;
     // 本帧已启用但还画不出来的粒子系统数（GPU 句柄未就绪 / 尚未攒够发射量）。
     // 反射探针首次捕获要等它归零，否则图集里会缺火焰。
     int particle_pending_count_ = 0;

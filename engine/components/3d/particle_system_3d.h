@@ -122,6 +122,10 @@ public:
     // 本帧待绘制的实例数（供渲染侧决定 draw 的实例数量）
     uint32_t instance_count() const { return used_instances_; }
 
+    // 无贴图时的内置回退：程序化径向渐变（中心实、边缘柔）。SPHFluid3D 等
+    // 复用粒子实例流的组件也用它，保证同一份片元着色器总有有效 uTexture。
+    static render::RHITextureHandle create_default_texture(render::RenderContext* ctx);
+
 private:
     void emit_internal(int count, const math::Matrix4f& model);
     void spawn_particle(const math::Matrix4f& model);

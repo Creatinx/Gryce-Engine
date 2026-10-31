@@ -91,6 +91,7 @@ target_sources(GryceCore
         components/2d/particle_emitter.cpp
         components/2d/skybox_2d.cpp
         components/3d/particle_system_3d.cpp
+        components/3d/sph_fluid.cpp
         components/3d/line_renderer_3d.cpp
         components/3d/trail_renderer.cpp
         components/3d/instanced_mesh_renderer.cpp
@@ -295,6 +296,8 @@ if(Vulkan_FOUND)
             render/vulkan/vk_device.cpp
             render/vulkan/vk_acceleration_structure.cpp
             render/vulkan/vk_ray_query_pass.cpp
+            render/vulkan/vk_rt_transmission_pass.cpp
+            render/vulkan/vk_rt_pathtrace_pass.cpp
             render/vulkan/vk_framebuffer.cpp
             render/vulkan/vk_imgui_backend.cpp
             render/vulkan/vk_instance.cpp

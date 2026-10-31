@@ -1,4 +1,4 @@
-#include "components/3d/particle_system_3d.h"
+﻿#include "components/3d/particle_system_3d.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,11 +16,28 @@ namespace {
 constexpr float k_pi = 3.14159265358979323846f;
 constexpr float k_deg2rad = k_pi / 180.0f;
 
+render::Color lerp_color(const render::Color& a, const render::Color& b, float t) {
+    return render::Color(a.r + (b.r - a.r) * t,
+                         a.g + (b.g - a.g) * t,
+                         a.b + (b.b - a.b) * t,
+                         a.a + (b.a - a.a) * t);
+}
+
+// 构造与 dir 正交的两个基向量（dir 需已归一化）
+void orthonormal_basis(const math::Vector3f& dir, math::Vector3f& out_t, math::Vector3f& out_b) {
+    const math::Vector3f ref = (std::abs(dir.y) < 0.99f) ? math::Vector3f(0.0f, 1.0f, 0.0f)
+                                                         : math::Vector3f(1.0f, 0.0f, 0.0f);
+    out_t = dir.cross(ref).normalized();
+    out_b = dir.cross(out_t).normalized();
+}
+
+} // namespace
+
 // 无 texture_path 时的内置回退贴图：程序化径向渐变（中心实、边缘柔、四角透明）。
 // 不用 1x1 白色是因为那会让每颗粒子渲染成硬边方块；带衰减的贴图开箱即得柔和的
 // 圆形粒子，同时保持"贴图 × 顶点色"单一路径（不需要 uUseTexture 分支，
 // Vulkan 的 per-object UBO 没有可用的 int 字段位）。
-render::RHITextureHandle create_default_particle_texture(render::RenderContext* ctx) {
+render::RHITextureHandle ParticleSystem3D::create_default_texture(render::RenderContext* ctx) {
     if (!ctx) return render::RHITextureHandle{};
 
     constexpr int k_size = 64;
@@ -51,23 +68,6 @@ render::RHITextureHandle create_default_particle_texture(render::RenderContext* 
     }
     return tex;
 }
-
-render::Color lerp_color(const render::Color& a, const render::Color& b, float t) {
-    return render::Color(a.r + (b.r - a.r) * t,
-                         a.g + (b.g - a.g) * t,
-                         a.b + (b.b - a.b) * t,
-                         a.a + (b.a - a.a) * t);
-}
-
-// 构造与 dir 正交的两个基向量（dir 需已归一化）
-void orthonormal_basis(const math::Vector3f& dir, math::Vector3f& out_t, math::Vector3f& out_b) {
-    const math::Vector3f ref = (std::abs(dir.y) < 0.99f) ? math::Vector3f(0.0f, 1.0f, 0.0f)
-                                                         : math::Vector3f(1.0f, 0.0f, 0.0f);
-    out_t = dir.cross(ref).normalized();
-    out_b = dir.cross(out_t).normalized();
-}
-
-} // namespace
 
 std::mt19937& ParticleSystem3D::rng() {
     static std::mt19937 engine{std::random_device{}()};
@@ -370,7 +370,7 @@ void ParticleSystem3D::prepare_gpu(render::RenderContext* ctx, const math::Matri
                 }
             }
             if (!texture_handle_.is_valid()) {
-                texture_handle_ = create_default_particle_texture(ctx);
+                texture_handle_ = create_default_texture(ctx);
             }
         }
 

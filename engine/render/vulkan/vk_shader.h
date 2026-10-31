@@ -65,6 +65,8 @@ public:
 
     bool is_post_process() const { return post_process_; }
     bool is_skybox() const { return skybox_; }
+    bool is_particle() const { return particle_; }
+    VkSampleCountFlagBits pipeline_samples_vk() const { return pipeline_samples_; }
     // post-process 与 skybox（及水性材质）共用每帧固定描述符集，
     // 标准 PBR 路径则每 draw 分配独立描述符集。
     bool uses_fixed_descriptor_sets() const { return post_process_ || skybox_ || water_; }
