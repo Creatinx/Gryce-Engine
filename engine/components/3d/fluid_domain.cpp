@@ -97,6 +97,9 @@ void FluidDomain3D::setup_grid() {
     grid_.curl_x.assign(cells, 0.0f);
     grid_.curl_y.assign(cells, 0.0f);
     grid_.curl_z.assign(cells, 0.0f);
+    grid_.adv_u.assign(grid_.u.size(), 0.0f);
+    grid_.adv_v.assign(grid_.v.size(), 0.0f);
+    grid_.adv_w.assign(grid_.w.size(), 0.0f);
 }
 
 void FluidDomain3D::reset_fluid() {
@@ -185,6 +188,7 @@ void FluidDomain3D::serialize(nlohmann::json& out) const {
     out["gas_source_extents"] = {gas_source_extents.x, gas_source_extents.y, gas_source_extents.z};
     out["gas_emission"] = gas_emission;
     out["gas_buoyancy"] = gas_buoyancy;
+    out["gas_drag"] = gas_drag;
     out["gas_dissipation"] = gas_dissipation;
     out["gas_vorticity"] = gas_vorticity;
     out["smoke_color"] = {smoke_color.x, smoke_color.y, smoke_color.z, smoke_color.w};
@@ -237,6 +241,7 @@ void FluidDomain3D::deserialize(const nlohmann::json& in) {
     read_vec3("gas_source_extents", gas_source_extents);
     read_f("gas_emission", gas_emission);
     read_f("gas_buoyancy", gas_buoyancy);
+    read_f("gas_drag", gas_drag);
     read_f("gas_dissipation", gas_dissipation);
     read_f("gas_vorticity", gas_vorticity);
     read_vec4("smoke_color", smoke_color);
@@ -268,31 +273,50 @@ void FluidDomain3D::integrate_particles(float dt) {
     for (size_t i = 0; i < positions_.size(); ++i) {
         math::Vector3f& vel = velocities_[i];
         vel = vel + g;
-        // 空气拖曳：粒子上采样到的空气速度会把它带向当地流场，这是"空气也是
-        // 流体"在粒子侧的直接体现。系数按每秒计，避免依赖帧率。
+        // 空气拖曳：粒子上采样到的空气速度会把它往当地流场带，这是"空气也是
+        // 流体"在粒子侧的直接体现（风吹水面起波纹）。
+        //
+        // 只取**水平分量**、按当地烟雾密度加权、并且很弱。竖直分量绝不能用：
+        // 上升的烟柱在下侧伴随很强的回流，把粒子往下吸、水就从中间被掏空、
+        // 摊成一圈围着池壁。
         if (gas_enabled) {
             const math::Vector3f gd(positions_[i].x - grid_.origin.x,
                                     positions_[i].y - grid_.origin.y,
                                     positions_[i].z - grid_.origin.z);
-            const math::Vector3f air = sample_cell_velocity(gd.x / grid_.cell,
-                                                            gd.y / grid_.cell,
-                                                            gd.z / grid_.cell);
-            vel = vel + (air - vel) * std::min(0.5f, 0.12f * dt);
+            const float gx = gd.x / grid_.cell;
+            const float gy = gd.y / grid_.cell;
+            const float gz = gd.z / grid_.cell;
+            const float d = sample_cell_scalar(grid_.density, gx, gy, gz);
+            if (d > 1e-3f) {
+                const math::Vector3f air = sample_cell_velocity(gx, gy, gz);
+                const float k = std::min(0.5f, 0.25f * dt * d);
+                vel.x += (air.x - vel.x) * k;
+                vel.z += (air.z - vel.z) * k;
+            }
         }
         positions_[i] = positions_[i] + vel * dt;
     }
 }
 
 // P2G：粒子速度按三线性权重散播到三种面心，同时统计格心体积分数。
+//
+// 只重建**液体**的面心速度。P2G 必须先把三种分量清零再累加（否则平均被上一
+// 步的残留污染），但清零同时会把气相速度一起抹掉：空气是欧拉量，靠速度场自
+// 平流与浮力累积动量，每步被 P2G 清一次就永远涨不起来 —— 表现为浮力把密度往
+// 上推一点点、竖直速度却始终停在单步增量上，烟只会堆在源口。
+// 所以清零前先留一份快照，散播完再把"两侧都是空气"的面心恢复成快照值。
 void FluidDomain3D::particles_to_grid() {
     const int nx = grid_.dim[0];
     const int ny = grid_.dim[1];
     const int nz = grid_.dim[2];
     const size_t cells = static_cast<size_t>(nx) * ny * nz;
 
-    std::fill(grid_.u.begin(), grid_.u.end(), 0.0f);
-    std::fill(grid_.v.begin(), grid_.v.end(), 0.0f);
-    std::fill(grid_.w.begin(), grid_.w.end(), 0.0f);
+    // 值累加器借 adv_*（P2G 阶段不需要快照）：液体只**覆盖**有粒子贡献的面，
+    // 没有粒子贡献的面保留原值 —— 那是气相的速度场，清零等于每步抹掉空气的
+    // 动量，浮力就永远攒不起来。
+    grid_.adv_u.assign(grid_.u.size(), 0.0f);
+    grid_.adv_v.assign(grid_.v.size(), 0.0f);
+    grid_.adv_w.assign(grid_.w.size(), 0.0f);
     grid_.tmp.assign(grid_.u.size() + grid_.v.size() + grid_.w.size(), 0.0f);
     float* wu = grid_.tmp.data();
     float* wv = wu + grid_.u.size();
@@ -340,19 +364,19 @@ void FluidDomain3D::particles_to_grid() {
         const int ux = static_cast<int>(std::floor(g.x));
         const int uy = static_cast<int>(std::floor(g.y - 0.5f));
         const int uz = static_cast<int>(std::floor(g.z - 0.5f));
-        splat(grid_.u, wu, ux, uy, uz, nx + 1, ny, nz, g.x, g.y - 0.5f, g.z - 0.5f,
+        splat(grid_.adv_u, wu, ux, uy, uz, nx + 1, ny, nz, g.x, g.y - 0.5f, g.z - 0.5f,
               velocities_[p].x, 0);
 
         const int vx = static_cast<int>(std::floor(g.x - 0.5f));
         const int vy = static_cast<int>(std::floor(g.y));
         const int vz = static_cast<int>(std::floor(g.z - 0.5f));
-        splat(grid_.v, wv, vx, vy, vz, nx, ny + 1, nz, g.x - 0.5f, g.y, g.z - 0.5f,
+        splat(grid_.adv_v, wv, vx, vy, vz, nx, ny + 1, nz, g.x - 0.5f, g.y, g.z - 0.5f,
               velocities_[p].y, 1);
 
         const int wx = static_cast<int>(std::floor(g.x - 0.5f));
         const int wy = static_cast<int>(std::floor(g.y - 0.5f));
         const int wz = static_cast<int>(std::floor(g.z));
-        splat(grid_.w, ww, wx, wy, wz, nx, ny, nz + 1, g.x - 0.5f, g.y - 0.5f, g.z,
+        splat(grid_.adv_w, ww, wx, wy, wz, nx, ny, nz + 1, g.x - 0.5f, g.y - 0.5f, g.z,
               velocities_[p].z, 2);
 
         // 格心体积分数：按最近 8 个格心的三线性权重累加
@@ -380,15 +404,6 @@ void FluidDomain3D::particles_to_grid() {
         }
     }
 
-    for (size_t i = 0; i < grid_.u.size(); ++i) {
-        if (wu[i] > 1e-6f) grid_.u[i] /= wu[i];
-    }
-    for (size_t i = 0; i < grid_.v.size(); ++i) {
-        if (wv[i] > 1e-6f) grid_.v[i] /= wv[i];
-    }
-    for (size_t i = 0; i < grid_.w.size(); ++i) {
-        if (ww[i] > 1e-6f) grid_.w[i] /= ww[i];
-    }
     // 每格期望粒子数 = (格距 / 播种间距)^3。必须按实际间距算：粒子上限会把
     // spacing 放大，用固定常数的话整片水的 frac 会系统性偏低，投影把它们
     // 全当空气（p = 0），水就失去压力支撑、一层层被压到池底。
@@ -398,6 +413,110 @@ void FluidDomain3D::particles_to_grid() {
     for (size_t i = 0; i < cells; ++i) {
         grid_.frac[i] = std::clamp(frac_acc[i] / per_cell, 0.0f, 1.0f);
     }
+
+    // 写回面心速度。没有粒子贡献的面分成两类：
+    //   ① 远离液体（离最近的液体格还有两格以上）—— 保留原值，那是气相自己的
+    //      速度场，清零等于每步抹掉空气的动量，浮力永远攒不起来；
+    //   ② 贴着液体 —— 清零，交给压力投影去补。这类面绝不能留旧值：投影的散度
+    //      正是拿它们算的，留着上一帧的气相速度会让液体格凭空多出散度，水面
+    //      被掏空、摊成一圈围着池壁。
+    // "靠近液体"用一次膨胀把液体格扩一圈预先算好，避免逐面查 26 邻域。
+    constexpr float k_empty_frac = 0.1f;
+    for (size_t i = 0; i < cells; ++i) {
+        grid_.p_next[i] = (grid_.frac[i] >= k_empty_frac) ? 1.0f : 0.0f;
+    }
+    for (int z = 0; z < nz; ++z) {
+        for (int y = 0; y < ny; ++y) {
+            for (int x = 0; x < nx; ++x) {
+                const size_t c = static_cast<size_t>(idx_c(x, y, z));
+                if (grid_.p_next[c] > 0.5f || grid_.frac[c] >= k_empty_frac) continue;
+                const auto liquid_at = [&](int xx, int yy, int zz) {
+                    if (xx < 0 || xx >= nx || yy < 0 || yy >= ny || zz < 0 || zz >= nz)
+                        return false;
+                    return grid_.frac[idx_c(xx, yy, zz)] >= k_empty_frac;
+                };
+                if (liquid_at(x - 1, y, z) || liquid_at(x + 1, y, z) || liquid_at(x, y - 1, z) ||
+                    liquid_at(x, y + 1, z) || liquid_at(x, y, z - 1) || liquid_at(x, y, z + 1)) {
+                    grid_.p_next[c] = 1.0f;
+                }
+            }
+        }
+    }
+    const auto near_liquid = [&](int x, int y, int z) {
+        return grid_.p_next[idx_c(std::clamp(x, 0, nx - 1), std::clamp(y, 0, ny - 1),
+                                  std::clamp(z, 0, nz - 1))] > 0.5f;
+    };
+    for (int z = 0; z < nz; ++z) {
+        for (int y = 0; y < ny; ++y) {
+            for (int x = 0; x <= nx; ++x) {
+                const size_t i = static_cast<size_t>(idx_u(x, y, z));
+                if (wu[i] > 1e-6f) grid_.u[i] = grid_.adv_u[i] / wu[i];
+                else if (near_liquid(x - 1, y, z) || near_liquid(x, y, z)) grid_.u[i] = 0.0f;
+            }
+        }
+    }
+    for (int z = 0; z < nz; ++z) {
+        for (int y = 0; y <= ny; ++y) {
+            for (int x = 0; x < nx; ++x) {
+                const size_t i = static_cast<size_t>(idx_v(x, y, z));
+                if (wv[i] > 1e-6f) grid_.v[i] = grid_.adv_v[i] / wv[i];
+                else if (near_liquid(x, y - 1, z) || near_liquid(x, y, z)) grid_.v[i] = 0.0f;
+            }
+        }
+    }
+    for (int z = 0; z <= nz; ++z) {
+        for (int y = 0; y < ny; ++y) {
+            for (int x = 0; x < nx; ++x) {
+                const size_t i = static_cast<size_t>(idx_w(x, y, z));
+                if (ww[i] > 1e-6f) grid_.w[i] = grid_.adv_w[i] / ww[i];
+                else if (near_liquid(x, y, z - 1) || near_liquid(x, y, z)) grid_.w[i] = 0.0f;
+            }
+        }
+    }
+
+    // 把液体速度外推一层到"贴水但没有粒子贡献"的面心。
+    // G2P 的 PIC 分量（1 - flip_ratio）采样的是速度场的**绝对值**，这些面如果
+    // 留 0 或留气相速度，水面粒子每步都会被掺进一份不属于水的速度（8% 权重 ×
+    // 气相几 m/s），几百步下来整池水就被搅成一圈围在池壁。外推一层后，水面附近
+    // 采样到的都是液相速度。
+    const auto fill_from_neighbors = [&](std::vector<float>& field, float* mask, int axis) {
+        const int sx = (axis == 0) ? nx + 1 : nx;
+        const int sy = (axis == 1) ? ny + 1 : ny;
+        const int sz = (axis == 2) ? nz + 1 : nz;
+        std::vector<float> next = field;
+        for (int z = 0; z < sz; ++z) {
+            for (int y = 0; y < sy; ++y) {
+                for (int x = 0; x < sx; ++x) {
+                    const size_t i = static_cast<size_t>((z * sy + y) * sx + x);
+                    if (mask[i] > 1e-6f) continue;
+                    int has_liquid = 0;
+                    if (axis == 0) has_liquid = near_liquid(x - 1, y, z) || near_liquid(x, y, z);
+                    if (axis == 1) has_liquid = near_liquid(x, y - 1, z) || near_liquid(x, y, z);
+                    if (axis == 2) has_liquid = near_liquid(x, y, z - 1) || near_liquid(x, y, z);
+                    if (!has_liquid) continue;
+                    float sum = 0.0f;
+                    int count = 0;
+                    const auto take = [&](int xx, int yy, int zz) {
+                        if (xx < 0 || xx >= sx || yy < 0 || yy >= sy || zz < 0 || zz >= sz) return;
+                        const size_t j = static_cast<size_t>((zz * sy + yy) * sx + xx);
+                        if (mask[j] <= 1e-6f) return;
+                        sum += field[j];
+                        ++count;
+                    };
+                    if (axis == 0) { take(x - 1, y, z); take(x + 1, y, z); }
+                    if (axis == 1) { take(x, y - 1, z); take(x, y + 1, z); }
+                    if (axis == 2) { take(x, y, z - 1); take(x, y, z + 1); }
+                    if (count == 0) continue;
+                    next[i] = sum / static_cast<float>(count);
+                    mask[i] = 2e-6f;   // 标记已填，下一轮可继续外推
+                }
+            }
+        }
+        field = next;
+    };
+    fill_from_neighbors(grid_.u, wu, 0);
+    fill_from_neighbors(grid_.v, wv, 1);
+    fill_from_neighbors(grid_.w, ww, 2);
 }
 
 // 采样任意格坐标处的速度（三种 MAC 分量分别三线性插值后合成矢量）。
@@ -417,13 +536,32 @@ float FluidDomain3D::sample_cell_scalar(const std::vector<float>& field, float g
                       gz - 0.5f);
 }
 
-// 气源：在源盒内补密度，同时给一点向上初速（否则浮力从零启动很慢）。
+// 气源：入流边界（Blender 的 Inflow）。源盒内的密度直接给到 gas_emission，
+// 而不是每步"加一点"。
+//
+// 加法的稳态密度 = 每步注入量 / 每步被冲走的比例。上升流在源区每步会替换掉
+// 三成以上的格子内容，注入量换算下来只剩 0.12 左右 —— 永远低于任何合理的
+// 等值面阈值，烟就只剩一层若有若无的薄壳。入流边界给的是"流进去的东西有多
+// 浓"，与流速无关，源区密度稳定在 gas_emission，烟柱才有实体。
 void FluidDomain3D::emit_gas(float dt) {
+    (void)dt;
     if (!gas_enabled || gas_emission <= 0.0f) return;
     const int nx = grid_.dim[0];
     const int ny = grid_.dim[1];
     const int nz = grid_.dim[2];
     const float h = grid_.cell;
+    const float level = std::min(1.6f, gas_emission);
+    // 入流不做成严格定常。定常入流在数值上是稳定的层流，长出来永远是一根笔
+    // 直的柱子；真实烟羽靠源头的扰动才会起卷、分叉成团。这里给每个源格一份
+    // 随步变化的白噪声，浮力把它放大成不稳定性。
+    const auto hash01 = [](int x, int y, int z, int t) {
+        unsigned hsh = static_cast<unsigned>(x) * 73856093u ^ static_cast<unsigned>(y) * 19349663u ^
+                       static_cast<unsigned>(z) * 83492791u ^ static_cast<unsigned>(t) * 2654435761u;
+        hsh ^= hsh >> 13;
+        hsh *= 1274126177u;
+        hsh ^= hsh >> 16;
+        return static_cast<float>(hsh & 0xFFFFFFu) / static_cast<float>(0xFFFFFFu);
+    };
     for (int z = 0; z < nz; ++z) {
         for (int y = 0; y < ny; ++y) {
             for (int x = 0; x < nx; ++x) {
@@ -434,26 +572,38 @@ void FluidDomain3D::emit_gas(float dt) {
                 if (std::abs(c.y - gas_source_center.y) > gas_source_extents.y) continue;
                 if (std::abs(c.z - gas_source_center.z) > gas_source_extents.z) continue;
                 const size_t i = static_cast<size_t>(idx_c(x, y, z));
-                grid_.density[i] = std::min(1.6f, grid_.density[i] + gas_emission * dt);
+                const float jitter = 0.65f + 0.7f * hash01(x, y, z, step_index_);
+                grid_.density[i] = std::max(grid_.density[i], level * jitter);
             }
         }
     }
 }
 
 // 浮力：密度越大越往上浮。v 分量在 y 面心，取上下两格密度的平均。
+// 同时按密度给一份阻尼：只有浮力没有阻力时竖直速度会逐帧累加到十几 m/s，
+// 回溯距离超过好几格，平流采样严重失真；加了阻尼速度收敛到 buoyancy/drag。
+//
+// 只在"面两侧都是空气"处加力。贴着液体的面归粒子所有，往那里加浮力等于让
+// 烟把水池整体往上抬，水面会被冲成一层薄壳再撕碎。
 void FluidDomain3D::apply_buoyancy(float dt) {
     if (!gas_enabled) return;
     const int nx = grid_.dim[0];
     const int ny = grid_.dim[1];
     const int nz = grid_.dim[2];
+    const float drag = std::max(0.0f, gas_drag);
     for (int z = 0; z < nz; ++z) {
         for (int y = 0; y < ny + 1; ++y) {
             for (int x = 0; x < nx; ++x) {
+                // 两侧格（y-1 / y）都必须不在液体里
+                const bool air0 = (y > 0) ? grid_.frac[idx_c(x, y - 1, z)] < k_air_frac : true;
+                const bool air1 = (y < ny) ? grid_.frac[idx_c(x, y, z)] < k_air_frac : true;
+                if (!air0 || !air1) continue;
                 const float d0 = (y > 0) ? grid_.density[idx_c(x, y - 1, z)] : 0.0f;
                 const float d1 = (y < ny) ? grid_.density[idx_c(x, y, z)] : 0.0f;
                 const float d = 0.5f * (d0 + d1);
                 if (d <= 1e-4f) continue;
-                grid_.v[idx_v(x, y, z)] += gas_buoyancy * d * dt;
+                float& v = grid_.v[idx_v(x, y, z)];
+                v += (gas_buoyancy - drag * v) * d * dt;
             }
         }
     }
@@ -488,20 +638,27 @@ void FluidDomain3D::apply_wind(float dt) {
 }
 
 // 涡量约束：ω = ∇×u，把 ω 的模长梯度方向与 ω 的叉积作为力加回速度场。
-// 半拉格朗日平流 + Jacobi 压力的数值耗散会把小涡抹平，没有这一步烟雾
-// 只会慢慢摊成一片均匀的雾，不会翻滚。
+// 半拉格朗日平流 + 压力的数值耗散会把小涡抹平，没有这一步烟只会慢慢摊成
+// 一片均匀的雾，不会翻滚。
+//
+// 只作用于**空气格**：液体格/液气交界面上的面心速度归 FLIP 粒子所有，往里
+// 加涡量力等于给水面凭空注入加速度，水池会被撕成丝带（烟源贴着水面时尤其
+// 明显）。
 void FluidDomain3D::apply_vorticity(float dt) {
     if (!gas_enabled || gas_vorticity <= 0.0f) return;
     const int nx = grid_.dim[0];
     const int ny = grid_.dim[1];
     const int nz = grid_.dim[2];
     const float h = grid_.cell;
+    const auto is_air_cell = [&](int x, int y, int z) {
+        return grid_.frac[idx_c(x, y, z)] < k_air_frac;
+    };
 
     for (int z = 0; z < nz; ++z) {
         for (int y = 0; y < ny; ++y) {
             for (int x = 0; x < nx; ++x) {
                 const size_t c = static_cast<size_t>(idx_c(x, y, z));
-                if (grid_.density[c] < 1e-3f) {
+                if (grid_.density[c] < 1e-3f || !is_air_cell(x, y, z)) {
                     grid_.curl_x[c] = grid_.curl_y[c] = grid_.curl_z[c] = 0.0f;
                     continue;
                 }
@@ -550,16 +707,174 @@ void FluidDomain3D::apply_vorticity(float dt) {
                 const math::Vector3f nrm = grad * (1.0f / glen);
                 const math::Vector3f omega(grid_.curl_x[c], grid_.curl_y[c], grid_.curl_z[c]);
                 const math::Vector3f force = nrm.cross(omega) * (gas_vorticity * h);
-                // 格心的力摊回三种面心（相邻两格取平均）
-                if (x > 0) grid_.u[idx_u(x, y, z)] += force.x * dt * 0.5f;
-                if (x + 1 <= nx) grid_.u[idx_u(x + 1, y, z)] += force.x * dt * 0.5f;
-                if (y > 0) grid_.v[idx_v(x, y, z)] += force.y * dt * 0.5f;
-                if (y + 1 <= ny) grid_.v[idx_v(x, y + 1, z)] += force.y * dt * 0.5f;
-                if (z > 0) grid_.w[idx_w(x, y, z)] += force.z * dt * 0.5f;
-                if (z + 1 <= nz) grid_.w[idx_w(x, y, z + 1)] += force.z * dt * 0.5f;
+                // 格心的力摊回三种面心（相邻两格取平均）。只有面两侧都是空气才写：
+                // 沾到液体的面心归粒子，动它就是动水面。
+                if (x > 0 && is_air_cell(x - 1, y, z) && is_air_cell(x, y, z))
+                    grid_.u[idx_u(x, y, z)] += force.x * dt * 0.5f;
+                if (x + 1 < nx && is_air_cell(x, y, z) && is_air_cell(x + 1, y, z))
+                    grid_.u[idx_u(x + 1, y, z)] += force.x * dt * 0.5f;
+                if (y > 0 && is_air_cell(x, y - 1, z) && is_air_cell(x, y, z))
+                    grid_.v[idx_v(x, y, z)] += force.y * dt * 0.5f;
+                if (y + 1 < ny && is_air_cell(x, y, z) && is_air_cell(x, y + 1, z))
+                    grid_.v[idx_v(x, y + 1, z)] += force.y * dt * 0.5f;
+                if (z > 0 && is_air_cell(x, y, z - 1) && is_air_cell(x, y, z))
+                    grid_.w[idx_w(x, y, z)] += force.z * dt * 0.5f;
+                if (z + 1 < nz && is_air_cell(x, y, z) && is_air_cell(x, y, z + 1))
+                    grid_.w[idx_w(x, y, z + 1)] += force.z * dt * 0.5f;
             }
         }
     }
+}
+
+// 速度场自平流：半拉格朗日回溯，把速度场按它自己搬运一遍（u·∇u 项）。
+//
+// 这一步是"烟会卷"和"烟是一根柱子"的分水岭。上升的烟柱中间快、两侧慢，本来
+// 就有强剪切，涡量约束也确实在放大这份涡量 —— 但速度场自己不被自己搬运的话，
+// 涡始终待在被放大的那一格里，不会往下游卷、不会把周围的空气拖进来，最终
+// 只表现为一根越来越快的直柱。Blender / Mantaflow 里烟雾的翻滚几乎全部来自
+// 这一项。
+//
+// 三个分量各自在**自己的面心**回溯：u 在 (x, y+0.5, z+0.5)，v 在 (x+0.5, y,
+// z+0.5)，w 在 (x+0.5, y+0.5, z)。采样一律读快照 adv_*，边写边读会让同一帧
+// 内的结果依赖于遍历顺序。
+//
+// 只对空气格生效：液体格的速度由粒子 P2G 每步重建，在那里再做一次自平流
+// 等于把动量平流两次，白白引入耗散、削掉水花。权重按 frac 线性衰减，
+// 面两侧任一格是液体就不动该面。
+void FluidDomain3D::advect_velocity(float dt) {
+    if (!gas_enabled) return;
+    if (dt <= 0.0f) return;
+
+    grid_.adv_u = grid_.u;
+    grid_.adv_v = grid_.v;
+    grid_.adv_w = grid_.w;
+
+    // axis: 0 = u（面在 x 上），1 = v，2 = w
+    advect_component(grid_.u, grid_.adv_u, grid_.dim[0] + 1, grid_.dim[1], grid_.dim[2], 0, dt);
+    advect_component(grid_.v, grid_.adv_v, grid_.dim[0], grid_.dim[1] + 1, grid_.dim[2], 1, dt);
+    advect_component(grid_.w, grid_.adv_w, grid_.dim[0], grid_.dim[1], grid_.dim[2] + 1, 2, dt);
+}
+
+// 单个 MAC 分量的自平流（MacCormack 二阶修正 + 回溯点邻域限幅）。
+//
+// 不能用一阶半拉格朗日：回溯点上的三线性插值天然是低通的，遇到速度峰值
+// （烟柱中心）时采样点必然落在更低的上游值上，每步削掉几个百分点。浮力
+// 每步给的那点增量刚好被这份数值耗散吃掉，速度场就卡在一个很低的平衡值上
+// —— 实测烟柱中心只到 0.17 m/s，而关掉自平流能到 1.1 m/s，烟根本升不起来。
+// MacCormack 用"前向平流 → 反向平流回来 → 用两者的差修正"把一阶误差抵掉，
+// 只在回溯点邻域内限幅防止过冲，峰值能保住。
+void FluidDomain3D::advect_component(std::vector<float>& dst, const std::vector<float>& src,
+                                     int sx, int sy, int sz, int axis, float dt) {
+    const int nx = grid_.dim[0];
+    const int ny = grid_.dim[1];
+    const int nz = grid_.dim[2];
+    const float scale = dt / grid_.cell;
+    // 面心在自己的轴上是整数位置，另两轴在半格：样本坐标 = 面心坐标 - soff
+    const float ox = (axis == 0) ? 0.0f : 0.5f;
+    const float oy = (axis == 1) ? 0.0f : 0.5f;
+    const float oz = (axis == 2) ? 0.0f : 0.5f;
+
+    const auto snapshot_at = [&](float gx, float gy, float gz) {
+        const float u = tri_sample(grid_.adv_u, nx + 1, ny, nz, gx, gy - 0.5f, gz - 0.5f);
+        const float v = tri_sample(grid_.adv_v, nx, ny + 1, nz, gx - 0.5f, gy, gz - 0.5f);
+        const float w = tri_sample(grid_.adv_w, nx, ny, nz + 1, gx - 0.5f, gy - 0.5f, gz);
+        return math::Vector3f(u, v, w);
+    };
+    // 面两侧格子里较小（更"空气"）的 frac 决定自平流权重
+    const auto face_weight = [&](int x, int y, int z) {
+        int ax = x;
+        int ay = y;
+        int az = z;
+        int bx = x;
+        int by = y;
+        int bz = z;
+        if (axis == 0) { ax = std::clamp(x - 1, 0, nx - 1); bx = std::clamp(x, 0, nx - 1); }
+        if (axis == 1) { ay = std::clamp(y - 1, 0, ny - 1); by = std::clamp(y, 0, ny - 1); }
+        if (axis == 2) { az = std::clamp(z - 1, 0, nz - 1); bz = std::clamp(z, 0, nz - 1); }
+        const float f0 = grid_.frac[idx_c(ax, ay, az)];
+        const float f1 = grid_.frac[idx_c(bx, by, bz)];
+        return std::clamp(1.0f - std::min(f0, f1) / k_air_frac, 0.0f, 1.0f);
+    };
+
+    // 前向平流：phi_hat = phi(x - u dt)。速度同时存进 mc_vel_ 供反向 pass 复用：
+    // 反向 pass 用的是同一个面、同一份快照，没必要再三次三线性采样一遍。
+    mc_scratch_.assign(src.size(), 0.0f);
+    mc_vel_.assign(src.size() * 3, 0.0f);
+    const auto forward_pass = [&](int x, int y, int z, size_t i) {
+        const float gx = static_cast<float>(x) + ox;
+        const float gy = static_cast<float>(y) + oy;
+        const float gz = static_cast<float>(z) + oz;
+        const math::Vector3f vel = snapshot_at(gx, gy, gz);
+        mc_vel_[i * 3 + 0] = vel.x;
+        mc_vel_[i * 3 + 1] = vel.y;
+        mc_vel_[i * 3 + 2] = vel.z;
+        mc_scratch_[i] = tri_sample(src, sx, sy, sz, gx - vel.x * scale - ox,
+                                    gy - vel.y * scale - oy, gz - vel.z * scale - oz);
+    };
+    const auto clamp_bounds = [&](float bx, float by, float bz, float& lo, float& hi) {
+        const int x0 = std::max(0, std::min(static_cast<int>(bx), sx - 2));
+        const int y0 = std::max(0, std::min(static_cast<int>(by), sy - 2));
+        const int z0 = std::max(0, std::min(static_cast<int>(bz), sz - 2));
+        lo = src[0];
+        hi = src[0];
+        bool init = false;
+        for (int dk = 0; dk < 2; ++dk) {
+            for (int dj = 0; dj < 2; ++dj) {
+                for (int di = 0; di < 2; ++di) {
+                    const int xi = std::clamp(x0 + di, 0, sx - 1);
+                    const int yi = std::clamp(y0 + dj, 0, sy - 1);
+                    const int zi = std::clamp(z0 + dk, 0, sz - 1);
+                    const float value = src[static_cast<size_t>((zi * sy + yi) * sx + xi)];
+                    if (!init) { lo = value; hi = value; init = true; continue; }
+                    lo = std::min(lo, value);
+                    hi = std::max(hi, value);
+                }
+            }
+        }
+    };
+
+    const auto back_and_correct = [&](int x, int y, int z, size_t i) {
+        const float weight = face_weight(x, y, z);
+        if (weight <= 0.0f) return;
+        const float gx = static_cast<float>(x) + ox;
+        const float gy = static_cast<float>(y) + oy;
+        const float gz = static_cast<float>(z) + oz;
+        const math::Vector3f vel(mc_vel_[i * 3 + 0], mc_vel_[i * 3 + 1], mc_vel_[i * 3 + 2]);
+        const float bx = gx - vel.x * scale - ox;
+        const float by = gy - vel.y * scale - oy;
+        const float bz = gz - vel.z * scale - oz;
+        // 反向：把前向结果按同一速度搬回来（采样点 = 本面位置 + 一倍位移），
+        // 与原始场之差即一阶插值误差。
+        const float back =
+            tri_sample(mc_scratch_, sx, sy, sz, bx + 2.0f * vel.x * scale,
+                       by + 2.0f * vel.y * scale, bz + 2.0f * vel.z * scale);
+        float res = mc_scratch_[i] + 0.5f * (src[i] - back);
+        float lo = 0.0f;
+        float hi = 0.0f;
+        clamp_bounds(bx, by, bz, lo, hi);
+        res = std::clamp(res, std::min(lo, src[i]), std::max(hi, src[i]));
+        float& target = dst[i];
+        target += (res - target) * weight;
+    };
+
+    // 三个分量的数组在各自的尺寸下布局一致（idx = (z*sy + y)*sx + x），
+    // 所以遍历与下标可以共用，只有面心位置与写入目标按轴区分。
+    const auto run_pass = [&](bool forward) {
+        for (int z = 0; z < sz; ++z) {
+            for (int y = 0; y < sy; ++y) {
+                for (int x = 0; x < sx; ++x) {
+                    const size_t i = static_cast<size_t>((z * sy + y) * sx + x);
+                    if (forward) {
+                        forward_pass(x, y, z, i);
+                    } else {
+                        back_and_correct(x, y, z, i);
+                    }
+                }
+            }
+        }
+    };
+    run_pass(true);
+    run_pass(false);
 }
 
 // 密度场半拉格朗日平流（RK2 回溯）。先用中点位置回溯一次，再在最终位置采样。
@@ -591,6 +906,18 @@ void FluidDomain3D::advect_density(float dt) {
                 const float by = gy - v1.y * (dt / grid_.cell);
                 const float bz = gz - v1.z * (dt / grid_.cell);
                 grid_.density[idx_c(x, y, z)] = sample_cell_scalar(grid_.tmp, bx, by, bz);
+            }
+        }
+    }
+
+    // 液相格里不该有烟。水是半透明的，留在池里的烟雾等值面会透过水面显出来，
+    // 表现为水面以下冒出一个方块状的实心团。按液体分数直接清掉，水线就成了
+    // 烟的下边界。
+    for (int z = 0; z < nz; ++z) {
+        for (int y = 0; y < ny; ++y) {
+            for (int x = 0; x < nx; ++x) {
+                const size_t c = static_cast<size_t>(idx_c(x, y, z));
+                if (grid_.frac[c] >= k_air_frac) grid_.density[c] = 0.0f;
             }
         }
     }
@@ -936,6 +1263,7 @@ void FluidDomain3D::collide_domain() {
 }
 
 void FluidDomain3D::simulate_step(float dt) {
+    ++step_index_;
     if (liquid_enabled) {
         integrate_particles(dt);
         particles_to_grid();
@@ -947,7 +1275,10 @@ void FluidDomain3D::simulate_step(float dt) {
     }
     emit_gas(dt);
     apply_wind(dt);
+    // 力先加进速度场，再由速度场自己把动量搬运一遍（u·∇u），最后才做涡量
+    // 约束：先搬运再放大，涡量才能被卷到下游；反过来放大完立刻被平流抹掉。
     apply_buoyancy(dt);
+    advect_velocity(dt);
     apply_vorticity(dt);
     advect_density(dt);
     project(dt);
@@ -1053,6 +1384,30 @@ void FluidDomain3D::build_smoke_field() {
             }
         }
     }
+
+    // 一次 7 点平滑再提取。烟柱侧面在网格上是一级一级的台阶，直接取等值面会
+    // 沿台阶拉出一排竖直细长面片（侧视角看就是"竖条纹"），法线在面片之间还
+    // 会跳变。先抹一遍，等值面就成了一张连续曲面。
+    smoke_scratch_.assign(smoke_field_.size(), 0.0f);
+    const auto at = [&](int i, int j, int k) {
+        const int ii = std::clamp(i, 0, cx - 1);
+        const int jj = std::clamp(j, 0, cy - 1);
+        const int kk = std::clamp(k, 0, nz);
+        return smoke_field_[static_cast<size_t>((kk * cy + jj) * cx + ii)];
+    };
+    for (int k = 0; k <= nz; ++k) {
+        for (int j = 0; j <= ny; ++j) {
+            for (int i = 0; i <= nx; ++i) {
+                const size_t c = static_cast<size_t>((k * cy + j) * cx + i);
+                smoke_scratch_[c] = (at(i, j, k) * 2.0f + at(i - 1, j, k) + at(i + 1, j, k) +
+                                     at(i, j - 1, k) + at(i, j + 1, k) + at(i, j, k - 1) +
+                                     at(i, j, k + 1)) /
+                                    8.0f;
+            }
+        }
+    }
+    smoke_field_.swap(smoke_scratch_);
+
     field_dim_[0] = nx;
     field_dim_[1] = ny;
     field_dim_[2] = nz;

@@ -35,9 +35,11 @@ namespace gryce_engine::components {
 //     水花与飞溅能维持。液体格以外的格压力置零（自由表面 Dirichlet），
 //     因此空气区域天然是"可压的"，水面不会像封闭容器那样被吸住。
 //
-//   气体：欧拉密度场。每步用半拉格朗日（RK2 回溯 + 三线性采样）平流，
-//     浮力按密度给加速度，涡量约束把被数值耗散抹平的小涡重新放大 —— 没有这
-//     一步烟雾只会缓慢摊平成一片雾，翻滚不起来。
+//   气体：欧拉密度场 + 速度场自平流。每步顺序是 加力（浮力）→ 速度自平流
+//     → 涡量约束 → 密度平流 → 投影。速度自平流（u·∇u 的半拉格朗日回溯）是
+//     烟能翻滚的前提：没有它，浮力造出的剪切涡只会在原地被涡量约束放大，
+//     烟永远是一根笔直的、越来越快的柱子。涡量约束再把这些涡放大回来，
+//     抵消半拉格朗日平流固有的数值耗散。
 //
 //   空气为什么"也是流体"：域内没有液体的格子就是空气，它同样参与压力投影
 //     （作为自由表面边界），同样有自己的速度。粒子的 G2P 读的是**这条共享
@@ -73,8 +75,15 @@ public:
     // 气源（本地空间）：每帧在这个盒子里补充密度，模拟"烟囱口"
     math::Vector3f gas_source_center = math::Vector3f(-0.45f, -0.7f, 0.0f);
     math::Vector3f gas_source_extents = math::Vector3f(0.12f, 0.04f, 0.12f);
-    float gas_emission = 2.2f;         // 每帧注入密度
-    float gas_buoyancy = 3.2f;         // 密度 → 向上加速度
+    // 源区密度（入流边界，对应 Blender 的 Inflow）：源盒里的密度直接维持在这个
+    // 值，不是每步"加一点"。上升流每步会替换掉源区三成以上的格子内容，加法注入
+    // 的稳态密度只有零点一量级，永远够不到等值面阈值，烟就只剩一层薄壳。
+    float gas_emission = 0.85f;
+    float gas_buoyancy = 8.0f;         // 密度 → 向上加速度
+    // 气相阻尼：浮力每帧都在往速度上加，没有阻力的话竖直速度会无限增长，
+    // 回溯距离一步步超过半格，平流采样失真、烟被抹成一片。有了阻尼，速度
+    // 收敛到 gas_buoyancy / gas_drag 的终端值。
+    float gas_drag = 0.8f;
     float gas_dissipation = 0.35f;     // 每秒衰减系数
     float gas_vorticity = 2.4f;        // 涡量约束强度（0 = 关闭）
     math::Vector4f smoke_color = math::Vector4f(0.62f, 0.66f, 0.72f, 0.18f);
@@ -83,7 +92,7 @@ public:
     // 最内层壳的密度阈值。外层依次乘更小的系数。必须是绝对值而不是按每帧
     // 密度峰值取比例：烟柱升到高处会稀释到 0.1 量级，按峰值缩放的话稀薄的
     // 部分整段落在阈值以下，烟就只剩源口一小团。
-    float smoke_iso = 0.30f;
+    float smoke_iso = 0.22f;
 
     // ---- 环境（序列化）----------------------------------------------------
     math::Vector3f gravity = math::Vector3f(0.0f, -9.8f, 0.0f);
@@ -137,6 +146,7 @@ private:
         std::vector<float> frac;      // 格心液体体积分数 [0,1]
         std::vector<float> density;   // 格心烟雾密度
         std::vector<float> curl_x, curl_y, curl_z;  // 涡量
+        std::vector<float> adv_u, adv_v, adv_w;     // 速度自平流的前一份快照
         std::vector<float> tmp;       // 平流临时
         std::vector<float> p_next;    // frac 平滑临时
     };
@@ -150,6 +160,10 @@ private:
     void apply_buoyancy(float dt);
     void apply_wind(float dt);
     void apply_vorticity(float dt);
+    void advect_velocity(float dt);
+    // 单个 MAC 分量的 MacCormack 自平流。axis：0 = u、1 = v、2 = w。
+    void advect_component(std::vector<float>& dst, const std::vector<float>& src, int sx, int sy,
+                          int sz, int axis, float dt);
     void advect_density(float dt);
     void smooth_frac();
     void project(float dt);
@@ -217,6 +231,9 @@ private:
     // 稠密粒子场（表面重建用）
     std::vector<float> liquid_field_;
     std::vector<float> smoke_field_;
+    std::vector<float> mc_scratch_;   // MacCormack 前向平流结果
+    std::vector<float> mc_vel_;       // 每个面心本次回溯用的速度（前向算一次，反向复用）
+    std::vector<float> smoke_scratch_; // 烟雾场平滑的中间缓冲
     int field_dim_[3] = {0, 0, 0};
     math::Vector3f field_origin_ = math::Vector3f::zero();
     float field_cell_ = 0.05f;
@@ -224,6 +241,7 @@ private:
     float spacing_ = 0.02f;      // 实际播种间距（受 max_particles 影响会被放大）
     float accumulator_ = 0.0f;
     int frame_counter_ = 0;
+    int step_index_ = 0;          // 模拟步序号（入流扰动的时间种子）
     bool initialized_ = false;
 
     std::shared_ptr<std::atomic<bool>> alive_token_ = std::make_shared<std::atomic<bool>>(true);
