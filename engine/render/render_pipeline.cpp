@@ -2689,6 +2689,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
             ctx.set_viewport(0, 0, viewport_width_, viewport_height_);
         }
 
+        // 水面深度补充（仅 SSR 需要）：水面在透明列表里不写深度，SSR 的屏幕
+        // 空间步进反射射线会直接穿过去，反射里看不到水面。必须在所有透明
+        // 几何（含旧水面）画完之后、SSR 之前，且仍在 HDR 目标上。
+        if (ssr_enabled_ && !fluid_items_.empty() && std::getenv("GRYCE_NO_FLUID_DEPTH") == nullptr) {
+            draw_fluid_depth(ctx);
+        }
+
         // SSR 屏幕空间反射（HDR 渲染后、SSIL/SSAO 前）
         // 硬件光追反射开启时跳过 SSR：两者都在替换同一份 IBL 镜面项，叠加会让
         // 同一物体出现两份来源不同、位置略有差异的反射（表现为"重影/错位"）。
@@ -2838,6 +2845,12 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         }
         ctx.set_depth_test(true);
         ctx.set_depth_write(true);
+    }
+
+    // 水面深度补充（仅 SSR 需要）：水面在透明列表里不写深度，SSR 的屏幕空间
+    // 步进反射射线会直接穿过去，反射里看不到水面。必须在 HDR pass 内、SSR 之前。
+    if (ssr_enabled_ && !fluid_items_.empty() && std::getenv("GRYCE_NO_FLUID_DEPTH") == nullptr) {
+        draw_fluid_depth(ctx);
     }
 
     if (hdr_enabled_) {
@@ -4460,6 +4473,33 @@ void RenderPipeline::draw_particles_depth(RenderContext& ctx, const math::Matrix
                             TextureSlots::kParticleTexture, "uTexture");
         }
         ctx.draw_mesh(ps->gpu_mesh_handle(), depth_shader);
+    }
+
+    ctx.set_blend(false);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(cull_disabled_ ? CullMode::None : CullMode::Back);
+}
+
+void RenderPipeline::draw_fluid_depth(RenderContext& ctx) {
+    if (fluid_items_.empty() || !pbr_shader_.is_valid() || !camera_) return;
+
+    // 与 draw_particles_depth 同一手法：blend (ZERO, ONE) 让颜色只读不写，
+    // 深度照常写入（Vulkan 没有动态颜色写掩码，两个后端行为一致）。
+    // 水面是连续表面、没有 alpha 裁边问题，pbr shader 也无 discard，
+    // 直接复用它即可。不在这里 set_framebuffer：调用点已绑定 HDR 目标，
+    // 重复绑定会在 Vulkan 下重启带 CLEAR 的 render pass 清掉整帧。
+    // 不做视锥剔除：流体组件通常只有个位数，剔除开销大于收益。
+    ctx.set_blend(true);
+    ctx.set_blend_func(BlendFactor::Zero, BlendFactor::One);
+    ctx.set_depth_test(true);
+    ctx.set_depth_write(true);
+    ctx.set_cull_face(CullMode::None);
+
+    for (const auto& item : fluid_items_) {
+        if (!item.fluid) continue;
+        render_mesh_internal(item.fluid->gpu_mesh_handle(), item.fluid->material(),
+                             item.model, ctx);
     }
 
     ctx.set_blend(false);
