@@ -94,7 +94,8 @@ public:
                 const math::Matrix4f& inv_view_proj,
                 const math::Vector3f& camera_pos,
                 const PostProcessParams& pp,
-                VkImageView normal_view = VK_NULL_HANDLE);
+                VkImageView normal_view = VK_NULL_HANDLE,
+                uint32_t frame_slot = 0);
 
     // 最终合成图（全分辨率），供后端拷回 HDR 颜色。仅在 valid() 且一次
     // render() 成功之后有效。
@@ -133,7 +134,10 @@ private:
     VkDescriptorSet temporal_set_ = VK_NULL_HANDLE;   // 槽 1：uOut=累积结果
     VkDescriptorSet composite_set_ = VK_NULL_HANDLE;  // 槽 2：uOut=全分辨率输出
 
-    VulkanBuffer* ubo_ = nullptr;          // uniform 缓冲（camera + 参数）
+    // uniform 缓冲按帧槽轮转（3 份）：host-visible 缓冲每帧被 CPU 覆写，而
+    // frames_in_flight=3 时 GPU 可能仍在执行前两帧的 dispatch；单份缓冲会读到
+    // 被下一帧改掉的相机矩阵，表现为反射整帧错位一帧的间歇性闪烁。
+    VulkanBuffer* ubo_[3] = {nullptr, nullptr, nullptr};
 
     VkCommandPool one_shot_pool_ = VK_NULL_HANDLE;
     // 环境缺失时的兜底采样器：组合图像采样器描述符不能留空（空视图/空采样器

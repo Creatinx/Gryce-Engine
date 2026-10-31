@@ -64,7 +64,8 @@ public:
                 const math::Matrix4f& view_proj,
                 const math::Matrix4f& inv_view_proj,
                 const math::Vector3f& camera_pos,
-                const PostProcessParams& pp);
+                const PostProcessParams& pp,
+                uint32_t frame_slot = 0);
 
     VkImage composite_image() const { return out_image_; }
     int composite_width() const { return out_w_; }
@@ -90,7 +91,9 @@ private:
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;
 
-    VulkanBuffer* ubo_ = nullptr;
+    // uniform 缓冲按帧槽轮转（3 份），避免 frames_in_flight>1 时 CPU 覆写
+    // GPU 仍在读取的上一帧数据。
+    VulkanBuffer* ubo_[3] = {nullptr, nullptr, nullptr};
     // 环境缺失时的兜底采样器：组合图像采样器描述符不能留空（空视图/空采样器会让
     // 驱动在 vkCmdDispatch 内崩），着色器按 envParams.z == 0 门控，不会真采样。
     VkSampler fallback_sampler_ = VK_NULL_HANDLE;

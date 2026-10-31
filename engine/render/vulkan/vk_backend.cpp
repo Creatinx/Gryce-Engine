@@ -200,8 +200,8 @@ void VulkanBackend::shutdown() {
     }
     if (rt_tlas_.is_valid()) rt_tlas_.destroy();
     rt_blas_cache_.clear();
-    rt_params_buffer_.shutdown();
-    rt_params_capacity_ = 0;
+    for (uint32_t i = 0; i < 3; ++i) rt_params_buffers_[i].shutdown();
+    rt_params_capacity_[0] = rt_params_capacity_[1] = rt_params_capacity_[2] = 0;
     ray_query_pass_.shutdown();
     rt_transmission_pass_.shutdown();
     rt_pathtrace_pass_.shutdown();
@@ -1390,21 +1390,23 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
 
     // 材质参数 SSBO：持久 host-visible 缓冲，实例数增长时整体重建。
     const uint32_t param_count = static_cast<uint32_t>(mat_params.size());
-    if (rt_params_capacity_ < param_count) {
-        rt_params_buffer_.shutdown();
+    const uint32_t rt_frame_slot =
+        static_cast<uint32_t>(swapchain_.current_frame_index()) % 3;
+    if (rt_params_capacity_[rt_frame_slot] < param_count) {
+        rt_params_buffers_[rt_frame_slot].shutdown();
         const uint32_t cap = param_count + param_count / 2 > 64 ? param_count + param_count / 2
                                                                 : 64;
-        if (!rt_params_buffer_.init(&device_,
+        if (!rt_params_buffers_[rt_frame_slot].init(&device_,
                 static_cast<VkDeviceSize>(cap) * sizeof(float),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             GLOG_WARN("VulkanBackend: RT material params buffer init failed");
             return;
         }
-        rt_params_capacity_ = cap;
+        rt_params_capacity_[rt_frame_slot] = cap;
     }
-    rt_params_buffer_.upload(mat_params.data(),
-                             static_cast<VkDeviceSize>(param_count) * sizeof(float));
+    rt_params_buffers_[rt_frame_slot].upload(
+        mat_params.data(), static_cast<VkDeviceSize>(param_count) * sizeof(float));
 
     // TLAS：持久缓冲容量按需增长，实例数据直接写 host-visible 缓冲。
     // 零画质损失优化：本帧实例集合（含世界变换与 BLAS 引用，顺序敏感）与上一帧
@@ -1421,7 +1423,7 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                     vk_instances.size() * sizeof(VkAccelerationStructureInstanceKHR)) == 0;
     if (!tlas_unchanged) {
         if (!rt_tlas_.ensure_capacity(&device_, inst_count)) return;
-        if (!rt_tlas_.update_instances(vk_instances)) return;
+        if (!rt_tlas_.update_instances(vk_instances, rt_frame_slot)) return;
         rt_tlas_prev_instances_ = vk_instances;
     }
 
@@ -1528,7 +1530,9 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
     // TLAS 构建/增量更新录在本帧命令缓冲上（与当帧工作一起排队，无主机端等待）。
     // 实例数据未变时跳过（tlas_unchanged 已复用上一帧加速结构），仅保留 handle。
     const bool rt_build_ok = tlas_unchanged ? true
-                                           : rt_tlas_.record_build_or_update(cmd, inst_count, rt_tlas_sig);
+                                           : rt_tlas_.record_build_or_update(cmd, inst_count,
+                                                                             rt_tlas_sig,
+                                                                             rt_frame_slot);
     if (!rt_build_ok) return;
 
     ray_query_pass_.render(cmd, rt_tlas_.handle(), depth->image_view(), color->image_view(),
@@ -1536,10 +1540,12 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                           env_tex ? env_tex->sampler() : VK_NULL_HANDLE,
                           prefilter_tex ? prefilter_tex->image_view() : VK_NULL_HANDLE,
                           prefilter_tex ? prefilter_tex->sampler() : VK_NULL_HANDLE,
-                          rt_params_buffer_.buffer(), prefilter_tex ? prefilter_tex->mip_levels() : 0,
+                          rt_params_buffers_[rt_frame_slot].buffer(),
+                          prefilter_tex ? prefilter_tex->mip_levels() : 0,
                           static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                           view_proj, inv_view_proj, camera_pos, pp,
-                          normal_tex ? normal_tex->image_view() : VK_NULL_HANDLE);
+                          normal_tex ? normal_tex->image_view() : VK_NULL_HANDLE,
+                          rt_frame_slot);
 
     // RT 折射/透射（P1）：与反射共用本帧 TLAS、逐实例材质 SSBO 与深度/颜色。
     // 关闭或通道无效时整段跳过，画面与现状零差异。
@@ -1552,10 +1558,11 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                                     env_tex ? env_tex->sampler() : VK_NULL_HANDLE,
                                     prefilter_tex ? prefilter_tex->image_view() : VK_NULL_HANDLE,
                                     prefilter_tex ? prefilter_tex->sampler() : VK_NULL_HANDLE,
-                                    rt_params_buffer_.buffer(),
+                                    rt_params_buffers_[rt_frame_slot].buffer(),
                                     prefilter_tex ? prefilter_tex->mip_levels() : 0,
                                     static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                                    view_proj, inv_view_proj, camera_pos, pp);
+                                    view_proj, inv_view_proj, camera_pos, pp,
+                                    rt_frame_slot);
         // 合成图在 dispatch 后为 GENERAL，转 TRANSFER_SRC 供 blit 读取。
         image_barrier(rt_transmission_pass_.composite_image(), VK_IMAGE_LAYOUT_GENERAL,
                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
@@ -1572,9 +1579,10 @@ void VulkanBackend::apply_ray_query_reflection(RHITextureHandle color_tex,
                                   normal_tex ? normal_tex->image_view() : VK_NULL_HANDLE,
                                   env_tex ? env_tex->image_view() : VK_NULL_HANDLE,
                                   env_tex ? env_tex->sampler() : VK_NULL_HANDLE,
-                                  rt_params_buffer_.buffer(),
+                                  rt_params_buffers_[rt_frame_slot].buffer(),
                                   static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-                                  view_proj, inv_view_proj, camera_pos, pp);
+                                  view_proj, inv_view_proj, camera_pos, pp,
+                                  rt_frame_slot);
         image_barrier(rt_pathtrace_pass_.composite_image(), VK_IMAGE_LAYOUT_GENERAL,
                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
                       VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

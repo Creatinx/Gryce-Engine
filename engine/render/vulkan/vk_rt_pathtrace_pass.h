@@ -42,7 +42,8 @@ public:
                 const math::Matrix4f& view_proj,
                 const math::Matrix4f& inv_view_proj,
                 const math::Vector3f& camera_pos,
-                const PostProcessParams& pp);
+                const PostProcessParams& pp,
+                uint32_t frame_slot = 0);
 
     VkImage composite_image() const { return out_image_; }
     VkImageLayout composite_layout() const { return out_layout_; }
@@ -63,7 +64,9 @@ private:
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;
-    VulkanBuffer* ubo_ = nullptr;
+    // uniform 缓冲按帧槽轮转（3 份），避免 frames_in_flight>1 时 CPU 覆写
+    // GPU 仍在读取的上一帧数据。
+    VulkanBuffer* ubo_[3] = {nullptr, nullptr, nullptr};
     VkSampler fallback_sampler_ = VK_NULL_HANDLE;
 
     VkImage out_image_ = VK_NULL_HANDLE;

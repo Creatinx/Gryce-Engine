@@ -29,7 +29,8 @@ namespace math { class Camera; }
 namespace scene { class Scene; }
 namespace assets { struct TextureData; }
 namespace components { class ParticleSystem3D; }
-namespace components { class SPHFluid3D; }
+namespace components { class ParticleSystem3D; }
+namespace components { class FluidSurface3D; }
 namespace components { class LineRenderer3D; }
 namespace components { class TrailRenderer; }
 namespace components { class InstancedMeshRenderer; }
@@ -880,8 +881,6 @@ private:
     // 因此单独补这一遍把粒子放进深度缓冲。必须在主粒子绘制之后、SSR 之前调用。
     void draw_particles_depth(RenderContext& ctx, const math::Matrix4f& view, const math::Matrix4f& proj);
     std::vector<components::ParticleSystem3D*> particle_items_;
-    // SPH 流体复用同一份粒子着色器与实例流布局，单独收集、同批绘制
-    std::vector<components::SPHFluid3D*> sph_items_;
     // 本帧已启用但还画不出来的粒子系统数（GPU 句柄未就绪 / 尚未攒够发射量）。
     // 反射探针首次捕获要等它归零，否则图集里会缺火焰。
     int particle_pending_count_ = 0;
@@ -1163,6 +1162,23 @@ private:
     void append_terrain_items(const Frustum& frustum, const math::Vector3f& cam_pos,
                               std::vector<DrawItem>& out) const;
     std::vector<TerrainItem> terrain_items_;
+
+    // -----------------------------------------------------------------------
+    // 高度场流体（浅水方程水面网格）
+    // collect 每帧调用一次：组件推进模拟、重建水面 MeshData 并投递上传命令。
+    // 水面默认是半透明实体几何，按材质 blend_mode 归入透明/不透明列表，
+    // 复用 pbr_shader_ 与 render_mesh_internal，不需要独立 draw 函数。
+    // -----------------------------------------------------------------------
+    struct FluidItem {
+        components::FluidSurface3D* fluid;
+        math::Matrix4f model;
+    };
+    void collect_fluid(scene::Scene& scene, RenderContext& ctx);
+    // 把已收集的水面按视锥剔除后追加进绘制列表（透明材质进 transparent）
+    void append_fluid_items(const Frustum& frustum, const math::Vector3f& cam_pos,
+                            std::vector<DrawItem>& opaque,
+                            std::vector<DrawItem>& transparent) const;
+    std::vector<FluidItem> fluid_items_;
 
     // -----------------------------------------------------------------------
     // LODGroup（自包含发射网格，与 Terrain 同类）

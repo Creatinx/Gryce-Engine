@@ -219,9 +219,11 @@ private:
     std::vector<VkAccelerationStructureInstanceKHR> rt_tlas_prev_instances_;
     std::unordered_map<IMesh*, std::unique_ptr<VkBottomLevelAccelerationStructure>> rt_blas_cache_;
     // 每实例材质参数（roughness/metallic，shader 里按 instanceCustomIndex 索引）。
-    // 持久 host-visible 缓冲，实例数增长时整体重建。
-    VulkanBuffer rt_params_buffer_;
-    uint32_t rt_params_capacity_ = 0;
+    // 持久 host-visible 缓冲，实例数增长时整体重建。按帧槽轮转（3 份）：
+    // frames_in_flight=3 时单份缓冲会被下一帧 CPU 覆写而 GPU 仍在读上一帧，
+    // 表现为反射间歇性闪烁。
+    VulkanBuffer rt_params_buffers_[3];
+    uint32_t rt_params_capacity_[3] = {0, 0, 0};
 
     // 生成时或上 kComputeShaderFlag，查池前必须用 this->pool_generation() 剥掉。
     static constexpr uint32_t kComputeShaderFlag = 0x80000000u;

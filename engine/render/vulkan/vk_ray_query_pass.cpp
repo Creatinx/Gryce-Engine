@@ -120,8 +120,9 @@ void main() {
         // ---- 模式 0：trace（追踪分辨率光线查询）----
         float texelScale = envParams.x;
         ivec2 fullRes = ivec2(vec2(res) * texelScale + 0.5);
-        // 亚像素抖动：连续帧采样不同子位置，时域累积后等效超采样（消边缘阶梯）。
-        vec2 uv = (vec2(px) + 0.5 + temporalParams.yz) / vec2(res);
+        // 像素中心采样：invViewProj 已含 TAA 半像素抖动且深度就是用它光栅化的，
+        // 自洽重建；再叠自己的抖动会与 TAA 序列错位，逐帧漂移导致闪烁。
+        vec2 uv = (vec2(px) + 0.5) / vec2(res);
         uv = clamp(uv, vec2(0.0), vec2(0.999999));
 
         ivec2 dp = clamp(ivec2(vec2(px) * texelScale), ivec2(0), fullRes - ivec2(1));
@@ -393,7 +394,7 @@ VkRayQueryPass& VkRayQueryPass::operator=(VkRayQueryPass&& other) noexcept {
         trace_set_ = other.trace_set_;
         temporal_set_ = other.temporal_set_;
         composite_set_ = other.composite_set_;
-        ubo_ = other.ubo_;
+        for (int i = 0; i < 3; ++i) ubo_[i] = other.ubo_[i];
         one_shot_pool_ = other.one_shot_pool_;
         fallback_sampler_ = other.fallback_sampler_;
         refl_image_ = other.refl_image_;
@@ -443,7 +444,7 @@ VkRayQueryPass& VkRayQueryPass::operator=(VkRayQueryPass&& other) noexcept {
         other.trace_set_ = VK_NULL_HANDLE;
         other.temporal_set_ = VK_NULL_HANDLE;
         other.composite_set_ = VK_NULL_HANDLE;
-        other.ubo_ = nullptr;
+        for (int i = 0; i < 3; ++i) other.ubo_[i] = nullptr;
         other.one_shot_pool_ = VK_NULL_HANDLE;
         other.fallback_sampler_ = VK_NULL_HANDLE;
         other.refl_image_ = VK_NULL_HANDLE;
@@ -620,14 +621,18 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
     // 恒为未写入的黑。HOST_VISIBLE + COHERENT，每帧 memcpy 上传。
     static_assert(sizeof(RayQueryUniforms) <= k_ubo_stride,
                   "RayQueryUniforms exceeded UBO region stride");
-    ubo_ = new VulkanBuffer();
-    if (!ubo_->init(device, k_ubo_stride * k_stage_count,
-                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-        GLOG_ERROR("VkRayQueryPass: uniform buffer init failed");
-        delete ubo_;
-        ubo_ = nullptr;
-        return false;
+    for (uint32_t s = 0; s < 3; ++s) {
+        ubo_[s] = new VulkanBuffer();
+        if (!ubo_[s]->init(device, k_ubo_stride * k_stage_count,
+                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            GLOG_ERROR("VkRayQueryPass: uniform buffer init failed");
+            ubo_[s]->shutdown();
+            delete ubo_[s];
+            ubo_[s] = nullptr;
+            return false;
+        }
     }
 
     // 一次性命令池（仅用于目标图创建时的初始布局转置）
@@ -659,7 +664,7 @@ void VkRayQueryPass::shutdown() {
         trace_set_ = VK_NULL_HANDLE;
         temporal_set_ = VK_NULL_HANDLE;
         composite_set_ = VK_NULL_HANDLE;
-        ubo_ = nullptr;
+        for (int i = 0; i < 3; ++i) ubo_[i] = nullptr;
         one_shot_pool_ = VK_NULL_HANDLE;
         fallback_sampler_ = VK_NULL_HANDLE;
         refl_image_ = VK_NULL_HANDLE;
@@ -693,10 +698,12 @@ void VkRayQueryPass::shutdown() {
     if (fallback_sampler_) vkDestroySampler(dev, fallback_sampler_, nullptr);
     fallback_sampler_ = VK_NULL_HANDLE;
     if (one_shot_pool_) vkDestroyCommandPool(dev, one_shot_pool_, nullptr);
-    if (ubo_) {
-        ubo_->shutdown();
-        delete ubo_;
-        ubo_ = nullptr;
+    for (uint32_t s = 0; s < 3; ++s) {
+        if (ubo_[s]) {
+            ubo_[s]->shutdown();
+            delete ubo_[s];
+            ubo_[s] = nullptr;
+        }
     }
     device_ = nullptr;
     valid_ = false;
@@ -938,7 +945,8 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
                             const math::Matrix4f& inv_view_proj,
                             const math::Vector3f& camera_pos,
                             const PostProcessParams& pp,
-                            VkImageView normal_view) {
+                            VkImageView normal_view,
+                            uint32_t frame_slot) {
     if (!valid_ || cmd == VK_NULL_HANDLE || tlas == VK_NULL_HANDLE) return;
 
     // 追踪分辨率档：光线数按 scale² 下降。trace 网格独立于输出分辨率。
@@ -997,8 +1005,6 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     }
     const bool env_valid = env_available;
     const float texel_scale = static_cast<float>(width) / static_cast<float>(trace_w);
-    const float jitter_x = halton(static_cast<uint32_t>(frame_index_ % 64u) + 1u, 2u) - 0.5f;
-    const float jitter_y = halton(static_cast<uint32_t>(frame_index_ % 64u) + 1u, 3u) - 0.5f;
 
     RayQueryUniforms base{};
     base.inv_view_proj = inv_view_proj;
@@ -1018,7 +1024,10 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
         math::Vector4f(static_cast<float>(trace_w), static_cast<float>(trace_h), 1.0f, 0.0f);
     // temporal_params.w 存放"法线缓冲可用"标志：trace 阶段据此决定用 G-buffer
     // 法线还是退回从深度重建（1/0 由这里写入）。
-    u_trace.temporal_params = math::Vector4f(1.0f, jitter_x, jitter_y,
+    // temporal_params.yz（亚像素抖动）恒为 0：传入的 inv_view_proj 已含 TAA 的
+    // 半像素抖动，深度缓冲就是用它光栅化的——像素中心 + 该矩阵是自洽重建；再叠
+    // 一套自己的 Halton 会与 TAA 序列逐帧错位，重投影几何校验反复翻转造成闪烁。
+    u_trace.temporal_params = math::Vector4f(1.0f, 0.0f, 0.0f,
                                              normal_view != VK_NULL_HANDLE ? 1.0f : 0.0f);
 
     // 时域混合系数：默认 0.12（约 8 帧收敛）；首帧 / 关降噪时为 1（纯当前帧）。
@@ -1033,13 +1042,15 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     u_composite.resolution_strength =
         math::Vector4f(static_cast<float>(width), static_cast<float>(height), 1.0f, 2.0f);
 
-    ubo_->upload(&u_trace, sizeof(u_trace), 0);
-    ubo_->upload(&u_temporal, sizeof(u_temporal), k_ubo_stride);
-    ubo_->upload(&u_composite, sizeof(u_composite), k_ubo_stride * 2);
+    VulkanBuffer* ubo = ubo_[frame_slot % 3];
+    if (!ubo) return;
+    ubo->upload(&u_trace, sizeof(u_trace), 0);
+    ubo->upload(&u_temporal, sizeof(u_temporal), k_ubo_stride);
+    ubo->upload(&u_composite, sizeof(u_composite), k_ubo_stride * 2);
 
     VkDescriptorBufferInfo buf_infos[k_stage_count]{};
     for (uint32_t i = 0; i < k_stage_count; ++i) {
-        buf_infos[i].buffer = ubo_->buffer();
+        buf_infos[i].buffer = ubo->buffer();
         buf_infos[i].offset = static_cast<VkDeviceSize>(i) * k_ubo_stride;
         buf_infos[i].range = sizeof(RayQueryUniforms);
     }

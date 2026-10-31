@@ -324,7 +324,8 @@ VkTopLevelAccelerationStructure::VkTopLevelAccelerationStructure(
     , capacity_(other.capacity_)
     , as_buffer_(std::move(other.as_buffer_))
     , scratch_buffer_(std::move(other.scratch_buffer_))
-    , instance_buffer_(std::move(other.instance_buffer_)) {
+    , oneshot_instance_buffer_(std::move(other.oneshot_instance_buffer_)) {
+    for (int i = 0; i < 3; ++i) instance_buffer_[i] = std::move(other.instance_buffer_[i]);
     other.device_ = nullptr;
     other.as_ = VK_NULL_HANDLE;
     other.device_address_ = 0;
@@ -341,7 +342,8 @@ VkTopLevelAccelerationStructure& VkTopLevelAccelerationStructure::operator=(
         capacity_ = other.capacity_;
         as_buffer_ = std::move(other.as_buffer_);
         scratch_buffer_ = std::move(other.scratch_buffer_);
-        instance_buffer_ = std::move(other.instance_buffer_);
+        oneshot_instance_buffer_ = std::move(other.oneshot_instance_buffer_);
+        for (int i = 0; i < 3; ++i) instance_buffer_[i] = std::move(other.instance_buffer_[i]);
         other.device_ = nullptr;
         other.as_ = VK_NULL_HANDLE;
         other.device_address_ = 0;
@@ -373,13 +375,13 @@ bool VkTopLevelAccelerationStructure::build_internal(VulkanDevice* device,
     // 实例数据缓冲（BUILD_INPUT_READ_ONLY + SHADER_DEVICE_ADDRESS）。
     const VkDeviceSize inst_size =
         static_cast<VkDeviceSize>(instance_count) * sizeof(VkAccelerationStructureInstanceKHR);
-    if (!instance_buffer_.init(device, inst_size,
+    if (!oneshot_instance_buffer_.init(device, inst_size,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         return false;
     }
-    if (!instance_buffer_.upload(instances, inst_size)) return false;
+    if (!oneshot_instance_buffer_.upload(instances, inst_size)) return false;
 
     VkAccelerationStructureGeometryKHR geo_khr{};
     geo_khr.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
@@ -389,7 +391,7 @@ bool VkTopLevelAccelerationStructure::build_internal(VulkanDevice* device,
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
     geo_khr.geometry.instances.arrayOfPointers = VK_FALSE;
     geo_khr.geometry.instances.data.deviceAddress =
-        buffer_device_address(dev, instance_buffer_.buffer());
+        buffer_device_address(dev, oneshot_instance_buffer_.buffer());
 
     VkAccelerationStructureBuildGeometryInfoKHR build_info{};
     build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
@@ -460,7 +462,8 @@ void VkTopLevelAccelerationStructure::destroy() {
     capacity_ = 0;
     as_buffer_.shutdown();
     scratch_buffer_.shutdown();
-    instance_buffer_.shutdown();
+    for (int i = 0; i < 3; ++i) instance_buffer_[i].shutdown();
+    oneshot_instance_buffer_.shutdown();
     device_ = nullptr;
 }
 
@@ -516,12 +519,14 @@ bool VkTopLevelAccelerationStructure::allocate_persistent(VulkanDevice* device,
         return false;
     }
     // 实例缓冲走 host-visible：每帧 memcpy 即可更新，无需 staging 往返。
-    if (!instance_buffer_.init(device,
-            static_cast<VkDeviceSize>(capacity) * sizeof(VkAccelerationStructureInstanceKHR),
-            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-        return false;
+    for (int i = 0; i < 3; ++i) {
+        if (!instance_buffer_[i].init(device,
+                static_cast<VkDeviceSize>(capacity) * sizeof(VkAccelerationStructureInstanceKHR),
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            return false;
+        }
     }
 
     VkAccelerationStructureCreateInfoKHR create_info{};
@@ -555,19 +560,21 @@ bool VkTopLevelAccelerationStructure::ensure_capacity(VulkanDevice* device,
 }
 
 bool VkTopLevelAccelerationStructure::update_instances(
-    const std::vector<VkAccelerationStructureInstanceKHR>& instances) {
+    const std::vector<VkAccelerationStructureInstanceKHR>& instances, uint32_t frame_slot) {
     if (!device_ || instances.empty() ||
         instances.size() > static_cast<size_t>(capacity_)) {
         return false;
     }
-    return instance_buffer_.upload(instances.data(),
-                                   static_cast<VkDeviceSize>(instances.size()) *
-                                       sizeof(VkAccelerationStructureInstanceKHR));
+    VulkanBuffer& buf = instance_buffer_[frame_slot % 3];
+    if (buf.buffer() == VK_NULL_HANDLE) return false;
+    return buf.upload(instances.data(),
+                      static_cast<VkDeviceSize>(instances.size()) *
+                          sizeof(VkAccelerationStructureInstanceKHR));
 }
 
 bool VkTopLevelAccelerationStructure::record_build_or_update(
     VkCommandBuffer cmd, uint32_t instance_count,
-    const std::vector<VkDeviceAddress>& signature) {
+    const std::vector<VkDeviceAddress>& signature, uint32_t frame_slot) {
     if (!device_ || cmd == VK_NULL_HANDLE || instance_count == 0 ||
         instance_count > capacity_ || as_ == VK_NULL_HANDLE) {
         return false;
@@ -589,8 +596,10 @@ bool VkTopLevelAccelerationStructure::record_build_or_update(
     geo_khr.geometry.instances.sType =
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
     geo_khr.geometry.instances.arrayOfPointers = VK_FALSE;
+    VulkanBuffer& inst_buf = instance_buffer_[frame_slot % 3];
+    if (inst_buf.buffer() == VK_NULL_HANDLE) return false;
     geo_khr.geometry.instances.data.deviceAddress =
-        buffer_device_address(dev, instance_buffer_.buffer());
+        buffer_device_address(dev, inst_buf.buffer());
 
     VkAccelerationStructureBuildGeometryInfoKHR build_info{};
     build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;

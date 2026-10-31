@@ -321,11 +321,14 @@ bool VkRTPathTracePass::init(VulkanDevice* device) {
         return false;
     }
 
-    ubo_ = new VulkanBuffer();
-    if (!ubo_->init(device, sizeof(RayQueryUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-        GLOG_ERROR("VkRTPathTracePass: UBO init failed");
-        return false;
+    for (uint32_t s = 0; s < 3; ++s) {
+        ubo_[s] = new VulkanBuffer();
+        if (!ubo_[s]->init(device, sizeof(RayQueryUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            GLOG_ERROR("VkRTPathTracePass: UBO init failed");
+            return false;
+        }
     }
 
     valid_ = true;
@@ -336,10 +339,12 @@ void VkRTPathTracePass::shutdown() {
     if (!device_) return;
     VkDevice dev = device_->device();
 
-    if (ubo_) {
-        ubo_->shutdown();
-        delete ubo_;
-        ubo_ = nullptr;
+    for (uint32_t i = 0; i < 3; ++i) {
+        if (ubo_[i]) {
+            ubo_[i]->shutdown();
+            delete ubo_[i];
+            ubo_[i] = nullptr;
+        }
     }
     destroy_targets();
     if (pool_) vkDestroyDescriptorPool(dev, pool_, nullptr);
@@ -459,7 +464,8 @@ void VkRTPathTracePass::render(VkCommandBuffer cmd,
                                const math::Matrix4f& view_proj,
                                const math::Matrix4f& inv_view_proj,
                                const math::Vector3f& camera_pos,
-                               const PostProcessParams& pp) {
+                               const PostProcessParams& pp,
+                               uint32_t frame_slot) {
     if (!valid_ || !device_) return;
     if (!ensure_targets(width, height)) return;
     // GI 采样槽需要有效 cube 视图（空组合图像采样器进 dispatch 会崩）；完全无
@@ -483,10 +489,12 @@ void VkRTPathTracePass::render(VkCommandBuffer cmd,
     u.env_params = math::Vector4f(1.0f, 0.0f, has_env ? pp.env_intensity : 0.0f,
                                   static_cast<float>(frame_index++));
     u.temporal_params = math::Vector4f(2.0f, 1.0f, 0.0f, 0.0f);  // 2 弹射, 1 spp
-    ubo_->upload(&u, sizeof(u), 0);
+    VulkanBuffer* ubo = ubo_[frame_slot % 3];
+    if (!ubo) return;
+    ubo->upload(&u, sizeof(u), 0);
 
     VkDescriptorBufferInfo ubo_info{};
-    ubo_info.buffer = ubo_->buffer();
+    ubo_info.buffer = ubo->buffer();
     ubo_info.offset = 0;
     ubo_info.range = sizeof(RayQueryUniforms);
 

@@ -30,8 +30,8 @@
 
 // 新增组件（3D / 2D / 系统级）
 #include "components/3d/visual_components.h"
-#include "components/3d/sph_fluid.h"
 #include "components/3d/system_components.h"
+#include "components/3d/fluid_surface.h"
 #include "components/2d/anim_components.h"
 #include "components/2d/visual_components.h"
 #include "components/2d/misc_components.h"
@@ -123,8 +123,8 @@ void register_builtin_components() {
                           "动画状态机组件，驱动 SkinnedMeshRenderer 的片段切换与混合。", k_cat_3d);
     factory.register_type("ParticleSystem3D", []() { return std::make_unique<ParticleSystem3D>(); },
                           "GPU 3D 粒子：火焰、烟雾、魔法、瀑布。", k_cat_3d);
-    factory.register_type("SPHFluid3D", []() { return std::make_unique<SPHFluid3D>(); },
-                          "SPH 3D 流体：水、岩浆等液体模拟（CPU 求解 + 粒子渲染）。", k_cat_3d);
+    factory.register_type("FluidSurface3D", []() { return std::make_unique<FluidSurface3D>(); },
+                          "高度场流体：浅水方程水面模拟，O(格数) 开销与密度无关。", k_cat_3d);
     factory.register_type("TrailRenderer", []() { return std::make_unique<TrailRenderer>(); },
                           "3D 拖尾：弹道、飞船尾焰、刀光。", k_cat_3d);
     factory.register_type("LineRenderer3D", []() { return std::make_unique<LineRenderer3D>(); },

@@ -43,7 +43,7 @@
 #include "components/mesh_renderer.h"
 #include "components/skinned_mesh_renderer.h"
 #include "components/3d/particle_system_3d.h"
-#include "components/3d/sph_fluid.h"
+#include "components/3d/fluid_surface.h"
 #include "components/3d/line_renderer_3d.h"
 #include "components/3d/trail_renderer.h"
 #include "components/3d/instanced_mesh_renderer.h"
@@ -898,7 +898,7 @@ void RenderPipeline::shutdown() {
         particle_depth_shader_ = RHIShaderHandle{};
     }
     particle_items_.clear();
-    sph_items_.clear();
+    fluid_items_.clear();
     if (owns_shaders_ && line3d_shader_.is_valid()) {
         ctx_->destroy_shader(line3d_shader_);
         line3d_shader_ = RHIShaderHandle{};
@@ -2121,6 +2121,7 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     collect_lines3d(scene, ctx);
     collect_instanced(scene, ctx);
     collect_terrain(scene, ctx);
+    collect_fluid(scene, ctx);
     collect_lod_groups(scene, ctx);
     collect_billboards(scene, ctx);
     collect_text3d(scene, ctx);
@@ -2493,6 +2494,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
 
     // 地形（程序化网格，不透明）
     append_terrain_items(camera_frustum, cam_pos, opaque_items);
+    // 高度场流体水面（默认半透明，进透明列表）
+    append_fluid_items(camera_frustum, cam_pos, opaque_items, transparent_items);
     // LODGroup（自包含网格，不透明）
     append_lod_items(camera_frustum, cam_pos, opaque_items);
 
@@ -2573,6 +2576,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         }
         // 地形（程序化网格，不透明）
         append_terrain_items(camera_frustum, cam_pos, opaque_items);
+        // 高度场流体水面（默认半透明，进透明列表）
+        append_fluid_items(camera_frustum, cam_pos, opaque_items, transparent_items);
         // LODGroup（自包含网格，不透明）
         append_lod_items(camera_frustum, cam_pos, opaque_items);
         // GBuffer 不透明物体（使用 g_buffer shader）
@@ -4365,7 +4370,6 @@ void RenderPipeline::render_grid(RenderContext& ctx) {
 // ===========================================================================
 void RenderPipeline::collect_particles(scene::Scene& scene, RenderContext& ctx) {
     particle_items_.clear();
-    sph_items_.clear();
     particle_pending_count_ = 0;
     if (!particle_shader_.is_valid()) return;
 
@@ -4385,23 +4389,11 @@ void RenderPipeline::collect_particles(scene::Scene& scene, RenderContext& ctx) 
             }
         });
 
-    // SPH 流体：同样的 collect / draw 拆分，绘制参数固定（alpha 混合 + 深度测试）
-    ecs::foreach_with_components<components::SPHFluid3D, components::Transform>(
-        scene,
-        [&](scene::Entity* entity, components::SPHFluid3D* fluid, components::Transform* /*transform*/) {
-            if (!entity || !fluid || !fluid->enabled) return;
-            fluid->prepare_gpu(&ctx, entity->world_transform());
-            if (fluid->gpu_mesh_handle().is_valid() && fluid->instance_count() > 0) {
-                sph_items_.push_back(fluid);
-            } else {
-                ++particle_pending_count_;
-            }
-        });
 }
 
 void RenderPipeline::draw_particles(RenderContext& ctx, const math::Matrix4f& view,
                                     const math::Matrix4f& proj) {
-    if (particle_items_.empty() && sph_items_.empty()) return;
+    if (particle_items_.empty()) return;
     if (!particle_shader_.is_valid()) return;
     // 不在这里 set_framebuffer：调用点（前向 HDR pass 内部 / 反射探针图集）都已
     // 绑定自己的目标与视口。重复绑定在 Vulkan 下会 end+begin render pass，且新
@@ -4430,10 +4422,6 @@ void RenderPipeline::draw_particles(RenderContext& ctx, const math::Matrix4f& vi
 
     for (auto* ps : particle_items_) {
         draw_one(ps->gpu_mesh_handle(), ps->texture_handle(), ps->additive, ps->depth_test);
-    }
-    for (auto* fluid : sph_items_) {
-        draw_one(fluid->gpu_mesh_handle(), fluid->texture_handle(),
-                 fluid->additive, fluid->depth_test);
     }
 
     // 恢复默认状态（viewmodel、探针后续面与后处理依赖）
@@ -4472,13 +4460,6 @@ void RenderPipeline::draw_particles_depth(RenderContext& ctx, const math::Matrix
                             TextureSlots::kParticleTexture, "uTexture");
         }
         ctx.draw_mesh(ps->gpu_mesh_handle(), depth_shader);
-    }
-    for (auto* fluid : sph_items_) {
-        if (fluid->texture_handle().is_valid()) {
-            ctx.set_texture(depth_shader, fluid->texture_handle(),
-                            TextureSlots::kParticleTexture, "uTexture");
-        }
-        ctx.draw_mesh(fluid->gpu_mesh_handle(), depth_shader);
     }
 
     ctx.set_blend(false);
@@ -5521,6 +5502,39 @@ void RenderPipeline::collect_terrain(scene::Scene& scene, RenderContext& ctx) {
                 terrain_items_.push_back(TerrainItem{terrain, entity->world_transform()});
             }
         });
+}
+
+void RenderPipeline::collect_fluid(scene::Scene& scene, RenderContext& ctx) {
+    fluid_items_.clear();
+
+    ecs::foreach_with_components<components::FluidSurface3D, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::FluidSurface3D* fluid, components::Transform* /*transform*/) {
+            if (!entity || !fluid || !fluid->enabled) return;
+            fluid->prepare_gpu(&ctx);
+            if (fluid->gpu_mesh_handle().is_valid()) {
+                fluid_items_.push_back(FluidItem{fluid, entity->world_transform()});
+            }
+        });
+}
+
+void RenderPipeline::append_fluid_items(const Frustum& frustum, const math::Vector3f& cam_pos,
+                                        std::vector<DrawItem>& opaque,
+                                        std::vector<DrawItem>& transparent) const {
+    for (const auto& item : fluid_items_) {
+        if (!item.fluid) continue;
+        math::Vector3f center;
+        float radius = 0.0f;
+        item.fluid->world_bounds(item.model, center, radius);
+        if (!frustum.contains_sphere(center, radius)) continue;
+
+        const math::Vector3f pos(item.model(0, 3), item.model(1, 3), item.model(2, 3));
+        const Material* mat = item.fluid->material();
+        const bool is_transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
+        DrawItem di{item.fluid->gpu_mesh_handle(), mat, item.model, (pos - cam_pos).length_sq()};
+        // mesh_path 留空 = 不参与实例化合批（水面网格是程序化动态几何）
+        (is_transparent ? transparent : opaque).push_back(std::move(di));
+    }
 }
 
 void RenderPipeline::append_terrain_items(const Frustum& frustum, const math::Vector3f& cam_pos,
