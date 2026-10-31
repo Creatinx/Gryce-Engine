@@ -45,6 +45,7 @@
 #include "components/3d/particle_system_3d.h"
 #include "components/3d/fluid_surface.h"
 #include "components/3d/sph_fluid.h"
+#include "components/3d/fluid_domain.h"
 #include "components/3d/line_renderer_3d.h"
 #include "components/3d/trail_renderer.h"
 #include "components/3d/instanced_mesh_renderer.h"
@@ -5560,6 +5561,32 @@ void RenderPipeline::collect_fluid(scene::Scene& scene, RenderContext& ctx) {
             item.model = entity->world_transform();
             fluid->world_bounds(item.model, item.center, item.radius);
             fluid_items_.push_back(item);
+        });
+
+    // 统一流体域：一个组件可出多层网格（液体表面 + 若干层烟雾壳），
+    // 每层各自带材质，按层推入绘制列表。
+    ecs::foreach_with_components<components::FluidDomain3D, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::FluidDomain3D* fluid,
+            components::Transform* /*transform*/) {
+            if (!entity || !fluid || !fluid->enabled) return;
+            fluid->prepare_gpu(&ctx);
+            if (fluid->render_layer_count() <= 0) return;
+            const math::Matrix4f model = entity->world_transform();
+            math::Vector3f center;
+            float radius = 0.0f;
+            fluid->world_bounds(model, center, radius);
+            for (int layer = 0; layer < fluid->render_layer_count(); ++layer) {
+                const render::RHIMeshHandle mesh = fluid->layer_mesh(layer);
+                if (!mesh.is_valid()) continue;
+                FluidItem item;
+                item.mesh = mesh;
+                item.material = fluid->layer_material(layer);
+                item.model = model;
+                item.center = center;
+                item.radius = radius;
+                fluid_items_.push_back(item);
+            }
         });
 
     // SPH 粒子流体：组件内部已完成 Surface Nets 重建与上传，这里只取网格

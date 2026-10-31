@@ -121,8 +121,6 @@ private:
     // ---- 表面重建 ----------------------------------------------------------
     void build_surface_field();
     void extract_surface(assets::MeshData& out) const;
-    math::Vector3f surface_gradient_at(float gx, float gy, float gz) const;
-    float sample_field_trilinear(float gx, float gy, float gz) const;
     int resolve_surface_resolution() const;
 
     float smooth_radius() const { return std::max(1e-3f, spacing * 2.0f); }
@@ -145,7 +143,6 @@ private:
 
     // 表面重建场
     std::vector<float> field_;        // 角点标量场（nx+1)*(ny+1)*(nz+1)
-    mutable std::vector<int> cell_vertex_;  // 单元 → 顶点下标（-1 = 非活跃单元），提取期临时缓冲
     int field_dim_[3] = {0, 0, 0};    // 单元数（角点数 = +1）
     math::Vector3f field_origin_ = math::Vector3f::zero();
     float field_cell_ = 0.04f;

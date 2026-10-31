@@ -33,6 +33,7 @@
 #include "components/3d/system_components.h"
 #include "components/3d/fluid_surface.h"
 #include "components/3d/sph_fluid.h"
+#include "components/3d/fluid_domain.h"
 #include "components/2d/anim_components.h"
 #include "components/2d/visual_components.h"
 #include "components/2d/misc_components.h"
@@ -128,6 +129,9 @@ void register_builtin_components() {
                           "高度场流体：浅水方程水面模拟，O(格数) 开销与密度无关。", k_cat_3d);
     factory.register_type("SPHFluid3D", []() { return std::make_unique<SPHFluid3D>(); },
                           "SPH 粒子流体：计数排序邻域 + Surface Nets 连续表面重建。", k_cat_3d);
+    factory.register_type("FluidDomain3D", []() { return std::make_unique<FluidDomain3D>(); },
+                          "统一流体域：FLIP 液体 + 欧拉气体共用 MAC 速度场，空气也参与求解。",
+                          k_cat_3d);
     factory.register_type("TrailRenderer", []() { return std::make_unique<TrailRenderer>(); },
                           "3D 拖尾：弹道、飞船尾焰、刀光。", k_cat_3d);
     factory.register_type("LineRenderer3D", []() { return std::make_unique<LineRenderer3D>(); },
