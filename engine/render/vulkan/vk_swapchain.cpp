@@ -43,13 +43,13 @@ bool VulkanSwapchain::recreate(uint32_t width, uint32_t height) {
 
 void VulkanSwapchain::set_vsync_enabled(bool enabled) {
     // VSync 开启 -> FIFO（硬同步到 vblank，有防撕裂，但帧率被显示器刷新率封顶）。
-    // VSync 关闭 -> 优先 MAILBOX：帧率不受刷新率封顶且无撕裂，是高刷新率/竞技场景
-    //   让 GPU 持续跑满的最佳选择；不可用再退 IMMEDIATE（无封顶但可能撕裂），
-    //   最后退 FIFO。
-    // 这个选择直接决定 GPU 能否被持续喂饱：FIFO 会让 GPU 在两次 vblank 间空转，
-    // 表现为 "GPU 没跑满"。
+    // VSync 关闭 -> 优先 IMMEDIATE。
+    //   MAILBOX 看起来"不封顶"，但它只有一个排队位：队列满时 vkQueuePresentKHR
+    //   会等 vblank 腾位置，实测把空场景压在刷新率附近（240Hz 屏 ~1000fps 就上不去）。
+    //   IMMEDIATE 直接投递、不排队（允许撕裂），才是"同时钟、无上限"的那个模式。
+    //   做性能对比／基准时必须走它，否则量到的是显示器而不是引擎。
     VkPresentModeKHR desired = enabled ? VK_PRESENT_MODE_FIFO_KHR
-                                       : VK_PRESENT_MODE_MAILBOX_KHR;
+                                       : VK_PRESENT_MODE_IMMEDIATE_KHR;
 
     // 查询设备支持的呈现模式，按优先级回退
     uint32_t count = 0;
@@ -68,9 +68,9 @@ void VulkanSwapchain::set_vsync_enabled(bool enabled) {
 
     VkPresentModeKHR chosen = desired;
     if (!supported(chosen)) {
-        // 关闭 vsync 时按 MAILBOX -> IMMEDIATE 顺序回退；两者都不支持则退回 FIFO。
-        if (!enabled && supported(VK_PRESENT_MODE_IMMEDIATE_KHR)) {
-            chosen = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        // 关闭 vsync 时按 IMMEDIATE -> MAILBOX -> FIFO 顺序回退。
+        if (!enabled && supported(VK_PRESENT_MODE_MAILBOX_KHR)) {
+            chosen = VK_PRESENT_MODE_MAILBOX_KHR;
         } else {
             chosen = VK_PRESENT_MODE_FIFO_KHR;
         }

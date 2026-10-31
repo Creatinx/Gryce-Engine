@@ -197,6 +197,7 @@ public:
     bool debug_ui = false;
     bool quit_requested = false;
     int shot_flush_frames = 0;
+    int vsync_override = -1;   // 命令行覆盖：-1 跟随脚本
 
     bool create_window(const WindowOptions& opts) override {
         if (window_valid()) return true;
@@ -214,7 +215,7 @@ public:
         // 渲染器里"init 前生效"的项
         GRender_SetShadowMapSize(cfg.shadow_map_size);
         GRender_SetPointShadowSize(cfg.point_shadow_size);
-        GRender_SetVSync(opts.vsync);
+        GRender_SetVSync(vsync_override < 0 ? opts.vsync : (vsync_override != 0));
         GRender_SetFPSOverlay(show_fps);
         // 运行时默认不挂 ImGui 调试面板（那是冒烟台/编辑器的东西）
         GRender_SetDebugUI(debug_ui);
@@ -376,6 +377,7 @@ struct AppOptions {
     bool show_fps = false;
     bool debug_ui = false;
     bool edit_mode = false;   // --edit-mode：强制停在编辑态（覆盖 project.data）
+    int vsync = -1;           // --vsync/--no-vsync：-1 = 跟随脚本/配置
 };
 
 // 用法文本里的程序名取自 argv[0]：现在有两个宿主（GryceApp 通用入口、
@@ -402,6 +404,8 @@ void print_usage(const char* argv0) {
         "  --debug-ui           启用渲染器 ImGui 调试面板（默认关）\n"
         "  --edit-mode          停在编辑态（不进 Play、不跑组件 update、撤销栈记账），\n"
         "                       覆盖 project.data 的 start_in_play\n"
+        "  --vsync              开垂直同步（帧率被钉在刷新率上，默认关）\n"
+        "  --no-vsync           关垂直同步（默认）\n"
         "  --help               显示本帮助\n",
         exe.c_str());
 }
@@ -437,6 +441,8 @@ int run(int argc, char** argv) {
         else if (std::strcmp(a, "--fps") == 0) opts.show_fps = true;
         else if (std::strcmp(a, "--debug-ui") == 0) opts.debug_ui = true;
         else if (std::strcmp(a, "--edit-mode") == 0) opts.edit_mode = true;
+        else if (std::strcmp(a, "--vsync") == 0) opts.vsync = 1;
+        else if (std::strcmp(a, "--no-vsync") == 0) opts.vsync = 0;
         else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -452,6 +458,7 @@ int run(int argc, char** argv) {
     HostServices host;
     host.cfg = load_project_config(opts.project_root);
     host.show_fps = opts.show_fps;
+    host.vsync_override = opts.vsync;
     host.debug_ui = opts.debug_ui;
     if (!opts.api.empty()) host.api_override = opts.api;
     host.main_scene_override = opts.scene;

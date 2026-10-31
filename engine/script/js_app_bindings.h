@@ -42,7 +42,9 @@ struct WindowOptions {
     int width = 1280;
     int height = 720;
     std::string api;  // opengl / vulkan / dx12 / webgl；空 = 跟随 project.data
-    bool vsync = true;
+    // 默认关。开着时帧率被钉在显示器刷新率上（240Hz 屏就是 240fps 封顶），
+    // 做性能对比时会被误读成"渲染上不去"。要垂直同步就在 createWindow 里显式传。
+    bool vsync = false;
     bool resizable = true;
 };
 

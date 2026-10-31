@@ -2634,7 +2634,10 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         // 2c''. 粒子深度补充（仅 SSR 需要）：主粒子绘制关深度写，SSR 屏幕空间步进
         // 读的 hdr_depth_ 里没有粒子，反射射线会直接穿过去。这里只写深度、丢弃颜色
         // 再画一遍，把粒子放进深度缓冲；必须在 SSR 之前。
-        if (ssr_enabled_ && std::getenv("GRYCE_NO_PARTICLE_DEPTH") == nullptr) {
+        // getenv 在 Windows CRT 上是线性扫描环境块，单次约 5us；放在逐帧路径里
+        // 等于白扔一帧预算的百分之一，这里读一次就固定下来。
+        static const bool particle_depth_disabled = std::getenv("GRYCE_NO_PARTICLE_DEPTH") != nullptr;
+        if (ssr_enabled_ && !particle_depth_disabled) {
             draw_particles_depth(ctx, camera_->get_view_matrix(), get_projection_matrix());
         }
 

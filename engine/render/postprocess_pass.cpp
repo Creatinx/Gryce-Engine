@@ -683,15 +683,6 @@ void RenderPipeline::render_tonemap(RenderContext& ctx) {
     // TAA 开启时读取 TAA 解析后的 HDR，否则读原始 HDR
     const bool use_taa = pp_params_.taa_enabled != 0 && taa_targets_valid_;
     const RHITextureHandle hdr_in = use_taa ? taa_tex_[taa_ping_] : hdr_color_;
-    // HDR 链路追踪（GRYCE_TRACE_HDR=1 开启）：打印 tonemap 这一帧实际读取的
-    // HDR 纹理。中间 fog / DOF / motion blur 会重指向 hdr_color_，该值才是
-    // "最终画面是否包含 SSR" 的决定因素。
-    if (std::getenv("GRYCE_TRACE_HDR")) {
-        static int t = 0;
-        ++t;
-        GLOG_WARN("[hdr3] frame={} use_taa={} hdr_in=idx{} gen{}", t, use_taa ? 1 : 0,
-                  hdr_in.index, hdr_in.generation);
-    }
 
     // 编辑器视口输出开启时，tonemap 写入独立 FBO 供 Viewport 面板采样，
     // 默认 framebuffer 只用于 ImGui；否则按原路径直接输出到屏幕。
