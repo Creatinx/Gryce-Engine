@@ -44,6 +44,7 @@
 #include "components/skinned_mesh_renderer.h"
 #include "components/3d/particle_system_3d.h"
 #include "components/3d/fluid_surface.h"
+#include "components/3d/sph_fluid.h"
 #include "components/3d/line_renderer_3d.h"
 #include "components/3d/trail_renderer.h"
 #include "components/3d/instanced_mesh_renderer.h"
@@ -4497,9 +4498,8 @@ void RenderPipeline::draw_fluid_depth(RenderContext& ctx) {
     ctx.set_cull_face(CullMode::None);
 
     for (const auto& item : fluid_items_) {
-        if (!item.fluid) continue;
-        render_mesh_internal(item.fluid->gpu_mesh_handle(), item.fluid->material(),
-                             item.model, ctx);
+        if (!item.mesh.is_valid()) continue;
+        render_mesh_internal(item.mesh, item.material, item.model, ctx);
     }
 
     ctx.set_blend(false);
@@ -5547,14 +5547,34 @@ void RenderPipeline::collect_terrain(scene::Scene& scene, RenderContext& ctx) {
 void RenderPipeline::collect_fluid(scene::Scene& scene, RenderContext& ctx) {
     fluid_items_.clear();
 
+    // 高度场浅水水面
     ecs::foreach_with_components<components::FluidSurface3D, components::Transform>(
         scene,
         [&](scene::Entity* entity, components::FluidSurface3D* fluid, components::Transform* /*transform*/) {
             if (!entity || !fluid || !fluid->enabled) return;
             fluid->prepare_gpu(&ctx);
-            if (fluid->gpu_mesh_handle().is_valid()) {
-                fluid_items_.push_back(FluidItem{fluid, entity->world_transform()});
-            }
+            if (!fluid->gpu_mesh_handle().is_valid()) return;
+            FluidItem item;
+            item.mesh = fluid->gpu_mesh_handle();
+            item.material = fluid->material();
+            item.model = entity->world_transform();
+            fluid->world_bounds(item.model, item.center, item.radius);
+            fluid_items_.push_back(item);
+        });
+
+    // SPH 粒子流体：组件内部已完成 Surface Nets 重建与上传，这里只取网格
+    ecs::foreach_with_components<components::SPHFluid3D, components::Transform>(
+        scene,
+        [&](scene::Entity* entity, components::SPHFluid3D* fluid, components::Transform* /*transform*/) {
+            if (!entity || !fluid || !fluid->enabled) return;
+            fluid->prepare_gpu(&ctx);
+            if (!fluid->gpu_mesh_handle().is_valid()) return;
+            FluidItem item;
+            item.mesh = fluid->gpu_mesh_handle();
+            item.material = fluid->material();
+            item.model = entity->world_transform();
+            fluid->world_bounds(item.model, item.center, item.radius);
+            fluid_items_.push_back(item);
         });
 }
 
@@ -5562,16 +5582,14 @@ void RenderPipeline::append_fluid_items(const Frustum& frustum, const math::Vect
                                         std::vector<DrawItem>& opaque,
                                         std::vector<DrawItem>& transparent) const {
     for (const auto& item : fluid_items_) {
-        if (!item.fluid) continue;
-        math::Vector3f center;
-        float radius = 0.0f;
-        item.fluid->world_bounds(item.model, center, radius);
-        if (!frustum.contains_sphere(center, radius)) continue;
+        if (!item.mesh.is_valid()) continue;
+        const bool visible = frustum.contains_sphere(item.center, item.radius);
+        if (!visible) continue;
 
         const math::Vector3f pos(item.model(0, 3), item.model(1, 3), item.model(2, 3));
-        const Material* mat = item.fluid->material();
-        const bool is_transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
-        DrawItem di{item.fluid->gpu_mesh_handle(), mat, item.model, (pos - cam_pos).length_sq()};
+        const bool is_transparent =
+            item.material && item.material->blend_mode == Material::BlendMode::Blend;
+        DrawItem di{item.mesh, item.material, item.model, (pos - cam_pos).length_sq()};
         // mesh_path 留空 = 不参与实例化合批（水面网格是程序化动态几何）
         (is_transparent ? transparent : opaque).push_back(std::move(di));
     }

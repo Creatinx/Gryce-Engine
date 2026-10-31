@@ -30,7 +30,7 @@ namespace scene { class Scene; }
 namespace assets { struct TextureData; }
 namespace components { class ParticleSystem3D; }
 namespace components { class ParticleSystem3D; }
-namespace components { class FluidSurface3D; }
+namespace components { class FluidSurface3D; class SPHFluid3D; }
 namespace components { class LineRenderer3D; }
 namespace components { class TrailRenderer; }
 namespace components { class InstancedMeshRenderer; }
@@ -1170,14 +1170,19 @@ private:
     std::vector<TerrainItem> terrain_items_;
 
     // -----------------------------------------------------------------------
-    // 高度场流体（浅水方程水面网格）
-    // collect 每帧调用一次：组件推进模拟、重建水面 MeshData 并投递上传命令。
-    // 水面默认是半透明实体几何，按材质 blend_mode 归入透明/不透明列表，
+    // 流体（两类组件共用同一条渲染路径）
+    //   FluidSurface3D  高度场浅水：解析水面网格
+    //   SPHFluid3D      SPH 粒子：Surface Nets 重建出的连续表面网格
+    // 两者都是"每帧变化的程序化网格 + 材质"，所以 collect 时只留网格句柄、
+    // 材质指针与包围球；append 按材质 blend_mode 归入透明/不透明列表，
     // 复用 pbr_shader_ 与 render_mesh_internal，不需要独立 draw 函数。
     // -----------------------------------------------------------------------
     struct FluidItem {
-        components::FluidSurface3D* fluid;
+        render::RHIMeshHandle mesh;
+        const render::Material* material = nullptr;
         math::Matrix4f model;
+        math::Vector3f center = math::Vector3f::zero();
+        float radius = 0.0f;
     };
     void collect_fluid(scene::Scene& scene, RenderContext& ctx);
     // 把已收集的水面按视锥剔除后追加进绘制列表（透明材质进 transparent）
