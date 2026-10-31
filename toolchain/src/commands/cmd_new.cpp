@@ -20,7 +20,7 @@
 // 设计约束：
 //   - 着色器不复制到项目：`res:/shaders` 缺失时引擎按 core 默认目录兜底，
 //     GL 源码与 Vulkan 的 .spv 都能命中；要自定义再自行拷贝覆盖。
-//   - 场景是纯 JSON（.gesc v2），因此可以直接生成，不需要序列化器。
+//   - 场景是纯 JSON（.gesc v3），因此可以直接生成，不需要序列化器。
 // ---------------------------------------------------------------------------
 
 #include "../cli.h"
@@ -210,13 +210,13 @@ std::string make_project_data(const std::string& name, int width, int height,
 }
 
 // ---------------------------------------------------------------------------
-// scenes/main.gesc：.gesc v2 是纯 JSON，实体数组里放相机 / 平行光 / 两个网格
+// scenes/main.gesc：.gesc v3 是纯 JSON，实体数组里放相机 / 平行光 / 两个网格
 // ---------------------------------------------------------------------------
 std::string make_scene(const std::string& project_name) {
     const std::string n = json_escape(project_name);
     std::string s;
     s += "{\n";
-    s += "  \"version\": 2,\n";
+    s += "  \"version\": 3,\n";
     s += "  \"name\": \"" + n + "\",\n";
     s += "  \"entities\": [\n";
     s +=
@@ -548,7 +548,7 @@ std::string make_readme(const std::string& name, const std::string& api, bool wi
     s += "| 文件 | 作用 |\n| --- | --- |\n";
     s += "| `main.js` | 入口脚本：建窗口、载场景、相机控制、Esc 退出 |\n";
     s += "| `project.data` | 项目配置：窗口尺寸、默认后端、渲染开关 |\n";
-    s += "| `scenes/main.gesc` | 场景（.gesc v2 = JSON）：相机 / 平行光 / 立方体 / 地面 |\n";
+    s += "| `scenes/main.gesc` | 场景（.gesc v3 = JSON）：相机 / 平行光 / 立方体 / 地面 |\n";
     s += "| `models/cube.obj` | 程序生成的单位立方体 |\n";
     if (with_extension) s += "| `extension.cpp` | 原生扩展模板：把引擎已有能力包成 JS 接口 |\n";
     s += "\n## 运行\n\n";
