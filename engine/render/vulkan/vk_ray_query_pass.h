@@ -22,8 +22,8 @@
 //     优雅失败，本通道置为无效，上层回退 SSR，行为与现状零差异）。
 //   - 射线查询本身在着色器内完成（GLSL rayQueryEXT），不需要 vkCmdTraceRays 等
 //     主机端 KHR 命令，因此无需解析额外 PFN。
-//   - TLAS 构建命令由后端先记录进同一命令缓冲（见
-//     VkTopLevelAccelerationStructure::record_build），本通道只消费。
+//   - TLAS 构建/增量更新命令由后端先记录进同一命令缓冲（见
+//     VkTopLevelAccelerationStructure::record_build_or_update），本通道只消费。
 //   - 历史图双缓冲（frame_parity_）：本帧写 A 读 B，下帧互换；目标重建或首帧时
 //     历史视为无效，混合系数取 1（纯当前帧），不会残留脏数据。
 // ---------------------------------------------------------------------------
@@ -80,7 +80,8 @@ public:
     // depth_view / lit_view 为 HDR 深度与颜色的图像视图；env_view/env_sampler
     // 与 prefilter_view/prefilter_sampler 为 IBL 环境立方体贴图（无效句柄 =
     // 无环境，未命中方向不产生反射）；params_buffer 为每实例材质参数
-    // (roughness, metallic) 的 SSBO，按 instanceCustomIndex 索引。
+    // (roughness, metallic, transmission, ior, attenuation_distance, thickness) 的
+    // SSBO，按 instanceCustomIndex 索引（见 MatParam，8 float 一组）。
     void render(VkCommandBuffer cmd,
                 VkAccelerationStructureKHR tlas,
                 VkImageView depth_view,

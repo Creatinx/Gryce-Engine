@@ -20,8 +20,8 @@ Ray-traced reflections and SSR are meant to be used exclusively: enable RT with 
 ### 2.1 Acceleration structures
 
 - **BLAS**: cached per `IMesh*`, built once (`rt_blas_cache_`). Vertices/indices come from `IMesh::get_ray_tracing_geometry`; instances without CPU geometry are skipped.
-- **TLAS**: rebuilt every frame from the opaque render list (`opaque_items_`: mesh handle, world matrix, material roughness/metallic).
-- **No host-side waits**: the instance buffer is persistent host-visible memory (1.5× capacity headroom), instance data is written directly, and the build command is recorded into the frame command buffer (`record_build`). Build and query are ordered by GPU barriers only.
+- **TLAS**: persistent buffer + in-frame build. Instances come from `opaque_items_` (mesh handle, world matrix, material roughness/metallic). On the common frame where only instance transforms change (geometry and the instance set are unchanged) the build uses `MODE_UPDATE` (refit, reusing the previous frame's BVH topology — far cheaper than a full rebuild); a full `MODE_BUILD` is reserved for topology/count/capacity changes (added/removed objects, swapped meshes, reorder, capacity growth). Refit validity is decided by an ordered BLAS-address topology signature (see `vk_acceleration_structure.cpp`).
+- **No host-side waits**: the instance buffer is persistent host-visible memory (1.5× capacity headroom), instance data is written directly, and the build/update command is recorded into the frame command buffer (`record_build_or_update`). Build and query are ordered by GPU barriers only.
 - Transforms: the engine uses column-major world matrices (`m[col*4+row]`) while `VkTransformMatrixKHR::matrix` is row-major `float[3][4]`; the conversion is element-wise in `vk_backend.cpp`.
 
 ### 2.2 Three-stage pass (`vk_ray_query_pass`)

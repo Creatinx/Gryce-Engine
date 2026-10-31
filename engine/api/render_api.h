@@ -336,6 +336,10 @@ GRYCE_RENDERER_API bool  GRender_IsSSILEnabled(void);
 // 硬件光追反射（Vulkan ray query）。仅 Vulkan 后端且设备支持时生效；其余情况
 // 为无操作，画面与未开启时零差异。用于 DEMO 与编辑器在支持的设备上对比 SSR。
 GRYCE_RENDERER_API void  GRender_SetRTReflection(bool enabled);
+GRYCE_RENDERER_API void  GRender_SetRTTransmission(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsRTTransmissionEnabled(void);
+GRYCE_RENDERER_API void  GRender_SetRTGI(bool enabled);
+GRYCE_RENDERER_API bool  GRender_IsRTGIEnabled(void);
 GRYCE_RENDERER_API bool  GRender_IsRTReflectionEnabled(void);
 GRYCE_RENDERER_API void  GRender_SetRTReflectionResolutionScale(float scale);
 // 光追反射的时域降噪开关（默认开启）。关闭后退化为单帧追踪 + 双线性上采样，

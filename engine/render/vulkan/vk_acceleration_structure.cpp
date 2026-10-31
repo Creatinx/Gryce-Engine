@@ -17,6 +17,7 @@
 
 #include <vma/vk_mem_alloc.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace gryce_engine::render {
@@ -489,7 +490,11 @@ bool VkTopLevelAccelerationStructure::allocate_persistent(VulkanDevice* device,
     VkAccelerationStructureBuildGeometryInfoKHR build_info{};
     build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-    build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+    // 持久 TLAS 用于帧内构建：以 FAST_TRACE 取向（全量 BUILD 仅在拓扑变化时发生，
+    // 极少），并带 ALLOW_UPDATE —— 后续每帧的实例变换更新走 UPDATE（refit），
+    // 复用首次 BUILD 的 BVH 拓扑，开销远小于重建。
+    build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                       VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
     build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     build_info.geometryCount = 1;
     build_info.pGeometries = &geo_khr;
@@ -530,6 +535,9 @@ bool VkTopLevelAccelerationStructure::allocate_persistent(VulkanDevice* device,
     }
     device_address_ = acceleration_structure_device_address(d, dev, as_);
     capacity_ = capacity;
+    // 容量重建 = 旧 TLAS 失效，下一次帧内构建必须整树 BUILD。
+    has_valid_build_ = false;
+    topo_sig_.clear();
     return true;
 }
 
@@ -557,8 +565,9 @@ bool VkTopLevelAccelerationStructure::update_instances(
                                        sizeof(VkAccelerationStructureInstanceKHR));
 }
 
-bool VkTopLevelAccelerationStructure::record_build(VkCommandBuffer cmd,
-                                                   uint32_t instance_count) {
+bool VkTopLevelAccelerationStructure::record_build_or_update(
+    VkCommandBuffer cmd, uint32_t instance_count,
+    const std::vector<VkDeviceAddress>& signature) {
     if (!device_ || cmd == VK_NULL_HANDLE || instance_count == 0 ||
         instance_count > capacity_ || as_ == VK_NULL_HANDLE) {
         return false;
@@ -567,6 +576,11 @@ bool VkTopLevelAccelerationStructure::record_build(VkCommandBuffer cmd,
 
     VkASDispatch d;
     if (!d.resolve(dev)) return false;
+
+    // refit 前提：当前 TLAS 已有一次有效 BUILD，且实例拓扑（有序 BLAS 地址）与那次
+    // 完全一致——只有变换不同。否则整树 BUILD 并刷新拓扑记录。
+    const bool use_update = has_valid_build_ && signature.size() == topo_sig_.size() &&
+                           std::equal(signature.begin(), signature.end(), topo_sig_.begin());
 
     VkAccelerationStructureGeometryKHR geo_khr{};
     geo_khr.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
@@ -581,8 +595,13 @@ bool VkTopLevelAccelerationStructure::record_build(VkCommandBuffer cmd,
     VkAccelerationStructureBuildGeometryInfoKHR build_info{};
     build_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-    build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
-    build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    // refit 复用首次 BUILD 的拓扑，取向 FAST_BUILD（每帧高频）；全量 BUILD 发生在
+    // 拓扑变化（极少），取向 FAST_TRACE 保质量。两者都带 ALLOW_UPDATE 以便后续 refit。
+    build_info.flags = (use_update ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
+                                  : VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) |
+                       VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    build_info.mode = use_update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+                                : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     build_info.geometryCount = 1;
     build_info.pGeometries = &geo_khr;
     build_info.dstAccelerationStructure = as_;
@@ -604,6 +623,9 @@ bool VkTopLevelAccelerationStructure::record_build(VkCommandBuffer cmd,
     bar.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &bar, 0, nullptr, 0, nullptr);
+
+    topo_sig_ = signature;
+    has_valid_build_ = true;
     return true;
 }
 

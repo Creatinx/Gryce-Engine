@@ -64,7 +64,9 @@ struct ProjectConfig {
     bool ssr_enabled = false;
     bool ssil_enabled = false;
     bool rt_reflection_enabled = false;
-    float rt_reflection_resolution_scale = 1.0f;
+    bool rt_transmission_enabled = false;
+    bool rt_gi_enabled = false;
+    float rt_reflection_resolution_scale = 0.5f;
     bool rt_reflection_denoise = true;
     // 画面重建模式：off / temporal / dlss（见 docs/zh/rt-reflection.md）
     std::string super_resolution = "temporal";
@@ -137,6 +139,8 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.ssr_enabled = j.value("ssr_enabled", c.ssr_enabled);
         c.ssil_enabled = j.value("ssil_enabled", c.ssil_enabled);
         c.rt_reflection_enabled = j.value("rt_reflection_enabled", c.rt_reflection_enabled);
+        c.rt_transmission_enabled = j.value("rt_transmission_enabled", c.rt_transmission_enabled);
+        c.rt_gi_enabled = j.value("rt_gi_enabled", c.rt_gi_enabled);
         c.rt_reflection_resolution_scale =
             j.value("rt_reflection_resolution_scale", c.rt_reflection_resolution_scale);
         c.rt_reflection_denoise = j.value("rt_reflection_denoise", c.rt_reflection_denoise);
@@ -339,6 +343,8 @@ private:
         GRender_SetSSR(cfg.ssr_enabled);
         GRender_SetSSIL(cfg.ssil_enabled);
         GRender_SetRTReflection(cfg.rt_reflection_enabled);
+        GRender_SetRTTransmission(cfg.rt_transmission_enabled);
+        GRender_SetRTGI(cfg.rt_gi_enabled);
         GRender_SetRTReflectionResolutionScale(cfg.rt_reflection_resolution_scale);
         GRender_SetRTReflectionDenoise(cfg.rt_reflection_denoise);
         // 超分模式：DLSS 缺失时引擎侧自动降级为内置时域重建并打日志。

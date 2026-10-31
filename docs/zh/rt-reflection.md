@@ -20,8 +20,8 @@
 ### 2.1 加速结构
 
 - **BLAS**：按 `IMesh*` 缓存，几何不变只建一次（`rt_blas_cache_`）。顶点/索引取自 `IMesh::get_ray_tracing_geometry`，不可用则该实例跳过。
-- **TLAS**：每帧按本帧不透明列表重建。实例来自 `opaque_items_`（网格句柄 + 世界矩阵 + 材质粗糙度/金属度）。
-- **零主机端等待**：TLAS 的实例缓冲是持久 host-visible 缓冲（按容量 1.5× 余量增长），实例数据直写，构建命令录进当帧命令缓冲（`VkTopLevelAccelerationStructure::record_build`），构建与查询之间用 GPU barrier 串序。
+- **TLAS**：持久缓冲 + 帧内构建。实例来自 `opaque_items_`（网格句柄 + 世界矩阵 + 材质粗糙度/金属度）。**绝大多数帧只有实例变换在变、几何与实例集合不变**，此时走 `MODE_UPDATE`（refit，复用上一帧 BVH 拓扑，开销远低于重建）；仅当实例集合/数量/容量变化（增删物体、换网格、重排、容量增长）才整树 `MODE_BUILD`。refit 的合法性由有序 BLAS 地址拓扑签名判定（见 `vk_acceleration_structure.cpp`）。
+- **零主机端等待**：TLAS 的实例缓冲是持久 host-visible 缓冲（按容量 1.5× 余量增长），实例数据直写，构建/增量更新命令录进当帧命令缓冲（`VkTopLevelAccelerationStructure::record_build_or_update`），构建与查询之间用 GPU barrier 串序。
 - 变换：引擎世界矩阵是列主序 `m[col*4+row]`，`VkTransformMatrixKHR::matrix` 是行主序 `float[3][4]`，转换在 `vk_backend.cpp` 逐元素写。
 
 ### 2.2 三段式通道（`vk_ray_query_pass`）
@@ -69,6 +69,20 @@
 
 - 相机快速切换（瞬移、过场）时历史无效一帧，会有一次可见的延迟收敛；不接受就按相机位移阈值清历史。
 - 运动的**被反射物体**在反射里会轻微拖影，由方差裁剪限幅；需要更干净的效果时把 α 调大（0.2~0.3）。
+
+## 4.1 追踪前反射率门控（性能）
+
+前向 pass 已经把表面反射率 ρ 写进 HDR 颜色的 alpha（合成段按 `cover*ρ` 加权）。绝大多数
+像素（漫反射墙面等）ρ 极小，完整追踪只贡献不到 2% 的反射、却要付出整条光线查询 / 屏幕空间
+步进的开销。因此在**追踪之前**加一道早退：
+
+- RT（Vulkan ray query，`vk_ray_query_pass.cpp` trace 段）：`texelFetch(uLit,dp,0).a <= 0.02`
+  则跳过 BVH 遍历，仍写出辅助图（法线 + 线性深度，供时域重投影做深度引导），输出 `cover=0`。
+  与"完整追踪 + 合成按 ρ 加权"画面等价（ρ→0 时权重→0）。
+- SSR（`ssr_trace.frag` / `vulkan_ssr_trace.frag`，trace 开头）：`texelFetch(uColorTex,self,0).a <= 0.02`
+  则整帧跳过屏幕空间步进循环，输出零覆盖度。
+
+该门控对光滑/金属表面（ρ 接近 1）不触发，只对真正非反射的表面省开销，画质无损。
 
 ## 5. 画面重建（超分）与 DLSS
 

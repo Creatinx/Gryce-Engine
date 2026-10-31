@@ -18,6 +18,8 @@
 #include "vk_compute.h"
 #include "vk_acceleration_structure.h"
 #include "vk_ray_query_pass.h"
+#include "vk_rt_transmission_pass.h"
+#include "vk_rt_pathtrace_pass.h"
 
 struct GLFWwindow;
 
@@ -26,6 +28,7 @@ namespace gryce_engine::render {
 class VulkanFramebuffer;
 class VulkanImGuiBackend;
 class VkRayQueryPass;
+class VkRTTransmissionPass;
 
 // ---------------------------------------------------------------------------
 // VulkanBackend — Vulkan 渲染后端实现
@@ -208,7 +211,12 @@ private:
     // 硬件光追反射（Vulkan ray query）：自管 pass + 每帧 TLAS + 按 mesh 缓存的 BLAS。
     // 仅设备支持光追且 rt_reflection_enabled 时使用；其余情况为 no-op，画面与现状零差异。
     VkRayQueryPass ray_query_pass_;
+    VkRTTransmissionPass rt_transmission_pass_;
+    VkRTPathTracePass rt_pathtrace_pass_;
     VkTopLevelAccelerationStructure rt_tlas_;
+    // 上一帧 TLAS 实例数据（含世界变换与 BLAS 引用，顺序敏感）。用于零画质损失
+    // 优化：本帧实例集合逐字节一致时跳过 TLAS 上传与构建，复用上一帧加速结构。
+    std::vector<VkAccelerationStructureInstanceKHR> rt_tlas_prev_instances_;
     std::unordered_map<IMesh*, std::unique_ptr<VkBottomLevelAccelerationStructure>> rt_blas_cache_;
     // 每实例材质参数（roughness/metallic，shader 里按 instanceCustomIndex 索引）。
     // 持久 host-visible 缓冲，实例数增长时整体重建。

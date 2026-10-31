@@ -84,8 +84,7 @@ ivec2 self_texel(vec2 src_size) {
     return ivec2(int(img.x), int(src_size.y - 1.0 - img.y));
 }
 
-float scene_depth(vec2 uv) {
-    vec2 src = vec2(textureSize(uDepthTex, 0));
+float scene_depth(vec2 uv, vec2 src) {
     vec2 img = (floor(vec2(uv.x, 1.0 - uv.y) * src) + vec2(0.5)) / src;
     return linearize_depth(texture(uDepthTex, vec2(img.x, 1.0 - img.y)).r);
 }
@@ -120,6 +119,14 @@ void main() {
     vec3 N = normalize(nr.rgb * 2.0 - 1.0);
     float roughness = nr.a;
     if (roughness >= uSSRMaxRoughness) {
+        FragColor = vec4(0.0);
+        return;
+    }
+
+    // 反射率门控：HDR 的 alpha 是该像素的表面反射率 ρ。ρ 极小的漫反射表面几乎
+    // 不产生镜面反射，直接整帧跳过步进（合成段按 cover*ρ 加权，ρ→0 时贡献→0，
+    // 画面与完整步进一致），省掉最贵的屏幕空间光线步进循环。
+    if (texelFetch(uColorTex, self, 0).a <= 0.02) {
         FragColor = vec4(0.0);
         return;
     }
@@ -221,7 +228,7 @@ void main() {
     vec2 uv_prev = uv0_exact;
     float invz_prev = invz0;
     float prev_ray_depth = lin;
-    float prev_scene = scene_depth(uv0_exact);
+    float prev_scene = scene_depth(uv0_exact, nd);
     // 起始步进相位按像素抖动一格：所有像素从同一点出发时，步长增长会让相邻列
     // 恰好落在同一批深度上，命中/未命中的分布沿列方向对齐，形成等距梳状条纹。
     // 相位打散后条纹退化为高频噪点，再由后续双边模糊抹平（条纹是相干图案，
@@ -231,9 +238,13 @@ void main() {
     // 步长上限随射线长度自适应：短射线用 4px 精扫（远处小物体在屏幕上只有
     // 几个像素厚，粗步进会整段跳过，出现"虚线状残缺反射"）；极长射线放宽到
     // px_total/max_steps，保证步数用尽前仍能走到终点（否则末段退化成环境色）。
-    float step_cap = max(4.0, px_total / float(uSSRMaxSteps));
+    // 粗糙度自适应步数预算：粗糙表面的反射会被后续双边模糊抹平，容许更少的步进
+    // （命中位置略粗不影响观感）；光滑表面仍用完整步数保边缘锐度。
+    float rough_norm = clamp(roughness / max(uSSRMaxRoughness - 1e-3, 1e-3), 0.0, 1.0);
+    float eff_steps = mix(float(uSSRMaxSteps), max(16.0, float(uSSRMaxSteps) * 0.5), rough_norm);
+    float step_cap = max(4.0, px_total / eff_steps);
 
-    for (int i = 0; i < uSSRMaxSteps; ++i) {
+    for (int i = 0; i < int(eff_steps); ++i) {
         if (px_acc >= px_total - 0.5) break;
         // 步长增长 1.08、上限交给 step_cap（与 VK 版 vulkan_ssr_trace.frag 一致）：
         // 粗步进会让相邻列的射线在不同深度处被判命中而竖着排成"栅格纹"，也会让
@@ -261,7 +272,7 @@ void main() {
             ray_depth = 1.0 / invz;
         }
 
-        float scene = scene_depth(uv);
+        float scene = scene_depth(uv, nd);
         float eps = max(uSSRThickness, ray_depth * 2e-3);
 
         if (px_acc >= 1.5 && ray_depth > scene + eps &&
@@ -269,10 +280,10 @@ void main() {
             // 二分细化（用同一空间：屏幕 s 或射线 t）
             vec2 uv_lo = uv_prev, uv_hi = uv;
             float iz_lo = invz_prev, iz_hi = invz;
-            for (int k = 0; k < 6; ++k) {
+            for (int k = 0; k < 4; ++k) {
                 vec2 uv_m = (uv_lo + uv_hi) * 0.5;
                 float iz_m = (iz_lo + iz_hi) * 0.5;
-                if (1.0 / iz_m > scene_depth(uv_m) + eps) {
+                if (1.0 / iz_m > scene_depth(uv_m, nd) + eps) {
                     uv_hi = uv_m;
                     iz_hi = iz_m;
                 } else {
@@ -295,7 +306,7 @@ void main() {
             // 在几何上不可能超过本步深度增量（表面连续时），故用它作上限；
             // 再乘 cand_dist*0.35 封顶，避免退化成"穿过薄片也算命中"。
             float cand_dist = 1.0 / iz_hi;
-            float overshoot = cand_dist - scene_depth(uv_hi);
+            float overshoot = cand_dist - scene_depth(uv_hi, nd);
             float step_dz = abs(ray_depth - prev_ray_depth);
             if (overshoot <= max(uSSRThickness * 4.0, min(step_dz * 1.5, cand_dist * 0.35))) {
                 hit_uv = uv_hi;

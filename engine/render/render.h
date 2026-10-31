@@ -71,6 +71,17 @@ struct RayTracingInstance {
     // 清晰度与强度衰减，metallic 决定菲涅尔基准反射率（0.04 绝缘体 → 1 金属）。
     float roughness = 0.15f;
     float metallic = 0.0f;
+    // 透射材质参数（P1 RT 折射 / P2 路径追踪）：transmission=0 表示不透明，
+    // 该实例不参与折射追踪；ior 为折射率（水 1.33 / 玻璃 1.5）；吸收按
+    // Beer-Lambert 用 attenuation_distance 与 thickness（薄壁）。
+    float transmission = 0.0f;
+    float ior = 1.5f;
+    math::Vector3f attenuation_color = math::Vector3f::one();
+    float attenuation_distance = 0.0f;
+    float thickness = 0.0f;
+    // 反照率（P2 路径追踪 GI）：间接光经表面弹射时按 albedo*(1-metallic) 调制，
+    // 让 GI 带上命中面的颜色（红墙映出红光）。
+    math::Vector3f albedo = math::Vector3f(0.8f, 0.8f, 0.8f);
 };
 
 // ---------------------------------------------------------------------------

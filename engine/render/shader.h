@@ -187,6 +187,11 @@ struct PostProcessParams {
     // 零差异。rt_reflection_max_distance 为单条反射射线的最大追踪距离（世界单位）。
     int rt_reflection_enabled = 0;
     float rt_reflection_max_distance = 100.0f;
+    // RT 折射/透射（P1）：transmission>0 的材质自相机打主视线取材质后折射。
+    // 关闭时通道整体跳过，画面与现状零差异。
+    int rt_transmission_enabled = 0;
+    float rt_transmission_max_distance = 100.0f;
+    int rt_gi_enabled = 0;               // RT 路径追踪 GI（P2，Vulkan ray query）
     // 追踪分辨率档（0.25~1.0）：光线查询在 width*scale × height*scale 的网格上
     // 派发，命中信息经 composite 双边上采样混合回主图。默认 1.0（逐像素追踪，
     // 不做上采样）；实测全分辨率与半分辨率的开销差在噪声范围内（瓶颈不在光追），

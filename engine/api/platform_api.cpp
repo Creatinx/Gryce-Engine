@@ -454,6 +454,28 @@ void GWindow_GetFramebufferSize(int* out_w, int* out_h) {
     }
 }
 
+void GWindow_GetContentScale(float* out_x, float* out_y) {
+    GRYCE_API_GUARD();
+    float x = 1.0f;
+    float y = 1.0f;
+    if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
+        GLFWwindow* handle = static_cast<GLFWwindow*>(g_platform.window->native_handle());
+        if (handle) {
+#ifndef __EMSCRIPTEN__
+            glfwGetWindowContentScale(handle, &x, &y);
+#endif
+        }
+    } else if (g_platform.mode == PlatformState::Mode::External) {
+        if (g_platform.embedded_window) {
+#ifndef __EMSCRIPTEN__
+            glfwGetWindowContentScale(g_platform.embedded_window, &x, &y);
+#endif
+        }
+    }
+    if (out_x) *out_x = x;
+    if (out_y) *out_y = y;
+}
+
 void GWindow_SetSize(int w, int h) {
     GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {

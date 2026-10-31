@@ -85,6 +85,16 @@ public:
         math::Vector3f bounds_center = math::Vector3f::zero();
         float bounds_radius = 0.0f;
         bool bounds_valid = false;
+        // 材质快照（来自 MeshRenderer 的 Material）：RenderElement 不持有 Material
+        // 指针（渲染列表跨帧存活会悬空），故拷值供 RT 逐实例材质参数使用。
+        // 透射族供 P1 RT 折射 / P2 路径追踪消费。
+        float mat_roughness = 0.15f;
+        float mat_metallic = 0.0f;
+        float mat_transmission = 0.0f;
+        float mat_ior = 1.5f;
+        math::Vector3f mat_attenuation_color = math::Vector3f::one();
+        float mat_attenuation_distance = 0.0f;
+        float mat_thickness = 0.0f;
     };
 
     RenderForwardClustered();

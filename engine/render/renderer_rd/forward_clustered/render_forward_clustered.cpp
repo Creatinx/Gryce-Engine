@@ -981,9 +981,20 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
         std::vector<RayTracingInstance> rt_instances;
         rt_instances.reserve(render_lists_[RENDER_LIST_OPAQUE].size());
         for (const auto& elem : render_lists_[RENDER_LIST_OPAQUE]) {
-            if (elem.mesh.is_valid()) {
-                rt_instances.push_back({elem.mesh, elem.transform});
-            }
+            if (!elem.mesh.is_valid()) continue;
+            // 填入真实材质参数（此前只填 mesh+transform，逐实例材质一直是默认值，
+            // 导致 RT 反射拿不到真值、P1 折射拿不到 transmission/ior）。
+            RayTracingInstance rti{};
+            rti.mesh = elem.mesh;
+            rti.transform = elem.transform;
+            rti.roughness = elem.mat_roughness;
+            rti.metallic = elem.mat_metallic;
+            rti.transmission = elem.mat_transmission;
+            rti.ior = elem.mat_ior;
+            rti.attenuation_color = elem.mat_attenuation_color;
+            rti.attenuation_distance = elem.mat_attenuation_distance;
+            rti.thickness = elem.mat_thickness;
+            rt_instances.push_back(rti);
         }
 
         ctx->push_command([color = fb_.color_tex, depth = fb_.depth_tex,
@@ -1143,6 +1154,17 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
             math::Vector3f cam_pos = current_camera_.position();
             elem.distance_sq = (world_pos - cam_pos).length_sq();
 
+            // 材质快照：供 RT 逐实例参数（P1 折射 / P2 路径追踪）消费。
+            if (mesh_renderer->material) {
+                elem.mat_roughness = mesh_renderer->material->roughness;
+                elem.mat_metallic = mesh_renderer->material->metallic;
+                elem.mat_transmission = mesh_renderer->material->transmission;
+                elem.mat_ior = mesh_renderer->material->ior;
+                elem.mat_attenuation_color = mesh_renderer->material->attenuation_color;
+                elem.mat_attenuation_distance = mesh_renderer->material->attenuation_distance;
+                elem.mat_thickness = mesh_renderer->material->thickness;
+            }
+
             // 判断是否透明
             bool transparent = mesh_renderer->material &&
                 mesh_renderer->material->blend_mode == render::Material::BlendMode::Blend;
@@ -1173,6 +1195,17 @@ void RenderForwardClustered::_populate_render_lists(const RenderData& data) {
 
             math::Vector3f cam_pos = current_camera_.position();
             elem.distance_sq = (world_pos - cam_pos).length_sq();
+
+            // 材质快照：供 RT 逐实例参数（P1 折射 / P2 路径追踪）消费。
+            if (skinned_renderer->material) {
+                elem.mat_roughness = skinned_renderer->material->roughness;
+                elem.mat_metallic = skinned_renderer->material->metallic;
+                elem.mat_transmission = skinned_renderer->material->transmission;
+                elem.mat_ior = skinned_renderer->material->ior;
+                elem.mat_attenuation_color = skinned_renderer->material->attenuation_color;
+                elem.mat_attenuation_distance = skinned_renderer->material->attenuation_distance;
+                elem.mat_thickness = skinned_renderer->material->thickness;
+            }
 
             bool transparent = skinned_renderer->material &&
                 skinned_renderer->material->blend_mode == render::Material::BlendMode::Blend;

@@ -61,6 +61,15 @@ public:
     float anisotropy = 0.0f;            // -1~1 各向异性（0=各向同性）
     float anisotropy_rotation = 0.0f;   // 各向异性方向旋转（弧度）
 
+    // 透射材质（玻璃/水）：P1 RT 折射、P2 路径追踪消费。transmission=0 时
+    // 以下字段不参与计算，材质按不透明处理（与未开启透射时零差异）。
+    float transmission = 0.0f;             // 0~1 透射比例（0=完全不透明）
+    float ior = 1.5f;                      // 折射率（真空 1.0 / 水 1.33 / 玻璃 1.5 / 钻石 2.42）
+    math::Vector3f attenuation_color =     // 吸收后残留的颜色（Beer-Lambert）
+        math::Vector3f::one();
+    float attenuation_distance = 1.0f;     // 吸收距离（米）：光穿过该厚度后衰减到 attenuation_color
+    float thickness = 0.0f;                // 薄壁厚度（米）；0=按体积内射线长度吸收
+
     // 贴图路径（res:/path 或绝对路径）
     std::string albedo_map_path;
     std::string normal_map_path;
@@ -87,6 +96,8 @@ public:
     bool albedo_overridden = false;
     bool roughness_overridden = false;
     bool metallic_overridden = false;
+    bool transmission_overridden = false;
+    bool ior_overridden = false;
 
     Material() = default;
     explicit Material(const std::string& material_name) : name(material_name) {}
@@ -103,6 +114,14 @@ public:
     void set_metallic(float value) {
         metallic = value;
         metallic_overridden = true;
+    }
+    void set_transmission(float value) {
+        transmission = value;
+        transmission_overridden = true;
+    }
+    void set_ior(float value) {
+        ior = value;
+        ior_overridden = true;
     }
 
     // 只复制材质参数（不含 GPU 贴图句柄）。多材质拆分时把父实体的材质设置

@@ -60,7 +60,11 @@ layout(binding = 3) uniform texture2D uLit;      // 全分辨率 HDR 颜色
 layout(binding = 4, rgba16f) uniform image2D uOut;
 layout(binding = 5) uniform samplerCube uEnv;
 layout(binding = 6) uniform samplerCube uPrefilter;
-layout(std430, binding = 7) readonly buffer MatParams { vec2 mat_params[]; };
+// a=(roughness, metallic, transmission, ior)
+// b=(attenuation_color.rgb, attenuation_distance)
+// c=(thickness, 0, 0, 0)
+struct MatParam { vec4 a; vec4 b; vec4 c; vec4 d; };
+layout(std430, binding = 7) readonly buffer MatParams { MatParam mat_params[]; };
 layout(binding = 8) uniform texture2D uRefl;     // 本帧原始反射 / 累积结果
 layout(binding = 9) uniform texture2D uAux;      // 本帧辅助(法线+线性深度)
 layout(binding = 10) uniform texture2D uHistCol; // 历史累积反射
@@ -164,6 +168,18 @@ void main() {
         // 会扎进表面自相交，命中恒为自身、反射等于原色，等于没效果。
         if (dot(n, vdir) > 0.0) n = -n;
         if (any(isnan(n))) n = -vdir;
+
+        // 反射率门控：前向 pass 把表面反射率 ρ 写进 HDR 的 alpha。ρ 极小的表面
+        // （漫反射墙体等绝大多数像素）几乎不产生镜面反射，直接跳过最贵的 BVH
+        // 遍历仍能得到与"完整追踪 + 合成按 ρ 加权"完全一致的画面（合成段本就
+        // cover*ρ 加权，ρ→0 时权重→0），只省掉 ray query 的遍历开销。
+        // 仍写出辅助图（法线 + 线性深度）供时域重投影做深度引导，行为不变。
+        float lit_a = texelFetch(uLit, dp, 0).a;
+        if (lit_a <= 0.02) {
+            imageStore(uOut, px, vec4(0.0));
+            imageStore(uAuxOut, px, vec4(n, length(world - camPos)));
+            return;
+        }
 
         vec3 rdir = reflect(vdir, n);
 

@@ -356,6 +356,9 @@ struct ProjectSettings {
     bool default_environment = false;
     bool ssao_enabled = false;
     bool ssr_enabled = false;
+    bool rt_reflection_enabled = false;
+    bool rt_transmission_enabled = false;
+    bool rt_gi_enabled = false;
     bool ssil_enabled = false;
     float ssr_max_steps = 64.0f;
     float ssr_max_roughness = 0.6f;
@@ -407,6 +410,9 @@ ProjectSettings load_project_settings(const std::string& project_root) {
         s.default_environment = j.value("default_environment", s.default_environment);
         s.ssao_enabled = j.value("ssao_enabled", s.ssao_enabled);
         s.ssr_enabled = j.value("ssr_enabled", s.ssr_enabled);
+        s.rt_reflection_enabled = j.value("rt_reflection_enabled", s.rt_reflection_enabled);
+        s.rt_transmission_enabled = j.value("rt_transmission_enabled", s.rt_transmission_enabled);
+        s.rt_gi_enabled = j.value("rt_gi_enabled", s.rt_gi_enabled);
         s.ssil_enabled = j.value("ssil_enabled", s.ssil_enabled);
         s.ssr_max_steps = j.value("ssr_max_steps", s.ssr_max_steps);
         s.ssr_max_roughness = j.value("ssr_max_roughness", s.ssr_max_roughness);
@@ -1085,6 +1091,9 @@ int main(int argc, char** argv) {
     if (ssr_debug_override > 0) GRender_SetSSRDebugView(ssr_debug_override);
     GRender_SetSSAO(cfg.ssao_enabled);
     GRender_SetSSR(cfg.ssr_enabled);
+    GRender_SetRTReflection(cfg.rt_reflection_enabled);
+    GRender_SetRTTransmission(cfg.rt_transmission_enabled);
+    GRender_SetRTGI(cfg.rt_gi_enabled);
     GRender_SetSSIL(cfg.ssil_enabled);
     if (editor_preview) {
         // Gizmo 需要选中实体才有东西可画：用屏幕中心拾取一个，

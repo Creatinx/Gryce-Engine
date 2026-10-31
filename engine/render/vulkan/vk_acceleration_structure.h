@@ -87,7 +87,13 @@ public:
     // 与当帧其余工作一起排队提交，不再有任何主机端等待。
     bool ensure_capacity(VulkanDevice* device, uint32_t instance_count);
     bool update_instances(const std::vector<VkAccelerationStructureInstanceKHR>& instances);
-    bool record_build(VkCommandBuffer cmd, uint32_t instance_count);
+    // 帧内构建/增量更新二合一：根据 signature 决定用 UPDATE（仅实例变换变化，
+    // 复用上一帧的 BVH 拓扑，开销远低于重建）还是 BUILD（实例集合/数量/容量变化
+    // 时整树重建）。signature 为按实例顺序的 BLAS device address 列表——顺序敏感，
+    // 顺序变动也判定为拓扑变化而走 BUILD，保证 UPDATE 的规范前提（与首次 BUILD
+    // 的实例输入除变换外完全一致）。
+    bool record_build_or_update(VkCommandBuffer cmd, uint32_t instance_count,
+                               const std::vector<VkDeviceAddress>& signature);
 
     VkAccelerationStructureKHR handle() const { return as_; }
     VkDeviceAddress device_address() const { return device_address_; }
@@ -107,6 +113,12 @@ private:
     VulkanBuffer as_buffer_;
     VulkanBuffer scratch_buffer_;
     VulkanBuffer instance_buffer_;   // 实例数据（BUILD_INPUT_READ_ONLY）
+
+    // refit 状态：上次 BUILD/UPDATE 后的实例拓扑（有序 BLAS 地址）。为空表示
+    // 当前持久 TLAS 还没有任何有效构建，必须 BUILD。容量重建后由 ensure_capacity
+    // 清空，强制下一帧 BUILD。
+    std::vector<VkDeviceAddress> topo_sig_;
+    bool has_valid_build_ = false;
 };
 
 } // namespace gryce_engine::render

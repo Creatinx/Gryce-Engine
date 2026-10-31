@@ -144,6 +144,8 @@ struct RendererState {
     bool  ssao_enabled = false;
     bool  ssr_enabled = false;
     bool  rt_reflection_enabled = false;   // 硬件光追反射（Vulkan ray query）
+    bool  rt_transmission_enabled = false; // 硬件光追折射/透射（Vulkan ray query）
+    bool  rt_gi_enabled = false;           // 硬件光追路径追踪 GI（P2，Vulkan ray query）
     bool  rt_reflection_denoise = true;    // 光追反射时域降噪（默认开）
     GRenderSuperResolutionMode sr_mode = GRENDER_SR_TEMPORAL;  // 实际生效的超分模式
     bool  show_fps = false;      // 左上角白色 FPS 叠加
@@ -1122,6 +1124,8 @@ static void apply_screen_space_settings(RenderPipeline* pipeline) {
     pipeline->set_ssr_enabled(g_renderer.ssr_enabled);
     pipeline->set_ssil_enabled(g_renderer.ssil_enabled);
     pipeline->set_rt_reflection_enabled(g_renderer.rt_reflection_enabled);
+    pipeline->set_rt_transmission_enabled(g_renderer.rt_transmission_enabled);
+    pipeline->set_rt_gi_enabled(g_renderer.rt_gi_enabled);
     pipeline->set_rt_reflection_denoise(g_renderer.rt_reflection_denoise);
     pipeline->set_taa_enabled(g_renderer.taa_enabled);
     pipeline->set_taa_weight(g_renderer.taa_weight);
@@ -2239,6 +2243,28 @@ void GRender_SetRTReflection(bool enabled) {
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.rt_reflection_enabled = enabled;
     if (g_renderer.pipeline) g_renderer.pipeline->set_rt_reflection_enabled(enabled);
+}
+void GRender_SetRTTransmission(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.rt_transmission_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_rt_transmission_enabled(enabled);
+}
+bool GRender_IsRTTransmissionEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.rt_transmission_enabled;
+}
+void GRender_SetRTGI(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.rt_gi_enabled = enabled;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_rt_gi_enabled(enabled);
+}
+bool GRender_IsRTGIEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.rt_gi_enabled;
 }
 bool GRender_IsRTReflectionEnabled(void) {
     GRYCE_API_GUARD();

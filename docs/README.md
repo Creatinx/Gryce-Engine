@@ -12,8 +12,9 @@ Gryce Engine is a C++26 game engine for Windows, built around a reflection-drive
 | Overview | [zh/architecture.md](zh/architecture.md) | [en/architecture.md](en/architecture.md) |
 | Build | [zh/build.md](zh/build.md) | [en/build.md](en/build.md) |
 | Rendering | [zh/renderer.md](zh/renderer.md) | [en/renderer.md](en/renderer.md) |
+| Ray-traced reflections | [zh/rt-reflection.md](zh/rt-reflection.md) | [en/rt-reflection.md](en/rt-reflection.md) |
 | Shaders | [zh/shader-conventions.md](zh/shader-conventions.md) | [en/shader-conventions.md](en/shader-conventions.md) |
-| Asset import | [zh/model-import.md](zh/model-import.md) | [en/model-import.md](en/model-import.md) |
+| Asset import | [zh/model-import.md](zh/model-import.md) | [en/model-import.md](en/model-import.md) |      
 | LOD | [zh/lod.md](zh/lod.md) | [en/lod.md](en/lod.md) |
 | Performance | [zh/performance.md](zh/performance.md) | [en/performance.md](en/performance.md) |
 | WebGL | [zh/webgl-backend.md](zh/webgl-backend.md) | [en/webgl-backend.md](en/webgl-backend.md) |
@@ -25,7 +26,6 @@ Gryce Engine is a C++26 game engine for Windows, built around a reflection-drive
 | Built-in UI | [zh/ui-api.md](zh/ui-api.md) | [en/ui-api.md](en/ui-api.md) |
 | Testing | [zh/testing.md](zh/testing.md) | [en/testing.md](en/testing.md) |
 
-Historical design plans (the D3D12, WebGL, and QuickJS scripting adoption plans) are archived under [zh/plans/](zh/plans/) and kept in Chinese only.
 
 ## Quick Start
 
