@@ -55,6 +55,7 @@ target_sources(GryceCore
         math/camera.cpp
         utils/glog/glog_lib.cpp
         utils/frame_limiter.cpp
+        utils/parallel_for.cpp
         utils/crypto/crc32.cpp
         utils/crypto/chacha20.cpp
         utils/crypto/random.cpp

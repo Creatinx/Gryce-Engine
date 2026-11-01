@@ -118,6 +118,11 @@ public:
     void reset_fluid();
     int active_particles() const { return static_cast<int>(positions_.size()); }
 
+    // 确定性校验：把若干聚合量写进 out（长度至少 8），用于串行/并行一致性测试。
+    // 并行化只重排了相互独立的单元更新顺序，每个单元的算术完全相同，因此
+    // 这些聚合量在串行与并行下逐位一致；不一致即说明并行引入了写冲突。
+    void collect_state_signature(float out[8]) const;
+
     // 局部坐标球形冲量（供脚本/玩法调用）
     void splash(const math::Vector3f& local_center, float radius, float strength);
 

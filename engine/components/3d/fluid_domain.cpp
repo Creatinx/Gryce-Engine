@@ -9,6 +9,7 @@
 #include "render/material.h"
 #include "render/mesh.h"
 #include "render/render_context.h"
+#include "utils/parallel_for.h"
 
 namespace gryce_engine::components {
 
@@ -270,32 +271,36 @@ bool FluidDomain3D::in_domain(const math::Vector3f& p) const {
 // 粒子积分只有重力和外部风：FLIP 不需要压力力，压力是通过速度场投影体现的。
 void FluidDomain3D::integrate_particles(float dt) {
     const math::Vector3f g = gravity * dt;
-    for (size_t i = 0; i < positions_.size(); ++i) {
-        math::Vector3f& vel = velocities_[i];
-        vel = vel + g;
-        // 空气拖曳：粒子上采样到的空气速度会把它往当地流场带，这是"空气也是
-        // 流体"在粒子侧的直接体现（风吹水面起波纹）。
-        //
-        // 只取**水平分量**、按当地烟雾密度加权、并且很弱。竖直分量绝不能用：
-        // 上升的烟柱在下侧伴随很强的回流，把粒子往下吸、水就从中间被掏空、
-        // 摊成一圈围着池壁。
-        if (gas_enabled) {
-            const math::Vector3f gd(positions_[i].x - grid_.origin.x,
-                                    positions_[i].y - grid_.origin.y,
-                                    positions_[i].z - grid_.origin.z);
-            const float gx = gd.x / grid_.cell;
-            const float gy = gd.y / grid_.cell;
-            const float gz = gd.z / grid_.cell;
-            const float d = sample_cell_scalar(grid_.density, gx, gy, gz);
-            if (d > 1e-3f) {
-                const math::Vector3f air = sample_cell_velocity(gx, gy, gz);
-                const float k = std::min(0.5f, 0.25f * dt * d);
-                vel.x += (air.x - vel.x) * k;
-                vel.z += (air.z - vel.z) * k;
+    // 逐粒子、只写自己的 positions_/velocities_，无跨粒子依赖，按索引切片并行。
+    utils::parallel_for(0, static_cast<int>(positions_.size()), [&](int lo, int hi) {
+        for (int i = lo; i < hi; ++i) {
+            math::Vector3f& vel = velocities_[static_cast<size_t>(i)];
+            vel = vel + g;
+            // 空气拖曳：粒子上采样到的空气速度会把它往当地流场带，这是"空气也是
+            // 流体"在粒子侧的直接体现（风吹水面起波纹）。
+            //
+            // 只取**水平分量**、按当地烟雾密度加权、并且很弱。竖直分量绝不能用：
+            // 上升的烟柱在下侧伴随很强的回流，把粒子往下吸、水就从中间被掏空、
+            // 摊成一圈围着池壁。
+            if (gas_enabled) {
+                const math::Vector3f gd(positions_[static_cast<size_t>(i)].x - grid_.origin.x,
+                                        positions_[static_cast<size_t>(i)].y - grid_.origin.y,
+                                        positions_[static_cast<size_t>(i)].z - grid_.origin.z);
+                const float gx = gd.x / grid_.cell;
+                const float gy = gd.y / grid_.cell;
+                const float gz = gd.z / grid_.cell;
+                const float d = sample_cell_scalar(grid_.density, gx, gy, gz);
+                if (d > 1e-3f) {
+                    const math::Vector3f air = sample_cell_velocity(gx, gy, gz);
+                    const float k = std::min(0.5f, 0.25f * dt * d);
+                    vel.x += (air.x - vel.x) * k;
+                    vel.z += (air.z - vel.z) * k;
+                }
             }
+            positions_[static_cast<size_t>(i)] =
+                positions_[static_cast<size_t>(i)] + vel * dt;
         }
-        positions_[i] = positions_[i] + vel * dt;
-    }
+    });
 }
 
 // P2G：粒子速度按三线性权重散播到三种面心，同时统计格心体积分数。
@@ -859,8 +864,11 @@ void FluidDomain3D::advect_component(std::vector<float>& dst, const std::vector<
 
     // 三个分量的数组在各自的尺寸下布局一致（idx = (z*sy + y)*sx + x），
     // 所以遍历与下标可以共用，只有面心位置与写入目标按轴区分。
-    const auto run_pass = [&](bool forward) {
-        for (int z = 0; z < sz; ++z) {
+    //
+    // 按 z 切片并行：两个 pass 的每个格子都是"只读 src/scratch、只写自己那个
+    // i"，切片之间没有写重叠，所以并行结果与串行逐位一致（不是近似一致）。
+    const auto run_pass = [&](bool forward, int z_begin, int z_end) {
+        for (int z = z_begin; z < z_end; ++z) {
             for (int y = 0; y < sy; ++y) {
                 for (int x = 0; x < sx; ++x) {
                     const size_t i = static_cast<size_t>((z * sy + y) * sx + x);
@@ -873,8 +881,8 @@ void FluidDomain3D::advect_component(std::vector<float>& dst, const std::vector<
             }
         }
     };
-    run_pass(true);
-    run_pass(false);
+    utils::parallel_for(0, sz, [&](int lo, int hi) { run_pass(true, lo, hi); });
+    utils::parallel_for(0, sz, [&](int lo, int hi) { run_pass(false, lo, hi); });
 }
 
 // 密度场半拉格朗日平流（RK2 回溯）。先用中点位置回溯一次，再在最终位置采样。
@@ -885,42 +893,46 @@ void FluidDomain3D::advect_density(float dt) {
     const int nz = grid_.dim[2];
     grid_.tmp.assign(grid_.density.begin(), grid_.density.end());
 
-    for (int z = 0; z < nz; ++z) {
-        for (int y = 0; y < ny; ++y) {
-            for (int x = 0; x < nx; ++x) {
-                const float gx = static_cast<float>(x) + 0.5f;
-                const float gy = static_cast<float>(y) + 0.5f;
-                const float gz = static_cast<float>(z) + 0.5f;
-                // 对流的驱动速度 = 网格速度 + 浮力项。浮力项必须显式加在
-                // 平流速度上，而不是只写进网格速度场：投影会把网格里的竖直
-                // 分量当成要消掉的散度压回 0，烟就只能堆在源口不动。
-                const math::Vector3f v0 = sample_cell_velocity(gx, gy, gz);
-                const float mxd = gx - v0.x * (dt / grid_.cell) * 0.5f;
-                const float myd = gy - v0.y * (dt / grid_.cell) * 0.5f;
-                const float mzd = gz - v0.z * (dt / grid_.cell) * 0.5f;
-                const float d_mid = sample_cell_scalar(grid_.tmp, mxd, myd, mzd);
-                const math::Vector3f v1(v0.x,
-                                        v0.y + gas_buoyancy * d_mid * k_buoyancy_advect,
-                                        v0.z);
-                const float bx = gx - v1.x * (dt / grid_.cell);
-                const float by = gy - v1.y * (dt / grid_.cell);
-                const float bz = gz - v1.z * (dt / grid_.cell);
-                grid_.density[idx_c(x, y, z)] = sample_cell_scalar(grid_.tmp, bx, by, bz);
+    utils::parallel_for(0, nz, [&](int z_lo, int z_hi) {
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y < ny; ++y) {
+                for (int x = 0; x < nx; ++x) {
+                    const float gx = static_cast<float>(x) + 0.5f;
+                    const float gy = static_cast<float>(y) + 0.5f;
+                    const float gz = static_cast<float>(z) + 0.5f;
+                    // 对流的驱动速度 = 网格速度 + 浮力项。浮力项必须显式加在
+                    // 平流速度上，而不是只写进网格速度场：投影会把网格里的竖直
+                    // 分量当成要消掉的散度压回 0，烟就只能堆在源口不动。
+                    const math::Vector3f v0 = sample_cell_velocity(gx, gy, gz);
+                    const float mxd = gx - v0.x * (dt / grid_.cell) * 0.5f;
+                    const float myd = gy - v0.y * (dt / grid_.cell) * 0.5f;
+                    const float mzd = gz - v0.z * (dt / grid_.cell) * 0.5f;
+                    const float d_mid = sample_cell_scalar(grid_.tmp, mxd, myd, mzd);
+                    const math::Vector3f v1(v0.x,
+                                            v0.y + gas_buoyancy * d_mid * k_buoyancy_advect,
+                                            v0.z);
+                    const float bx = gx - v1.x * (dt / grid_.cell);
+                    const float by = gy - v1.y * (dt / grid_.cell);
+                    const float bz = gz - v1.z * (dt / grid_.cell);
+                    grid_.density[idx_c(x, y, z)] = sample_cell_scalar(grid_.tmp, bx, by, bz);
+                }
             }
         }
-    }
+    });
 
     // 液相格里不该有烟。水是半透明的，留在池里的烟雾等值面会透过水面显出来，
     // 表现为水面以下冒出一个方块状的实心团。按液体分数直接清掉，水线就成了
     // 烟的下边界。
-    for (int z = 0; z < nz; ++z) {
-        for (int y = 0; y < ny; ++y) {
-            for (int x = 0; x < nx; ++x) {
-                const size_t c = static_cast<size_t>(idx_c(x, y, z));
-                if (grid_.frac[c] >= k_air_frac) grid_.density[c] = 0.0f;
+    utils::parallel_for(0, nz, [&](int z_lo, int z_hi) {
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y < ny; ++y) {
+                for (int x = 0; x < nx; ++x) {
+                    const size_t c = static_cast<size_t>(idx_c(x, y, z));
+                    if (grid_.frac[c] >= k_air_frac) grid_.density[c] = 0.0f;
+                }
             }
         }
-    }
+    });
 }
 
 void FluidDomain3D::dissipate_gas(float dt) {
@@ -936,27 +948,30 @@ void FluidDomain3D::smooth_frac() {
     const int nx = grid_.dim[0];
     const int ny = grid_.dim[1];
     const int nz = grid_.dim[2];
-    for (int z = 0; z < nz; ++z) {
-        for (int y = 0; y < ny; ++y) {
-            for (int x = 0; x < nx; ++x) {
-                const size_t c = static_cast<size_t>(idx_c(x, y, z));
-                float sum = grid_.frac[c] * 2.0f;
-                float wsum = 2.0f;
-                const auto add = [&](int xx, int yy, int zz) {
-                    if (xx < 0 || xx >= nx || yy < 0 || yy >= ny || zz < 0 || zz >= nz) return;
-                    sum += grid_.frac[idx_c(xx, yy, zz)];
-                    wsum += 1.0f;
-                };
-                add(x - 1, y, z);
-                add(x + 1, y, z);
-                add(x, y - 1, z);
-                add(x, y + 1, z);
-                add(x, y, z - 1);
-                add(x, y, z + 1);
-                grid_.p_next[c] = sum / wsum;
+    // 写 p_next、读 frac，out-of-place，所以可以按 z 切片并行。
+    utils::parallel_for(0, nz, [&](int z_lo, int z_hi) {
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y < ny; ++y) {
+                for (int x = 0; x < nx; ++x) {
+                    const size_t c = static_cast<size_t>(idx_c(x, y, z));
+                    float sum = grid_.frac[c] * 2.0f;
+                    float wsum = 2.0f;
+                    const auto add = [&](int xx, int yy, int zz) {
+                        if (xx < 0 || xx >= nx || yy < 0 || yy >= ny || zz < 0 || zz >= nz) return;
+                        sum += grid_.frac[idx_c(xx, yy, zz)];
+                        wsum += 1.0f;
+                    };
+                    add(x - 1, y, z);
+                    add(x + 1, y, z);
+                    add(x, y - 1, z);
+                    add(x, y + 1, z);
+                    add(x, y, z - 1);
+                    add(x, y, z + 1);
+                    grid_.p_next[c] = sum / wsum;
+                }
             }
         }
-    }
+    });
     grid_.frac.swap(grid_.p_next);
 }
 
@@ -1009,68 +1024,76 @@ void FluidDomain3D::project(float dt) {
         if (x < 0 || x >= nx || y < 0 || y >= ny || z < 0 || z >= nz) return false;
         return grid_.frac[idx_c(x, y, z)] >= k_air_frac;
     };
-    for (int z = 0; z < nz; ++z) {
-        for (int y = 0; y < ny; ++y) {
-            for (int x = 0; x < nx; ++x) {
-                float du = 0.0f;
-                float dv = 0.0f;
-                float dw = 0.0f;
-                if (liquid_cell(x - 1, y, z) || liquid_cell(x, y, z)) {
-                    du = grid_.u[idx_u(x + 1, y, z)] - grid_.u[idx_u(x, y, z)];
+    utils::parallel_for(0, nz, [&](int z_lo, int z_hi) {
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y < ny; ++y) {
+                for (int x = 0; x < nx; ++x) {
+                    float du = 0.0f;
+                    float dv = 0.0f;
+                    float dw = 0.0f;
+                    if (liquid_cell(x - 1, y, z) || liquid_cell(x, y, z)) {
+                        du = grid_.u[idx_u(x + 1, y, z)] - grid_.u[idx_u(x, y, z)];
+                    }
+                    if (liquid_cell(x, y - 1, z) || liquid_cell(x, y, z)) {
+                        dv = grid_.v[idx_v(x, y + 1, z)] - grid_.v[idx_v(x, y, z)];
+                    }
+                    if (liquid_cell(x, y, z - 1) || liquid_cell(x, y, z)) {
+                        dw = grid_.w[idx_w(x, y, z + 1)] - grid_.w[idx_w(x, y, z)];
+                    }
+                    grid_.div[idx_c(x, y, z)] = (du + dv + dw) * inv_h;
                 }
-                if (liquid_cell(x, y - 1, z) || liquid_cell(x, y, z)) {
-                    dv = grid_.v[idx_v(x, y + 1, z)] - grid_.v[idx_v(x, y, z)];
-                }
-                if (liquid_cell(x, y, z - 1) || liquid_cell(x, y, z)) {
-                    dw = grid_.w[idx_w(x, y, z + 1)] - grid_.w[idx_w(x, y, z)];
-                }
-                grid_.div[idx_c(x, y, z)] = (du + dv + dw) * inv_h;
             }
         }
-    }
+    });
 
     const auto is_air = [&](int x, int y, int z) {
         return grid_.frac[idx_c(x, y, z)] < k_air_frac;
     };
 
     const int iterations = std::clamp(pressure_iterations, 4, 200);
-    for (int it = 0; it < iterations; ++it) {
-        for (int color = 0; color < 2; ++color) {
-            for (int z = 0; z < nz; ++z) {
-                for (int y = 0; y < ny; ++y) {
-                    const int parity = ((y + z) & 1) ^ color;
-                    for (int x = parity; x < nx; x += 2) {
-                        const size_t c = static_cast<size_t>(idx_c(x, y, z));
-                        if (is_air(x, y, z)) {
-                            grid_.p[c] = 0.0f;
-                            continue;
-                        }
-                        float sum = 0.0f;
-                        int count = 0;
-                        const auto nb = [&](int xx, int yy, int zz) {
-                            if (xx < 0 || xx >= nx || yy < 0 || yy >= ny || zz < 0 || zz >= nz) {
-                                // 固体壁：Neumann，镜像自身压力
-                                sum += grid_.p[c];
-                            } else if (is_air(xx, yy, zz)) {
-                                sum += 0.0f;  // 自由表面：p = 0
-                            } else {
-                                sum += grid_.p[idx_c(xx, yy, zz)];
-                            }
-                            ++count;
-                        };
-                        nb(x - 1, y, z);
-                        nb(x + 1, y, z);
-                        nb(x, y - 1, z);
-                        nb(x, y + 1, z);
-                        nb(x, y, z - 1);
-                        nb(x, y, z + 1);
-                        const float target = grid_.div[c] * h * h / dt;
-                        grid_.p[c] = (sum - target) / static_cast<float>(std::max(1, count));
+    // 红黑 Gauss-Seidel：x 从 parity 起步、步长 2，于是本轮处理的格子全部满足
+    // (x+y+z)&1 == color，而任意相邻格的奇偶必然相反 —— 同色内没有相邻格，
+    // 所以按 z 切片并行不会产生写冲突，结果与串行逐位一致。
+    //
+    // 改成 parallel_region（固定分区 + 迭代间屏障）而不是每轮一次 parallel_for：
+    // 一轮就是 iterations*2 次（默认 240），而一次唤醒+等待在 8 线程上是几十
+    // 微秒，光调度开销就能吃光并行省下的时间。
+    utils::parallel_region(0, nz, iterations * 2, [&](int z_lo, int z_hi, int iter) {
+        const int color = iter & 1;
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y < ny; ++y) {
+                const int parity = ((y + z) & 1) ^ color;
+                for (int x = parity; x < nx; x += 2) {
+                    const size_t c = static_cast<size_t>(idx_c(x, y, z));
+                    if (is_air(x, y, z)) {
+                        grid_.p[c] = 0.0f;
+                        continue;
                     }
+                    float sum = 0.0f;
+                    int count = 0;
+                    const auto nb = [&](int xx, int yy, int zz) {
+                        if (xx < 0 || xx >= nx || yy < 0 || yy >= ny || zz < 0 || zz >= nz) {
+                            // 固体壁：Neumann，镜像自身压力
+                            sum += grid_.p[c];
+                        } else if (is_air(xx, yy, zz)) {
+                            sum += 0.0f;  // 自由表面：p = 0
+                        } else {
+                            sum += grid_.p[idx_c(xx, yy, zz)];
+                        }
+                        ++count;
+                    };
+                    nb(x - 1, y, z);
+                    nb(x + 1, y, z);
+                    nb(x, y - 1, z);
+                    nb(x, y + 1, z);
+                    nb(x, y, z - 1);
+                    nb(x, y, z + 1);
+                    const float target = grid_.div[c] * h * h / dt;
+                    grid_.p[c] = (sum - target) / static_cast<float>(std::max(1, count));
                 }
             }
         }
-    }
+    });
 
     // 减梯度。面心两侧若有一侧是空气，那里压力按 0 算（自由表面），
     // 所以水面外的速度被完整释放，不会把水面吸住。
@@ -1080,42 +1103,48 @@ void FluidDomain3D::project(float dt) {
         return grid_.frac[c] < k_air_frac ? 0.0f : grid_.p[c];
     };
 
-    for (int z = 0; z < nz; ++z) {
-        for (int y = 0; y < ny; ++y) {
-            for (int x = 0; x <= nx; ++x) {
-                float& u = grid_.u[idx_u(x, y, z)];
-                if (x == 0 || x == nx) {
-                    u = 0.0f;
-                    continue;
+    utils::parallel_for(0, nz, [&](int z_lo, int z_hi) {
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y < ny; ++y) {
+                for (int x = 0; x <= nx; ++x) {
+                    float& u = grid_.u[idx_u(x, y, z)];
+                    if (x == 0 || x == nx) {
+                        u = 0.0f;
+                        continue;
+                    }
+                    u -= dt * (pressure_at(x, y, z) - pressure_at(x - 1, y, z)) * inv_h;
                 }
-                u -= dt * (pressure_at(x, y, z) - pressure_at(x - 1, y, z)) * inv_h;
             }
         }
-    }
-    for (int z = 0; z < nz; ++z) {
-        for (int y = 0; y <= ny; ++y) {
-            for (int x = 0; x < nx; ++x) {
-                float& v = grid_.v[idx_v(x, y, z)];
-                if (y == 0 || y == ny) {
-                    v = 0.0f;
-                    continue;
+    });
+    utils::parallel_for(0, nz, [&](int z_lo, int z_hi) {
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y <= ny; ++y) {
+                for (int x = 0; x < nx; ++x) {
+                    float& v = grid_.v[idx_v(x, y, z)];
+                    if (y == 0 || y == ny) {
+                        v = 0.0f;
+                        continue;
+                    }
+                    v -= dt * (pressure_at(x, y, z) - pressure_at(x, y - 1, z)) * inv_h;
                 }
-                v -= dt * (pressure_at(x, y, z) - pressure_at(x, y - 1, z)) * inv_h;
             }
         }
-    }
-    for (int z = 0; z <= nz; ++z) {
-        for (int y = 0; y < ny; ++y) {
-            for (int x = 0; x < nx; ++x) {
-                float& w = grid_.w[idx_w(x, y, z)];
-                if (z == 0 || z == nz) {
-                    w = 0.0f;
-                    continue;
+    });
+    utils::parallel_for(0, nz + 1, [&](int z_lo, int z_hi) {
+        for (int z = z_lo; z < z_hi; ++z) {
+            for (int y = 0; y < ny; ++y) {
+                for (int x = 0; x < nx; ++x) {
+                    float& w = grid_.w[idx_w(x, y, z)];
+                    if (z == 0 || z == nz) {
+                        w = 0.0f;
+                        continue;
+                    }
+                    w -= dt * (pressure_at(x, y, z) - pressure_at(x, y, z - 1)) * inv_h;
                 }
-                w -= dt * (pressure_at(x, y, z) - pressure_at(x, y, z - 1)) * inv_h;
             }
         }
-    }
+    });
 }
 
 // G2P：把投影前后的速度差按 FLIP 混合回粒子。
@@ -1124,26 +1153,31 @@ void FluidDomain3D::project(float dt) {
 void FluidDomain3D::grid_to_particles() {
     const float h = grid_.cell;
     const float flip = std::clamp(flip_ratio, 0.0f, 1.0f);
-    for (size_t i = 0; i < positions_.size(); ++i) {
-        const math::Vector3f& pos = positions_[i];
-        const float gx = pos.x / h - grid_.origin.x / h;
-        const float gy = pos.y / h - grid_.origin.y / h;
-        const float gz = pos.z / h - grid_.origin.z / h;
-        const math::Vector3f now = sample_cell_velocity(gx, gy, gz);
+    const int nx = grid_.dim[0];
+    const int ny = grid_.dim[1];
+    const int nz = grid_.dim[2];
+    // 逐粒子：每粒子只写自己的 velocities_[i]，只读网格（prev_* 与当前速度场），
+    // 按索引切片并行无写冲突。
+    utils::parallel_for(0, static_cast<int>(positions_.size()), [&](int lo, int hi) {
+        for (int i = lo; i < hi; ++i) {
+            const math::Vector3f& pos = positions_[static_cast<size_t>(i)];
+            const float gx = pos.x / h - grid_.origin.x / h;
+            const float gy = pos.y / h - grid_.origin.y / h;
+            const float gz = pos.z / h - grid_.origin.z / h;
+            const math::Vector3f now = sample_cell_velocity(gx, gy, gz);
 
-        const int nx = grid_.dim[0];
-        const int ny = grid_.dim[1];
-        const int nz = grid_.dim[2];
-        const float pux = tri_sample(grid_.prev_u, nx + 1, ny, nz, gx, gy - 0.5f, gz - 0.5f);
-        const float puy = tri_sample(grid_.prev_v, nx, ny + 1, nz, gx - 0.5f, gy, gz - 0.5f);
-        const float puz = tri_sample(grid_.prev_w, nx, ny, nz + 1, gx - 0.5f, gy - 0.5f, gz);
-        const math::Vector3f delta(now.x - pux, now.y - puy, now.z - puz);
+            const float pux = tri_sample(grid_.prev_u, nx + 1, ny, nz, gx, gy - 0.5f, gz - 0.5f);
+            const float puy = tri_sample(grid_.prev_v, nx, ny + 1, nz, gx - 0.5f, gy, gz - 0.5f);
+            const float puz = tri_sample(grid_.prev_w, nx, ny, nz + 1, gx - 0.5f, gy - 0.5f, gz);
+            const math::Vector3f delta(now.x - pux, now.y - puy, now.z - puz);
 
-        const math::Vector3f& v = velocities_[i];
-        velocities_[i] = math::Vector3f(v.x + delta.x * flip + now.x * (1.0f - flip),
-                                        v.y + delta.y * flip + now.y * (1.0f - flip),
-                                        v.z + delta.z * flip + now.z * (1.0f - flip));
-    }
+            const math::Vector3f& v = velocities_[static_cast<size_t>(i)];
+            velocities_[static_cast<size_t>(i)] = math::Vector3f(
+                v.x + delta.x * flip + now.x * (1.0f - flip),
+                v.y + delta.y * flip + now.y * (1.0f - flip),
+                v.z + delta.z * flip + now.z * (1.0f - flip));
+        }
+    });
 }
 
 // 粒子邻域：计数排序空间哈希。格边长取播种间距，查询半径 1 格。
@@ -1250,16 +1284,42 @@ void FluidDomain3D::collide_domain() {
     const math::Vector3f lim(domain_extents.x - grid_.cell * 0.5f,
                              domain_extents.y - grid_.cell * 0.5f,
                              domain_extents.z - grid_.cell * 0.5f);
-    for (size_t i = 0; i < positions_.size(); ++i) {
-        math::Vector3f& p = positions_[i];
-        math::Vector3f& v = velocities_[i];
-        if (p.x < -lim.x) { p.x = -lim.x; if (v.x < 0.0f) v.x *= -damping; }
-        if (p.x > lim.x) { p.x = lim.x; if (v.x > 0.0f) v.x *= -damping; }
-        if (p.y < -lim.y) { p.y = -lim.y; if (v.y < 0.0f) v.y *= -damping; }
-        if (p.y > lim.y) { p.y = lim.y; if (v.y > 0.0f) v.y *= -damping; }
-        if (p.z < -lim.z) { p.z = -lim.z; if (v.z < 0.0f) v.z *= -damping; }
-        if (p.z > lim.z) { p.z = lim.z; if (v.z > 0.0f) v.z *= -damping; }
+    // 逐粒子：只写自己的 positions_/velocities_，按索引切片并行。
+    utils::parallel_for(0, static_cast<int>(positions_.size()), [&](int lo, int hi) {
+        for (int i = lo; i < hi; ++i) {
+            math::Vector3f& p = positions_[static_cast<size_t>(i)];
+            math::Vector3f& v = velocities_[static_cast<size_t>(i)];
+            if (p.x < -lim.x) { p.x = -lim.x; if (v.x < 0.0f) v.x *= -damping; }
+            if (p.x > lim.x) { p.x = lim.x; if (v.x > 0.0f) v.x *= -damping; }
+            if (p.y < -lim.y) { p.y = -lim.y; if (v.y < 0.0f) v.y *= -damping; }
+            if (p.y > lim.y) { p.y = lim.y; if (v.y > 0.0f) v.y *= -damping; }
+            if (p.z < -lim.z) { p.z = -lim.z; if (v.z < 0.0f) v.z *= -damping; }
+            if (p.z > lim.z) { p.z = lim.z; if (v.z > 0.0f) v.z *= -damping; }
+        }
+    });
+}
+
+void FluidDomain3D::collect_state_signature(float out[8]) const {
+    double s_d = 0.0, s_u = 0.0, s_v = 0.0, s_w = 0.0;
+    double s_px = 0.0, s_py = 0.0, s_pz = 0.0, s_vm = 0.0;
+    for (float d : grid_.density) s_d += d;
+    for (float f : grid_.u) s_u += std::fabs(f);
+    for (float f : grid_.v) s_v += std::fabs(f);
+    for (float f : grid_.w) s_w += std::fabs(f);
+    for (const auto& p : positions_) {
+        s_px += p.x;
+        s_py += p.y;
+        s_pz += p.z;
     }
+    for (const auto& v : velocities_) s_vm += v.length();
+    out[0] = static_cast<float>(s_d);
+    out[1] = static_cast<float>(s_u);
+    out[2] = static_cast<float>(s_v);
+    out[3] = static_cast<float>(s_w);
+    out[4] = static_cast<float>(s_px);
+    out[5] = static_cast<float>(s_py);
+    out[6] = static_cast<float>(s_pz);
+    out[7] = static_cast<float>(s_vm);
 }
 
 void FluidDomain3D::simulate_step(float dt) {
@@ -1289,10 +1349,13 @@ void FluidDomain3D::simulate_step(float dt) {
         // CFL 保护：一帧内位移超过半格就会穿过压力场，投影失效后速度自我
         // 放大成爆炸。这里按半格/步硬夹一次，数值异常时只会停顿而不会发散。
         const float vmax = 0.5f * grid_.cell / std::max(1e-4f, dt);
-        for (auto& v : velocities_) {
-            const float len = v.length();
-            if (len > vmax) v = v * (vmax / len);
-        }
+        utils::parallel_for(0, static_cast<int>(velocities_.size()), [&](int lo, int hi) {
+            for (int i = lo; i < hi; ++i) {
+                math::Vector3f& v = velocities_[static_cast<size_t>(i)];
+                const float len = v.length();
+                if (len > vmax) v = v * (vmax / len);
+            }
+        });
         collide_domain();
     }
     dissipate_gas(dt);
