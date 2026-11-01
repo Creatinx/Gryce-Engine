@@ -145,6 +145,7 @@ struct RendererState {
 
     // 屏幕空间效果（默认关闭；SSR/SSIL 需要管线自动跑 depth+normal 预通道）
     bool  ssao_enabled = false;
+    int   ssao_resolution_div = 4;   // SSAO 目标分辨率除数（1/div），经工程配置下发
     bool  ssr_enabled = false;
     bool  rt_reflection_enabled = false;   // 硬件光追反射（Vulkan ray query）
     bool  rt_transmission_enabled = false; // 硬件光追折射/透射（Vulkan ray query）
@@ -2216,6 +2217,14 @@ void GRender_SetSSAO(bool enabled) {
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.ssao_enabled = enabled;
     if (g_renderer.pipeline) g_renderer.pipeline->set_ssao_enabled(enabled);
+}
+void GRender_SetSSAOResolutionDiv(int div) {
+    GRYCE_API_GUARD();
+    if (div < 1) div = 1;
+    if (div > 16) div = 16;
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.ssao_resolution_div = div;
+    if (g_renderer.pipeline) g_renderer.pipeline->set_ssao_resolution_div(div);
 }
 bool GRender_IsSSAOEnabled(void) {
     GRYCE_API_GUARD();

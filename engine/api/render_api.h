@@ -334,6 +334,7 @@ GRYCE_RENDERER_API bool GRender_IsDefaultEnvironmentEnabled(void);
 // 预通道；若该通道不可用（着色器缺失），SSR 会被安全跳过。
 // 三者默认关闭；SSAO 只需深度，最轻量；SSR 最贵。
 GRYCE_RENDERER_API void  GRender_SetSSAO(bool enabled);
+GRYCE_RENDERER_API void  GRender_SetSSAOResolutionDiv(int div);
 GRYCE_RENDERER_API bool  GRender_IsSSAOEnabled(void);
 GRYCE_RENDERER_API void  GRender_SetSSR(bool enabled);
 GRYCE_RENDERER_API bool  GRender_IsSSREnabled(void);

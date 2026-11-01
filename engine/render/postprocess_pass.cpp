@@ -394,8 +394,9 @@ bool RenderPipeline::create_ssao_targets(RenderContext* ctx) {
     // 实测（2560x1440，RTX 5070 Laptop）：1/2 = 2.55ms/帧，占整帧 GPU 的
     // 74%，是当时全帧最大单项；1/8 仍有 2.52ms —— 说明这个 pass 的时间跟着
     // 视口走而不是跟着 AO 目标走，视口与目标尺寸不一致会让缩小目标白费。
-    // 现在两者都由 ssao_div 推导，缩小才真正生效。
-    constexpr int ssao_div = 4;
+    // 现在两者都由 ssao_div 推导，缩小才真正生效。ssao_div 来自工程配置
+    // （ssao_resolution_div，默认 4），允许在质量/帧率间权衡。
+    const int ssao_div = ssao_resolution_div_;
     ssao_w_ = std::max(16, viewport_width_ / ssao_div);
     ssao_h_ = std::max(16, viewport_height_ / ssao_div);
     // 1x1 白回退纹理：SSAO 禁用时仍绑定合法纹理（Vulkan 需要 SHADER_READ_ONLY layout）
@@ -486,6 +487,14 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
         return;
     }
     GpuScope _gpu(ctx, "ssao");
+
+    // 分辨率档位（ssao_resolution_div）可能在运行期被改：不一致时销毁旧目标、
+    // 按新除数重建。首帧 ssao_applied_div_==0 也会触发一次重建以对齐配置。
+    if (ssao_applied_div_ != ssao_resolution_div_ || !ssao_targets_valid_) {
+        if (ssao_targets_valid_) destroy_ssao_targets();
+        if (!create_ssao_targets(ctx_)) return;
+        ssao_applied_div_ = ssao_resolution_div_;
+    }
 
     // 每帧从相机更新 GTAO 参数（Vulkan push constants / GL bind 时应用）
     if (camera_) {

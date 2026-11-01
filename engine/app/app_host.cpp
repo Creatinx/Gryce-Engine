@@ -61,6 +61,7 @@ struct ProjectConfig {
     float ibl_intensity = 1.0f;
     bool default_environment = false;
     bool ssao_enabled = false;
+    int  ssao_resolution_div = 4;   // SSAO 目标分辨率除数（越大越省，默认 1/4）
     bool ssr_enabled = false;
     bool ssil_enabled = false;
     bool rt_reflection_enabled = false;
@@ -136,6 +137,7 @@ ProjectConfig load_project_config(const std::string& project_root) {
         c.ibl_intensity = j.value("ibl_intensity", c.ibl_intensity);
         c.default_environment = j.value("default_environment", c.default_environment);
         c.ssao_enabled = j.value("ssao_enabled", c.ssao_enabled);
+        c.ssao_resolution_div = j.value("ssao_resolution_div", c.ssao_resolution_div);
         c.ssr_enabled = j.value("ssr_enabled", c.ssr_enabled);
         c.ssil_enabled = j.value("ssil_enabled", c.ssil_enabled);
         c.rt_reflection_enabled = j.value("rt_reflection_enabled", c.rt_reflection_enabled);
@@ -348,6 +350,7 @@ private:
         GRender_SetPCSSEnabled(cfg.pcss_enabled);
         GRender_SetPCSSParams(cfg.pcss_light_size, cfg.pcss_max_radius, 1.0f);
         GRender_SetSSAO(cfg.ssao_enabled);
+        GRender_SetSSAOResolutionDiv(cfg.ssao_resolution_div);
         GRender_SetSSR(cfg.ssr_enabled);
         GRender_SetSSIL(cfg.ssil_enabled);
         GRender_SetRTReflection(cfg.rt_reflection_enabled);

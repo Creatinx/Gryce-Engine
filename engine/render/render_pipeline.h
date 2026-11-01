@@ -290,6 +290,11 @@ public:
     // -----------------------------------------------------------------------
     void set_ssao_enabled(bool enabled) { pp_params_.ssao_enabled = enabled ? 1 : 0; }
     bool ssao_enabled() const { return pp_params_.ssao_enabled != 0; }
+    void set_ssao_resolution_div(int div) {
+        if (div < 1) div = 1;
+        if (div > 16) div = 16;
+        ssao_resolution_div_ = div;
+    }
     void set_ssao_params(float strength, float radius_px) {
         pp_params_.ssao_strength = math::clamp(strength, 0.0f, 2.0f);
         pp_params_.ssao_radius = std::max(1.0f, radius_px);
@@ -1507,6 +1512,8 @@ private:
 
     int ssao_w_ = 0;
     int ssao_h_ = 0;
+    int ssao_resolution_div_ = 4;   // SSAO 目标分辨率除数（1/div），工程可配
+    int ssao_applied_div_ = 0;      // 已建目标所用的除数（0=未建，首帧强制重建）
     RHIShaderHandle gtao_shader_;
     RHIShaderHandle ssao_blur_shader_;
     bool ssao_targets_valid_ = false;
