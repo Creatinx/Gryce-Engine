@@ -43,6 +43,7 @@ Directory layout under `engine/`:
 - `ecs/world.h` holds entities and component storage; `ecs/component_store.h` stores components densely per type.
 - Systems live in `ecs/systems/`: `animator` / `audio` / `hierarchy` / `physics_2d` / `physics_3d` / `render_2d` / `render_3d` / `subviewport`. Play mode drives these systems; exiting restores the edit-state snapshot.
 - Components are registered through `reflection/`, so they can be accessed uniformly by serialization, editors, and scripts. Component creation goes through `components/component_factory.h`.
+- Node identity follows `Node → Node3D / Node2D → NodeUI`. `NodeUI` reuses 2D node semantics while UI layout, input and rendering remain a separate subsystem.
 
 ### 3.1 Type Inheritance (Base / Derived)
 
@@ -51,7 +52,7 @@ A component query must support both an **exact query** (does the entity own a `C
 The implementation is **per-type views** (`components/component.h`): on mount, every component instance expands into the correct sub-object pointer for "its own type plus every ancestor type", and registers them all into the index in one pass. The query hot path degrades to one hash lookup plus one pointer re-interpretation — no `dynamic_cast`, no offset arithmetic.
 
 - The reflection table is the source of truth for inheritance: the `Base` argument of `GRYCE_REFLECT_CLASS(Class, Base)` is the real C++ base class.
-- A base class that has derived classes must override `collect_type_views()` (currently `Component2D` and `BasicRect`); otherwise queries against it silently return nothing. The reflection-table-driven regression test (`test/component_tests.cpp`, `hierarchy` suite) verifies every pair, so nothing slips through.
+- A base class that has derived classes must override `collect_type_views()` (currently `Node`, `Node2D`, `Component2D` and `BasicRect`); otherwise queries against it silently return nothing. The reflection-table-driven regression test (`test/component_tests.cpp`, `hierarchy` suite) verifies every pair, so nothing slips through.
 - Both the component index and the component pools are **view indexes** (`type -> pointer list`), so multiple instances of the same type no longer overwrite each other.
 
 ### 3.2 Component Tree (Instance-Level Parent/Child)
@@ -84,7 +85,14 @@ The core rule on the render side: per-frame state writes must go through the `Re
 
 - `render/render_context.h` collects commands; `render/render_thread.cpp` executes them on a dedicated thread. Under `sync_mode`, commands execute inline on the main thread (the WebGL build uses this mode, see [webgl-backend.md](webgl-backend.md)).
 - Backends plug in through the `IRenderBackend` interface in `render/render.h`. Missing capabilities degrade declaratively via `RenderBackendCapabilities` (for example, without compute shaders the engine falls back to CPU culling).
-- GPU resources live in `render/storage_rd/`; pipeline implementations live in `render/renderer_rd/` (`forward_clustered` / `shadow` / `effects` / `environment`).
+- GPU resources live in `render/storage_rd/`; 3D passes and effects live in `render/renderer_rd/` (`shadow` / `effects` / `environment`).
+
+The game frame is split into a 3D scene pipeline (`RenderPipeline`) and a 2D
+canvas pipeline (`Canvas2DPipeline`). The renderer only keeps the built-in debug
+UI (FPS/frame-time overlay and the F1 ImGui window), submitted by
+`api/render_api.cpp`; there is no general-purpose GUI framework. The old
+`RenderingServer`/`RendererCompositor` path is not part of the production entry
+point and is excluded from the default build.
 
 ## 7. Platform Layer
 

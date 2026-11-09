@@ -71,6 +71,7 @@ int post_process_binding(int slot) {
     if (slot >= TextureSlots::kSSRHiZ && slot < TextureSlots::kSSRHiZ + 4)
         return 6 + (slot - TextureSlots::kSSRHiZ);          // HiZ0..3 -> 6..9
     if (slot == TextureSlots::kSSRTexture) return 10;        // SSRTex -> 10
+    if (slot == TextureSlots::kPBRShadow) return 13;         // 平行光阴影贴图（体积光用）
     if (slot == TextureSlots::kPBRShadowDepth) return 11;    // 深度 -> 11
     if (slot == TextureSlots::kPBRShadowDepth1) return 12;   // 法线/粗糙度 -> 12
     if (slot == TextureSlots::kMotionVectors) return 13;     // 运动向量 -> 13
@@ -310,6 +311,7 @@ bool VulkanShader::load_program(const std::string& name,
         else if (name.rfind("motion_", 0) == 0) push_kind_ = PostProcessPushKind::Motion;
         else if (name == "gtao") push_kind_ = PostProcessPushKind::GTAO;
         else if (name == "fog" || name == "fog_apply") push_kind_ = PostProcessPushKind::Fog;
+        else if (name == "volumetric_scatter") push_kind_ = PostProcessPushKind::Volumetric;
         else push_kind_ = PostProcessPushKind::General;
     } else {
         push_kind_ = PostProcessPushKind::General;
@@ -543,6 +545,8 @@ bool VulkanShader::create_pipeline() {
                 push_range.size = sizeof(FogPushData);
             else if (push_kind_ == PostProcessPushKind::GTAO)
                 push_range.size = sizeof(GTAOPushData);
+            else if (push_kind_ == PostProcessPushKind::Volumetric)
+                push_range.size = sizeof(VolumetricPushData);
         }
 
         VkPipelineLayoutCreateInfo pl_info{};
@@ -1085,6 +1089,11 @@ void VulkanShader::set_int(const char* name, int value) {
         else if (eq(name, "uFogSliceIndex")) fog_push_.slice_index = value;
         return;
     }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Volumetric) {
+        if (eq(name, "uSteps")) volumetric_push_.steps = value;
+        else if (eq(name, "uShadowEnabled")) volumetric_push_.shadow_enabled = value;
+        return;
+    }
     if (post_process_ && push_kind_ == PostProcessPushKind::SSIL) {
         if (eq(name, "uSSILSteps")) ssil_push_.steps = value;
         return;
@@ -1136,6 +1145,18 @@ void VulkanShader::set_float(const char* name, float value) {
         return;
     }
     // ---- 特效 push 块 ----
+    if (post_process_ && push_kind_ == PostProcessPushKind::Volumetric) {
+        if (eq(name, "uSunIntensity")) volumetric_push_.sun_intensity = value;
+        else if (eq(name, "uIntensity")) volumetric_push_.intensity = value;
+        else if (eq(name, "uDensity")) volumetric_push_.density = value;
+        else if (eq(name, "uScattering")) volumetric_push_.scattering = value;
+        else if (eq(name, "uPhaseG")) volumetric_push_.phase_g = value;
+        else if (eq(name, "uMaxDistance")) volumetric_push_.max_distance = value;
+        else if (eq(name, "uShadowBias")) volumetric_push_.shadow_bias = value;
+        else if (eq(name, "uNDCZScale")) volumetric_push_.ndc_z_scale = value;
+        else if (eq(name, "uNDCZBias")) volumetric_push_.ndc_z_bias = value;
+        return;
+    }
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
         if (eq(name, "uFogDensity")) fog_push_.density = value;
         else if (eq(name, "uFogHeight")) fog_push_.height = value;
@@ -1231,6 +1252,13 @@ void VulkanShader::set_vec3(const char* name, const math::Vector3f& value) {
         ssil_push_.camera_pos = value;
         return;
     }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Volumetric) {
+        if (eq(name, "uCameraPos")) volumetric_push_.camera_pos = value;
+        else if (eq(name, "uSunDirection")) volumetric_push_.sun_direction = value;
+        else if (eq(name, "uSunColor")) volumetric_push_.sun_color = value;
+        else if (eq(name, "uTint")) volumetric_push_.tint = value;
+        return;
+    }
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
         if (eq(name, "uCameraPos")) { fog_push_.camera_pos = value; return; }
         if (eq(name, "uFogColor")) { fog_push_.fog_color = value; return; }
@@ -1321,6 +1349,17 @@ void VulkanShader::set_mat4(const char* name, const math::Matrix4f& value) {
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::GTAO && eq(name, "uView")) {
         gtao_push_.view = value;
+        return;
+    }
+    if (post_process_ && push_kind_ == PostProcessPushKind::Volumetric) {
+        if (eq(name, "uInvViewProj")) volumetric_push_.inv_view_proj = value;
+        else if (eq(name, "uLightSpaceMatrix")) {
+            // 与通用路径（见下）同一套 NDC z 重映射：阴影贴图里存的是 [0,1] 深度。
+            math::Matrix4f vk_light = value;
+            vk_light(2, 2) = value(2, 2) * 0.5f + value(3, 2) * 0.5f;
+            vk_light(2, 3) = value(2, 3) * 0.5f + value(3, 3) * 0.5f;
+            volumetric_push_.light_space_matrix = vk_light;
+        }
         return;
     }
     if (post_process_ && push_kind_ == PostProcessPushKind::Fog) {
@@ -1472,6 +1511,12 @@ bool VulkanShader::create_post_process_pools() {
 
         VkDescriptorPoolCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        // 池必须与布局的 UPDATE_AFTER_BIND_POOL 标志一致（descriptor_set_layout_
+        // 在 create_pipeline 里带着它创建）。缺这个标志时 vkAllocateDescriptorSets
+        // 直接报 VUID 校验错误，且驱动不再保证"已提交帧在用的描述符集被更新"的
+        // 语义 —— 多级 bloom/SSR 每 draw 改写同一批 binding 时会读到别的 pass 的
+        // 贴图（表现为后处理串图），在部分驱动上还会连锁到 device lost。
+        info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         info.poolSizeCount = 1;
         info.pPoolSizes = &pool_size;
         info.maxSets = k_max_post_process_draws;
@@ -1816,6 +1861,9 @@ void VulkanShader::push_constants(VkCommandBuffer cmd) const {
         } else if (push_kind_ == PostProcessPushKind::Fog) {
             vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(FogPushData), &fog_push_);
+        } else if (push_kind_ == PostProcessPushKind::Volumetric) {
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(VolumetricPushData), &volumetric_push_);
         } else {
             push_post_process_constants(cmd, pp_params_);
         }

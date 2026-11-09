@@ -128,6 +128,7 @@ public:
     void set_viewport(int width, int height);
     int viewport_width() const { return viewport_width_; }
     int viewport_height() const { return viewport_height_; }
+    const math::Camera* current_camera() const { return camera_; }
     void set_shadow_bias(float bias);
     // 阴影贴图分辨率（级联 0），必须在 init() 之前调用
     void set_shadow_map_size(int size);
@@ -251,6 +252,20 @@ public:
     void set_bloom_params(float threshold, float intensity) {
         pp_params_.bloom_threshold = threshold;
         pp_params_.bloom_intensity = intensity;
+    }
+
+    // 体积光散射（丁达尔 / 神光）：沿视线在参与介质中按光线步进累积方向光的
+    // 单散射，输出接进 HDR 链（Bloom 之前，因此光柱本身也会参与辉光扩散）。
+    // 默认开启（低密度）；不想要全局薄雾时置 0。
+    void set_volumetric_enabled(bool enabled) {
+        pp_params_.volumetric_enabled = enabled ? 1 : 0;
+    }
+    bool volumetric_enabled() const { return pp_params_.volumetric_enabled != 0; }
+    void set_volumetric_params(float intensity, float density, float scattering, float phase_g) {
+        pp_params_.volumetric_intensity = intensity;
+        pp_params_.volumetric_density = density;
+        pp_params_.volumetric_scattering = scattering;
+        pp_params_.volumetric_phase_g = math::clamp(phase_g, -0.95f, 0.95f);
     }
 
     // -----------------------------------------------------------------------
@@ -753,6 +768,20 @@ private:
     std::vector<SkinnedDrawItem> skinned_opaque_items_;
     std::vector<SkinnedDrawItem> skinned_transparent_items_;
 
+    // 阴影级联剔除并行化：候选列表整段阴影更新只算一次 world_transform，再一次性
+    // 对各级联并行剔除，结果按 [级联][块] 分装。重放时按「级联 → 块序」绘制，与原
+    // 串行 foreach（先级联0全部、再级联1…每块内保持 ECS 序）完全一致，绘制顺序不依赖
+    // 合批（深度图看不出 2px 几何误差，顺序本就无关），但仍保序以维持确定性。
+    // 线程安全：剔除只读 world_transform + 包围球缓存（shared_mutex 已保护）；
+    // 每个 worker 只写自己负责的块（shard），互不相交。
+    struct ShadowCaster {
+        components::MeshRenderer* mr;
+        math::Matrix4f model;
+    };
+    // 阴影并行剔除的每帧复用暂存（clear()/assign() 保留 capacity，避免反复堆分配）
+    std::vector<std::pair<components::MeshRenderer*, math::Matrix4f>> shadow_candidates_;
+    std::vector<std::vector<std::vector<ShadowCaster>>> shadow_vis_;
+
     // 收集一台 MeshRenderer 的绘制项（空间分块 LOD 时一块一项）。
     // 前向与延迟两条路径共用，避免两处逻辑漂移。
     void append_mesh_renderer_items(components::MeshRenderer* mr, const math::Matrix4f& model,
@@ -760,6 +789,32 @@ private:
                                     std::vector<DrawItem>& opaque_items,
                                     std::vector<DrawItem>& transparent_items,
                                     std::vector<DrawItem>& viewmodel_items) const;
+
+    // 并行收集 MeshRenderer 绘制项：先按 ECS 迭代序收集实体指针（串行、只读、
+    // 极廉价），再按块切分给多核并发做 world_transform + 视锥剔除 + append。
+    // 每块写入独立缓冲，最后按块序合并，保证 opaque_items 的全局顺序与串行
+    // foreach 完全一致 —— batch_skip_ 的索引依赖该顺序，乱序会错位。
+    // 线程安全：bounds 缓存已用 shared_mutex 保护（见 compute_world_mesh_bounds），
+    // world_transform() 为只读，per-chunk 缓冲互不相交。
+    void gather_mesh_renderer_items(scene::Scene& scene, const Frustum& camera_frustum,
+                                   const math::Vector3f& cam_pos,
+                                   std::vector<DrawItem>& opaque_items,
+                                   std::vector<DrawItem>& transparent_items,
+                                   std::vector<DrawItem>& viewmodel_items);
+
+    // 并行收集 SkinnedMeshRenderer 绘制项（同上分块策略；结果进独立的 skinned 列表，
+    // 绘制阶段单独遍历，顺序无关，但仍按块序合并以保持确定性）。
+    void gather_skinned_items(scene::Scene& scene, const Frustum& camera_frustum,
+                             const math::Vector3f& cam_pos,
+                             std::vector<SkinnedDrawItem>& skinned_opaque_items,
+                             std::vector<SkinnedDrawItem>& skinned_transparent_items);
+
+    // 收集本帧所有可能投射阴影的 MeshRenderer（启用、有网格）及其世界矩阵到
+    // shadow_candidates_（clear() 保留 capacity）。
+    void collect_shadow_candidates(scene::Scene& scene);
+    // 对 cascade_frusta 中每个级联并行剔除；结果写入 shadow_vis_（[cascade][chunk]）。
+    // cascade_frusta 长度须 == cascade_count_。
+    void cull_shadow_cascades(const std::vector<Frustum>& cascade_frusta);
 
 
     // 连续相同材质跳过重复 bind（按 shader 分开缓存，每帧/每 pass 重置）
@@ -1366,6 +1421,18 @@ private:
     bool create_bloom_targets(RenderContext* ctx);
     void destroy_bloom_targets();
     void render_bloom(RenderContext& ctx);
+
+    // 体积光散射（丁达尔）：沿视线在参与介质中按光线步进做方向单单散射累积。
+    // 输出 scene + in_scatter，接成新的 HDR 颜色输入（与 fog_ 同一约定）。
+    RHITextureHandle volumetric_tex_;
+    RHIFramebufferHandle volumetric_fbo_;
+    int volumetric_w_ = 0, volumetric_h_ = 0;
+    RHIShaderHandle volumetric_shader_;
+    bool volumetric_targets_valid_ = false;
+
+    bool create_volumetric_targets(RenderContext* ctx, int width, int height);
+    void destroy_volumetric_targets();
+    void render_volumetric(RenderContext& ctx);
 
     // 3D LUT
     RHITextureHandle lut_texture_;

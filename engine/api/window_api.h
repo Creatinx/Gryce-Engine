@@ -38,10 +38,15 @@ GRYCE_PLATFORM_API bool GWindow_IsValid(void);
 
 GRYCE_PLATFORM_API void GWindow_GetSize(int* out_w, int* out_h);
 GRYCE_PLATFORM_API void GWindow_GetFramebufferSize(int* out_w, int* out_h);
+// 窗口内容缩放（设备像素 / 逻辑像素）：HiDPI 屏上 > 1。GLFW 在进程声明了 DPI
+// 感知后才会返回真实值（否则恒为 1）。UI 轨据此把逻辑布局乘到设备分辨率，
+// 高 DPI 屏既尺寸正确又不发虚。无有效窗口时返回 1。
+GRYCE_PLATFORM_API void GWindow_GetContentScale(float* out_x, float* out_y);
 GRYCE_PLATFORM_API void GWindow_SetSize(int w, int h);
 GRYCE_PLATFORM_API GWindowHandle GWindow_GetNativeHandle(void);
 GRYCE_PLATFORM_API GWindowHandle GWindow_GetRenderHandle(void);
 GRYCE_PLATFORM_API bool GWindow_ShouldClose(void);
+GRYCE_PLATFORM_API void GWindow_RequestClose(void);
 GRYCE_PLATFORM_API void GWindow_PollEvents(void);
 GRYCE_PLATFORM_API void GWindow_SwapBuffers(void);
 

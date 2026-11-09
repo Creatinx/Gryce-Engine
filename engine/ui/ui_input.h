@@ -1,69 +1,96 @@
-// ===========================================================================
-// engine/ui/ui_input.h — 输入捕获门控与快捷键表（无 ImGui 依赖的纯逻辑）
-//
-// 解决的问题（编辑器真实踩过）：输入框里打 "Wire"，快捷键把工具切走了——
-// 宿主不知道键盘被 UI 吃着。规则必须是引擎策略而不是每个宿主各自记得：
-// 派发任何快捷键之前先问 UI 要不要这个键盘。
-//
-// 第二部分是快捷键表：注册 (键, 修饰键) → 命令，重复注册算冲突。
-// 冲突必须在注册期就报出来，不能等用户按下去才发现两个功能抢同一个键。
-//
-// 线程模型：宿主线程（帧外）。want_capture_* 在 ImGui 构建里读 ImGui 的
-// IO，无 ImGui 构建恒为 false（那时没有 UI 在吃键盘）。
-// ===========================================================================
-
-#ifndef GRYCE_UI_INPUT_H
-#define GRYCE_UI_INPUT_H
+#pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
-namespace gryce_ui {
+#include "math/math.h"
+#include "ui/ui_geometry.h"
 
-// UI 是否正吃着键盘 / 鼠标（ImGui 的 WantCaptureKeyboard / WantCaptureMouse）。
-// 宿主据此决定"这次按键还给不给场景导航 / 快捷键"。
-bool wants_capture_keyboard();
-bool wants_capture_mouse();
+namespace gryce_engine::components {
+class NodeUI;
+}
 
-// 引擎策略：UI 吃着键盘时不派发任何快捷键。一行实现，但必须是**所有**
-// 宿主的唯一入口——各自判断就会各自漏。
-inline bool should_dispatch_shortcut() { return !wants_capture_keyboard(); }
+namespace gryce_engine::ui {
 
-// 修饰键位（与 ui_api.h 的 GUI_MOD_* 同值，避免两个枚举漂移）。
-enum UiMod : uint32_t {
-    UI_MOD_CTRL  = 1u << 0,
-    UI_MOD_SHIFT = 1u << 1,
-    UI_MOD_ALT   = 1u << 2,
-    UI_MOD_SUPER = 1u << 3,
+// 与 GLFW 键值一致，UI 控件无需包含平台头文件。
+enum class UIKey : int {
+    A = 65,
+    C = 67,
+    V = 86,
+    X = 88,
+    Escape = 256,
+    Enter = 257,
+    Tab = 258,
+    Backspace = 259,
+    Delete = 261,
+    Right = 262,
+    Left = 263,
+    Down = 264,
+    Up = 265,
+    Home = 268,
+    End = 269,
 };
 
-class ShortcutTable {
-public:
-    static constexpr int kCapacity = 64;
-
-    struct Entry {
-        uint32_t key     = 0;   // 宿主键码（GLFW_KEY_* 这类，本层不认识语义）
-        uint32_t mods    = 0;   // UI_MOD_* 位或
-        int      command = 0;   // 调用方自定义命令号
-    };
-
-    // 注册。返回 1 = 成功；0 = 同一个 (key,mods) 已存在（冲突）或表满。
-    // 冲突不覆盖、不报警静默：调用方要能看见失败。
-    int add(uint32_t key, uint32_t mods, int command);
-    // 查命令号，没有返回 -1。精确匹配（修饰键必须完全一致）。
-    int find(uint32_t key, uint32_t mods) const;
-    // (key,mods) 是否已注册（注册前自查用）。
-    bool has_conflict(uint32_t key, uint32_t mods) const;
-
-    void clear();
-    int  size() const;
-
-    const Entry& at(int i) const { return entries_[i]; }
-
-private:
-    Entry entries_[kCapacity];
-    int   count_ = 0;
+struct UIKeyEvent {
+    int key = 0;
+    bool repeat = false;
 };
 
-} // namespace gryce_ui
+// 一帧的输入快照。平台适配器负责把 GInput_* 的轮询状态转换成这个结构；
+// UI 核心不直接依赖 GLFW 或平台 DLL。
+struct UIInputFrame {
+    uint64_t frame_serial = 0;
+    float delta_time = 1.0f / 60.0f;
+    math::Vector2f pointer;
+    math::Vector2f wheel;
+    bool pointer_down[3] = {false, false, false};
+    bool pointer_pressed[3] = {false, false, false};
+    bool pointer_released[3] = {false, false, false};
 
-#endif // GRYCE_UI_INPUT_H
+    int modifiers = 0;
+    std::vector<UIKeyEvent> key_down;
+    std::vector<int> key_up;
+    std::vector<uint32_t> characters;
+    std::string preedit;
+};
+
+enum class UIEventType : uint8_t {
+    PointerEnter = 0,
+    PointerLeave,
+    PointerMove,
+    PointerDown,
+    PointerUp,
+    Click,
+    FocusGained,
+    FocusLost,
+    KeyDown,
+    KeyUp,
+    Character,
+    Wheel,
+    Preedit,
+    DragStart,
+    DragOver,
+    Drop,
+    DragEnd,
+};
+
+struct UIEvent {
+    UIEventType type = UIEventType::PointerMove;
+    components::NodeUI* target = nullptr;
+    components::NodeUI* current_target = nullptr;
+    math::Vector2f position;
+    int mouse_button = -1;
+    int key = 0;
+    uint32_t codepoint = 0;
+    math::Vector2f wheel;
+    std::string preedit;
+    std::string payload;
+    UIRect layout_rect;
+    UIRect parent_rect;
+    int modifiers = 0;
+    bool repeat = false;
+    bool handled = false;
+};
+
+} // namespace gryce_engine::ui

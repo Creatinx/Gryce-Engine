@@ -26,6 +26,64 @@ VkFormat channels_to_format(int channels, bool srgb) {
     return VK_FORMAT_R8G8B8A8_UNORM;
 }
 
+// 单像素字节数。上传 staging 缓冲必须按 **格式** 算大小，不能按 channels_ 算：
+// RGBA16F 的 channels 也是 4，但每像素 8 字节，按 "channels 字节" 分配会让
+// vkCmdCopyBufferToImage 从 4 字节的缓冲里拷 8 字节（验证层越界报错，驱动上
+// 是未定义行为）。曝光值、SSAO 回退这类 1x1 RGBA16F 贴图正是这条路径。
+VkDeviceSize format_texel_bytes(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R8_SNORM:
+        case VK_FORMAT_R8_UINT:
+        case VK_FORMAT_R8_SINT:
+        case VK_FORMAT_R8_SRGB: return 1;
+        case VK_FORMAT_R8G8_UNORM:
+        case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R16_UNORM:
+        case VK_FORMAT_R16_UINT: return 2;
+        case VK_FORMAT_R8G8B8_UNORM:
+        case VK_FORMAT_R8G8B8_SRGB:
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R32_SFLOAT:
+        case VK_FORMAT_R32_UINT:
+        case VK_FORMAT_D32_SFLOAT:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
+        case VK_FORMAT_D16_UNORM: return 4;
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R32G32_SFLOAT:
+        case VK_FORMAT_D32_SFLOAT_S8_UINT: return 8;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
+        default: return 4;
+    }
+}
+
+// float32 → IEEE 754 half（含就近舍入）。Vulkan 的缓冲→图像拷贝不做格式转换，
+// 16F 目标的初值必须由 CPU 侧先降位（见 create() 里的说明）。
+uint16_t float_to_half_bits(float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const uint32_t sign = (bits >> 16) & 0x8000u;
+    const int32_t exponent = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127 + 15;
+    const uint32_t mantissa = bits & 0x7FFFFFu;
+
+    if (exponent <= 0) {
+        if (exponent < -10) return static_cast<uint16_t>(sign);   // 下溢成 0
+        const uint32_t with_hidden = mantissa | 0x800000u;
+        const uint32_t shift = static_cast<uint32_t>(14 - exponent);
+        uint32_t half = with_hidden >> shift;
+        if ((with_hidden >> (shift - 1)) & 1u) ++half;
+        return static_cast<uint16_t>(sign | half);
+    }
+    if (exponent >= 31) return static_cast<uint16_t>(sign | 0x7C00u);   // inf / nan
+    uint32_t half = sign | (static_cast<uint32_t>(exponent) << 10) | (mantissa >> 13);
+    if (mantissa & 0x1000u) ++half;
+    return static_cast<uint16_t>(half);
+}
+
 VkFilter to_vk_filter(TextureFilter f) {
     switch (f) {
         case TextureFilter::Nearest:
@@ -587,6 +645,20 @@ bool VulkanTexture::create_msaa(TextureFormat format, int width, int height, int
             usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
             break;
+        // 场景深度是 Depth32F（见 create_hdr_target 的说明），而 GL 要求颜色/深度
+        // 附件采样数一致，所以这里必然被请求。原先没有这一支 → 每次创建 HDR 目标
+        // 都报 "unsupported MSAA format 14" 然后整条 MSAA 链降级到 1x，表现为
+        // "Vulkan 上 MSAA 从来没生效过、抗锯齿永远有锯齿"，且窗口一缩放就再降一次。
+        case TextureFormat::Depth32F:
+            vk_format = VK_FORMAT_D32_SFLOAT;
+            usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            break;
+        case TextureFormat::D32FS8:
+            vk_format = VK_FORMAT_D32_SFLOAT_S8_UINT;
+            usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            break;
         default:
             GLOG_ERROR("VulkanTexture::create_msaa: unsupported MSAA format {}",
                        static_cast<int>(format));
@@ -641,7 +713,13 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
     switch (format) {
         case TextureFormat::RGB8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 4; break;
         case TextureFormat::RGBA8: vk_format = VK_FORMAT_R8G8B8A8_UNORM; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 4; break;
-        case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; channels_ = 4; break;
+        // RGBA16F 是 HDR 主颜色目标：既要当渲染目标、又要被后处理采样，还要
+        // 接收光追/折射/GI 合成图的 blit（见 VulkanBackend 的 rt composite 路径）。
+        // 原先这里把 usage 整体赋值成 COLOR_ATTACHMENT|SAMPLED，抹掉了基线的
+        // TRANSFER_SRC/DST —— 于是 vkCmdBlitImage 的目标 image 缺
+        // VK_IMAGE_USAGE_TRANSFER_DST_BIT，验证层报错、驱动上合成图写不进去
+        // （表现为光追/折射效果整体不出现，且每次 blit 都是一次未定义行为）。
+        case TextureFormat::RGBA16F: vk_format = VK_FORMAT_R16G16B16A16_SFLOAT; usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; channels_ = 4; break;
         case TextureFormat::RGBA32F: vk_format = VK_FORMAT_R32G32B32A32_SFLOAT; channels_ = 4; break;
         case TextureFormat::R8: vk_format = VK_FORMAT_R8_UNORM; channels_ = 1; break;
         // 单/双通道浮点：HiZ 深度金字塔（R32F）等。带 COLOR_ATTACHMENT 是为了
@@ -661,6 +739,25 @@ bool VulkanTexture::create(TextureFormat format, int width, int height, const vo
         default: break;
     }
     format_ = vk_format;
+
+    // 16 位浮点格式的初值数据在引擎里一律以 float32 传入（曝光值 / SSAO 回退白
+    // 等），OpenGL 后端靠 glTexImage2D(GL_FLOAT) 隐式降位，Vulkan 的
+    // vkCmdCopyBufferToImage 是纯字节拷贝、不做转换，必须在这里显式压成 half。
+    // 不转换的话每个 texel 只拷前 4 字节的位模式，自动曝光初值变成垃圾，
+    // 首帧画面亮度会明显偏掉。
+    std::vector<unsigned char> half_data;
+    if (upload_data && (format == TextureFormat::RGBA16F || format == TextureFormat::R16F ||
+                        format == TextureFormat::RG16F)) {
+        const int comps = (format == TextureFormat::RGBA16F) ? 4
+                        : (format == TextureFormat::RG16F ? 2 : 1);
+        const size_t count = static_cast<size_t>(width) * static_cast<size_t>(height) *
+                             static_cast<size_t>(comps);
+        const float* src = static_cast<const float*>(upload_data);
+        half_data.resize(count * 2);
+        uint16_t* dst = reinterpret_cast<uint16_t*>(half_data.data());
+        for (size_t i = 0; i < count; ++i) dst[i] = float_to_half_bits(src[i]);
+        upload_data = half_data.data();
+    }
     return create_image(vk_format, usage, aspect, upload_data);
 }
 
@@ -944,7 +1041,9 @@ bool VulkanTexture::create_image(VkFormat format, VkImageUsageFlags usage, VkIma
 
     // upload data if provided
     if (data && (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
-        VkDeviceSize size = static_cast<VkDeviceSize>(width_ * height_ * channels_);
+        const VkDeviceSize size = static_cast<VkDeviceSize>(width_) *
+                                  static_cast<VkDeviceSize>(height_) *
+                                  format_texel_bytes(format);
         return upload_with_staging(data, size);
     }
 

@@ -14,6 +14,7 @@
 #include "render/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
 #include "render/renderer_rd/forward_clustered/shadow_system_rd.h"
 #include "render/renderer_rd/effects/ssr.h"
+#include "render/renderer_rd/effects/volumetric_scatter.h"
 #include "render/renderer_rd/effects/ssil.h"
 #include "render/renderer_rd/effects/bokeh_dof.h"
 #include "render/renderer_rd/effects/fsr2.h"
@@ -239,6 +240,8 @@ private:
     // 后处理效果子系统
     std::unique_ptr<SSR_RD> ssr_;
     std::unique_ptr<SSIL_RD> ssil_;
+    // 体积光散射（丁达尔 / 神光）：Bloom 前接进颜色链
+    std::unique_ptr<VolumetricScatter_RD> volumetric_scatter_;
     std::unique_ptr<BokehDOF_RD> bokeh_dof_;
     std::unique_ptr<FSR2_RD> fsr2_;
     std::unique_ptr<SubsurfaceScattering_RD> subsurface_scattering_;

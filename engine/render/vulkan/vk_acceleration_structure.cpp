@@ -198,16 +198,21 @@ bool VkBottomLevelAccelerationStructure::build(VulkanDevice* device,
     }
 
     // 1) 位置 + 索引上传到 device-local 缓冲（VulkanBuffer::upload 自带 staging 回退）。
+    //    用途位必须是 BUILD_INPUT_READ_ONLY（"这个缓冲被拿去当构建输入"），而不是
+    //    ACCELERATION_STRUCTURE_STORAGE（那是给 AS 本体用的）。写错时
+    //    vkCmdBuildAccelerationStructuresKHR 是未定义行为 —— 验证层逐次报
+    //    "vertexData.deviceAddress has no buffer(s) associated that are valid"，
+    //    驱动上表现为加速结构内容随机/丢设备。
     const VkDeviceSize pos_size = static_cast<VkDeviceSize>(geo.vertex_count) * 3 * sizeof(float);
     const VkDeviceSize idx_size = static_cast<VkDeviceSize>(geo.index_count) * sizeof(uint32_t);
     if (!vertex_buffer_.init(device, pos_size,
-            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         return false;
     }
     if (!index_buffer_.init(device, idx_size,
-            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {

@@ -277,6 +277,8 @@ private:
                                      const VkClearValue* clears, uint32_t clear_count,
                                      const VkExtent2D& extent);
     void end_current_render_pass();
+    // 把当前 framebuffer 各附件的 layout_ 缓存同步到 pass 结束后的实际布局。
+    void sync_attachment_layouts();
 
     // GPU 计时：每帧一个槽（环形），每槽 k_gpu_max_scopes 段 = 2×时间戳。
     // 时间戳只写在 render pass 之外（begin 前先关闭已开启的 pass），

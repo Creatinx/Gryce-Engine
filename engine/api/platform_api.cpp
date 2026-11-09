@@ -188,7 +188,7 @@ int GWindow_InitExternal(GWindowHandle hwnd, int w, int h) {
     // 为外部 HWND 创建一个隐藏的 GLFW 子窗口，用于提供 OpenGL 上下文并实际渲染。
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     GLFWwindow* embedded = glfwCreateWindow(w > 0 ? w : 640, h > 0 ? h : 480,
-                                            "GryceEditorViewport", nullptr, nullptr);
+                                            "GryceEmbeddedViewport", nullptr, nullptr);
     if (!embedded) {
         GLOG_ERROR("GWindow_InitExternal: failed to create embedded GLFW window");
         Window::shutdown_sdk();
@@ -255,7 +255,7 @@ GLFWwindow* create_embedded_window(void* parent_hwnd, int w, int h, GRenderAPI a
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     }
     GLFWwindow* embedded = glfwCreateWindow(w > 0 ? w : 640, h > 0 ? h : 480,
-                                            "GryceEditorViewport", nullptr, nullptr);
+                                            "GryceEmbeddedViewport", nullptr, nullptr);
     if (!embedded) return nullptr;
 
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
@@ -549,6 +549,13 @@ bool GWindow_ShouldClose(void) {
     return true;
 }
 
+void GWindow_RequestClose(void) {
+    GRYCE_API_GUARD();
+    if (g_platform.mode == PlatformState::Mode::GLFW && g_platform.window) {
+        g_platform.window->request_close();
+    }
+}
+
 void GWindow_PollEvents(void) {
     GRYCE_API_GUARD();
     if (g_platform.mode == PlatformState::Mode::GLFW) {
@@ -570,6 +577,14 @@ void GWindow_SwapBuffers(void) {
 }
 
 // ========== Input ==========
+
+void GInput_BeginHostFrame(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    // 把本帧的状态快照成"上一帧"，随后宿主注入的新状态才会产生正确的
+    // press / release 边沿。重复调用无副作用（同一份数据再拷一遍）。
+    copy_input_prev_to_current();
+}
 
 void GInput_InjectKey(int key_code, GInputAction action) {
     GRYCE_API_GUARD();
@@ -667,6 +682,13 @@ bool GInput_IsKeyHeld(int key_code) {
     return g_platform.input.keys[key_code];
 }
 
+bool GInput_IsKeyReleased(int key_code) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_platform.input_mutex);
+    if (key_code < 0 || key_code >= 512) return false;
+    return !g_platform.input.keys[key_code] && g_platform.input.keys_prev[key_code];
+}
+
 bool GInput_IsMouseButtonPressed(int button) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_platform.input_mutex);
@@ -706,6 +728,76 @@ void GInput_InjectChar(unsigned int codepoint) {
     std::lock_guard lock(g_platform.input_mutex);
     if (g_platform.input.char_count >= PlatformState::InputState::kCharCap) return;
     g_platform.input.chars[g_platform.input.char_count++] = codepoint;
+}
+
+int GInput_SetClipboardText(const char* utf8_text) {
+    GRYCE_API_GUARD();
+    if (!utf8_text) return -1;
+#ifdef _WIN32
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8_text, -1, nullptr, 0);
+    if (wlen <= 0 || !OpenClipboard(nullptr)) return -1;
+    EmptyClipboard();
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(wlen) * sizeof(wchar_t));
+    if (!mem) {
+        CloseClipboard();
+        return -1;
+    }
+    auto* chars = static_cast<wchar_t*>(GlobalLock(mem));
+    MultiByteToWideChar(CP_UTF8, 0, utf8_text, -1, chars, wlen);
+    GlobalUnlock(mem);
+    if (!SetClipboardData(CF_UNICODETEXT, mem)) {
+        GlobalFree(mem);
+        CloseClipboard();
+        return -1;
+    }
+    CloseClipboard();
+    return static_cast<int>(std::strlen(utf8_text));
+#else
+    GLFWwindow* window = glfwGetCurrentContext();
+    if (!window) return -1;
+    glfwSetClipboardString(window, utf8_text);
+    return static_cast<int>(std::strlen(utf8_text));
+#endif
+}
+
+int GInput_GetClipboardText(char* out_buf, int buf_size) {
+    GRYCE_API_GUARD();
+#ifdef _WIN32
+    if (!OpenClipboard(nullptr)) return -1;
+    HANDLE data = GetClipboardData(CF_UNICODETEXT);
+    if (!data) {
+        CloseClipboard();
+        if (out_buf && buf_size > 0) out_buf[0] = '\0';
+        return 0;
+    }
+    const auto* chars = static_cast<const wchar_t*>(GlobalLock(data));
+    if (!chars) {
+        CloseClipboard();
+        return -1;
+    }
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, chars, -1,
+                                          nullptr, 0, nullptr, nullptr);
+    const int needed = bytes > 0 ? bytes - 1 : 0;
+    if (out_buf && buf_size > 0) {
+        WideCharToMultiByte(CP_UTF8, 0, chars,
+                            static_cast<int>(wcslen(chars)) + 1,
+                            out_buf, buf_size, nullptr, nullptr);
+        out_buf[buf_size - 1] = '\0';
+    }
+    GlobalUnlock(data);
+    CloseClipboard();
+    return needed;
+#else
+    GLFWwindow* window = glfwGetCurrentContext();
+    const char* text = window ? glfwGetClipboardString(window) : nullptr;
+    if (!text) return 0;
+    const int needed = static_cast<int>(std::strlen(text));
+    if (out_buf && buf_size > 0) {
+        std::strncpy(out_buf, text, static_cast<std::size_t>(buf_size - 1));
+        out_buf[buf_size - 1] = '\0';
+    }
+    return needed;
+#endif
 }
 
 void GInput_GetMousePosition(float* out_x, float* out_y) {

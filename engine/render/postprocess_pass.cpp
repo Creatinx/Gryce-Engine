@@ -83,7 +83,11 @@ bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
 
     hdr_depth_ = ctx->create_texture();
     ITexture* hdr_depth_ptr = ctx->texture(hdr_depth_);
-    if (!hdr_depth_.is_valid() || !hdr_depth_ptr || !hdr_depth_ptr->create(TextureFormat::Depth24, viewport_width_, viewport_height_, nullptr)) {
+    // 场景深度用 32 位浮点：光追/GI/SSR 都要靠它反投影重建世界坐标，24 位非线性
+    // 深度在远处（几十~上百米）重建误差可达分米级，命中点投影回屏幕采样时整体偏
+    // 一两个像素 —— 表现为"反射精度不够 / 远处反射漂移"。32F 是线性浮点，代价与
+    // D24S8 同为 4 字节/像素，无额外面宽。
+    if (!hdr_depth_.is_valid() || !hdr_depth_ptr || !hdr_depth_ptr->create(TextureFormat::Depth32F, viewport_width_, viewport_height_, nullptr)) {
         GLOG_ERROR("create_hdr_target: depth texture failed ({}x{})", viewport_width_, viewport_height_);
         return false;
     }
@@ -126,7 +130,7 @@ bool RenderPipeline::create_hdr_target(RenderContext* ctx) {
             hdr_msaa_depth_ = ctx->create_texture();
             ITexture* msaa_depth_ptr = ctx->texture(hdr_msaa_depth_);
             if (!hdr_msaa_depth_.is_valid() || !msaa_depth_ptr ||
-                !msaa_depth_ptr->create_msaa(TextureFormat::Depth24, viewport_width_,
+                !msaa_depth_ptr->create_msaa(TextureFormat::Depth32F, viewport_width_,
                                              viewport_height_, msaa_samples_)) {
                 GLOG_WARN("create_hdr_target: MSAA depth texture failed ({}x), falling back to 1x",
                           msaa_samples_);
@@ -490,9 +494,19 @@ void RenderPipeline::render_ssao(RenderContext& ctx) {
 
     // 分辨率档位（ssao_resolution_div）可能在运行期被改：不一致时销毁旧目标、
     // 按新除数重建。首帧 ssao_applied_div_==0 也会触发一次重建以对齐配置。
+    //
+    // ★ 重建必须转发到持有 GPU 上下文的线程：render_ssao 由主线程驱动，而
+    //   GL/Vulkan 的 context current 在渲染线程。主线程直调 glCreateTextures
+    //   返回 0（GL 侧只有一句含糊的 "returned 0"，Vulkan 侧则是未经 chunk 化
+    //   的 create 调用），于是 SSAO 目标永远建不起来、GTAO 实际从未生效。
+    //   与 ensure_hiz_targets 同一套处理（那里已改为同步转发）。
     if (ssao_applied_div_ != ssao_resolution_div_ || !ssao_targets_valid_) {
-        if (ssao_targets_valid_) destroy_ssao_targets();
-        if (!create_ssao_targets(ctx_)) return;
+        bool rebuilt = false;
+        ctx_->run_with_gpu_context_sync([this, &rebuilt]() {
+            if (ssao_targets_valid_) destroy_ssao_targets();
+            rebuilt = create_ssao_targets(ctx_);
+        });
+        if (!rebuilt) return;
         ssao_applied_div_ = ssao_resolution_div_;
     }
 
@@ -843,6 +857,150 @@ void RenderPipeline::render_bloom(RenderContext& ctx) {
         ctx.set_uniform_int(bloom_upsample_shader_, "uTextureB", TextureSlots::kTonemapBloom);
         ctx.draw_mesh(fullscreen_mesh_, bloom_upsample_shader_);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 体积光散射（丁达尔）：沿视线按光线步进，对方向光做单散射累积
+// ---------------------------------------------------------------------------
+
+bool RenderPipeline::create_volumetric_targets(RenderContext* ctx, int width, int height) {
+    destroy_volumetric_targets();
+    if (!ctx) return false;
+
+    const int w = std::max(16, width);
+    const int h = std::max(16, height);
+
+    volumetric_tex_ = ctx->create_texture();
+    ITexture* tex = ctx->texture(volumetric_tex_);
+    if (!volumetric_tex_.is_valid() || !tex ||
+        !tex->create(TextureFormat::RGBA16F, w, h, nullptr)) {
+        GLOG_ERROR("RenderPipeline: volumetric texture failed ({}x{})", w, h);
+        destroy_volumetric_targets();
+        return false;
+    }
+    tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    volumetric_fbo_ = ctx->create_framebuffer();
+    IFramebuffer* fbo = ctx->framebuffer(volumetric_fbo_);
+    if (!volumetric_fbo_.is_valid() || !fbo || !fbo->create(w, h)) {
+        GLOG_ERROR("RenderPipeline: volumetric framebuffer failed ({}x{})", w, h);
+        destroy_volumetric_targets();
+        return false;
+    }
+    fbo->attach_color_texture(tex);
+    if (!fbo->is_complete()) {
+        GLOG_ERROR("RenderPipeline: volumetric framebuffer incomplete ({}x{})", w, h);
+        destroy_volumetric_targets();
+        return false;
+    }
+
+    volumetric_w_ = w;
+    volumetric_h_ = h;
+    volumetric_targets_valid_ = true;
+    return true;
+}
+
+void RenderPipeline::destroy_volumetric_targets() {
+    if (!ctx_) return;
+    if (volumetric_fbo_.is_valid()) {
+        ctx_->destroy_framebuffer(volumetric_fbo_);
+        volumetric_fbo_ = RHIFramebufferHandle{};
+    }
+    if (volumetric_tex_.is_valid()) {
+        ctx_->destroy_texture(volumetric_tex_);
+        volumetric_tex_ = RHITextureHandle{};
+    }
+    volumetric_targets_valid_ = false;
+}
+
+void RenderPipeline::render_volumetric(RenderContext& ctx) {
+    if (power_saver_active_) return;
+    if (pp_params_.volumetric_enabled == 0) return;
+    if (!volumetric_targets_valid_ || !volumetric_shader_.is_valid() ||
+        !fullscreen_mesh_.is_valid() || !hdr_color_.is_valid() ||
+        !hdr_depth_.is_valid() || !volumetric_fbo_.is_valid() || !camera_ || !ctx_) {
+        return;
+    }
+    GpuScope _gpu(ctx, "volumetric");
+
+    const math::Matrix4f view = camera_->get_view_matrix();
+    const math::Matrix4f view_proj = get_projection_matrix() * view;
+    const math::Matrix4f inv_view_proj = view_proj.inverse();
+    // GL/WebGL 的 NDC z 为 [-1,1]（ndc_z = d*2-1），Vulkan/D3D12 为 [0,1]。
+    // get_projection_matrix() 已按后端重映射过 z 行，故这里只补"深度→NDC z"这一段。
+    const bool gl_depth = ctx_->backend() && ctx_->backend()->uses_gl_depth_range();
+
+    // 太阳参数：优先生成自"参与阴影计算的方向光"，这样丁达尔光柱的方向与场景
+    // 主光、阴影完全一致（这是"按光线去做"的前提）；场景没有方向光时退回
+    // pp_params_ 里的独立配置。uLightDir 约定是"光的传播方向"，而相位函数
+    // 需要"指向光源"的方向，故取反。
+    math::Vector3f sun_dir = pp_params_.volumetric_sun_direction;
+    math::Vector3f sun_col = pp_params_.volumetric_sun_color;
+    float sun_int = pp_params_.volumetric_sun_intensity;
+    if (shadow_light_index_ >= 0 &&
+        shadow_light_index_ < static_cast<int>(lights_.size())) {
+        const Light& sun = lights_[static_cast<size_t>(shadow_light_index_)];
+        if (sun.type == LightType::Directional && sun.direction.length_sq() > 1e-8f) {
+            sun_dir = math::Vector3f(-sun.direction.x, -sun.direction.y, -sun.direction.z)
+                          .normalized();
+            sun_col = sun.color;
+            sun_int = sun.intensity;
+        }
+    }
+
+    // 目标必须显式设置：上一个 pass 的 FBO/视口沿用会把结果画进别的目标。
+    ctx.set_framebuffer(volumetric_fbo_);
+    ctx.set_viewport(0, 0, volumetric_w_, volumetric_h_);
+    ctx.set_shader(volumetric_shader_);
+    ctx.set_depth_test(false);
+    ctx.set_depth_write(false);
+    ctx.set_cull_face(CullMode::None);
+    ctx.set_blend(false);
+
+    ctx.set_texture(volumetric_shader_, hdr_color_, TextureSlots::kTonemapHDR, "uSceneTex");
+    ctx.set_uniform_int(volumetric_shader_, "uSceneTex", TextureSlots::kTonemapHDR);
+    // 深度按原始值采样（比较采样器读 depth 会得到比较结果而非深度值）。
+    ctx.set_texture_raw_depth(volumetric_shader_, hdr_depth_,
+                              TextureSlots::kPBRShadowDepth, "uDepthTex");
+    ctx.set_uniform_int(volumetric_shader_, "uDepthTex", TextureSlots::kPBRShadowDepth);
+
+    ctx.set_uniform_mat4(volumetric_shader_, "uInvViewProj", inv_view_proj);
+    // 日照遮挡：级联 0 的阴影贴图。没有可用阴影时显式关闭（退化成均匀薄雾），
+    // 而不是绑一张空纹理让 shader 读到未定义数据。
+    const bool shadow_ok = shadow_enabled_ && shadow_maps_[0].is_valid();
+    if (shadow_ok) {
+        ctx.set_texture_raw_depth(volumetric_shader_, shadow_maps_[0],
+                                  TextureSlots::kPBRShadow, "uShadowMap");
+        ctx.set_uniform_int(volumetric_shader_, "uShadowMap", TextureSlots::kPBRShadow);
+        ctx.set_uniform_mat4(volumetric_shader_, "uLightSpaceMatrix",
+                             cascade_light_space_matrices_[0]);
+    } else {
+        // 关闭时仍绑一张合法纹理：Vulkan 未绑定的描述符会让 shader 读到垃圾。
+        ctx.set_texture_raw_depth(volumetric_shader_, hdr_depth_,
+                                  TextureSlots::kPBRShadow, "uShadowMap");
+        ctx.set_uniform_int(volumetric_shader_, "uShadowMap", TextureSlots::kPBRShadow);
+        ctx.set_uniform_mat4(volumetric_shader_, "uLightSpaceMatrix",
+                             math::Matrix4f::identity());
+    }
+    ctx.set_uniform_int(volumetric_shader_, "uShadowEnabled", shadow_ok ? 1 : 0);
+    ctx.set_uniform_float(volumetric_shader_, "uShadowBias", 0.0025f);
+    ctx.set_uniform_vec3(volumetric_shader_, "uCameraPos", camera_->position());
+    ctx.set_uniform_vec3(volumetric_shader_, "uSunDirection", sun_dir);
+    ctx.set_uniform_vec3(volumetric_shader_, "uSunColor", sun_col);
+    ctx.set_uniform_float(volumetric_shader_, "uSunIntensity", sun_int);
+    ctx.set_uniform_vec3(volumetric_shader_, "uTint", pp_params_.volumetric_tint);
+    ctx.set_uniform_float(volumetric_shader_, "uIntensity", pp_params_.volumetric_intensity);
+    ctx.set_uniform_float(volumetric_shader_, "uDensity", pp_params_.volumetric_density);
+    ctx.set_uniform_float(volumetric_shader_, "uScattering", pp_params_.volumetric_scattering);
+    ctx.set_uniform_float(volumetric_shader_, "uPhaseG", pp_params_.volumetric_phase_g);
+    ctx.set_uniform_int(volumetric_shader_, "uSteps",
+                        std::max(0, std::min(64, pp_params_.volumetric_steps)));
+    ctx.set_uniform_float(volumetric_shader_, "uMaxDistance", pp_params_.volumetric_max_distance);
+    ctx.set_uniform_float(volumetric_shader_, "uNDCZScale", gl_depth ? 2.0f : 1.0f);
+    ctx.set_uniform_float(volumetric_shader_, "uNDCZBias", gl_depth ? -1.0f : 0.0f);
+
+    ctx.draw_mesh(fullscreen_mesh_, volumetric_shader_);
 }
 
 // ---------------------------------------------------------------------------

@@ -34,7 +34,7 @@ struct PackageResult {
 };
 
 struct PackageOptions {
-    fs::path build_dir = "cmake-build-debug";
+    fs::path build_dir = "build";
     std::string exe;                      // 显式 exe（空 = 自动探测）
     fs::path output = "dist";
     std::string name = "GryceEngine";
@@ -50,7 +50,7 @@ class Packager {
 public:
     explicit Packager(const PackageOptions& opt) : opt_(opt) {}
 
-    // 定位 exe：显式路径优先，其次 build_dir 内递归找 GryceRenderSmoke.exe
+    // 定位 exe：显式路径优先，其次 build_dir 内优先 GryceApp.exe，再任一 .exe
     fs::path resolve_exe() const;
 
     // 主流程；失败时 ok=false 且 error 非空

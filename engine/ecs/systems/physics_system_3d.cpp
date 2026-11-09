@@ -220,7 +220,10 @@ void PhysicsSystem3D::on_init(scene::Scene& scene) {
     const size_t temp_size = 16 * 1024 * 1024;
     impl_->temp_allocator = std::make_unique<JPH::TempAllocatorImpl>(temp_size);
 
-    const int threads = std::max(0, worker_threads);
+    // 工作线程：显式 >0 用显式值；否则按逻辑核数自动取（留 1 给主线程）。
+    // 线程数只影响求解吞吐，不影响 Jolt 求解的确定性结果，属零画质损失优化。
+    const int hw_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()) - 1);
+    const int threads = worker_threads > 0 ? worker_threads : hw_threads;
     impl_->job_system = std::make_unique<JPH::JobSystemThreadPool>(
         cMaxPhysicsJobs, cMaxPhysicsBarriers, threads);
 
@@ -346,9 +349,28 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
     impl_->accumulator += std::min(dt, 0.25f);
     constexpr float kStep = 1.0f / 60.0f;
     const int max_steps = std::max(1, max_steps_per_frame);
+
+    // 静态体：帧内 Transform 不变，Jolt 在子步之间也不会移动静态体，故在子步
+    // 循环外下发一次位姿即可。原实现在每个子步内重复 SetPositionAndRotation，
+    // 对含 N 个静态体的场景每帧多 N×(子步数-1) 次无谓下发。结果与逐子步下发
+    // 完全等价（静态体不参与积分），不影响碰撞求解。
+    for (components::RigidBody3D* rb : rb_pool) {
+        if (!rb || !rb->enabled) continue;
+        scene::Entity* e = rb->owner();
+        if (!e || !e->enabled) continue;
+        if (rb->runtime_body == components::RigidBody3D::kNoBody) continue;
+        if (rb->body_type != components::Body3DType::Static) continue;
+        const JPH::BodyID id = unpack_body(rb->runtime_body);
+        if (id.IsInvalid()) continue;
+        const auto* tr = e->transform();
+        const math::Vector3f pos = tr ? tr->position : math::Vector3f::zero();
+        const math::Quaternionf rot = tr ? tr->rotation : math::Quaternionf::identity();
+        bi.SetPositionAndRotation(id, to_jolt_r(pos), to_jolt(rot), JPH::EActivation::Activate);
+    }
+
     int steps = 0;
     while (impl_->accumulator >= kStep && steps < max_steps) {
-        // 步进前把静态/运动学刚体跟随 Transform，动力学下发脚本速度
+        // 步进前运动学体跟随 Transform（钉住到脚本/回写位置），动力学下发脚本速度
         for (components::RigidBody3D* rb : rb_pool) {
             if (!rb || !rb->enabled) continue;
             scene::Entity* e = rb->owner();
@@ -373,16 +395,15 @@ void PhysicsSystem3D::on_update(scene::Scene& scene, float dt) {
                     std::fabs(wwant.z - bw.z) > 1e-3f) {
                     bi.SetAngularVelocity(id, to_jolt(wwant));
                 }
-            } else {
+            } else if (rb->body_type == components::Body3DType::Kinematic) {
+                // 运动学体每子步跟随 Transform（维持原"钉住"语义），并下发速度驱动。
                 const auto* tr = e->transform();
                 const math::Vector3f pos = tr ? tr->position : math::Vector3f::zero();
                 const math::Quaternionf rot = tr ? tr->rotation : math::Quaternionf::identity();
                 bi.SetPositionAndRotation(id, to_jolt_r(pos), to_jolt(rot),
                                           JPH::EActivation::Activate);
-                if (rb->body_type == components::Body3DType::Kinematic) {
-                    bi.SetLinearVelocity(id, to_jolt(rb->velocity));
-                    bi.SetAngularVelocity(id, to_jolt(rb->angular_velocity));
-                }
+                bi.SetLinearVelocity(id, to_jolt(rb->velocity));
+                bi.SetAngularVelocity(id, to_jolt(rb->angular_velocity));
             }
         }
 

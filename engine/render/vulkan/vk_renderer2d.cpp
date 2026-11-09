@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -17,6 +19,7 @@
 #include "assets/texture_data.h"
 #include "render/render_context.h"
 #include "render/render.h"
+#include "render/round_rect_geometry.h"
 #include "render/shader_source_resolver.h"
 #include "render/vulkan/vk_backend.h"
 #include "render/vulkan/vk_device.h"
@@ -270,6 +273,7 @@ void VulkanRenderer2D::shutdown() {
     }
 
     destroy_bloom_targets();
+    destroy_ui_ssaa_target();
     destroy_shadow_map();
 
     if (context_alive()) {
@@ -383,6 +387,12 @@ bool VulkanRenderer2D::create_shader_modules() {
     }
     if (!has_bloom) {
         GLOG_WARN("VulkanRenderer2D: bloom shaders missing, Bloom disabled in Vulkan");
+    }
+
+    // 覆盖层超采样解析（可选）：缺少就退回 1x 直绘，不影响功能
+    frag_ui_resolve_module_ = load_stage("2d_ui_resolve", GlslStage::Fragment);
+    if (frag_ui_resolve_module_ == VK_NULL_HANDLE) {
+        GLOG_WARN("VulkanRenderer2D: ui resolve shader missing, UI overlay SSAA disabled");
     }
 
     if (!vert_module_ || !frag_rect_module_ || !frag_text_module_ || !frag_sprite_module_) {
@@ -771,7 +781,10 @@ bool VulkanRenderer2D::create_descriptor_sets() {
     // One dynamic pool per frame-in-flight so resetting a pool never touches sets
     // that may still be executed by the GPU on an earlier frame.
     const int frames = vk_swapchain_ ? vk_swapchain_->frames_in_flight() : 2;
-    constexpr uint32_t kMaxSetsPerFrame = 256;
+    // 裁剪变化会切批（每段裁剪各自成批），一帧的批次数量按界面里 clip 的
+    // 数量线性增长；256 在一屏几十个滚动容器下会被打满，分配失败的批次
+    // 直接丢绘制（界面上表现为整块消失）。
+    constexpr uint32_t kMaxSetsPerFrame = 1024;
 
     std::array<VkDescriptorPoolSize, 2> pool_sizes{};
     pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -781,6 +794,7 @@ bool VulkanRenderer2D::create_descriptor_sets() {
 
     VkDevice dev = vk_device_->device();
     descriptor_pools_.resize(frames, VK_NULL_HANDLE);
+    descriptor_pool_dirty_.assign(static_cast<std::size_t>(frames), 1);
     for (int i = 0; i < frames; ++i) {
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -800,6 +814,12 @@ VkDescriptorSet VulkanRenderer2D::allocate_descriptor_set(VkDescriptorSetLayout 
     if (frame_index < 0 || frame_index >= static_cast<int>(descriptor_pools_.size()) ||
         descriptor_pools_[frame_index] == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) {
         return VK_NULL_HANDLE;
+    }
+    if (frame_index < static_cast<int>(descriptor_pool_dirty_.size()) &&
+        descriptor_pool_dirty_[static_cast<std::size_t>(frame_index)] != 0) {
+        // 该帧槽的上一帧已经过 fence 等待（帧槽复用前必等），此时重置是安全的。
+        vkResetDescriptorPool(vk_device_->device(), descriptor_pools_[frame_index], 0);
+        descriptor_pool_dirty_[static_cast<std::size_t>(frame_index)] = 0;
     }
     VkDescriptorSetAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -988,6 +1008,119 @@ void VulkanRenderer2D::destroy_shadow_map() {
     shadow_fb_ = RHIFramebufferHandle{};
     shadow_map_tex_ = RHITextureHandle{};
     shadow_map_ = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// 覆盖层超采样（SSAA）
+//
+// 2D 管线没有任何几何抗锯齿：矩形边、圆角、字形都是硬采样。文字靠图集里的
+// 覆盖率和线性采样凑合，图形边缘则完全是台阶。这里把整个覆盖层画到 2x 尺寸
+// 的离屏 RGBA8 上，再用一次全屏线性采样降回 back buffer——双线性在精确 2:1
+// 上取四个 texel 的等权平均，等价于每像素 4 个样本。代价是覆盖层的填充率 ×4，
+// 但覆盖层本身很轻，换来的是文字与图形边缘一起变平滑。
+// ---------------------------------------------------------------------------
+
+bool VulkanRenderer2D::create_ui_ssaa_pipeline() {
+    if (pipeline_ui_resolve_ != VK_NULL_HANDLE) return true;
+    if (!vk_swapchain_ || frag_ui_resolve_module_ == VK_NULL_HANDLE ||
+        vert_bloom_module_ == VK_NULL_HANDLE || bloom_pipeline_layout_ == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkVertexInputAttributeDescription fs_attrs[2]{};
+    fs_attrs[0].location = 0;
+    fs_attrs[0].binding = 0;
+    fs_attrs[0].format = VK_FORMAT_R32G32_SFLOAT;
+    fs_attrs[0].offset = 0;
+    fs_attrs[1].location = 1;
+    fs_attrs[1].binding = 0;
+    fs_attrs[1].format = VK_FORMAT_R32G32_SFLOAT;
+    fs_attrs[1].offset = 2 * sizeof(float);
+
+    pipeline_ui_resolve_ = create_pipeline(vert_bloom_module_, frag_ui_resolve_module_,
+                                           bloom_pipeline_layout_, vk_swapchain_->render_pass(),
+                                           sizeof(FSVertex), fs_attrs, 2,
+                                           false, false, BlendMode::Alpha);
+    // 必须是 Alpha 混合：离屏目标是"透明黑"起步的，没有被 UI 覆盖到的像素
+    // alpha 就是 0。按不透明写回会把整个 back buffer 刷成黑色 —— 纯 UI 预览
+    // 背景全黑、3D 场景被整片盖掉，都是这一条造成的。着色器已经把 RGB 反预乘
+    // 回直通色，这里正好交给固定的 SrcAlpha/OneMinusSrcAlpha。
+    if (pipeline_ui_resolve_ == VK_NULL_HANDLE) {
+        GLOG_ERROR("VulkanRenderer2D: failed to create ui resolve pipeline");
+        return false;
+    }
+    return true;
+}
+
+bool VulkanRenderer2D::create_ui_ssaa_target_locked(int width, int height) {
+    if (!ctx_ || width <= 0 || height <= 0) return false;
+    destroy_ui_ssaa_target();
+
+    ui_ssaa_texture_ = ctx_->create_texture();
+    auto* vk_tex = dynamic_cast<VulkanTexture*>(ctx_->texture(ui_ssaa_texture_));
+    if (!vk_tex || !vk_tex->create(TextureFormat::RGBA8, width, height, nullptr)) {
+        GLOG_ERROR("VulkanRenderer2D: failed to create ui ssaa texture");
+        destroy_ui_ssaa_target();
+        return false;
+    }
+    vk_tex->set_filter(TextureFilter::Linear, TextureFilter::Linear);
+    vk_tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+
+    ui_ssaa_fb_ = ctx_->create_framebuffer();
+    auto* vk_fb = dynamic_cast<VulkanFramebuffer*>(ctx_->framebuffer(ui_ssaa_fb_));
+    if (!vk_fb || !vk_fb->create(width, height)) {
+        GLOG_ERROR("VulkanRenderer2D: failed to create ui ssaa framebuffer");
+        destroy_ui_ssaa_target();
+        return false;
+    }
+    vk_fb->attach_color_texture(vk_tex);
+    vk_fb->set_clear_color(0.0f, 0.0f, 0.0f, 0.0f);
+    if (!vk_fb->is_complete()) {
+        GLOG_ERROR("VulkanRenderer2D: ui ssaa framebuffer incomplete");
+        destroy_ui_ssaa_target();
+        return false;
+    }
+
+    ui_ssaa_w_ = width;
+    ui_ssaa_h_ = height;
+    return true;
+}
+
+bool VulkanRenderer2D::ensure_ui_ssaa_target(int width, int height) {
+    const int w = width * 2;
+    const int h = height * 2;
+    if (ui_ssaa_ready_ && ui_ssaa_w_ == w && ui_ssaa_h_ == h &&
+        ui_ssaa_fb_.is_valid() && pipeline_ui_resolve_ != VK_NULL_HANDLE) {
+        return true;
+    }
+    if (!ctx_ || !context_alive() || frag_ui_resolve_module_ == VK_NULL_HANDLE) {
+        ui_ssaa_ready_ = false;
+        return false;
+    }
+
+    bool ok = false;
+    auto build = [this, w, h, &ok]() {
+        ok = create_ui_ssaa_pipeline() && create_ui_ssaa_target_locked(w, h);
+    };
+    if (ctx_->is_running()) {
+        ctx_->run_with_gpu_context_sync(build);
+    } else {
+        build();
+    }
+    ui_ssaa_ready_ = ok;
+    return ok;
+}
+
+void VulkanRenderer2D::destroy_ui_ssaa_target() {
+    if (context_alive()) {
+        if (ui_ssaa_fb_.is_valid()) ctx_->destroy_framebuffer(ui_ssaa_fb_);
+        if (ui_ssaa_texture_.is_valid()) ctx_->destroy_texture(ui_ssaa_texture_);
+    }
+    ui_ssaa_fb_ = RHIFramebufferHandle{};
+    ui_ssaa_texture_ = RHITextureHandle{};
+    ui_ssaa_w_ = 0;
+    ui_ssaa_h_ = 0;
+    ui_ssaa_ready_ = false;
 }
 
 bool VulkanRenderer2D::create_bloom_targets() {
@@ -1238,6 +1371,10 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     text_vertices_.clear();
     sprite_vertices_.clear();
     sprite_texture_ = RHITextureHandle{};
+    sprite_segments_.clear();
+    rect_stream_base_ = 0;
+    sprite_stream_base_ = 0;
+    text_stream_base_ = 0;
     lit_batches_.clear();
     shadow_caster_vertices_.clear();
     reset_lights();
@@ -1248,10 +1385,7 @@ void VulkanRenderer2D::begin_frame(float screen_width, float screen_height) {
     // 之后执行，时序与安全性都有保证。
     ctx_->push_command([this](IRenderBackend*) {
         int frame_index = vk_swapchain_ ? vk_swapchain_->current_frame_index() : 0;
-        if (frame_index >= 0 && frame_index < static_cast<int>(descriptor_pools_.size()) &&
-            descriptor_pools_[frame_index] != VK_NULL_HANDLE) {
-            vkResetDescriptorPool(vk_device_->device(), descriptor_pools_[frame_index], 0);
-        }
+        for (auto& dirty : descriptor_pool_dirty_) dirty = 1;
         if (frame_index >= 0 && frame_index < static_cast<int>(retired_buffers_.size())) {
             retired_buffers_[frame_index].clear();
         }
@@ -1337,6 +1471,163 @@ void VulkanRenderer2D::set_camera(const math::Vector2f& center, float zoom, bool
         }
         view_proj_ = ortho_ * view;
     }
+}
+
+float VulkanRenderer2D::overlay_scale() const {
+    // 是否超采样是启动期的静态开关，与"当前是否在 overlay 内"无关。调用方要
+    // 在 begin_overlay_pass 之前就把字号报上来——图集必须在那之前重烘完，
+    // 在本帧已经绑定覆盖层目标之后重建纹理，会让目标失效、整屏画不出来。
+    static const bool enabled = []() {
+        const char* v = std::getenv("GRYCE_UI_SSAA");
+        return !(v != nullptr && v[0] == '0');
+    }();
+    return (enabled && frag_ui_resolve_module_ != VK_NULL_HANDLE) ? 2.0f : 1.0f;
+}
+
+void VulkanRenderer2D::begin_overlay_pass(int screen_width, int screen_height) {
+    if (!context_alive() || screen_width <= 0 || screen_height <= 0) return;
+
+    // 超采样目标必须在 flush 之前准备好：尺寸变化时会创建/销毁纹理，得先于
+    // 本帧的命令录制完成。
+    float scale = 1.0f;
+    if (overlay_scale() > 1.0f && ensure_ui_ssaa_target(screen_width, screen_height)) {
+        scale = 2.0f;
+        ctx_->set_framebuffer(ui_ssaa_fb_);
+    } else {
+        ctx_->set_framebuffer(RHIFramebufferHandle{});
+    }
+    overlay_scale_ = scale;
+
+    flush_batches();
+    flush_sprite_batch();
+
+    overlay_saved_center_ = camera_center_;
+    overlay_saved_zoom_ = camera_zoom_;
+    overlay_saved_rotation_ = camera_rotation_;
+    overlay_saved_top_left_ = camera_top_left_origin_;
+    overlay_saved_width_ = screen_width_;
+    overlay_saved_height_ = screen_height_;
+    overlay_saved_active_ = true;
+    overlay_pass_ = true;
+    use_bloom_this_frame_ = false;
+
+    screen_width_ = static_cast<float>(screen_width) * overlay_scale_;
+    screen_height_ = static_cast<float>(screen_height) * overlay_scale_;
+    camera_center_ = math::Vector2f::zero();
+    camera_zoom_ = 1.0f;
+    camera_rotation_ = 0.0f;
+    camera_top_left_origin_ = true;
+    ortho_ = math::Matrix4f::ortho(0.0f, screen_width_, screen_height_,
+                                   0.0f, -1.0f, 1.0f);
+    view_proj_ = ortho_;
+
+    set_blend_mode(BlendMode::Alpha);
+    ctx_->set_viewport(0, 0, static_cast<int>(screen_width_), static_cast<int>(screen_height_));
+    ctx_->set_depth_test(false);
+    ctx_->set_blend(true);
+    ctx_->set_cull_face(CullMode::None);
+    // 覆盖层总是以"满屏可写"开局：上一帧末尾留下的裁剪框（滚动区、下拉列表）
+    // 不能漏进这一帧，否则第二次进入时整片界面会被裁掉。
+    apply_scissor_rect(0, 0, screen_width, screen_height);
+}
+
+void VulkanRenderer2D::end_overlay_pass() {
+    if (!overlay_saved_active_) return;
+    flush_batches();
+    flush_sprite_batch();
+    overlay_pass_ = false;
+    overlay_saved_active_ = false;
+
+    // 超采样解析必须在恢复屏幕尺寸之前判定，之后 overlay_scale_ 就归 1 了。
+    const bool resolve_ssaa = overlay_scale_ > 1.5f && ui_ssaa_ready_ &&
+                              ui_ssaa_texture_.is_valid() &&
+                              pipeline_ui_resolve_ != VK_NULL_HANDLE;
+    overlay_scale_ = 1.0f;
+
+    screen_width_ = overlay_saved_width_;
+    screen_height_ = overlay_saved_height_;
+    camera_center_ = overlay_saved_center_;
+    camera_zoom_ = overlay_saved_zoom_;
+    camera_rotation_ = overlay_saved_rotation_;
+    camera_top_left_origin_ = overlay_saved_top_left_;
+    ortho_ = math::Matrix4f::ortho(0.0f, screen_width_, screen_height_,
+                                   0.0f, -1.0f, 1.0f);
+    math::Matrix4f view;
+    if (camera_top_left_origin_) {
+        view = math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::rotate(-camera_rotation_,
+                                      math::Vector3f(0.0f, 0.0f, 1.0f))
+             * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    } else {
+        const math::Vector2f screen_center(screen_width_ * 0.5f,
+                                           screen_height_ * 0.5f);
+        view = math::Matrix4f::translate(screen_center.x, screen_center.y, 0.0f)
+             * math::Matrix4f::scale(camera_zoom_, camera_zoom_, 1.0f)
+             * math::Matrix4f::rotate(-camera_rotation_,
+                                      math::Vector3f(0.0f, 0.0f, 1.0f))
+             * math::Matrix4f::translate(-camera_center_.x, -camera_center_.y, 0.0f);
+    }
+    view_proj_ = ortho_ * view;
+
+    // 降采样：把 2x 覆盖层按线性过滤画回 back buffer。输出像素与输入像素
+    // 精确 2:1 对齐，双线性在四 texel 交界处权重各 0.25，等价于 2x2 盒式平均。
+    if (resolve_ssaa) {
+        draw_fullscreen_pass(RHIFramebufferHandle{}, pipeline_ui_resolve_,
+                             bloom_pipeline_layout_, false,
+                             {{ui_ssaa_texture_, 0}}, nullptr, 0);
+    }
+
+    // 交还控制权前恢复成整个目标：这一帧后面还有绘制时（如 FPS 回退文本），
+    // 不该继承最后一处 UI 的裁剪矩形。
+    const int full_w = static_cast<int>(screen_width_);
+    const int full_h = static_cast<int>(screen_height_);
+    ctx_->push_command([this, full_w, full_h](IRenderBackend*) {
+        vk_backend_->set_scissor(0, 0, full_w, full_h);
+    });
+}
+
+void VulkanRenderer2D::apply_scissor_rect(int x, int y, int w, int h) {
+    if (!context_alive() || !vk_backend_ || !ctx_) return;
+    const float scale = overlay_scale_;
+    int sx = static_cast<int>(std::floor(static_cast<float>(x) * scale));
+    int sy = static_cast<int>(std::floor(static_cast<float>(y) * scale));
+    int sw = static_cast<int>(std::ceil(static_cast<float>(w) * scale));
+    int sh = static_cast<int>(std::ceil(static_cast<float>(h) * scale));
+    // 负宽高在 Vulkan 里是非法矩形；越界部分按目标尺寸夹掉，夹空就是一个
+    // 全零的裁剪框（合法的"什么都不画"）。
+    if (sw < 0) sw = 0;
+    if (sh < 0) sh = 0;
+    if (sx < 0) { sw = std::max(0, sw + sx); sx = 0; }
+    if (sy < 0) { sh = std::max(0, sh + sy); sy = 0; }
+    const int limit_w = static_cast<int>(screen_width_);
+    const int limit_h = static_cast<int>(screen_height_);
+    sw = std::min(sw, std::max(0, limit_w - sx));
+    sh = std::min(sh, std::max(0, limit_h - sy));
+    ctx_->push_command([this, sx, sy, sw, sh](IRenderBackend*) {
+        vk_backend_->set_scissor(sx, sy, sw, sh);
+    });
+    scissor_set_ = true;
+    scissor_rect_ = {{sx, sy, sw, sh}};
+}
+
+void VulkanRenderer2D::set_scissor(int x, int y, int w, int h) {
+    if (!context_alive()) return;
+    // 先提交已积累的顶点：顶点流是"一次上传 + 按 firstVertex 分段绘制"，
+    // 中途改裁剪区却不提交，早先排队的图元会跟着吃到新矩形。
+    flush_batches();
+    apply_scissor_rect(x, y, w, h);
+}
+
+void VulkanRenderer2D::reset_scissor() {
+    if (!context_alive()) return;
+    flush_batches();
+    const int w = static_cast<int>(screen_width_);
+    const int h = static_cast<int>(screen_height_);
+    ctx_->push_command([this, w, h](IRenderBackend*) {
+        vk_backend_->set_scissor(0, 0, w, h);
+    });
+    scissor_set_ = false;
+    scissor_rect_ = {{0, 0, w, h}};
 }
 
 math::Vector2f VulkanRenderer2D::world_to_screen(const math::Vector2f& world) const {
@@ -1679,7 +1970,7 @@ void VulkanRenderer2D::draw_fullscreen_pass(RHIFramebufferHandle fb,
         std::memcpy(push_data.data(), push_constants, push_size);
     }
 
-    ctx_->push_command([=](IRenderBackend*) mutable {
+    ctx_->push_command([=, this](IRenderBackend*) mutable {
         if (fb.is_valid()) {
             vk_backend_->bind_framebuffer(fb);
         } else {
@@ -1755,6 +2046,12 @@ void VulkanRenderer2D::draw_fullscreen_pass(RHIFramebufferHandle fb,
 }
 
 void VulkanRenderer2D::push_vertex(float x, float y, const Color& color, float u, float v) {
+    // 覆盖层超采样时几何要按倍率铺到更大的离屏目标上。文字顶点不在这里乘：
+    // draw_text 内部已经按 overlay_scale_ 换了挡位和笔位，再乘一次会双倍放大。
+    if (overlay_scale_ != 1.0f) {
+        x *= overlay_scale_;
+        y *= overlay_scale_;
+    }
     vertices_.push_back({x, y, color.r, color.g, color.b, color.a, u, v});
 }
 
@@ -1763,6 +2060,10 @@ void VulkanRenderer2D::push_text_vertex(float x, float y, const Color& color, fl
 }
 
 void VulkanRenderer2D::push_sprite_vertex(float x, float y, const Color& color, float u, float v) {
+    if (overlay_scale_ != 1.0f) {
+        x *= overlay_scale_;
+        y *= overlay_scale_;
+    }
     sprite_vertices_.push_back({x, y, color.r, color.g, color.b, color.a, u, v});
 }
 
@@ -1791,49 +2092,144 @@ VulkanRenderer2D::LitBatch* VulkanRenderer2D::find_lit_batch(RHITextureHandle al
     return &it->second;
 }
 
-void VulkanRenderer2D::flush_batches() {
-    VkPipeline rect_pipeline = use_bloom_this_frame_ ? pipeline_rect_scene_ : pipeline_rect_;
-    VkPipeline text_pipeline = use_bloom_this_frame_ ? pipeline_text_scene_ : pipeline_text_;
-    flush_batch(std::move(vertices_), false, nullptr, rect_pipeline, pipeline_layout_);
-    // 字体图集纹理保留裸指针：FontAtlas 由本对象拥有，生命周期一致，
-    // 且 shutdown 时渲染线程已同步，不存在悬垂风险，无需 handle 化。
-    flush_batch(std::move(text_vertices_), true, font_atlas_.texture(), text_pipeline, pipeline_layout_);
+VkPipeline VulkanRenderer2D::current_sprite_pipeline() const {
+    if (use_bloom_this_frame_ && !overlay_pass_) {
+        return (blend_mode_ == BlendMode::Additive && pipeline_sprite_scene_additive_ != VK_NULL_HANDLE)
+                   ? pipeline_sprite_scene_additive_
+                   : pipeline_sprite_scene_;
+    }
+    return (blend_mode_ == BlendMode::Additive && pipeline_sprite_additive_ != VK_NULL_HANDLE)
+               ? pipeline_sprite_additive_
+               : pipeline_sprite_;
 }
 
-void VulkanRenderer2D::flush_sprite_batch() {
-    if (sprite_vertices_.empty() || !sprite_texture_.is_valid()) return;
-    // 句柄 → GPU 纹理：带 generation 校验，失效（已销毁/槽位复用）则丢弃本批
-    ITexture* tex = ctx_->texture(sprite_texture_);
-    if (!tex) {
-        GLOG_WARN("VulkanRenderer2D::flush_sprite_batch: texture handle expired, dropping {} verts",
-                  sprite_vertices_.size());
+void VulkanRenderer2D::finalize_sprite_segment() {
+    if (sprite_vertices_.empty() || !sprite_texture_.is_valid()) {
         sprite_vertices_.clear();
         sprite_texture_ = RHITextureHandle{};
         return;
     }
-    GLOG_DEBUG("VulkanRenderer2D::flush_sprite_batch: verts={} texture={} format={}",
-              sprite_vertices_.size(),
-              reinterpret_cast<uintptr_t>(tex),
-              static_cast<int>(dynamic_cast<VulkanTexture*>(tex)->format()));
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (use_bloom_this_frame_) {
-        pipeline = (blend_mode_ == BlendMode::Additive && pipeline_sprite_scene_additive_ != VK_NULL_HANDLE)
-                       ? pipeline_sprite_scene_additive_
-                       : pipeline_sprite_scene_;
-    } else {
-        pipeline = (blend_mode_ == BlendMode::Additive && pipeline_sprite_additive_ != VK_NULL_HANDLE)
-                       ? pipeline_sprite_additive_
-                       : pipeline_sprite_;
-    }
-    flush_batch(std::move(sprite_vertices_), false, tex, pipeline, pipeline_layout_);
+    SpriteSegment segment;
+    segment.texture = sprite_texture_;
+    // 混合/管线在封口时定下来：之后调用方再改混合模式也不会影响已绘制的这一段。
+    segment.pipeline = current_sprite_pipeline();
+    segment.vertices = std::move(sprite_vertices_);
+    segment.rect_vertex_split = vertices_.size();
+    sprite_segments_.push_back(std::move(segment));
+    sprite_vertices_.clear();
     sprite_texture_ = RHITextureHandle{};
 }
 
-void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, ITexture* texture,
-                                    VkPipeline pipeline, VkPipelineLayout layout) {
-    const bool is_sprite = (!is_text && texture != nullptr);
+void VulkanRenderer2D::flush_batches() {
+    finalize_sprite_segment();
 
-    if (verts.empty() || !context_alive() || !vk_backend_ || pipeline == VK_NULL_HANDLE || layout == VK_NULL_HANDLE) {
+    const bool bloom = use_bloom_this_frame_ && !overlay_pass_;
+    VkPipeline rect_pipeline = bloom ? pipeline_rect_scene_ : pipeline_rect_;
+    VkPipeline text_pipeline = bloom ? pipeline_text_scene_ : pipeline_text_;
+
+    // 每个帧槽只有一个矩形顶点缓冲、一个贴图顶点缓冲，所以两种流都只能上传一次：
+    // 分段上传会让后一段把前一段的数据冲掉（表现为整片发白、只剩最后一张图）。
+    // 这里各自拼成一条流，用 firstVertex 让每段取自己那段顶点。
+    std::vector<Vertex2D> rect_stream = std::move(vertices_);
+    vertices_.clear();
+    const std::size_t rect_total = rect_stream.size();
+
+    struct SpriteDraw {
+        std::uint32_t first = 0;
+        std::uint32_t count = 0;
+        ITexture* texture = nullptr;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        std::size_t rect_split = 0;
+    };
+    std::vector<Vertex2D> sprite_stream;
+    std::vector<SpriteDraw> sprite_draws;
+    sprite_draws.reserve(sprite_segments_.size());
+    for (auto& segment : sprite_segments_) {
+        ITexture* tex = ctx_ ? ctx_->texture(segment.texture) : nullptr;
+        if (!tex) {
+            GLOG_WARN("VulkanRenderer2D::flush_batches: sprite texture expired, dropping {} verts",
+                      segment.vertices.size());
+            continue;
+        }
+        if (segment.vertices.empty()) continue;
+        SpriteDraw draw;
+        draw.first = static_cast<std::uint32_t>(sprite_stream.size());
+        draw.count = static_cast<std::uint32_t>(segment.vertices.size());
+        draw.texture = tex;
+        draw.pipeline = segment.pipeline;
+        draw.rect_split = std::min(segment.rect_vertex_split, rect_total);
+        sprite_stream.insert(sprite_stream.end(), segment.vertices.begin(), segment.vertices.end());
+        sprite_draws.push_back(draw);
+    }
+    sprite_segments_.clear();
+    // 必须先记下条数：第一段 flush 会把 sprite_stream 整体 move 走，之后再取
+    // size() 拿到的是 0，跨批次基址就不再前进 —— 后一次上传会从头覆盖前一批
+    // 的顶点，而先前录制的 vkCmdDraw 仍指向那些旧偏移（画出来是别的图元）。
+    const std::size_t sprite_total = sprite_stream.size();
+
+    bool rect_uploaded = false;
+    bool sprite_uploaded = false;
+    const std::uint32_t rect_base = rect_stream_base_;
+    auto emit_rects = [&](std::size_t begin, std::size_t end) {
+        if (end <= begin) return;
+        const auto first = static_cast<std::uint32_t>(begin) + rect_base;
+        const auto count = static_cast<std::uint32_t>(end - begin);
+        if (!rect_uploaded) {
+            rect_uploaded = true;
+            flush_batch(std::move(rect_stream), false, nullptr, rect_pipeline,
+                        pipeline_layout_, first, count, rect_base);
+        } else {
+            flush_batch({}, false, nullptr, rect_pipeline, pipeline_layout_, first, count);
+        }
+    };
+
+    std::size_t emitted = 0;
+    for (const SpriteDraw& draw : sprite_draws) {
+        const std::size_t split = std::max(emitted, draw.rect_split);
+        emit_rects(emitted, split);
+        emitted = split;
+        const std::uint32_t sprite_first = draw.first + sprite_stream_base_;
+        if (!sprite_uploaded) {
+            sprite_uploaded = true;
+            flush_batch(std::move(sprite_stream), false, draw.texture, draw.pipeline,
+                        pipeline_layout_, sprite_first, draw.count, sprite_stream_base_);
+        } else {
+            flush_batch({}, false, draw.texture, draw.pipeline, pipeline_layout_,
+                        sprite_first, draw.count);
+        }
+    }
+    emit_rects(emitted, rect_total);
+    rect_stream_base_ += static_cast<std::uint32_t>(rect_total);
+    sprite_stream_base_ += static_cast<std::uint32_t>(sprite_total);
+
+    // 字体图集纹理保留裸指针：FontAtlas 由本对象拥有，生命周期一致，
+    // 且 shutdown 时渲染线程已同步，不存在悬垂风险，无需 handle 化。
+    if (!text_vertices_.empty()) {
+        const auto text_count = static_cast<std::uint32_t>(text_vertices_.size());
+        flush_batch(std::move(text_vertices_), true, font_atlas_.texture(), text_pipeline,
+                    pipeline_layout_, text_stream_base_, text_count, text_stream_base_);
+        text_stream_base_ += text_count;
+        text_vertices_.clear();
+    }
+}
+
+void VulkanRenderer2D::flush_sprite_batch() {
+    // 只封口，不立即提交：提交时机统一由 flush_batches 控制，否则贴图会被后提交的
+    // 矩形/文字盖住。段内已固化纹理与管线，晚提交不会混淆状态。
+    finalize_sprite_segment();
+}
+
+void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, ITexture* texture,
+                                    VkPipeline pipeline, VkPipelineLayout layout,
+                                    std::uint32_t first_vertex, std::uint32_t draw_count,
+                                    std::uint32_t upload_first_vertex) {
+    const bool is_sprite = (!is_text && texture != nullptr);
+    const bool upload = !verts.empty();
+    const std::uint32_t count = draw_count != 0 ? draw_count
+                                                : static_cast<std::uint32_t>(verts.size());
+
+    if (count == 0 || !context_alive() || !vk_backend_ || pipeline == VK_NULL_HANDLE ||
+        layout == VK_NULL_HANDLE) {
         return;
     }
 
@@ -1841,11 +2237,15 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
     ITexture* tex = texture;
     float screen_w = screen_width_;
     float screen_h = screen_height_;
+    // 这批顶点积累期间的裁剪矩形：提交时可能早就换过，必须按快照下发。
+    const bool scissor_set = scissor_set_;
+    const std::array<std::int32_t, 4> scissor_rect = scissor_rect_;
 
     auto verts_shared = std::make_shared<std::vector<Vertex2D>>(std::move(verts));
 
     ctx_->push_command([this, verts_shared, is_text, is_sprite, tex, pipeline, layout,
-                        view_proj, screen_w, screen_h](IRenderBackend*) {
+                        view_proj, screen_w, screen_h, upload, count, first_vertex,
+                        upload_first_vertex, scissor_set, scissor_rect](IRenderBackend*) {
         int frame_index = vk_swapchain_->current_frame_index();
         if (frame_index < 0 || frame_index >= static_cast<int>(vertex_buffer_rect_.size())) {
             return;
@@ -1864,12 +2264,19 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
             capacity = &vertex_buffer_rect_capacity_[frame_index];
         }
 
-        VkDeviceSize required = verts_shared->size() * sizeof(Vertex2D);
-        if (!grow_vertex_buffer(*vertex_buffer, *capacity, required, frame_index,
-                                "vertex buffer")) {
+        if (upload) {
+            VkDeviceSize required = (static_cast<VkDeviceSize>(upload_first_vertex) +
+                                     verts_shared->size()) * sizeof(Vertex2D);
+            if (!grow_vertex_buffer(*vertex_buffer, *capacity, required, frame_index,
+                                    "vertex buffer")) {
+                return;
+            }
+            vertex_buffer->upload(verts_shared->data(),
+                                  verts_shared->size() * sizeof(Vertex2D),
+                                  static_cast<VkDeviceSize>(upload_first_vertex) * sizeof(Vertex2D));
+        } else if (vertex_buffer->buffer() == VK_NULL_HANDLE) {
             return;
         }
-        vertex_buffer->upload(verts_shared->data(), required);
 
         VkCommandBuffer cmd = vk_backend_->current_command_buffer();
         if (cmd == VK_NULL_HANDLE) return;
@@ -1886,8 +2293,14 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         vk_backend_->set_viewport_cached(cmd, viewport);
 
         VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = {static_cast<uint32_t>(screen_w), static_cast<uint32_t>(screen_h)};
+        if (scissor_set) {
+            scissor.offset = {scissor_rect[0], scissor_rect[1]};
+            scissor.extent = {static_cast<uint32_t>(scissor_rect[2]),
+                              static_cast<uint32_t>(scissor_rect[3])};
+        } else {
+            scissor.offset = {0, 0};
+            scissor.extent = {static_cast<uint32_t>(screen_w), static_cast<uint32_t>(screen_h)};
+        }
         vk_backend_->set_scissor_cached(cmd, scissor);
 
         vk_backend_->bind_pipeline(cmd, pipeline);
@@ -1944,7 +2357,7 @@ void VulkanRenderer2D::flush_batch(std::vector<Vertex2D>&& verts, bool is_text, 
         VkBuffer buffers[] = {vertex_buffer->buffer()};
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
-        vkCmdDraw(cmd, static_cast<uint32_t>(verts_shared->size()), 1, 0, 0);
+        vkCmdDraw(cmd, count, 1, first_vertex, 0);
     });
 }
 
@@ -1985,6 +2398,38 @@ void VulkanRenderer2D::draw_circle(float cx, float cy, float r, int segments, co
         push_vertex(x0, y0, color, 0, 0);
         push_vertex(x1, y1, color, 0, 0);
     }
+}
+
+void VulkanRenderer2D::draw_round_rect(float x, float y, float w, float h,
+                                       const float radii[4], const Color& color) {
+    draw_round_rect_gradient(x, y, w, h, radii, color, color);
+}
+
+void VulkanRenderer2D::draw_round_rect_gradient(float x, float y, float w, float h,
+                                                const float radii[4],
+                                                const Color& top, const Color& bottom) {
+    auto push = [this](float px, float py, const Color& c) {
+        push_vertex(px, py, c, 0, 0);
+    };
+    render_detail::emit_round_fill(push, x, y, w, h, radii, top, bottom);
+}
+
+void VulkanRenderer2D::draw_round_rect_border(float x, float y, float w, float h,
+                                              const float radii[4], float thickness,
+                                              const Color& color) {
+    auto push = [this](float px, float py, const Color& c) {
+        push_vertex(px, py, c, 0, 0);
+    };
+    render_detail::emit_round_border(push, x, y, w, h, radii, thickness, color);
+}
+
+void VulkanRenderer2D::draw_round_shadow(float x, float y, float w, float h,
+                                         const float radii[4], float spread,
+                                         const Color& color) {
+    auto push = [this](float px, float py, const Color& c) {
+        push_vertex(px, py, c, 0, 0);
+    };
+    render_detail::emit_round_shadow(push, x, y, w, h, radii, spread, color);
 }
 
 void VulkanRenderer2D::draw_sprite(float x, float y, float w, float h,
@@ -2169,7 +2614,140 @@ void VulkanRenderer2D::set_bloom(const BloomParams& params) {
     }
 }
 
-void VulkanRenderer2D::draw_text(float x, float y, const std::string& text, float font_size, const Color& color) {
+namespace {
+
+// draw_text / measure_text 共用的逐字节推进：两者必须用同一套规则，
+// 否则 measure 出来的宽度与实际笔位不一致，彩色 run 会互相压字。
+inline float glyph_advance(const FontAtlas& atlas, int bucket, float scale, char c) {
+    if (c == '\n' || c == '\r') return -1.0f;
+    const Glyph* g = atlas.get_glyph(bucket, static_cast<uint32_t>(static_cast<unsigned char>(c)));
+    return g ? g->advance * scale : 0.0f;
+}
+
+// 1:1 采样时把字形左上角对齐到像素网格：落在半像素上时双线性会同时混合
+// 相邻两行/两列 texel，笔画宽度被抹成 1.5 像素的灰边——观感就是"发虚"。
+// 缩放比明显偏离 1 时不再取整（那时亚像素定位的收益更大，取整反而抖字距）。
+inline void glyph_quad(float scale, float cursor_x, float cursor_y, const Glyph& g,
+                       float* x0, float* y0, float* x1, float* y1) {
+    float px = cursor_x + g.offset_x * scale;
+    float py = cursor_y + g.offset_y * scale;
+    float w = g.width * scale;
+    float h = g.height * scale;
+    if (std::fabs(scale - 1.0f) < 0.16f) {
+        px = std::round(px);
+        py = std::round(py);
+        w = std::round(w);
+        h = std::round(h);
+    }
+    *x0 = px;
+    *y0 = py;
+    *x1 = px + w;
+    *y1 = py + h;
+}
+
+} // namespace
+
+float VulkanRenderer2D::measure_text(const char* text, float font_size) const {
+    if (!text || !font_atlas_.texture() || font_size <= 0.0f) return 0.0f;
+    const int bucket = font_atlas_.bucket_for(font_size);
+    const float raster = font_atlas_.bucket_size(bucket);
+    if (bucket < 0 || raster <= 0.0f) return 0.0f;
+    const float scale = font_size / raster;
+    float best = 0.0f;
+    float cursor = 0.0f;
+    for (const char* p = text; *p; ++p) {
+        const float adv = glyph_advance(font_atlas_, bucket, scale, *p);
+        if (adv < 0.0f) {
+            best = std::max(best, cursor);
+            cursor = 0.0f;
+            continue;
+        }
+        cursor += adv;
+    }
+    return std::max(best, cursor);
+}
+
+float VulkanRenderer2D::text_cap_height(float font_size) const {    if (font_size <= 0.0f) return 0.0f;
+    if (!font_atlas_.texture()) return font_size * 0.72f;
+    const int bucket = font_atlas_.bucket_for(font_size);
+    const float raster = font_atlas_.bucket_size(bucket);
+    if (bucket < 0 || raster <= 0.0f) return font_size * 0.72f;
+    return font_atlas_.cap_height(bucket) * (font_size / raster);
+}
+
+bool VulkanRenderer2D::ensure_text_raster_size(float px) {
+    return ensure_text_raster_sizes(std::vector<float>{px});
+}
+
+bool VulkanRenderer2D::ensure_text_raster_sizes(const std::vector<float>& px_list) {
+    if (!ctx_ || !font_atlas_.texture() || px_list.empty()) return false;
+
+    // 超采样时图集按 2x 物理像素烘档，整形强度仍要按逻辑字号算（否则 16px 的
+    // 字在 32 档上会被当成"大字号"跳过加粗，笔画反而比 1x 更细）。只在 >1 时
+    // 设置：非覆盖层调用（3D 文本）不能把它重置回 1，否则每帧来回重烘。
+    if (overlay_scale() > 1.0f) {
+        FontAtlas::set_shape_logical_scale(overlay_scale());
+    }
+
+    std::vector<float> want;
+    want.reserve(px_list.size());
+    for (float px : px_list) {
+        if (px < 6.0f) px = 6.0f;
+        if (px > 128.0f) px = 128.0f;
+        const float q = std::round(px);
+        if (font_atlas_.has_size(q)) continue;
+        bool dup = false;
+        for (float w : want) {
+            if (std::fabs(w - q) < 0.5f) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) want.push_back(q);
+    }
+    if (want.empty()) {
+        // 没有新档，但整形参数可能变过（首次进入超采样），需要按新参数重烘一次
+        bool reshaped = false;
+        auto bake = [this, &reshaped]() { reshaped = font_atlas_.reshape_if_dirty(ctx_); };
+        if (ctx_->is_running()) {
+            ctx_->run_with_gpu_context_sync(bake);
+        } else {
+            bake();
+        }
+        return reshaped;
+    }
+
+    bool baked = false;
+    auto bake = [this, &want, &baked]() { baked = font_atlas_.ensure_sizes(ctx_, want); };
+    if (ctx_->is_running()) {
+        // 重建图集 = 新建纹理 + 整张重传，必须在渲染线程上下文里同步做完：
+        // 随后同一帧的 flush_batch 会现取 font_atlas_.texture()，异步会取到旧图。
+        ctx_->run_with_gpu_context_sync(bake);
+    } else {
+        bake();
+    }
+    if (!baked) return false;
+
+    if (ITexture* tex = font_atlas_.texture()) {
+        tex->set_wrap(TextureWrap::ClampToEdge, TextureWrap::ClampToEdge);
+    }
+    GLOG_INFO("VulkanRenderer2D: font atlas rebaked at {} size(s) ({} bucket(s))",
+              want.size(), font_atlas_.bucket_count());
+    return true;
+}
+
+float VulkanRenderer2D::text_raster_size() const {
+    return font_atlas_.font_size();
+}
+
+void VulkanRenderer2D::draw_text(float x, float y, const std::string& text, float font_size, const Color& color) {    // 覆盖层超采样：笔位与字号一起换算到离屏目标的分辨率。字号乘上去之后
+    // bucket_for 会选到 2x 那一档，字形按离屏像素 1:1 铺开，降采样才有额外的
+    // 采样点可平均；只放大坐标不放大字号等于把 1x 位图拉一倍再缩回去。
+    if (overlay_scale_ != 1.0f) {
+        x *= overlay_scale_;
+        y *= overlay_scale_;
+        font_size *= overlay_scale_;
+    }
     if (!font_atlas_.texture()) {
         float cursor_x = x;
         float cursor_y = y;
@@ -2189,24 +2767,28 @@ void VulkanRenderer2D::draw_text(float x, float y, const std::string& text, floa
         return;
     }
 
-    float scale = font_size / font_atlas_.font_size();
+    // 取**最近的一档**而不是第 0 档：档位是按真实界面字号烘的，缩放比接近 1:1；
+    // 固定用第 0 档（初始 32px）等于把 13px 文字缩小 2.4 倍做双线性采样，笔画
+    // 边缘全是灰台阶，这就是 Vulkan 文字比 D3D12 糊的原因。
+    const int   bucket = font_atlas_.bucket_for(font_size);
+    const float raster = font_atlas_.bucket_size(bucket);
+    if (bucket < 0 || raster <= 0.0f) return;
+    const float scale = font_size / raster;
     float cursor_x = x;
     float cursor_y = y;
 
     for (char c : text) {
         if (c == '\n') {
             cursor_x = x;
-            cursor_y += font_atlas_.font_size() * scale;
+            cursor_y += font_size;
             continue;
         }
 
-        const Glyph* g = font_atlas_.get_glyph(c);
+        const Glyph* g = font_atlas_.get_glyph(bucket, static_cast<uint32_t>(static_cast<unsigned char>(c)));
         if (!g) continue;
 
-        float x0 = cursor_x + g->offset_x * scale;
-        float y0 = cursor_y + g->offset_y * scale;
-        float x1 = x0 + g->width * scale;
-        float y1 = y0 + g->height * scale;
+        float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+        glyph_quad(scale, cursor_x, cursor_y, *g, &x0, &y0, &x1, &y1);
 
         push_text_vertex(x0, y0, color, g->uv0_x, g->uv0_y);
         push_text_vertex(x1, y0, color, g->uv1_x, g->uv0_y);
@@ -2220,8 +2802,65 @@ void VulkanRenderer2D::draw_text(float x, float y, const std::string& text, floa
     }
 }
 
+void VulkanRenderer2D::draw_text_colored(float x, float y, float font_size,
+                                         const std::vector<ColoredRun>& runs) {
+    if (overlay_scale_ != 1.0f) {
+        x *= overlay_scale_;
+        y *= overlay_scale_;
+        font_size *= overlay_scale_;
+    }
+    if (!font_atlas_.texture()) {
+        // 无字体：按色块近似推进，至少保证 run 之间不重叠。
+        float cursor_x = x;
+        const float block_w = font_size * 0.6f;
+        for (const ColoredRun& run : runs) {
+            for (char c : run.text) {
+                if (c != ' ') {
+                    draw_rect(cursor_x, y - font_size * 0.8f, block_w, font_size, run.color);
+                }
+                cursor_x += block_w;
+            }
+        }
+        return;
+    }
+
+    const int   bucket = font_atlas_.bucket_for(font_size);
+    const float raster = font_atlas_.bucket_size(bucket);
+    if (bucket < 0 || raster <= 0.0f) return;
+    const float scale = font_size / raster;
+    float cursor_x = x;
+    for (const ColoredRun& run : runs) {
+        for (char c : run.text) {
+            if (c == '\n') {
+                cursor_x = x;
+                continue;
+            }
+            const Glyph* g = font_atlas_.get_glyph(bucket, static_cast<uint32_t>(static_cast<unsigned char>(c)));
+            if (!g) continue;
+
+            float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+            glyph_quad(scale, cursor_x, y, *g, &x0, &y0, &x1, &y1);
+
+            push_text_vertex(x0, y0, run.color, g->uv0_x, g->uv0_y);
+            push_text_vertex(x1, y0, run.color, g->uv1_x, g->uv0_y);
+            push_text_vertex(x1, y1, run.color, g->uv1_x, g->uv1_y);
+
+            push_text_vertex(x0, y0, run.color, g->uv0_x, g->uv0_y);
+            push_text_vertex(x1, y1, run.color, g->uv1_x, g->uv1_y);
+            push_text_vertex(x0, y1, run.color, g->uv0_x, g->uv1_y);
+
+            cursor_x += g->advance * scale;
+        }
+    }
+}
+
 void VulkanRenderer2D::draw_font_atlas_debug(float x, float y, float size) {
     if (!font_atlas_.texture()) return;
+    if (overlay_scale_ != 1.0f) {
+        x *= overlay_scale_;
+        y *= overlay_scale_;
+        size *= overlay_scale_;
+    }
 
     Color c = Color::white();
     push_text_vertex(x, y, c, 0.0f, 0.0f);

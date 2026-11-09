@@ -13,7 +13,7 @@ ctest --test-dir build --output-on-failure
 
 ## 2. Test Inventory
 
-There are currently 54 cases across seven hosts.
+There are currently 41 cases across seven hosts.
 
 ### 2.1 Math and Resource Rules (`GryceMathTests.exe`, 7 cases)
 
@@ -65,9 +65,9 @@ The sources under test (`engine/assets/asset_meta.cpp`, `engine/assets/import_op
 | Case | Coverage |
 | --- | --- |
 | `asset_meta` | Sidecar read/write round-trip, guid generation when missing (32 hex chars, no collision across 512 draws), defaults for missing fields, malformed JSON treated as absent, invalid settings falling back while keeping the guid, source-fingerprint staleness, no file written for a nonexistent source |
-| `asset_import_options` | Scaling, Z-up / X-up conversion (positions, normals and tangents together), material switch, roughness multiplier clamping, invalid scale ignored (see [editor-api.md](editor-api.md) section 7) |
+| `asset_import_options` | Scaling, Z-up / X-up conversion (positions, normals and tangents together), material switch, roughness multiplier clamping, invalid scale ignored (see [core-api.md](core-api.md) section 7) |
 
-### 2.5 Editor API (`GryceEditorTests.exe`, 3 cases)
+### 2.5 Edit command surface (`GryceCoreEditTests.exe`, 3 cases)
 
 The only unit suite that **links `GryceCore.dll`**: command consumption, the undo stack and scene serialization all live inside core, so there is no pure-compute core to strip out. None of these paths touch GPU or window state (`GCore_Init` only builds a World and a scene), so CI still needs no graphics card.
 
@@ -75,46 +75,18 @@ Observations are made by comparing scene-JSON bytes rather than entity counts: `
 
 | Case | Coverage |
 | --- | --- |
-| `editor_edit` | All 10 payload structs fit in 256 bytes, invalid arguments rejected (return 0), create auto-selects, rename, and the "missing components keep current value" semantics of `SetTransform` (see [editor-api.md](editor-api.md) section 1) |
-| `editor_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
-| `editor_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
+| `core_edit_edit` | All 10 payload structs fit in 256 bytes, invalid arguments rejected (return 0), create auto-selects, rename, and the "missing components keep current value" semantics of `SetTransform` (see [core-api.md](core-api.md) section 1) |
+| `core_edit_undo` | Undo returns byte-identical previous state, redo restores exactly, `BeginEdit`/`EndEdit` folds 5 transform commands into 1 step, stack depth limit, `SetUndoLimit(0)` disables recording, loading another scene clears history |
+| `core_edit_scene` | save → new scene → load → save produces byte-identical files (covers both "serializer drops a field" and "deserializer fails to restore"), loading a missing path returns -1 and leaves the scene usable |
 
-### 2.6 UI model layer and op queue (`GryceUiTests.exe`, 18 cases)
+### 2.6 Component model (`GryceComponentTests.exe`, 7 cases)
 
-The sources under test (`engine/api/ui_op_queue.cpp` + `engine/api/ui_api.cpp` + `engine/ui/*.cpp`) are compiled straight into the test executable with no engine DLL, and **without `GRYCE_HAS_IMGUI`** — which also verifies that the queue and the model layer work in builds with ImGui disabled (headless hosts take that path too). `GRYCE_RENDERER_BUILDING` turns the export macros into dllexport so the static exe links against itself.
-
-The `queue` suite covers the OpQueue itself: FIFO order and seq, in-place coalescing (position and seq untouched), same key with a different type does not merge, discrete ops never merge, a full queue evicts only the oldest coalescing op, a full queue of discrete ops rejects the push and counts it, drain budget, drain interval (the first drain is exempt, an empty drain does not consume the interval), `clear` keeps cumulative stats, the same key after a drain is a new entry, and bad arguments leave the queue untouched.
-
-The `abi` suite covers the C layer: field round-trip with engine-assigned seq, coalescing and discrete ops through the ABI, policy get/set, interval throttling, `GUi_ClearOps`, stats queries tolerating nullptr, bad arguments rejected, and a request beyond capacity capped at capacity. The ABI acts on the process-wide singleton, so cases isolate leftover interval state by clearing and advancing a few frames.
-
-The `state` / `layout` / `theme` / `input` / `snapshot` suites cover the `engine/ui/` model layer: stable ids and the state store (aging boundary, truncation, clear, count ABI), the deterministic layout stack (nested panels, row advance by `max(row height, tallest cell)`, auto-closed rows, indent), theme tokens (5 preset anchor sets, preset count and names, derived-token consistency across presets, per-token overrides not surviving preset switches, out-of-range tolerance, `apply` is a no-op without ImGui, rounding/scrollbar metrics), input gating and the shortcut table (exact modifier matching, registration-time conflict reporting, capacity), and the panel view model's JSON round-trip (64-bit ids as decimal strings, bad rows skipped, tolerant reads, capacity truncation).
-
-The `comp` suite covers the layout tree: add/find/remove with whole-subtree removal, parent must exist, capacity, child order, cycle check when `set` reparents, **a non-layout parent keeps the written pos**, Column stacking, all four Row cross-axis alignments, flex distributing main-axis free space, overflow clamping to 0, Grid equal-width columns and row heights, padding shrinking the content area, nested trees, and degenerate containers. The `compabi` suite round-trips the same semantics through the C surface (spec fields, out-of-range enum rejection, bad-argument return conventions). The `layoutjson` suite covers the layout tree's JSON round-trip (`ui_layout_tree_json.h`): storage-order emission, ids as decimal strings, node order matching `node_at` order, tolerant reads (missing fields defaulting, unknown kind/align names, bad entries skipped), and a bad top-level structure being the only thing that returns false.
-
-The `anim` suite covers the animation system: block 1's pure functions (boundary alignment and input clamping for all 11 easings, overshoot returning to 1 for Back, tween delay/overshoot/zero-duration, color lerp clamping, ordered key insertion with same-time overwrite, holding outside the range, segment easing taken from the previous key, capacity) and block 2's runtime (clip duration derivation and same-name track replacement, Once finishing at the end and stopping there, Loop wrap and PingPong fold, speed/seek/pause/stop, track delay holding the initial value, color channels and type discipline, the channel table rebuilt per clip, all operations no-op without a clip). The `animabi` suite covers the C surface: easing/name consistency with the model (including out-of-range enums), the tween/color helpers, and the full loop of "build a C clip → play → advance → read channels → pause/change speed/seek/stop".
-
-Full queue semantics and policy are documented in [ui-api.md](ui-api.md) section 7.5; the layout tree in section 7.7; theme presets and beautification in section 7.8; the two animation blocks in section 7.9; the built-in UI render path and UIDrawList in section 7.10; the backend switch and the `GUi_*` capability table in section 7.11.
-
-The `drawlist` suite covers the UI self-draw command buffer (the model layer of the built-in UI render path, see ui-api.md section 7.10): command order and field round-trip, empty text/nullptr producing no command, multiple string-pool entries not overlapping, commands tagged with the clip depth, nested clips intersecting, an empty clip culling draw commands while clip commands are still recorded, pop restoring the parent clip, popping an empty stack as a no-op, three-level intersection, a full clip stack rejecting the push without unbalancing pops, a full command table dropping and counting, a string pool dropping whole entries instead of truncating, reset clearing the clip stack, and negative geometry recorded verbatim.
-
-The `bridge` suite covers drawlist → `UiRenderer` translation: commands turning into rect/text/clip draws in order, the clip depth only being pushed when it changes, the bridge keeping its own clip stack so commands are self-describing, line-box tops converted to baselines, `0xRRGGBBAA` unpacked per channel, string-pool offset/length sliced correctly, and an empty drawlist producing no draws. The bridge touches no backend API, so assertions land on the recorded draw-call sequence.
-
-The `widget` suite covers the retained widget layer (phase 3): hit testing with the "later submission wins the press" layering rule, press / drag-out cancel / release for a click, Checkbox and Slider drag with external value sync, TextInput focus transfer plus character and backspace consumption, the `ensure` vs `touch` split (the former keeps flags, the latter clears them), `sweep` reclaiming slots not submitted this frame, everything being a no-op outside a window, and degenerate window sizes being rejected.
-
-The `builtin` suite covers the engine's built-in immediate-mode layer (phases 4a/4b, no ImGui): items flowing downwards with `same_line` switching columns, button click round-trip, the `##` suffix hidden from display but not from the id (two `Save##x` in one window are two widgets, and width is measured on the visible text only), long text wrapping without losing characters, `spacing(0)` as a no-op versus `spacing(<0)` advancing one theme item-spacing row, `wants_mouse` following the pointer in and out of the window while `wants_keyboard` follows input focus, color packing to RGBA, Progress fill, Label string composition, two separators as two slots, chrome drawn before content with content clipped to the window, same label in different windows staying independent, and the `last_item_*` queries.
-
-The same suite also covers every interaction the built-in track supports (`--case <substring>` runs a single case): text editing (click to place the caret, arrows/Home/End, Shift to select then type to replace, Delete and Backspace with and without a selection, Ctrl+A/C/V clipboard round-trip, long text scrolling horizontally to keep the caret visible, IME pre-edit attached only to the focused input); scrolling (one wheel notch = two line heights, the scrollbar only appears when content overflows, clamping at both ends); popups (the opening frame already returns 1, an outside click returns 0 on that same frame, clicking inside keeps it open, a menu item click closes it); modals (outside clicks do not close, Esc does); structure (a tree node toggles and `default_open` only seeds once, children indent, a menu opens and closes, a child region clips and scrolls on its own); drag and drop (a 4px threshold activates with a payload, release delivers it); `DragFloat` following the mouse delta with Ctrl for 1/10; window chrome (a title bar gives up content height, dragging accumulates the offset, the collapse box takes effect on the click frame); tooltips (immediate with a zero clock, 0.35 s delayed with a real clock); and HiDPI (screen coordinates divided by the scale land inside the logical rect, and the same pixel misses at scale 1).
-
-`GryceUiSmoke.exe` is the end-to-end demo for the model layer (not part of the gate; needs a window): the panel draws, `--ops-burst N` shows `coalesced` close to the continuous-op count in the stats, and `--ui-interval 3` produces a byte-identical screenshot to per-frame builds. The Layout page (`--page layout` / `Ctrl+3`) draws a 20-node tree, reading each node's rect after `GUi_CompResolve()` and drawing one window per node — those windows deliberately **do not** pass `GUI_WIN_NO_BRING_TO_FRONT`, or the children would sink below their parent (see ui-api.md section 7.7). The Anim page (`--page anim` / `Ctrl+4`) shows block 1 in the panel (easing combo + tween progress bar + color-lerp swatch) and block 2 on the stage: one 2-second clip drives four nodes (slide / pulse / bounce / staggered entrance) whose parent is 0, so the animation's direct pos writes are never overwritten by a layout. The Struct page (`--page struct`) demos collapsing headers, trees, a scrolling child region, popups, a modal and a tooltip, and `--ui-scale N` demos HiDPI. Adding `--ui-backend builtin` routes the whole UI through the built-in render path (no ImGui context involved); per-page screenshots should be visually equivalent to the ImGui backend — this is the only end-to-end check of the dual-track switch, since it exercises GL/D3D state and the font atlas that unit tests cannot reach (GL's `GL_SCISSOR_TEST` only really gets enabled here; unit tests can only observe the clip depth inside the drawlist).
-
-### 2.7 Component model (`GryceComponentTests.exe`, 7 cases)
-
-The sources under test (`engine/scene/entity.cpp` + `engine/scene/scene_serializer.cpp` + `engine/scene/prefab.cpp` + `engine/components/**` + `engine/reflection/**` + `engine/api/component_api.cpp` + `engine/api/core_api.cpp` + `engine/api/edit_api.cpp`) are compiled straight into the test executable with no engine DLL. Covers both orthogonal axes of the ECS (type inheritance, instance attachment); the semantics live in [architecture.md](architecture.md) 3.1/3.2 and [editor-api.md](editor-api.md) chapter 8.
+The sources under test (`engine/scene/entity.cpp` + `engine/scene/scene_serializer.cpp` + `engine/scene/prefab.cpp` + `engine/components/**` + `engine/reflection/**` + `engine/api/component_api.cpp` + `engine/api/core_api.cpp` + `engine/api/edit_api.cpp`) are compiled straight into the test executable with no engine DLL. Covers both orthogonal axes of the ECS (type inheritance, instance attachment); the semantics live in [architecture.md](architecture.md) 3.1/3.2 and [core-api.md](core-api.md) chapter 8.
 
 | Case | What it checks |
 | --- | --- |
-| `component_hierarchy` | Reflection-table-driven validation that every `GRYCE_REFLECT_CLASS` `Base` is a real C++ base class; base classes with derived classes (`Component2D` / `BasicRect`) must override `collect_type_views()`; `is_derived_from` reflexivity / transitivity / asymmetry |
-| `component_query` | Base-class queries (a `ColorRect` found as `BasicRect` / `Component2D`) and exact queries are not supersets of each other; multiple instances of one type do not overwrite each other in the view index; unmounting erases by exact pointer; `component_type_chain_names` ordering |
+| `component_hierarchy` | Reflection-table-driven validation that every `GRYCE_REFLECT_CLASS` `Base` is a real C++ base class; base classes with derived classes (`Node` / `Node2D` / `Component2D` / `BasicRect`) must override `collect_type_views()`; `is_derived_from` reflexivity / transitivity / asymmetry |
+| `component_query` | Base-class queries (a `NodeUI` found as `Node2D` / `Node` / `Component`, and a `ColorRect` as `BasicRect` / `Component2D`) and exact queries are not supersets of each other; Node domains, entity/component-tree visibility propagation and NodeUI serialization; multiple instances of one type do not overwrite each other in the view index; unmounting erases by exact pointer; `component_type_chain_names` ordering |
 | `component_pool` | View-pool allocation / release / reuse; a full pool refuses; `view_at` indexing agrees with pool traversal |
 | `component_lifecycle` | awake / start / update / destroy hook order; `is_effectively_enabled` propagating a disabled parent; a disabled component not affecting siblings |
 | `component_tree` | `set_component_parent` cycle checks, reparenting, unmounting; children remounting to the grandparent and staying alive when the parent component is removed; `component_root()`; local transforms stacking on top of the parent component (`world_transform_2d`); `clone()` rebuilding the tree |
@@ -122,6 +94,18 @@ The sources under test (`engine/scene/entity.cpp` + `engine/scene/scene_serializ
 | `component_capi` | Argument validation and return conventions for the 13 `engine.component.*` C APIs; the two setters (`SetParent` / `SetLocalTransform`) pushing commands instead of writing directly, with payload-size and undo round-trip assertions |
 
 `component_capi`'s undo assertions are the **command-routing** regression guard: if those setters ever go back to direct writes, `GEdit_BeginEdit` snapshots nothing and the assertion fails immediately.
+
+### 2.7 GryceUI (`GryceUiSkeletonTests.exe`, 5 cases)
+
+This target links only `GryceCore.dll` and creates no window or GPU resources. It tests NodeUI component-tree layout, the input state machine and backend-neutral draw commands.
+
+| Case | What it checks |
+| --- | --- |
+| `ui_layout` | viewport-filling root, Column layout, padding/gap advancement, minimum size, normalized anchors and local offsets |
+| `ui_input` | hover/enter/leave, pointer down/up/click, focus transfer to a focusable ancestor, event bubbling through NodeUI parents, and keyboard/character delivery only through the focused chain |
+| `ui_drawlist` | UIPanel background, UILabel text, clip push/pop ordering, font size and RGBA packing |
+| `ui_runtime` | root-tree lifecycle, hidden nodes removed from layout, clipping plus the root rectangle constraining hit testing, and `clear()` resetting state |
+| `ui_widgets` | pointer and keyboard interaction for Button/CheckBox/Slider, TextInput UTF-8 editing/IME pre-edit/Tab focus, and ScrollView wheel content offset |
 
 ## 3. Execution Notes
 
@@ -136,7 +120,8 @@ On CI the cases are registered individually and scheduled by the runner, so this
 ## 4. Adding Cases
 
 - Math / resource-rule suites: add the name to `GRYCE_MATH_TEST_SUITES` in the root `CMakeLists.txt`; it is registered as a CTest case automatically.
-- Asset / editor / UI suites: add the name to `GRYCE_ASSET_TEST_SUITES` / `GRYCE_EDITOR_TEST_SUITES` / `GRYCE_UI_TEST_SUITES` respectively. Editor cases must respect the two return conventions (enqueue returns 1/0, queries and scene operations return 0/-1); getting it wrong turns every assertion into a silent always-true pass.
+- Asset / edit-command suites: add the name to `GRYCE_ASSET_TEST_SUITES` / `GRYCE_CORE_EDIT_TEST_SUITES` respectively. Edit-command cases must respect the two return conventions (enqueue returns 1/0, queries and scene operations return 0/-1); getting it wrong turns every assertion into a silent always-true pass.
+- GryceUI skeleton suites: add the name to `GRYCE_UI_SKELETON_TEST_SUITES` in the root `CMakeLists.txt`; they run through `GryceUiSkeletonTests.exe`.
 - Component suites: add the name to `GRYCE_COMPONENT_TEST_SUITES` in the root `CMakeLists.txt`.
 - Toolchain suites: add the name to `_grycegc_suites` in `toolchain/CMakeLists.txt`.
 

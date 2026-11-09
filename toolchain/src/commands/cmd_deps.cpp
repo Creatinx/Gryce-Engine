@@ -44,9 +44,14 @@ std::filesystem::path resolve_exe(const std::filesystem::path& build_dir,
 } // namespace
 
 int cmd_deps(const Options& opts) {
-    const std::string build_dir_arg = opts.get("build-dir", "cmake-build-debug");
+    std::filesystem::path build_dir;
+    if (opts.has("build-dir")) {
+        build_dir = opts.get("build-dir");
+    } else {
+        // 缺省自动探测（build → cmake-build-debug → cmake-build-release）。
+        build_dir = find_build_dir({"build", "cmake-build-debug", "cmake-build-release"});
+    }
     const std::string exe_arg = opts.get("exe");
-    std::filesystem::path build_dir = build_dir_arg;
     std::error_code ec;
     build_dir = std::filesystem::absolute(build_dir, ec);
 

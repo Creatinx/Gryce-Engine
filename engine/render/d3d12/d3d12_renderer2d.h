@@ -30,8 +30,13 @@ class D3D12Renderer2D final : public Renderer2D {
 public:
     explicit D3D12Renderer2D(D3D12Backend* backend);
     ~D3D12Renderer2D() override = default;
+    void begin_overlay_pass(int screen_width, int screen_height) override;
 
 protected:
+    void submit_mesh(IMesh* mesh, IShader* shader,
+                     RHIMeshHandle mesh_handle,
+                     RHIShaderHandle shader_handle) override;
+    void configure_batch_mesh(IMesh* mesh) override;
     bool use_backend_framebuffers() const override { return true; }
 
     void configure_depth_texture_for_sampling(ITexture* shadow_map) override;
@@ -42,6 +47,7 @@ protected:
     void bind_default_texture_slot(int slot, uint32_t id) override;
 
 private:
+    D3D12Backend* d3d12_backend_ = nullptr;
     // 1x1 默认纹理的引擎纹理句柄（albedo / normal 各一个）。
     // 基类的钩子签名是 uint32_t，这里用 index+1 作为 id，0 保留为"无效"。
     RHITextureHandle default_textures_[2];

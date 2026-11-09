@@ -209,7 +209,7 @@ private:
     bool water_ = false;
     // 特效后处理 push constant 块的选择（决定 create_pipeline 的 push range 与
     // set_uniform_* 路由）：每个特效独立块避免共享块超 maxPushConstantsSize(256)。
-    enum class PostProcessPushKind { General = 0, ContactShadow, SSR, SSIL, Motion, Fog, GTAO };
+    enum class PostProcessPushKind { General = 0, ContactShadow, SSR, SSIL, Motion, Fog, GTAO, Volumetric };
     PostProcessPushKind push_kind_ = PostProcessPushKind::General;
     // 骨骼蒙皮管线：顶点布局追加 bone ids/weights（stride 88），
     // 描述符布局追加 palette UBO（binding 8，vertex stage）
@@ -559,6 +559,32 @@ private:
     };
     static_assert(sizeof(GTAOPushData) == 96, "GTAOPushData must be 96 bytes");
 
+    // 体积光散射（丁达尔）专用 push constant（std430，224 字节，< 256）。
+    // 对应 vulkan_volumetric_scatter.frag 的 PushConstants 块：重建世界坐标的逆
+    // 矩阵、阴影贴图用的光照矩阵、太阳参数、介质参数与阴影比较偏移。
+    struct alignas(16) VolumetricPushData {
+        math::Matrix4f inv_view_proj;      // +0
+        math::Matrix4f light_space_matrix; // +64（已做 NDC z 重映射）
+        math::Vector3f camera_pos;         // +128
+        float _pad_camera;                 // +140  std430：vec3 占满 16 字节
+        math::Vector3f sun_direction;      // +144
+        float sun_intensity;               // +156
+        math::Vector3f sun_color;          // +160
+        float intensity;                   // +172
+        math::Vector3f tint;               // +176
+        float density;                     // +188
+        float scattering;                  // +192
+        float phase_g;                     // +196
+        int steps;                         // +200
+        float max_distance;                // +204
+        float ndc_z_scale;                 // +208
+        float ndc_z_bias;                  // +212
+        float shadow_bias;                 // +216
+        int shadow_enabled;                // +220
+    };
+    static_assert(sizeof(VolumetricPushData) == 224,
+                  "VolumetricPushData must be 224 bytes");
+
     // 水体材质专用 push constant（std430，192 字节，< 256）。对应 vulkan_water 的
     // PushConstants 块。顶点阶段用 view_proj/model，片元阶段用其余参数。
     struct alignas(16) WaterPushData {
@@ -583,6 +609,7 @@ private:
     mutable MotionPushData motion_push_{};
     mutable FogPushData fog_push_{};
     mutable GTAOPushData gtao_push_{};
+    mutable VolumetricPushData volumetric_push_{};
     mutable WaterPushData water_push_{};
 };
 

@@ -49,8 +49,13 @@ void main() {
     vec3  hue = scene_lum > 1e-4 ? scene.rgb / scene_lum : vec3(1.0);
     float refl_lum = dot(ssr.rgb, vec3(0.2126, 0.7152, 0.0722));
 
-    // 反射项只取反射内容的**亮度**，色相用表面自己的 —— 反射的强弱由反射面决定，
-    // 而不是被反射物。直接用 ssr.rgb 会把命中物体的颜色整块搬过来，
-    // 与"按表面 BRDF 加权"相矛盾。
-    FragColor = vec4(mix(scene.rgb, hue * refl_lum, w), 1.0);
+    // 彩色反射：反射项的颜色主要来自**被反射的内容**（镜面里的红墙就该是红的），
+    // 只按表面自身色相轻微染色 —— 金属保留本色，绝缘体基本中性。
+    // 早先只取反射内容的亮度、色相一律用表面的，等于把所有反射压成表面色的
+    // 灰度图，任何反射看起来都是"没有颜色的亮块"，这正是彩色反射缺失的原因。
+    // 亮度守恒：两项亮度相同，混合后反射强度仍由 w 决定，不会变亮。
+    const float kSurfaceHueMix = 0.35;
+    vec3 refl_col = mix(ssr.rgb, hue * refl_lum, kSurfaceHueMix);
+
+    FragColor = vec4(mix(scene.rgb, refl_col, w), 1.0);
 }

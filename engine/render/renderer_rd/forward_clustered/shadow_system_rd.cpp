@@ -215,11 +215,14 @@ math::Matrix4f ShadowSystemRD::_compute_cascade_light_matrix(
     light_space_max.y = light_space_min.y + span_y;
     light_space_max.z = light_space_min.z + span_z;
 
-    // 构建正交投影矩阵
+    // 构建正交投影矩阵。light_space_min/max.z 是光照空间下的负值（相机看向 -z），
+    // 必须转成正距离且 near<far：近平面取最不负（-max.z），远平面取最负（-min.z）。
+    // 直接把负值传给 ortho 会让几何体映射到 NDC z≈9~11（超出 [-1,1]）被远裁剪面
+    // 裁掉，导致 CSM 阴影贴图整张为空 —— 这就是"阴影位置错/不显示"的根因。
     math::Matrix4f light_proj = math::Matrix4f::ortho(
         light_space_min.x, light_space_max.x,
         light_space_min.y, light_space_max.y,
-        light_space_min.z, light_space_max.z);
+        -light_space_max.z, -light_space_min.z);
 
     return light_proj * light_view;
 }

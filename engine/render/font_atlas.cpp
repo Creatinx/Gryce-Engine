@@ -23,13 +23,32 @@ namespace gryce_engine::render {
 
 namespace {
 
-// 档位上限：每个档都是整批字形的一份拷贝。6 档足够覆盖"界面文字 + 引擎自带
-// 调试文字 + 1/1.5/2 倍 DPI"，再多就是浪费显存（1024² RGBA 已经 4MB）。
-constexpr int kMaxBuckets = 6;
+// 档位上限：每个档都是整批字形的一份拷贝。8 档够覆盖"界面正文字号 + 标题
+// + 引擎自带调试文字 + 1/1.5/2 倍 DPI"，再多就是浪费显存（4096² RGBA 已 64MB）。
+constexpr int kMaxBuckets = 8;
 
 // 档位合并容差：请求尺寸与已有档相差 12% 以内就复用该档（1.12 倍缩放的模糊
 // 人眼几乎看不出来，却能省掉一次整图重烘）。
 constexpr float kSizeTolerance = 0.12f;
+
+// 字形栅格化的过采样倍率（stb 上限 8）。1 = 二值位图，抗锯齿全靠采样插值；
+// 8x8 = 每像素 64 个子样本，覆盖率量化到 1/64，边缘才有真正的灰度过渡。
+constexpr int kOversample = 8;
+
+// 覆盖率曲线指数。16px 等宽字体的竖笔本就只有一个像素宽，8x8 过采样量到的
+// 笔画芯部覆盖率通常只有 60%~75%，再叠上目标色就显灰、显软。小于 1 的指数
+// 把整条曲线往上抬，笔画芯部压向实心，边缘仍保留渐变。
+constexpr float kCoverageGamma = 0.68f;
+
+// 笔画加粗（stem darkening）强度。按四邻域取最大覆盖率再乘这个系数，取 max
+// 并入原值：只在笔画外侧补一圈半透明，不会把已经实心的像素变淡。0 = 关闭。
+constexpr float kStemGain = 0.56f;
+
+// 整形强度随字号衰减：字号越小，单个像素占笔画的比例越高、覆盖率越容易偏灰，
+// 需要满强度；到 24px 笔画已经占满几个像素，再抬曲线只会让字变胖发糊，直接
+// 关闭。中间线性过渡，避免同一份界面里小字过实、大字发虚。
+constexpr float kShapeFullPx = 14.0f;
+constexpr float kShapeNonePx = 24.0f;
 
 float clamp_size(float s) {
     if (s < 4.0f) return 4.0f;
@@ -37,7 +56,37 @@ float clamp_size(float s) {
     return s;
 }
 
+// 运行时可调的字形整形强度，见 FontAtlas::set_shape_strength
+float g_shape_strength = 1.0f;
+
+// 档位尺寸 / 逻辑字号（超采样时为 2），以及"整形参数变了要重烘"的脏标记
+float g_shape_logical_scale = 1.0f;
+bool g_shape_dirty = false;
+
 } // namespace
+
+void FontAtlas::set_shape_strength(float strength) {
+    if (strength < 0.0f) strength = 0.0f;
+    if (strength > 2.5f) strength = 2.5f;
+    g_shape_strength = strength;
+}
+
+float FontAtlas::shape_strength() {
+    return g_shape_strength;
+}
+
+void FontAtlas::set_shape_logical_scale(float scale) {
+    if (!(scale > 1.0f)) scale = 1.0f;
+    if (std::fabs(scale - g_shape_logical_scale) < 1e-3f) return;
+    g_shape_logical_scale = scale;
+    g_shape_dirty = true;
+}
+
+bool FontAtlas::reshape_if_dirty(RenderContext* ctx) {
+    if (!g_shape_dirty || sizes_.empty()) return false;
+    g_shape_dirty = false;
+    return repack(ctx, sizes_);
+}
 
 FontAtlas::~FontAtlas() {}
 
@@ -145,12 +194,6 @@ bool FontAtlas::repack(RenderContext* ctx, const std::vector<float>& requested) 
                 pr.array_of_unicode_codepoints = nullptr;
                 pr.num_chars = static_cast<int>(range.last - range.first + 1);
                 pr.font_size = s;
-                // 2x2 过采样：stb 对 h/v 分别做 2 倍栅格化 + 盒式预滤。原来写成
-                // h=2/v=1 只横向滤了一遍，竖笔边缘的灰度台阶因此比横笔更硬（同一
-                // 个字横竖笔画质感不一致）。顺带给每个字形留出 1 列 1 行透明守卫
-                // 像素（g.width 取 x1-x0 时把这列算进去），缩放采样不啃邻居。
-                pr.h_oversample = 2;
-                pr.v_oversample = 2;
                 pr.chardata_for_range = nullptr;
                 job.ranges.push_back(pr);
                 job.chardata.emplace_back(pr.num_chars);
@@ -173,6 +216,13 @@ bool FontAtlas::repack(RenderContext* ctx, const std::vector<float>& requested) 
             GLOG_ERROR("FontAtlas: stbtt_PackBegin failed");
             return false;
         }
+        // 过采样必须设在 **pack context** 上：stbtt_PackFontRanges 开头会用
+        // spc->h_oversample 覆写每个 range 里的同名字段（注释也写明 "don't set
+        // these"），所以直接改 stbtt_pack_range 是静默无效的 —— 之前就是这么
+        // 写的，图集里的字形一直是 1 倍二值位图，屏幕上的"平滑边缘"其实全是
+        // 采样时的双线性插值糊出来的，不是真正的覆盖率抗锯齿。
+        // 8x8 是 stb 上限：覆盖率量化 1/(8*8)=65 级，斜笔画/圆角才真的连续。
+        stbtt_PackSetOversampling(&pack_ctx, kOversample, kOversample);
         // 注：每次重试都要重跑所有 job —— 上一轮的 chardata 会被覆盖，
         // 这正是我们要的（只有成功那轮的坐标有效）。
         packed_ok = true;
@@ -192,6 +242,62 @@ bool FontAtlas::repack(RenderContext* ctx, const std::vector<float>& requested) 
             return false;
         }
         atlas_size *= 2;
+    }
+
+    // ---- 3.5 覆盖率整形：抬曲线 + 轻度加粗 ----
+    // 过采样只保证"边缘有正确的灰度"，不保证"笔画够实"。等宽字体在 16px 下
+    // 竖笔 1 个像素宽、横笔两个像素各半覆盖，直接画出来就是一层灰纱。这里在
+    // 烘焙期一次性整形：曲线抬陡让芯部接近实心，四邻域膨胀补足 1px 笔画的
+    // 侧向覆盖。膨胀严格限制在字形自身的图集矩形内，不会啃到相邻字形。
+    {
+        std::vector<unsigned char> shaped = bitmap_r8;
+        const std::size_t stride = static_cast<std::size_t>(atlas_size);
+        unsigned char lut[256];
+        for (const auto& job : jobs) {
+            if (g_shape_strength <= 0.0f) break;
+            // 整形强度按**逻辑字号**判断：超采样时 32 档对应的仍是 16px 的字，
+            // 若按 32 判就会掉进"大字号不整形"，笔画反而比 1x 渲染更细。
+            const float logical_size = job.size / std::max(1.0f, g_shape_logical_scale);
+            const float t = std::clamp((kShapeNonePx - logical_size) / (kShapeNonePx - kShapeFullPx),
+                                       0.0f, 1.0f);
+            if (t <= 0.0f) continue;
+            const float amount = std::min(1.5f, t * g_shape_strength);
+            const float gamma = std::max(0.40f, 1.0f - amount * (1.0f - kCoverageGamma));
+            const float stem = std::min(1.0f, kStemGain * amount);
+            for (int i = 0; i < 256; ++i) {
+                const float c = static_cast<float>(i) / 255.0f;
+                lut[i] = static_cast<unsigned char>(std::pow(c, gamma) * 255.0f + 0.5f);
+            }
+            for (const auto& range : job.ranges) {
+                const stbtt_packedchar* chars = range.chardata_for_range;
+                if (!chars) continue;
+                for (int ci = 0; ci < range.num_chars; ++ci) {
+                    const stbtt_packedchar& b = chars[ci];
+                    const int bx0 = static_cast<int>(b.x0);
+                    const int bx1 = static_cast<int>(b.x1);
+                    const int by0 = static_cast<int>(b.y0);
+                    const int by1 = static_cast<int>(b.y1);
+                    if (bx1 <= bx0 || by1 <= by0) continue;
+                    for (int y = by0; y < by1; ++y) {
+                        for (int x = bx0; x < bx1; ++x) {
+                            const std::size_t idx = static_cast<std::size_t>(y) * stride +
+                                                    static_cast<std::size_t>(x);
+                            unsigned int neighbour = 0;
+                            if (x > bx0) neighbour = std::max(neighbour, static_cast<unsigned int>(lut[bitmap_r8[idx - 1]]));
+                            if (x + 1 < bx1) neighbour = std::max(neighbour, static_cast<unsigned int>(lut[bitmap_r8[idx + 1]]));
+                            if (y > by0) neighbour = std::max(neighbour, static_cast<unsigned int>(lut[bitmap_r8[idx - stride]]));
+                            if (y + 1 < by1) neighbour = std::max(neighbour, static_cast<unsigned int>(lut[bitmap_r8[idx + stride]]));
+                            const unsigned int self = lut[bitmap_r8[idx]];
+                            const unsigned int gained = static_cast<unsigned int>(
+                                static_cast<float>(neighbour) * stem + 0.5f);
+                            shaped[idx] = static_cast<unsigned char>(
+                                std::min(255u, std::max(self, gained)));
+                        }
+                    }
+                }
+            }
+        }
+        bitmap_r8.swap(shaped);
     }
 
     // ---- 4. 转 RGBA8（白色 + alpha=覆盖度），与 2D sprite 纹理同格式，
@@ -246,8 +352,12 @@ bool FontAtlas::repack(RenderContext* ctx, const std::vector<float>& requested) 
                 g.uv1_y = b.y1 / fatlas;
                 g.offset_x = b.xoff;
                 g.offset_y = b.yoff;
-                g.width = static_cast<float>(b.x1 - b.x0);
-                g.height = static_cast<float>(b.y1 - b.y0);
+                // 逻辑宽高必须用 xoff2-xoff：过采样时 x0/x1 是图集里放大
+                // oversample 倍后的像素矩形，直接拿来当绘制尺寸会让字形胀大
+                // 8 倍且 UV 只覆盖 1/8（越界采样到邻居字形）。stb 已经把
+                // xoff/xoff2 按 1/oversample 换算回逻辑像素。
+                g.width = b.xoff2 - b.xoff;
+                g.height = b.yoff2 - b.yoff;
                 g.advance = b.xadvance;
 
                 // 多源合并：先出现的源优先，后面的源只补前面没有的码点
@@ -260,7 +370,14 @@ bool FontAtlas::repack(RenderContext* ctx, const std::vector<float>& requested) 
     }
 
     std::size_t total = 0;
-    for (const auto& b : buckets_) total += b.glyphs.size();
+    for (auto& b : buckets_) {
+        // 大写高决定文字视觉重心，'H' 在所有等宽/无衬线字体里都齐备。
+        const auto cap = b.glyphs.find(static_cast<uint32_t>('H'));
+        b.cap_height = (cap != b.glyphs.end() && cap->second.height > 0.0f)
+                           ? cap->second.height
+                           : b.size * 0.72f;
+        total += b.glyphs.size();
+    }
     std::string ladder;
     for (float s : sizes_) {
         if (!ladder.empty()) ladder += ", ";
@@ -271,18 +388,76 @@ bool FontAtlas::repack(RenderContext* ctx, const std::vector<float>& requested) 
     return true;
 }
 
+namespace {
+
+// 档位超上限时淘汰"与邻居最挤"的一档：两档尺寸只差几像素时，留一档就够
+// （缩放比接近 1），把名额让给真正缺的尺寸。
+void prune_buckets(std::vector<float>& sizes, int max_buckets) {
+    while (static_cast<int>(sizes.size()) > max_buckets && sizes.size() > 1) {
+        int victim = 1;
+        float tightest = 1e30f;
+        for (int i = 1; i < static_cast<int>(sizes.size()); ++i) {
+            const float lo = sizes[static_cast<std::size_t>(i)] - sizes[static_cast<std::size_t>(i - 1)];
+            const float hi = (i + 1 < static_cast<int>(sizes.size()))
+                                 ? sizes[static_cast<std::size_t>(i + 1)] - sizes[static_cast<std::size_t>(i)]
+                                 : lo;
+            const float gap = std::min(lo, hi);
+            if (gap < tightest) {
+                tightest = gap;
+                victim = i;
+            }
+        }
+        sizes.erase(sizes.begin() + victim);
+    }
+}
+
+} // namespace
+
 bool FontAtlas::ensure_size(RenderContext* ctx, float size) {
     if (sources_.empty()) return false;
     size = clamp_size(size);
-    if (has_size(size)) return false;
+    if (has_size(size)) {
+        // 档位已存在，但整形参数变过（例如切换了超采样倍率）就得按新参数重烘
+        if (!g_shape_dirty) return false;
+        g_shape_dirty = false;
+        return repack(ctx, sizes_);
+    }
 
     std::vector<float> next = sizes_;
     next.push_back(size);
-    // 超上限：丢掉最早加进来的非兜底档（第 0 档永远保留——单参 get_glyph 用它）
-    while (static_cast<int>(next.size()) > kMaxBuckets) {
-        if (next.size() <= 1) break;
-        next.erase(next.begin() + 1);
+    // 第 0 档永远保留——单参 get_glyph 用它。
+    prune_buckets(next, kMaxBuckets);
+    return repack(ctx, next);
+}
+
+bool FontAtlas::ensure_sizes(RenderContext* ctx, const std::vector<float>& sizes) {
+    if (sources_.empty() || sizes.empty()) return false;
+
+    std::vector<float> next = sizes_;
+    bool added = false;
+    for (float raw : sizes) {
+        const float s = clamp_size(raw);
+        bool dup = false;
+        for (float e : next) {
+            if (std::fabs(e - s) <= kSizeTolerance * std::max(e, 1.0f)) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+        next.push_back(s);
+        added = true;
     }
+    if (!added) {
+        if (!g_shape_dirty) return false;
+        g_shape_dirty = false;
+        return repack(ctx, sizes_);
+    }
+    g_shape_dirty = false;
+
+    // 第 0 档保持原位，其余按尺寸升序，便于 bucket_for 与日志阅读。
+    if (next.size() > 2) std::sort(next.begin() + 1, next.end());
+    prune_buckets(next, kMaxBuckets);
     return repack(ctx, next);
 }
 
@@ -300,7 +475,11 @@ int FontAtlas::bucket_for(float font_size) const {
     for (std::size_t i = 0; i < buckets_.size(); ++i) {
         // 用相对误差选档：13 画在 32 上是 1.46 倍误差、32 画在 13 上是 1.46，
         // 相对量才对"放大糊"和"缩小虚"一视同仁。
-        const float err = std::fabs(font_size - buckets_[i].size) / std::max(buckets_[i].size, 1.0f);
+        float err = std::fabs(font_size - buckets_[i].size) / std::max(buckets_[i].size, 1.0f);
+        // 同等误差下优先选**比目标小**的档：放大是双线性插值，笔画轮廓只是被
+        // 拉宽一点点；缩小是欠采样，会直接丢掉笔画细节（细竖线断成灰点）。
+        // 13px 在 {12, 14} 之间时选 12（放大 8%）而不是 14（缩小 7%）。
+        if (buckets_[i].size > font_size) err *= 1.15f;
         if (err < best_err) {
             best_err = err;
             best = static_cast<int>(i);
@@ -312,6 +491,12 @@ int FontAtlas::bucket_for(float font_size) const {
 float FontAtlas::bucket_size(int bucket) const {
     if (bucket < 0 || bucket >= static_cast<int>(buckets_.size())) return font_size_;
     return buckets_[static_cast<std::size_t>(bucket)].size;
+}
+
+float FontAtlas::cap_height(int bucket) const {
+    if (bucket < 0 || bucket >= static_cast<int>(buckets_.size())) return 0.0f;
+    const Bucket& b = buckets_[static_cast<std::size_t>(bucket)];
+    return b.cap_height > 0.0f ? b.cap_height : b.size * 0.72f;
 }
 
 bool FontAtlas::create_fallback_atlas(RenderContext* ctx, float font_size) {

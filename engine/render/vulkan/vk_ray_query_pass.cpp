@@ -214,8 +214,26 @@ void main() {
                 huv.y = 1.0 - huv.y;
                 if (all(greaterThanEqual(huv, vec2(0.0))) &&
                     all(lessThanEqual(huv, vec2(1.0)))) {
-                    reflCol = bilinear(uLit, huv * vec2(fullRes), fullRes).rgb;
-                    on_screen = true;
+                    // 遮挡校验（修漏光）：命中点投影回屏幕后，屏幕该像素必须**确实是
+                    // 这个命中面**。若该像素更近处有别的物体（命中点被遮挡），采样
+                    // uLit 拿到的其实是遮挡物的颜色 —— 反射里会"透墙"看到本不该可见
+                    // 的光照，这就是漏光。这里用线性距离比对：屏幕深度重建点到相机
+                    // 的距离与命中点到相机的距离相对差超过阈值即判为被遮挡，退回环境
+                    // 预过滤（与出屏命中同一条兜底，不去采错误的屏幕色）。
+                    // 之前只判投影在屏内、不判遮挡，是所有"漏光"的共同来源。
+                    ivec2 hp = clamp(ivec2(huv * vec2(fullRes)), ivec2(0), fullRes - ivec2(1));
+                    float scene_z = texelFetch(uDepth, hp, 0).r;
+                    float hit_lin = length(hit - camPos);
+                    if (scene_z < 1.0) {
+                        float scene_lin = length(reconstructWorld(huv, scene_z) - camPos);
+                        float rel = abs(scene_lin - hit_lin) / max(hit_lin, 1e-3);
+                        // 6% 相对容差：小于它视为同一表面（亚像素级投影误差），
+                        // 大于它视为被更近的几何遮挡。
+                        if (rel < 0.06) {
+                            reflCol = bilinear(uLit, huv * vec2(fullRes), fullRes).rgb;
+                            on_screen = true;
+                        }
+                    }
                 }
             }
             if (!on_screen) {
@@ -352,7 +370,11 @@ void main() {
         }
         vec3 hue = lum > 1e-4 ? lit / lum : vec3(1.0);
         float refl_lum = dot(r.rgb, vec3(0.2126, 0.7152, 0.0722));
-        vec3 color = mix(lit, hue * refl_lum, w);
+        // 与 SSR 合成同口径的彩色反射：反射色取自被反射内容本身，只按表面色相
+        // 轻微染色；亮度守恒，反射强度仍完全由 w 决定。
+        const float kSurfaceHueMix = 0.35;
+        vec3 refl_col = mix(r.rgb, hue * refl_lum, kSurfaceHueMix);
+        vec3 color = mix(lit, refl_col, w);
         imageStore(uOut, px, vec4(color, 1.0));
     }
 }
@@ -391,9 +413,11 @@ VkRayQueryPass& VkRayQueryPass::operator=(VkRayQueryPass&& other) noexcept {
         composite_pipeline_ = other.composite_pipeline_;
         desc_layout_ = other.desc_layout_;
         pool_ = other.pool_;
-        trace_set_ = other.trace_set_;
-        temporal_set_ = other.temporal_set_;
-        composite_set_ = other.composite_set_;
+        for (int i = 0; i < 3; ++i) {
+            trace_set_[i] = other.trace_set_[i];
+            temporal_set_[i] = other.temporal_set_[i];
+            composite_set_[i] = other.composite_set_[i];
+        }
         for (int i = 0; i < 3; ++i) ubo_[i] = other.ubo_[i];
         one_shot_pool_ = other.one_shot_pool_;
         fallback_sampler_ = other.fallback_sampler_;
@@ -441,9 +465,11 @@ VkRayQueryPass& VkRayQueryPass::operator=(VkRayQueryPass&& other) noexcept {
         other.composite_pipeline_ = VK_NULL_HANDLE;
         other.desc_layout_ = VK_NULL_HANDLE;
         other.pool_ = VK_NULL_HANDLE;
-        other.trace_set_ = VK_NULL_HANDLE;
-        other.temporal_set_ = VK_NULL_HANDLE;
-        other.composite_set_ = VK_NULL_HANDLE;
+        for (int i = 0; i < 3; ++i) {
+            other.trace_set_[i] = VK_NULL_HANDLE;
+            other.temporal_set_[i] = VK_NULL_HANDLE;
+            other.composite_set_[i] = VK_NULL_HANDLE;
+        }
         for (int i = 0; i < 3; ++i) other.ubo_[i] = nullptr;
         other.one_shot_pool_ = VK_NULL_HANDLE;
         other.fallback_sampler_ = VK_NULL_HANDLE;
@@ -574,7 +600,9 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
 
     // 三槽位描述符集：槽 0 trace（uOut=原始反射, uAuxOut=本帧辅助）、
     // 槽 1 temporal（uOut=累积结果）、槽 2 composite（uOut=全分辨率输出）。
-    constexpr uint32_t k_slots = k_stage_count;
+    // 帧槽 x 阶段：每个在飞帧都要有自己的一套（见头文件字段说明）。
+    constexpr uint32_t k_frame_slots = 3;
+    constexpr uint32_t k_slots = k_frame_slots * k_stage_count;
     VkDescriptorPoolSize pool_sizes[6]{};
     pool_sizes[0].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     pool_sizes[0].descriptorCount = k_slots;
@@ -599,8 +627,9 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
         return false;
     }
 
-    VkDescriptorSet sets[3]{};
-    VkDescriptorSetLayout layouts[3] = {desc_layout_, desc_layout_, desc_layout_};
+    VkDescriptorSet sets[k_slots]{};
+    VkDescriptorSetLayout layouts[k_slots]{};
+    for (uint32_t i = 0; i < k_slots; ++i) layouts[i] = desc_layout_;
     VkDescriptorSetAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc_info.descriptorPool = pool_;
@@ -610,9 +639,11 @@ bool VkRayQueryPass::init(VulkanDevice* device) {
         GLOG_ERROR("VkRayQueryPass: vkAllocateDescriptorSets failed");
         return false;
     }
-    trace_set_ = sets[0];
-    temporal_set_ = sets[1];
-    composite_set_ = sets[2];
+    for (uint32_t f = 0; f < k_frame_slots; ++f) {
+        trace_set_[f] = sets[f * k_stage_count + 0];
+        temporal_set_[f] = sets[f * k_stage_count + 1];
+        composite_set_[f] = sets[f * k_stage_count + 2];
+    }
 
     // uniform 缓冲三个区域（trace / temporal / composite）。
     // 区域步长必须按 minUniformBufferOffsetAlignment 取整（NVIDIA 桌面为 256）：
@@ -661,9 +692,11 @@ void VkRayQueryPass::shutdown() {
         composite_pipeline_ = VK_NULL_HANDLE;
         desc_layout_ = VK_NULL_HANDLE;
         pool_ = VK_NULL_HANDLE;
-        trace_set_ = VK_NULL_HANDLE;
-        temporal_set_ = VK_NULL_HANDLE;
-        composite_set_ = VK_NULL_HANDLE;
+        for (int i = 0; i < 3; ++i) {
+            trace_set_[i] = VK_NULL_HANDLE;
+            temporal_set_[i] = VK_NULL_HANDLE;
+            composite_set_[i] = VK_NULL_HANDLE;
+        }
         for (int i = 0; i < 3; ++i) ubo_[i] = nullptr;
         one_shot_pool_ = VK_NULL_HANDLE;
         fallback_sampler_ = VK_NULL_HANDLE;
@@ -1126,7 +1159,10 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     accel_write.accelerationStructureCount = 1;
     accel_write.pAccelerationStructures = &tlas;
 
-    const VkDescriptorSet sets[k_stage_count] = {trace_set_, temporal_set_, composite_set_};
+    // 取本帧槽位那一套（3 套轮转，见头文件字段说明）。
+    const uint32_t set_slot = frame_slot % 3;
+    const VkDescriptorSet sets[k_stage_count] = {trace_set_[set_slot], temporal_set_[set_slot],
+                                                 composite_set_[set_slot]};
     // 每段最多写 14 个描述符（binding 0..13）。
     constexpr uint32_t k_writes = 14;
     VkWriteDescriptorSet writes[k_stage_count][k_writes]{};
@@ -1178,7 +1214,7 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     // ---- 派发 1：trace（追踪分辨率光线查询）----
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, trace_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1,
-                            &trace_set_, 0, nullptr);
+                            &sets[0], 0, nullptr);
     vkCmdDispatch(cmd, (trace_w + 7) / 8, (trace_h + 7) / 8, 1);
 
     // trace 写出 → temporal/composite 采样（着色器写 → 着色器读写）
@@ -1192,7 +1228,7 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
         // ---- 派发 2：temporal（时域累积）----
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_pipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1,
-                                &temporal_set_, 0, nullptr);
+                                &sets[1], 0, nullptr);
         vkCmdDispatch(cmd, (trace_w + 7) / 8, (trace_h + 7) / 8, 1);
         cmd_transition_image(cmd, acc_image_[cur], VK_IMAGE_LAYOUT_GENERAL,
                              VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
@@ -1202,7 +1238,7 @@ void VkRayQueryPass::render(VkCommandBuffer cmd,
     // ---- 派发 3：composite（全分辨率双边合成）----
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composite_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1,
-                            &composite_set_, 0, nullptr);
+                            &sets[2], 0, nullptr);
     vkCmdDispatch(cmd, (width + 7) / 8, (height + 7) / 8, 1);
 
     // 输出图写完成 → 准备被后端拷回 HDR 颜色（TRANSFER_SRC）

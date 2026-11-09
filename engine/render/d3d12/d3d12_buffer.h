@@ -23,6 +23,7 @@
 
 #include <d3d12.h>
 
+#include "d3d12_retire.h"
 #include "render/buffer.h"
 
 namespace gryce_engine::render::d3d12 {
@@ -58,8 +59,11 @@ public:
     // 后端在创建时注入的设备上下文。D3D12 资源无法脱离设备创建，
     // 而 IBuffer 的工厂签名（create_buffer()）不带设备参数，故用注入。
     // sink 可为 nullptr（此时 DEFAULT 堆缓冲的 update() 退回同步路径）。
+    // retire_sink 可为 nullptr（此时 release() 直接 Release —— 仅在设备已销毁、
+    // 或调用方保证 GPU 空闲时安全）。
     void set_context(ID3D12Device* device, ID3D12CommandQueue* queue,
-                     UploadSink* sink = nullptr);
+                     UploadSink* sink = nullptr,
+                     ResourceRetireSink* retire_sink = nullptr);
 
     // ★ 标记为 SSBO。必须在 create() 之前调用（决定堆类型与资源标志）。
     void set_storage(bool read_write) override {
@@ -96,6 +100,9 @@ private:
     ID3D12Device* device_ = nullptr;
     ID3D12CommandQueue* queue_ = nullptr;
     UploadSink* sink_ = nullptr;
+    // 释放通道（见 d3d12_retire.h）：SSBO / DEFAULT 静态缓冲会被在飞的命令列表
+    // 引用，release() 必须把资源交给后端排队，而不是就地 Release。
+    ResourceRetireSink* retire_sink_ = nullptr;
     ID3D12Resource* resource_ = nullptr;
     void* mapped_ = nullptr;
     size_t size_ = 0;

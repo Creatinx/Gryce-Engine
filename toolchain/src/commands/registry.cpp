@@ -35,7 +35,7 @@ const std::vector<Command>& kTable() {
         {"deps", "列出可执行文件的完整 DLL 依赖闭包（按 core / 依赖分类）",
          "用法: GryceGC deps [options]\n"
          "选项:\n"
-         "  --build-dir <dir>   CMake 构建目录（默认 cmake-build-debug）\n"
+         "  --build-dir <dir>   CMake 构建目录（缺省自动探测：build → cmake-build-debug → cmake-build-release）\n"
          "  --exe <path>        可执行文件路径或名称（默认在 build-dir 内自动探测）\n"
          "  --extra-dir <dir>   额外 DLL 搜索目录（可重复）\n",
          &cmd_deps},
@@ -50,13 +50,13 @@ const std::vector<Command>& kTable() {
         {"package", "打包成可脱线运行的发布目录（移植自 toolchain/main.py）",
          "用法: GryceGC package [options]\n"
          "选项:\n"
-         "  --build-dir <dir>   CMake 构建目录（默认 cmake-build-debug）\n"
-         "  --exe <path>        可执行文件（默认自动探测 GryceRenderSmoke.exe）\n"
+         "  --build-dir <dir>   CMake 构建目录（相对路径以引擎根为基；缺省自动探测 build → cmake-build-debug → cmake-build-release，优先含 GryceApp.exe 的）\n"
+         "  --exe <path>        可执行文件（默认自动探测 GryceApp.exe）\n"
          "  --output <dir>      输出根目录（默认 dist）\n"
          "  --name <name>       发布包文件夹名（默认 GryceEngine）\n"
-         "  --project <dir>     资源项目根（默认 test/demo_project）\n"
+         "  --project <dir>     资源项目根（默认 test/demo_project；会被拷进包内 demo_project/）\n"
          "  --dll-folder <n>    依赖 DLL 文件夹名（默认 dll）\n"
-         "  --api <api>         默认启动器后端 opengl|vulkan（默认 opengl）\n"
+         "  --api <api>         默认启动器后端 opengl|vulkan；缺省读 project.data 的 render_api\n"
          "  --extra-dir <dir>   额外 DLL 搜索目录（可重复）\n"
          "  --no-assets         不打包 demo_project 资源\n"
          "  --clean             打包前清空输出目录\n"
@@ -64,13 +64,15 @@ const std::vector<Command>& kTable() {
          &cmd_package},
 
         {"run", "跨平台启动器（替代 run*.bat）：注入 dll/ 到 PATH 后启动宿主",
-         "用法: GryceGC run --package <dir>|--build-dir <dir> [--api opengl|vulkan] [--play] [-- <exe args>]\n"
+         "用法: GryceGC run (--package <dir> | --build-dir <dir> [--project <dir>]) [--api ...] [--play] [-- <exe args>]\n"
          "选项:\n"
-         "  --package <dir>     发布包目录（含 run.bat 的目录）\n"
-         "  --build-dir <dir>   构建目录（直接用构建产物启动）\n"
-         "  --api <api>         渲染后端（默认 opengl）\n"
+         "  --package <dir>     发布包目录（含 run.bat 的目录；资源在包内 demo_project/）\n"
+         "  --build-dir <dir>   构建目录（相对路径以引擎根为基；缺省=当前目录）\n"
+         "  --project <dir>     项目根，会作为 --project 传给宿主（定位 res:/ 与 main.js）\n"
+         "  --api <api>         渲染后端 opengl|vulkan|dx12；缺省不传，由宿主按 project.data 决定\n"
          "  --play              交互模式（WASD + 鼠标）\n"
-         "  --                  之后的参数原样透传给宿主\n",
+         "  --                  之后的参数原样透传给宿主\n"
+         "说明: 宿主默认 GryceApp.exe（new 生成的用户项目）；--project 会被原样转发。\n",
          &cmd_run},
 
         {"copyright", "版权/许可印章：COPYRIGHT.txt + README 页脚 + PE trailer（+ VERSIONINFO）",
@@ -149,15 +151,19 @@ const std::vector<Command>& kTable() {
 
         {"build", "cmake configure + build 封装（复用主工程工具链）",
          "用法: GryceGC build [options]\n"
+         "说明: 构建的是引擎本体（GryceApp / GryceRenderSmoke / 测试 / DLL），不是用户项目；\n"
+         "      源码根 = --source 指定，或从当前目录向上找含 CMakeLists.txt 的引擎根（默认当前目录）。\n"
          "选项:\n"
-         "  --build-dir <dir>   构建目录（默认 build）\n"
+         "  --source <dir>      引擎源码根（含 CMakeLists.txt）；缺省自动探测\n"
+         "  --build-dir <dir>   构建目录（相对路径以源码根为基，默认 build）\n"
          "  --preset <p>        debug（默认）| release\n"
          "  --target <name>     构建目标（可重复）\n"
          "  --d3d12 <on|off>    D3D12 后端开关（默认 on）\n"
          "  --lto               开启 LTO\n"
          "  --test              构建后跑 CTest\n"
          "  --clean             构建前清空目录\n"
-         "  --jobs N            并行度\n",
+         "  --jobs N            并行度\n"
+         "  --cc/--cxx <path>   覆盖编译器（默认强制 MSYS2 UCRT64 g++，绝不用 MSVC）\n",
          &cmd_build},
 
         {"webpack", "把 Emscripten 多文件 Web 产物打成一个自包含 HTML（file:// 双击即用）",

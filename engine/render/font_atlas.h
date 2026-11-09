@@ -63,6 +63,20 @@ public:
     FontAtlas() = default;
     ~FontAtlas();
 
+    // 字形整形强度（默认 1.0 = 标准，0 = 关闭，>1 更实/更粗）。只影响**之后**
+    // 的烘焙；改了要在下一次 repack 之前调用。调大可以缓解小字号笔画发灰，
+    // 但过大会让字粘连、斜笔画出现台阶。
+    static void set_shape_strength(float strength);
+    static float shape_strength();
+
+    // 档位尺寸与**逻辑字号**的比值。覆盖层超采样时图集按 2x 物理像素烘档，
+    // 整形强度必须仍按逻辑字号判断——否则 16px 的字在 32 档上会落进"大字号
+    // 不整形"那一侧，笔画被削弱。改了会在下一次 ensure 时强制重烘。
+    static void set_shape_logical_scale(float scale);
+
+    // 若整形参数变过，按当前档位重烘一次（不新增档位）。返回 true 表示重烘了。
+    bool reshape_if_dirty(RenderContext* ctx);
+
     // 从单个字体文件加载并生成 atlas（ASCII 可见字符 32-126），初始档 = font_size
     bool init(RenderContext* ctx, const std::string& font_path, float font_size = 32.0f);
 
@@ -81,11 +95,20 @@ public:
     // 上下文里调用（RenderContext::run_with_gpu_context_sync）。
     bool ensure_size(RenderContext* ctx, float size);
 
+    // 一次补齐多档（一帧的字号集合）。内部去重、按尺寸排序、超上限时淘汰
+    // "与邻居最挤"的一档，然后**只重烘一次**——逐档调用会把整张图集重传 N 次。
+    bool ensure_sizes(RenderContext* ctx, const std::vector<float>& sizes);
+
     // 已有档位里离 font_size 最近的一档（返回下标，恒有效；没有档时返回 -1）
     int   bucket_for(float font_size) const;
     float bucket_size(int bucket) const;
     int   bucket_count() const { return static_cast<int>(buckets_.size()); }
     bool  has_size(float size, float tolerance = 0.12f) const;
+
+    // 该档的大写字母高度（逻辑像素）。文字要真正"在行盒里居中"就必须知道
+    // 大写高：只按 font_size 居中会让视觉重心整体下坠（字母的下伸部与行距
+    // 都被算进了字高）。档位里没有 'H' 时按 0.72*size 估算。
+    float cap_height(int bucket) const;
 
     // 获取字符字形（nullptr 表示字符不存在）。单参版本用第 0 档（初始尺寸）。
     const Glyph* get_glyph(char c) const;
@@ -108,6 +131,7 @@ public:
 private:
     struct Bucket {
         float size = 0.0f;
+        float cap_height = 0.0f;
         std::unordered_map<uint32_t, Glyph> glyphs;
     };
 

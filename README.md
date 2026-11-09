@@ -2,11 +2,33 @@
 
 [![CI](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Creatinx/Gryce-Engine/actions/workflows/ci.yml)
 
-面向 Windows 的 C++26 游戏引擎，核心为带反射系统的 ECS 架构与四后端（OpenGL / Vulkan / D3D12 / WebGL）渲染器。已打通场景序列化、资源系统、2D/3D 物理、音频与动画，附带三个可直接运行的宿主：渲染演示台 `GryceRenderSmoke`、UI 系统演示台 `GryceUiSmoke`，以及"项目只写 main.js"的运行时 `GryceApp`。
+面向 Windows 的 C++26 游戏引擎，核心为带反射系统的 ECS 架构与四后端（OpenGL / Vulkan / D3D12 / WebGL）渲染器。已打通场景序列化、资源系统、2D/3D 物理、音频、动画与 GryceUI，附带渲染演示台 `GryceRenderSmoke`、"项目只写 main.js"的运行时 `GryceApp`，以及使用 GryceUI 的 `GryceIDE`。引擎内置的 FPS/帧时间叠加与 F1 ImGui 调试面板保持独立。
 
 平台与工具链：Windows 为主目标。构建脚本不含任何机器专属绝对路径，依赖前缀由 `cmake/GryceDependencyPaths.cmake` 从环境变量与编译器路径自动推断。已验证可直接用于 MSYS2 UCRT64、CLion / JetBrains 自带 MinGW、vcpkg 及任意自定义前缀；缺依赖时 `FetchContent` 自动拉源码兜底，拉不到会自动换镜像。
 
 English documentation: [docs/README.md](docs/README.md)（英文入口）。
+
+---
+
+## 项目定位与边界
+
+Gryce Engine 是**运行时研究型引擎**：目标是打通「现代渲染运行时 + 反射 ECS + 稳定 C API + 配套自绘 UI」这条链路，验证四后端 RHI、逐帧命令缓冲、前向 PBR 与后处理链可以独立实现并协同工作。它**不是** Unreal / Godot 那类产品级游戏引擎，也不以追平商业引擎的功能清单为目标。
+
+已具备：四后端渲染、场景序列化与反射 ECS、2D/3D 物理、音频、骨骼动画、QuickJS 脚本、资源打包与加密、GryceUI 自绘控件框架，以及 41 条不依赖 GPU 的 CTest 门禁。
+
+当前不作为目标的范围：
+
+- 内容生产链：内容浏览器、材质图 / 蓝图 / Sequencer / Niagara、光照烘焙、资源缩略图与导入流水线
+- 玩法框架：GameMode / Pawn / Controller、动作映射、手柄与触摸输入
+- 网络与 AI：属性复制、NavMesh、行为树
+- 高端渲染：Nanite / Lumen 级虚拟化几何与全局光照、World Partition / 关卡流送
+- 平台化：主机与移动端、cook / 发布打包链、本地化与无障碍
+
+`GryceIDE.exe` 是最小编辑器宿主（Transform 编辑 + Play 预览），不是完整编辑器；编辑能力保留在 core 的 `GEdit_*` 命令面内。SDFGI / VoxelGI 目前是实验骨架，尚未进入正式能力面。
+
+已知验证限制：Vulkan 与 OpenGL 路径可无头出图；D3D12 交换链需要真实显示设备，无法在无头会话中验证。
+
+评估本项目请用「运行时架构是否自洽、能力是否可复现」作标尺，而不是「离 UE 还差几个功能」。
 
 ---
 
@@ -28,8 +50,8 @@ English documentation: [docs/README.md](docs/README.md)（英文入口）。
 | 脚本系统（QuickJS 组件） | [docs/zh/scripting.md](docs/zh/scripting.md) | [docs/en/scripting.md](docs/en/scripting.md) |
 | 应用入口（GryceApp + main.js） | [docs/zh/app-entry.md](docs/zh/app-entry.md) | [docs/en/app-entry.md](docs/en/app-entry.md) |
 | 原生扩展（extension.cpp / ABI） | [docs/zh/extension.md](docs/zh/extension.md) | [docs/en/extension.md](docs/en/extension.md) |
-| 编辑器接口（命令/撤销/视口/Gizmo） | [docs/zh/editor-api.md](docs/zh/editor-api.md) | [docs/en/editor-api.md](docs/en/editor-api.md) |
-| 内置界面（`GUi_*` 控件面） | [docs/zh/ui-api.md](docs/zh/ui-api.md) | [docs/en/ui-api.md](docs/en/ui-api.md) |
+| GryceCore 接口手册（逐函数 + 示例） | [docs/zh/core-api.md](docs/zh/core-api.md) | - |
+| 接入其它项目（产物 / 顺序 / CMake） | [docs/zh/integration.md](docs/zh/integration.md) | - |
 | 测试与 CI | [docs/zh/testing.md](docs/zh/testing.md) | [docs/en/testing.md](docs/en/testing.md) |
 | 文档总索引 | [docs/zh/README.md](docs/zh/README.md) | [docs/en/README.md](docs/en/README.md) |
 
@@ -53,7 +75,7 @@ cmake -S . -B build -G Ninja
 cmake --build build --parallel
 
 # 3. 跑测试（纯计算正确性核对，全部通过才算绿）
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -j1 --output-on-failure
 
 # 4. 运行（交互模式：WASD 移动，鼠标转视角）
 build/GryceRenderSmoke.exe --api opengl --play
@@ -70,18 +92,19 @@ build/GryceRenderSmoke.exe --api opengl --play
 - 运行期热重载：场景、着色器、材质与网格支持重载，无需重启进程
 - Play 模式：进入后驱动系统更新（物理、动画），退出后恢复编辑态快照
 - 稳定的 C API 边界（`engine/api`），引擎以 DLL 形式对外提供能力
+- 游戏渲染按职责拆为 3D 场景、2D 画布和 UI overlay 三条路径，共享 `RenderContext` 命令缓冲与后端；GryceUI 不复制图形后端
 
 详见 [docs/zh/architecture.md](docs/zh/architecture.md)。
 
 **渲染**
 
 - 四后端：OpenGL / Vulkan / D3D12 / WebGL，共用上层管线与着色器源（Vulkan、D3D12 的函数与着色器链均运行时加载，不绑定 MSVC 导入库；WebGL 经 Emscripten 复用 GL 后端源码）
-- 内置调试 UI：左上角 FPS / 帧时间 / 限速状态叠加（带帧时间曲线），以及 ImGui 调试窗口（F1 开关）——可热开关垂直同步、帧率上限（软件锁帧）、省电模式、GPU 计时，以及阴影 / GPU 剔除 / SSR / IBL 等渲染开关
-- Clustered Forward 前向管线、HDR、色调映射、自动曝光
+- 基础调试 UI：左上角 FPS / 帧时间 / 限速状态叠加（带帧时间曲线），以及 ImGui 调试窗口（F1 开关）——可热开关垂直同步、帧率上限（软件锁帧）、省电模式、GPU 计时，以及阴影 / GPU 剔除 / SSR / IBL 等渲染开关
+- Forward PBR 多光源管线、HDR、色调映射、自动曝光
 - PBR 材质与预设（如 `Chrome` 等金属 / 镜面预设）
 - 阴影：Shadow Atlas、VSM / ESM、PCSS 软阴影、点光源阴影、接触阴影
 - 屏幕空间效果：SSR（反射）、SSAO、SSIL
-- 全局光照与环境：SDFGI、VoxelGI、Reflection Probe、IBL、体积雾
+- 环境：Reflection Probe、IBL、体积雾；SDFGI / VoxelGI 目前是实验骨架，尚未进入正式能力面
 - 后处理：Bloom、TAA、运动模糊、Bokeh DOF、FSR2、次表面散射、水面
 - 2D 管线：精灵、图块地图、视差背景、2D 粒子、2D 天空盒、文本
 - 3D 扩展：3D 粒子、线渲染、拖尾、实例化网格、Billboard、3D 文本、LOD、体积光
@@ -134,7 +157,6 @@ Gryce-Engine/
 ├── test/
 │   ├── math_tests.cpp               数学与资源规则测试（CTest 门禁之一）
 │   ├── renderer_smoke.cpp           演示宿主源码（GryceRenderSmoke.exe，不参与 CTest）
-│   ├── ui_smoke.cpp                 UI 演示宿主源码（GryceUiSmoke.exe，不参与 CTest）
 │   └── demo_project/                演示工程（project.data + 场景 / 模型 / 着色器 + main.js）
 ├── third_party/                     仓库内置第三方依赖（Amplitude、imgui、stb ...）
 ├── toolchain/
@@ -157,7 +179,7 @@ Gryce-Engine/
 | Assimp | 可选，系统包或 FetchContent | 模型导入（FBX / glTF / DAE / PLY / STL 等；OBJ 走内置加载器），缺失时非 OBJ 格式不可用 |
 | Vulkan SDK | 可选 | 缺失时自动关闭 Vulkan 后端（CTest 不依赖它） |
 | Amplitude Audio SDK | 仓库内置 `third_party/amplitude` | 预编译静态库，随仓库分发 |
-| stb / tinyexr / nlohmann_json / imgui / quickjs | 仓库内置 `third_party` | 图像、EXR、JSON、编辑器 UI、脚本 |
+| stb / tinyexr / nlohmann_json / imgui / quickjs | 仓库内置 `third_party` | 图像、EXR、JSON、基础调试 UI、脚本 |
 
 `GRYCE_DEP_FETCH` 控制缺失依赖的处理：`AUTO`（默认，缺哪项拉哪项）/ `ON`（全部源码构建）/ `OFF`（只用系统包，完全离线）。前缀推断、镜像切换与本地源码兜底的完整说明见 [docs/zh/build.md](docs/zh/build.md)。
 
@@ -174,15 +196,16 @@ cmake --build build --parallel
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
-| `GRYCE_ENABLE_IMGUI` | `ON` | ImGui 编辑器叠加层 |
+| `GRYCE_ENABLE_IMGUI` | `ON` | ImGui 调试 UI 后端 |
 | `BUILD_TESTING` | `ON` | CTest 用例 |
 | `GRYCE_BUILD_TOOLCHAIN` | `ON` | GryceGC 命令行工具链 |
 | `GRYCE_ENABLE_D3D12` | `ON` | D3D12 后端（无可用 `d3d12.h` 时静默跳过） |
+| `GRYCE_ENABLE_LEGACY_RENDERER_COMPOSITOR` | `OFF` | 编译未接入生产入口的旧 RenderingServer/Compositor 路径，仅供迁移取证 |
 | `GRYCE_ENABLE_WEBGL` | `OFF` | WebGL（Emscripten）构建，检测到工具链时自动启用 |
 | `GRYCE_ENABLE_LTO` | `OFF` | 非 Debug 构建的进程间优化 |
 | `GRYCE_ENABLE_X86_V3` | `ON` | x86-64-v3 目标 ISA（AVX2 / FMA / BMI / F16C / LZCNT / POPCNT） |
 
-构建产物：`GryceCore.dll`（抽象层 + 场景 / ECS / 组件 / 反射 / 资源 + 物理音频）、`GryceRenderer.dll`（渲染管线与后端）、`GrycePlatform.dll`（窗口输入）、`GryceRenderSmoke.exe`（渲染演示台）、`GryceUiSmoke.exe`（UI 系统演示台）、`GryceApp.exe`（main.js 运行时）、`GryceMathTests.exe` 与 `GryceGC.exe`。构建后 `GryceSyncRuntimeDlls` 会把引擎 DLL、第三方运行库与 MinGW 运行时复制到 exe 同目录，脱离 MSYS2 终端也能运行。
+构建产物：`GryceCore.dll`（抽象层 + 场景 / ECS / 组件 / 反射 / 资源 + 物理音频 + GryceUI 模型/运行时）、`GryceRenderer.dll`（3D/2D/UI 管线、基础调试 UI 与后端）、`GrycePlatform.dll`（窗口输入）、`GryceRenderSmoke.exe`（渲染演示台）、`GryceApp.exe`（main.js 运行时）、`GryceIDE.exe`（GryceUI 编辑器宿主）、`GryceMathTests.exe` 与 `GryceGC.exe`。构建后 `GryceSyncRuntimeDlls` 会把引擎 DLL、第三方运行库与 MinGW 运行时复制到 exe 同目录，脱离 MSYS2 终端也能运行。
 
 Web 构建（Emscripten）走独立 `build-webgl/`，产物可经 `GryceGC webpack` 打成单文件 HTML，详见 [docs/zh/webgl-backend.md](docs/zh/webgl-backend.md)。
 
@@ -211,6 +234,7 @@ build/GryceRenderSmoke.exe --api opengl
 | `--msaa N` / `--no-msaa` | MSAA 档位 |
 | `--no-gpu-cull` / `--no-occlusion` | 关闭 GPU 剔除 / 遮挡剔除（走 CPU 回退） |
 | `--ui-interval <N>` | UI 帧节流：调试面板每 N 个渲染帧才构建一次，中间的帧重绘上一份 draw data（默认 1 = 每帧构建） |
+| `--ui-demo` | 在演示场景中注入 GryceUI 基础控件，用于验证 3D/2D/UI 合成 |
 | `--vsync` / `--no-vsync`、`--fps N` / `--no-fps`、`--fps-limit N`、`--power-saver` | 垂直同步、帧率叠加与限速、省电模式 |
 | `--debug-view N` | 调试视图：0 合成、1 albedo、2 normal、3 roughness、4 metallic、5 阴影、6 直接光、7 环境光、8 级联 |
 | `--bench N` | 分段 GPU 计时 + CPU 分相 |
@@ -236,7 +260,7 @@ build/GryceApp.exe --project MyGame
 build/GryceApp.exe --project test/demo_project --api opengl
 ```
 
-引擎里已经实现、但脚本层还没开放的能力，用 `extension.cpp` 包成 `engine.*` 接口即可（扩展是接口层，不是业务层；参考实现见 [docs/zh/extension.md](docs/zh/extension.md)，编辑器自身的 `editor/ext/` 就是这套 ABI 的完整用例）。
+引擎里已经实现、但脚本层还没开放的能力，用 `extension.cpp` 包成 `engine.*` 接口即可（扩展是接口层，不是业务层；参考实现见 [docs/zh/extension.md](docs/zh/extension.md)）。
 
 无窗口验证与截图：
 
@@ -245,24 +269,6 @@ build/GryceApp.exe --project test/demo_project --frames 60 --shot shot.png --api
 ```
 
 完整参数与 API 面见 [docs/zh/app-entry.md](docs/zh/app-entry.md)，扩展 ABI 与用法见 [docs/zh/extension.md](docs/zh/extension.md)。
-
-## 运行 UI 系统演示（GryceUiSmoke）
-
-`GryceUiSmoke` 演示引擎的 UI 子系统（`engine/ui` 模型层 + `GUi_*` C 面）：跨帧控件状态（引擎按稳定 id 保管，面板无本地缓冲）、确定性布局栈、组件树布局（保留模式：父级是布局组件才安排子节点，否则保留直写 pos）、主题预设与美化（5 套预设 + 圆角/滚动条度量）、动画系统（块一纯函数补间 + 块二片段/通道/播放器）、操作队列受控执行、快捷键门控。
-
-```bash
-build/GryceUiSmoke.exe                          # 默认暗色主题
-build/GryceUiSmoke.exe --theme nord --shot ui.png   # dark / light / midnight / nord / highcontrast
-build/GryceUiSmoke.exe --ops-burst 200          # 灌 200 条操作，看合并/预算/统计
-build/GryceUiSmoke.exe --ui-interval 3          # UI 每 3 帧构建一次，画面不变
-build/GryceUiSmoke.exe --page layout            # 组件树布局页：20 个组件 + 滑杆改参数
-build/GryceUiSmoke.exe --page anim              # 动画页：补间/颜色纯函数 + 四组件片段动画
-build/GryceUiSmoke.exe --ui-backend builtin     # 引擎内置 UI 轨：不建 ImGui 上下文，同一份界面自己画
-```
-
-`--ui-backend` 切的是**谁来画**：默认 `imgui` 走 Dear ImGui；`builtin` 走引擎内置的即时模式层 + 2D 覆盖层（`ui_drawlist` → `IRenderer2D`），不依赖任何 UI 库。宿主代码一行不改，两轨共用同一套 `GUi_*`。
-
-界面与 API 说明见 [docs/zh/ui-api.md](docs/zh/ui-api.md)。
 
 示例：以 Vulkan 后端进入 Play 模式并在第 120 帧截图。
 
@@ -276,11 +282,47 @@ Web 端参数经 URL query 传入（`?--api=webgl&--frames=8`），画布尺寸�
 
 ## 测试
 
-CI 的通过条件只有一条：`ctest` 里的用例全部通过。当前 23 条用例：`GryceMathTests` 承载 7 条数学与资源规则数值核对（vector / matrix / quaternion / camera / ray / material / lod），`GryceGCTests` 承载 11 条工具链用例，`GryceScriptTests` 承载 5 条脚本用例。`grycegc_*` 用例本地并行会互相干扰，全量验证请 `ctest --test-dir build -j1`。
+CI 的通过条件只有一条：`ctest` 里的用例全部通过。当前 41 条用例，全部是 CPU 侧逻辑核对，不依赖 GPU、驱动或窗口：
+
+| 可执行文件 | 套件数 | 覆盖 |
+| --- | --- | --- |
+| `GryceMathTests` | 7 | vector / matrix / quaternion / camera / ray / material / lod |
+| `GryceGCTests` | 11 | GryceGC 工具链：加密、Pak、元数据、打包与发布校验 |
+| `GryceScriptTests` | 6 | value_convert / lifecycle / error_isolation / hot_reload / app_entry / component |
+| `GryceAssetTests` | 2 | meta / import_options |
+| `GryceCoreEditTests` | 3 | edit / undo / scene |
+| `GryceComponentTests` | 7 | hierarchy / query / pool / lifecycle / tree / serialize / capi |
+| `GryceUiSkeletonTests` | 5 | layout / input / drawlist / runtime / widgets |
+
+`grycegc_*` 用例本地并行会互相干扰，全量验证请 `ctest --test-dir build -j1`。
 
 ```bash
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -j1 --output-on-failure
+```
+
+### 收口验收（本机，可选）
+
+上面 41 条门禁守不住「画面还能不能画出来」。本机改完渲染相关代码后，跑一次渲染截图回归：
+
+```bash
+python tools/render_regression.py --api vulkan --frames 90 --resolution 800x600
+```
+
+脚本驱动 `GryceRenderSmoke` 出图，用与宿主 `analyze_image` 一致的直方图口径检查尺寸、非主色占比（≥ 20%）、颜色档位（≥ 16）与非全黑，输出 `build/render_regression.png`。首次生成基线，之后可比对均值与非主色占比是否漂移：
+
+```bash
+python tools/render_regression.py --update-baseline build/render_baseline.json
+python tools/render_regression.py --baseline build/render_baseline.json
+```
+
+也可以用 `cmake -S . -B build -DGRYCE_RENDER_REGRESSION=ON` 把它注册成 `ctest -L gpu` 用例。**该选项默认关闭，CI 不启用**：无头软件渲染与驱动差异会让像素统计漂移，既不反映构建正确性也不反映计算正确性（见 `.github/workflows/ci.yml` 里移除 `renderer_smoke_*` 用例的说明）。基线是本机统计 JSON，不入库，跨 GPU / 驱动不通用。
+
+最小可运行工程是 `test/demo_project`（`project.data` + `scenes/main.gesc` + `main.js`），端到端验收入口：
+
+```bash
+build/GryceRenderSmoke.exe --api vulkan --project test/demo_project --frames 90 --shot build/frame.png
+build/GryceApp.exe --project test/demo_project --api vulkan --frames 60 --shot build/app.png
 ```
 
 用例清单、设计约束与 CI 配置见 [docs/zh/testing.md](docs/zh/testing.md)。

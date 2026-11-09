@@ -127,12 +127,33 @@ ID3D12Resource* D3D12Mesh::create_and_upload(const void* data, uint32_t size, co
 
 void D3D12Mesh::upload_vertices(const void* data, uint32_t size, uint32_t count) {
     vertex_count_ = 0;
+    if (streaming_vertices_) {
+        ID3D12Resource* next = create_and_upload(data, size, "streaming vertex buffer");
+        if (!next) return;
+        if (vertex_buffer_) {
+            if (retire_sink_) retire_sink_->retire_gpu_resource(vertex_buffer_);
+            else vertex_buffer_->Release();
+        }
+        vertex_buffer_ = next;
+        vertex_buffer_bytes_ = size;
+        vertex_count_ = count;
+        create_vb_view();
+        return;
+    }
     if (!update_or_create_buffer(&vertex_buffer_, &vertex_buffer_bytes_, data, size,
                                  "vertex buffer")) {
         return;
     }
     vertex_count_ = count;
     create_vb_view();
+
+    // 光追几何的 CPU 副本（BLAS 只吃紧凑 xyz，需要顶点流的原始字节解出来）。
+    rt_geometry_ready_ = false;
+    rt_vertex_bytes_.clear();
+    if (capture_rt_geometry_ && data && size > 0) {
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        rt_vertex_bytes_.assign(p, p + size);
+    }
 }
 
 void D3D12Mesh::upload_indices(const void* data, uint32_t size, uint32_t count) {
@@ -143,6 +164,63 @@ void D3D12Mesh::upload_indices(const void* data, uint32_t size, uint32_t count) 
     }
     index_count_ = count;
     create_ib_view();
+
+    rt_geometry_ready_ = false;
+    rt_index_bytes_.clear();
+    if (capture_rt_geometry_ && data && size >= count * 4u) {
+        const uint32_t* p = static_cast<const uint32_t*>(data);
+        rt_index_bytes_.assign(p, p + count);
+    }
+}
+
+bool D3D12Mesh::get_ray_tracing_geometry(const float*& out_positions,
+                                         uint32_t& out_vertex_count,
+                                         const uint32_t*& out_indices,
+                                         uint32_t& out_index_count) const {
+    out_positions = nullptr;
+    out_vertex_count = 0;
+    out_indices = nullptr;
+    out_index_count = 0;
+    if (rt_vertex_bytes_.empty() || rt_index_bytes_.empty()) return false;
+
+    if (!rt_geometry_ready_) {
+        // 位置属性取 location 0（与 location_to_semantic 的约定一致），
+        // 按 stride 摘 xyz 三通道成紧凑数组。
+        uint32_t pos_offset = 0xFFFFFFFFu;
+        VertexType pos_type = VertexType::Float;
+        for (const auto& attr : layout_.attributes) {
+            if (attr.location == 0) {
+                pos_offset = attr.offset;
+                pos_type = attr.type;
+                break;
+            }
+        }
+        if (pos_offset == 0xFFFFFFFFu || layout_.stride == 0) return false;
+        if (pos_type != VertexType::Float3) return false;
+        if (rt_vertex_bytes_.size() < static_cast<size_t>(vertex_count_) * layout_.stride) {
+            return false;
+        }
+
+        rt_positions_.resize(static_cast<size_t>(vertex_count_) * 3);
+        for (uint32_t v = 0; v < vertex_count_; ++v) {
+            const float* p = reinterpret_cast<const float*>(
+                rt_vertex_bytes_.data() + static_cast<size_t>(v) * layout_.stride + pos_offset);
+            rt_positions_[static_cast<size_t>(v) * 3 + 0] = p[0];
+            rt_positions_[static_cast<size_t>(v) * 3 + 1] = p[1];
+            rt_positions_[static_cast<size_t>(v) * 3 + 2] = p[2];
+        }
+        rt_indices_ = rt_index_bytes_;
+        // 三角形数按 3 的整数倍截断（BLAS 的 index_count 必须是 3 的倍数）。
+        rt_indices_.resize((rt_indices_.size() / 3) * 3);
+        rt_geometry_ready_ = true;
+    }
+
+    if (rt_positions_.empty() || rt_indices_.empty()) return false;
+    out_positions = rt_positions_.data();
+    out_vertex_count = vertex_count_;
+    out_indices = rt_indices_.data();
+    out_index_count = static_cast<uint32_t>(rt_indices_.size());
+    return true;
 }
 
 void D3D12Mesh::set_layout(const VertexLayout& layout) {

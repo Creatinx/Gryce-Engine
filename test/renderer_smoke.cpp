@@ -23,17 +23,32 @@
 // 退出码: 0 = 正常；1 = 初始化失败；2 = 渲染结果为空（着色器/管线未生效）。 
 #include "api/render_api.h"
 #include "api/core_api.h"
+#include "api/input_api.h"
+#include "api/key_codes.h"
 #include "api/scene_api.h"
 #include "api/edit_api.h"   // --editor-preview 的选中/Gizmo 预览路径
 #include "api/entity_api.h"
 #include "api/component_api.h"
 #include "api/viewport_api.h"
 #include "platform/window.h"
+#include "components/ui_root.h"
+#include "ecs/world.h"
+#include "scene/scene.h"
+#include "ui/ui_widgets.h"
+#include "ui/ui_editor_widgets.h"
+#include "ui/ui_extended_widgets.h"
+#include "ui/ui_theme.h"
+#include "ui/ui_texture.h"
+#include "render/font_atlas.h"
+#include "render/render2d.h"
+#include "assets/texture_data.h"
+#include "resources/resource_path.h"
 
 #include <nlohmann/json.hpp>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+#include <stb_image_write.h>
 
 #include <algorithm>
 #include <chrono>
@@ -55,7 +70,954 @@ using gryce_engine::platform::Window;
 using gryce_engine::platform::WindowMode;
 using gryce_engine::platform::WindowContextType;
 
+namespace gryce_engine::components {
+class UIRoot;
+}
+
 namespace {
+
+bool inject_gryce_ui_demo() {
+    auto* world = static_cast<gryce_engine::ecs::World*>(GCore_GetInternalWorldPtr());
+    if (!world || !world->scene()) return false;
+    auto* entity = world->scene()->create_entity("GryceUI Demo");
+    if (!entity) return false;
+
+    auto* root = entity->add_component<gryce_engine::components::UIRoot>();
+    auto* panel = entity->add_component<gryce_engine::components::UIPanel>();
+    auto* title = entity->add_component<gryce_engine::components::UILabel>();
+    auto* button = entity->add_component<gryce_engine::components::UIButton>();
+    auto* check = entity->add_component<gryce_engine::components::UICheckBox>();
+    auto* slider = entity->add_component<gryce_engine::components::UISlider>();
+    auto* input = entity->add_component<gryce_engine::components::UITextInput>();
+    auto* scroll = entity->add_component<gryce_engine::components::UIScrollView>();
+
+    panel->set_local_position(gryce_engine::math::Vector3f(24.0f, 60.0f, 0.0f));
+    panel->size = gryce_engine::math::Vector2f(420.0f, 390.0f);
+    panel->min_size = panel->size;
+    panel->padding = 14.0f;
+    panel->gap = 10.0f;
+    panel->layout_mode = gryce_engine::components::UILayoutMode::Column;
+    panel->color = gryce_engine::math::Vector4f(0.08f, 0.10f, 0.14f, 0.96f);
+
+    title->text = "GryceUI Phase 2";
+    title->font_size = 22.0f;
+    title->size = gryce_engine::math::Vector2f(0.0f, 32.0f);
+    button->text = "Apply";
+    button->size = gryce_engine::math::Vector2f(160.0f, 34.0f);
+    check->text = "Draw debug bounds";
+    check->size = gryce_engine::math::Vector2f(220.0f, 26.0f);
+    slider->value = 0.65f;
+    slider->size = gryce_engine::math::Vector2f(300.0f, 26.0f);
+    input->text = "res:/scenes/main.gesc";
+    input->size = gryce_engine::math::Vector2f(340.0f, 30.0f);
+    scroll->size = gryce_engine::math::Vector2f(360.0f, 90.0f);
+    scroll->content_height = 180.0f;
+
+    entity->set_component_parent(panel, root);
+    entity->set_component_parent(title, panel);
+    entity->set_component_parent(button, panel);
+    entity->set_component_parent(check, panel);
+    entity->set_component_parent(slider, panel);
+    entity->set_component_parent(input, panel);
+    entity->set_component_parent(scroll, panel);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// GryceUI 组件画廊：展示所有内置控件 + 多主题切换（5 个预设 + 实时 JSON 编辑）。
+// 用 --ui-gallery 启动；--theme <dark|light|highcontrast|nord|fluent> 选初始主题。
+// 运行时点主题按钮切预设，点 "Apply JSON" 用编辑器里的 JSON 实时覆盖主题。
+// ---------------------------------------------------------------------------
+struct GalleryHandles {
+    gryce_engine::components::UIRoot*   root      = nullptr;
+    gryce_engine::components::UILabel*  theme_label = nullptr;
+    gryce_engine::components::UIButton* b_dark  = nullptr;
+    gryce_engine::components::UIButton* b_light = nullptr;
+    gryce_engine::components::UIButton* b_high  = nullptr;
+    gryce_engine::components::UIButton* b_nord  = nullptr;
+    gryce_engine::components::UIButton* b_fluent = nullptr;
+    gryce_engine::components::UICodeEditor* theme_json = nullptr;
+    gryce_engine::components::UIButton* b_apply = nullptr;
+    gryce_engine::components::UIMenuBar* menu_bar = nullptr;
+    gryce_engine::components::UIMenuFlyout* menu_flyout = nullptr;
+    std::string current_theme = "Dark";
+};
+static GalleryHandles g_gallery;
+
+static gryce_engine::ui::UIThemePreset parse_theme(const std::string& s) {
+    if (s == "light")          return gryce_engine::ui::UIThemePreset::Light;
+    if (s == "highcontrast" || s == "high-contrast" || s == "hc")
+        return gryce_engine::ui::UIThemePreset::HighContrast;
+    if (s == "nord")           return gryce_engine::ui::UIThemePreset::Nord;
+    if (s == "fluent")         return gryce_engine::ui::UIThemePreset::Fluent;
+    return gryce_engine::ui::UIThemePreset::Dark;
+}
+
+// 平台输入 -> 引擎输入层。
+//
+// smoke 自己建 GLFW 窗口（不走 GWindow_*），引擎"每帧从平台窗口现查输入"的
+// 那条路就是空的：界面收不到指针与按键，鼠标点按钮、滚轮翻页全都没反应。
+// 这里把窗口状态逐帧灌进输入层。
+//
+// GInput_BeginHostFrame 必须先调：它把上帧状态快照成"上一帧"，之后注入的新
+// 状态才会产生正确的 press / release 边沿。少了它，按下的那一帧每帧都被认成
+// "新按下"（点变成连点），松开事件则永远不产生。
+static void pump_input(gryce_engine::platform::Window& window) {
+    GInput_BeginHostFrame();
+
+    double cursor_x = 0.0;
+    double cursor_y = 0.0;
+    window.get_cursor_pos(cursor_x, cursor_y);
+    const float px = static_cast<float>(cursor_x);
+    const float py = static_cast<float>(cursor_y);
+    GInput_InjectMouseMove(px, py);
+    for (int button = 0; button < 3; ++button) {
+        GInput_InjectMouseButton(button,
+                                 window.get_mouse_button(button) ? GINPUT_ACTION_PRESS
+                                                                 : GINPUT_ACTION_RELEASE,
+                                 px, py);
+    }
+
+    double scroll_x = 0.0;
+    double scroll_y = 0.0;
+    if (window.take_scroll(scroll_x, scroll_y)) {
+        GInput_InjectMouseScroll(static_cast<float>(scroll_x),
+                                 static_cast<float>(scroll_y));
+    }
+
+    unsigned int chars[64] = {};
+    const int char_count = window.pull_chars(chars, 64);
+    for (int i = 0; i < char_count; ++i) GInput_InjectChar(chars[i]);
+
+    // 只转发输入层会读取的那批键（键码与 GLFW 一致，见 api/key_codes.h）。
+    static constexpr int kPumpedKeys[] = {
+        GKEY_ENTER, GKEY_ESCAPE, GKEY_TAB, GKEY_BACKSPACE, GKEY_DELETE,
+        GKEY_LEFT, GKEY_RIGHT, GKEY_UP, GKEY_DOWN, GKEY_HOME, GKEY_END,
+        GKEY_A, GKEY_C, GKEY_V, GKEY_X,
+        GKEY_F1, GKEY_F2, GKEY_F3, GKEY_F4, GKEY_F5, GKEY_F6,
+        GKEY_F7, GKEY_F8, GKEY_F9, GKEY_F10, GKEY_F11, GKEY_F12,
+        GKEY_LEFT_CTRL, GKEY_LEFT_SHIFT, GKEY_LEFT_ALT,
+    };
+    for (int key : kPumpedKeys) {
+        GInput_InjectKey(key, window.get_key(key) ? GINPUT_ACTION_PRESS
+                                                  : GINPUT_ACTION_RELEASE);
+    }
+}
+
+static void gallery_poll() {
+    auto set_theme = [](gryce_engine::components::UIButton* b,
+                       gryce_engine::ui::UIThemePreset p, const char* name) {
+        if (b && b->clicked) {
+            b->clicked = false;
+            gryce_engine::ui::set_ui_theme_preset(p);
+            g_gallery.current_theme = name;
+        }
+    };
+    set_theme(g_gallery.b_dark,  gryce_engine::ui::UIThemePreset::Dark,          "Dark");
+    set_theme(g_gallery.b_light, gryce_engine::ui::UIThemePreset::Light,         "Light");
+    set_theme(g_gallery.b_high,  gryce_engine::ui::UIThemePreset::HighContrast,  "High Contrast");
+    set_theme(g_gallery.b_nord,  gryce_engine::ui::UIThemePreset::Nord,          "Nord");
+    set_theme(g_gallery.b_fluent, gryce_engine::ui::UIThemePreset::Fluent,       "Fluent");
+    if (g_gallery.b_apply && g_gallery.b_apply->clicked) {
+        g_gallery.b_apply->clicked = false;
+        if (g_gallery.theme_json)
+            gryce_engine::ui::load_ui_theme_json(g_gallery.theme_json->text.c_str());
+    }
+    if (g_gallery.theme_label) {
+        g_gallery.theme_label->text =
+            "Theme: " + g_gallery.current_theme +
+            "    (buttons switch preset  |  Apply JSON live-edits theme)";
+    }
+}
+
+// UI 贴图服务：把文件解码成 TextureData，再交给渲染器建 GPU 纹理。注册一次
+// 之后控件只写 texture_path 就能显示贴图；按路径的缓存由 UI 层负责，这里只在
+// 首次遇到某个路径时被调用一次。
+static bool ui_texture_from_file(const char* path,
+                                 gryce_engine::ui::TextureRef* out) {
+    if (!path || !*path || !out) return false;
+    auto* renderer = static_cast<gryce_engine::render::IRenderer2D*>(
+        GRender_GetRenderer2D());
+    if (!renderer) return false;
+    const std::string resolved = gryce_engine::resources::ResourcePath::resolve(path);
+    int width = 0, height = 0, channels = 0;
+    unsigned char* pixels = stbi_load(resolved.c_str(), &width, &height, &channels, 4);
+    if (!pixels) {
+        std::fprintf(stderr, "[smoke] ui texture not found: %s (%s)\n",
+                     path, resolved.c_str());
+        return false;
+    }
+    gryce_engine::assets::TextureData data;
+    data.width = width;
+    data.height = height;
+    data.channels = 4;
+    data.pixels.assign(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
+    stbi_image_free(pixels);
+    const gryce_engine::render::RHITextureHandle handle =
+        renderer->create_texture_from_data(&data);
+    if (!handle.is_valid()) return false;
+    out->index = handle.index;
+    out->generation = handle.generation;
+    out->width = width;
+    out->height = height;
+    return true;
+}
+
+static bool inject_gryce_ui_gallery(const std::string& theme_arg, bool fit_all, int scroll_y,
+                                    bool menu_open_demo) {
+    using namespace gryce_engine::components;
+    using namespace gryce_engine::ui;
+    auto* world = static_cast<gryce_engine::ecs::World*>(GCore_GetInternalWorldPtr());
+    if (!world || !world->scene()) return false;
+    auto* entity = world->scene()->create_entity("GryceUI Gallery");
+    if (!entity) return false;
+
+    g_gallery = GalleryHandles{};
+    g_gallery.current_theme = (theme_arg == "light") ? "Light" :
+        (theme_arg == "highcontrast") ? "High Contrast" :
+        (theme_arg == "nord") ? "Nord" :
+        (theme_arg == "fluent") ? "Fluent" : "Dark";
+    set_ui_theme_preset(parse_theme(theme_arg));
+
+    // 贴图预热：注入期（未持渲染器锁）把用到的路径全部加载成纹理句柄，绘制期
+    // 只查缓存。若留到绘制期懒加载，加载回调会去取渲染器 → 同一把锁 → 死锁。
+    for (const char* tex_path : {"res:/ui/demo_photo.png",
+                                 "res:/ui/icon_folder.png",
+                                 "res:/ui/icon_save.png",
+                                 "res:/ui/icon_undo.png",
+                                 "res:/ui/icon_redo.png",
+                                 "res:/ui/icon_play.png",
+                                 "res:/ui/icon_search.png",
+                                 "res:/ui/icon_settings.png",
+                                 "res:/ui/icon_close.png",
+                                 "res:/ui/icon_check.png"}) {
+        gryce_engine::ui::ui_texture(tex_path);
+    }
+
+    auto* root = entity->add_component<UIRoot>();
+    g_gallery.root = root;
+    auto* main = entity->add_component<UIPanel>();
+    auto place = [&](NodeUI* w, NodeUI* parent, float ww, float hh) {
+        w->size = gryce_engine::math::Vector2f(ww, hh);
+        w->min_size = gryce_engine::math::Vector2f(ww, hh);
+        entity->set_component_parent(w, parent);
+    };
+
+    // 分区高度集中声明：section() 用它们排布，滚动区内容高度与整页高度都从同一
+    // 组常量推导。以前散在三处的魔数各改一次，加一个分区就会漏改、出现重叠或
+    // 空档，症状像"布局没对齐"。
+    const float h_surfaces = 300.0f;
+    const float h_images   = 330.0f;
+    const float h_buttons  = 262.0f;
+    const float h_inputs   = 350.0f;
+    const float h_nav      = 168.0f;
+    const float h_shell    = 520.0f;
+    const float h_lists    = 1150.0f;
+    const float h_editors  = 1210.0f;
+    const float h_popups   = 1200.0f;
+    const float sections_total = h_surfaces + h_images + h_buttons + h_inputs +
+                                 h_nav + h_shell + h_lists + h_editors + h_popups;
+    // 滚动区内容比可见区域高 600，--gallery-scroll 才有翻页余量。
+    const float scroll_content_h = sections_total + 150.0f;
+
+    // 面板按 1440 设计宽度排版，但横向锚在父容器中点：窗口被拉宽时整块居中，
+    // 不会只剩左边一列、右边一大片空背景（拖窗口时最扎眼的就是这个）。
+    main->anchor_min = gryce_engine::math::Vector2f(0.5f, 0.0f);
+    main->anchor_max = gryce_engine::math::Vector2f(0.5f, 0.0f);
+    main->set_local_position(gryce_engine::math::Vector3f(-720.0f, 24.0f, 0.0f));
+    // fit_all：把滚动区拉到约 1320，填满无头帧缓冲（引擎把帧缓冲高度钳到 ~1570），
+    // 配合 --gallery-scroll 翻页截全部分区；交互模式保持 720 高、可滚动。
+    // 466 = 标题栏/菜单栏/命令栏/标题/说明/主题行/JSON 行(368) + 7 个 10px 行距
+    // + 上下 padding 28。
+    const float main_h = fit_all ? (466.0f + scroll_content_h - 600.0f) : 1080.0f;
+    main->size = gryce_engine::math::Vector2f(1440.0f, main_h);
+    main->min_size = main->size;
+    main->padding = 14.0f; main->gap = 10.0f;
+    main->layout_mode = UILayoutMode::Column;
+    entity->set_component_parent(main, root);
+
+    // 窗口框架：标题栏 + 命令栏（图标全部走自定义贴图，不依赖字体里有没有
+    // 对应字形）。菜单栏在下面的"Navigation"分区里，展开后靠 draws_on_top
+    // 压在其它内容之上。
+    auto* titlebar = entity->add_component<UITitleBar>();
+    titlebar->title = "Gryce Engine";
+    titlebar->subtitle = "scenes/main.gesc";
+    place(titlebar, main, 1412, 40);
+
+    // 菜单栏放在标题栏与命令栏之间，和 WinUI 3 的窗口结构一致：标题栏 → 菜单 →
+    // 命令栏 → 内容。浮层是菜单栏的子节点，命中测试按节点矩形走，画在父 rect
+    // 之外也能收到点击；UIPopup 的 draws_on_top 让它压在后面的卡片之上。
+    auto* mb = entity->add_component<UIMenuBar>();
+    mb->menus = {
+        {"File", {{"New Scene", "Ctrl+N", 1},
+                  {"Open...", "Ctrl+O", 2},
+                  {"Save", "Ctrl+S", 3},
+                  {"", "", -1, true},
+                  {"Exit", "Alt+F4", 9}}},
+        {"Edit", {{"Undo", "Ctrl+Z", 11},
+                  {"Redo", "Ctrl+Y", 12},
+                  {"", "", -1, true},
+                  {"Cut", "Ctrl+X", 13},
+                  {"Copy", "Ctrl+C", 14},
+                  {"Paste", "Ctrl+V", 15}}},
+        {"View", {{"Show Grid", "", 21, false, true},
+                  {"Show Gizmos", "", 22, false, true},
+                  {"", "", -1, true},
+                  {"Fullscreen", "F11", 23}}},
+        {"Help", {{"Documentation", "", 31},
+                  {"About Gryce", "", 32, false, false, true, true}}},
+    };
+    place(mb, main, 1412, 32);
+    auto* mb_fly = entity->add_component<UIMenuFlyout>();
+    entity->set_component_parent(mb_fly, mb);
+    mb->flyout = mb_fly;
+    mb_fly->set_entries(mb->menus[0].items);
+    mb_fly->place_at(0.0f, 34.0f);
+    g_gallery.menu_bar = mb;
+    g_gallery.menu_flyout = mb_fly;
+    if (menu_open_demo) {
+        mb_fly->set_entries(mb->menus[0].items);
+        mb->selected = 0;
+        mb->open_index = 0;
+        mb->open = true;
+        mb_fly->place_at(0.0f, 34.0f);
+        mb_fly->set_open(true);
+    }
+
+    auto* cmdbar = entity->add_component<UICommandBar>();
+    place(cmdbar, main, 1412, 48);
+    auto mkcmd = [&](const char* label, const char* icon) -> UIIconButton* {
+        auto* b = entity->add_component<UIIconButton>();
+        b->text = label;
+        b->icon_path = icon;
+        b->icon_size = 16.0f;
+        // 宽度 = 图标 + 间距 + 文字 + 左右内边距
+        const float w = 16.0f + 8.0f + ui_estimate_text_width(label, 14.0f) + 26.0f;
+        place(b, cmdbar, std::max(40.0f, w), 32);
+        return b;
+    };
+    mkcmd("Open", "res:/ui/icon_folder.png");
+    mkcmd("Save", "res:/ui/icon_save.png");
+    mkcmd("Undo", "res:/ui/icon_undo.png");
+    mkcmd("Redo", "res:/ui/icon_redo.png");
+    auto* cmd_sep = entity->add_component<UISeparator>();
+    place(cmd_sep, cmdbar, 9, 32);
+    mkcmd("Play", "res:/ui/icon_play.png");
+    {
+        auto* find = entity->add_component<UIIconButton>();
+        find->icon_path = "res:/ui/icon_search.png";
+        find->icon_size = 18.0f;
+        place(find, cmdbar, 40, 32);
+        auto* cfg_btn = entity->add_component<UIIconButton>();
+        cfg_btn->icon_path = "res:/ui/icon_settings.png";
+        cfg_btn->icon_size = 18.0f;
+        place(cfg_btn, cmdbar, 40, 32);
+    }
+
+    auto* title = entity->add_component<UILabel>();
+    title->text = "GryceUI Component Gallery"; title->font_size = 24.0f;
+    title->size = gryce_engine::math::Vector2f(0.0f, 34.0f);
+    entity->set_component_parent(title, main);
+
+    g_gallery.theme_label = entity->add_component<UILabel>();
+    // 说明行是次要信息：12px + 次要色，标题才用大字。
+    g_gallery.theme_label->font_size = 12.0f;
+    g_gallery.theme_label->foreground_role = UIThemeColor::TextMuted;
+    g_gallery.theme_label->size = gryce_engine::math::Vector2f(0.0f, 24.0f);
+    entity->set_component_parent(g_gallery.theme_label, main);
+
+    auto* theme_row = entity->add_component<UIPanel>();
+    theme_row->draws_background = false;
+    theme_row->layout_mode = UILayoutMode::Row; theme_row->gap = 8.0f; theme_row->padding = 4.0f;
+    theme_row->size = gryce_engine::math::Vector2f(1420.0f, 40.0f); theme_row->min_size = theme_row->size;
+    entity->set_component_parent(theme_row, main);
+
+
+    auto mkbtn = [&](UIPanel* parent, const char* label) -> UIButton* {
+        auto* b = entity->add_component<UIButton>();
+        b->text = label;
+        b->size = gryce_engine::math::Vector2f(132.0f, 32.0f); b->min_size = b->size;
+        entity->set_component_parent(b, parent);
+        return b;
+    };
+    g_gallery.b_dark  = mkbtn(theme_row, "Dark");
+    g_gallery.b_light = mkbtn(theme_row, "Light");
+    g_gallery.b_high  = mkbtn(theme_row, "High Contrast");
+    g_gallery.b_nord  = mkbtn(theme_row, "Nord");
+    g_gallery.b_fluent = mkbtn(theme_row, "Fluent");
+
+    auto* json_row = entity->add_component<UIPanel>();
+    json_row->draws_background = false;
+    json_row->layout_mode = UILayoutMode::Row; json_row->gap = 8.0f; json_row->padding = 4.0f;
+    json_row->size = gryce_engine::math::Vector2f(1420.0f, 150.0f); json_row->min_size = json_row->size;
+    entity->set_component_parent(json_row, main);
+
+    g_gallery.theme_json = entity->add_component<UICodeEditor>();
+    g_gallery.theme_json->language = "json";
+    g_gallery.theme_json->show_line_numbers = true;
+    g_gallery.theme_json->set_code(
+        "{\n"
+        "  \"name\": \"Custom\",\n"
+        "  \"colors\": { \"accent\": \"#33aaff\", \"panel\": \"#1b2030\" },\n"
+        "  \"metrics\": { \"padding\": 10 }\n"
+        "}\n", false);
+    g_gallery.theme_json->size = gryce_engine::math::Vector2f(1080.0f, 140.0f);
+    g_gallery.theme_json->min_size = g_gallery.theme_json->size;
+    entity->set_component_parent(g_gallery.theme_json, json_row);
+    g_gallery.b_apply = mkbtn(json_row, "Apply JSON");
+
+    auto* scroll = entity->add_component<UIScrollView>();
+    // fit_all 时把滚动区撑到内容高度：Vulkan 后端没有裁剪实现，滚动后的内容
+    // 会溢出到标题区，分页截图会重叠。
+    const float scroll_h = fit_all ? (scroll_content_h - 600.0f) : 760.0f;
+    scroll->size = gryce_engine::math::Vector2f(1420.0f, scroll_h); scroll->min_size = scroll->size;
+    entity->set_component_parent(scroll, main);
+
+    auto section = [&](const char* heading, float h) -> UIPanel* {
+        // 每个分区是一张 Fluent 卡片：比页面底亮一档的表面 + 发丝边 + 8px 圆角，
+        // 内部 20px 内边距与 12px 行距，标题用 Subtitle 字号拉开层级。
+        auto* p = entity->add_component<UIPanel>();
+        p->layout_mode = UILayoutMode::Column; p->padding = 20.0f; p->gap = 12.0f;
+        p->background_role = UIThemeColor::PanelRaised;
+        p->size = gryce_engine::math::Vector2f(1400.0f, h); p->min_size = p->size;
+        auto* t = entity->add_component<UILabel>();
+        t->text = heading;
+        t->font_size = ui_theme_metric(UIThemeMetric::SubtitleFontSize);
+        t->size = gryce_engine::math::Vector2f(0.0f, 32.0f);
+        entity->set_component_parent(t, p);
+        entity->set_component_parent(p, scroll);
+        return p;
+    };
+    // 一行控件：Row 布局 + 12px 间隔。Fluent 的设置页是"标题 -> 若干行"，
+    // 每个控件独占整行会让页面拉得很长、也很松散。
+    auto subgroup = [&](UIPanel* parent, float h) -> UIPanel* {
+        auto* row = entity->add_component<UIPanel>();
+        row->layout_mode = UILayoutMode::Row;
+        row->gap = 12.0f;
+        row->padding = 0.0f;
+        row->draws_background = false;
+        place(row, parent, 1360.0f, h);
+        return row;
+    };
+
+    // 0) Fluent 的圆角阶梯与层次
+    auto* s0 = section("Surfaces: Corner Radius & Elevation", h_surfaces);
+    auto* radius_row = entity->add_component<UIPanel>();
+    radius_row->draws_background = false;
+    radius_row->layout_mode = UILayoutMode::Row; radius_row->gap = 18.0f; radius_row->padding = 4.0f;
+    place(radius_row, s0, 1360, 130);
+    auto mkcard = [&](UIPanel* parent, const char* caption, UIRadiusTier tier,
+                      float elevation) {
+        auto* slot = entity->add_component<UIPanel>();
+        slot->draws_background = false;
+        place(slot, parent, 210, 120);
+        auto* card = entity->add_component<UIPanel>();
+        card->radius_tier = tier;
+        card->rest_elevation = elevation;
+        // 浮起的表面要比底色亮一档，否则深色主题上"抬起"看不出来。
+        card->background_role = UIThemeColor::PanelRaised;
+        card->set_local_position(gryce_engine::math::Vector3f(20.0f, 18.0f, 0.0f));
+        place(card, slot, 170, 70);
+        auto* label = entity->add_component<UILabel>();
+        label->text = caption;
+        label->font_size = 12.0f;
+        label->set_local_position(gryce_engine::math::Vector3f(8.0f, 24.0f, 0.0f));
+        place(label, card, 154, 22);
+    };
+    mkcard(radius_row, "radius small", UIRadiusTier::Small, 0.0f);
+    mkcard(radius_row, "radius medium", UIRadiusTier::Medium, 0.0f);
+    mkcard(radius_row, "radius large", UIRadiusTier::Large, 0.0f);
+    mkcard(radius_row, "elevation 3", UIRadiusTier::Medium, 3.0f);
+    mkcard(radius_row, "elevation 8", UIRadiusTier::Medium, 8.0f);
+    mkcard(radius_row, "elevation 14", UIRadiusTier::Medium, 14.0f);
+
+    auto* motion_row = entity->add_component<UIPanel>();
+    motion_row->draws_background = false;
+    motion_row->layout_mode = UILayoutMode::Row; motion_row->gap = 12.0f; motion_row->padding = 4.0f;
+    place(motion_row, s0, 1360, 44);
+    auto mkmotion = [&](const char* caption, float hover_duration, float press_scale) {
+        auto* b = entity->add_component<UIButton>();
+        b->text = caption;
+        b->hover_duration = hover_duration;
+        b->press_scale = press_scale;
+        place(b, motion_row, 260, 34);
+    };
+    mkmotion("hover 83ms (fast)", 0.083f, 0.02f);
+    mkmotion("hover 167ms (normal)", 0.167f, 0.02f);
+    mkmotion("hover 250ms (slow)", 0.25f, 0.04f);
+    auto* note = entity->add_component<UILabel>();
+    note->text = "radius tiers and elevation come from theme tokens; hover, press and focus run on eased tweens";
+    note->font_size = 12.0f;
+    place(note, s0, 1200, 20);
+
+    // 0.5) 贴图：UIFitMode 决定缩放/裁切，图标按钮用同一套纹理服务
+    auto* s_img = section("Images & Custom Textures", h_images);
+    auto* row_img = subgroup(s_img, 176);
+    auto mkimg = [&](const char* path, gryce_engine::ui::UIFitMode mode, float w, float h,
+                     const char* caption) {
+        auto* holder = entity->add_component<UIPanel>();
+        holder->draws_background = false;
+        holder->layout_mode = UILayoutMode::Column;
+        holder->gap = 8.0f;
+        place(holder, row_img, w, 176);
+        auto* im = entity->add_component<UIImage>();
+        im->texture_path = path;
+        im->fit = mode;
+        place(im, holder, w, h);
+        auto* lab = entity->add_component<UILabel>();
+        lab->text = caption;
+        lab->font_size = 12.0f;
+        lab->foreground_role = UIThemeColor::TextMuted;
+        place(lab, holder, w, 20);
+    };
+    mkimg("res:/ui/demo_photo.png", gryce_engine::ui::UIFitMode::Cover, 300, 148, "Cover - fills, crops the sides");
+    mkimg("res:/ui/demo_photo.png", gryce_engine::ui::UIFitMode::Contain, 160, 148, "Contain - whole image");
+    mkimg("res:/ui/demo_photo.png", gryce_engine::ui::UIFitMode::Stretch, 120, 148, "Stretch");
+
+    auto* row_icon = subgroup(s_img, 40);
+    for (const char* name : {"folder", "save", "undo", "redo", "play", "search",
+                             "settings", "close", "check"}) {
+        auto* b = entity->add_component<UIIconButton>();
+        b->icon_path = std::string("res:/ui/icon_") + name + ".png";
+        b->icon_size = 18.0f;
+        place(b, row_icon, 40, 32);
+    }
+    auto* icon_note = entity->add_component<UILabel>();
+    icon_note->text = "24px PNG icons loaded through the UI texture service (path -> cached texture handle)";
+    icon_note->font_size = 12.0f;
+    icon_note->foreground_role = UIThemeColor::TextMuted;
+    place(icon_note, s_img, 1200, 20);
+
+    // 1) 按钮：Standard / Accent / Subtle 三种变体 + 切换与图标按钮
+    auto* s1 = section("Buttons", h_buttons);
+    auto* row1 = subgroup(s1, 40);
+    auto* b1 = entity->add_component<UIButton>(); b1->text = "Standard"; place(b1, row1, 140, 32);
+    auto* b2 = entity->add_component<UIButton>(); b2->text = "Accent";
+    b2->variant = UIButtonVariant::Accent; place(b2, row1, 140, 32);
+    auto* b3 = entity->add_component<UIButton>(); b3->text = "Subtle";
+    b3->variant = UIButtonVariant::Subtle; place(b3, row1, 140, 32);
+    auto* tg = entity->add_component<UIToggleButton>(); tg->text = "Toggle";
+    tg->checked = true; place(tg, row1, 140, 32);
+    auto* ic = entity->add_component<UIIconButton>(); ic->text = "Icon"; ic->icon = "*"; place(ic, row1, 120, 32);
+
+    auto* row2 = subgroup(s1, 40);
+    auto* sw1 = entity->add_component<UIToggleSwitch>(); sw1->text = "Wi-Fi";
+    sw1->on = true; sw1->switch_tween.reset(1.0f); place(sw1, row2, 180, 32);
+    auto* sw2 = entity->add_component<UIToggleSwitch>(); sw2->text = "Bluetooth"; place(sw2, row2, 200, 32);
+    auto* cb = entity->add_component<UICheckBox>(); cb->text = "Checkbox"; cb->checked = true; place(cb, row2, 180, 32);
+    auto* cb2 = entity->add_component<UICheckBox>(); cb2->text = "Unchecked"; place(cb2, row2, 180, 32);
+    auto* r1 = entity->add_component<UIRadioButton>(); r1->text = "Radio A"; r1->selected = true; place(r1, row2, 150, 32);
+    auto* r2 = entity->add_component<UIRadioButton>(); r2->text = "Radio B"; place(r2, row2, 150, 32);
+
+    auto* row3 = subgroup(s1, 40);
+    auto* pb = entity->add_component<UIProgressBar>(); pb->value = 0.62f; place(pb, row3, 260, 32);
+    auto* sl = entity->add_component<UISlider>(); sl->value = 0.42f; place(sl, row3, 320, 32);
+    auto* rs = entity->add_component<UIRangeSlider>(); rs->low = 0.25f; rs->high = 0.75f; place(rs, row3, 320, 32);
+
+    // 2) 文本 / 数值输入
+    auto* s2 = section("Text & Numeric Inputs", h_inputs);
+    auto* row4 = subgroup(s2, 40);
+    auto* ti = entity->add_component<UITextInput>(); ti->text = "res:/scenes/main.gesc"; place(ti, row4, 340, 32);
+    auto* sb = entity->add_component<UISearchBox>(); place(sb, row4, 260, 32);
+    auto* cbx = entity->add_component<UIComboBox>(); cbx->items = "Option A\nOption B\nOption C";
+    cbx->selected = 0; place(cbx, row4, 200, 32);
+    auto* kb = entity->add_component<UIKeyBindingEditor>(); kb->binding = "Ctrl+S"; place(kb, row4, 180, 32);
+
+    auto* row5 = subgroup(s2, 40);
+    auto* ni = entity->add_component<UINumberInput>(); ni->set_value(3.14f, false); place(ni, row5, 160, 32);
+    auto* df = entity->add_component<UIDragFloat>(); df->set_value(2.5f, false); place(df, row5, 220, 32);
+    auto* ve = entity->add_component<UIVectorEditor>(); ve->set_value(0, 1.0f, false);
+    ve->set_value(1, 2.0f, false); place(ve, row5, 280, 32);
+
+    auto* row6 = subgroup(s2, 160);
+    auto* cp = entity->add_component<UIColorPicker>();
+    cp->color = gryce_engine::math::Vector4f(1.0f, 0.5f, 0.1f, 1.0f); place(cp, row6, 220, 150);
+
+    // 3) 导航 / 选择器
+    auto* s3 = section("Navigation & Pickers", h_nav);
+    auto* row7 = subgroup(s3, 40);
+    auto* tb = entity->add_component<UITabBar>(); tb->items = "Scene\nGame\nAssets";
+    tb->selected = 0; place(tb, row7, 380, 32);
+
+    auto* row8 = subgroup(s3, 40);
+    auto* tlb = entity->add_component<UIToolbar>();
+    { auto* x1 = entity->add_component<UIButton>(); x1->text = "Open"; place(x1, tlb, 92, 28);
+      auto* x2 = entity->add_component<UIButton>(); x2->text = "Save"; place(x2, tlb, 92, 28);
+      auto* x3 = entity->add_component<UIButton>(); x3->text = "Build";
+      place(x3, tlb, 92, 28); }
+    place(tlb, row8, 440, 40);
+    auto* bc = entity->add_component<UIBreadcrumb>();
+    bc->size = gryce_engine::math::Vector2f(400.0f, 32.0f); bc->min_size = bc->size;
+    place(bc, row8, 400, 32);
+
+    auto* row9 = subgroup(s3, 40);
+    auto* sp = entity->add_component<UISplitter>(); sp->vertical = true; place(sp, row9, 8, 40);
+
+    // 3b) 窗口外壳：NavigationView + InfoBar
+    //
+    // 版式照 WinUI 3 的设置页：左侧固定宽度的导航，右侧一列全宽通知条。
+    // 导航项的图标走自定义贴图，不复用字体字形。
+    auto* s3b = section("Shell: NavigationView & InfoBar", h_shell);
+    auto* shell_row = entity->add_component<UIPanel>();
+    shell_row->draws_background = false;
+    shell_row->layout_mode = UILayoutMode::Row;
+    shell_row->gap = 24.0f;
+    shell_row->padding = 0.0f;
+    place(shell_row, s3b, 1360.0f, 424.0f);
+
+    auto* nav = entity->add_component<UINavigationView>();
+    nav->header = "Workspace";
+    nav->row_height = 42.0f;
+    nav->items = {
+        {"Home", "res:/ui/icon_folder.png", false},
+        {"Scenes", "res:/ui/icon_save.png", false},
+        {"Playback", "res:/ui/icon_play.png", false},
+        {"History", "res:/ui/icon_undo.png", false},
+        {"Search", "res:/ui/icon_search.png", false},
+        {"Settings", "res:/ui/icon_settings.png", true},
+    };
+    nav->selected = 1;
+    place(nav, shell_row, 300, 424);
+
+    auto* bar_col = entity->add_component<UIPanel>();
+    bar_col->draws_background = false;
+    bar_col->layout_mode = UILayoutMode::Column;
+    bar_col->gap = 12.0f;
+    bar_col->padding = 0.0f;
+    place(bar_col, shell_row, 1036, 424);
+
+    auto mkinfobar = [&](UIInfoBarSeverity severity, const char* heading,
+                         const char* message) {
+        auto* bar = entity->add_component<UIInfoBar>();
+        bar->severity = severity;
+        bar->title = heading;
+        bar->message = message;
+        place(bar, bar_col, 1036, 56);
+    };
+    mkinfobar(UIInfoBarSeverity::Informational, "Update available",
+              "Gryce 1.4 is ready to install — restart to finish.");
+    mkinfobar(UIInfoBarSeverity::Success, "Build succeeded",
+              "Scene compiled in 2.3 s with 0 warnings.");
+    mkinfobar(UIInfoBarSeverity::Warning, "Unreferenced asset",
+              "textures/rock.png is not used by any material.");
+    mkinfobar(UIInfoBarSeverity::Error, "Shader compile failed",
+              "pbr.frag line 42: unknown uniform u_light_dir.");
+
+    // 4) 列表 / 树 / 表格
+    auto* s4 = section("Lists, Trees & Tables", h_lists);
+    auto* lv = entity->add_component<UIListView>(); lv->items = "Item One\nItem Two\nItem Three\nItem Four"; lv->selected = 1; place(lv, s4, 300, 140);
+    auto* tv = entity->add_component<UITreeView>();
+    tv->items.push_back({"Root Node", 0, true, true, true});
+    tv->items.push_back({"  Child A", 1, true, false, true});
+    tv->items.push_back({"  Child B", 1, true, false, true});
+    tv->items.push_back({"    Sub A1", 2, true, false, true});
+    tv->items.push_back({"  Leaf", 1, true, false, true});
+    place(tv, s4, 300, 200);
+    auto* tbl = entity->add_component<UITableView>();
+    tbl->columns = "Name\nType\nSize";
+    tbl->rows = "Main.gesc|Scene|4 KB\nplayer.js|Script|8 KB\nrock.png|Texture|16 KB";
+    place(tbl, s4, 500, 200);
+    auto* ag = entity->add_component<UIAssetGrid>(); ag->items = "cube.obj\nmain.gesc\nplayer.js\nrock.png\nlogo.png"; place(ag, s4, 400, 200);
+    auto* pg = entity->add_component<UIPropertyGrid>(); place(pg, s4, 400, 160);
+    auto* cv = entity->add_component<UIConsoleView>(); cv->items = "> loaded scene\n> 5 meshes\n> render ok"; place(cv, s4, 500, 140);
+
+    // 5) 高级 / 编辑器
+    auto* s5 = section("Advanced & Editors", h_editors);
+    auto* ce = entity->add_component<UICodeEditor>();
+    ce->language = "javascript";
+    ce->set_code("function greet(name) {\n  return `Hello, ${name}`;\n}\nconsole.log(greet('Gryce'));\n", false);
+    place(ce, s5, 700, 260);
+    auto* st = entity->add_component<UIStatusBar>(); st->text = "Ready"; st->right_text = "GryceEngine 1.0"; place(st, s5, 800, 24);
+    auto* nc = entity->add_component<UINotificationCenter>(); place(nc, s5, 400, 160);
+    auto* ds = entity->add_component<UIDragSource>(); ds->label = "Drag me"; ds->payload = "asset/cube"; place(ds, s5, 200, 32);
+    auto* dz = entity->add_component<UIDropZone>(); dz->last_payload = "drop here"; place(dz, s5, 200, 60);
+    auto* dp = entity->add_component<UIDockPanel>(); dp->title = "Inspector"; place(dp, s5, 400, 160);
+    auto* img = entity->add_component<UIImage>(); place(img, s5, 200, 140);
+    auto* vp = entity->add_component<UIViewportPanel>(); place(vp, s5, 400, 220);
+    auto* lbl = entity->add_component<UILabel>(); lbl->text = "A plain label with themed text color."; place(lbl, s5, 400, 24);
+
+    // 6) 弹层 / 对话框 / 通知
+    auto* s6 = section("Popups, Dialogs & Notifications", h_popups);
+    auto* md = entity->add_component<UIMessageDialog>(); md->title = "Saved"; md->message = "Your work was saved."; md->visible = true; md->receives_input = true; place(md, s6, 440, 160);
+    auto* cd = entity->add_component<UIConfirmDialog>(); cd->title = "Delete"; cd->message = "Delete this asset?"; cd->visible = true; cd->receives_input = true; place(cd, s6, 460, 160);
+    auto* fd = entity->add_component<UIFileDialog>(); fd->title = "Open File"; fd->entries = "scenes\nscripts\nmodels\ntextures"; fd->visible = true; fd->receives_input = true; place(fd, s6, 620, 300);
+    auto* mn = entity->add_component<UIMenu>(); mn->items = "Open\nSave\nExit"; mn->visible = true; mn->receives_input = true; place(mn, s6, 220, 90);
+    auto* cm = entity->add_component<UIContextMenu>(); cm->visible = true; cm->receives_input = true; place(cm, s6, 220, 90);
+    auto* toast = entity->add_component<UIToast>(); toast->text = "Build succeeded"; toast->visible = true; toast->receives_input = true; place(toast, s6, 320, 50);
+    auto* tip = entity->add_component<UITooltip>(); tip->text = "Tooltip text"; tip->visible = true; tip->receives_input = false; place(tip, s6, 180, 28);
+    auto* fp = entity->add_component<UIFloatingPanel>(); fp->title = "Floating"; fp->visible = true; fp->receives_input = true; place(fp, s6, 360, 170);
+
+    scroll->content_height = scroll_content_h;
+    if (scroll_y > 0) scroll->scroll_y = static_cast<float>(scroll_y);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// 无场景代码编辑器演示（--ui-codeeditor）
+//
+// 只建 UIRoot + 一个 UICodeEditor（外加一行状态标签），不加载任何 3D 场景：
+// 配合 GCore_SetAutoLoadMainScene(false)，引擎保留一个空的 "Untitled" 场景，
+// 世界与渲染照常初始化，但没有任何网格/相机/灯光。用于验证：
+//   * 语法高亮（tokenizer → 彩色 run → draw_text_colored）
+//   * 查找高亮（find_query → 行内匹配背景块）
+//   * 撤销/重做（undo_depth 状态 + Ctrl+Z / Ctrl+Y）
+//   * 字体抗锯齿（小字号独立烘档后的清晰度）
+// ---------------------------------------------------------------------------
+static bool inject_code_editor_demo(const std::string& language, const std::string& find_query,
+                                    float code_font_size) {
+    using namespace gryce_engine::components;
+    auto* world = static_cast<gryce_engine::ecs::World*>(GCore_GetInternalWorldPtr());
+    if (!world || !world->scene()) return false;
+    auto* entity = world->scene()->create_entity("Code Editor Demo");
+    if (!entity) return false;
+
+    const bool js = (language.rfind("javascript", 0) == 0) || language == "js" ||
+                    language == "typescript" || language == "ts";
+    const std::string sample = js ? std::string(R"(// Gryce engine — JavaScript syntax highlight demo
+import { render } from './engine.js';
+
+const MAX_STEPS = 128;
+let accumulator = 0.0;
+
+/* Render the scene into an offscreen target.
+   The word render appears here and below for the find demo. */
+function renderScene(scene, camera) {
+  const light = { dir: [0, -1, 0], color: '#ffddaa' };
+  for (let i = 0; i < MAX_STEPS; ++i) {
+    accumulator += render(scene, camera, i) * 0.5;
+  }
+  return accumulator > 1.0 ? accumulator : 1.0;
+}
+
+export default renderScene;
+)") : std::string(R"(#version 450 core
+// Gryce engine — GLSL syntax highlight demo
+layout(location = 0) out vec4 frag_color;
+
+uniform sampler2D u_albedo;
+uniform vec3 u_light_dir;   // normalized, world space
+
+float specular(vec3 n, vec3 l, vec3 v, float shininess) {
+    vec3 h = normalize(l + v);
+    return pow(max(dot(n, h), 0.0), shininess);
+}
+
+void main() {
+    vec4 base = texture(u_albedo, uv);          // sample the render target
+    float ndl = max(dot(normal, u_light_dir), 0.0);
+    float spec = specular(normal, u_light_dir, view_dir, 64.0);
+    vec3 color = base.rgb * (ndl + spec);       // render with light + specular
+    frag_color = vec4(color, base.a);
+}
+)");
+
+    auto* root = entity->add_component<UIRoot>();
+    auto* panel = entity->add_component<UIPanel>();
+    panel->layout_mode = UILayoutMode::Column;
+    panel->padding = 10.0f; panel->gap = 8.0f;
+    panel->set_local_position(gryce_engine::math::Vector3f(24.0f, 24.0f, 0.0f));
+    panel->size = gryce_engine::math::Vector2f(1470.0f, 950.0f);
+    panel->min_size = panel->size;
+    entity->set_component_parent(panel, root);
+
+    auto* editor = entity->add_component<UICodeEditor>();
+    editor->language = language;
+    editor->show_line_numbers = true;
+    editor->highlight = true;
+    editor->highlight_current_line = true;
+    editor->font_size = code_font_size;
+    editor->line_height = std::round(code_font_size * 1.38f);
+    editor->set_code(sample, false);
+    editor->set_find_query(find_query);
+    editor->set_editor_cursor(0);
+    editor->set_editor_focus(true);
+    editor->size = gryce_engine::math::Vector2f(1450.0f, 880.0f);
+    editor->min_size = editor->size;
+    entity->set_component_parent(editor, panel);
+
+    auto* status = entity->add_component<UILabel>();
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "lang=%s   find=\"%s\"   matches=%d   undo_depth=%d   (Ctrl+Z / Ctrl+Y)",
+                  language.c_str(), find_query.c_str(),
+                  editor->match_count(), editor->undo_depth());
+    status->text = buf;
+    status->font_size = 14.0f;
+    status->size = gryce_engine::math::Vector2f(0.0f, 24.0f);
+    entity->set_component_parent(status, panel);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// 代码编辑器逻辑自测（--code-selftest）：不建窗口/场景，直接验证 tokenizer、
+// 查找计数、撤销/重做。用真实的 Character 事件驱动编辑路径。
+// ---------------------------------------------------------------------------
+static int run_code_selftest() {
+    using gryce_engine::components::UICodeEditor;
+    using gryce_engine::ui::CodeTokenRole;
+    using gryce_engine::ui::UIEvent;
+    using gryce_engine::ui::UIEventType;
+    bool ok = true;
+
+    UICodeEditor ed;
+    ed.language = "javascript";
+    ed.set_code("let a = 1;\nconst b = 2;\n", false);
+
+    {
+        const auto tokens = gryce_engine::ui::tokenize_code_line("let a = 1;", "javascript");
+        bool kw = false, num = false;
+        for (const auto& t : tokens) {
+            if (t.role == CodeTokenRole::Keyword) kw = true;
+            if (t.role == CodeTokenRole::Number) num = true;
+        }
+        ok = ok && kw && num;
+        std::printf("[selftest] tokenizer keyword=%d number=%d\n", kw ? 1 : 0, num ? 1 : 0);
+    }
+    {
+        ed.set_find_query("const");
+        const int m = ed.match_count();
+        ok = ok && (m == 1);
+        std::printf("[selftest] match_count(const)=%d expect=1\n", m);
+        ed.set_find_query("");
+    }
+    {
+        ed.set_editor_focus(true);
+        ed.set_editor_cursor(ed.text.size());
+        const std::string before = ed.text;
+        UIEvent ev;
+        ev.type = UIEventType::Character;
+        ev.codepoint = static_cast<uint32_t>('X');
+        ed.on_ui_event(ev);
+        const bool inserted = (ed.text.size() == before.size() + 1) && ed.text.back() == 'X';
+        const int depth = ed.undo_depth();
+        ed.undo();
+        const bool undone = (ed.text == before);
+        ed.redo();
+        const bool redone = (ed.text.size() == before.size() + 1) && ed.text.back() == 'X';
+        ok = ok && inserted && depth >= 1 && undone && redone;
+        std::printf("[selftest] edit=%d undo_depth=%d undo=%d redo=%d\n",
+                    inserted ? 1 : 0, depth, undone ? 1 : 0, redone ? 1 : 0);
+        ed.set_editor_focus(false);
+    }
+    std::printf("[selftest] %s\n", ok ? "ALL PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+// 圆角 / 层次 / 动效自测（--fluent-selftest）：不建窗口，直接驱动 UIRuntime，
+// 检查半径是否来自主题、hover 提亮是否单调收敛、按下是否产生内缩、焦点框是否
+// 随焦点淡入，以及悬停时是否真的多出一条投影命令。
+static int run_fluent_selftest() {
+    using namespace gryce_engine::components;
+    using namespace gryce_engine::ui;
+    bool ok = true;
+
+    set_ui_theme_preset(UIThemePreset::Fluent);
+    const float small_radius = ui_theme_radius(UIRadiusTier::Small);
+    const float medium_radius = ui_theme_radius(UIRadiusTier::Medium);
+    std::printf("[selftest] radius small=%.1f medium=%.1f large=%.1f\n",
+                small_radius, medium_radius, ui_theme_radius(UIRadiusTier::Large));
+
+    gryce_engine::scene::Entity entity("FluentMotion");
+    auto* root = entity.add_component<UIPanel>();
+    root->size = gryce_engine::math::Vector2f(400.0f, 200.0f);
+    auto* button = entity.add_component<UIButton>();
+    button->text = "Button";
+    button->size = gryce_engine::math::Vector2f(120.0f, 32.0f);
+    button->min_size = button->size;
+    button->set_local_position(gryce_engine::math::Vector3f(10.0f, 10.0f, 0.0f));
+    button->hover_duration = 0.10f;
+    button->press_duration = 0.08f;
+    entity.set_component_parent(button, root);
+
+    UIRuntime runtime;
+    runtime.set_root(root);
+    runtime.set_viewport({0.0f, 0.0f, 400.0f, 200.0f});
+
+    gryce_engine::ui::UIInputFrame idle;
+    idle.pointer = gryce_engine::math::Vector2f(-5.0f, -5.0f);
+    idle.delta_time = 0.02f;
+    runtime.update(idle);
+
+    auto step = [&](float px, float py, bool down, bool edge, uint64_t serial) {
+        gryce_engine::ui::UIInputFrame frame;
+        frame.pointer = gryce_engine::math::Vector2f(px, py);
+        frame.pointer_down[0] = down;
+        frame.pointer_pressed[0] = edge && down;
+        frame.delta_time = 0.02f;
+        frame.frame_serial = serial;
+        runtime.update(frame);
+    };
+
+    // hover：单调上升且按缓动收敛到 1（不是线性跳变）。
+    float previous = 0.0f;
+    bool monotonic = true;
+    float mid = 0.0f;
+    for (uint64_t i = 0; i < 10; ++i) {
+        step(20.0f, 20.0f, false, false, 100 + i);
+        const float h = button->hover_amount();
+        if (h + 1e-4f < previous) monotonic = false;
+        if (i == 1) mid = h;
+        previous = h;
+    }
+    const bool hover_ok = monotonic && previous > 0.99f && mid < previous;
+    ok = ok && hover_ok;
+    std::printf("[selftest] hover first=%.2f settled=%.2f monotonic=%d\n",
+                mid, previous, monotonic ? 1 : 0);
+
+    // 悬停时应当多出一条投影命令（hover_elevation = 3）。
+    UIDrawList hovered_draw;
+    runtime.build_draw_list(hovered_draw);
+    int shadows = 0;
+    float button_radius = -1.0f;
+    for (const UIDrawCommand& command : hovered_draw.commands()) {
+        if (command.type == UIDrawCommandType::Shadow) ++shadows;
+        if (command.type == UIDrawCommandType::Rect &&
+            std::fabs(command.rect.w - 120.0f) < 0.5f && button_radius < 0.0f) {
+            button_radius = command.radii[0];
+        }
+    }
+    const bool radius_ok = std::fabs(button_radius - small_radius) < 0.01f;
+    const bool shadow_ok = shadows >= 1;
+    ok = ok && radius_ok && shadow_ok;
+    std::printf("[selftest] button_radius=%.1f expect=%.1f shadows=%d\n",
+                button_radius, small_radius, shadows);
+
+    // press：按下后绘制矩形应当比布局矩形小（按压内缩）。
+    for (uint64_t i = 0; i < 8; ++i) step(20.0f, 20.0f, true, i == 0, 200 + i);
+    UIDrawList pressed_draw;
+    runtime.build_draw_list(pressed_draw);
+    float pressed_w = -1.0f;
+    for (const UIDrawCommand& command : pressed_draw.commands()) {
+        if (command.type == UIDrawCommandType::Rect &&
+            command.rect.y > 5.0f && command.rect.w > 100.0f) {
+            pressed_w = command.rect.w;
+            break;
+        }
+    }
+    const bool press_ok = button->press_amount() > 0.9f &&
+                          pressed_w > 0.0f && pressed_w < 119.5f;
+    ok = ok && press_ok;
+    std::printf("[selftest] press=%.2f draw_w=%.2f layout_w=120.0\n",
+                button->press_amount(), pressed_w);
+
+    // 焦点框：淡入而不是瞬变。按下时已经拿过焦点，先让它降下去再重新聚焦。
+    step(-5.0f, -5.0f, false, false, 300);
+    button->set_focused_state(false);
+    for (uint64_t i = 0; i < 10; ++i) step(-5.0f, -5.0f, false, false, 301 + i);
+    const float focus_rest = button->focus_amount();
+    button->set_focused_state(true);
+    step(-5.0f, -5.0f, false, false, 320);
+    const float focus_mid = button->focus_amount();
+    for (uint64_t i = 0; i < 10; ++i) step(-5.0f, -5.0f, false, false, 321 + i);
+    const bool focus_ok = focus_rest < 0.01f && focus_mid > 0.0f && focus_mid < 1.0f &&
+                          button->focus_amount() > 0.99f;
+    ok = ok && focus_ok;
+    std::printf("[selftest] focus rest=%.2f mid=%.2f settled=%.2f\n",
+                focus_rest, focus_mid, button->focus_amount());
+
+    std::printf("[selftest] %s\n", ok ? "ALL PASS" : "FAIL");
+    return ok ? 0 : 1;
+}
 
 // ---------------------------------------------------------------------------
 // 交互式相机（--play）：鼠标锁定 + 视角 + WASD
@@ -477,6 +1439,34 @@ struct ImageStats {
     int unique_bins = 0;
 };
 
+// 裁剪一块区域并最近邻放大，用来肉眼核对文字边缘的灰度台阶（抗锯齿质量）。
+// 双线性放大自己会制造平滑假象，所以必须用最近邻，让原始像素块保持方正。
+bool write_zoomed_region(const std::string& src, const std::string& dst,
+                         int rx, int ry, int rw, int rh, int scale) {
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels = stbi_load(src.c_str(), &w, &h, &channels, 4);
+    if (!pixels) return false;
+    if (scale < 1) scale = 1;
+    rx = std::max(0, std::min(rx, w - 1));
+    ry = std::max(0, std::min(ry, h - 1));
+    rw = std::max(1, std::min(rw, w - rx));
+    rh = std::max(1, std::min(rh, h - ry));
+
+    const int ow = rw * scale;
+    const int oh = rh * scale;
+    std::vector<unsigned char> out(static_cast<std::size_t>(ow) * oh * 4);
+    for (int y = 0; y < oh; ++y) {
+        const int sy = ry + y / scale;
+        for (int x = 0; x < ow; ++x) {
+            const int sx = rx + x / scale;
+            std::memcpy(&out[(static_cast<std::size_t>(y) * ow + x) * 4],
+                        &pixels[(static_cast<std::size_t>(sy) * w + sx) * 4], 4);
+        }
+    }
+    stbi_image_free(pixels);
+    return stbi_write_png(dst.c_str(), ow, oh, 4, out.data(), ow * 4) != 0;
+}
+
 ImageStats analyze_image(const std::string& path) {
     ImageStats st;
     int w = 0, h = 0, channels = 0;
@@ -535,6 +1525,10 @@ void print_usage() {
         "  --no-debug-ui          不画调试 UI（左上角读数 + ImGui 调试窗口）\n"
         "  --ui-interval <N>      UI 帧节流：调试面板每 N 个渲染帧才构建一次（默认 1）\n"
         "  --editor-preview       走编辑器预览路径：离屏视口输出 + 双视口 + Gizmo 命中测试\n"
+        "  --ui-demo              注入 GryceUI 基础控件演示\n"
+        "  --ui-gallery [--theme X] [--gallery-all] [--gallery-scroll N]  注入全组件画廊 + 多主题切换\n"
+        "  --resize-probe                                                 运行中改窗口尺寸（核对不黑屏）\n"
+        "  --click-probe                                                  合成一次点击（核对输入链路）\n"
         "  --bench [N]            开启 GPU 分段计时，跑 N 帧（默认 240）后打印每 pass 平均 GPU 时间\n"
         "  --ssr / --no-ssr       覆盖屏幕空间反射开关（A/B 对照用）\n"
         "  --ssao / --no-ssao     覆盖屏幕空间环境光遮蔽开关\n"
@@ -726,11 +1720,20 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
 
+    // 纯逻辑自测：不需要窗口/GPU，先于一切初始化返回。
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--code-selftest") == 0) return run_code_selftest();
+        if (std::strcmp(argv[i], "--fluent-selftest") == 0) return run_fluent_selftest();
+    }
+
+
     std::string project_root = GRYCE_DEMO_PROJECT_ROOT;
     std::string scene_override;
     int frames = 60;
     int shot_delay = 4;             // 请求截图后再驱动的帧数（等渲染线程写盘）
     std::string shot_path;
+    // --shot-zoom x,y,w,h,scale：截图后裁一块区域最近邻放大另存 <shot>.zoom.png
+    std::string shot_zoom_arg;
     std::string api_arg;
     int width_override = 0;
     int height_override = 0;
@@ -765,6 +1768,7 @@ int main(int argc, char** argv) {
     bool stress_shadow = false;   // 保留：投影体默认全开，此项仅用于日志标注
     int instanced_count = 0;      // >0：注入一个 InstancedMeshRenderer（GPU 剔除验证用）
     bool frames_explicit = false;
+    bool shot_explicit = false;   // 用户显式给了 --shot（决定 UI 预览是否常驻）
     bool vsync = true;   // 默认开垂直同步；--no-vsync 用于性能测量
     float ssr_env_fallback_override = -1.0f;
     float ssr_scale_override = -1.0f;
@@ -774,6 +1778,21 @@ int main(int argc, char** argv) {
     int  ui_interval_override = 0;   // --ui-interval N，<=0 不干预（默认每帧构建 UI）
     int  fps_limit = -1;       // --fps-limit N（<0 表示不设置，保持默认 0 = 不限速）
     bool debug_ui_enabled = true;   // --no-debug-ui 关闭调试 UI
+    bool ui_demo = false;
+    bool ui_gallery = false;
+    bool menu_open_demo = false;   // --menu-open：注入时展开 File 菜单（截图核对浮层）
+    bool gallery_all = false;   // --gallery-all：拉高滚动区填满帧缓冲，配合 --gallery-scroll 翻页
+    int gallery_scroll = 0;    // --gallery-scroll N：初始滚动像素（无头翻页截图用）
+    bool resize_probe = false; // --resize-probe：运行中改窗口尺寸，核对不黑屏
+    bool click_probe = false;  // --click-probe：合成一次点击，核对输入链路
+    float probe_x = 0.0f;
+    float probe_y = 0.0f;
+    bool ui_codeeditor = false;       // --ui-codeeditor：无场景代码编辑器演示
+    std::string code_find = "render"; // --code-find <q>：查找高亮查询词
+    std::string code_lang = "glsl";   // --code-lang <lang>：高亮语言
+    float code_font_size = 16.0f;     // --code-font <px>：编辑器字号
+    float font_shape = 1.0f;          // --font-shape <k>：字形整形强度（0 关闭，1 标准，>1 更实）
+    std::string theme_arg = "dark";
     // --editor-preview：编辑器前置能力的运行时冒烟。开启后 tonemap 写离屏视口目标
     // 而不是默认帧缓冲（窗口本身会是黑的，这是编辑器预览的正常形态），并额外
     // 渲染一次 GameView、跑一次 Gizmo 命中测试。
@@ -810,8 +1829,8 @@ int main(int argc, char** argv) {
             frames = std::atoi(need_value(a));
             frames_explicit = true;
         }
-        else if (std::strcmp(a, "--shot") == 0) shot_path = need_value(a);
-        else if (std::strcmp(a, "--w") == 0) width_override = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--shot") == 0) { shot_path = need_value(a); shot_explicit = true; }
+        else if (std::strcmp(a, "--shot-zoom") == 0) shot_zoom_arg = need_value(a);        else if (std::strcmp(a, "--w") == 0) width_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--h") == 0) height_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--sync") == 0) sync_mode = true;
         else if (std::strcmp(a, "--vsync") == 0) vsync = true;
@@ -847,6 +1866,19 @@ int main(int argc, char** argv) {
         else if (std::strcmp(a, "--ui-interval") == 0)
             ui_interval_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--editor-preview") == 0) editor_preview = true;
+        else if (std::strcmp(a, "--ui-demo") == 0) ui_demo = true;
+        else if (std::strcmp(a, "--ui-gallery") == 0) ui_gallery = true;
+        else if (std::strcmp(a, "--ui-codeeditor") == 0) ui_codeeditor = true;
+        else if (std::strcmp(a, "--code-find") == 0) code_find = need_value(a);
+        else if (std::strcmp(a, "--code-lang") == 0) code_lang = need_value(a);
+        else if (std::strcmp(a, "--code-font") == 0) code_font_size = static_cast<float>(std::atof(need_value(a)));
+        else if (std::strcmp(a, "--font-shape") == 0) font_shape = static_cast<float>(std::atof(need_value(a)));
+        else if (std::strcmp(a, "--gallery-all") == 0) gallery_all = true;
+        else if (std::strcmp(a, "--menu-open") == 0) menu_open_demo = true;
+        else if (std::strcmp(a, "--gallery-scroll") == 0) gallery_scroll = std::atoi(need_value(a));
+        else if (std::strcmp(a, "--resize-probe") == 0) resize_probe = true;
+        else if (std::strcmp(a, "--click-probe") == 0) click_probe = true;
+        else if (std::strcmp(a, "--theme") == 0) theme_arg = need_value(a);
         else if (std::strcmp(a, "--ssr-debug") == 0) ssr_debug_override = std::atoi(need_value(a));
         else if (std::strcmp(a, "--resolution") == 0) {
             // --resolution 1920x1080 等价于 --w 1920 --h 1080
@@ -991,7 +2023,12 @@ int main(int argc, char** argv) {
     core_desc.version = sizeof(GCoreInitDesc);
     core_desc.project_root = project_root.c_str();
     core_desc.enable_reflection = true;
-    GCore_SetAutoLoadMainScene(scene_override.empty());
+    // UI 预览模式（--ui-gallery / --ui-demo / --ui-codeeditor）：只关心界面，
+    // 不加载项目主场景。否则每帧都要跑一遍 PBR + 阴影 + 后处理，1080p 上就是
+    // 100ms/帧，界面跟着鼠标都拖不动，而这些开销对你正在看的控件毫无意义。
+    // 显式给了 --scene 就说明要看 3D，退回完整管线。
+    const bool ui_only = (ui_gallery || ui_demo || ui_codeeditor) && scene_override.empty();
+    GCore_SetAutoLoadMainScene(scene_override.empty() && !ui_only);
     if (GCore_Init(&core_desc) != 0) {
         std::fprintf(stderr, "[smoke] GCore_Init failed\n");
         Window::shutdown_sdk();
@@ -1008,7 +2045,8 @@ int main(int argc, char** argv) {
     // --no-debug-ui 必须在那之前告知，否则 ImGui 照旧会初始化（只是不画面板）。
     if (!debug_ui_enabled) GRender_SetDebugUI(false);
     // 离屏视口输出同理：管线在 init 时按目标 FBO 建立 tonemap 的 render pass。
-    if (editor_preview) GRender_SetViewportOutput(true);
+    // UI 预览没有 3D 可预览，开了只会多一倍离屏目标与一次合成。
+    if (editor_preview && !ui_only) GRender_SetViewportOutput(true);
 
     GRenderInitDesc desc{};
     desc.version = sizeof(GRenderInitDesc);
@@ -1023,6 +2061,11 @@ int main(int argc, char** argv) {
         const int msaa = msaa_override > 0 ? msaa_override : 1;
         GRender_SetMSAASamples(msaa);
         std::printf("[smoke] msaa = %d%s\n", msaa, msaa == 1 ? " (off)" : "x");
+    }
+    // 字形整形强度必须在 GRender_Init 之前下发：首次烘图集发生在 init 内。
+    if (font_shape != 1.0f) {
+        gryce_engine::render::FontAtlas::set_shape_strength(font_shape);
+        std::printf("[smoke] font shape strength = %.2f\n", font_shape);
     }
     if (GRender_Init(&desc) != 0) {
         std::fprintf(stderr, "[smoke] GRender_Init failed\n");
@@ -1039,6 +2082,10 @@ int main(int argc, char** argv) {
         GViewport_SetSize(w, h);
     });
 #endif
+
+    // UI 贴图服务必须在渲染器起来之后注册：UIImage / 图标按钮写 texture_path
+    // 就能直接显示贴图。
+    gryce_engine::ui::ui_set_texture_loader(&ui_texture_from_file);
 
     GRender_SetHDR(cfg.hdr);
     GRender_SetToneMapMode(cfg.tone_map_mode);
@@ -1095,7 +2142,7 @@ int main(int argc, char** argv) {
     GRender_SetRTTransmission(cfg.rt_transmission_enabled);
     GRender_SetRTGI(cfg.rt_gi_enabled);
     GRender_SetSSIL(cfg.ssil_enabled);
-    if (editor_preview) {
+    if (editor_preview && !ui_only) {
         // Gizmo 需要选中实体才有东西可画：用屏幕中心拾取一个，
         // 拾取不到也不影响其余检查（命中测试会如实返回 -1）。
         const GEntityHandle picked = GScene_PickScreen(
@@ -1127,6 +2174,41 @@ int main(int argc, char** argv) {
         const bool ok = spawn_instanced_scene(instanced_count);
         std::printf("[smoke] --instanced %d: %s\n", instanced_count,
                     ok ? "实例化实体已注入（GPU 剔除路径应被启用）" : "注入失败");
+    }
+    if (ui_demo && !inject_gryce_ui_demo()) {
+        std::fprintf(stderr, "[smoke] failed to inject GryceUI demo\n");
+        return 1;
+    }
+    if (ui_gallery && !inject_gryce_ui_gallery(theme_arg, gallery_all, gallery_scroll,
+                                               menu_open_demo)) {
+        std::fprintf(stderr, "[smoke] failed to inject GryceUI gallery\n");
+        return 1;
+    }
+    if (ui_codeeditor) {
+        set_ui_theme_preset(parse_theme(theme_arg));
+        if (!inject_code_editor_demo(code_lang, code_find, code_font_size)) {
+            std::fprintf(stderr, "[smoke] failed to inject code editor demo\n");
+            return 1;
+        }
+    }
+
+    // UI 预览：切到 scene2d 路径（清屏 + 2D 覆盖层），彻底不跑 3D 管线。
+    // 清屏色取主题的 Window 角色，页面边缘与窗口底色才连成一片。
+    uint32_t last_clear_packed = 0;
+    auto sync_clear_color = [&last_clear_packed]() {
+        // 主题色是 0xRRGGBBAA（alpha 在最低字节），换 float 时按位段取。
+        const uint32_t packed = gryce_engine::ui::ui_theme_color(
+            gryce_engine::ui::UIThemeColor::Window);
+        if (packed == last_clear_packed) return;
+        last_clear_packed = packed;
+        GRender_SetScene2DClearColor(static_cast<float>((packed >> 24) & 0xFFu) / 255.0f,
+                                     static_cast<float>((packed >> 16) & 0xFFu) / 255.0f,
+                                     static_cast<float>((packed >> 8) & 0xFFu) / 255.0f);
+    };
+    if (ui_only) {
+        GRender_SetScene2D(true);
+        sync_clear_color();
+        std::printf("[smoke] ui-only: scene2d path (3D pipeline skipped)\n");
     }
 
     const SceneStats scene = scan_scene();
@@ -1219,8 +2301,16 @@ int main(int argc, char** argv) {
     }
 #endif
 
+    // UI 预览默认常驻：只要没显式 --frames 也没要截图，就一直跑到关窗。
+    // 原来默认第 60 帧截图退出，慢的时候 60 帧只有 6 秒，看起来像"自己闪退"。
+    const bool ui_resident = ui_only && !frames_explicit && !shot_explicit &&
+                             bench_frames == 0 && play_frames == 0;
     // 交互模式默认一直跑到用户退出；只有显式给了 --frames N 才在第 N 帧截图。
-    const bool shot_wanted = play_mode ? (frames_explicit && frames > 0) : true;
+    const bool shot_wanted = ui_resident ? false
+                           : (play_mode ? (frames_explicit && frames > 0) : true);
+    if (ui_resident) {
+        std::printf("[smoke] ui-only: 常驻运行（关窗退出；要出图加 --frames N --shot <png>）\n");
+    }
 
     // --bench：开启 GPU 分段计时，跑满指定帧数后打印每 pass 的 GPU 时间。
     if (bench_frames > 0) {
@@ -1242,8 +2332,65 @@ int main(int argc, char** argv) {
     if (bench_frames > 0) bench_frame_ms.reserve(static_cast<size_t>(bench_frames) + 8);
     // 0=world update 1=render begin 2=RenderWorld 3=RenderGizmo 4=EndFrame 5=Core EndFrame
     double bench_phase_ms[6] = {};
+    // 视口尺寸跟随窗口：窗口有可拖动的 resize 边框，被拉伸/最大化后如果视口
+    // 仍停在旧尺寸，引擎就继续按旧尺寸渲染，back buffer 里超出的部分停在清屏色
+    // —— 画面只占一块、其余全黑。每帧现查帧缓冲尺寸，变化了才下发（幂等）。
+    int tracked_vp_w = width;
+    int tracked_vp_h = height;
     while (!window.should_close()) {
         window.poll_events();
+        // --click-probe：在第 30/31 帧合成一次"按下 → 松开"，验证"窗口事件 →
+        // 输入层 → UI 运行时 → clicked"整条链路。目标取运行时布局结果（不写死
+        // 像素），两帧都绕开窗口状态注入，否则窗口里的指针位置会把点击位置冲掉。
+        bool synthetic_click_frame = false;
+        if (click_probe && g_gallery.root && g_gallery.b_light) {
+            if (rendered == 30) {
+                const gryce_engine::ui::UIRect* rect =
+                    g_gallery.root->runtime().rect_for(g_gallery.b_light);
+                if (rect) {
+                    probe_x = rect->x + rect->w * 0.5f;
+                    probe_y = rect->y + rect->h * 0.5f;
+                }
+                std::printf("[click] target=Light at (%.0f, %.0f)\n", probe_x, probe_y);
+            }
+            if (rendered == 30 || rendered == 31) {
+                synthetic_click_frame = true;
+                GInput_BeginHostFrame();
+                GInput_InjectMouseMove(probe_x, probe_y);
+                GInput_InjectMouseButton(0,
+                                         rendered == 30 ? GINPUT_ACTION_PRESS
+                                                        : GINPUT_ACTION_RELEASE,
+                                         probe_x, probe_y);
+            }
+            if (rendered == 40) {
+                std::printf("[click] theme=%s ok=%d\n", g_gallery.current_theme.c_str(),
+                            g_gallery.current_theme == "Light" ? 1 : 0);
+            }
+        }
+        if (!synthetic_click_frame) pump_input(window);
+        if (ui_only) sync_clear_color();   // 换主题时清屏色跟着走
+        // --resize-probe：每 25 帧换一次窗口尺寸，用来核对"拖动窗口不黑屏"。
+        // 尺寸同步走的是宿主通知路径（GViewport_NotifyWindowSize），与真实拖拽
+        // 相同；这里只是把"拖"换成程序改尺寸，好让无头环境也能复现。
+        if (resize_probe && rendered > 0 && rendered % 25 == 0) {
+            static const int kProbeSizes[3][2] = {{1280, 720}, {960, 560}, {1600, 900}};
+            const int* probe = kProbeSizes[(rendered / 25) % 3];
+            window.set_size(probe[0], probe[1]);
+        }
+        if (ui_gallery) gallery_poll();
+        {
+            int fb_w = 0;
+            int fb_h = 0;
+            window.get_framebuffer_size(fb_w, fb_h);
+            if (fb_w > 0 && fb_h > 0 && (fb_w != tracked_vp_w || fb_h != tracked_vp_h)) {
+                tracked_vp_w = fb_w;
+                tracked_vp_h = fb_h;
+                // 必须走 NotifyWindowSize 而不是 GViewport_SetSize：后者只改视口，
+                // 屏幕尺寸（= 交换链 extent 与 UI 坐标系）留在旧值，拖动窗口时
+                // present 一直 OUT_OF_DATE、又反复按旧尺寸重建，整窗就是黑的。
+                GViewport_NotifyWindowSize(fb_w, fb_h);
+            }
+        }
 
         // 交互模式的 dt 用真实时间（固定 1/60 会让移动速度随帧率漂移）
         float dt = 1.0f / 60.0f;
@@ -1270,9 +2417,9 @@ int main(int argc, char** argv) {
         GRender_RenderWorld();
         // 编辑器预览：SceneView 之后再把 GameView 渲进它自己的颜色目标。两张图
         // 共用同一条 HDR 链，所以这里只是多一次 tonemap，不是重画一遍场景。
-        if (editor_preview) GRender_RenderGameView();
+        if (editor_preview && !ui_only) GRender_RenderGameView();
         const auto t3 = std::chrono::steady_clock::now();
-        GRender_RenderGizmo();
+        if (!ui_only) GRender_RenderGizmo();
         const auto t4 = std::chrono::steady_clock::now();
         GRender_EndFrame();
         const auto t5 = std::chrono::steady_clock::now();
@@ -1376,7 +2523,9 @@ int main(int argc, char** argv) {
     // 必须在 GRender_Shutdown() **之前**取 —— 渲染器销毁后统计就清零了。
     // 编辑器预览的可见证据：纹理句柄非空说明离屏目标建成了；GameView 句柄
     // 与 SceneView 不同说明双视口是两份目标，而不是回退共用一份。
-    if (editor_preview) {
+    // UI 预览模式刻意不开离屏视口（没有 3D 可预览），所以这条检查只在真的
+    // 需要编辑器预览时才成立。
+    if (editor_preview && !ui_only) {
         GTextureHandle vp_tex = GRender_GetViewportTexture();
         GTextureHandle gv_tex = GRender_GetGameViewTexture();
         const int axis = GRender_GizmoHitTest(static_cast<float>(cfg.width) * 0.5f,
@@ -1409,6 +2558,20 @@ int main(int argc, char** argv) {
     if (!std::filesystem::exists(shot_path)) {
         std::fprintf(stderr, "[smoke] 截图未生成（渲染线程未写盘）\n");
         return 2;
+    }
+    if (!shot_zoom_arg.empty()) {
+        int zx = 0, zy = 0, zw = 0, zh = 0, zs = 1;
+        if (std::sscanf(shot_zoom_arg.c_str(), "%d,%d,%d,%d,%d", &zx, &zy, &zw, &zh, &zs) == 5) {
+            const std::string zoom_path = shot_path + ".zoom.png";
+            if (write_zoomed_region(shot_path, zoom_path, zx, zy, zw, zh, zs)) {
+                std::printf("[smoke] zoom crop %d,%d %dx%d x%d -> %s\n",
+                            zx, zy, zw, zh, zs, zoom_path.c_str());
+            } else {
+                std::fprintf(stderr, "[smoke] zoom crop failed\n");
+            }
+        } else {
+            std::fprintf(stderr, "[smoke] --shot-zoom 参数格式应为 x,y,w,h,scale\n");
+        }
     }
     if (!analyze) {
         std::printf("[smoke] screenshot ok: %s\n", shot_path.c_str());

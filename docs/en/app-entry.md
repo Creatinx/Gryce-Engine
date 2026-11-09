@@ -192,6 +192,7 @@ Priority: explicit command-line value > `project.data` > built-in default. A mis
 | `--no-extension` | Disables the default lookup (an explicit `--extension` still applies) |
 | `--fps` | FPS overlay in the top-left (off by default) |
 | `--debug-ui` | Renderer ImGui debug panel (off by default; `GryceRenderSmoke`, not the runtime, is the smoke-test surface) |
+| `--play` | Force Play mode (component `on_update` runs, scene auto-loads); overrides `"start_in_play": false` in `project.data`; `--edit-mode` wins if both are given |
 | `--edit-mode` | Stay in edit mode (no Play, component updates off, undo stack records); overrides `start_in_play` in `project.data` |
 | `--help` / `-h` | Print usage and exit |
 
@@ -200,7 +201,7 @@ Unknown arguments print the usage and exit with code 1.
 **Start mode**: the default is Play (runtime semantics, component `on_update` runs).
 Editor-style hosts set `"start_in_play": false` in `project.data` or pass `--edit-mode`;
 in Play mode the engine skips undo snapshots, so an editor that forgets this ends up
-with "edits apply but undo is always greyed out" (see [editor-api.md](editor-api.md)
+with "edits apply but undo is always greyed out" (see [core-api.md](core-api.md)
 section 2). A `[app] start mode: play|edit` line is printed at startup.
 
 ## 7. Native Extensions

@@ -30,29 +30,15 @@
 
 #include <d3d12.h>
 
+#include "d3d12_retire.h"
 #include "render/mesh.h"
 
 namespace gryce_engine::render::d3d12 {
 
-// ---------------------------------------------------------------------------
-// ResourceRetireSink — 把"被替换掉的 GPU 资源"交给后端延迟释放
-//
-// 为什么需要：D3D12 **严禁**销毁仍被"已提交但未完成"的命令列表引用的资源
-// （驱动判非法 → RemoveDevice / DEVICE_HUNG）。网格缓冲在尺寸变化时会被换成
-// 新资源，旧的这一份可能还被前 1~2 帧的 draw 引用着，所以只能挂到围栏上等
-// GPU 跑完再 Release（与 D3D12Buffer 的 UploadSink、后端的 retire_* 同一套思路）。
-//
-// ★ 触发这个机制的典型场景是**粒子系统**：它每帧调用 upload_instances()，
-//   而实例数逐帧变化 —— 旧实现每次上传都先 Release 再重建实例缓冲，于是
-//   "销毁 GPU 正在读的缓冲" → 实测在 Play 模式（粒子开始模拟）下随机几帧后
-//   直接 DXGI_ERROR_DEVICE_HUNG(0x887A0006)。这也是为什么"只跑了静态帧没事、
-//   一旦组件 on_update 生效就挂"。
-// ---------------------------------------------------------------------------
-class ResourceRetireSink {
-public:
-    virtual ~ResourceRetireSink() = default;
-    virtual void retire_gpu_resource(ID3D12Resource* res) = 0;
-};
+// ResourceRetireSink 定义在 d3d12_retire.h（D3D12Buffer 也用同一条通道）。
+// 触发这条通道的典型场景是**粒子系统**：它每帧调用 upload_instances()，而实例数
+// 逐帧变化 —— 旧实现每次上传都先 Release 再重建实例缓冲，于是"销毁 GPU 正在读的
+// 缓冲" → 实测在 Play 模式（粒子开始模拟）下随机几帧后直接 DEVICE_HUNG。
 
 class D3D12Mesh final : public IMesh {
 public:
@@ -77,6 +63,21 @@ public:
 
     uint32_t vertex_count() const override { return vertex_count_; }
     uint32_t index_count() const override { return index_count_; }
+
+    // ---- 光追几何（DXR BLAS 的输入）----
+    //
+    // DXR 的几何输入必须是 GPU 缓冲，而 BLAS 只吃"紧凑 xyz + uint32 索引"，
+    // 顶点流里还夹着法线/切线/UV，所以这里在 CPU 侧解出一份紧凑副本。
+    // 只有后端真正启用了 DXR 时才保留原始字节（见 set_ray_tracing_capture），
+    // 否则不额外占内存。
+    bool get_ray_tracing_geometry(const float*& out_positions, uint32_t& out_vertex_count,
+                                  const uint32_t*& out_indices,
+                                  uint32_t& out_index_count) const override;
+    void set_ray_tracing_capture(bool enabled) { capture_rt_geometry_ = enabled; }
+    // 2D UI 会在一帧内多次复用同一个 mesh 句柄提交不同批次。若顶点缓冲
+    // 原地覆盖，GPU 真正执行前面 draw 时看到的会是最后一批数据。
+    // 开启后每次 upload 都创建独立顶点缓冲，旧缓冲走 retire 通道延迟释放。
+    void set_streaming_vertices(bool enabled) { streaming_vertices_ = enabled; }
 
     // ---- D3D12 侧扩展 ----
     ID3D12Resource* vertex_buffer() const { return vertex_buffer_; }
@@ -134,6 +135,15 @@ private:
     VertexLayout layout_{};
     VertexLayout instance_layout_{};
     bool layout_set_ = false;
+
+    // 光追几何：原始顶点/索引字节 + 懒解出的紧凑副本。
+    bool capture_rt_geometry_ = false;
+    bool streaming_vertices_ = false;
+    std::vector<uint8_t> rt_vertex_bytes_;
+    std::vector<uint32_t> rt_index_bytes_;
+    mutable std::vector<float> rt_positions_;
+    mutable std::vector<uint32_t> rt_indices_;
+    mutable bool rt_geometry_ready_ = false;
 };
 
 } // namespace gryce_engine::render::d3d12

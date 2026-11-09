@@ -38,8 +38,8 @@ struct ExtFunction {
 // 进程级函数表：条目只在扩展注册时追加，索引即 JS_NewCFunctionData 的 magic。
 std::vector<ExtFunction> g_functions;
 
-// 交给扩展的函数表必须活到进程结束：扩展通常会把指针缓存成静态变量
-// （见 editor/ext/bridge/js_register.cpp），栈上的临时表会立刻悬空。
+// 交给扩展的函数表必须活到进程结束：扩展通常会把指针缓存成静态变量，
+// 栈上的临时表会立刻悬空。
 std::vector<std::unique_ptr<GryceExtensionApi>> g_apis;
 
 static_assert(sizeof(JSValue) == 8 || sizeof(JSValue) == 16,

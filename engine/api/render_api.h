@@ -33,6 +33,13 @@ typedef struct {
     bool         sync_mode;
 } GRenderInitDesc;
 
+typedef struct {
+    uint32_t index;
+    uint32_t generation;
+    int      width;
+    int      height;
+} GRenderTextureInfo;
+
 GRYCE_RENDERER_API int  GRender_Init(const GRenderInitDesc* desc);
 GRYCE_RENDERER_API void GRender_Shutdown(void);
 GRYCE_RENDERER_API bool GRender_IsInitialized(void);
@@ -73,8 +80,17 @@ GRYCE_RENDERER_API void GRender_DrawGizmoOverlay(void);
 GRYCE_RENDERER_API void GRender_RenderGameView(void);
 GRYCE_RENDERER_API void GRender_EndFrame(void);
 
+// 内部 2D 渲染器（IRenderer2D*）。宿主用它把贴图交给 UI 纹理服务
+// （创建纹理 / 解析句柄）；普通画面渲染不需要它。
+GRYCE_RENDERER_API void* GRender_GetRenderer2D(void);
+
 GRYCE_RENDERER_API GTextureHandle GRender_GetViewportTexture(void);
 GRYCE_RENDERER_API GTextureHandle GRender_GetGameViewTexture(void);
+// Stable RHI generation handles for GryceUI Image/ViewportPanel. Unlike the
+// legacy void* getters above, these can be stored in UIDrawList safely.
+GRYCE_RENDERER_API int GRender_GetViewportTextureInfo(GRenderTextureInfo* out);
+GRYCE_RENDERER_API int GRender_GetGameViewTextureInfo(GRenderTextureInfo* out);
+GRYCE_RENDERER_API int GRender_GetCanvas2DViewTextureInfo(GRenderTextureInfo* out);
 GRYCE_RENDERER_API int            GRender_GetViewportSize(int* out_w, int* out_h);
 GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h);
 
@@ -87,6 +103,10 @@ GRYCE_RENDERER_API int            GRender_GetGameViewSize(int* out_w, int* out_h
 // 一次性打开。
 GRYCE_RENDERER_API void GRender_SetViewportOutput(bool enabled);
 GRYCE_RENDERER_API bool GRender_IsViewportOutputEnabled(void);
+// Independent 2D scene target. Keep this separate from the 3D viewport output
+// switch so an editor can show 3D and Canvas2D textures at the same time.
+GRYCE_RENDERER_API void GRender_SetCanvas2DViewportOutput(bool enabled);
+GRYCE_RENDERER_API bool GRender_IsCanvas2DViewportOutputEnabled(void);
 
 GRYCE_RENDERER_API void  GRender_SetVSync(bool enabled);
 
@@ -130,80 +150,12 @@ GRYCE_RENDERER_API bool  GRender_IsDebugUIActive(void);
 // 在宿主自持 ImGui 上下文时调用（须处于 ImGui::NewFrame() 与 ImGui::Render() 之间）。
 GRYCE_RENDERER_API void  GRender_DrawDebugPanel(void);
 
-// ---------------------------------------------------------------------------
-// 编辑器 UI 托管
-//
-//   引擎在以下两种情况下接管 ImGui（CreateContext + 三后端渲染后端都由引擎持有）：
-//     1) GRender_SetDebugUI(true) —— 引擎自带的调试叠加/窗口；
-//     2) 设置了 UI 回调（GRender_SetUICallback）—— 编辑器把自己的界面画进来。
-//   若宿主在 GRender_Init 之前已经 CreateContext，引擎一律让出，不用这两条路径。
-//
-//   回调在 GRender_EndFrame 内、渲染线程提交本帧之前被调用，处于 ImGui 的
-//   NewFrame() 与 Render() 之间：宿主可以直接用 imgui.h 的 API 画窗口，
-//   画出来的内容与场景一起提交、一起被截图。
-//
-//   约束：回调运行在持锁的帧收尾路径上（g_renderer.mutex 已持有），
-//   回调内不得再调用 GRender_* / GCore_* 这类会加锁的公开 API —— 与引擎自己的
-//   调试面板是同一条约束；需要改渲染状态时通过命令缓冲（edit_api.h）下发。
-// ---------------------------------------------------------------------------
-GRYCE_RENDERER_API void GRender_SetUICallback(void (*callback)(void* user), void* user);
 GRYCE_RENDERER_API bool GRender_HasImGui(void);
 
-// ---------------------------------------------------------------------------
-// UI 后端选择（在 GRender_Init **之前**调；中途切换需要重建渲染器）
-//
-//   0 = ImGui（默认）：引擎按上面的规则接管 ImGui，宿主用 imgui.h 画界面。
-//   1 = 内置：引擎不建 ImGui 上下文，宿主用 api/ui_api.h 的 GUi_* 画界面，
-//       由引擎内置的即时模式层 + 2D 覆盖层自己渲染（不依赖 ImGui、不依赖
-//       宿主的任何 UI 库）。两条轨的回调与节流语义完全相同。
-//
-// GUi_* 的能力差异（内置轨没有的少数 API 返回 0 / 空操作）见 docs/zh/ui-api.md
-// 第 7.11 节的逐条能力表。
-// ---------------------------------------------------------------------------
-// UI 后端编号（GRender_SetUIBackend 的取值；写成常量，避免宿主里出现裸 0/1）
-enum {
-    GRYCE_UI_BACKEND_IMGUI   = 0,
-    GRYCE_UI_BACKEND_BUILTIN = 1,
-};
-
-GRYCE_RENDERER_API void GRender_SetUIBackend(int backend);
-GRYCE_RENDERER_API int  GRender_GetUIBackend(void);
-
-// 内置 UI 轨的 HiDPI 缩放（1.0 = 100%）。UI 始终按逻辑像素布局，鼠标在进入
-// 模型层前除以它，绘制时（坐标 + 字号 + 裁剪框）再乘回去。默认 1.0。
-// 只影响内置轨：ImGui 轨的缩放由它的后端按 DPI 自行处理。
-GRYCE_RENDERER_API void  GRender_SetUIScale(float scale);
-GRYCE_RENDERER_API float GRender_GetUIScale(void);
-
-// UI 帧节流：每 frames 个渲染帧才真正构建一次 ImGui 帧（跑宿主回调与
-// gizmo），中间的帧直接重绘上一次的 draw data。frames <= 1 = 每帧都构建
-// （默认）。UI 的刷新率不需要跟渲染帧率一样高——面板读数慢半拍看不出来，
-// 省下的是每帧的 NewFrame/控件求值/gizmo 命中测试。
-//
-// 注意只影响"构建"，不影响"绘制"：非 UI 帧仍会重绘上一份 draw data，
-// 所以 UI 一直在屏幕上，只是内容按间隔更新。输入也按同一间隔采样，
-// 对工具型界面（点击 / 拖拽）足够。
+// 调试 UI 帧节流：每 frames 个渲染帧才重新构建一次调试窗口与 gizmo，
+// 中间的帧重绘上一次的 draw data。只影响引擎自有调试 UI，不影响游戏 2D。
 GRYCE_RENDERER_API void GRender_SetUiFrameInterval(int frames);
 GRYCE_RENDERER_API int  GRender_GetUiFrameInterval(void);
-
-// 把引擎纹理（视口/游戏视口/贴图预览）转换成 ImGui 可用的纹理 ID
-// （ImTextureID 的整数值），供 ImGui::Image / ImageButton 采样。
-// OpenGL 返回 GL 纹理名，Vulkan 返回缓存的 VkDescriptorSet，D3D12 返回 SRV
-// 句柄；返回 0 表示当前后端不可用或引擎没有接管 ImGui。
-GRYCE_RENDERER_API uint64_t GRender_GetImGuiTextureId(GTextureHandle texture);
-
-// 取得可传给 GUi_Image 的纹理 id。与 GRender_GetImGuiTextureId 的区别是
-// **按当前 UI 轨（GRender_GetUIBackend）返回对应语义**，宿主只需存这一个值：
-//   * ImGui 轨（0，默认）：等价于 GRender_GetImGuiTextureId —— 后端
-//     ImTextureID（OpenGL=纹理名 / Vulkan=VkDescriptorSet / D3D12=SRV 句柄）；
-//   * 内置轨（1）：打包的引擎纹理句柄，低 32 位 = RHI index、高 32 位 =
-//     generation，由内置 UI 的 drawlist 直接交给 Renderer2D 采样。
-// 纹理为空、已销毁或后端不可用时返回 0。
-GRYCE_RENDERER_API uint64_t GRender_GetUiTextureId(GTextureHandle texture);
-
-// 让引擎丢弃该纹理的 ImGui 侧缓存（纹理被销毁或重建后必须调用，
-// 否则 ImGui 会继续引用已经释放的描述符）。
-GRYCE_RENDERER_API void GRender_InvalidateImGuiTexture(GTextureHandle texture);
 
 // 电源 / 省电模式：未插电（电池）时自动进入，极致压缩每帧工作以稳定高帧率。
 // 默认 auto 开启；forced 可手动强制开(true)/关(false)。插电时行为不变（零回归）。
@@ -290,7 +242,12 @@ GRYCE_RENDERER_API int  GRender_IsDisplayModeSupported(const char* mode);
 
 // 2D 场景编辑器模式：GRender_RenderWorld 只渲染 2D 画布
 //（清屏 + 2D 覆盖层，不跑 3D 管线）。false = 3D 场景 + 2D 覆盖。
+// 纯 UI 预览（组件画廊、UI 设计器）走这条路径最省：没有场景、没有阴影/后处理，
+// 每帧只有一次清屏加一批 2D 命令。
 GRYCE_RENDERER_API void GRender_SetScene2D(bool enabled);
+// scene2d 模式的清屏色（0..1）。默认 0.12/0.14/0.18 是 2D 画布的深板岩色；
+// 纯 UI 预览应改成宿主窗口的底色，否则面板与背景之间会多出一层色差。
+GRYCE_RENDERER_API void GRender_SetScene2DClearColor(float r, float g, float b);
 
 // --- Project Settings（渲染质量；大部分可运行时调整，阴影贴图尺寸/后端重启生效）---
 GRYCE_RENDERER_API void  GRender_SetHDR(bool enabled);

@@ -33,8 +33,10 @@ fs::path find_package_exe(const fs::path& pkg_root) {
     return {};
 }
 
+// 构建目录里定位宿主 exe：优先 GryceApp（new 生成的用户项目宿主），
+// 其次任一 .exe（如 GryceRenderSmoke）。
 fs::path find_build_exe(const fs::path& build_dir) {
-    const fs::path top = build_dir / "GryceRenderSmoke.exe";
+    const fs::path top = build_dir / "GryceApp.exe";
     if (fs::exists(top)) return top;
     std::error_code ec;
     for (auto it = fs::recursive_directory_iterator(
@@ -59,15 +61,26 @@ int cmd_run(const Options& o) {
             std::fprintf(stderr, "[错误] 包目录不存在：%s\n", pkg_root.string().c_str());
             return 2;
         }
-    } else if (o.has("build-dir")) {
-        pkg_root = o.get("build-dir");
-        if (!fs::is_directory(pkg_root)) {
-            std::fprintf(stderr, "[错误] 构建目录不存在：%s\n", pkg_root.string().c_str());
+    } else {
+        // 构建目录：缺省用当前目录（直接在构建目录里跑最自然）；显式给出时，
+        // 相对路径以引擎根为基，这样从引擎任意子目录调用 --build-dir build 都指向同一个 build/。
+        fs::path build_dir;
+        if (o.has("build-dir")) {
+            const fs::path bd = o.get("build-dir");
+            if (bd.is_absolute()) build_dir = fs::absolute(bd);
+            else {
+                const fs::path root = find_engine_root();
+                build_dir = (root.empty() ? fs::current_path() : root) / bd;
+            }
+        } else {
+            build_dir = fs::current_path();
+        }
+        build_dir = fs::absolute(build_dir);
+        if (!fs::is_directory(build_dir)) {
+            std::fprintf(stderr, "[错误] 构建目录不存在：%s\n", build_dir.string().c_str());
             return 2;
         }
-    } else {
-        std::fprintf(stderr, "[错误] 请指定 --package <dir> 或 --build-dir <dir>\n");
-        return 2;
+        pkg_root = build_dir;   // 复用下方 dll/ 注入逻辑
     }
 
     // 定位 exe
@@ -83,17 +96,57 @@ int cmd_run(const Options& o) {
         return 2;
     }
 
-    std::string api = "opengl";
-    if (o.has("api")) api = o.get("api");
-    if (api != "opengl" && api != "vulkan") {
-        std::fprintf(stderr, "[错误] --api 仅支持 opengl / vulkan\n");
-        return 2;
+    // 项目根：传给宿主的 --project。
+    //  - 显式 --project：原样（转绝对）传给 exe；
+    //  - 包模式无 --project：默认包内 demo_project（打包时已把资源放进去）；
+    //  - 构建目录模式无 --project：不传，由宿主用其默认（通常是当前目录）。
+    std::string project_arg;
+    if (o.has("project")) {
+        project_arg = fs::absolute(o.get("project")).string();
+    } else if (o.has("package")) {
+        const fs::path d = pkg_root / "demo_project";
+        project_arg = (fs::is_directory(d) ? d : pkg_root).string();
     }
 
-    // 组装 exe 参数：--api + 可选 --play + 透传参数
+    // 入口脚本预检：宿主默认加载 res:/main.js，项目根没有这份文件时启动必然
+    // 在 "entry load failed" 处退出。提前提示比让人对着那行错误猜要快。
+    // 透传了 --entry 时跳过（入口由调用方指定，不一定是 main.js）。
+    bool entry_overridden = false;
+    for (const auto& p : o.passthrough) {
+        if (p == "--entry") { entry_overridden = true; break; }
+    }
+    if (!entry_overridden && !project_arg.empty()) {
+        std::error_code ec;
+        const fs::path entry = fs::path(project_arg) / "main.js";
+        if (!fs::exists(entry, ec)) {
+            std::fprintf(stderr,
+                         "[警告] 项目缺少入口脚本：%s\n"
+                         "       宿主默认加载 res:/main.js，没有它会在入口处退出。\n"
+                         "       补一份 main.js，或用 -- --entry <res:/path> 指定别的入口。\n",
+                         entry.string().c_str());
+        }
+    }
+
+    // --api：仅当显式给出才传；否则交给宿主按 project.data 决定（避免覆盖 vulkan 等）。
+    std::string api;
+    if (o.has("api")) {
+        api = o.get("api");
+        if (api != "opengl" && api != "vulkan" && api != "dx12") {
+            std::fprintf(stderr, "[错误] --api 仅支持 opengl / vulkan / dx12\n");
+            return 2;
+        }
+    }
+
+    // 组装 exe 参数：--project + 可选 --api + 可选 --play + 透传参数
     std::vector<std::string> args;
-    args.push_back("--api");
-    args.push_back(api);
+    if (!project_arg.empty()) {
+        args.push_back("--project");
+        args.push_back(project_arg);
+    }
+    if (!api.empty()) {
+        args.push_back("--api");
+        args.push_back(api);
+    }
     if (o.is_flag("play")) args.push_back("--play");
     for (const auto& p : o.passthrough) args.push_back(p);
 

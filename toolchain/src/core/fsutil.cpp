@@ -143,4 +143,46 @@ std::filesystem::path temp_dir() {
 #endif
 }
 
+std::filesystem::path find_engine_root() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path dir = fs::weakly_canonical(fs::current_path(ec), ec);
+    while (!dir.empty()) {
+        if (fs::exists(dir / "CMakeLists.txt", ec)) return dir;
+        const fs::path parent = dir.parent_path();
+        if (parent == dir) break;   // 到达盘符根，无法再上溯
+        dir = parent;
+    }
+    return {};
+}
+
+std::filesystem::path find_build_dir(const std::vector<std::string>& candidates,
+                                     const std::filesystem::path& base) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path root = base;
+    if (root.empty()) root = find_engine_root();
+    if (root.empty()) root = fs::current_path(ec);
+
+    // 注意按值保存候选：迭代内的 path 对象在迭代结束即销毁，存指针是悬垂。
+    std::filesystem::path first_existing;
+    std::filesystem::path with_exe;
+    for (const auto& c : candidates) {
+        const fs::path dir = root / c;
+        if (!fs::is_directory(dir, ec)) continue;
+        if (first_existing.empty()) first_existing = dir;
+        // 优先含 GryceApp.exe 的目录（package / run 的主宿主）。
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+            if (e.is_regular_file(ec) && e.path().filename() == "GryceApp.exe") {
+                with_exe = dir;
+                break;
+            }
+        }
+        if (!with_exe.empty()) break;
+    }
+    if (!with_exe.empty()) return with_exe;
+    if (!first_existing.empty()) return first_existing;
+    return root / candidates.front();
+}
+
 } // namespace grycegc

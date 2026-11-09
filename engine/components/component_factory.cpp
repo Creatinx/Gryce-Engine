@@ -8,6 +8,11 @@
 #include "components/terrain.h"
 #include "components/node2d.h"
 #include "components/node3d.h"
+#include "components/node_ui.h"
+#include "components/ui_root.h"
+#include "ui/ui_widgets.h"
+#include "ui/ui_extended_widgets.h"
+#include "ui/ui_editor_widgets.h"
 #include "components/camera.h"
 #include "components/light.h"
 #include "components/hierarchy_components.h"
@@ -49,9 +54,10 @@ namespace gryce_engine::components {
 
 namespace {
 
-// 分类常量：Create Entity 对话框按 Node3D / Node2D / Other 分组
+// 分类常量：Create Entity 对话框按 Node3D / Node2D / NodeUI / Other 分组
 constexpr const char* k_cat_3d = "Node3D";
 constexpr const char* k_cat_2d = "Node2D";
+constexpr const char* k_cat_ui = "NodeUI";
 constexpr const char* k_cat_other = "Other";
 
 } // namespace
@@ -78,7 +84,115 @@ void register_builtin_components() {
     factory.register_type("Node2D", []() { return std::make_unique<Node2D>(); },
                           "2D 节点的基类，提供 Z 索引等 2D 属性。", k_cat_2d);
     factory.register_type("Node3D", []() { return std::make_unique<Node3D>(); },
-                          "3D 节点的基类，提供可见性开关。", k_cat_3d);
+                          "3D 场景节点的基类，提供节点可见性。", k_cat_3d);
+    factory.register_type("NodeUI", []() { return std::make_unique<NodeUI>(); },
+                          "UI 节点的基类，提供尺寸、输入与裁剪属性。", k_cat_ui);
+    factory.register_type("UIRoot", []() { return std::make_unique<UIRoot>(); },
+                          "UI 根节点，驱动一棵 NodeUI 树的布局、输入与绘制。", k_cat_ui);
+    factory.register_type("UIPanel", []() { return std::make_unique<UIPanel>(); },
+                          "基础 UI 面板容器，可绘制纯色背景。", k_cat_ui);
+    factory.register_type("UILabel", []() { return std::make_unique<UILabel>(); },
+                          "基础 UI 文本节点。", k_cat_ui);
+    factory.register_type("UIImage", []() { return std::make_unique<UIImage>(); },
+                          "基础 UI 图像节点。", k_cat_ui);
+    factory.register_type("UIViewportPanel", []() { return std::make_unique<UIViewportPanel>(); },
+                          "显示引擎 3D/2D 离屏纹理的视口面板。", k_cat_ui);
+    factory.register_type("UIButton", []() { return std::make_unique<UIButton>(); },
+                          "可点击 UI 按钮。", k_cat_ui);
+    factory.register_type("UICheckBox", []() { return std::make_unique<UICheckBox>(); },
+                          "布尔勾选控件。", k_cat_ui);
+    factory.register_type("UISlider", []() { return std::make_unique<UISlider>(); },
+                          "连续数值滑条。", k_cat_ui);
+    factory.register_type("UITextInput", []() { return std::make_unique<UITextInput>(); },
+                          "单行文本输入框。", k_cat_ui);
+    factory.register_type("UIScrollView", []() { return std::make_unique<UIScrollView>(); },
+                          "可滚动 UI 容器。", k_cat_ui);
+    factory.register_type("UISplitter", []() { return std::make_unique<UISplitter>(); },
+                          "可拖动分隔条。", k_cat_ui);
+    factory.register_type("UITabBar", []() { return std::make_unique<UITabBar>(); },
+                          "标签页选择栏。", k_cat_ui);
+    factory.register_type("UIComboBox", []() { return std::make_unique<UIComboBox>(); },
+                          "下拉选择控件。", k_cat_ui);
+    factory.register_type("UIProgressBar", []() { return std::make_unique<UIProgressBar>(); },
+                          "进度条。", k_cat_ui);
+    factory.register_type("UIListView", []() { return std::make_unique<UIListView>(); },
+                          "可滚动列表。", k_cat_ui);
+    factory.register_type("UIPopup", []() { return std::make_unique<UIPopup>(); },
+                          "弹出层容器。", k_cat_ui);
+    factory.register_type("UIModal", []() { return std::make_unique<UIModal>(); },
+                          "模态对话框容器。", k_cat_ui);
+    factory.register_type("UITooltip", []() { return std::make_unique<UITooltip>(); },
+                          "工具提示。", k_cat_ui);
+    factory.register_type("UIDockPanel", []() { return std::make_unique<UIDockPanel>(); },
+                          "停靠面板。", k_cat_ui);
+    factory.register_type("UIDockHost", []() { return std::make_unique<UIDockHost>(); },
+                          "管理 Top/Bottom/Left/Right/Center 区域的停靠宿主。", k_cat_ui);
+    factory.register_type("UIDragSource", []() { return std::make_unique<UIDragSource>(); },
+                          "可拖放数据源。", k_cat_ui);
+    factory.register_type("UIDropZone", []() { return std::make_unique<UIDropZone>(); },
+                          "拖放接收区域。", k_cat_ui);
+    factory.register_type("UIFloatingPanel", []() { return std::make_unique<UIFloatingPanel>(); },
+                          "可移动浮动窗口。", k_cat_ui);
+    factory.register_type("UIMultilineTextInput", []() { return std::make_unique<UIMultilineTextInput>(); },
+                          "多行文本输入框。", k_cat_ui);
+    factory.register_type("UISearchBox", []() { return std::make_unique<UISearchBox>(); },
+                          "带占位符和清除按钮的搜索框。", k_cat_ui);
+    factory.register_type("UINumberInput", []() { return std::make_unique<UINumberInput>(); },
+                          "带范围、步进和格式化的数值输入。", k_cat_ui);
+    factory.register_type("UIDragFloat", []() { return std::make_unique<UIDragFloat>(); },
+                          "可横向拖动调整的浮点字段。", k_cat_ui);
+    factory.register_type("UIVectorEditor", []() { return std::make_unique<UIVectorEditor>(); },
+                          "Vector2/3/4 紧凑编辑器。", k_cat_ui);
+    factory.register_type("UIColorPicker", []() { return std::make_unique<UIColorPicker>(); },
+                          "HSV 颜色选择器。", k_cat_ui);
+    factory.register_type("UIRangeSlider", []() { return std::make_unique<UIRangeSlider>(); },
+                          "双端范围滑条。", k_cat_ui);
+    factory.register_type("UIKeyBindingEditor", []() { return std::make_unique<UIKeyBindingEditor>(); },
+                          "快捷键录制控件。", k_cat_ui);
+    factory.register_type("UIRadioButton", []() { return std::make_unique<UIRadioButton>(); },
+                          "单选按钮。", k_cat_ui);
+    factory.register_type("UIToggleButton", []() { return std::make_unique<UIToggleButton>(); },
+                          "可保持状态的切换按钮。", k_cat_ui);
+    factory.register_type("UIIconButton", []() { return std::make_unique<UIIconButton>(); },
+                          "带图标的工具栏按钮。", k_cat_ui);
+    factory.register_type("UIBreadcrumb", []() { return std::make_unique<UIBreadcrumb>(); },
+                          "路径面包屑导航。", k_cat_ui);
+    factory.register_type("UIToolbar", []() { return std::make_unique<UIToolbar>(); },
+                          "横向工具按钮容器。", k_cat_ui);
+    factory.register_type("UIMenuBar", []() { return std::make_unique<UIMenuBar>(); },
+                          "应用主菜单栏。", k_cat_ui);
+    factory.register_type("UIMenu", []() { return std::make_unique<UIMenu>(); },
+                          "弹出菜单。", k_cat_ui);
+    factory.register_type("UIContextMenu", []() { return std::make_unique<UIContextMenu>(); },
+                          "右键上下文菜单。", k_cat_ui);
+    factory.register_type("UITreeView", []() { return std::make_unique<UITreeView>(); },
+                          "可展开层级树。", k_cat_ui);
+    factory.register_type("UITableView", []() { return std::make_unique<UITableView>(); },
+                          "带表头和多列数据的表格。", k_cat_ui);
+    factory.register_type("UIPropertyGrid", []() { return std::make_unique<UIPropertyGrid>(); },
+                          "Inspector 属性行列表。", k_cat_ui);
+    factory.register_type("UIPropertyEditor", []() { return std::make_unique<UIPropertyEditor>(); },
+                          "可编辑的反射属性表。", k_cat_ui);
+    factory.register_type("UIAssetGrid", []() { return std::make_unique<UIAssetGrid>(); },
+                          "资源缩略图网格。", k_cat_ui);
+    factory.register_type("UIStatusBar", []() { return std::make_unique<UIStatusBar>(); },
+                          "窗口底部状态栏。", k_cat_ui);
+    factory.register_type("UIMessageDialog", []() { return std::make_unique<UIMessageDialog>(); },
+                          "消息对话框。", k_cat_ui);
+    factory.register_type("UIConfirmDialog", []() { return std::make_unique<UIConfirmDialog>(); },
+                          "确认/取消对话框。", k_cat_ui);
+    factory.register_type("UIFileDialog", []() { return std::make_unique<UIFileDialog>(); },
+                          "打开/保存文件对话框。", k_cat_ui);
+    factory.register_type("UIFolderPicker", []() { return std::make_unique<UIFolderPicker>(); },
+                          "文件夹选择对话框。", k_cat_ui);
+    factory.register_type("UIToast", []() { return std::make_unique<UIToast>(); },
+                          "自动消失的轻量通知。", k_cat_ui);
+    factory.register_type("UINotificationCenter", []() { return std::make_unique<UINotificationCenter>(); },
+                          "通知历史面板。", k_cat_ui);
+    factory.register_type("UICodeEditor", []() { return std::make_unique<UICodeEditor>(); },
+                          "带行号、UTF-8 编辑和文件保存的代码编辑器。", k_cat_ui);
+    factory.register_type("UIConsoleView", []() { return std::make_unique<UIConsoleView>(); },
+                          "带过滤、自动滚动和容量限制的 Console 视图。", k_cat_ui);
     factory.register_type("ColorRect", []() { return std::make_unique<d2::basic_rect::ColorRect>(); },
                           "填充指定颜色的矩形 2D 图形。", k_cat_2d);
     factory.register_type("Circle", []() { return std::make_unique<d2::shape::Circle>(); },

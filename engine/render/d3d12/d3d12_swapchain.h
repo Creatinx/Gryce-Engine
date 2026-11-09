@@ -74,6 +74,18 @@ public:
     UINT64 completed_value() const { return fence_ ? fence_->GetCompletedValue() : 0; }
     // 当前已"交给 GPU"的最新围栏值（提交后即递增；用作延迟释放的时间戳）。
     UINT64 last_submitted_value() const { return next_fence_value_ - 1; }
+    // **正在录制**的这一帧提交后将会拿到的围栏值。
+    //
+    // ★ 延迟释放必须用它、不能用 last_submitted_value()：资源常在**帧录制期间**
+    //   被销毁（最典型是 HiZ SSBO 随窗口尺寸重建，发生在渲染命令回放里、早于本帧
+    //   提交），而本帧的命令列表**已经引用过**它。若把时间戳记成"上一次提交值"，
+    //   GPU 只要跑完上一帧就会被判定"安全"并 Release，于是本帧仍在执行、仍在读
+    //   该资源 → 调试层报
+    //     ID3D12Resource3::<final-release>: An ID3D12Resource object ('buf ... sd')
+    //     is referenced by GPU operations in-flight on Command Queue
+    //     [OBJECT_DELETED_WHILE_STILL_IN_USE]
+    //   驱动侧则表现为设备移除/黑屏。记成"本帧将提交的值"最多多滞留一帧，代价可忽略。
+    UINT64 next_fence_value() const { return next_fence_value_; }
 
 private:
     bool create_swapchain();

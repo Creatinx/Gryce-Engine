@@ -104,6 +104,7 @@ void StreamlineInterface::shutdown() {
 #endif
 }
 
+#if defined(GRYCE_HAS_STREAMLINE)
 bool StreamlineInterface::load_core_api() {
 #if defined(GRYCE_HAS_STREAMLINE) && defined(_WIN32)
     HMODULE mod = LoadLibraryA("sl.interposer.dll");
@@ -134,7 +135,9 @@ bool StreamlineInterface::load_core_api() {
     return false;
 #endif
 }
+#endif // GRYCE_HAS_STREAMLINE
 
+#if defined(GRYCE_HAS_STREAMLINE)
 void StreamlineInterface::write_row_major(sl::float4x4& dst, const math::Matrix4f& src) {
     // math::Matrix4f 是列主序 m[col*4+row]；sl::float4x4 是行主序，row[r] 为第 r 行、
     // row[r].x/.y/.z/.w 依次是列 0..3（float4 没有 operator[]，用 setRow + float4 构造）。
@@ -143,7 +146,9 @@ void StreamlineInterface::write_row_major(sl::float4x4& dst, const math::Matrix4
         dst.setRow(r, sl::float4(src.m[r], src.m[4 + r], src.m[8 + r], src.m[12 + r]));
     }
 }
+#endif // GRYCE_HAS_STREAMLINE
 
+#if defined(GRYCE_HAS_STREAMLINE)
 bool StreamlineInterface::ensure_output_target(RenderContext* ctx, int out_w, int out_h) {
 #if defined(GRYCE_HAS_STREAMLINE)
     if (output_tex_.is_valid() && out_w == output_width_ && out_h == output_height_) {
@@ -172,7 +177,9 @@ bool StreamlineInterface::ensure_output_target(RenderContext* ctx, int out_w, in
     return false;
 #endif
 }
+#endif // GRYCE_HAS_STREAMLINE
 
+#if defined(GRYCE_HAS_STREAMLINE)
 void StreamlineInterface::destroy_output_target(RenderContext* ctx) {
 #if defined(GRYCE_HAS_STREAMLINE)
     if (ctx) {
@@ -185,6 +192,7 @@ void StreamlineInterface::destroy_output_target(RenderContext* ctx) {
     (void)ctx;
 #endif
 }
+#endif // GRYCE_HAS_STREAMLINE
 
 bool StreamlineInterface::dlss_sr_ready() const {
 #if defined(GRYCE_HAS_STREAMLINE)

@@ -100,6 +100,9 @@ public:
 
     // 输入
     bool get_key(int key) const;
+    // 鼠标键当前是否按下（0=左 1=右 2=中）。给绕过 GWindow_* 自建窗口的宿主
+    // 用：它们要自己把状态灌进输入层（GInput_InjectMouseButton）。
+    bool get_mouse_button(int button) const;
     void get_cursor_pos(double& x, double& y) const;
 
     // 文本输入（Unicode 码点）：GLFW 的字符回调是事件式的（一帧可能多次），

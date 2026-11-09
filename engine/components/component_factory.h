@@ -32,7 +32,7 @@ public:
     std::vector<std::string> all_types() const;
     // 组件描述；未注册或没有描述返回空字符串
     const char* description(const std::string& type) const;
-    // 组件分类：Node3D / Node2D / Other（Create Entity 对话框分组用）
+    // 组件分类：Node3D / Node2D / NodeUI / Other（Create Entity 对话框分组用）
     const char* category(const std::string& type) const;
 
 private:

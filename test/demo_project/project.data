@@ -13,11 +13,10 @@
   "exposure": 1.0,
   "shadow_enabled": true,
   "shadow_map_size": 4096,
-  "ambient_r": 0.2,
-  "ambient_g": 0.22,
-  "ambient_b": 0.26,
-  "ibl_intensity": 0.6,
-
+  "ambient_r": 0.03,
+  "ambient_g": 0.033,
+  "ambient_b": 0.04,
+  "ibl_intensity": 0.12,
   "default_environment": true,
   "ssao_enabled": true,
   "ssr_enabled": true,
@@ -27,11 +26,9 @@
   "ssr_max_steps": 96,
   "pcss_enabled": true,
   "pcss_light_size": 0.3,
-
   "pcss_max_radius": 8.0,
   "pcss_blocker_scale": 0.5,
-
-  "ssr_max_roughness": 0.6,
+  "ssr_max_roughness": 0.85,
   "ssr_thickness": 0.01,
   "ssr_bilateral_filter": 0.5,
   "ssr_env_fallback": 1.0,
@@ -39,9 +36,9 @@
   "main_scene": "res:/scenes/rt_showcase.gesc",
   "rt_reflection_denoise": true,
   "msaa_samples": 4,
-  "_comment_antialiasing": "MSAA 只抗几何轮廓；反射边缘与高光细节靠 TAA 时域累积。taa_enabled 打开后细节略软，快速运动物体可能有轻微拖影。",
+  "_comment_antialiasing": "MSAA \u53ea\u6297\u51e0\u4f55\u8f6e\u5ed3\uff1b\u53cd\u5c04\u8fb9\u7f18\u4e0e\u9ad8\u5149\u7ec6\u8282\u9760 TAA \u65f6\u57df\u7d2f\u79ef\u3002taa_enabled \u6253\u5f00\u540e\u7ec6\u8282\u7565\u8f6f\uff0c\u5feb\u901f\u8fd0\u52a8\u7269\u4f53\u53ef\u80fd\u6709\u8f7b\u5fae\u62d6\u5f71\u3002",
   "taa_enabled": false,
   "taa_weight": 0.85,
-  "super_resolution": "temporal"
-
+  "super_resolution": "temporal",
+  "point_shadow_size": 2048
 }

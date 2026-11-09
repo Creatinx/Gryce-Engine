@@ -19,6 +19,8 @@
 | 脚本 | [scripting.md](scripting.md) | QuickJS 脚本组件：挂载字段、生命周期钩子、基础 engine.* API、值约定、沙箱、热重载 |
 | 应用入口 | [app-entry.md](app-entry.md) | `GryceApp` 宿主 + `main.js` 入口：启动顺序、钩子、窗口/场景/实体/应用 API、命令行 |
 | 原生扩展 | [extension.md](extension.md) | `extension.cpp` 完整 ABI 参考：加载机制、虚表逐字段语义、值通道、编译分发、排错 |
-| 编辑器接口 | [editor-api.md](editor-api.md) | 编辑命令面、撤销/重做、视口输出与编辑器相机、双视口、Gizmo 与屏幕原点、显示模式、资产侧车文件与目录遍历 |
-| 内置界面 | [ui-api.md](ui-api.md) | `GUi_*` 控件面：DLL 边界上的 ImGui 归属、两道闸、回调内禁调清单与意图队列、视口矩形与坐标、撤销分组、输入让路 |
+| GryceCore 接口 | [core-api.md](core-api.md) | 138 个导出函数的签名、作用、参数与调用示例 |
+| 接入其它项目 | [integration.md](integration.md) | 交付物清单、运行期目录、初始化顺序、CMake 与常见坑 |
+| GryceUI | [gryce-ui-plan.md](gryce-ui-plan.md) | Node / Node2D / NodeUI 层级、模块边界与分阶段实现计划 |
+| GryceIDE 完整化 | [gryce-ide-roadmap.md](gryce-ide-roadmap.md) | 内嵌 3D/2D 视口、完整控件集、IDE Shell、编辑/调试/构建路线 |
 | 测试 | [testing.md](testing.md) | CTest 门禁、用例清单、CI 配置 |

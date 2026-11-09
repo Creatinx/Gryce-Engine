@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 
+# 独立配置时默认 MSYS2 UCRT64 编译器（被根工程包含时根 project() 已定，自动跳过）。
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/GryceDefaultCompiler.cmake")
+endif()
+
 # ---------------------------------------------------------------------------
 # toolchain — Gryce-Engine 命令行工具链（C++23）
 #

@@ -1,5 +1,7 @@
 #include "d3d12_texture.h"
 
+#include <cwchar>
+
 #include <cstring>
 
 #include "d3d12_upload.h"
@@ -279,6 +281,16 @@ bool D3D12Texture::create_resource(uint32_t width, uint32_t height, uint32_t dep
                    static_cast<unsigned>(hr));
         resource_ = nullptr;
         return false;
+    }
+
+    // 调试名：设备移除/非法引用时调试层的消息会带上这个名字，能把"某个
+    // Unnamed Object 被提前释放"直接定位到具体纹理（尺寸/格式/mip）。
+    {
+        wchar_t nm[160];
+        std::swprintf(nm, 160, L"tex %ux%u fmt%u mip%u arr%u",
+                      static_cast<unsigned>(width), static_cast<unsigned>(height),
+                      static_cast<unsigned>(fmt), mip_levels, depth_or_array);
+        resource_->SetName(nm);
     }
 
     width_ = static_cast<int>(width);

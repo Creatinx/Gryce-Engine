@@ -391,9 +391,8 @@ struct AppOptions {
     bool bench = false;       // --bench：离屏基准（不 present，帧末等 GPU）
 };
 
-// 用法文本里的程序名取自 argv[0]：现在有两个宿主（GryceApp 通用入口、
-// GryceEditor 编辑器专用入口），写死一个名字会让另一个的 --help 显示
-// 别人的名字。
+// 用法文本里的程序名取自 argv[0]：宿主程序可能被改名或复制成多个入口，
+// 写死一个名字会让副本的 --help 显示别人的名字。
 void print_usage(const char* argv0) {
     const std::string exe = argv0
         ? std::filesystem::path(argv0).filename().string()

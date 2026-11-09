@@ -4,6 +4,7 @@
 
 #include "../cli.h"
 #include "../commands/commands.h"
+#include "../core/fsutil.h"
 #include "../core/packager.h"
 #include "../core/pe_image.h"
 
@@ -15,6 +16,23 @@ namespace fs = std::filesystem;
 namespace grycegc {
 
 namespace {
+
+// 从 project.data 里粗略读 render_api（不引 JSON 库，按行找 "render_api" 后的引号串）。
+std::string read_render_api(const fs::path& project_src) {
+    if (!fs::is_directory(project_src)) return {};
+    const auto buf = read_all(project_src / "project.data");
+    if (buf.empty()) return {};
+    const std::string s(reinterpret_cast<const char*>(buf.data()), buf.size());
+    const auto pos = s.find("\"render_api\"");
+    if (pos == std::string::npos) return {};
+    const auto colon = s.find(':', pos);
+    if (colon == std::string::npos) return {};
+    const auto q1 = s.find('"', colon);
+    if (q1 == std::string::npos) return {};
+    const auto q2 = s.find('"', q1 + 1);
+    if (q2 == std::string::npos) return {};
+    return s.substr(q1 + 1, q2 - q1 - 1);
+}
 
 int verify_package_dir(const fs::path& pkg_root, const std::string& dll_folder) {
     namespace fs = std::filesystem;
@@ -61,7 +79,14 @@ int verify_package_dir(const fs::path& pkg_root, const std::string& dll_folder) 
 
 int cmd_package(const Options& o) {
     PackageOptions po;
-    if (o.has("build-dir")) po.build_dir = o.get("build-dir");
+    if (o.has("build-dir")) {
+        po.build_dir = o.get("build-dir");
+    } else {
+        // 缺省自动探测：build → cmake-build-debug → cmake-build-release，
+        // 优先含 GryceApp.exe 的，别再让人对着默认名报错。
+        po.build_dir = find_build_dir({"build", "cmake-build-debug", "cmake-build-release"});
+        std::printf("[package] 未指定 --build-dir，自动探测：%s\n", po.build_dir.string().c_str());
+    }
     if (o.has("exe")) po.exe = o.get("exe");
     if (o.has("output")) po.output = o.get("output");
     if (o.has("name")) po.name = o.get("name");
@@ -69,11 +94,27 @@ int cmd_package(const Options& o) {
     if (o.has("dll-folder")) po.dll_folder = o.get("dll-folder");
     for (const auto& d : o.get_all("extra-dir")) po.extra_dirs.emplace_back(d);
     if (o.is_flag("no-assets")) po.no_assets = true;
-    if (o.has("api")) po.api = o.get("api");
     if (o.is_flag("clean")) po.clean = true;
 
+    // build-dir：相对路径以引擎根为基，这样从引擎任意子目录调用 --build-dir build
+    // 都指向同一个 build/（与 build / run 的基准一致）。
+    if (!po.build_dir.is_absolute()) {
+        const fs::path root = find_engine_root();
+        po.build_dir = (root.empty() ? fs::current_path() : root) / po.build_dir;
+    }
+    po.build_dir = fs::absolute(po.build_dir);
+
+    // --api 缺省时读 project.data 的 render_api；dx12 离线不支持，回落到 opengl。
+    // 显式给出则尊重用户选择（仍限定 opengl / vulkan，dx12 离线包不保证 DLL 齐备）。
+    if (o.has("api")) {
+        po.api = o.get("api");
+    } else {
+        const std::string ra = read_render_api(po.project_src);
+        po.api = (ra == "vulkan") ? "vulkan" : "opengl";
+    }
     if (po.api != "opengl" && po.api != "vulkan") {
-        std::fprintf(stderr, "[错误] --api 仅支持 opengl / vulkan（当前 %s）\n", po.api.c_str());
+        std::fprintf(stderr, "[错误] 离线包 --api 仅支持 opengl / vulkan（当前 %s）\n",
+                     po.api.c_str());
         return 2;
     }
     if (!fs::is_directory(po.build_dir)) {

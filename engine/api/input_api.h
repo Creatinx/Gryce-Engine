@@ -9,6 +9,12 @@ extern "C" {
 #endif
 
 // Input injection (external HWND mode; OS events are pushed in by the host).
+//
+// 自建窗口的宿主每帧顺序：GInput_BeginHostFrame() → 按窗口当前状态 Inject* →
+// 再走 GCore_BeginFrame / GRender_BeginFrame。少了 BeginHostFrame，"按下的那一
+// 帧"会被反复认成新按下（上一帧快照没有推进），点一次等于连点，而松开事件
+// 永远不会产生。走 GWindow_PollEvents 的宿主不需要它（那边已经做了同一件事）。
+GRYCE_PLATFORM_API void GInput_BeginHostFrame(void);
 GRYCE_PLATFORM_API void GInput_InjectKey(int key_code, GInputAction action);
 GRYCE_PLATFORM_API void GInput_InjectMouseMove(float x, float y);
 GRYCE_PLATFORM_API void GInput_InjectMouseButton(int button, GInputAction action, float x, float y);
@@ -18,6 +24,7 @@ GRYCE_PLATFORM_API void GInput_ResetMouseBaseline(void);
 // Query helpers.
 GRYCE_PLATFORM_API bool GInput_IsKeyPressed(int key_code);
 GRYCE_PLATFORM_API bool GInput_IsKeyHeld(int key_code);
+GRYCE_PLATFORM_API bool GInput_IsKeyReleased(int key_code);
 GRYCE_PLATFORM_API bool GInput_IsMouseButtonPressed(int button);
 GRYCE_PLATFORM_API bool GInput_IsMouseButtonHeld(int button);
 GRYCE_PLATFORM_API bool GInput_IsMouseButtonReleased(int button);
@@ -41,6 +48,11 @@ GRYCE_PLATFORM_API void GInput_GetWheel(float* out_dx, float* out_dy);
 // 组合。内置 UI 的输入框会把它画在插入点处并加下划线。
 GRYCE_PLATFORM_API void GInput_InjectPreedit(const char* utf8_text);
 GRYCE_PLATFORM_API int  GInput_GetPreedit(char* out_buf, int buf_size);
+
+// UTF-8 system clipboard. Get returns required byte count (excluding NUL);
+// copy is truncated only when the caller-provided buffer is too small.
+GRYCE_PLATFORM_API int  GInput_SetClipboardText(const char* utf8_text);
+GRYCE_PLATFORM_API int  GInput_GetClipboardText(char* out_buf, int buf_size);
 
 // Push changed input state into the engine command ring buffer.
 GRYCE_PLATFORM_API void GInput_SyncToCore(void);

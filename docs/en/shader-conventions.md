@@ -60,3 +60,15 @@ Backend-dependent switches must use a single `#ifndef` fallback, with the 0 valu
 ## 7. Shadow Bias
 
 `slope_bias()` = `max(base*(1-N.L), base*0.3) * 2.0`. Seven receiver shaders must stay in sync: `pbr` / `instanced` / `skinned_pbr` / `vulkan_*` variants / `deferred_lighting`. When out of sync, borderline self-occlusion flips per pixel with the PCF rotation angle into 4px-periodic diagonal stripes.
+
+## 8. Vulkan Post-Process Parameters Need a Registered Push Block
+
+Vulkan has no bare `uniform`; post-process shader parameters can only travel through a `push_constant` block, and the C++ `VulkanShader` routes `set_uniform_*` into a hand-written struct according to `push_kind_` (`SSRPushData` / `FogPushData` / `VolumetricPushData` ...). Adding a parameterised post-process shader requires all three of the following, and missing any one shows up as "the parameter is always 0 and the effect silently does nothing, with no error":
+
+1. `vk_shader.h`: add a `PostProcessPushKind` value, the push struct and a `static_assert(sizeof(...))`;
+2. `vk_shader.cpp`: pick `push_kind_` by shader name in `load_program`, add the `push_range.size` branch in `create_pipeline`, the branch in `push_constants()`, and field routing in `set_int/float/vec3/vec4/mat4`;
+3. register the texture slot in `post_process_binding()`, otherwise it falls through to binding 0 and samples the wrong image.
+
+Limit: a single push block must not exceed the device `maxPushConstantsSize` (256 bytes; the contact-shadow block exists precisely because the shared block was already at 224). Under std430 a `vec3` occupies a full 16 bytes, so a scalar placed right after it must fit in its padding, or every following offset shifts.
+
+Matrix convention: the camera projection already has its z row remapped per backend in `RenderPipeline::get_projection_matrix()`, while light matrices get the same remap inside `set_mat4("uLightSpaceMatrix")`. A custom push block that intercepts those names must repeat the remap itself, otherwise shadow comparison and depth reconstruction are offset wholesale.

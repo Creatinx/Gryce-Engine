@@ -26,6 +26,20 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# 产物布局：本目录下的 target 一律把「运行期产物」放在构建树根（与宿主 exe
+# 同目录），把「链接期产物」（MinGW 的 libXxx.dll.a / MSVC 的 .lib 导入库）
+# 收进 lib/ 子目录。CMake 的默认值是**当前子目录**的构建目录（build/engine/），
+# 会让 DLL 散落在中间层、再靠 POST_BUILD 拷一份到根目录 —— 同一个二进制出现
+# 两个位置，清理与打包都容易拿错。
+# 收敛后：
+#   cmake --build build --target GryceCore   → 只产出 build/GryceCore.dll
+#   （导入库在 build/lib/libGryceCore.dll.a，由使用方链接，不属于运行期产物）
+# ---------------------------------------------------------------------------
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+
+# ---------------------------------------------------------------------------
 # GryceCore.dll
 # ---------------------------------------------------------------------------
 add_library(GryceCore ${_gryce_lib_type})
@@ -86,6 +100,11 @@ target_sources(GryceCore
         animation/pose.cpp
         components/component_factory.cpp
         components/2d/component_2d.cpp
+        components/node.cpp
+        ui/ui_runtime.cpp
+        ui/ui_clipboard.cpp
+        ui/ui_theme.cpp
+        ui/ui_texture.cpp
         components/2d/sprite_2d.cpp
         components/2d/tilemap.cpp
         components/2d/parallax_background.cpp
@@ -185,6 +204,9 @@ endif()
 # ---------------------------------------------------------------------------
 # GryceRenderer.dll
 # ---------------------------------------------------------------------------
+option(GRYCE_ENABLE_LEGACY_RENDERER_COMPOSITOR
+       "Build the unused Godot-style RenderingServer/Compositor renderer path" OFF)
+
 add_library(GryceRenderer ${_gryce_lib_type})
 
 set_target_properties(GryceRenderer PROPERTIES
@@ -197,36 +219,12 @@ target_compile_definitions(GryceRenderer PUBLIC GRYCE_BUILD_SHARED)
 target_sources(GryceRenderer
     PRIVATE
         api/render_api.cpp
-        api/ui_api.cpp
-        api/ui_builtin_backend.cpp
-        api/ui_op_queue.cpp
-        ui/ui_state.cpp
-        ui/ui_layout.cpp
-        ui/ui_layout_tree.cpp
-        ui/ui_layout_tree_json.cpp
-        ui/ui_drawlist.cpp
-        ui/ui_theme.cpp
-        ui/ui_anim.cpp
-        ui/ui_input.cpp
-        ui/ui_snapshot.cpp
-        # 内置 UI 渲染路径：drawlist → IRenderer2D 的桥（+ 本 DLL 内的适配器）
-        # 与 retained 控件层（命中测试 / 事件 / 控件库）
-        ui/ui_render_bridge.cpp
-        ui/ui_render_bridge_rd.cpp
-        ui/ui_widget.cpp
-        ui/ui_builtin.cpp
         render/render.cpp
         render/renderer2d_impl.cpp
+        render/canvas2d_pipeline.cpp
+        render/ui_pipeline.cpp
         render/core_shaders.cpp
         render/shader_source_resolver.cpp
-        render/render_forward_basic.cpp
-        render/renderer_canvas_render_rd.cpp
-        render/compositor_basic.cpp
-        render/compositor_forward_clustered.cpp
-        render/renderer_rd/cluster_builder_rd.cpp
-        render/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp
-        render/renderer_rd/forward_clustered/render_forward_clustered.cpp
-        render/renderer_rd/forward_clustered/shadow_system_rd.cpp
         render/renderer_rd/shadow/shadow_atlas.cpp
         render/renderer_rd/shadow/vsm_esm_shadow.cpp
         render/renderer_rd/effects/ssr.cpp
@@ -236,6 +234,7 @@ target_sources(GryceRenderer
         render/renderer_rd/effects/subsurface_scattering.cpp
         render/renderer_rd/effects/motion_blur.cpp
         render/renderer_rd/effects/water.cpp
+        render/renderer_rd/effects/volumetric_scatter.cpp
         render/renderer_rd/environment/sdfgi.cpp
         render/renderer_rd/environment/voxel_gi.cpp
         render/renderer_rd/environment/fog.cpp
@@ -246,12 +245,10 @@ target_sources(GryceRenderer
         render/storage_rd/light_storage_impl.cpp
         render/storage_rd/decal_storage.cpp
         render/compositor_effect.cpp
-        render/rendering_server_default.cpp
         render/render_pipeline.cpp
         render/super_resolution.cpp
         render/shadow_pass.cpp
         render/postprocess_pass.cpp
-        render/renderer_compositor.cpp
         ecs/systems/subviewport_system.cpp
         render/opengl/gl_backend.cpp
         render/opengl/gl_frame_pacing.cpp
@@ -264,6 +261,23 @@ target_sources(GryceRenderer
         ecs/systems/render_system_2d.cpp
         ecs/systems/render_system_3d.cpp
 )
+
+# 旧 Godot 式组合器路径从未接入 GRender_* 生产入口，且 RenderForwardBasic
+# 还有空 RenderContext 解引用。默认不编译；保留开关仅用于后续迁移/取证。
+if(GRYCE_ENABLE_LEGACY_RENDERER_COMPOSITOR)
+    target_sources(GryceRenderer PRIVATE
+        render/render_forward_basic.cpp
+        render/renderer_canvas_render_rd.cpp
+        render/compositor_basic.cpp
+        render/compositor_forward_clustered.cpp
+        render/renderer_rd/cluster_builder_rd.cpp
+        render/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp
+        render/renderer_rd/forward_clustered/render_forward_clustered.cpp
+        render/renderer_rd/forward_clustered/shadow_system_rd.cpp
+        render/rendering_server_default.cpp
+        render/renderer_compositor.cpp
+    )
+endif()
 
 # ImGui 源（M4 阶段启用）
 if(GRYCE_ENABLE_IMGUI)
@@ -415,6 +429,8 @@ if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 render/d3d12/d3d12_shader.cpp
                 render/d3d12/d3d12_reflect.cpp
                 render/d3d12/d3d12_compute.cpp
+                render/d3d12/d3d12_rt_accel.cpp
+                render/d3d12/d3d12_rt_reflection.cpp
                 PROPERTIES INCLUDE_DIRECTORIES "${_gryce_d3d12_sdk_root}/um;${_gryce_d3d12_sdk_root}/shared")
         endif()
         target_sources(GryceRenderer
@@ -433,6 +449,8 @@ if(GRYCE_ENABLE_D3D12 AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 render/d3d12/d3d12_shader.cpp
                 render/d3d12/d3d12_reflect.cpp
                 render/d3d12/d3d12_compute.cpp
+                render/d3d12/d3d12_rt_accel.cpp
+                render/d3d12/d3d12_rt_reflection.cpp
                 render/d3d12/d3d12_renderer2d.cpp
                 render/d3d12/d3d12_backend.cpp
         )
@@ -590,24 +608,10 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
-# 引擎 DLL 重链接后立即同步到 exe 目录（${GRYCE_EXE_OUTPUT_DIR}，由顶层传入）。
-#
-# 为什么挂 POST_BUILD：日常迭代常用
-#   cmake --build . --target GryceRenderer
-# 单独构建引擎库，顶层 GryceSyncRuntimeDlls（ALL 目标）不参与，exe 目录
-# 会留下旧 DLL，运行时加载过期二进制（"改了代码却看不到变化"的经典陷阱）。
-# 命令必须挂在 DLL 自身而不是 exe 上：挂 exe 时改引擎代码 exe 不重链接、
-# 不会触发；挂 DLL 则每次重链接必触发。
-# add_custom_command(TARGET) 只接受本目录创建的 target，故三个引擎 DLL
-# 都在此处理；第三方 DLL 是 IMPORTED 目标无法挂 POST_BUILD，仍由顶层
-# GryceSyncRuntimeDlls 负责。copy_if_different 幂等，两处重复执行无副作用。
-foreach(_gryce_dll IN ITEMS GryceCore GryceRenderer GrycePlatform)
-    add_custom_command(TARGET ${_gryce_dll} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:${_gryce_dll}>"
-                "${GRYCE_EXE_OUTPUT_DIR}"
-        COMMENT "Syncing ${_gryce_dll}.dll next to GryceRenderSmoke.exe"
-        VERBATIM
-    )
-endforeach()
+# 产物已经直接落在宿主 exe 所在目录（见文件头的 CMAKE_RUNTIME_OUTPUT_DIRECTORY），
+# 不再需要 POST_BUILD 复制：单独 `--target GryceRenderer` 重链接后，
+# build/GryceRenderer.dll 就是最新的那一份，不存在"exe 旁留旧 DLL"的陷阱。
+# 第三方运行库（glfw3 / glew32 / box2d / Jolt / MinGW 运行时）仍是 IMPORTED
+# 目标，由顶层 GryceSyncRuntimeDlls 负责同步。
+# ---------------------------------------------------------------------------
 unset(_gryce_dll)

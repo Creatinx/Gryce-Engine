@@ -60,3 +60,15 @@ D3D12 的 vulkanize（`d3d12_vulkanize`）会把源码里**所有** `#define NAM
 ## 7. 阴影偏置
 
 `slope_bias()` = `max(base*(1-N·L), base*0.3) * 2.0`。接收端共七份着色器必须同步：`pbr` / `instanced` / `skinned_pbr` / `vulkan_*` 变体 / `deferred_lighting`。不同步时临界自遮挡会随 PCF 的逐像素旋转角翻成 4px 周期斜条纹。
+
+## 8. Vulkan 后处理参数必须登记 push 块
+
+Vulkan 不允许裸 `uniform`，后处理 shader 的参数只能走 `push_constant` 块；C++ 侧 `VulkanShader` 按 `push_kind_` 把 `set_uniform_*` 路由到对应的手写结构体（`SSRPushData` / `FogPushData` / `VolumetricPushData` …）。新增一个带参数的后处理 shader 时，三件事必须同时做，缺任一件都表现为"参数永远是 0、效果静默失效且无报错"：
+
+1. `vk_shader.h`：加 `PostProcessPushKind` 枚举值 + push 结构体 + `static_assert(sizeof(...))`；
+2. `vk_shader.cpp`：`load_program` 里按 shader 名判定 `push_kind_`、`create_pipeline` 的 `push_range.size` 分支、`push_constants()` 的分支，以及 `set_int/float/vec3/vec4/mat4` 的字段路由；
+3. 纹理槽位要在 `post_process_binding()` 里登记，否则会落到 binding 0（与主输入冲突，采样到错图）。
+
+约束：单个 push 块不得超过设备 `maxPushConstantsSize`（256 字节，接触阴影块就是因为共享块已 224 字节才单独拆出去的）。std430 下 `vec3` 占满 16 字节，紧跟其后的标量要能落进它的 padding，否则整块偏移错位。
+
+矩阵约定：相机投影矩阵在 `RenderPipeline::get_projection_matrix()` 已按后端重映射 z 行；光照矩阵则在 `set_mat4("uLightSpaceMatrix")` 时做同样的 z 重映射。自建 push 块拦下这些名字后要自己补重映射，否则阴影比较 / 深度重建会整体错位。

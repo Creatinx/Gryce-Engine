@@ -20,6 +20,41 @@ const std::set<std::string>& engine_core_names() {
     return s;
 }
 
+// 把目录内的 .dll 索引进 name→path 映射（emplace 先到先得：先插入者优先）。
+void index_dlls_in(std::map<std::string, std::filesystem::path>& name_map,
+                   const std::filesystem::path& d, bool recurse) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(d, ec)) return;
+    if (recurse) {
+        for (auto it = std::filesystem::recursive_directory_iterator(
+                 d, std::filesystem::directory_options::skip_permission_denied, ec);
+             it != std::filesystem::recursive_directory_iterator();
+             it.increment(ec)) {
+            if (ec) { ec.clear(); continue; }
+            if (!it->is_regular_file(ec)) continue;
+            const auto fn = it->path().filename().string();
+            if (fn.size() > 4 &&
+                (fn.substr(fn.size() - 4) == ".dll" || fn.substr(fn.size() - 4) == ".DLL")) {
+                auto k = fn;
+                std::transform(k.begin(), k.end(), k.begin(), ::tolower);
+                name_map.emplace(k, it->path());
+            }
+        }
+    } else {
+        for (auto& e : std::filesystem::directory_iterator(d, ec)) {
+            if (ec) continue;
+            if (!e.is_regular_file(ec)) continue;
+            const auto fn = e.path().filename().string();
+            if (fn.size() > 4 &&
+                (fn.substr(fn.size() - 4) == ".dll" || fn.substr(fn.size() - 4) == ".DLL")) {
+                auto k = fn;
+                std::transform(k.begin(), k.end(), k.begin(), ::tolower);
+                name_map.emplace(k, e.path());
+            }
+        }
+    }
+}
+
 } // namespace
 
 DepCategory classify(const std::string& name_lower) {
@@ -105,41 +140,10 @@ void DepResolver::build_name_map() const {
     if (name_map_ready_) return;
     name_map_.clear();
 
-    auto add_dlls_in = [&](const std::filesystem::path& d, bool recurse) {
-        std::error_code ec;
-        if (!std::filesystem::is_directory(d, ec)) return;
-        if (recurse) {
-            for (auto it = std::filesystem::recursive_directory_iterator(
-                     d, std::filesystem::directory_options::skip_permission_denied, ec);
-                 it != std::filesystem::recursive_directory_iterator();
-                 it.increment(ec)) {
-                if (ec) { ec.clear(); continue; }
-                if (!it->is_regular_file(ec)) continue;
-                const auto fn = it->path().filename().string();
-                if (fn.size() > 4 &&
-                    (fn.substr(fn.size() - 4) == ".dll" || fn.substr(fn.size() - 4) == ".DLL")) {
-                    auto k = fn;
-                    std::transform(k.begin(), k.end(), k.begin(), ::tolower);
-                    name_map_.emplace(k, it->path());
-                }
-            }
-        } else {
-            for (auto& e : std::filesystem::directory_iterator(d, ec)) {
-                if (ec) continue;
-                if (!e.is_regular_file(ec)) continue;
-                const auto fn = e.path().filename().string();
-                if (fn.size() > 4 &&
-                    (fn.substr(fn.size() - 4) == ".dll" || fn.substr(fn.size() - 4) == ".DLL")) {
-                    auto k = fn;
-                    std::transform(k.begin(), k.end(), k.begin(), ::tolower);
-                    name_map_.emplace(k, e.path());
-                }
-            }
-        }
-    };
-
-    if (!build_dir_.empty()) add_dlls_in(build_dir_, true);
-    for (const auto& d : extra_dirs_) add_dlls_in(d, true);
+    // 快速索引只含 exe 同目录 / extra / PATH：构建系统已把全部运行时 DLL
+    // 同步到 exe 旁（GryceSyncRuntimeDlls），绝大多数场景到这里就够了，
+    // 不必付全树递归的代价。build_dir 全树递归留给 build_deep_map() 兑底。
+    for (const auto& d : extra_dirs_) index_dlls_in(name_map_, d, true);
 
     if (include_path_) {
 #if defined(_WIN32)
@@ -150,13 +154,21 @@ void DepResolver::build_name_map() const {
             while (i <= p.size()) {
                 size_t j = p.find(';', i);
                 if (j == std::string::npos) j = p.size();
-                add_dlls_in(std::filesystem::path(p.substr(i, j - i)), false);
+                index_dlls_in(name_map_, std::filesystem::path(p.substr(i, j - i)), false);
                 i = j + 1;
             }
         }
 #endif
     }
     name_map_ready_ = true;
+}
+
+void DepResolver::build_deep_map() const {
+    if (deep_map_ready_) return;
+    deep_map_ready_ = true;
+    if (!name_map_ready_) build_name_map();
+    // emplace 先到先得：快速索引（exe 旁）已占的名字不会被构建树副本覆盖。
+    if (!build_dir_.empty()) index_dlls_in(name_map_, build_dir_, true);
 }
 
 DepResolveResult DepResolver::resolve(const std::filesystem::path& entry) const {
@@ -183,6 +195,13 @@ DepResolveResult DepResolver::resolve(const std::filesystem::path& entry) const 
             if (seen_names.count(low)) continue;
             seen_names.insert(low);
             auto it = name_map_.find(low);
+            if ((it == name_map_.end() ||
+                 !std::filesystem::is_regular_file(it->second, ec)) &&
+                !deep_map_ready_) {
+                // 快速索引 miss 才做一次全树兑底扫描，扫完重试一次。
+                build_deep_map();
+                it = name_map_.find(low);
+            }
             if (it != name_map_.end() && std::filesystem::is_regular_file(it->second, ec)) {
                 DepNode node;
                 node.name_lower = low;

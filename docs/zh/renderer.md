@@ -17,10 +17,15 @@
 
 ## 2. 前向管线
 
-- Clustered Forward：光源按 3D 簇分配（`render/renderer_rd/cluster_builder_rd.cpp`）。
+- 生产路径为 Forward PBR 多光源管线（`render/render_pipeline.cpp`）。
 - HDR 渲染目标、色调映射、自动曝光。
 - 法线预通道（`prepass_normal`）为 SSAO / SSR 重绘几何，跟随当前 LOD 级别。
 - GPU 剔除（视锥 / 遮挡）与 CPU 回退路径并存。
+
+游戏渲染拆为 3D 场景（`RenderPipeline`）、2D 画布和 UI overlay
+（`render/canvas2d_pipeline.*` / `render/ui_pipeline.*`），共享 `RenderContext`。
+GryceUI 的 DrawList 复用 `IRenderer2D` overlay，不复制图形后端；FPS/帧时间
+叠加和 F1 ImGui 调试窗口保持独立。
 
 ## 3. 阴影
 
@@ -37,11 +42,16 @@ SSR（反射）、SSAO、SSIL，可经 `--ssr` / `--no-ssr`、`--ssao` / `--no-s
 
 ## 5. 全局光照与环境
 
-SDFGI、VoxelGI、Reflection Probe、IBL（预滤波环境贴图 + BRDF LUT）、体积雾。IBL 的镜面项口径（`F0*A + B`，禁用 `fresnel(NdotV)*A + B`）见 [model-import.md](model-import.md) 第 6.1 节。
+Reflection Probe、IBL（预滤波环境贴图 + BRDF LUT）、体积雾为当前能力。
+SDFGI / VoxelGI 仍只有资源骨架和空更新循环，属于实验代码，不应作为正式
+功能开关使用。IBL 的镜面项口径（`F0*A + B`，禁用
+`fresnel(NdotV)*A + B`）见 [model-import.md](model-import.md) 第 6.1 节。
 
 ## 6. 后处理
 
 Bloom、TAA、运动模糊、Bokeh DOF、FSR2、次表面散射、水面。
+
+体积光散射（丁达尔 / 神光）在 Bloom 之前接进 HDR 链：沿视线按光线步进累积方向光的单散射（Henyey-Greenstein 相位），采样点的日照遮挡用平行光级联 0 的阴影贴图判定，因此窗口、缝隙、树影之间会留下可见光柱。由 `PostProcessParams::volumetric_*` 控制（`set_volumetric_params` / `set_volumetric_enabled`），默认低密度开启。Bloom 上采样带轻微径向色散，高亮反射与光柱会形成彩色光晕。
 
 ## 7. 2D 管线
 

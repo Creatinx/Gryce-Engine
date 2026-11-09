@@ -214,7 +214,57 @@ void web_track_page_size(GLFWwindow* handle) {
 // ---------------------------------------------------------------------------
 // GLFW SDK 管理
 // ---------------------------------------------------------------------------
+
+#ifdef _WIN32
+// 进程级 DPI 感知：让 GLFW 拿到真实设备像素帧缓冲与内容缩放，避免整窗被 DWM
+// 拉伸发虚（"抗锯齿不够"的主因），并让高 DPI 屏上 UI 逻辑尺寸正确（"长宽高
+// 不合理"的主因）。必须在 glfwInit 之前设，GLFW 据此解析 monitor 内容缩放。
+//
+// 用 GetProcAddress 逐级回退，不硬依赖 Windows SDK 版本或额外链接库
+// （思路与 ImGui 的 ImGui_ImplWin32_EnableDpiAwareness 一致）：
+//   Win10 1703+ : SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)
+//   Win8.1+     : SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+//   兜底        : SetProcessDPIAware()（user32 自带）
+// 返回值忽略：若 manifest/其它子系统已设过，失败即可（保持现状）。
+static void enable_dpi_awareness() {
+    const HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
+    const HMODULE shcore = ::GetModuleHandleW(L"shcore.dll");
+
+    // Win10 1703+：per-monitor v2（窗口在跨不同 DPI 显示器拖动时也不发虚）。
+    if (user32) {
+        typedef BOOL (WINAPI* PFN_SetProcessDpiAwarenessContext)(HANDLE);
+        if (auto fn = reinterpret_cast<PFN_SetProcessDpiAwarenessContext>(
+                ::GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+            // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4
+            fn(reinterpret_cast<HANDLE>(-4));
+            return;
+        }
+    }
+    // Win8.1+：per-monitor v1（运行时从 shcore 取，不链库）。
+    if (shcore) {
+        typedef HRESULT (WINAPI* PFN_SetProcessDpiAwareness)(int);
+        if (auto fn = reinterpret_cast<PFN_SetProcessDpiAwareness>(
+                ::GetProcAddress(shcore, "SetProcessDpiAwareness"))) {
+            fn(2 /*PROCESS_PER_MONITOR_DPI_AWARE*/);
+            return;
+        }
+    }
+    // 兜底：system DPI 感知（user32 自带，无需额外库）。
+    if (user32) {
+        typedef BOOL (WINAPI* PFN_SetProcessDPIAware)(void);
+        if (auto fn = reinterpret_cast<PFN_SetProcessDPIAware>(
+                ::GetProcAddress(user32, "SetProcessDPIAware"))) {
+            fn();
+        }
+    }
+}
+#endif // _WIN32
+
 bool Window::init_sdk() {
+#ifdef _WIN32
+    // 必须在 glfwInit 之前声明 DPI 感知，否则 GLFW 仍按 96 DPI 虚拟化解析。
+    enable_dpi_awareness();
+#endif
     int result = glfwInit();
     if (!result) {
         GLOG_ERROR("glfwInit() failed");
@@ -262,6 +312,15 @@ GLFWwindow* Window::create_glfw_window(const std::string& title, int w, int h, W
 #endif
 
     GLFWmonitor* monitor = nullptr;
+    // 进程已声明 DPI 感知（见 init_sdk）：glfwCreateWindow 的尺寸按**逻辑像素**
+    // 解释，OS 再按显示器缩放翻到物理像素。因此这里直接传调用方给的逻辑尺寸
+    // w/h，不做任何缩放——高 DPI 屏上窗口在屏幕上看起来和请求的逻辑大小一致，
+    // 只是帧缓冲是原生高分辨率（清晰、不发虚）。
+    //
+    // 切勿在此按内容缩放放大 w/h：那会变成 w*scale 的"逻辑像素"窗口，OS 再翻
+    // scale 倍到物理像素，等效 scale² 倍大（用户实测"窗口太大"正是这个）。UI
+    // 倍率由 GRender_BeginFrame 按 GWindow_GetContentScale 单独施加到渲染，与
+    // 窗口创建尺寸解耦。无边框/全屏走视频模式整屏（下方 switch 覆盖）。
     int win_w = w;
     int win_h = h;
 
@@ -715,6 +774,10 @@ bool Window::has_focus() const {
 // ---------------------------------------------------------------------------
 bool Window::get_key(int key) const {
     return handle_ ? (glfwGetKey(handle_, key) == GLFW_PRESS) : false;
+}
+
+bool Window::get_mouse_button(int button) const {
+    return handle_ ? (glfwGetMouseButton(handle_, button) == GLFW_PRESS) : false;
 }
 
 void Window::push_char(unsigned int codepoint) {

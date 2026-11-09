@@ -175,11 +175,11 @@ Pool& global_pool() {
 
 } // namespace
 
-int parallel_worker_count() {
+GRYCE_API int parallel_worker_count() {
     return static_cast<int>(global_pool().workers.size());
 }
 
-void parallel_for(int begin, int end, const std::function<void(int, int)>& range_fn) {
+GRYCE_API void parallel_for(int begin, int end, const std::function<void(int, int)>& range_fn) {
     const int count = end - begin;
     if (count <= 0) return;
 
@@ -226,7 +226,7 @@ void parallel_for(int begin, int end, const std::function<void(int, int)>& range
     pool.job = nullptr;
 }
 
-void parallel_region(int begin, int end, int repeats, const std::function<void(int, int, int)>& range_fn) {
+GRYCE_API void parallel_region(int begin, int end, int repeats, const std::function<void(int, int, int)>& range_fn) {
     const int count = end - begin;
     if (count <= 0 || repeats <= 0) return;
 

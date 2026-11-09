@@ -32,6 +32,7 @@ enum class DxcProfile {
     Vs_6_0,   // 顶点 SM 6.0（DXIL）
     Ps_6_0,
     Cs_6_0,
+    Cs_6_5,   // 计算 SM 6.5（DXR inline raytracing / RayQuery）
 };
 
 // 是否可在当前进程加载 dxcompiler（懒加载，仅首次调用时校验）。

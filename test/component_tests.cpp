@@ -44,6 +44,10 @@
 #include "components/camera.h"
 #include "components/component.h"
 #include "components/component_factory.h"
+#include "components/node.h"
+#include "components/node2d.h"
+#include "components/node3d.h"
+#include "components/node_ui.h"
 #include "ecs/component_store.h"
 #include "reflection/reflection.h"
 #include "reflection/type_name.h"
@@ -54,6 +58,11 @@
 
 using gryce_engine::components::Component;
 using gryce_engine::components::ComponentFactory;
+using gryce_engine::components::Node;
+using gryce_engine::components::Node2D;
+using gryce_engine::components::Node3D;
+using gryce_engine::components::NodeDomain;
+using gryce_engine::components::NodeUI;
 using gryce_engine::components::d2::Component2D;
 using gryce_engine::ecs::ComponentStore;
 using gryce_engine::scene::Entity;
@@ -347,6 +356,75 @@ TEST(query, base_query_returns_first_match) {
     CHECK_TRUE(first != nullptr);
     CHECK_TRUE(first == rect);
     CHECK_INT(entity.component_view_count(std::type_index(typeid(Component2D))), 2);
+}
+
+TEST(query, node_hierarchy_domains_and_visibility) {
+    ensure_builtins();
+
+    Entity root("NodeRoot");
+    auto* root_node = root.add_component<Node3D>();
+    CHECK_TRUE(root_node != nullptr);
+    CHECK_TRUE(root_node->node_domain() == NodeDomain::Scene3D);
+    CHECK_TRUE(root.get_component<Node>() == root_node);
+
+    auto child = std::make_unique<Entity>("UIChild");
+    Entity* child_raw = root.add_child(std::move(child));
+    auto* ui = child_raw->add_component<NodeUI>();
+    CHECK_TRUE(ui != nullptr);
+    CHECK_TRUE(ui->node_domain() == NodeDomain::UI);
+    CHECK_TRUE(child_raw->get_component<NodeUI>() == ui);
+    CHECK_TRUE(child_raw->get_component<Node2D>() == ui);
+    CHECK_TRUE(child_raw->get_component<Node>() == ui);
+
+    // Entity 祖先链上的节点可见性向下传播。
+    CHECK_TRUE(ui->is_visible_in_tree());
+    root_node->visible = false;
+    CHECK_TRUE(!ui->is_visible_in_tree());
+    root_node->visible = true;
+
+    // 同一个 Entity 内的 NodeUI 组件树同样需要传播可见性。
+    Entity ui_document("UIDocument");
+    auto* panel = ui_document.add_component<NodeUI>();
+    auto* label = ui_document.add_component<NodeUI>();
+    CHECK_TRUE(panel != nullptr);
+    CHECK_TRUE(label != nullptr);
+    CHECK_TRUE(ui_document.set_component_parent(label, panel));
+    panel->visible = false;
+    CHECK_TRUE(!label->is_visible_in_tree());
+    panel->visible = true;
+    CHECK_TRUE(label->is_visible_in_tree());
+
+    // NodeUI 序列化必须保留 Node、Node2D 与 UI 自身字段。
+    ui->visible = false;
+    ui->z_index = 12;
+    ui->top_level = true;
+    ui->size = math::Vector2f(320.0f, 180.0f);
+    ui->receives_input = false;
+    ui->focusable = true;
+    ui->clip_contents = true;
+    nlohmann::json saved;
+    ui->serialize(saved);
+
+    auto restored = std::make_unique<NodeUI>();
+    restored->deserialize(saved);
+    CHECK_TRUE(!restored->visible);
+    CHECK_INT(restored->z_index, 12);
+    CHECK_TRUE(restored->top_level);
+    CHECK_TRUE(restored->size.x == 320.0f && restored->size.y == 180.0f);
+    CHECK_TRUE(!restored->receives_input);
+    CHECK_TRUE(restored->focusable);
+    CHECK_TRUE(restored->clip_contents);
+
+    const auto chain = gryce_engine::components::component_type_chain_names(ui);
+    auto has_name = [&](const char* name) {
+        for (const auto& item : chain) {
+            if (item.find(name) != std::string::npos) return true;
+        }
+        return false;
+    };
+    CHECK_TRUE(has_name("Node"));
+    CHECK_TRUE(has_name("Node2D"));
+    CHECK_TRUE(has_name("NodeUI"));
 }
 
 // ===========================================================================
@@ -950,6 +1028,59 @@ TEST(capi, local_transform_apis) {
     CHECK_INT(GComponent_SetLocalTransformAt(h, 5, pos, rot, scl), 0);
 }
 
+TEST(capi, world_transform_apis_follow_parent_chain) {
+    if (!capi_core_init()) { CHECK_TRUE(false); return; }
+
+    const GEntityHandle parent = capi_create_entity("CapiWorldParent");
+    CHECK_TRUE(parent != 0);
+    CHECK_INT(GEdit_CreateEntity("CapiWorldChild", parent), 1);
+    capi_pump();
+    const GEntityHandle child = GEntity_GetChildAt(parent, 0);
+    CHECK_TRUE(child != 0);
+
+    const GVec3 parent_pos{10.0f, 1.0f, 0.0f};
+    const GQuat parent_rot{0.0f, 0.0f, 0.0f, 1.0f};
+    const GVec3 parent_scale{2.0f, 2.0f, 2.0f};
+    const GVec3 child_pos{1.0f, 2.0f, 3.0f};
+    const GQuat child_rot{0.0f, 0.0f, 0.0f, 1.0f};
+    const GVec3 child_scale{0.5f, 0.5f, 0.5f};
+    CHECK_INT(GEdit_SetTransform(parent, &parent_pos, &parent_rot, &parent_scale), 1);
+    CHECK_INT(GEdit_SetTransform(child, &child_pos, &child_rot, &child_scale), 1);
+    capi_pump();
+
+    GVec3 world_pos{};
+    GQuat world_rot{};
+    GVec3 world_scale{};
+    CHECK_INT(GEntity_GetWorldPosition(child, &world_pos), 0);
+    CHECK_INT(GEntity_GetWorldRotation(child, &world_rot), 0);
+    CHECK_INT(GEntity_GetWorldScale(child, &world_scale), 0);
+    CHECK_NEAR(world_pos.x, 12.0, 1e-4);
+    CHECK_NEAR(world_pos.y, 5.0, 1e-4);
+    CHECK_NEAR(world_pos.z, 6.0, 1e-4);
+    CHECK_NEAR(world_scale.x, 1.0, 1e-4);
+    CHECK_NEAR(world_scale.y, 1.0, 1e-4);
+    CHECK_NEAR(world_scale.z, 1.0, 1e-4);
+    CHECK_NEAR(std::abs(world_rot.w), 1.0, 1e-4);
+
+    // 父级旋转必须参与世界位置与世界旋转；用数学库计算同一份期望值，
+    // 避免测试把旋转方向硬编码成与引擎约定相反。
+    const math::Quaternionf yaw = math::Quaternionf::from_axis_angle(
+        math::Vector3f(0.0f, 1.0f, 0.0f), 3.14159265358979323846f * 0.5f);
+    const GQuat parent_yaw{yaw.x, yaw.y, yaw.z, yaw.w};
+    CHECK_INT(GEdit_SetTransform(parent, &parent_pos, &parent_yaw, &parent_scale), 1);
+    capi_pump();
+    const math::Vector3f expected =
+        math::Vector3f(10.0f, 1.0f, 0.0f) +
+        yaw.rotate_vector(math::Vector3f(1.0f, 2.0f, 3.0f) * 2.0f);
+    CHECK_INT(GEntity_GetWorldPosition(child, &world_pos), 0);
+    CHECK_NEAR(world_pos.x, expected.x, 1e-4);
+    CHECK_NEAR(world_pos.y, expected.y, 1e-4);
+    CHECK_NEAR(world_pos.z, expected.z, 1e-4);
+    CHECK_INT(GEntity_GetWorldRotation(child, &world_rot), 0);
+    CHECK_NEAR(std::abs(world_rot.w), std::abs(yaw.w), 1e-4);
+    CHECK_NEAR(std::abs(world_rot.y), std::abs(yaw.y), 1e-4);
+}
+
 // 命令载荷必须放得进 GCommand::payload（GCMD_PAYLOAD_SIZE = 256 字节）
 TEST(capi, command_payloads_fit_in_command_buffer) {
     CHECK_TRUE(sizeof(GCmdSetComponentParent) <= GCMD_PAYLOAD_SIZE);
@@ -1047,6 +1178,11 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    // capi 套件会 GCore_Init 一次（起 Jolt 物理线程池），但从不主动 Shutdown；
+    // 进程退出时引擎静态析构等这些线程会卡住，表现为 ctest 超时。这里在所有
+    // 套件跑完后统一回收。GCore_Shutdown 在未初始化时是 no-op，调用安全。
+    GCore_Shutdown();
 
     std::printf("\n--------------------------------------------------------------\n");
     std::printf("checks: %d total, %d passed, %d failed\n",

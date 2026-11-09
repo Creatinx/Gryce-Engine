@@ -42,6 +42,7 @@
 #include "d3d12_framebuffer.h"
 #include "d3d12_shader.h"
 #include "d3d12_compute.h"
+#include "d3d12_rt_reflection.h"
 
 namespace gryce_engine::render::d3d12 {
 
@@ -93,6 +94,20 @@ public:
                               RHIBufferHandle args, uint32_t offset) override;
     void copy_texture_to_buffer(RHITextureHandle texture, RHIBufferHandle buffer,
                                 uint32_t offset) override;
+
+    // ---- 硬件光追（DXR Tier 1.1 inline raytracing）----
+    // 设备不支持 / 初始化失败时返回 false，上层自动回退 SSR，画面与现状零差异。
+    bool supports_ray_tracing() const override;
+    void apply_ray_query_reflection(RHITextureHandle color_tex, RHITextureHandle depth_tex,
+                                    int width, int height,
+                                    const math::Matrix4f& view_proj,
+                                    const math::Matrix4f& inv_view_proj,
+                                    const math::Vector3f& camera_pos,
+                                    const PostProcessParams& pp,
+                                    const std::vector<RayTracingInstance>& instances = {},
+                                    RHITextureHandle env_tex = {},
+                                    RHITextureHandle env_prefilter_tex = {},
+                                    RHITextureHandle normal_tex = {}) override;
 
     // ---- 帧率控制 ----
     void set_swap_interval(int interval) override;
@@ -173,6 +188,10 @@ public:
     //   （引擎自身的 2D/3D pass 走 GL 约定，必须落在 present 目标里一起被翻转；
     //     ImGui 的内置着色器是 D3D 原生约定，翻转后反而会上下颠倒。）
     void flush_present_blit_for_overlay();
+    // GryceUI overlay 必须直接落到真实 back buffer。该入口与 ImGui 的
+    // flush_present_blit_for_overlay 共用收尾逻辑，但即使本帧没有 present
+    // 目标内容，也会显式解除离屏 RT 并绑定 back buffer。
+    void prepare_gryce_ui_overlay();
 
     // ---- D3D12 侧扩展（供 shader / pipeline 层使用）----
     ID3D12Device* device() const { return device_; }
@@ -235,7 +254,8 @@ private:
     //   **录制进本帧已有的命令列表**（必须和本帧绘制同一条列表，否则拷到空
     //   buffer → 确定性黑帧）。finish_screenshot 在本帧提交并等 GPU 后调用，
     //   从回读缓冲取像素并落盘。
-    bool begin_screenshot_copy(ID3D12GraphicsCommandList* cmd);
+    bool begin_screenshot_copy(ID3D12GraphicsCommandList* cmd,
+                               bool from_present_target);
     void finish_screenshot();
     void release_screenshot_staging();
     // 纹理探针：帧提交后等 GPU、回读统计并打日志（见 probe_texture）。
@@ -302,6 +322,9 @@ private:
     // 计算管线单独一个池（句柄靠 generation 最高位区分，见 kComputeShaderFlag）。
     RHIResourcePool<D3D12ComputeShader> compute_pool_;
 
+    // DXR inline 光追反射（设备不支持 Tier 1.1 时内部 valid()=false，全程 no-op）。
+    D3D12RtReflection rt_reflection_;
+
     // ---- M6：GPU 剔除的绑定状态 ----
     // 本帧按 **GLSL 块名** 记下的 SSBO 绑定；dispatch_compute 时解析成
     // D3D12Buffer*、翻状态、写描述符。
@@ -362,8 +385,8 @@ public:
     // 挂到"最近一次已提交"的围栏值上，等 GPU 跑完那几帧再真正 Release。
     // 直接 Release 会让仍被在飞命令列表引用的资源消失 → RemoveDevice/DEVICE_HUNG。
     void retire_gpu_resource(ID3D12Resource* res) override;
-    // 当帧"刚提交、尚未完成"的围栏值（归还请求要挂在这个值上）。
-    uint64_t pending_fence_value() const { return swapchain_.last_submitted_value(); }
+    // 当帧"正在录制、尚未提交"的围栏值（归还请求要挂在这个值上）。
+    uint64_t pending_fence_value() const { return swapchain_.next_fence_value(); }
 
 private:
     struct RetiredDescriptors {
@@ -431,7 +454,10 @@ private:
     bool back_buffer_as_rt_ = false;
 
     // ---- present 目标（画到屏幕的 pass 的真正落点）+ 帧末翻转 blit ----
-    ID3D12Resource* present_tex_ = nullptr;              // 与交换链同尺寸/同格式
+    // 尺寸恒等于交换链（= 窗口客户区物理像素）。不能跟着引擎 set_viewport 的
+    // 尺寸走：一帧内 shadow/bloom 各级的视口各不相同，跟着重建会让本帧命令列表
+    // 里已录制的 barrier 指向已销毁资源（驱动直接崩）。
+    ID3D12Resource* present_tex_ = nullptr;
     uint32_t present_w_ = 0, present_h_ = 0;
     ID3D12DescriptorHeap* present_rtv_heap_ = nullptr;   // NON_SHADER_VISIBLE，1 槽
     D3D12_CPU_DESCRIPTOR_HANDLE present_rtv_{};
@@ -470,6 +496,7 @@ private:
     uint64_t shot_total_ = 0;
     uint32_t shot_w_ = 0;
     uint32_t shot_h_ = 0;
+    bool shot_flip_vertical_ = false;
 
     // 当前帧待应用状态（D3D12 无"立即状态"，一切在录制时下发）
     float clear_r_ = 0.0f, clear_g_ = 0.0f, clear_b_ = 0.0f, clear_a_ = 1.0f;

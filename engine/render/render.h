@@ -356,10 +356,14 @@ public:
     // 本后端的纹理/render-target 采样约定：纹理第 0 行是图像的**下**边时为 true
     // （OpenGL 的 framebuffer 原点在左下，Vulkan/D3D12 在左上）。
     //
-    // 这个判据同时服务两条 UI 轨的 GUi_Image：ImGui 轨经 IImGuiBackend::
-    // texture_needs_v_flip 间接拿到（那边是 ImGui 自己的覆写），内置轨直接问后端
-    // —— 内置轨不建 ImGui 后端，拿不到前者。新增后端时两处必须一起改。
+    // 基础调试 UI 与游戏 2D 的贴图绘制共同遵守该约定。
     virtual bool texture_needs_v_flip() const { return false; }
+
+    // 深度缓冲里存的值反推 NDC z 的约定：GL/WebGL 的 NDC z 是 [-1, 1]，从深度
+    // 纹理取出的 [0,1] 值需要 ndc_z = d*2-1；Vulkan/D3D12 的 NDC z 本身就是
+    // [0,1]，直接 ndc_z = d。需要由深度重建世界坐标的全屏 pass（体积雾/体积光）
+    // 靠这个开关选对线性变换，否则重建出的世界位置整体偏到几何之前/之后。
+    virtual bool uses_gl_depth_range() const { return false; }
 
     // Enable backend validation (Vulkan validation layers). Must be called before init().
     virtual void set_validation_enabled(bool enabled) { (void)enabled; }
@@ -368,7 +372,8 @@ public:
 // 渲染后端分层：
 //   Vulkan —— 默认后端（首选，全功能）
 //   OpenGL —— 兼容后端（旧硬件兼容 / 排障对照）
-//   DX11 / DX12 —— WinNative 预留，尚未实现（工厂返回 nullptr）
+//   DX11 —— 未实现（工厂返回 nullptr）
+//   DX12 —— Windows 原生后端，编译期探测头文件、运行时加载系统 DLL
 //   WebGL —— Emscripten 构建专用：与 OpenGL 共用 GLBackend 实现，
 //            差异（DSA shim / GLES3 头 / ES300 着色器）全部关在
 //            #ifdef __EMSCRIPTEN__ 内，桌面构建零影响

@@ -39,7 +39,8 @@ std::string launcher_script(const std::string& exe_name, const std::string& api,
 fs::path Packager::resolve_exe() const {
     if (!opt_.exe.empty() && fs::exists(opt_.exe)) return fs::absolute(opt_.exe);
     if (!fs::is_directory(opt_.build_dir)) return {};
-    const fs::path top = opt_.build_dir / "GryceRenderSmoke.exe";
+    // 优先 GryceApp（new 生成的用户项目宿主），其次任一 .exe（含 GryceRenderSmoke）。
+    const fs::path top = opt_.build_dir / "GryceApp.exe";
     if (fs::exists(top)) return top;
     std::vector<std::pair<size_t, fs::path>> hits;
     std::error_code ec;
@@ -130,9 +131,9 @@ PackageResult Packager::run() const {
 
 void Packager::write_launchers(const fs::path& pkg_root,
                                const std::string& exe_name) const {
-    write_binary(pkg_root / "run.bat", launcher_script(exe_name, "opengl", ""));
+    write_binary(pkg_root / "run.bat", launcher_script(exe_name, opt_.api, ""));
     write_binary(pkg_root / "run_vulkan.bat", launcher_script(exe_name, "vulkan", ""));
-    write_binary(pkg_root / "run_play.bat", launcher_script(exe_name, "opengl", "--play "));
+    write_binary(pkg_root / "run_play.bat", launcher_script(exe_name, opt_.api, "--play "));
 }
 
 void Packager::write_readme(const fs::path& pkg_root, const std::string& exe_name,

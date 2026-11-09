@@ -13,10 +13,20 @@ VulkanMesh::~VulkanMesh() = default;
 
 void VulkanMesh::upload_vertices(const void* data, uint32_t size, uint32_t count) {
     vertex_count_ = count;
+    // 光追设备的 BLAS 直接以网格顶点/索引缓冲的 deviceAddress 作为构建输入，
+    // 因此这两类缓冲必须带上 BUILD_INPUT_READ_ONLY + SHADER_DEVICE_ADDRESS。
+    // 缺位时 vkCmdBuildAccelerationStructuresKHR 是一次未定义行为：验证层报
+    // "vertexData.deviceAddress has no buffer(s) associated that are valid"，
+    // 驱动上可能直接丢设备。
+    const bool rt = device_ && device_->supports_ray_tracing();
     if (!vertex_buffer_.buffer() || vertex_buffer_.size() < size) {
         vertex_buffer_.shutdown();
-        if (!vertex_buffer_.init(device_, size,
-                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        if (rt) {
+            usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        }
+        if (!vertex_buffer_.init(device_, size, usage,
                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             GLOG_ERROR("VulkanMesh: failed to create vertex buffer");
@@ -26,7 +36,7 @@ void VulkanMesh::upload_vertices(const void* data, uint32_t size, uint32_t count
     vertex_buffer_.upload(data, size);
 
     // 仅在设备支持光追时保留 CPU 顶点字节，供 BLAS 构建（非 RT 设备零成本）。
-    if (device_ && device_->supports_ray_tracing()) {
+    if (rt) {
         rt_vertex_bytes_.assign(static_cast<const uint8_t*>(data),
                                static_cast<const uint8_t*>(data) + size);
         capture_position_info();
@@ -36,10 +46,15 @@ void VulkanMesh::upload_vertices(const void* data, uint32_t size, uint32_t count
 void VulkanMesh::upload_indices(const void* data, uint32_t size, uint32_t count) {
     index_count_ = count;
     has_index_ = true;
+    const bool rt = device_ && device_->supports_ray_tracing();
     if (!index_buffer_.buffer() || index_buffer_.size() < size) {
         index_buffer_.shutdown();
-        if (!index_buffer_.init(device_, size,
-                                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (rt) {
+            usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        }
+        if (!index_buffer_.init(device_, size, usage,
                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             GLOG_ERROR("VulkanMesh: failed to create index buffer");
@@ -48,7 +63,7 @@ void VulkanMesh::upload_indices(const void* data, uint32_t size, uint32_t count)
     }
     index_buffer_.upload(data, size);
 
-    if (device_ && device_->supports_ray_tracing()) {
+    if (rt) {
         rt_index_bytes_.assign(static_cast<const uint8_t*>(data),
                                static_cast<const uint8_t*>(data) + size);
     }

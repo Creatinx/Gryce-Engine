@@ -1,5 +1,7 @@
 #include "d3d12_renderer2d.h"
 
+#include "render/d3d12/d3d12_backend.h"
+#include "render/d3d12/d3d12_mesh.h"
 #include "render/render.h"
 #include "render/render_context.h"
 #include "render/texture.h"
@@ -8,7 +10,35 @@
 namespace gryce_engine::render {
 
 D3D12Renderer2D::D3D12Renderer2D(D3D12Backend* backend) {
-    (void)backend;
+    d3d12_backend_ = backend;
+}
+
+void D3D12Renderer2D::begin_overlay_pass(int screen_width, int screen_height) {
+    // 3D 编辑器视口使用后端内部 present 目标承接屏幕内容。进入 UI overlay 前
+    // 先把该目标翻转到真实 back buffer，随后 UI 才能稳定地直接画到交换链；
+    // 否则离屏输出 + UI 的组合会让 overlay 继续写进 present 目标并在截图/呈现
+    // 路径中丢失。
+    if (d3d12_backend_ && ctx()) {
+        D3D12Backend* backend = d3d12_backend_;
+        ctx()->push_command([backend](IRenderBackend*) {
+            backend->prepare_gryce_ui_overlay();
+        });
+    }
+    Renderer2D::begin_overlay_pass(screen_width, screen_height);
+}
+
+void D3D12Renderer2D::submit_mesh(IMesh* mesh, IShader* shader,
+                                  RHIMeshHandle mesh_handle,
+                                  RHIShaderHandle shader_handle) {
+    (void)mesh;
+    if (d3d12_backend_) d3d12_backend_->draw_mesh(mesh_handle, shader_handle);
+    if (shader) shader->unbind();
+}
+
+void D3D12Renderer2D::configure_batch_mesh(IMesh* mesh) {
+    if (auto* d3d_mesh = dynamic_cast<d3d12::D3D12Mesh*>(mesh)) {
+        d3d_mesh->set_streaming_vertices(true);
+    }
 }
 
 // ---------------------------------------------------------------------------

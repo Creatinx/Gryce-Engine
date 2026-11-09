@@ -73,6 +73,13 @@ bool RenderForwardClustered::init(RenderContext* ctx, const std::string& shader_
         return false;
     }
 
+    // 体积光散射（丁达尔）：与 RenderPipeline 同一套 shader，独立实例
+    volumetric_scatter_ = std::make_unique<VolumetricScatter_RD>();
+    if (!volumetric_scatter_->init(ctx, shader_dir)) {
+        GLOG_WARN("RenderForwardClustered: failed to init volumetric scatter, disabled");
+        volumetric_scatter_.reset();
+    }
+
     bokeh_dof_ = std::make_unique<BokehDOF_RD>();
     if (!bokeh_dof_->init(ctx)) {
         GLOG_ERROR("RenderForwardClustered: failed to init BokehDOF");
@@ -184,6 +191,7 @@ void RenderForwardClustered::shutdown() {
 
     ssr_.reset();
     ssil_.reset();
+    volumetric_scatter_.reset();
     bokeh_dof_.reset();
     fsr2_.reset();
     subsurface_scattering_.reset();
@@ -1040,6 +1048,54 @@ void RenderForwardClustered::_render_post_processing(RenderContext* ctx) {
         fb_.color_tex = StreamlineInterface::instance().dlss_sr_render(
             ctx, fb_.color_tex, fb_.depth_tex, fb_.motion_vectors_tex,
             RHITextureHandle{}, pp_params_, f, viewport_width_, viewport_height_);
+    }
+
+    // 2.6 SSR 合成结果接入后续 pass。合成落在 SSR 自己的目标上（不能写回 HDR
+    // 目标的颜色附件：那是采样与写入同一纹理的自反馈），所以必须在这里显式把
+    // fb_.color_tex 换成合成结果 —— 否则后续 Bloom/Tonemap 采到的还是反射之前
+    // 的颜色，SSR 等于白跑（表现为"开了 SSR 画面没有任何反射"）。
+    // 放在 RT 反射之后：RT 读的是未合成的 HDR，避免"反射里再反射一遍"。
+    if (pp_params_.ssr_enabled && ssr_ && ssr_->output_texture().is_valid()) {
+        fb_.color_tex = ssr_->output_texture();
+    }
+
+    // 2.7 体积光散射（丁达尔 / 神光 / 光柱）：沿视线按光线步进累积方向光单散射。
+    // 输出 = 当前颜色 + 散射光，落在自己的目标上，同样接成新的颜色输入。
+    // 位置在 Bloom 之前：光柱本身也要参与辉光扩散，才能形成"彩色光晕"。
+    if (pp_params_.volumetric_enabled && volumetric_scatter_ &&
+        volumetric_scatter_->valid()) {
+        // 太阳：优先取参与阴影的方向光（与主光/阴影同源），没有就退回天空太阳。
+        math::Vector3f sun_dir = sky_sun_direction_;
+        math::Vector3f sun_col = pp_params_.volumetric_sun_color;
+        float sun_int = pp_params_.volumetric_sun_intensity;
+        if (cluster_builder_) {
+            for (const auto& light : cluster_builder_->culled_lights()) {
+                if (light.type != LightType::Directional) continue;
+                const math::Vector3f& d = light.direction;
+                if (d.length_sq() <= 1e-8f) break;
+                sun_dir = math::Vector3f(-d.x, -d.y, -d.z).normalized();
+                sun_col = light.color;
+                sun_int = light.intensity;
+                break;
+            }
+        }
+        // GL/WebGL 的 NDC z 是 [-1,1]，Vulkan/D3D12 是 [0,1]（深度缓冲同源）。
+        const bool gl_depth = ctx->backend() && ctx->backend()->uses_gl_depth_range();
+        // 级联 0 的阴影贴图与光照矩阵：没有阴影系统时传空句柄（退化成薄雾）。
+        const RHITextureHandle sun_shadow =
+            shadow_system_ ? shadow_system_->cascade_shadow_tex(0) : RHITextureHandle{};
+        const math::Matrix4f sun_light_space =
+            shadow_system_ ? shadow_system_->cascade_light_matrix(0) : math::Matrix4f::identity();
+        volumetric_scatter_->render(
+            ctx, fb_.color_tex, fb_.depth_tex, sun_shadow,
+            current_camera_.get_projection_matrix() * current_camera_.get_view_matrix(),
+            sun_light_space,
+            current_camera_.position(), sun_dir, sun_col, sun_int,
+            gl_depth ? 2.0f : 1.0f, gl_depth ? -1.0f : 0.0f,
+            pp_params_, viewport_width_, viewport_height_);
+        if (volumetric_scatter_->output_texture().is_valid()) {
+            fb_.color_tex = volumetric_scatter_->output_texture();
+        }
     }
 
     // 4. Bloom（阈值提取 → 降采样 → 上采样合成）

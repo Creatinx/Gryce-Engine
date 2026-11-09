@@ -976,6 +976,34 @@ void VulkanBackend::end_current_render_pass() {
     if (render_pass_contents_secondary_) {
         vkCmdEndRenderPass(primary);
         render_pass_contents_secondary_ = false;
+        // pass 关闭后附件实际落在 render pass 的 finalLayout 上（颜色
+        // SHADER_READ_ONLY、深度 DEPTH_STENCIL_READ_ONLY，见
+        // VulkanFramebuffer::create_render_pass），纹理对象的 layout_ 缓存不会
+        // 自动更新 —— 必须在这里回写，否则下一次 transition_layout 会拿
+        // "ATTACHMENT" 当 oldLayout，而驱动知道它其实是 READ_ONLY，验证层逐帧报
+        // VUID-VkImageMemoryBarrier-oldLayout，驱动上则可能把内容当未定义丢弃。
+        sync_attachment_layouts();
+    }
+}
+
+// 把当前绑定的 framebuffer 各附件的 layout_ 缓存同步到 pass 结束后的实际布局。
+void VulkanBackend::sync_attachment_layouts() {
+    if (!current_framebuffer_.is_valid()) return;
+    auto* vk_fb = static_cast<VulkanFramebuffer*>(framebuffer(current_framebuffer_));
+    if (!vk_fb) return;
+    if (auto* color_tex = vk_fb->color_texture()) {
+        // 多样本颜色附件被 resolve 附件接手：pass 末尾自身留在
+        // COLOR_ATTACHMENT_OPTIMAL（finalLayout），真正可采样的是
+        // resolve 目标（SHADER_READ_ONLY_OPTIMAL，创建时已缓存）。
+        color_tex->set_layout(vk_fb->color_sample_count() > 1
+                                  ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                  : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    if (auto* resolve_tex = vk_fb->resolve_texture()) {
+        resolve_tex->set_layout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    if (auto* depth_tex = vk_fb->depth_texture()) {
+        depth_tex->set_layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     }
 }
 
@@ -985,36 +1013,13 @@ void VulkanBackend::end_current_render_pass() {
 // 调用后 current_render_pass_ 为空，下一个 bind_framebuffer 会重新开 pass。
 void VulkanBackend::end_render_pass_for_transfer() {
     if (!initialized_ || frame_aborted_) return;
-    const bool had_pass = (current_render_pass_ != VK_NULL_HANDLE);
 
     end_geometry_secondary();
     end_and_execute_inline_secondary();
     end_current_render_pass();
-
-    // 关闭 pass 后附件实际已落在 render pass 的 finalLayout 上（颜色为
-    // SHADER_READ_ONLY_OPTIMAL，深度为 DEPTH_STENCIL_READ_ONLY_OPTIMAL，见
-    // VulkanFramebuffer::create_render_pass），但纹理对象的 layout_ 缓存不会
-    // 自动更新；若不回写，紧随其后的 transition_layout 会用错误的 oldLayout
-    // （首帧仍是 UNDEFINED）把图像内容当作未定义处理，拷出垃圾数据。
-    if (had_pass && current_framebuffer_.is_valid()) {
-        auto* vk_fb = static_cast<VulkanFramebuffer*>(framebuffer(current_framebuffer_));
-        if (vk_fb) {
-            if (auto* color_tex = vk_fb->color_texture()) {
-                // 多样本颜色附件被 resolve 附件接手：pass 末尾自身留在
-                // COLOR_ATTACHMENT_OPTIMAL（finalLayout），真正可采样的是
-                // resolve 目标（SHADER_READ_ONLY_OPTIMAL，创建时已缓存）。
-                color_tex->set_layout(vk_fb->color_sample_count() > 1
-                                          ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-                                          : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-            if (auto* resolve_tex = vk_fb->resolve_texture()) {
-                resolve_tex->set_layout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            }
-            if (auto* depth_tex = vk_fb->depth_texture()) {
-                depth_tex->set_layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-            }
-        }
-    }
+    // end_current_render_pass 已在真正关闭 pass 时回写附件布局缓存；
+    // 若本次调用前 pass 已被关闭（无实际录制内容），这里的附件本来就没有新写入，
+    // 布局缓存也是上次关闭时同步过的，无需重复处理。
 
     // 关键：清空句柄，让 copy/dispatch 的 render-pass guard 放行，并且后续绘制
     // 必须先重新绑定 framebuffer（begin_inline_secondary 继承的 renderPass 也
@@ -1143,7 +1148,9 @@ void VulkanBackend::bind_framebuffer(RHIFramebufferHandle fb) {
 
 void VulkanBackend::unbind_framebuffer() {
     if (!initialized_ || frame_aborted_) return;
-    if (in_forward_pass_) return;
+    if (in_forward_pass_) {
+        return;
+    }
 
     end_geometry_secondary();
     end_and_execute_inline_secondary();
@@ -1806,6 +1813,39 @@ void VulkanBackend::copy_texture_to_buffer(RHITextureHandle tex, RHIBufferHandle
 
     const VkImageAspectFlags aspect = t->is_depth() ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                     : VK_IMAGE_ASPECT_COLOR_BIT;
+
+    // 容量校验：目标 SSBO 一旦比源纹理小（窗口缩小后 HiZ 金字塔按更小的尺寸
+    // 原地重建，而调用方手里还是旧布局的 offset/尺寸），vkCmdCopyImageToBuffer
+    // 就是越界拷贝。Vulkan 没有 D3D12 那样的调试层资源名，报错只有
+    // "trying to copy N bytes ... exceeds the VkBuffer total size of M"，
+    // 驱动侧直接 VK_ERROR_DEVICE_LOST，整窗永久黑屏。宁可丢掉这次拷贝。
+    VkDeviceSize texel_bytes = 4;
+    switch (t->format()) {
+        case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R8_SNORM:
+        case VK_FORMAT_R8_UINT:
+        case VK_FORMAT_R8_SINT: texel_bytes = 1; break;
+        case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R16_UNORM:
+        case VK_FORMAT_R16_UINT: texel_bytes = 2; break;
+        case VK_FORMAT_R16G16_SFLOAT: texel_bytes = 4; break;
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R32G32_SFLOAT: texel_bytes = 8; break;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: texel_bytes = 16; break;
+        default: texel_bytes = 4; break;
+    }
+    const VkDeviceSize copy_bytes =
+        static_cast<VkDeviceSize>(t->width()) * static_cast<VkDeviceSize>(t->height()) * texel_bytes;
+    if (static_cast<VkDeviceSize>(offset) + copy_bytes > b->size()) {
+        GLOG_WARN("VulkanBackend::copy_texture_to_buffer: skipped stale copy "
+                  "({}x{} -> {} bytes at offset {}, buffer segment {})",
+                  t->width(), t->height(),
+                  static_cast<unsigned long long>(copy_bytes),
+                  static_cast<unsigned long long>(offset),
+                  static_cast<unsigned long long>(b->size()));
+        return;
+    }
+
     // 过渡到 TRANSFER_SRC_OPTIONAL 再拷回可采样布局（HiZ 拷进 SSBO 后仍可能被
     // 下一轮归约 pass 当输入采样）。
     t->transition_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);

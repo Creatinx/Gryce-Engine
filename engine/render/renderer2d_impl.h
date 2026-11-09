@@ -75,6 +75,7 @@ public:
                            const float radii[4], float spread,
                            const Color& color) override;
     void draw_text(float x, float y, const std::string& text, float font_size, const Color& color) override;
+    void draw_text_colored(float x, float y, float font_size, const std::vector<ColoredRun>& runs) override;
 
     // 2D 光照接口
     void set_ambient_light(const Color& color) override;
@@ -107,8 +108,11 @@ public:
     void reset_scissor() override;
 
     float measure_text(const char* text, float font_size) const override;
+    float text_cap_height(float font_size) const override;
     bool  ensure_text_raster_size(float px) override;
+    bool  ensure_text_raster_sizes(const std::vector<float>& px) override;
     float text_raster_size() const override;
+    void  flush_pending() override { flush_batches(); }
     void  begin_overlay_pass(int screen_width, int screen_height) override;
     void  end_overlay_pass() override;
 
@@ -126,6 +130,9 @@ protected:
     // 这些点在 GL 后端下由 renderer2d_impl.cpp 直接完成；其它后端
     // （D3D12）继承本类并覆盖下列钩子即可复用全部逻辑。
     // ---------------------------------------------------------------------
+
+    // 内部：绘制一段单色文本的字位（draw_text / draw_text_colored 共用）。
+    void draw_text_glyphs(float x, float y, const std::string& text, float font_size, const Color& color);
 
     // 关闭给定深度纹理的「采样器比较模式」（默认：GL 实现）。
     virtual void configure_depth_texture_for_sampling(ITexture* shadow_map);
@@ -152,6 +159,13 @@ protected:
 
     // 子类钩子实现里需要访问的上下文（其余成员仍为 private）。
     RenderContext* ctx() const { return ctx_; }
+
+    // 后端直接绘制钩子。GL 默认走 IMesh::draw()；D3D12 的 IMesh::draw()
+    // 没有命令列表参数，必须由后端按 RHI 句柄提交。
+    virtual void submit_mesh(IMesh* mesh, IShader* shader,
+                             RHIMeshHandle mesh_handle,
+                             RHIShaderHandle shader_handle);
+    virtual void configure_batch_mesh(IMesh* mesh);
 
 private:
     bool context_alive() const;

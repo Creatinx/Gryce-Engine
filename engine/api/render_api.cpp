@@ -4,23 +4,20 @@
 // 帧级状态集中在文件内的 g_renderer，跨线程访问一律走 g_renderer.mutex。
 #include "api/render_api.h"
 #include "api/api_guard.h"
-#include "api/ui_api_internal.h"
-#include "api/ui_builtin_backend.h"
-#include "api/ui_op_queue_internal.h"
 #include "api/viewport_api.h"
 #include "api/core_api.h"
 #include <algorithm>
 #include <cstring>
 #include "api/edit_api.h"
 #include "api/entity_api.h"
+#include "api/input_api.h"
 #include "api/window_api.h"
 #include "runtime/engine_context.h"
 #include "scene/entity.h"
-#include "ui/ui_theme.h"
-#include "ui/ui_render_bridge.h"
 
 #include "render/render_context.h"
 #include "render/render_pipeline.h"
+#include "render/canvas2d_pipeline.h"
 #include "render/render.h"
 #include "render/super_resolution.h"
 #include "render/render2d.h"
@@ -40,12 +37,13 @@
 #include "components/skinned_mesh_renderer.h"
 #include "ecs/world.h"
 #include "scene/query.h"
-#include "ecs/systems/render_system_2d.h"
 #include "math/camera.h"
 #include "math/math.h"
 #include "scene/scene.h"
+#include "ui/ui_input.h"
 #include "utils/glog/glog_lib.h"
 
+#include <GLFW/glfw3.h>
 #include <cmath>
 #include <chrono>
 #include <cstdio>
@@ -86,7 +84,7 @@ struct RendererState {
 
     std::unique_ptr<RenderContext> ctx;
     std::unique_ptr<RenderPipeline> pipeline;
-    std::unique_ptr<render::IRenderer2D> renderer2d;
+    render::Canvas2DPipeline canvas2d;
 
     int viewport_w = 1280;
     int viewport_h = 720;
@@ -112,9 +110,12 @@ struct RendererState {
     // render_world_internal 里的 set_wireframe）。
     bool wireframe = false;
     bool scene_2d_only = false;
+    // scene_2d 模式的清屏色：2D 画布编辑器要深板岩，纯 UI 预览要跟主题底色。
+    float scene_2d_clear[3] = {0.12f, 0.14f, 0.18f};
     // 离屏视口输出（编辑器必须开）。init 之前只记录期望值，由 GRender_Init
     // 在 pipeline->init 之前下发 —— tonemap 管线按目标 FBO 的 render pass 建立。
     bool viewport_output_requested = false;
+    bool canvas2d_viewport_output_requested = false;
 
     // Project Settings（渲染质量）—— 持久化值，GRender_Init 时应用到管线
     bool  hdr_enabled = true;
@@ -164,11 +165,9 @@ struct RendererState {
     bool  debug_ui_enabled = true;  // 叠加 + 调试窗口总开关（GRender_SetDebugUI）
     bool  debug_window_open = true; // 调试窗口显示中（窗口内勾选 / F1 切换）
     bool  debug_imgui_ready = false;   // 引擎已接管 ImGui（叠加与窗口都可用）
+    ui::UIInputFrame ui_input;
+    uint64_t ui_input_serial = 0;
     std::unique_ptr<render::ImGuiRenderer> debug_imgui;   // 引擎接管的 ImGui
-    // 宿主（编辑器）的每帧 UI 回调：引擎接管 ImGui 时在 NewFrame/Render 之间调用。
-    // 与 debug_ui_enabled 相互独立 —— 编辑器可以关掉调试叠加、只用自己的界面。
-    void (*ui_callback)(void*) = nullptr;
-    void* ui_callback_user = nullptr;
     // 引擎自己那个 ImGui 上下文的裸指针：绘制前后显式切进/切出。
     // （ImGui 的"当前上下文"是最后创建/设置的那个；宿主若在引擎之后又
     //   CreateContext（编辑器就可能这样），NewFrame/Render 会打到宿主的上下文上，
@@ -179,15 +178,11 @@ struct RendererState {
     // 构建一次 ImGui 帧（跑宿主回调与 gizmo），中间的帧直接重绘上一次构建
     // 出的 draw data 深拷贝。<=1 表示每帧都构建（默认）。
     int        ui_frame_interval = 1;
-    uint64_t   ui_frame_counter = 0;   // 渲染帧计数，debug_ui_submit_locked 每次 +1
+    uint64_t   debug_ui_frame_counter = 0;
 #ifdef GRYCE_HAS_IMGUI
-    // 上一次 UI 帧构建出的 draw data 深拷贝（深拷贝自带 CmdLists 与纹理
-    // 引用，异步渲染线程持有也安全）。非 UI 帧重绘它即可，省掉整帧控件求值。
-    std::shared_ptr<ImDrawData> ui_cached_draw;
+    std::shared_ptr<ImDrawData> debug_ui_cached_draw;
 #endif
-    // 给"UI 绘制命令"用的存活标志（shared_ptr 让命令持有它）：
-    // 关闭时先 pause 渲染线程、再置 false —— 之后即使有一条命令被主线程 drain
-    // 出来执行，也不会去碰已经销毁的 ImGui 后端。
+    // 延迟命令持有的存活标志；shutdown 时先置 false 再销毁 ImGui 后端。
     std::shared_ptr<bool> debug_ui_alive;
     // 帧时间历史（调试 UI 里的曲线；环形缓冲）
     static constexpr int k_msHistory = 180;
@@ -221,6 +216,14 @@ struct RendererState {
 
 static RendererState g_renderer;
 
+static void reset_debug_ui_state_locked() {
+    g_renderer.debug_ui_frame_counter = 0;
+#ifdef GRYCE_HAS_IMGUI
+    g_renderer.debug_ui_cached_draw.reset();
+#endif
+    g_renderer.debug_ui_alive.reset();
+}
+
 // 应用场景视口尺寸（**调用方必须已持有 g_renderer.mutex**）。
 // 目标重建是 GPU 资源操作，必须排到渲染线程执行 —— 在主线程直接建 FBO 会
 // 因为拿不到 GL context 而静默失败。
@@ -234,6 +237,37 @@ static void apply_viewport_size_locked(int w, int h) {
         g_renderer.ctx->run_on_render_thread([pipeline, pw, ph]() {
             pipeline->resize_render_targets(pw, ph);
         });
+    }
+}
+
+// 窗口帧缓冲尺寸变化（平台层每帧查询与宿主主动通知共用这一条路径）。
+//
+// 屏幕尺寸是 UI 覆盖层与 2D overlay 的坐标系，也是交换链 extent 的来源。只更新
+// screen 不更新视口，引擎仍按旧尺寸渲染，帧缓冲里超出的部分停在清屏色；反过来
+// 只更新视口不更新 screen，交换链与 UI 都还按旧尺寸工作，拖动窗口时 present
+// 持续 OUT_OF_DATE、又反复按旧尺寸重建 —— 整窗黑屏。
+static void sync_window_size_locked(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (w == g_renderer.screen_w && h == g_renderer.screen_h) return;
+    const bool viewport_fills_window = (g_renderer.viewport_w == g_renderer.screen_w &&
+                                        g_renderer.viewport_h == g_renderer.screen_h);
+    g_renderer.screen_w = w;
+    g_renderer.screen_h = h;
+    if (viewport_fills_window) {
+        // 纯 2D/UI 预览不跑 3D 管线，没有 HDR/G-Buffer 目标要跟随窗口尺寸：
+        // 拖窗口时每变几像素就重建一整套 GPU 目标，只会让拖拽卡顿。视口尺寸
+        // 仍然要跟上（清屏与 2D 覆盖层都用它换算）。
+        if (!g_renderer.scene_2d_only) {
+            apply_viewport_size_locked(w, h);
+            g_renderer.gameview_w = w;
+            g_renderer.gameview_h = h;
+            if (g_renderer.pipeline) {
+                g_renderer.pipeline->resize_game_view(w, h);
+            }
+        } else {
+            g_renderer.viewport_w = w;
+            g_renderer.viewport_h = h;
+        }
     }
 }
 
@@ -261,35 +295,66 @@ static World* get_world() {
     return static_cast<World*>(ptr);
 }
 
-// 2D 覆盖层 pass：begin_frame -> RenderSystem2D -> end_frame
+// 2D 覆盖层 pass：通过独立 Canvas2DPipeline 完成场景批次与 FPS 回退文本。
 // 坐标系是**窗口**（screen_w/h）而不是 3D 视口：覆盖层的像素就是屏幕像素，
 // 编辑器把视口缩成面板里的一块时，覆盖层仍然铺满整窗（UI 画在它上面）。
 static void render_2d_overlay() {
-    if (!g_renderer.renderer2d || !g_renderer.ctx) return;
-    g_renderer.renderer2d->begin_frame(g_renderer.screen_w, g_renderer.screen_h);
+    if (!g_renderer.canvas2d.valid() || !g_renderer.ctx) return;
     World* world = get_world();
-    if (world && world->scene()) {
-        ecs::RenderSystem2D sys(g_renderer.renderer2d.get());
-        sys.on_render(*world->scene(), *g_renderer.ctx);
+    g_renderer.canvas2d.render(world ? world->scene() : nullptr,
+                               g_renderer.screen_w, g_renderer.screen_h,
+                               g_renderer.show_fps && !g_renderer.debug_imgui,
+                               g_renderer.fps, g_renderer.frame_ms,
+                               g_renderer.ui_input,
+                               g_renderer.pipeline
+                                   ? g_renderer.pipeline->current_camera()
+                                   : nullptr);
+}
+
+static ui::UIInputFrame capture_ui_input() {
+    ui::UIInputFrame input;
+    input.frame_serial = ++g_renderer.ui_input_serial;
+    float x = 0.0f;
+    float y = 0.0f;
+    GInput_GetMousePosition(&x, &y);
+    float scale_x = 1.0f;
+    float scale_y = 1.0f;
+    GWindow_GetContentScale(&scale_x, &scale_y);
+    input.pointer = math::Vector2f(x * scale_x, y * scale_y);
+    for (int button = 0; button < 3; ++button) {
+        input.pointer_down[button] = GInput_IsMouseButtonHeld(button);
+        input.pointer_pressed[button] = GInput_IsMouseButtonPressed(button);
+        input.pointer_released[button] = GInput_IsMouseButtonReleased(button);
     }
-    // ---- 左上角白色 FPS / 帧时间 ----
-    // 直接画在 2D overlay 层（tonemap 之后、默认帧缓冲之上），因此不受 HDR/后处理影响。
-    // ★ 引擎接管 ImGui 时（debug_imgui 非空）改由 ImGui 叠加来画：既避免两处
-    //   重复显示，也因为 ImGui 叠加带帧时间曲线与限速状态，信息更全。
-    //   这里的 2D 文本路径留给"没有 ImGui / 宿主自持 ImGui"的宿主，行为与原先一致。
-    if (g_renderer.show_fps && !g_renderer.debug_imgui) {
-        // 2D 相机默认以屏幕中心为原点、y 向上；FPS 要贴在左上角，这里临时切到
-        // "左上角为原点、y 向下"的相机。放在场景 2D 之后画，因此不需要恢复。
-        g_renderer.renderer2d->set_camera(math::Vector2f(0.0f, 0.0f), 1.0f, true);
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "FPS %.1f   frame %.2f ms",
-                      static_cast<double>(g_renderer.fps),
-                      static_cast<double>(g_renderer.frame_ms));
-        // y 取 30：字体图集路径以基线定位，y 太小会把字顶切掉。
-        g_renderer.renderer2d->draw_text(12.0f, 30.0f, buf, 22.0f,
-                                         render::Color(1.0f, 1.0f, 1.0f, 1.0f));
+    GInput_GetWheel(&input.wheel.x, &input.wheel.y);
+
+    unsigned int chars[64] = {};
+    const int char_count = GInput_PullChars(chars, 64);
+    input.characters.reserve(static_cast<std::size_t>(char_count));
+    for (int i = 0; i < char_count; ++i) input.characters.push_back(chars[i]);
+    char preedit[256] = {};
+    if (GInput_GetPreedit(preedit, sizeof(preedit)) > 0) input.preedit = preedit;
+
+    static constexpr int keys[] = {
+        GLFW_KEY_ENTER, GLFW_KEY_ESCAPE, GLFW_KEY_TAB,
+        GLFW_KEY_BACKSPACE, GLFW_KEY_DELETE,
+        GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_DOWN,
+        GLFW_KEY_HOME, GLFW_KEY_END,
+        GLFW_KEY_A, GLFW_KEY_C, GLFW_KEY_V, GLFW_KEY_X,
+        GLFW_KEY_F1, GLFW_KEY_F2, GLFW_KEY_F3, GLFW_KEY_F4,
+        GLFW_KEY_F5, GLFW_KEY_F6, GLFW_KEY_F7, GLFW_KEY_F8,
+        GLFW_KEY_F9, GLFW_KEY_F10, GLFW_KEY_F11, GLFW_KEY_F12,
+    };
+    for (int key : keys) {
+        if (GInput_IsKeyPressed(key)) input.key_down.push_back({key, false});
+        if (GInput_IsKeyReleased(key)) input.key_up.push_back(key);
     }
-    g_renderer.renderer2d->end_frame();
+
+    if (GInput_IsKeyHeld(GLFW_KEY_LEFT_CONTROL)) input.modifiers |= 1 << 0;
+    if (GInput_IsKeyHeld(GLFW_KEY_LEFT_SHIFT)) input.modifiers |= 1 << 1;
+    if (GInput_IsKeyHeld(GLFW_KEY_LEFT_ALT)) input.modifiers |= 1 << 2;
+    if (GInput_IsKeyHeld(GLFW_KEY_LEFT_SUPER)) input.modifiers |= 1 << 3;
+    return input;
 }
 
 // ===========================================================================
@@ -539,7 +604,7 @@ static bool build_scene_camera(scene::Entity* entity, int viewport_w, int viewpo
 // 塞线段。原因有三：
 //   * 三后端零成本 —— 不用为 GL/Vulkan/D3D12 各写一套线段渲染与深度状态；
 //   * Gizmo 本来就该盖在物体之上（Unity 也是这么做的），不需要深度遮挡；
-//   * 引擎已经接管了 ImGui（GRender_SetUICallback），屏幕空间绘制不需要新的
+//   * 引擎基础调试 UI 已经接管 ImGui，屏幕空间绘制不需要新的
 //     渲染目标。
 // 代价是没有透视正确的线宽，但 gizmo 的视觉语义是"手柄"，恒定像素宽度反而
 // 更符合操作预期。
@@ -822,120 +887,66 @@ static void gizmo_draw_locked() {
 }
 #endif
 
-// 引擎接管 ImGui 时的每帧收尾：NewFrame → 画面板 → Render → 把 draw data
-// 以命令形式推入本帧命令缓冲。必须在 GRender_EndFrame 内、且 **g_renderer.mutex
-// 已持有**时调用（它读 g_renderer 状态，并会 push_command）。
+// 基础调试 UI：左上角 FPS/帧时间叠加、F1 调试窗口和 gizmo。
+// 不再承载宿主自定义 UI。
 static void debug_ui_submit_locked() {
-    // 帧计数与 UI 操作队列的帧基准在 ImGui 之外推进：关掉 ImGui 的构建里
-    // 队列照样要能用（无窗口宿主也走这条路），间隔策略以同一把尺子计量。
-    ++g_renderer.ui_frame_counter;
-    gryce_ui::state().begin_frame(static_cast<uint32_t>(g_renderer.ui_frame_counter));
-    gryce_ui::op_queue().advance_frame();
-
-    // ---- 内置 UI 轨 ----
-    // 与 ImGui 轨互斥（后端在 GRender_Init 时定），走同一份宿主回调与同一个
-    // 节流间隔，只是"谁来画"不同：内置轨把 drawlist 打成一条渲染命令，在帧尾
-    // 用 2D 覆盖层 pass 画出去（时序见 api/ui_builtin_backend.h）。
-    if (gryce_ui::builtin_ui()) {
-        gryce_ui::BuiltinRuntime& rt = gryce_ui::BuiltinRuntime::instance();
-        rt.set_frame_context(g_renderer.screen_w, g_renderer.screen_h,
-                             g_renderer.renderer2d.get());
-        rt.set_throttle(g_renderer.ui_frame_interval, g_renderer.ui_frame_counter);
-        if (rt.begin_build()) {
-            if (g_renderer.ui_callback) {
-                // 约束同 ImGui 轨：本函数运行在 g_renderer.mutex 已持有的路径上，
-                // 回调内只能调 GUi_*（纯绘制/入队），不得调 GRender_*/GCore_*。
-                gryce_ui::enter_callback();
-                g_renderer.ui_callback(g_renderer.ui_callback_user);
-                gryce_ui::leave_callback();
-            }
-            rt.end_build();
-        }
-        rt.draw_now(g_renderer.renderer2d.get());
-        return;
-    }
-
 #ifdef GRYCE_HAS_IMGUI
     if (!g_renderer.debug_imgui || !g_renderer.ctx) return;
-    // ★ 显式切到引擎自己的 ImGui 上下文再 NewFrame/Render：宿主（编辑器）可能在
-    //   引擎之后又 CreateContext，那时"当前上下文"是宿主的，不切的话会把宿主的
-    //   帧数据再渲染一遍、两边 UI 都会错乱。用完切回宿主，宿主完全不受影响。
-    struct ContextSwitch {
-        ImGuiContext* engine = nullptr;
-        ImGuiContext* prev = nullptr;
-        bool armed = false;
-        ~ContextSwitch() { if (armed) ImGui::SetCurrentContext(prev); }
-    } ctx_switch;
-    ctx_switch.engine = g_renderer.debug_imgui_ctx;
-    ctx_switch.prev = ImGui::GetCurrentContext();
-    if (ctx_switch.engine && ctx_switch.prev != ctx_switch.engine) {
-        ImGui::SetCurrentContext(ctx_switch.engine);
-        ctx_switch.armed = true;
-    }
 
-    if (!g_renderer.debug_ui_enabled && !g_renderer.ui_callback) {
-        // 关闭时仍然走一遍 NewFrame/Render（空帧），避免上一帧的同步 future 永远不结束。
-        // 这条路径不节流：它本来就要跑，且空帧会把缓存一起清掉（不会残留旧界面）。
+    ImGuiContext* engine = g_renderer.debug_imgui_ctx;
+    ImGuiContext* previous = ImGui::GetCurrentContext();
+    const bool switched = engine && previous != engine;
+    if (switched) ImGui::SetCurrentContext(engine);
+    struct RestoreContext {
+        ImGuiContext* previous = nullptr;
+        bool armed = false;
+        ~RestoreContext() {
+            if (armed) ImGui::SetCurrentContext(previous);
+        }
+    } restore{previous, switched};
+
+    ++g_renderer.debug_ui_frame_counter;
+    if (!g_renderer.debug_ui_enabled) {
         g_renderer.debug_imgui->begin_frame();
-        g_renderer.debug_imgui->end_frame([](ImDrawData*, std::shared_ptr<std::promise<void>> done) {
-            if (done) done->set_value();
-        });
+        g_renderer.debug_imgui->end_frame(
+            [](ImDrawData*, std::shared_ptr<std::promise<void>> done) {
+                if (done) done->set_value();
+            });
         return;
     }
 
-    // UI 帧节流：未到构建点时重绘上一次的 draw data 深拷贝——UI 一直在屏幕上，
-    // 只是不重新求值控件。首帧（缓存为空）与间隔为 1 时走下面的构建路径。
-    const uint64_t interval =
-        g_renderer.ui_frame_interval > 1 ? static_cast<uint64_t>(g_renderer.ui_frame_interval) : 1;
-    const bool build_due = interval <= 1 || (g_renderer.ui_frame_counter % interval) == 1;
-    if (!build_due && g_renderer.ui_cached_draw) {
-        std::shared_ptr<ImDrawData> clone = g_renderer.ui_cached_draw;
-        render::IImGuiBackend* ui_backend = g_renderer.debug_imgui->backend();
-        render::RenderContext* ctx = g_renderer.ctx.get();
+    const uint64_t interval = g_renderer.ui_frame_interval > 1
+                                  ? static_cast<uint64_t>(g_renderer.ui_frame_interval)
+                                  : 1;
+    const bool build_due =
+        interval <= 1 || (g_renderer.debug_ui_frame_counter % interval) == 1;
+    if (!build_due && g_renderer.debug_ui_cached_draw) {
+        std::shared_ptr<ImDrawData> clone = g_renderer.debug_ui_cached_draw;
+        render::IImGuiBackend* backend = g_renderer.debug_imgui->backend();
         std::shared_ptr<bool> alive = g_renderer.debug_ui_alive;
-        ctx->push_command([clone, ui_backend, alive](IRenderBackend*) {
-            if (alive && *alive && ui_backend && clone) {
-                ui_backend->render_draw_data(clone.get());
+        g_renderer.ctx->push_command([clone, backend, alive](IRenderBackend*) {
+            if (alive && *alive && backend && clone) {
+                backend->render_draw_data(clone.get());
             }
         });
         return;
     }
 
     g_renderer.debug_imgui->begin_frame();
-    if (g_renderer.debug_ui_enabled) debug_ui_build_panels_locked();
-    if (g_renderer.ui_callback) {
-        // 宿主（编辑器）的界面：与引擎调试面板共用同一个 ImGui 帧，画在同一个
-        // draw list 里，因此和场景一起提交、一起被截图。
-        // 约束同调试面板：本函数运行在 g_renderer.mutex 已持有的路径上，
-        // 回调内不得再调用 GRender_* / GCore_* 这类会加锁的公开 API。
-        // 回调内能用的只有 api/ui_api.h 的 GUi_*（纯绘制，不碰引擎状态）。
-        gryce_ui::enter_callback();
-        g_renderer.ui_callback(g_renderer.ui_callback_user);
-        gryce_ui::leave_callback();
-    }
-    // Gizmo 最后画：用 foreground draw list，盖在视口图像与各面板之上。
-#ifdef GRYCE_HAS_IMGUI
+    debug_ui_build_panels_locked();
     gizmo_draw_locked();
-#endif
 
-    render::IImGuiBackend* ui_backend = g_renderer.debug_imgui->backend();
+    render::IImGuiBackend* backend = g_renderer.debug_imgui->backend();
     render::ImGuiRenderer* renderer = g_renderer.debug_imgui.get();
     render::RenderContext* ctx = g_renderer.ctx.get();
     std::shared_ptr<bool> alive = g_renderer.debug_ui_alive;
-    renderer->end_frame([ui_backend, renderer, ctx, alive](
-                            ImDrawData* draw_data, std::shared_ptr<std::promise<void>> done) {
-        // draw_data 只在回调期间有效；异步渲染线程要用就必须先深拷贝
-        // （ImGuiRenderer::clone_draw_data 会连同 CmdList / 纹理列表一起复制）。
+    renderer->end_frame([&](ImDrawData* draw_data,
+                            std::shared_ptr<std::promise<void>> done) {
         std::shared_ptr<ImDrawData> clone = renderer->clone_draw_data(draw_data);
-        // 留一份给非 UI 帧重绘（见上面的节流分支）。static 的 g_renderer
-        // 不需要捕获；本 lambda 在持锁的收尾路径上同步执行，写它没有竞争。
-        g_renderer.ui_cached_draw = clone;
-        ctx->push_command([clone, ui_backend, done, alive](IRenderBackend*) {
-            // 这里运行在渲染线程：用后端的 ImGui 后端把 draw data 画进**本帧**
-            // 已经绑定的渲染目标（因此排在场景之后，截图里也有 UI）。
-            // alive 为 false 表示引擎正在关闭（后端可能已销毁）→ 直接跳过。
-            if (alive && *alive && ui_backend && clone) {
-                ui_backend->render_draw_data(clone.get());
+        g_renderer.debug_ui_cached_draw = clone;
+        ctx->push_command([clone, backend, done, alive](IRenderBackend*) {
+            if (alive && *alive && backend && clone) {
+                backend->render_draw_data(clone.get());
             }
             if (done) done->set_value();
         });
@@ -1159,10 +1170,7 @@ static void apply_backend_switch() {
         g_renderer.pipeline->shutdown();
         g_renderer.pipeline.reset();
     }
-    if (g_renderer.renderer2d) {
-        g_renderer.renderer2d->shutdown();
-        g_renderer.renderer2d.reset();
-    }
+    g_renderer.canvas2d.shutdown();
     if (g_renderer.ctx) {
         g_renderer.ctx->shutdown();
         g_renderer.ctx.reset();
@@ -1209,13 +1217,9 @@ static void apply_backend_switch() {
         apply_screen_space_settings(g_renderer.pipeline.get());
     }
 
-    g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
-    if (g_renderer.renderer2d) {
-        // 换后端等于换了整套纹理：UI 字号那一档要跟着来（同 GRender_Init）
-        g_renderer.renderer2d->ensure_text_raster_size(gryce_ui::ui_text_physical_size(
-            gryce_ui::kWidgetFontSize, gryce_ui::BuiltinRuntime::instance().scale()));
-        g_renderer.renderer2d->init(g_renderer.ctx.get());
-    }
+    g_renderer.canvas2d.initialize(g_renderer.ctx.get());
+    g_renderer.canvas2d.set_viewport_output_enabled(
+        g_renderer.canvas2d_viewport_output_requested);
     if (!sync) {
         g_renderer.ctx->start();
     }
@@ -1238,6 +1242,7 @@ int GRender_Init(const GRenderInitDesc* desc) {
 
     std::lock_guard lock(g_renderer.mutex);
     if (g_renderer.initialized) return 0;
+    reset_debug_ui_state_locked();
 
     // WebGL2：WebGL context 与创建它的线程绑定，浏览器的 rAF 主循环天然是
     // 单线程模型 —— 强制 sync_mode（渲染线程不启动，命令在主线程内联执行）。
@@ -1295,7 +1300,7 @@ int GRender_Init(const GRenderInitDesc* desc) {
     g_renderer.pipeline = std::make_unique<RenderPipeline>();
     // WPF 编辑器通过嵌入的 GLFW HWND 直接显示场景（ViewportHwndHost），
     // 因此 tonemap 必须写入默认帧缓冲（交换链），而不是离屏 viewport FBO。
-    // 离屏输出留给需要采样纹理的宿主（如旧 ImGui 编辑器）使用。
+    // 离屏输出留给需要自行采样视口纹理的宿主使用。
     g_renderer.pipeline->set_viewport_output_enabled(false);
     // 应用 Project Settings（阴影贴图尺寸 / MSAA 必须在 init 之前 ——
     // 两者都决定 init 时创建的 GPU 目标形态）
@@ -1322,67 +1327,33 @@ int GRender_Init(const GRenderInitDesc* desc) {
     // 内置时域重建，不改变任何渲染路径。
     render::probe_super_resolution();
 
-    // 2D 覆盖层渲染器：编辑器视口在 3D 场景之上绘制 2D（Sprite2D/UI 等）。
+    // 2D 覆盖层渲染器：3D 场景之上的 Sprite2D/Text 等游戏 2D 内容。
     // init 必须在 RenderContext::start()（渲染线程）之前调用。
-    g_renderer.renderer2d = g_renderer.ctx->create_renderer2d();
-    if (g_renderer.renderer2d) {
-        // 字形图集按 UI 的**物理**字号烘。init 里默认烘 32px 通用档，而界面
-        // 文字是 13px——只靠缩放的话笔画会糊出一圈灰边（实测明显比 ImGui 的
-        // 1:1 文字软）。这个调用在 init 之前只记下尺寸，让首烘一次到位。
-        const float ui_px = gryce_ui::ui_text_physical_size(
-            gryce_ui::kWidgetFontSize, gryce_ui::BuiltinRuntime::instance().scale());
-        g_renderer.renderer2d->ensure_text_raster_size(ui_px);
-        g_renderer.renderer2d->init(g_renderer.ctx.get());
-        GLOG_INFO("GRender_Init: 2D overlay renderer initialized (ui text raster {} px)",
-                  static_cast<int>(ui_px));
+    if (g_renderer.canvas2d.initialize(g_renderer.ctx.get())) {
+        g_renderer.canvas2d.set_viewport_output_enabled(
+            g_renderer.canvas2d_viewport_output_requested);
+        GLOG_INFO("GRender_Init: 2D overlay renderer initialized");
     } else {
         GLOG_WARN("GRender_Init: create_renderer2d returned nullptr");
-    }
-
-    // 内置 UI 轨：先把实现表装进 ui_api 再决定建不建 ImGui。顺序反了的话
-    // 首帧的宿主回调会打到空表上（GUi_* 全部静默空操作，界面一片空白）。
-    if (gryce_ui::builtin_ui()) {
-        gryce_ui::install_builtin_ui();
-        gryce_ui::BuiltinRuntime::instance().reset();
-    }
-
-    // GUi_Image 的 V 翻转判据：问渲染后端而不是 ImGui 后端 —— 内置轨根本不建
-    // ImGui 后端，而两条轨的采样约定是同一个（后端纹理第 0 行在上还是在下）。
-    // 这个标志由 ui_api 在初始化期落一次，绘制时只读（回调路径持锁，不能反查）。
-    if (g_renderer.ctx && g_renderer.ctx->backend()) {
-        gryce_ui::set_texture_v_flip(g_renderer.ctx->backend()->texture_needs_v_flip());
     }
 
     // 调试 UI：宿主没有自己的 ImGui 上下文时，引擎接管一套（左上角 FPS/帧时间
     // 叠加 + F1 调试窗口）。必须在渲染线程启动**之前**完成 —— ImGui 后端会建
     // 自己的 PSO/SRV 堆与字体纹理，放到渲染线程跑起来之后再建容易和首帧抢资源。
 #ifdef GRYCE_HAS_IMGUI
-    // 需要 ImGui 的两种情况：引擎自带调试叠加，或宿主注册了 UI 回调（编辑器）。
-    // 宿主已自建上下文（编辑器自管 ImGui）时一律让出，绝不再建第二个。
-    // 内置 UI 轨（GRender_SetUIBackend(1)）不建 ImGui 上下文——这正是它的目的。
-    const bool want_imgui = !gryce_ui::builtin_ui() &&
-                            (g_renderer.debug_ui_enabled || g_renderer.ui_callback != nullptr);
+    // 只有引擎基础调试 UI 需要创建 ImGui 上下文。
+    const bool want_imgui = g_renderer.debug_ui_enabled;
     if (want_imgui && desc->native_window && ImGui::GetCurrentContext() == nullptr) {
         auto imgui_backend = g_renderer.ctx->backend()
                                  ? g_renderer.ctx->backend()->create_imgui_backend()
                                  : nullptr;
         if (imgui_backend) {
-            // 采样约定必须在**移动**之前问出来：之后 imgui_backend 已归
-            // ImGuiRenderer 所有。GUi_Image 靠这个标志决定要不要翻 V。
-            // 上面已按渲染后端设过一次（服务内置轨），这里用真正建出来的
-            // ImGui 后端的答案覆盖——两条轨各取自己的权威源。
-            gryce_ui::set_texture_v_flip(imgui_backend->texture_needs_v_flip());
             auto renderer = std::make_unique<render::ImGuiRenderer>();
             auto* glfw_window = static_cast<GLFWwindow*>(desc->native_window);
             if (renderer->init(glfw_window, std::move(imgui_backend))) {
                 g_renderer.debug_imgui = std::move(renderer);
-                g_renderer.debug_ui_alive = std::make_shared<bool>(true);
                 g_renderer.debug_imgui_ctx = ImGui::GetCurrentContext();   // 引擎自己的上下文
-                // 主题 token 落地一次：此后所有控件（含引擎调试面板与宿主角落）
-                // 的颜色/度量都走 ui_theme.h 那一张表，换主题由宿主调
-                // GUi_ThemeSetPreset + GUi_ThemeApply。在这里 apply 而不是等
-                // 首帧，是因为 Style 要在第一个 NewFrame 之前就位。
-                gryce_ui::apply();
+                g_renderer.debug_ui_alive = std::make_shared<bool>(true);
                 // ★★ 关键：告诉 ImGui「不要改 OS 光标的显示/模式」★★
                 //   ImGui 的 GLFW 后端每帧都会按自己的判断调
                 //   glfwSetInputMode(GLFW_CURSOR, GLFW_CURSOR_NORMAL/HIDDEN)，
@@ -1417,6 +1388,12 @@ int GRender_Init(const GRenderInitDesc* desc) {
     return 0;
 }
 
+void* GRender_GetRenderer2D(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.canvas2d.valid() ? static_cast<void*>(g_renderer.canvas2d.renderer()) : nullptr;
+}
+
 void GRender_Shutdown(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
@@ -1427,10 +1404,7 @@ void GRender_Shutdown(void) {
         g_renderer.pipeline.reset();
     }
 
-    if (g_renderer.renderer2d) {
-        g_renderer.renderer2d->shutdown();
-        g_renderer.renderer2d.reset();
-    }
+    g_renderer.canvas2d.shutdown();
 
     // 调试 UI 必须在 ctx 销毁**之前**拆掉（它的 ImGui 后端持有设备资源）。
     // 顺序要点：
@@ -1445,9 +1419,10 @@ void GRender_Shutdown(void) {
         if (g_renderer.debug_ui_alive) *g_renderer.debug_ui_alive = false;
         g_renderer.debug_imgui->shutdown();
         g_renderer.debug_imgui.reset();
-        g_renderer.debug_ui_alive.reset();
         g_renderer.debug_imgui_ctx = nullptr;
     }
+
+    reset_debug_ui_state_locked();
 
     if (g_renderer.ctx) {
         g_renderer.ctx->shutdown();
@@ -1477,10 +1452,6 @@ bool GRender_IsInitialized(void) {
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.initialized;
 }
-
-// 前向声明：定义见文件末尾（GRender_SetUIScale 区域）。在 GRender_BeginFrame
-// 的互斥持有路径内复用同一份缩放逻辑，避免两处发散。
-static void apply_ui_scale_locked(float scale);
 
 void GRender_BeginFrame(void) {
     GRYCE_API_GUARD();
@@ -1538,36 +1509,25 @@ void GRender_BeginFrame(void) {
 
     // 窗口尺寸：UI 覆盖层与 2D overlay 的坐标系就是它（见 screen_w 的说明）。
     // 每帧现查，窗口被拉伸/最大化时不用等宿主通知；查询本身只是读一次平台层
-    // 的缓存值，不做同步或轮询。没有窗口的宿主（离屏跑测试）保留上次的值。
+    // 的缓存值，不做同步或轮询。没有窗口的宿主（离屏跑测试 / 自建窗口）保留
+    // 上次的值，自建窗口的宿主用 GViewport_NotifyWindowSize 通知。
     if (GWindow_IsValid()) {
         int fw = 0;
         int fh = 0;
         GWindow_GetFramebufferSize(&fw, &fh);
         if (fw > 0 && fh > 0) {
-            g_renderer.screen_w = fw;
-            g_renderer.screen_h = fh;
+            // 全窗口渲染（demo / smoke / 独立游戏）的 3D 视口本来就铺满窗口，
+            // 尺寸必然等于窗口尺寸。窗口被拉伸或最大化后如果只更新 screen 而不
+            // 更新视口，引擎仍按旧尺寸渲染，帧缓冲里超出的部分停在清屏色 ——
+            // 表现就是"画面只占一块、剩下全黑"。这里在"视口原本等于窗口"时跟随。
+            // 编辑器把视口缩进面板（view 输出到离屏纹理）时二者不相等，不会触发，
+            // 面板布局与 UI 尺寸都不受影响。
+            sync_window_size_locked(fw, fh);
         }
     }
 
-    // HiDPI：每帧按窗口内容缩放跟随 UI 倍率。进程已在 Window::init_sdk 声明
-    // DPI 感知，Windowed 窗口也在创建时按显示器内容缩放放大到物理像素，这里
-    // 直接取"显示器真实内容缩放"（glfwGetWindowContentScale，经
-    // GWindow_GetContentScale 暴露）作为 UI 倍率——它就是 DPI 比值（100% = 1，
-    // 200% = 2），与 GLFW 的窗口尺寸报告语义无关，因此稳定不漂移。UI 逻辑
-    // 布局尺寸 = 设备帧缓冲 / 此倍率，渲染时再乘回设备像素：高 DPI 屏上既
-    // 不被 DWM 拉伸发虚、比例也不缩水。100% DPI 下倍率为 1，与改动前完全
-    // 一致，安全。只在倍率变化时写内置轨并补字形档——幂等，无变化的帧零开销。
-    {
-        float csx = 1.0f, csy = 1.0f;
-        GWindow_GetContentScale(&csx, &csy);
-        float want = (csx > 0.5f) ? csx : 1.0f;     // 异常值回退
-        if (want > 4.0f) want = 4.0f;               // 极端倍率夹制
-        const float cur = gryce_ui::BuiltinRuntime::instance().scale();
-        const float diff = want - cur;
-        if (diff > 1e-3f || diff < -1e-3f) {
-            apply_ui_scale_locked(want);
-        }
-    }
+    g_renderer.ui_input = capture_ui_input();
+
     // Async mode: render thread handles begin_frame
 }
 
@@ -1599,11 +1559,14 @@ static void render_world_internal(GEntityHandle camera_override = 0, bool to_gam
 
     // 2D 场景编辑器：只渲染 2D 画布（不混 3D）
     if (g_renderer.scene_2d_only) {
+        const float r = g_renderer.scene_2d_clear[0];
+        const float g = g_renderer.scene_2d_clear[1];
+        const float b = g_renderer.scene_2d_clear[2];
         if (g_renderer.sync_mode) {
             auto* backend = g_renderer.ctx->backend();
-            if (backend) backend->clear(0.12f, 0.14f, 0.18f, 1.0f);
+            if (backend) backend->clear(r, g, b, 1.0f);
         } else {
-            g_renderer.ctx->clear(0.12f, 0.14f, 0.18f, 1.0f);
+            g_renderer.ctx->clear(r, g, b, 1.0f);
         }
         render_2d_overlay();
         return;
@@ -1669,6 +1632,12 @@ static void render_world_internal(GEntityHandle camera_override = 0, bool to_gam
         g_renderer.pipeline->set_wireframe(g_renderer.wireframe);
         g_renderer.pipeline->render_scene(*world->scene(), *g_renderer.ctx);
         g_renderer.pipeline->set_game_view_active(false);
+
+        // 3D 视口可能把 tonemap 写进离屏目标。UI/2D overlay 始终属于屏幕，
+        // 在进入 Canvas2DPipeline 前显式归还默认帧缓冲，避免后端把 UI 继续
+        // 画进 viewport FBO（D3D12 对中间 RT 状态尤其敏感）。
+        g_renderer.ctx->set_framebuffer(render::RHIFramebufferHandle{});
+        g_renderer.ctx->set_viewport(0, 0, g_renderer.screen_w, g_renderer.screen_h);
 
         // 2D 覆盖层：在 3D 场景（tonemap 到默认帧缓冲）之上绘制 2D 组件
         //（Sprite2D / Label / ColorRect / TileMap 等，按 CanvasLayer 分层）。
@@ -1933,6 +1902,7 @@ void GRender_EndFrame(void) {
         // **之前**把 draw data 推进本帧命令流，这样它排在场景命令之后，
         // 与场景一起提交、一起被截图。
         debug_ui_submit_locked();
+
         if (g_renderer.sync_mode) {
             // Execute queued render commands under both locks, but defer the
             // swap to present_swap() below so a vsync stall inside
@@ -2035,6 +2005,14 @@ void GRender_SetScene2D(bool enabled) {
     std::lock_guard lock(g_renderer.mutex);
     g_renderer.scene_2d_only = enabled;
     GLOG_INFO("GRender_SetScene2D: {}", enabled);
+}
+
+void GRender_SetScene2DClearColor(float r, float g, float b) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    g_renderer.scene_2d_clear[0] = r;
+    g_renderer.scene_2d_clear[1] = g;
+    g_renderer.scene_2d_clear[2] = b;
 }
 
 // --- Project Settings ---
@@ -2549,20 +2527,16 @@ void GRender_DrawDebugPanel(void) {
 #endif
 }
 
-void GRender_SetUICallback(void (*callback)(void* user), void* user) {
-    GRYCE_API_GUARD();
-    std::lock_guard lock(g_renderer.mutex);
-    g_renderer.ui_callback = callback;
-    g_renderer.ui_callback_user = user;
-}
-
 void GRender_SetUiFrameInterval(int frames) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     // <=1 归一成 1（每帧构建）；间隔必须为正，否则取模会除零。
     g_renderer.ui_frame_interval = frames > 1 ? frames : 1;
     // 重置计数：让下一帧立即成为构建帧，避免改了间隔后还要空等一个周期。
-    g_renderer.ui_frame_counter = 0;
+    g_renderer.debug_ui_frame_counter = 0;
+#ifdef GRYCE_HAS_IMGUI
+    g_renderer.debug_ui_cached_draw.reset();
+#endif
 }
 
 int GRender_GetUiFrameInterval(void) {
@@ -2575,105 +2549,6 @@ bool GRender_HasImGui(void) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
     return g_renderer.debug_imgui != nullptr;
-}
-
-void GRender_SetUIBackend(int backend) {
-    GRYCE_API_GUARD();
-    gryce_ui::set_ui_backend(backend);
-}
-
-int GRender_GetUIBackend(void) {
-    GRYCE_API_GUARD();
-    return gryce_ui::ui_backend();
-}
-
-// 假定调用方已持有 g_renderer.mutex：把 UI 逻辑→设备像素的倍率写到内置轨，
-// 并顺带把字形图集补到对应的物理字号档。GRender_SetUIScale（显式设置）与
-// GRender_BeginFrame（每帧按窗口内容缩放自动跟随）共用这一份，避免两处逻辑
-// 漂移。运行期重建纹理由 ensure_text_raster_size 走 GPU 上下文同步，幂等。
-static void apply_ui_scale_locked(float scale) {
-    // 只影响内置轨：ImGui 轨的缩放由后端自己按 DPI 处理。
-    gryce_ui::BuiltinRuntime::instance().set_scale(scale);
-    // 缩放变了，界面文字的**物理**字号也变了：字形图集要补上那一档，否则
-    // 2 倍屏上是把 13px 的图放大两倍（边缘马赛克），1.5 倍屏上是 19.5→20 的
-    // 半像素缩放（笔画发虚）。
-    if (g_renderer.renderer2d) {
-        g_renderer.renderer2d->ensure_text_raster_size(
-            gryce_ui::ui_text_physical_size(gryce_ui::kWidgetFontSize, scale));
-    }
-}
-
-void GRender_SetUIScale(float scale) {
-    GRYCE_API_GUARD();
-    apply_ui_scale_locked(scale);
-}
-
-float GRender_GetUIScale(void) {
-    GRYCE_API_GUARD();
-    return gryce_ui::BuiltinRuntime::instance().scale();
-}
-
-namespace {
-
-// 假定调用方已持有 g_renderer.mutex：问当前 ImGui 后端要纹理 id。
-// GRender_GetImGuiTextureId 与 GRender_GetUiTextureId 共用（后者不能反过来调
-// 前者——g_renderer.mutex 不是递归锁，会自锁）。
-uint64_t imgui_texture_id_locked(render::ITexture* tex) {
-#ifdef GRYCE_HAS_IMGUI
-    if (!g_renderer.debug_imgui) return 0;
-    auto* backend = g_renderer.debug_imgui->backend();
-    if (!backend) return 0;
-    return backend->imgui_texture_id(tex);
-#else
-    (void)tex;
-    return 0;
-#endif
-}
-
-} // namespace
-
-uint64_t GRender_GetImGuiTextureId(GTextureHandle texture) {
-    GRYCE_API_GUARD();
-#ifndef GRYCE_HAS_IMGUI
-    (void)texture;
-    return 0;
-#else
-    if (!texture) return 0;
-    std::lock_guard lock(g_renderer.mutex);
-    // 契约：GTextureHandle 就是 ITexture*（见 GRender_GetViewportTexture）。
-    return imgui_texture_id_locked(static_cast<render::ITexture*>(texture));
-#endif
-}
-
-uint64_t GRender_GetUiTextureId(GTextureHandle texture) {
-    GRYCE_API_GUARD();
-    if (!texture) return 0;
-    std::lock_guard lock(g_renderer.mutex);
-    if (!g_renderer.ctx) return 0;
-    // 契约：GTextureHandle 就是 ITexture*（见 GRender_GetViewportTexture）。
-    auto* tex = static_cast<render::ITexture*>(texture);
-    // 分派只看 UI 轨，不看构建有没有编入 ImGui：没编入时 imgui_texture_id_locked
-    // 恒返回 0（那条轨本来也画不出东西），内置轨仍能拿到打包句柄。
-    if (!gryce_ui::builtin_ui()) return imgui_texture_id_locked(tex);
-    // 内置轨：打包的引擎纹理句柄。低 32 位 index、高 32 位 generation，
-    // 与内置 UI drawlist 的 UiCommand.texture 解包约定一致
-    // （见 ui_render_bridge_rd.cpp 的 to_handle）。
-    const render::RHITextureHandle handle = g_renderer.ctx->texture_handle(tex);
-    if (!handle.is_valid()) return 0;
-    return (static_cast<uint64_t>(handle.generation) << 32) | handle.index;
-}
-
-void GRender_InvalidateImGuiTexture(GTextureHandle texture) {
-    GRYCE_API_GUARD();
-#ifndef GRYCE_HAS_IMGUI
-    (void)texture;
-#else
-    if (!texture) return;
-    std::lock_guard lock(g_renderer.mutex);
-    if (!g_renderer.debug_imgui) return;
-    auto* backend = g_renderer.debug_imgui->backend();
-    if (backend) backend->invalidate_texture(static_cast<render::ITexture*>(texture));
-#endif
 }
 
 void GRender_SetSSRDebugView(int mode) {
@@ -2732,6 +2607,58 @@ GTextureHandle GRender_GetGameViewTexture(void) {
     // 独立目标创建失败时的降级：与 SceneView 共用纹理（此时 RenderGameView
     // 的画面就是 SceneView 的，编辑器据此判断是否拿到了独立视口）。
     return static_cast<GTextureHandle>(g_renderer.pipeline->viewport_color_texture());
+}
+
+namespace {
+
+bool texture_info_from_handle(const render::RHITextureHandle& handle,
+                              int width, int height,
+                              GRenderTextureInfo* out) {
+    if (!out || !handle.is_valid()) return false;
+    out->index = handle.index;
+    out->generation = handle.generation;
+    out->width = width;
+    out->height = height;
+    return true;
+}
+
+} // namespace
+
+int GRender_GetViewportTextureInfo(GRenderTextureInfo* out) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.pipeline || !g_renderer.pipeline->is_valid()) return 0;
+    return texture_info_from_handle(g_renderer.pipeline->viewport_color_handle(),
+                                    g_renderer.pipeline->viewport_width(),
+                                    g_renderer.pipeline->viewport_height(), out)
+               ? 1 : 0;
+}
+
+int GRender_GetGameViewTextureInfo(GRenderTextureInfo* out) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.pipeline || !g_renderer.pipeline->is_valid()) return 0;
+    const render::RHITextureHandle handle = g_renderer.pipeline->game_view_color_handle();
+    if (handle.is_valid()) {
+        return texture_info_from_handle(handle,
+                                        g_renderer.pipeline->game_view_width(),
+                                        g_renderer.pipeline->game_view_height(), out)
+                   ? 1 : 0;
+    }
+    return texture_info_from_handle(g_renderer.pipeline->viewport_color_handle(),
+                                    g_renderer.pipeline->viewport_width(),
+                                    g_renderer.pipeline->viewport_height(), out)
+               ? 1 : 0;
+}
+
+int GRender_GetCanvas2DViewTextureInfo(GRenderTextureInfo* out) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (!g_renderer.canvas2d.viewport_output_enabled()) return 0;
+    return texture_info_from_handle(g_renderer.canvas2d.viewport_texture(),
+                                    g_renderer.canvas2d.viewport_width(),
+                                    g_renderer.canvas2d.viewport_height(), out)
+               ? 1 : 0;
 }
 
 int GRender_GetViewportSize(int* out_w, int* out_h) {
@@ -2843,6 +2770,12 @@ void GViewport_SetSize(int w, int h) {
     apply_viewport_size_locked(w, h);
 }
 
+void GViewport_NotifyWindowSize(int w, int h) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    sync_window_size_locked(w, h);
+}
+
 void GRender_SetViewportOutput(bool enabled) {
     GRYCE_API_GUARD();
     std::lock_guard lock(g_renderer.mutex);
@@ -2853,6 +2786,20 @@ void GRender_SetViewportOutput(bool enabled) {
     // 目标 FBO 的 render pass 与 tonemap 管线绑定，切换必然要重建管线；
     // 交给 BeginFrame 的 hot reload 路径，避免在这里直接动 GPU 资源。
     g_renderer.pipeline_reload_pending = true;
+}
+
+void GRender_SetCanvas2DViewportOutput(bool enabled) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    if (g_renderer.canvas2d_viewport_output_requested == enabled) return;
+    g_renderer.canvas2d_viewport_output_requested = enabled;
+    g_renderer.canvas2d.set_viewport_output_enabled(enabled);
+}
+
+bool GRender_IsCanvas2DViewportOutputEnabled(void) {
+    GRYCE_API_GUARD();
+    std::lock_guard lock(g_renderer.mutex);
+    return g_renderer.canvas2d.viewport_output_enabled();
 }
 
 bool GRender_IsViewportOutputEnabled(void) {

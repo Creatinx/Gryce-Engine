@@ -87,6 +87,14 @@ enum class BlendMode {
 };
 
 // ---------------------------------------------------------------------------
+// ColoredRun — 一段带颜色的文本（用于语法高亮等逐段着色场景）
+// ---------------------------------------------------------------------------
+struct ColoredRun {
+    std::string text;
+    Color       color = Color::white();
+};
+
+// ---------------------------------------------------------------------------
 // IRenderer2D — 2D 图形渲染接口
 // 支持：矩形、n 边形、圆形、文字
 // 所有坐标系以屏幕左上角为原点，向右为 +X，向下为 +Y
@@ -185,12 +193,31 @@ public:
     // y 是**基线**，不是行盒顶。
     virtual void draw_text(float x, float y, const std::string& text, float font_size, const Color& color) = 0;
 
+    // 绘制彩色文本：runs 为按显示顺序的彩色片段（语法高亮逐 token 着色）。
+    // 每段 run 从传入 x 起横向连续推进；多行文本请按行分别调用本方法。
+    // y 是基线。默认实现退化为逐 run 单色 draw_text（不支持的后端也能画）。
+    virtual void draw_text_colored(float x, float y, float font_size,
+                                   const std::vector<ColoredRun>& runs) {
+        float cx = x;
+        for (const ColoredRun& run : runs) {
+            draw_text(cx, y, run.text, font_size, run.color);
+            cx += measure_text(run.text.c_str(), font_size);
+        }
+    }
+
     // 文本宽度（同一套字形推进量，含 UTF-8 解码）。返回 0 表示本渲染器
     // 不提供度量（无字体图集/后端未实现），调用方应退回估算宽度。
     // 存在的意义：自动尺寸控件（按钮宽 = 文字宽 + 内边距）与文字居中都
     // 必须和真正画出来的宽度用同一个口径，否则宽度会漂。
     virtual float measure_text(const char* text, float font_size) const {
         (void)text; (void)font_size; return 0.0f;
+    }
+
+    // 该字号下大写字母的高度（逻辑像素）。UI 把文字放进行盒居中时要用它算
+    // 基线——按 font_size 居中会让文字整体偏上（字高的下伸部与行距不属于
+    // 视觉重心）。无字体图集的后端返回 0.72*font_size 的估算值。
+    virtual float text_cap_height(float font_size) const {
+        return font_size * 0.72f;
     }
 
     // -----------------------------------------------------------------------
@@ -205,6 +232,15 @@ public:
     // 默认空实现：不支持的后端保持原样，调用方退回"按原尺寸缩放绘制"。
     virtual bool ensure_text_raster_size(float px) { (void)px; return false; }
 
+    // 批量版本：一帧里 UI 通常用 3~6 种字号，逐个 raise 会让图集反复整张重烘
+    // （每次 = 重建纹理 + 全量重传），启动时肉眼可见卡顿。后端若支持一次加多
+    // 档就 override 这里；默认退化成逐个调用。
+    virtual bool ensure_text_raster_sizes(const std::vector<float>& px) {
+        bool any = false;
+        for (float p : px) any = ensure_text_raster_size(p) || any;
+        return any;
+    }
+
     // 当前图集的栅格字号（0 = 后端没有字体图集）。绘制方据此判断能否 1:1。
     virtual float text_raster_size() const { return 0.0f; }
 
@@ -216,6 +252,10 @@ public:
     // 直接提交顶点并恢复相机。这样 UI 命令既不需要插进场景 2D 的批次里
     //（那要求 UI 在场景 pass 之前构建），也不会被 2D bloom 洗一遍。
     // 默认空实现：不支持的后端退化成"UI 不显示"，不影响场景渲染。
+    // 把已积累的批次立刻提交（不结束覆盖层）。分层绘制时用：置顶层必须等
+    // 页面这一层的矩形/文字都提交完再画，否则它的底色会被页面文字盖住。
+    virtual void flush_pending() {}
+
     virtual void begin_overlay_pass(int screen_width, int screen_height) {
         (void)screen_width; (void)screen_height;
     }
@@ -289,6 +329,11 @@ public:
     virtual void set_scissor(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; }
     // 恢复全屏裁剪
     virtual void reset_scissor() {}
+
+    // 覆盖层渲染倍率。>1 表示后端把整个覆盖层画在更大的离屏目标上再降采样
+    // （超采样抗锯齿）。调用方据此把字号换算到离屏分辨率——否则图集只会烘
+    // 逻辑字号那一档，放到 2x 目标上被放大一倍，超采样就白做了。
+    virtual float overlay_scale() const { return 1.0f; }
 
     // 设置 Bloom 后处理参数
     virtual void set_bloom(const BloomParams& params) { (void)params; }

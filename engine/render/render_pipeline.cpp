@@ -38,6 +38,7 @@
 #include "assets/mesh_data.h"
 #include "assets/texture_data.h"
 #include "scene/scene.h"
+#include "utils/parallel_for.h"
 #include "scene/entity.h"
 #include "components/transform.h"
 #include "components/mesh_renderer.h"
@@ -426,24 +427,38 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
         return false;
     }
 
+    // VSM 彩色阴影目标先建：VSM / ESM / VSM-blur 三条 shader 都写颜色附件，
+    // 不能用深度阴影 FBO 当作初始 render pass —— Vulkan 把 render pass 烘死在
+    // 管线创建时，对着"没有颜色附件"的 pass 建出来的管线会把颜色输出丢掉
+    // （验证层 WARN "writes to Location 0 but there is no pColorAttachments"）。
+    if (!create_vsm_color_targets(ctx)) {
+        GLOG_WARN("RenderPipeline: VSM color targets failed, VSM/ESM disabled");
+    }
+    const RHIFramebufferHandle vsm_target =
+        vsm_color_fbo_[0].is_valid() ? vsm_color_fbo_[0] : shadow_fbos_[0];
+    const RHIFramebufferHandle vsm_blur_target =
+        vsm_blur_fbo_[0].is_valid() ? vsm_blur_fbo_[0] : vsm_target;
+
     // VSM/ESM 阴影 shader（可选：加载失败降级为 PCF）
-    shadow_vsm_shader_ = load_shader("shadow_vsm", shadow_fbos_[0], false, false);
+    shadow_vsm_shader_ = load_shader("shadow_vsm", vsm_target, true, false);
     if (!shadow_vsm_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: shadow_vsm shader unavailable, VSM disabled");
     }
-    shadow_esm_shader_ = load_shader("shadow_esm", shadow_fbos_[0], false, false);
+    shadow_esm_shader_ = load_shader("shadow_esm", vsm_target, true, false);
     if (!shadow_esm_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: shadow_esm shader unavailable, ESM disabled");
     }
-    // VSM blur shader 需要全屏四边形的 FBO（后处理管线），用 shadow_fbos_[0] 作为占位
-    // 实际使用时会在 render_vsm_blur 中设置正确的 FBO
-    vsm_blur_shader_ = load_shader("vsm_blur", shadow_fbos_[0], false, false);
+    // VSM blur shader 需要全屏四边形的 FBO（后处理管线），用 vsm_blur_fbo_[0] 作为占位
+    // 实际使用时会在 render_vsm_blur 中设置正确的 FBO。
+    // ★ 必须按"后处理 + 有颜色输出"加载：它只采样一张 2D 阴影图并写出颜色，
+    //   没有任何 UBO。若按默认几何管线加载，Vulkan 侧绑定式布局的 binding 0 是
+    //   UNIFORM_BUFFER，而片元着色器声明的是 sampler2D —— 验证层报
+    //   "variable uVSMTexture which has a VkDescriptorType mismatch"，管线创建被拒，
+    //   VSM 模糊整条失效（阴影出现硬块状锯齿）。color_output=false 还会让
+    //   pColorBlendState 被置空，对着带颜色附件的 render pass 同样非法。
+    vsm_blur_shader_ = load_shader("vsm_blur", vsm_blur_target, true, true);
     if (!vsm_blur_shader_.is_valid()) {
         GLOG_WARN("RenderPipeline: vsm_blur shader unavailable, VSM blur disabled");
-    }
-    // 创建 VSM 彩色阴影目标
-    if (!create_vsm_color_targets(ctx)) {
-        GLOG_WARN("RenderPipeline: VSM color targets failed, VSM/ESM disabled");
     }
 
     // Shadow Atlas shader（使用 atlas FBO 作为渲染目标；失败不阻塞）
@@ -531,6 +546,21 @@ bool RenderPipeline::init(RenderContext* ctx, const std::string& shader_dir) {
             !bloom_upsample_shader_.is_valid()) {
             GLOG_WARN("RenderPipeline: bloom shaders unavailable, bloom disabled");
             pp_params_.bloom_enabled = 0;
+        }
+    }
+
+    // 体积光散射（丁达尔）目标 + shader：全分辨率全屏 pass，输出 scene + 散射光，
+    // 接成新的 HDR 颜色输入。失败即关闭该效果，不影响其余后处理。
+    if (hdr_enabled_) {
+        if (create_volumetric_targets(ctx, viewport_width_, viewport_height_)) {
+            volumetric_shader_ = load_shader("volumetric_scatter", volumetric_fbo_, true, true);
+            if (!volumetric_shader_.is_valid()) {
+                GLOG_WARN("RenderPipeline: volumetric shader unavailable, disabled");
+                pp_params_.volumetric_enabled = 0;
+            }
+        } else {
+            GLOG_WARN("RenderPipeline: volumetric targets failed, disabled");
+            pp_params_.volumetric_enabled = 0;
         }
     }
 
@@ -813,6 +843,10 @@ void RenderPipeline::shutdown() {
         ctx_->destroy_shader(bloom_upsample_shader_);
         bloom_upsample_shader_ = RHIShaderHandle{};
     }
+    if (owns_shaders_ && volumetric_shader_.is_valid()) {
+        ctx_->destroy_shader(volumetric_shader_);
+        volumetric_shader_ = RHIShaderHandle{};
+    }
     if (owns_shaders_ && lum_average_shader_.is_valid()) {
         ctx_->destroy_shader(lum_average_shader_);
         lum_average_shader_ = RHIShaderHandle{};
@@ -861,6 +895,7 @@ void RenderPipeline::shutdown() {
     destroy_point_shadow_targets();
     destroy_contact_shadow_targets();
     destroy_bloom_targets();
+    destroy_volumetric_targets();
     destroy_auto_exposure_targets();
     destroy_taa_targets();
     destroy_ssao_targets();
@@ -1258,6 +1293,174 @@ bool RenderPipeline::is_inside_frustum_skinned(const Frustum& frustum, const mat
         return true;
     }
     return frustum.contains_sphere(center, radius);
+}
+
+// ---------------------------------------------------------------------------
+// 并行收集（多核视锥剔除 + 合批前收集）
+//
+// 设计要点：
+//   * 串行阶段只按 ECS 迭代序收集 (Entity*, MeshRenderer*) 指针对，开销极小；
+//     ECS 迭代本身保持串行，避免改动 foreach_with_components 的并发语义。
+//   * 并行阶段把实体索引 [0,n) 切成 num_chunks 个连续区间，每块由一个线程全程
+//     负责，写入「按块下标」独立的缓冲（c_opaque[c] 等），块间无写冲突。
+//   * 合并按块序 c=0..num_chunks-1 进行，因此 opaque_items 的最终全局顺序与串行
+//     foreach 完全一致 —— batch_skip_[] 的索引依赖该顺序，乱序会错位。
+//   * 线程安全：compute_world_mesh_bounds 的缓存已用 shared_mutex 保护（读锁并发
+//     命中）；world_transform() 为纯只读；per-chunk 缓冲互不相交。单核或实体数
+//     小于线程数时 num_chunks 退化为 1，等价于串行，行为不变。
+// ---------------------------------------------------------------------------
+void RenderPipeline::gather_mesh_renderer_items(scene::Scene& scene,
+                                               const Frustum& camera_frustum,
+                                               const math::Vector3f& cam_pos,
+                                               std::vector<DrawItem>& opaque_items,
+                                               std::vector<DrawItem>& transparent_items,
+                                               std::vector<DrawItem>& viewmodel_items) {
+    std::vector<std::pair<scene::Entity*, components::MeshRenderer*>> ents;
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scene, [&](scene::Entity* e, components::MeshRenderer* mr, components::Transform*) {
+            ents.emplace_back(e, mr);
+        });
+
+    const int n = static_cast<int>(ents.size());
+    if (n == 0) return;
+
+    const int num_chunks = std::max(1, std::min(n, utils::parallel_worker_count() + 1));
+    std::vector<int> bounds(num_chunks + 1);
+    for (int c = 0; c <= num_chunks; ++c) {
+        bounds[c] = static_cast<int>(1LL * n * c / num_chunks);
+    }
+    std::vector<std::vector<DrawItem>> c_opaque(num_chunks);
+    std::vector<std::vector<DrawItem>> c_transparent(num_chunks);
+    std::vector<std::vector<DrawItem>> c_viewmodel(num_chunks);
+
+    utils::parallel_for(0, num_chunks, [&](int lo, int hi) {
+        for (int c = lo; c < hi; ++c) {
+            auto& o = c_opaque[c];
+            auto& t = c_transparent[c];
+            auto& v = c_viewmodel[c];
+            for (int i = bounds[c]; i < bounds[c + 1]; ++i) {
+                scene::Entity* e = ents[i].first;
+                components::MeshRenderer* mr = ents[i].second;
+                if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid())
+                    continue;
+                math::Matrix4f model = e->world_transform();
+                if (mr->billboard && camera_) {
+                    model = math::billboard_matrix(
+                        math::Vector3f(model(0, 3), model(1, 3), model(2, 3)),
+                        e->transform()->scale, camera_->position());
+                }
+                if (!is_inside_frustum(camera_frustum, model, mr->gpu_mesh_handle(),
+                                       mr->mesh_path))
+                    continue;
+                append_mesh_renderer_items(mr, model, cam_pos, camera_frustum, o, t, v);
+            }
+        }
+    });
+
+    for (int c = 0; c < num_chunks; ++c) {
+        opaque_items.insert(opaque_items.end(), c_opaque[c].begin(), c_opaque[c].end());
+        transparent_items.insert(transparent_items.end(), c_transparent[c].begin(),
+                                c_transparent[c].end());
+        viewmodel_items.insert(viewmodel_items.end(), c_viewmodel[c].begin(),
+                               c_viewmodel[c].end());
+    }
+}
+
+void RenderPipeline::gather_skinned_items(scene::Scene& scene,
+                                         const Frustum& camera_frustum,
+                                         const math::Vector3f& cam_pos,
+                                         std::vector<SkinnedDrawItem>& skinned_opaque_items,
+                                         std::vector<SkinnedDrawItem>& skinned_transparent_items) {
+    std::vector<std::pair<scene::Entity*, components::SkinnedMeshRenderer*>> ents;
+    ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
+        scene, [&](scene::Entity* e, components::SkinnedMeshRenderer* mr, components::Transform*) {
+            if (!mr->enabled || mr->model_path.empty() || !mr->gpu_mesh_handle().is_valid() ||
+                !mr->palette())
+                return;
+            ents.emplace_back(e, mr);
+        });
+
+    const int n = static_cast<int>(ents.size());
+    if (n == 0) return;
+
+    const int num_chunks = std::max(1, std::min(n, utils::parallel_worker_count() + 1));
+    std::vector<int> bounds(num_chunks + 1);
+    for (int c = 0; c <= num_chunks; ++c) {
+        bounds[c] = static_cast<int>(1LL * n * c / num_chunks);
+    }
+    std::vector<std::vector<SkinnedDrawItem>> c_opaque(num_chunks);
+    std::vector<std::vector<SkinnedDrawItem>> c_transparent(num_chunks);
+
+    utils::parallel_for(0, num_chunks, [&](int lo, int hi) {
+        for (int c = lo; c < hi; ++c) {
+            auto& o = c_opaque[c];
+            auto& t = c_transparent[c];
+            for (int i = bounds[c]; i < bounds[c + 1]; ++i) {
+                scene::Entity* e = ents[i].first;
+                components::SkinnedMeshRenderer* mr = ents[i].second;
+                const math::Matrix4f& model = e->world_transform();
+                if (!is_inside_frustum_skinned(camera_frustum, model, mr->model_path)) continue;
+                const Material* mat = mr->material.get();
+                const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
+                math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
+                float dist_sq = (pos - cam_pos).length_sq();
+                SkinnedDrawItem item{mr->gpu_mesh_handle(), mat, model, mr->palette(), dist_sq};
+                if (transparent)
+                    t.push_back(std::move(item));
+                else
+                    o.push_back(std::move(item));
+            }
+        }
+    });
+
+    for (int c = 0; c < num_chunks; ++c) {
+        skinned_opaque_items.insert(skinned_opaque_items.end(), c_opaque[c].begin(),
+                                    c_opaque[c].end());
+        skinned_transparent_items.insert(skinned_transparent_items.end(),
+                                         c_transparent[c].begin(), c_transparent[c].end());
+    }
+}
+
+void RenderPipeline::collect_shadow_candidates(scene::Scene& scene) {
+    shadow_candidates_.clear();
+    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
+        scene, [&](scene::Entity* e, components::MeshRenderer* mr, components::Transform*) {
+            if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid())
+                return;
+            shadow_candidates_.emplace_back(mr, e->world_transform());
+        });
+}
+
+void RenderPipeline::cull_shadow_cascades(const std::vector<Frustum>& cascade_frusta) {
+    const int n = static_cast<int>(shadow_candidates_.size());
+    const int nc = static_cast<int>(cascade_frusta.size());
+    shadow_vis_.assign(nc, {});
+    if (n == 0 || nc == 0) return;
+
+    const int num_chunks = std::max(1, std::min(n, utils::parallel_worker_count() + 1));
+    std::vector<int> bounds(num_chunks + 1);
+    for (int c = 0; c <= num_chunks; ++c) {
+        bounds[c] = static_cast<int>(1LL * n * c / num_chunks);
+    }
+    for (int c = 0; c < nc; ++c) {
+        shadow_vis_[c].assign(num_chunks, {});
+        for (int ch = 0; ch < num_chunks; ++ch) {
+            shadow_vis_[c][ch].reserve((n / num_chunks) + 1);
+        }
+    }
+    utils::parallel_for(0, num_chunks, [&](int lo, int hi) {
+        for (int ch = lo; ch < hi; ++ch) {
+            for (int i = bounds[ch]; i < bounds[ch + 1]; ++i) {
+                const auto& cand = shadow_candidates_[i];
+                for (int c = 0; c < nc; ++c) {
+                    if (is_inside_frustum(cascade_frusta[c], cand.second,
+                                         cand.first->gpu_mesh_handle(), cand.first->mesh_path)) {
+                        shadow_vis_[c][ch].push_back({cand.first, cand.second});
+                    }
+                }
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2315,6 +2518,16 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         shadow_cache_valid_ = true;
         // GPU 计时：整段 CSM（含 atlas / VSM blur）算一个 pass 区间。
         ctx.gpu_profile_begin("shadow");
+        // 整段阴影更新只算一次 world_transform，再一次性对所有级联并行剔除。
+        // 绘制顺序原本依赖 foreach 的 ECS 迭代序（先级联0全部、再级联1…），这里
+        // 用 [级联][块] 分装 + 按级联→块序重放精确复刻，深度图本就与绘制序无关。
+        std::vector<Frustum> cascade_frusta(cascade_count_);
+        for (int c = 0; c < cascade_count_; ++c) {
+            cascade_frusta[c] = extract_frustum(cascade_light_space_matrices_[c]);
+        }
+        collect_shadow_candidates(scene);
+        cull_shadow_cascades(cascade_frusta);
+
         if (shadow_atlas_enabled_ && shadow_atlas_.valid() && shadow_atlas_shader_.is_valid()) {
             // ---- Shadow Atlas 模式：所有级联渲染到同一张图集纹理 ----
             shadow_atlas_.free_all();
@@ -2350,14 +2563,11 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                 math::Vector4f uv_xform = shadow_atlas_.slot_uv_transform(slot_indices[c]);
                 ctx.set_uniform_vec4(shadow_atlas_shader_, "uAtlasOffset", uv_xform);
 
-                const Frustum shadow_frustum = extract_frustum(cascade_light_space_matrices_[c]);
-                ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
-                    scene,
-                    [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
-                        if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
-                        const math::Matrix4f& model = entity->world_transform();
-                        if (!is_inside_frustum(shadow_frustum, model, mr->gpu_mesh_handle(),
-                                               mr->mesh_path)) return;
+                const int num_chunks = static_cast<int>(shadow_vis_[c].size());
+                for (int ch = 0; ch < num_chunks; ++ch) {
+                    for (const auto& sd : shadow_vis_[c][ch]) {
+                        components::MeshRenderer* mr = sd.mr;
+                        const math::Matrix4f& model = sd.model;
                         ctx.set_uniform_mat4(shadow_atlas_shader_, "uModel", model);
                         ctx.set_uniform_mat4(shadow_atlas_shader_, "uLightSpaceMatrix",
                                              cascade_light_space_matrices_[c]);
@@ -2375,13 +2585,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                         for (int di = 0; di < shadow_draws; ++di) {
                             ctx.draw_mesh(mr->draw_mesh_handle_at(di), shadow_atlas_shader_);
                         }
-                    });
+                    }
+                }
             }
             ctx.set_framebuffer(RHIFramebufferHandle{});
         } else {
             // ---- 传统模式：每级联独立渲染 ----
             for (int c = 0; c < cascade_count_; ++c) {
-                const Frustum shadow_frustum = extract_frustum(cascade_light_space_matrices_[c]);
                 begin_shadow_pass(ctx, c);
 
                 // 根据 shadow_mode_ 选择正确的 shader 句柄
@@ -2392,13 +2602,11 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                     current_shadow = shadow_esm_shader_;
                 }
 
-                ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
-                    scene,
-                    [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
-                        if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
-                        const math::Matrix4f& model = entity->world_transform();
-                        if (!is_inside_frustum(shadow_frustum, model, mr->gpu_mesh_handle(),
-                                               mr->mesh_path)) return;
+                const int num_chunks = static_cast<int>(shadow_vis_[c].size());
+                for (int ch = 0; ch < num_chunks; ++ch) {
+                    for (const auto& sd : shadow_vis_[c][ch]) {
+                        components::MeshRenderer* mr = sd.mr;
+                        const math::Matrix4f& model = sd.model;
                         ctx.set_uniform_mat4(current_shadow, "uModel", model);
                         ctx.set_uniform_mat4(current_shadow, "uLightSpaceMatrix",
                                              cascade_light_space_matrices_[c]);
@@ -2421,7 +2629,8 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
                         for (int di = 0; di < shadow_draws; ++di) {
                             ctx.draw_mesh(mr->draw_mesh_handle_at(di), current_shadow);
                         }
-                    });
+                    }
+                }
                 end_shadow_pass(ctx);
             }
 
@@ -2455,43 +2664,15 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
     skinned_opaque_items.clear();
     skinned_transparent_items.clear();
     const math::Vector3f cam_pos = camera_->position();
-    ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
-        scene,
-        [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
-            if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
-            math::Matrix4f model = entity->world_transform();
-            if (mr->billboard && camera_) {
-                // Sprite3D 广告牌：忽略自身旋转，局部 +Z 朝向相机
-                model = math::billboard_matrix(
-                    math::Vector3f(model(0, 3), model(1, 3), model(2, 3)),
-                    entity->transform()->scale,
-                    camera_->position());
-            }
-            if (!is_inside_frustum(camera_frustum, model, mr->gpu_mesh_handle(),
-                                       mr->mesh_path)) return;
-            append_mesh_renderer_items(mr, model, cam_pos, camera_frustum, opaque_items,
-                                       transparent_items, viewmodel_items);
-        });
+    // 并行收集：多核并发做 world_transform + 视锥剔除 + 合批前收集。
+    // 输出顺序与串行 foreach 一致（per-chunk 缓冲按块序合并），batch_skip_ 索引安全。
+    gather_mesh_renderer_items(scene, camera_frustum, cam_pos, opaque_items,
+                             transparent_items, viewmodel_items);
 
     // 蒙皮网格：skinned 管线可用且 palette 已就绪才绘制
     if (skinned_pbr_shader_.is_valid()) {
-        ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
-            scene,
-            [&](scene::Entity* entity, components::SkinnedMeshRenderer* mr, components::Transform* /*transform*/) {
-                if (!mr->enabled || mr->model_path.empty() || !mr->gpu_mesh_handle().is_valid() || !mr->palette()) return;
-                const math::Matrix4f& model = entity->world_transform();
-                if (!is_inside_frustum_skinned(camera_frustum, model, mr->model_path)) return;
-                const Material* mat = mr->material.get();
-                const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
-                math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
-                float dist_sq = (pos - cam_pos).length_sq();
-                SkinnedDrawItem item{mr->gpu_mesh_handle(), mat, model, mr->palette(), dist_sq};
-                if (transparent) {
-                    skinned_transparent_items.push_back(std::move(item));
-                } else {
-                    skinned_opaque_items.push_back(std::move(item));
-                }
-            });
+        gather_skinned_items(scene, camera_frustum, cam_pos, skinned_opaque_items,
+                            skinned_transparent_items);
     }
 
     // 地形（程序化网格，不透明）
@@ -2540,41 +2721,13 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         skinned_opaque_items.clear();
         skinned_transparent_items.clear();
         const math::Vector3f cam_pos = camera_->position();
-        ecs::foreach_with_components<components::MeshRenderer, components::Transform>(
-            scene,
-            [&](scene::Entity* entity, components::MeshRenderer* mr, components::Transform* /*transform*/) {
-                if (!mr->enabled || mr->mesh_path.empty() || !mr->gpu_mesh_handle().is_valid()) return;
-                math::Matrix4f model = entity->world_transform();
-                if (mr->billboard && camera_) {
-                    model = math::billboard_matrix(
-                        math::Vector3f(model(0, 3), model(1, 3), model(2, 3)),
-                        entity->transform()->scale,
-                        camera_->position());
-                }
-                if (!is_inside_frustum(camera_frustum, model, mr->gpu_mesh_handle(),
-                                       mr->mesh_path)) return;
-                append_mesh_renderer_items(mr, model, cam_pos, camera_frustum, opaque_items,
-                                           transparent_items, viewmodel_items);
-            });
+        // 并行收集（同 forward 路径，per-chunk 缓冲按块序合并保持 batch_skip_ 对齐）
+        gather_mesh_renderer_items(scene, camera_frustum, cam_pos, opaque_items,
+                                 transparent_items, viewmodel_items);
         // 蒙皮网格
         if (skinned_pbr_shader_.is_valid()) {
-            ecs::foreach_with_components<components::SkinnedMeshRenderer, components::Transform>(
-                scene,
-                [&](scene::Entity* entity, components::SkinnedMeshRenderer* mr, components::Transform* /*transform*/) {
-                    if (!mr->enabled || mr->model_path.empty() || !mr->gpu_mesh_handle().is_valid() || !mr->palette()) return;
-                    const math::Matrix4f& model = entity->world_transform();
-                    if (!is_inside_frustum_skinned(camera_frustum, model, mr->model_path)) return;
-                    const Material* mat = mr->material.get();
-                    const bool transparent = mat && mat->blend_mode == Material::BlendMode::Blend;
-                    math::Vector3f pos(model(0, 3), model(1, 3), model(2, 3));
-                    float dist_sq = (pos - cam_pos).length_sq();
-                    SkinnedDrawItem item{mr->gpu_mesh_handle(), mat, model, mr->palette(), dist_sq};
-                    if (transparent) {
-                        skinned_transparent_items.push_back(std::move(item));
-                    } else {
-                        skinned_opaque_items.push_back(std::move(item));
-                    }
-                });
+            gather_skinned_items(scene, camera_frustum, cam_pos, skinned_opaque_items,
+                                skinned_transparent_items);
         }
         // 地形（程序化网格，不透明）
         append_terrain_items(camera_frustum, cam_pos, opaque_items);
@@ -2740,6 +2893,10 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         // 后处理：SSAO, Contact Shadow, Bloom, DOF, Motion Blur, Auto Exposure, TAA, Tonemap
         render_ssao(ctx);
         render_contact_shadow(ctx);
+        // 体积光散射（丁达尔）：放在 Bloom 之前，让光柱本身也参与辉光扩散。
+        // 输出 scene + 散射光，按 SSR/雾的同一约定接成新的 HDR 颜色输入。
+        render_volumetric(ctx);
+        if (volumetric_tex_.is_valid()) hdr_color_ = volumetric_tex_;
         render_bloom(ctx);
         // DOF
         if (dof_enabled_ && dof_.valid()) {
@@ -3003,6 +3160,9 @@ void RenderPipeline::render_scene(scene::Scene& scene, RenderContext& ctx) {
         render_ssao(ctx);
         // 3a. 屏幕空间接触阴影（补 Peter-Panning 脚底黑）
         render_contact_shadow(ctx);
+        // 3b. 体积光散射（丁达尔）：Bloom 前接进 HDR 链
+        render_volumetric(ctx);
+        if (volumetric_tex_.is_valid()) hdr_color_ = volumetric_tex_;
         // 4. Bloom（阈值 → 降采样链 → 上采样合成）
         render_bloom(ctx);
         // 4a. DOF 景深（Bloom 后，TAA 前）
@@ -3443,6 +3603,9 @@ void RenderPipeline::render_submitted(RenderContext& ctx) {
         }
         render_ssao(ctx);
         render_contact_shadow(ctx);
+        // 体积光散射（丁达尔）：Bloom 前接进 HDR 链
+        render_volumetric(ctx);
+        if (volumetric_tex_.is_valid()) hdr_color_ = volumetric_tex_;
         render_bloom(ctx);
         if (dof_enabled_ && dof_.valid()) {
             dof_.render(&ctx, hdr_color_, hdr_depth_, pp_params_, viewport_width_, viewport_height_);
@@ -4136,6 +4299,10 @@ bool RenderPipeline::resize_render_targets_impl(int width, int height) {
         if (!create_bloom_targets(ctx_)) {
             GLOG_ERROR("RenderPipeline: resize bloom targets failed, bloom disabled");
             pp_params_.bloom_enabled = 0;
+        }
+        if (!create_volumetric_targets(ctx_, viewport_width_, viewport_height_)) {
+            GLOG_WARN("RenderPipeline: resize volumetric targets failed, disabled");
+            pp_params_.volumetric_enabled = 0;
         }
         destroy_auto_exposure_targets();
         if (!create_auto_exposure_targets(ctx_)) {
@@ -5066,9 +5233,17 @@ bool RenderPipeline::ensure_hiz_targets(RenderContext& ctx, int depth_w, int dep
     // 驱动，而 GL/Vulkan context current 在渲染线程 —— 主线程直调
     // glCreateTextures/glGenFramebuffers 会静默返回 0，HiZ 会一直"创建失败"，
     // 遮挡剔除其实从未真正启用。统一转发。
+    //
+    // **必须是同步版**：本函数改写的 hiz_levels_/hiz_w_/hiz_tex_/gpu_cull_hiz_
+    // 会被同一帧末尾的 build_hiz() 立刻读取。异步转发时 lambda 排在命令缓冲里
+    // 尚未执行，build_hiz 读到的还是旧尺寸的整套金字塔，于是它按旧布局录下
+    // "把 709x377 的层级拷进偏移 N" 的拷贝；而 lambda 随后把 SSBO 重建成更小的
+    // 尺寸并在新布局上执行这些拷贝 → vkCmdCopyImageToBuffer 越界（实测
+    // "trying to copy 1069172 bytes ... exceeds the VkBuffer total size of 750456"）
+    // → GPU 上直接 VK_ERROR_DEVICE_LOST。窗口连续缩放时必现。
     hiz_create_in_flight_ = true;
-    const bool queued = ctx.run_with_gpu_context([this, &ctx, levels, floats,
-                                                 pw, ph, poff]() mutable {
+    const bool queued = ctx.run_with_gpu_context_sync([this, &ctx, levels, floats,
+                                                      pw, ph, poff]() mutable {
         hiz_create_in_flight_ = false;
         _create_hiz_targets(ctx, levels, floats, pw, ph, poff);
     });
@@ -5076,8 +5251,6 @@ bool RenderPipeline::ensure_hiz_targets(RenderContext& ctx, int depth_w, int dep
         hiz_create_in_flight_ = false;
         return false;
     }
-    // 异步路径下资源尚未建好，本帧先按"不可用"处理；下一帧起 occlusion_culling_active_
-    // 才为 true。cull 侧对 active=false 有兜底（只用视锥剔除）。
     return occlusion_culling_active_;
 }
 

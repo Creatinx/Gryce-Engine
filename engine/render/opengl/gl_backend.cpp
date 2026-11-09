@@ -371,7 +371,10 @@ void GLBackend::set_scissor(int x, int y, int w, int h) {
     // 这里按需打开，绑/解帧缓冲时再关掉（见 bind_framebuffer），免得离屏
     // pass 被上一段屏幕坐标的裁剪域切掉。
     glEnable(GL_SCISSOR_TEST);
-    glScissor(x, y, w, h);
+    // 引擎 2D/UI 的裁剪矩形使用左上原点；glScissor 使用帧缓冲左下原点。
+    // 这里集中转换，Renderer2D、UI DrawList 和宿主不需要各写一套 Y 翻转。
+    const int target_height = viewport_h_ > 0 ? viewport_h_ : h;
+    glScissor(x, std::max(0, target_height - y - h), w, h);
     scissor_test_on_ = true;
     scissor_x_ = x;
     scissor_y_ = y;

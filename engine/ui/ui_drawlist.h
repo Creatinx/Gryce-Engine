@@ -1,183 +1,283 @@
-// engine/ui/ui_drawlist.h
-// UI 自绘命令缓冲（引擎内置 UI 的第一块"手脚"）。
-//
-// 定位：脱离 Dear ImGui 的引擎内置 UI 渲染路径上，本文件是**模型层**——
-// 只记录"画什么"（命令 + 裁剪栈 + 字符串池），不碰 GPU、不依赖渲染器，
-// 因此可以无窗口单测。光栅化由后续的渲染桥把命令翻成 IRenderer2D 调用
-// （draw_rect / draw_round_rect / draw_text / draw_sprite_region / set_scissor），
-// 三后端（D3D12 / Vulkan / GL）自动继承，不需要为 UI 写新 shader。
-//
-// 圆角在模型层只是"四个角的半径 + 线宽"，怎么光栅化（折线扇形 + 1px alpha
-// 渐隐边）是渲染器的事——这样直角与圆角共用同一套批次与裁剪策略，圆角不会
-// 因为引入新的图元类型而丢掉裁剪/剔除语义。
-//
-// 与 ImDrawList 的差异：ImDrawList 每帧由 ImGui 内部生成并直接进后端；
-// 本类是 retained 控件层（阶段 3）与渲染桥（阶段 2）之间的稳定契约，
-// 控件只追加命令，裁剪与容量策略在这里统一。
-
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
-namespace gryce_ui {
+#include "ui/ui_geometry.h"
 
-// ---------------------------------------------------------------------------
-// UiCmd — 命令类型
-// ---------------------------------------------------------------------------
-enum class UiCmd : uint32_t {
-    Rect     = 0,  // 纯色矩形（x/y/w/h + color）
-    Text     = 1,  // 文本（x/y + 字符串池引用 + font_size + color）
-    Sprite   = 2,  // 贴图（x/y/w/h + texture + uv + tint）
-    PushClip = 3,  // 压入裁剪矩形（与父裁剪相交）
-    PopClip  = 4,  // 弹出裁剪矩形
-    // ---- 美化：圆角族（radii 四角、border_w 线宽、color2 渐变下端色）----
-    // 单独成命令而不是在 Rect 上挂可选字段，是为了让渲染桥的分支保持
-    // "一种命令一次调用"——直角矩形是绝大多数背景板/分隔线，不该为圆角付代价。
-    RoundRect       = 5,  // 圆角填充（color2 != 0 时竖直渐变 color → color2）
-    RoundRectBorder = 6,  // 圆角描边（border_w = 线宽，向内生长）
-    Shadow          = 7,  // 圆角外阴影（border_w = 扩散半径，color 带 alpha）
-    // 凸多边形填充：顶点走多边形池（poly_off / poly_len）。
-    // 单独一个命令而不是"用一堆矩形拼"：勾选标记与下拉箭头都是斜线，
-    // 拼矩形既画不出斜边也没法抗锯齿。ImGui 画的勾/箭头本身就是一条
-    // 8 点凸路径（RenderCheckMark / RenderArrow），这里与它一一对应。
-    Polygon = 8,
+namespace gryce_engine::ui {
+
+struct TextureRef {
+    uint32_t index = 0xFFFFFFFFu;
+    uint32_t generation = 0;
+    int width = 0;
+    int height = 0;
+
+    bool valid() const { return index != 0xFFFFFFFFu && width > 0 && height > 0; }
 };
 
-// ---------------------------------------------------------------------------
-// UiCommand — 单条命令（POD，测试与渲染桥共用）
-// clip 字段 = **执行该命令后**生效的裁剪栈深度（PushClip 记压入后的深度，
-// PopClip 记弹出后的深度，绘制命令记当前深度；0 = 无裁剪）。渲染桥据此
-// 判断"裁剪状态变没变"，不在每条命令里存裁剪矩形，省 16 字节/条。
-//
-// 例外是 PushClip：它的 x/y/w/h **不是**调用方请求的矩形，而是与父裁剪
-// 相交后的**生效矩形**。命令流因此是自描述的——渲染桥不需要在读命令时
-// 回查 drawlist 的裁剪栈（那是构建期的活状态，双缓冲下会被下一帧覆盖，
-// 见 ui_render_bridge.h 的线程模型）。
-// ---------------------------------------------------------------------------
-struct UiCommand {
-    UiCmd    cmd = UiCmd::Rect;
-    float    x = 0.0f;
-    float    y = 0.0f;
-    float    w = 0.0f;
-    float    h = 0.0f;
-    uint32_t color = 0xFFFFFFFF;  // 0xRRGGBBAA，与主题 token 一致
-    uint64_t texture = 0;         // Sprite：引擎纹理稳定 id（0 = 无）
-    float    u0 = 0.0f;
-    float    v0 = 0.0f;
-    float    u1 = 1.0f;
-    float    v1 = 1.0f;
-    float    font_size = 0.0f;    // Text：像素高度
-    uint32_t text_off = 0;        // Text：字符串池偏移
-    uint32_t text_len = 0;        // Text：字节数（不含 '\0'）
-    uint32_t clip = 0;            // 发出时的裁剪栈深度
-
-    // ---- 圆角族（RoundRect / RoundRectBorder / Shadow）----
-    // 四角半径按「左上、右上、右下、左下」排列，单位逻辑像素。单值半径由
-    // add_round_rect 展开成四角相同；只有标题栏那种"上圆下方"才需要逐角给。
-    float    radii[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float    border_w = 0.0f;     // Border：线宽；Shadow：扩散半径
-    uint32_t color2 = 0;          // RoundRect：渐变下端色（0 = 纯色填充）
-
-    // ---- Polygon ----
-    // 顶点池偏移（单位 = float，成对存 x/y）与顶点数。与字符串池同一套语义：
-    // 放不下整条多边形就整条丢弃并计 dropped_，绝不画半个形状。
-    uint32_t poly_off = 0;
-    uint32_t poly_len = 0;
+enum class UIDrawCommandType : uint8_t {
+    Rect = 0,
+    Text = 1,
+    PushClip = 2,
+    PopClip = 3,
+    Image = 4,
+    // 一行多色文本：runs 里的每一段按顺序横向推进行（语法高亮用）。
+    // 与 Text 的区别只在颜色粒度——Text 整行一个颜色，TextColored 每 run 一个颜色。
+    TextColored = 5,
+    // 圆角外阴影：rect 是投影体本身，spread 是扩散半径。
+    Shadow = 6,
+    // 圆头线段：起点/终点 + 线宽。Fluent 的勾选标记、下拉箭头、菜单分隔线
+    // 都是这种"短圆头笔画"，用旋转四边形 + 两端圆点拼出来。
+    Line = 7,
 };
 
-// ---------------------------------------------------------------------------
-// UiClipRect — 裁剪栈槽位（渲染桥按 index 1..depth 读取）
-// ---------------------------------------------------------------------------
-struct UiClipRect {
-    float x = 0.0f;
-    float y = 0.0f;
-    float w = 0.0f;
-    float h = 0.0f;
+// 文本在 rect 内的水平对齐方式。
+enum class UITextAlign : uint8_t {
+    Left = 0,
+    Center,
+    Right,
 };
 
-// ---------------------------------------------------------------------------
-// UiDrawList — 定长命令缓冲 + 裁剪栈 + 字符串池
-//
-// 语义（均有单测覆盖）：
-// - 裁剪相交：push_clip 与当前裁剪取交集；交集为空（w<=0 或 h<=0）时进入
-//   剔除态，后续**绘制命令**直接丢弃并计 culled_，但 PushClip/PopClip 照常
-//   记录（否则恢复不回来）
-// - 容量：命令表满 → 丢弃并计 dropped_；字符串池放不下整条文本 → 整条丢弃
-//   并计 dropped_（不截断：半条字符串比没有更难调试）
-// - 坐标系：左上原点、+y 向下，与 IRenderer2D 的 top_left_origin 一致
-// - 不规范化输入：w/h 为负也原样记录，几何正确性由布局层负责
-// ---------------------------------------------------------------------------
-class UiDrawList {
+// 文本在 rect 内的垂直对齐方式。控件里的单行文字默认 Middle（真正按大写高
+// 居中）；逐行排版的正文（代码编辑器、控制台）用 Baseline 保持行距节奏。
+enum class UITextVAlign : uint8_t {
+    // 大写字母顶边贴 rect 顶。
+    Top = 0,
+    // 大写字母在 rect 内垂直居中——控件标签用这个。
+    Middle,
+    // 基线固定在 rect.y + font_size，保留逐行排版的老口径。
+    Baseline,
+};
+
+// 一段同色文本。文本模型层不依赖后端 Color，直接用 0xRRGGBBAA。
+struct UITextRun {
+    std::string text;
+    uint32_t color = 0xFFFFFFFFu;
+};
+
+// 稳定的模型层命令。颜色使用 0xRRGGBBAA，不携带 GPU 句柄或后端对象。
+struct UIDrawCommand {
+    UIDrawCommandType type = UIDrawCommandType::Rect;
+    UIRect rect;
+    uint32_t color = 0xFFFFFFFFu;
+    float font_size = 0.0f;
+    std::string text;
+    uint32_t texture_index = 0xFFFFFFFFu;
+    uint32_t texture_generation = 0;
+    float u0 = 0.0f;
+    float v0 = 0.0f;
+    float u1 = 1.0f;
+    float v1 = 1.0f;
+    std::vector<UITextRun> runs;   // 仅 TextColored 使用
+
+    // ---- 圆角 / 描边 / 阴影（Rect 与 Shadow 使用）----------------------
+    // 半径顺序固定为 左上、右上、右下、左下，单位逻辑像素。全 0 等价于直角，
+    // 此时后端走原来的矩形路径，不为圆角多展开任何三角形。
+    float radii[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    // 向内生长的描边；border_width 为 0 时不描边。
+    float border_width = 0.0f;
+    uint32_t border_color = 0x00000000u;
+    // 竖直渐变的底色。0 表示纯色（用 color），非 0 时由 color 渐变到它。
+    uint32_t color_bottom = 0x00000000u;
+    // Shadow 的扩散半径。
+    float spread = 0.0f;
+
+    // ---- 文本对齐（Text / TextColored）--------------------------------
+    UITextAlign align = UITextAlign::Left;
+    UITextVAlign valign = UITextVAlign::Middle;
+
+    // ---- 线段（Line）---------------------------------------------------
+    // 起点与终点为绝对坐标，thickness 是笔画宽度，两端按半宽做成圆头。
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+    float thickness = 0.0f;
+
+    bool rounded() const {
+        return radii[0] > 0.0f || radii[1] > 0.0f ||
+               radii[2] > 0.0f || radii[3] > 0.0f;
+    }
+};
+
+class UIDrawList {
 public:
-    static constexpr int kMaxCommands = 4096;
-    static constexpr int kMaxClips     = 64;
-    static constexpr int kTextPoolSize = 32768;
-    // 多边形池（单位 float）。勾/箭头各 8~10 个点，正常一帧几十个图元；
-    // 4096 float = 2048 个点，够 200 个多边形同时在场。
-    static constexpr int kPolyPoolSize = 4096;
+    void reset() {
+        commands_.clear();
+        top_layer_start_ = 0;
+    }
 
-    void reset();
+    // 置顶层（菜单浮层、对话框）在命令流里的起点。0 表示没有置顶层。
+    // 后端要在这一条之前把已经积累的批次提交掉：文字批次天然排在矩形之后，
+    // 同一趟里浮层的底色会被页面文字盖住。
+    void set_top_layer_start(std::size_t index) { top_layer_start_ = index; }
+    std::size_t top_layer_start() const { return top_layer_start_; }
 
-    // 裁剪栈
-    void push_clip(float x, float y, float w, float h);
-    void pop_clip();  // 空栈时无操作（不崩、不计数）
+    void add_rect(const UIRect& rect, uint32_t rgba) {
+        commands_.push_back({UIDrawCommandType::Rect, rect, rgba});
+    }
 
-    // 绘制命令（剔除态/容量满时按上面的策略丢弃）
-    void add_rect(float x, float y, float w, float h, uint32_t rgba);
-    // 圆角矩形填充。radius 会被渲染器钳到 min(w,h)/2，负值按 0 处理。
-    void add_round_rect(float x, float y, float w, float h, float radius, uint32_t rgba);
-    // 逐角半径（左上/右上/右下/左下）。
-    void add_round_rect4(float x, float y, float w, float h, const float radii[4],
-                         uint32_t rgba);
-    // 圆角竖直渐变（top → bottom）：面板/标题栏用得上，比纯色更有层次。
-    void add_round_gradient(float x, float y, float w, float h, float radius,
-                            uint32_t top, uint32_t bottom);
-    // 逐角半径的渐变（标题栏"上圆下方"用它）。
-    void add_round_gradient4(float x, float y, float w, float h, const float radii[4],
-                             uint32_t top, uint32_t bottom);
-    // 圆角描边：线宽向内生长（矩形外轮廓不变，尺寸不会因为加边框变大）。
-    void add_round_border(float x, float y, float w, float h, float radius,
-                          float thickness, uint32_t rgba);
-    // 逐角半径的描边（标题栏"上圆下方"要它：四条边一起画，不留半圈缝）。
-    void add_round_border4(float x, float y, float w, float h, const float radii[4],
-                           float thickness, uint32_t rgba);
-    // 圆角外阴影：spread 是视觉上的扩散半径，rgba 的 alpha 是中心的浓度。
-    void add_shadow(float x, float y, float w, float h, float radius, float spread,
-                    uint32_t rgba);
-    void add_text(float x, float y, const char* text, float font_size, uint32_t rgba);
-    void add_sprite(float x, float y, float w, float h, uint64_t texture,
-                    float u0, float v0, float u1, float v1, uint32_t rgba);
-    // 凸多边形填充。xy 是 2*count 个 float（x0,y0,x1,y1,...），按给定顺序连成
-    // 闭合凸多边形——勾选标记与下拉箭头用它。少于 3 点直接忽略。
-    void add_polygon(const float* xy, int count, uint32_t rgba);
+    // 圆角填充（四角同半径）。radius 为 0 时退化成直角。
+    void add_round_rect(const UIRect& rect, float radius, uint32_t rgba) {
+        const float radii[4] = {radius, radius, radius, radius};
+        add_round_rect(rect, radii, rgba);
+    }
 
-    // 查询
-    int                command_count() const { return count_; }
-    const UiCommand&   command(int index) const { return commands_[index]; }
-    const char*        text_at(uint32_t off) const;      // 保证 '\0' 结尾
-    const float*       points_at(uint32_t off) const;    // Polygon 顶点池
-    const UiClipRect&  clip_at(int index) const;         // index 1..clip_depth_
-    int                clip_depth() const { return clip_depth_; }
-    uint32_t           dropped() const { return dropped_; }  // 容量丢弃计数
-    uint32_t           culled() const { return culled_; }    // 裁剪剔除计数
+    // 圆角填充，可带竖直渐变（bottom_rgba 非 0）与内描边（border_width > 0）。
+    // 渐变与描边都靠顶点色/额外环带完成，不需要新的着色器或纹理。
+    void add_round_rect(const UIRect& rect, const float radii_in[4], uint32_t rgba,
+                        uint32_t bottom_rgba = 0u,
+                        float border_width = 0.0f,
+                        uint32_t border_rgba = 0x00000000u) {
+        UIDrawCommand command;
+        command.type = UIDrawCommandType::Rect;
+        command.rect = rect;
+        command.color = rgba;
+        for (int i = 0; i < 4; ++i) {
+            command.radii[i] = std::max(0.0f, radii_in[i]);
+        }
+        command.color_bottom = bottom_rgba;
+        command.border_width = std::max(0.0f, border_width);
+        command.border_color = border_rgba;
+        commands_.push_back(std::move(command));
+    }
+
+    // 四角同半径的带描边/渐变版本。
+    void add_round_rect(const UIRect& rect, float radius, uint32_t rgba,
+                        uint32_t bottom_rgba, float border_width,
+                        uint32_t border_rgba) {
+        const float radii[4] = {radius, radius, radius, radius};
+        add_round_rect(rect, radii, rgba, bottom_rgba, border_width, border_rgba);
+    }
+
+    // 圆角外阴影。必须画在投影体之前，调用方负责顺序。
+    void add_round_shadow(const UIRect& rect, float radius, float spread,
+                          uint32_t rgba) {
+        UIDrawCommand command;
+        command.type = UIDrawCommandType::Shadow;
+        command.rect = rect;
+        command.color = rgba;
+        for (int i = 0; i < 4; ++i) command.radii[i] = std::max(0.0f, radius);
+        command.spread = std::max(0.0f, spread);
+        commands_.push_back(std::move(command));
+    }
+
+    void add_text(const UIRect& rect, std::string text, float font_size, uint32_t rgba,
+                  UITextAlign align = UITextAlign::Left,
+                  UITextVAlign valign = UITextVAlign::Middle) {
+        UIDrawCommand command;
+        command.type = UIDrawCommandType::Text;
+        command.rect = rect;
+        command.color = rgba;
+        command.font_size = font_size;
+        command.align = align;
+        command.valign = valign;
+        command.text = std::move(text);
+        commands_.push_back(std::move(command));
+    }
+
+    void add_text_colored(const UIRect& rect, std::vector<UITextRun> runs, float font_size,
+                          UITextAlign align = UITextAlign::Left,
+                          UITextVAlign valign = UITextVAlign::Middle) {
+        UIDrawCommand command;
+        command.type = UIDrawCommandType::TextColored;
+        command.rect = rect;
+        command.font_size = font_size;
+        command.align = align;
+        command.valign = valign;
+        command.runs = std::move(runs);
+        commands_.push_back(std::move(command));
+    }
+
+    // 圆头线段。端点按 thickness 的一半各补一个圆，短笔画（勾选标记、箭头）
+    // 才不会出现方角。
+    void add_line(float x0, float y0, float x1, float y1, float thickness, uint32_t rgba) {
+        UIDrawCommand command;
+        command.type = UIDrawCommandType::Line;
+        command.x0 = x0;
+        command.y0 = y0;
+        command.x1 = x1;
+        command.y1 = y1;
+        command.thickness = thickness;
+        command.color = rgba;
+        commands_.push_back(std::move(command));
+    }
+
+    void push_clip(const UIRect& rect) {
+        commands_.push_back({UIDrawCommandType::PushClip, rect});
+    }
+
+    void add_image(const UIRect& rect, uint32_t texture_index,
+                   uint32_t texture_generation,
+                   float u0 = 0.0f, float v0 = 0.0f,
+                   float u1 = 1.0f, float v1 = 1.0f,
+                   uint32_t rgba = 0xFFFFFFFFu) {
+        UIDrawCommand command;
+        command.type = UIDrawCommandType::Image;
+        command.rect = rect;
+        command.color = rgba;
+        command.texture_index = texture_index;
+        command.texture_generation = texture_generation;
+        command.u0 = u0;
+        command.v0 = v0;
+        command.u1 = u1;
+        command.v1 = v1;
+        commands_.push_back(std::move(command));
+    }
+
+    void pop_clip() {
+        commands_.push_back({UIDrawCommandType::PopClip});
+    }
+
+    void append(const UIDrawList& other, float opacity = 1.0f) {
+        const float alpha_scale = std::clamp(opacity, 0.0f, 1.0f);
+        auto fade = [alpha_scale](uint32_t rgba) -> uint32_t {
+            const uint32_t alpha = rgba & 0xFFu;
+            const uint32_t scaled = static_cast<uint32_t>(
+                static_cast<float>(alpha) * alpha_scale + 0.5f);
+            return (rgba & 0xFFFFFF00u) | scaled;
+        };
+        for (UIDrawCommand command : other.commands_) {
+            if (command.type != UIDrawCommandType::PushClip &&
+                command.type != UIDrawCommandType::PopClip &&
+                alpha_scale < 1.0f) {
+                command.color = fade(command.color);
+                // 描边与渐变底色同样是 0xRRGGBBAA，透明度必须一起乘，
+                // 否则整体淡出时描边会残留成实线。
+                if ((command.border_color & 0xFFu) != 0u) {
+                    command.border_color = fade(command.border_color);
+                }
+                if (command.color_bottom != 0u) {
+                    command.color_bottom = fade(command.color_bottom);
+                }
+                for (UITextRun& run : command.runs) {
+                    run.color = fade(run.color);
+                }
+            }
+            commands_.push_back(std::move(command));
+        }
+    }
+
+    bool empty() const { return commands_.empty(); }
+    std::size_t size() const { return commands_.size(); }
+    const std::vector<UIDrawCommand>& commands() const { return commands_; }
 
 private:
-    bool  emit(const UiCommand& c);       // 统一入口：满队返回 false
-    bool  cull_active() const;            // 当前裁剪是否为空（剔除态）
-    void  intersect(float x, float y, float w, float h,
-                    float* ox, float* oy, float* ow, float* oh) const;
-
-    UiCommand  commands_[kMaxCommands];
-    UiClipRect clips_[kMaxClips];   // [0] 不用；有效区 1..clip_depth_
-    char       text_pool_[kTextPoolSize];
-    float      poly_pool_[kPolyPoolSize];   // 成对存 x/y
-
-    int      count_        = 0;
-    int      clip_depth_   = 0;
-    int      text_used_    = 0;
-    int      poly_used_    = 0;
-    uint32_t dropped_      = 0;
-    uint32_t culled_       = 0;
+    std::vector<UIDrawCommand> commands_;
+    std::size_t top_layer_start_ = 0;
 };
 
-} // namespace gryce_ui
+inline uint32_t ui_color(float r, float g, float b, float a = 1.0f) {
+    auto channel = [](float value) -> uint32_t {
+        const float clamped = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+        return static_cast<uint32_t>(clamped * 255.0f + 0.5f);
+    };
+    return (channel(r) << 24u) | (channel(g) << 16u) |
+           (channel(b) << 8u) | channel(a);
+}
+
+} // namespace gryce_engine::ui

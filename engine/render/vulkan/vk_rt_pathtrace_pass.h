@@ -63,7 +63,10 @@ private:
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
-    VkDescriptorSet set_ = VK_NULL_HANDLE;
+    // 描述符集同样按帧槽轮转（3 份）：每帧都会重写整套 binding，若只有一份，
+    // 上一帧仍在飞的命令缓冲正引用它 —— 验证层报 "VkDescriptorSet ... is in use
+    // by VkCommandBuffer"，部分驱动上会读到别的帧的贴图/缓冲（画面闪黑或闪白）。
+    VkDescriptorSet set_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     // uniform 缓冲按帧槽轮转（3 份），避免 frames_in_flight>1 时 CPU 覆写
     // GPU 仍在读取的上一帧数据。
     VulkanBuffer* ubo_[3] = {nullptr, nullptr, nullptr};

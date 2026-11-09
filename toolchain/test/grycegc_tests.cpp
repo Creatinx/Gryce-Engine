@@ -763,7 +763,7 @@ void run_package() {
         return;
     }
     const fs::path pkg = res.pkg_root;
-    EXPECT(fs::exists(pkg / "GryceRenderSmoke.exe"), "exe at pkg root");
+    EXPECT(fs::exists(pkg / res.exe_name), "exe at pkg root");
     EXPECT(fs::exists(pkg / "GryceCore.dll"), "core dll at pkg root");
     EXPECT(fs::exists(pkg / "dll"), "dll/ folder exists");
     EXPECT(fs::exists(pkg / "run.bat"), "run.bat exists");
@@ -775,7 +775,7 @@ void run_package() {
 
     // 包自洽性：闭包全部可解析、无缺失
     DepResolver resolver(pkg, {pkg, pkg / "dll"});
-    const auto closure = resolver.resolve(pkg / "GryceRenderSmoke.exe");
+    const auto closure = resolver.resolve(pkg / res.exe_name);
     EXPECT(closure.missing.empty(), "package closure has no missing dll");
 
     // 与 Python 版对拍已在 CLI 冒烟覆盖（字节级一致）；这里只验证二次打包稳定

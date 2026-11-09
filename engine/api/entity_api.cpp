@@ -16,12 +16,70 @@
 #include "utils/glog/glog_lib.h"
 
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <cstring>
 
 using gryce_engine::scene::Scene;
 using gryce_engine::scene::Entity;
 
 namespace gc = gryce_core;
+
+namespace {
+
+using gryce_engine::math::Matrix4f;
+using gryce_engine::math::Quaternionf;
+using gryce_engine::math::Vector3f;
+
+struct WorldTRS {
+    Vector3f position{};
+    Quaternionf rotation = Quaternionf::identity();
+    Vector3f scale = Vector3f::one();
+};
+
+// 分解 Entity::world_transform()。父级非均匀缩放叠加子级旋转时矩阵可能含
+// 剪切，TRS 无法无损表达；此时按基向量长度取尺度，并对旋转矩阵正交化。
+bool decompose_world_trs(const Entity* entity, WorldTRS& out) {
+    if (!entity || !entity->transform()) return false;
+    const Matrix4f world = entity->world_transform();
+    out.position = world.translation();
+
+    // Matrix4f::right/up/forward_vector() 会归一化，不能用来取尺度。
+    // 直接读前三列基向量；forward_vector() 按相机约定返回 -Z，也不适合
+    // 作为 TRS 的局部 Z 基。
+    Vector3f basis[3] = {
+        Vector3f(world(0, 0), world(1, 0), world(2, 0)),
+        Vector3f(world(0, 1), world(1, 1), world(2, 1)),
+        Vector3f(world(0, 2), world(1, 2), world(2, 2))
+    };
+    float length[3] = {basis[0].length(), basis[1].length(), basis[2].length()};
+    for (float& l : length) {
+        if (!std::isfinite(l) || l < 1e-6f) return false;
+    }
+
+    const float det =
+        basis[0].cross(basis[1]).dot(basis[2]);
+    out.scale = Vector3f(length[0], length[1], length[2]);
+    if (det < 0.0f) out.scale.x = -out.scale.x;
+
+    // 旋转矩阵只接受正交基；先去掉三轴长度，再补回右手正交性。
+    const float sx = length[0];
+    Vector3f x = basis[0] / sx;
+    Vector3f y = basis[1] / length[1];
+    Vector3f z = basis[2] / length[2];
+    if (det < 0.0f) x = x * -1.0f;
+    z = x.cross(y).normalized();
+    y = z.cross(x).normalized();
+    x = y.cross(z).normalized();
+
+    Matrix4f rotation = Matrix4f::identity();
+    rotation(0, 0) = x.x; rotation(1, 0) = x.y; rotation(2, 0) = x.z;
+    rotation(0, 1) = y.x; rotation(1, 1) = y.y; rotation(2, 1) = y.z;
+    rotation(0, 2) = z.x; rotation(1, 2) = z.y; rotation(2, 2) = z.z;
+    out.rotation = Quaternionf::from_rotation_matrix(rotation);
+    return true;
+}
+
+} // namespace
 
 extern "C" {
 
@@ -152,22 +210,36 @@ int GEntity_GetLocalScale(GEntityHandle entity, GVec3* out_scale) {
     return 0;
 }
 
-// 世界变换查询：当前版本未实现（本地变换见上一节），统一返回 -1，
-// 调用方按"不支持"处理。
 int GEntity_GetWorldPosition(GEntityHandle entity, GVec3* out_pos) {
     GRYCE_API_GUARD();
-    (void)entity; (void)out_pos;
-    return -1;
+    if (!out_pos) return -1;
+    WorldTRS trs;
+    if (!decompose_world_trs(gc::EntityResolver::resolve(entity), trs)) return -1;
+    out_pos->x = trs.position.x;
+    out_pos->y = trs.position.y;
+    out_pos->z = trs.position.z;
+    return 0;
 }
 int GEntity_GetWorldRotation(GEntityHandle entity, GQuat* out_rot) {
     GRYCE_API_GUARD();
-    (void)entity; (void)out_rot;
-    return -1;
+    if (!out_rot) return -1;
+    WorldTRS trs;
+    if (!decompose_world_trs(gc::EntityResolver::resolve(entity), trs)) return -1;
+    out_rot->x = trs.rotation.x;
+    out_rot->y = trs.rotation.y;
+    out_rot->z = trs.rotation.z;
+    out_rot->w = trs.rotation.w;
+    return 0;
 }
 int GEntity_GetWorldScale(GEntityHandle entity, GVec3* out_scale) {
     GRYCE_API_GUARD();
-    (void)entity; (void)out_scale;
-    return -1;
+    if (!out_scale) return -1;
+    WorldTRS trs;
+    if (!decompose_world_trs(gc::EntityResolver::resolve(entity), trs)) return -1;
+    out_scale->x = trs.scale.x;
+    out_scale->y = trs.scale.y;
+    out_scale->z = trs.scale.z;
+    return 0;
 }
 
 // --- Transform Setters ---

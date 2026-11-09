@@ -1,5 +1,7 @@
 #include "d3d12_buffer.h"
 
+#include <cwchar>
+
 #include <cstring>
 
 #include "d3d12_upload.h"
@@ -14,10 +16,11 @@ D3D12Buffer::~D3D12Buffer() {
 }
 
 void D3D12Buffer::set_context(ID3D12Device* device, ID3D12CommandQueue* queue,
-                              UploadSink* sink) {
+                              UploadSink* sink, ResourceRetireSink* retire_sink) {
     device_ = device;
     queue_ = queue;
     sink_ = sink;
+    retire_sink_ = retire_sink;
 }
 
 bool D3D12Buffer::create(size_t size, const void* data, BufferUsage usage) {
@@ -46,6 +49,14 @@ bool D3D12Buffer::create(size_t size, const void* data, BufferUsage usage) {
     }
     state_ = is_upload_heap_ ? D3D12_RESOURCE_STATE_GENERIC_READ
                              : D3D12_RESOURCE_STATE_COMMON;
+    // 调试名：设备移除时调试层会报 "resource ... deleted prior to closing"，
+    // 只有命名过的资源才会显示这里的信息（否则只是一串 Unnamed Object 指针）。
+    {
+        wchar_t nm[128];
+        std::swprintf(nm, 128, L"buf %zu %s%s", size,
+                      storage_ ? L"ssbo " : L"", is_upload_heap_ ? L"upload" : L"default");
+        resource_->SetName(nm);
+    }
 
     if (is_upload_heap_) {
         // 持久映射：UPLOAD 堆允许整生命周期保持映射，后续 update() 直接写。
@@ -180,7 +191,19 @@ void D3D12Buffer::release() {
             resource_->Unmap(0, nullptr);
             mapped_ = nullptr;
         }
-        resource_->Release();
+        // ★ 延迟释放：SSBO（HiZ 金字塔、间接参数、光源表……）会被**已提交但
+        //   未完成**的命令列表引用（frames_in_flight=3，GPU 落后 2~3 帧）。
+        //   就地 Release 会让调试层报
+        //     ID3D12CommandList::Close: An ID3D12Resource object
+        //     ('buf 599392 sd') referenced in the command list being closed
+        //     was deleted prior to closing the command list.
+        //   驱动侧连锁表现为 DXGI_ERROR_DEVICE_HUNG（窗口 resize 后必现：
+        //   HiZ SSBO 随分辨率重建）。所以交给后端的围栏队列。
+        if (retire_sink_) {
+            retire_sink_->retire_gpu_resource(resource_);
+        } else {
+            resource_->Release();
+        }
         resource_ = nullptr;
     }
     size_ = 0;

@@ -1,11 +1,20 @@
 cmake_minimum_required(VERSION 3.24)
 
+# 引擎默认编译器 = MSYS2 UCRT64 g++（用户命令行显式指定时不干预）。见该文件头注释。
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GryceDefaultCompiler.cmake")
+
 project(GryceEngineRenderer
         VERSION 0.1.0
         DESCRIPTION "Gryce Engine Renderer: GryceCore + GryceRenderer + GrycePlatform"
         LANGUAGES C CXX)
 
-option(GRYCE_ENABLE_IMGUI "Enable ImGui editor overlay in GryceRenderer" ON)
+# 链接期产物（.a 静态库、MinGW 的 libXxx.dll.a 导入库）统一收进 build/lib，
+# 构建树根只保留运行期产物（DLL 与 exe）。engine/ 子目录里再设一次是为了让
+# 该子目录的 target 也生效（CMake 的输出目录变量按目录作用域）。
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+
+option(GRYCE_ENABLE_IMGUI "Enable the ImGui debug UI backend in GryceRenderer" ON)
 
 # ===========================================================================
 # WebGL（Emscripten/wasm）构建
@@ -25,7 +34,7 @@ if(EMSCRIPTEN)
     set(GRYCE_ENABLE_WEBGL ON)
 endif()
 if(GRYCE_ENABLE_WEBGL AND NOT EMSCRIPTEN)
-    message(FATAL_ERROR
+     message(FATAL_ERROR
         "GRYCE_ENABLE_WEBGL=ON 需要 Emscripten 工具链（emcmake cmake ...）。\n"
         "桌面构建请不要开启该选项。")
 endif()
@@ -92,18 +101,11 @@ if(GRYCE_ENABLE_LTO AND NOT MSVC AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-# ===========================================================================
-# 编辑器：editor/ 整套（GryceEditor.exe + GryceEditorExtension.dll + 项目）。
-# 默认 OFF —— 它是开发期工具，产物不进运行时目录，也不参与门禁。开启后
-# 界面走引擎**内置轨**（GRender_SetUIBackend），不依赖 ImGui 上下文。
-#
-# editor/ 自带一整套 CMake 工程，可以脱离本根工程单独配置与构建：
-#     cmake -S editor -B editor/build -G Ninja
-#     cmake --build editor/build --target GryceEditor
-# 详见 editor/CMakeLists.txt 头注释。这个选项控制的只是"是否把编辑器接进
-# 根构建树"，与独立构建互不冲突。
-# ===========================================================================
-option(GRYCE_BUILD_EDITOR "把编辑器接进根构建树（编辑器也可独立配置，见 editor/CMakeLists.txt）" OFF)
+# 渲染截图回归需要真实 GPU / 窗口，CI 的无头软件渲染下像素统计会漂移
+#（见 .github/workflows/ci.yml 里移除 renderer_smoke_* 用例的说明）。
+# 默认关闭；本机收口验调用 -DGRYCE_RENDER_REGRESSION=ON 开启，注册为 gpu 标签，
+# 可用 ctest -L gpu 单独跑，不进入默认门禁。
+option(GRYCE_RENDER_REGRESSION "注册需要 GPU 的渲染截图回归（默认关闭）" OFF)
 
 # 使用 LLVM lld 链接，避免 GNU ld 处理大型对象崩溃
 find_program(LLD_LINKER ld.lld)
@@ -371,11 +373,9 @@ endif()
 
 endif() # EMSCRIPTEN
 
-# GryceRenderSmoke.exe 的运行时输出目录。engine/ 子目录里引擎 DLL 的
-# POST_BUILD 拷贝命令需要它（那边无法引用尚未定义的 exe target，
-# add_custom_command(TARGET) 也不允许跨目录挂命令，拷贝只能挂在 DLL 自身）。
-# 默认不设 RUNTIME_OUTPUT_DIRECTORY，即落在 ${CMAKE_BINARY_DIR} 根下。
-set(GRYCE_EXE_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
+# 运行时产物统一落在 ${CMAKE_BINARY_DIR}（引擎 DLL 与宿主 exe 同目录，
+# 见 engine/CMakeLists.txt 的 CMAKE_RUNTIME_OUTPUT_DIRECTORY 设置），
+# 不再需要额外的"同步目录"变量。
 
 # ===========================================================================
 # QuickJS 脚本引擎：third_party/quickjs 随仓库分发（MIT，GryceQuickJS 静态库）。
@@ -389,6 +389,10 @@ add_subdirectory(third_party/quickjs)
 # （Vulkan SDK 由 engine/CMakeLists.txt 自行探测并设置 GRYCE_HAS_VULKAN）
 # ===========================================================================
 add_subdirectory(engine)
+
+# 只构建核心库的便捷目标：cmake --build build --target core
+# 产物只有一个 —— build/GryceCore.dll（导入库在 build/lib/，不属于运行期产物）。
+add_custom_target(core DEPENDS GryceCore)
 # ===========================================================================
 # 演示宿主：GryceRenderSmoke.exe（人工运行，非 CTest 用例）
 #
@@ -474,27 +478,6 @@ if(WIN32)
 endif()
 
 # ===========================================================================
-# UI 系统演示：GryceUiSmoke.exe
-#
-# 与 GryceRenderSmoke 的分工：那个演示渲染管线，这个演示引擎的 UI 子系统
-# （engine/ui 模型层 + api/ui_api.h 的 C 面）——跨帧控件状态、确定性布局、
-# 主题 token、操作队列受控执行、快捷键门控。截图可复现，适合做 UI 层回归。
-# ===========================================================================
-add_executable(GryceUiSmoke test/ui_smoke.cpp)
-target_include_directories(GryceUiSmoke PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/engine
-)
-target_compile_definitions(GryceUiSmoke PRIVATE
-    GRYCE_DEMO_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/test/demo_project"
-)
-target_link_libraries(GryceUiSmoke PRIVATE
-    GryceRenderer GryceCore GrycePlatform
-)
-if(WIN32)
-    target_link_libraries(GryceUiSmoke PRIVATE opengl32 gdi32)
-endif()
-
-# ===========================================================================
 # 应用运行时：GryceApp.exe
 #
 # 这是给"项目只写 main.js"的形态准备的宿主：窗口、场景、退出都由脚本调
@@ -518,20 +501,17 @@ if(NOT EMSCRIPTEN)
 
     add_executable(GryceApp engine/app/app_main.cpp)
     target_link_libraries(GryceApp PRIVATE GryceAppHost)
-endif()
 
-# ===========================================================================
-# 编辑器（可选）：editor/ 里自带 exe + 扩展 + 项目三件套。
-# 放在 GryceAppHost 之后 —— 编辑器的 exe 复用它，不做第二套宿主逻辑。
-# 只做扩展时（改 ext/ 下的源码）也可以只 build GryceEditorExtension。
-#
-# editor/ 自带一整套 CMake 工程，可以脱离根工程单独配置
-# （cmake -S editor -B editor/build），详见 editor/CMakeLists.txt 头注释。
-# 这里的 add_subdirectory 只是把同一套定义接进根构建树：编辑器迭代时改
-# ext/ 下的源码不必重配整个引擎，根构建树里的目标名也保持一致。
-# ===========================================================================
-if(GRYCE_BUILD_EDITOR AND NOT EMSCRIPTEN)
-    add_subdirectory(editor)
+    # GryceIDE：独立编辑器宿主。UI 由 GryceUI 组件树构建，通过引擎
+    # Canvas2DPipeline 的 UI overlay 提交；不反向依赖到引擎 DLL。
+    add_executable(GryceIDE ide/ide_main.cpp)
+    target_include_directories(GryceIDE PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    target_link_libraries(GryceIDE PRIVATE GryceRenderer GryceCore GrycePlatform)
+    if(WIN32)
+        target_link_libraries(GryceIDE PRIVATE opengl32 gdi32)
+    endif()
 endif()
 
 # 引擎 DLL 同步到 exe 目录。
@@ -576,12 +556,6 @@ if(NOT EMSCRIPTEN)
 
 add_custom_target(GryceSyncRuntimeDlls ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:GryceRenderer>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:GryceCore>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:GrycePlatform>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:box2d::box2d>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:Jolt::Jolt>" "$<TARGET_FILE_DIR:GryceRenderSmoke>"
@@ -597,6 +571,13 @@ add_custom_target(GryceSyncRuntimeDlls ALL
 )
 unset(_gryce_mingw_rt_cmds)
 unset(_gryce_assimp_sync_cmd)
+
+# 构建 GryceApp 即带齐全部运行时 DLL：引擎 DLL 有 POST_BUILD 自同步，但
+# 第三方 DLL 与 MinGW 运行时只挂在上面这个 ALL 同步目标上——单独
+# `--target GryceApp` 不会触发它，exe 旁缺 glfw3/MinGW 运行时，run/package
+# 就得去构建树里"猎 DLL"。挂成硬依赖后，编译 exe 必然先补齐运行时。
+add_dependencies(GryceApp GryceSyncRuntimeDlls)
+add_dependencies(GryceIDE GryceSyncRuntimeDlls)
 
 endif() # EMSCRIPTEN
 # ===========================================================================
@@ -699,69 +680,26 @@ if(BUILD_TESTING)
             LABELS "unit;asset" TIMEOUT 60)
     endforeach()
 
-    # UI 系统：操作队列 + 模型层（跨帧状态 / 布局 / 主题 / 输入 / 视图模型）。
-    # 与 math/script/asset 同构——被测源码直编进 exe，不链 GryceRenderer.dll，
-    # 也不定义 GRYCE_HAS_IMGUI：同时验证"关掉 ImGui 的构建里 UI 模型层照常
-    # 工作"（无窗口宿主也走这条路）。GRYCE_RENDERER_BUILDING 让导出宏变成
-    # dllexport，静态 exe 内自链接（否则 dllimport 会去找 __imp_ 符号）。
-    # ui_snapshot.cpp 用 nlohmann/json（头文件库，与 GryceRenderer 同一份）。
-    set(GRYCE_UI_TEST_SUITES queue abi state layout comp compabi drawlist bridge widget builtin theme theme_json widget_anim input snapshot anim animabi layoutjson)
-
-    add_executable(GryceUiTests
-        test/ui_tests.cpp
-        engine/api/ui_op_queue.cpp
-        engine/api/ui_api.cpp
-        engine/ui/ui_state.cpp
-        engine/ui/ui_layout.cpp
-        engine/ui/ui_layout_tree.cpp
-        engine/ui/ui_layout_tree_json.cpp
-        engine/ui/ui_drawlist.cpp
-        engine/ui/ui_render_bridge.cpp
-        engine/ui/ui_widget.cpp
-        engine/ui/ui_builtin.cpp
-        engine/ui/ui_theme.cpp
-        engine/ui/ui_anim.cpp
-        engine/ui/ui_input.cpp
-        engine/ui/ui_snapshot.cpp
-    )
-    target_include_directories(GryceUiTests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/engine
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json
-    )
-    # assets/themes 的"四套皮肤能加载"是交付物级断言：把源目录烙进来，
-    # 测试在 build/ 工作目录里跑也能找到文件（ctest 以 build/ 为 cwd）。
-    target_compile_definitions(GryceUiTests PRIVATE
-        GRYCE_RENDERER_BUILDING
-        GRYCE_UI_THEMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/themes")
-
-    foreach(suite IN LISTS GRYCE_UI_TEST_SUITES)
-        add_test(NAME ui_${suite}
-                 COMMAND GryceUiTests --suite ${suite}
-                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-        set_tests_properties(ui_${suite} PROPERTIES
-            LABELS "unit;ui" TIMEOUT 60)
-    endforeach()
-
-    # 编辑器前置能力（编辑命令面 / 撤销重做 / 场景存档往返）。
+    # 编辑命令面（命令载荷 / 撤销重做 / 场景存档往返）。
     # 这一个必须链 GryceCore.dll —— 命令消费与序列化都在 core 内部，没有可
     # 剥离的纯计算内核；但这些路径都不碰 GPU，因此 CI 仍不需要显卡。
-    set(GRYCE_EDITOR_TEST_SUITES edit undo scene)
+    set(GRYCE_CORE_EDIT_TEST_SUITES edit undo scene)
 
-    add_executable(GryceEditorTests test/editor_tests.cpp)
-    target_include_directories(GryceEditorTests PRIVATE
+    add_executable(GryceCoreEditTests test/core_edit_tests.cpp)
+    target_include_directories(GryceCoreEditTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
     )
-    target_compile_definitions(GryceEditorTests PRIVATE
+    target_compile_definitions(GryceCoreEditTests PRIVATE
         GRYCE_TEST_PROJECT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/demo_project"
     )
-    target_link_libraries(GryceEditorTests PRIVATE GryceCore)
+    target_link_libraries(GryceCoreEditTests PRIVATE GryceCore)
 
-    foreach(suite IN LISTS GRYCE_EDITOR_TEST_SUITES)
-        add_test(NAME editor_${suite}
-                 COMMAND GryceEditorTests --suite ${suite}
+    foreach(suite IN LISTS GRYCE_CORE_EDIT_TEST_SUITES)
+        add_test(NAME core_edit_${suite}
+                 COMMAND GryceCoreEditTests --suite ${suite}
                  WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-        set_tests_properties(editor_${suite} PROPERTIES
-            LABELS "unit;editor" TIMEOUT 120)
+        set_tests_properties(core_edit_${suite} PROPERTIES
+            LABELS "unit;core" TIMEOUT 120)
     endforeach()
 
     # 组件继承语义（基类查询 / 类型视角索引）回归测试。
@@ -791,6 +729,45 @@ if(BUILD_TESTING)
         set_tests_properties(component_${suite} PROPERTIES
             LABELS "unit;component" TIMEOUT 120)
     endforeach()
+
+    # GryceUI Phase 1 骨架：布局、输入/焦点、DrawList 与 NodeUI 树运行时。
+    # 只链 GryceCore，不创建窗口或 GPU 资源。
+    set(GRYCE_UI_SKELETON_TEST_SUITES layout input drawlist runtime widgets)
+    add_executable(GryceUiSkeletonTests test/ui_skeleton_tests.cpp)
+    target_include_directories(GryceUiSkeletonTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    )
+    target_link_libraries(GryceUiSkeletonTests PRIVATE GryceCore)
+
+    foreach(suite IN LISTS GRYCE_UI_SKELETON_TEST_SUITES)
+        add_test(NAME ui_${suite}
+                 COMMAND GryceUiSkeletonTests --suite ${suite}
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        set_tests_properties(ui_${suite} PROPERTIES
+            LABELS "unit;ui" TIMEOUT 120)
+    endforeach()
+
+    # 本机收口验收：GryceRenderSmoke 出图 + tools/render_regression.py 校验画面
+    # 不是清屏色。默认不注册，CI 永远不会碰到它。
+    if(GRYCE_RENDER_REGRESSION AND NOT EMSCRIPTEN)
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+        if(Python3_Interpreter_FOUND AND TARGET GryceRenderSmoke)
+            add_test(NAME render_regression_vulkan
+                     COMMAND "${Python3_EXECUTABLE}"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/tools/render_regression.py"
+                             --exe "$<TARGET_FILE:GryceRenderSmoke>"
+                             --project "${CMAKE_CURRENT_SOURCE_DIR}/test/demo_project"
+                             --api vulkan --frames 90 --resolution 800x600
+                             --out "${CMAKE_BINARY_DIR}/render_regression.png"
+                     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+            set_tests_properties(render_regression_vulkan PROPERTIES
+                LABELS "gpu;render" TIMEOUT 300)
+            message(STATUS "Render regression: enabled (ctest -L gpu)")
+        else()
+            message(WARNING
+                "GRYCE_RENDER_REGRESSION=ON 但未找到 Python3 或 GryceRenderSmoke，跳过注册")
+        endif()
+    endif()
 endif()
 
 # ===========================================================================

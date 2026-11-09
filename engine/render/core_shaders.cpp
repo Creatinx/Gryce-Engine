@@ -11,7 +11,7 @@ namespace gryce_engine::render::core_shaders {
 
 namespace {
 
-// 当前可执行文件所在目录（编辑器中为 GryceEditor.exe，运行时为 GryceGame.exe）。
+// 当前可执行文件所在目录。
 // 核心默认 shader 随可执行/DLL 部署时，会放在该目录或其近邻的子目录。
 std::string exe_base_dir() {
 #if defined(_WIN32)

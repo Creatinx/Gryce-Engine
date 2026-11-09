@@ -4,7 +4,7 @@
   "entities": [
     {
       "name": "Floor",
-      "uuid": "651cc70f-8bb7-4536-a5f9-42cf32bfe1e1",
+      "uuid": "6d6243ff-d97c-429d-80d2-ca61965955d3",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -60,7 +60,7 @@
     },
     {
       "name": "Ceiling",
-      "uuid": "aa3841fb-3801-448b-9616-09050910f077",
+      "uuid": "32e35176-460c-43e7-b484-386899ff8e9a",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -117,7 +117,7 @@
     },
     {
       "name": "LeftWall",
-      "uuid": "24d80346-ca9c-4e3e-87c8-d1c32493c15b",
+      "uuid": "4f46b945-71ad-4508-bcf4-9044301c9ea3",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -175,7 +175,7 @@
     },
     {
       "name": "RightWall",
-      "uuid": "543a05b8-b68e-4a0c-983a-db481d7da4c8",
+      "uuid": "f5dc592f-7f31-4ed3-93f3-6edcd9f9b296",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -233,7 +233,7 @@
     },
     {
       "name": "ScreenWall",
-      "uuid": "b83c9e7c-c857-4341-8aef-3b897298c52f",
+      "uuid": "cee520a6-70da-4b0d-a3a5-151b247a4f65",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -290,13 +290,13 @@
     },
     {
       "name": "FrontLower",
-      "uuid": "81ecde33-8166-44b8-80ed-66689d407098",
+      "uuid": "c3f2232a-4dbb-483c-a5cd-5f81741a6963",
       "parent": null,
       "enabled": true,
       "transform": {
         "position": [
           0.0,
-          0.725,
+          0.685,
           2.66
         ],
         "rotation": [
@@ -307,7 +307,7 @@
         ],
         "scale": [
           4.0,
-          1.45,
+          1.37,
           0.12
         ]
       },
@@ -336,7 +336,7 @@
             "use_emissive_map": false,
             "uv_scale": [
               4.166666666666667,
-              2.0422535211267605
+              1.9295774647887327
             ],
             "uv_offset": [
               0.0,
@@ -348,13 +348,13 @@
     },
     {
       "name": "FrontUpper",
-      "uuid": "0920b86c-cde9-417f-ad2f-21cb7011682a",
+      "uuid": "2e372009-8300-4c3b-9f0a-c83f1191a51a",
       "parent": null,
       "enabled": true,
       "transform": {
         "position": [
           0.0,
-          2.075,
+          2.115,
           2.66
         ],
         "rotation": [
@@ -365,7 +365,7 @@
         ],
         "scale": [
           4.0,
-          1.05,
+          0.9700000000000001,
           0.12
         ]
       },
@@ -394,7 +394,7 @@
             "use_emissive_map": false,
             "uv_scale": [
               4.166666666666667,
-              1.47887323943662
+              1.3661971830985917
             ],
             "uv_offset": [
               0.0,
@@ -406,12 +406,12 @@
     },
     {
       "name": "FrontLeft",
-      "uuid": "f53ef3e5-0137-444a-8f8f-84b8b1368448",
+      "uuid": "fd6851ab-bf03-430f-9750-57ed4a7fb5df",
       "parent": null,
       "enabled": true,
       "transform": {
         "position": [
-          -1.025,
+          -1.065,
           1.5,
           2.66
         ],
@@ -422,7 +422,7 @@
           1
         ],
         "scale": [
-          1.95,
+          1.87,
           0.5,
           0.12
         ]
@@ -451,7 +451,7 @@
             "use_ao_map": false,
             "use_emissive_map": false,
             "uv_scale": [
-              2.03125,
+              1.947916666666667,
               0.7042253521126761
             ],
             "uv_offset": [
@@ -464,12 +464,12 @@
     },
     {
       "name": "FrontRight",
-      "uuid": "e3aabdc4-1ed8-4b53-b974-16ab6f29c35b",
+      "uuid": "5dab3c3c-972e-4180-b229-34a41c69bbb0",
       "parent": null,
       "enabled": true,
       "transform": {
         "position": [
-          1.025,
+          1.065,
           1.5,
           2.66
         ],
@@ -480,7 +480,7 @@
           1
         ],
         "scale": [
-          1.95,
+          1.87,
           0.5,
           0.12
         ]
@@ -509,7 +509,7 @@
             "use_ao_map": false,
             "use_emissive_map": false,
             "uv_scale": [
-              2.03125,
+              1.947916666666667,
               0.7042253521126761
             ],
             "uv_offset": [
@@ -522,7 +522,7 @@
     },
     {
       "name": "ChromeSphere",
-      "uuid": "3b07dd0d-ad2f-4749-9c8e-5e254279b714",
+      "uuid": "7de35bbc-abdf-4239-a99e-d66ba7c02db8",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -557,7 +557,7 @@
     },
     {
       "name": "GoldBlock",
-      "uuid": "dabb74bf-ff9e-462a-a0d3-6a4c80e64749",
+      "uuid": "37986817-41c6-4a77-bb47-4dc256f26285",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -592,7 +592,7 @@
     },
     {
       "name": "SteelBlock",
-      "uuid": "048ce24e-173f-4ebd-a590-0c23e2794888",
+      "uuid": "c3ff597c-161c-4dbd-945a-f66a0494f5cc",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -650,7 +650,7 @@
     },
     {
       "name": "ReliefPanel",
-      "uuid": "b55e12e0-d4ec-4946-88d0-b015188189ee",
+      "uuid": "1c552dd9-246e-4626-b574-d6d2b0fb3abf",
       "parent": null,
       "enabled": true,
       "transform": {
@@ -706,14 +706,59 @@
       ]
     },
     {
-      "name": "LightA",
-      "uuid": "0eb00308-d622-4a4f-a3ec-5be0d8c22043",
+      "name": "Sun",
+      "uuid": "6619415a-46ce-48eb-8c75-124b18295cca",
       "parent": null,
       "enabled": true,
       "transform": {
         "position": [
-          -0.55,
-          1.8,
+          0.0,
+          1.6,
+          6.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": [
+        {
+          "type": "Light",
+          "enabled": true,
+          "light_type": 1,
+          "color": [
+            1.0,
+            0.95,
+            0.86
+          ],
+          "intensity": 6000.0,
+          "direction": [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          "range": 16.0,
+          "spot_angle": 70.0,
+          "spot_softness": 0.35
+        }
+      ]
+    },
+    {
+      "name": "LightR",
+      "uuid": "6acd218d-d3a4-49ca-a773-3c11e56d3d43",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          -0.95,
+          1.92,
           5.0
         ],
         "rotation": [
@@ -738,72 +783,27 @@
             0.24,
             0.16
           ],
-          "intensity": 3200.0,
+          "intensity": 2400.0,
           "direction": [
             0.0,
             -1.0,
             0.0
           ],
-          "range": 12.0,
-          "spot_angle": 45.0,
-          "spot_softness": 0.2
+          "range": 16.0,
+          "spot_angle": 70.0,
+          "spot_softness": 0.35
         }
       ]
     },
     {
-      "name": "LightB",
-      "uuid": "0f166877-20a8-484e-81ae-c0a3b2ea78bf",
+      "name": "LightG",
+      "uuid": "639bcf6d-f148-4f0e-bdd5-4359bc4c5a29",
       "parent": null,
       "enabled": true,
       "transform": {
         "position": [
-          -0.55,
-          1.52,
-          5.0
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1,
-          1,
-          1
-        ]
-      },
-      "components": [
-        {
-          "type": "Light",
-          "enabled": true,
-          "light_type": 1,
-          "color": [
-            1.0,
-            0.72,
-            0.16
-          ],
-          "intensity": 3200.0,
-          "direction": [
-            0.0,
-            -1.0,
-            0.0
-          ],
-          "range": 12.0,
-          "spot_angle": 45.0,
-          "spot_softness": 0.2
-        }
-      ]
-    },
-    {
-      "name": "LightC",
-      "uuid": "1ce440cc-4649-485e-a15a-5a9868558234",
-      "parent": null,
-      "enabled": true,
-      "transform": {
-        "position": [
-          -0.55,
-          1.24,
+          -0.95,
+          1.08,
           5.0
         ],
         "rotation": [
@@ -828,27 +828,27 @@
             1.0,
             0.34
           ],
-          "intensity": 3200.0,
+          "intensity": 2400.0,
           "direction": [
             0.0,
             -1.0,
             0.0
           ],
-          "range": 12.0,
-          "spot_angle": 45.0,
-          "spot_softness": 0.2
+          "range": 16.0,
+          "spot_angle": 70.0,
+          "spot_softness": 0.35
         }
       ]
     },
     {
-      "name": "LightD",
-      "uuid": "c68b4d69-6b76-4d67-a501-6123090e2646",
+      "name": "LightB",
+      "uuid": "713691de-9e14-44f9-afbf-7b0c4be36bb3",
       "parent": null,
       "enabled": true,
       "transform": {
         "position": [
-          0.02,
-          1.24,
+          0.12,
+          0.95,
           5.0
         ],
         "rotation": [
@@ -873,21 +873,103 @@
             0.44,
             1.0
           ],
-          "intensity": 3200.0,
+          "intensity": 2400.0,
           "direction": [
             0.0,
             -1.0,
             0.0
           ],
-          "range": 12.0,
-          "spot_angle": 45.0,
-          "spot_softness": 0.2
+          "range": 16.0,
+          "spot_angle": 70.0,
+          "spot_softness": 0.35
+        }
+      ]
+    },
+    {
+      "name": "FigureBody",
+      "uuid": "6e762f48-45a9-40da-b1e6-6d6d2a9604eb",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.05,
+          1.5,
+          5.0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          0.2,
+          0.22,
+          0.2
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/cube.obj",
+          "material": {
+            "name": "FigMat",
+            "albedo_color": [
+              0.09,
+              0.09,
+              0.11
+            ],
+            "roughness": 0.75,
+            "metallic": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "FigureHead",
+      "uuid": "901eef2c-fd7a-4b8f-8b71-bea5f285b987",
+      "parent": null,
+      "enabled": true,
+      "transform": {
+        "position": [
+          0.05,
+          1.725,
+          5.0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          0.115,
+          0.115,
+          0.115
+        ]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "mesh_path": "res:/models/sphere.obj",
+          "material": {
+            "name": "FigMat",
+            "albedo_color": [
+              0.09,
+              0.09,
+              0.11
+            ],
+            "roughness": 0.75,
+            "metallic": 0.0
+          }
         }
       ]
     },
     {
       "name": "MainCamera",
-      "uuid": "cf2185ec-2b7f-4b1f-8c22-9013b43db5d6",
+      "uuid": "6994ea73-e95c-4e65-8aab-889d98c7ebfb",
       "parent": null,
       "enabled": true,
       "transform": {

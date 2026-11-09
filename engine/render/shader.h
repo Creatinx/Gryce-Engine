@@ -218,6 +218,24 @@ struct PostProcessParams {
     math::Vector4f shadows = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
     math::Vector4f midtones = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
     math::Vector4f highlights = math::Vector4f(0.0f, 0.0f, 0.0f, 0.0f);
+
+    // 体积光散射（丁达尔 / 神光 / 光柱）：沿视线在参与介质中按光线步进，对方向光
+    // 做单散射累积（Henyey-Greenstein 相位），即"按光线去做"的丁达尔效应。
+    // 在 SSR / 光追反射合成之后、Bloom 之前执行，辉光由 Bloom 进一步放大。
+    int   volumetric_enabled = 1;
+    // 整体强度与介质密度。密度按每世界单位的消光尺度计：光程 100 单位左右时
+    // σ_t·L ≈ 0.2 是"空气里有薄雾、但不吃掉画面反差"的量级；再高会整屏发白发灰。
+    float volumetric_intensity = 0.7f;
+    float volumetric_density = 0.006f;        // 介质密度（每世界单位消光尺度）
+    float volumetric_scattering = 0.5f;       // 散射占比（相对消光）
+    float volumetric_phase_g = 0.6f;          // HG 各向异性（-1..1，越大越聚向前向/太阳）
+    int   volumetric_steps = 24;              // 视线步进采样数（上限 64）
+    float volumetric_max_distance = 80.0f;   // 单条视线最大追踪距离（世界单位）
+    math::Vector3f volumetric_tint = math::Vector3f(1.0f, 0.95f, 0.85f); // 介质染色（暖色丁达尔）
+    // 方向光（太阳）：由管线每帧从首个方向光同步。sun_direction 指向太阳。
+    math::Vector3f volumetric_sun_color = math::Vector3f(1.0f, 0.95f, 0.85f);
+    math::Vector3f volumetric_sun_direction = math::Vector3f(0.7f, 1.0f, -0.5f);
+    float volumetric_sun_intensity = 6.0f;
 };
 
 // ---------------------------------------------------------------------------

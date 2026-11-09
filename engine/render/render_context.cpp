@@ -480,8 +480,7 @@ RHITextureHandle RenderContext::create_texture() {
     if (!backend_) return RHITextureHandle{};
     RHITextureHandle handle = backend_->create_texture();
     // 登记指针 → 句柄：池在 allocate 时就把对象建好了，这里能立刻取到指针。
-    // 取不到就跳过（该纹理此后无法被 GUi_Image 内置轨引用，但绘制路径用的是
-    // 句柄，不受影响）。
+    // 取不到就跳过；正常绘制路径使用的是 RHI 句柄，不受影响。
     if (handle.is_valid()) {
         if (ITexture* tex = backend_->texture(handle)) {
             std::lock_guard<std::mutex> lock(texture_handles_mutex_);

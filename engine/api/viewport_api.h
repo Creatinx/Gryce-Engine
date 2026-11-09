@@ -26,6 +26,17 @@ extern "C" {
 
 GRYCE_RENDERER_API void GViewport_SetSize(int w, int h);
 GRYCE_RENDERER_API void GViewport_GetSize(int* out_w, int* out_h);
+
+// 窗口帧缓冲尺寸变化通知（**自建窗口的宿主必须调**）。
+//
+// 引擎默认每帧从平台窗口（GWindow_*）自己查帧缓冲尺寸。宿主绕过平台层、自己
+// 建 GLFW 窗口时那条路是空的，屏幕尺寸就永远停在 init 时的值：交换链与 UI
+// 覆盖层都按旧尺寸工作，拖动窗口改大小时 present 持续返回 OUT_OF_DATE、又按
+// 旧尺寸重建，循环下去整窗黑屏；UI 也只画在左上角一块。
+//
+// 语义：屏幕尺寸跟随窗口；视口原本等于窗口尺寸时一并跟随（全窗口渲染），
+// 编辑器把视口缩进面板时不受影响。重复调用同一尺寸是空操作。
+GRYCE_RENDERER_API void GViewport_NotifyWindowSize(int w, int h);
 GRYCE_RENDERER_API void GViewport_SetCamera(GEntityHandle camera_entity);
 GRYCE_RENDERER_API GEntityHandle GViewport_GetCamera(void);
 

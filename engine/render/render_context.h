@@ -104,10 +104,9 @@ public:
     IFramebuffer* framebuffer(RHIFramebufferHandle handle) const;
     IBuffer* buffer(RHIBufferHandle handle) const;
 
-    // ITexture* → RHITextureHandle 反查（UI 内置轨的 GUi_Image 需要：宿主持有的
-    // 是 GTextureHandle 即 ITexture*，而内置轨 drawlist 的 sprite 命令要的是打包
-    // 句柄）。表由 create_texture / destroy_texture 同步维护，指针不是本 context
-    // 创建的活纹理时返回无效句柄。与 create/destroy 同线程（主线程）调用。
+    // ITexture* → RHITextureHandle 反查。表由 create_texture / destroy_texture
+    // 同步维护，指针不是本 context 创建的活纹理时返回无效句柄。
+    // 与 create/destroy 同线程（主线程）调用。
     RHITextureHandle texture_handle(const ITexture* tex) const;
 
     // 渲染命令（必须在 start() 之后调用，push 到 CMDBUFFER）

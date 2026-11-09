@@ -240,6 +240,7 @@ const char* dxc_profile_string(DxcProfile p) {
         case DxcProfile::Vs_6_0: return "vs_6_0";
         case DxcProfile::Ps_6_0: return "ps_6_0";
         case DxcProfile::Cs_6_0: return "cs_6_0";
+        case DxcProfile::Cs_6_5: return "cs_6_5";
         default: return "vs_6_0";
     }
 }

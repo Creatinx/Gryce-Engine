@@ -220,7 +220,10 @@ bool D3D12Swapchain::recreate(uint32_t width, uint32_t height) {
 
 void D3D12Swapchain::release_target_objects() {
     for (auto*& bb : back_buffers_) {
-        if (bb) { bb->Release(); bb = nullptr; }
+        if (bb) {
+            bb->Release();
+            bb = nullptr;
+        }
     }
     back_buffers_.clear();
     if (rtv_heap_) { rtv_heap_->Release(); rtv_heap_ = nullptr; }
@@ -271,8 +274,11 @@ bool D3D12Swapchain::end_frame() {
 
     HRESULT hr = command_list_->Close();
     if (FAILED(hr)) {
-        GLOG_ERROR("D3D12Swapchain: command_list Close failed (hr=0x{:08x})",
-                   static_cast<unsigned>(hr));
+        GLOG_ERROR("D3D12Swapchain: command_list Close failed (hr=0x{:08x}) "
+                   "recording_={} current_frame_={} frame_count_={} cur_index={}",
+                   static_cast<unsigned>(hr), recording_ ? 1 : 0,
+                   current_frame_, frame_count_,
+                   static_cast<int>(swapchain_ ? swapchain_->GetCurrentBackBufferIndex() : 99));
         return false;
     }
 

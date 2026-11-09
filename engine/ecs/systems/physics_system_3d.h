@@ -48,8 +48,8 @@ public:
     int max_contact_constraints = 2048;
     // 每帧最大物理子步（防止卡顿后追赶过多）
     int max_steps_per_frame = 4;
-    // Jolt 工作线程数（0 = 单线程）
-    int worker_threads = 2;
+    // Jolt 工作线程数。0 = 自动按逻辑核数取（留 1 给主线程）；>0 显式覆盖。
+    int worker_threads = 0;
 
 private:
     struct Impl;

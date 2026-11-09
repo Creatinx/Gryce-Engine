@@ -88,7 +88,7 @@ void main() {
     // 距离拒绝用平方比较：内层每个 tap 都要跑一次拒绝，length() 的 sqrt
     // 在这里没有任何用处（只与常数阈值比大小），24 个 tap 就是 24 次多余的
     // 开方。阈值取平方后语义完全等价。
-    const float span_reject_sq = sample_span_world * sample_span_world * 2.25;
+    float span_reject_sq = sample_span_world * sample_span_world * 2.25;
 
     // ---- 法线：从 G-buffer / depth prepass 取世界法线，转到视图空间 ----
     vec3 N_view = vec3(0.0, 0.0, -1.0);

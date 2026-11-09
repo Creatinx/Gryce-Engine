@@ -19,6 +19,9 @@
 
 namespace gryce_engine::render {
 
+// 每帧重写整套描述符集，必须与 frames_in_flight 对齐轮转（与 ubo_ 一致）。
+static constexpr uint32_t k_frame_slots = 3;
+
 // 内联路径追踪计算着色器（GLSL，Vulkan 语义 + GL_EXT_ray_query）。
 // 布局与透射通道一致（binding 0-7、13），便于复用同一套描述符组装代码。
 static const char* k_pathtrace_glsl = R"GLSL(
@@ -67,6 +70,13 @@ vec3 cosine_dir(vec3 n, float r1, float r2) {
                                       : cross(n, vec3(1, 0, 0)));
     vec3 b = cross(n, t);
     return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(1.0 - r2));
+}
+
+// 由屏幕 uv + 深度反投影出世界坐标（遮挡校验用）。
+vec3 reconstructWorld(vec2 uv, float depth) {
+    vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    vec4 world = invViewProj * clip;
+    return world.xyz / world.w;
 }
 
 // 手写双线性（与透射通道一致）。
@@ -164,8 +174,19 @@ void main() {
                 vec2 sp = uv2 * vec2(size);
                 ivec2 si = ivec2(clamp(sp, vec2(0.0), vec2(size) - 1.0));
                 float dpt = texelFetch(uDepth, si, 0).r;
-                L = bilinear(uLit, sp, size).rgb;
-                if (dpt >= 1.0) L = textureLod(uEnv, d, 0.0).rgb * envParams.z;
+                // 遮挡校验（修漏光）：弹射命中点投影回屏幕后，该像素必须确实是这个
+                // 命中面。被更近的物体挡住时直接采 uLit 会把遮挡物的光照当成间接光
+                // —— 表现为 GI"透墙"漏光。比较屏幕深度重建点与命中点到相机的线性
+                // 距离，相对差过大即判遮挡，退回环境 cube。
+                vec3 scene_w = reconstructWorld(uv2, dpt);
+                float scene_lin = length(scene_w - camPos);
+                float hit_lin = length(p2 - camPos);
+                float rel = abs(scene_lin - hit_lin) / max(hit_lin, 1e-3);
+                if (dpt >= 1.0 || rel > 0.06) {
+                    L = textureLod(uEnv, d, 0.0).rgb * envParams.z;
+                } else {
+                    L = bilinear(uLit, sp, size).rgb;
+                }
             }
             gi += thr * L;
 
@@ -289,21 +310,21 @@ bool VkRTPathTracePass::init(VulkanDevice* device) {
 
     VkDescriptorPoolSize pool_sizes[6]{};
     pool_sizes[0].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    pool_sizes[0].descriptorCount = 1;
+    pool_sizes[0].descriptorCount = k_frame_slots;
     pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    pool_sizes[1].descriptorCount = 1;
+    pool_sizes[1].descriptorCount = k_frame_slots;
     pool_sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    pool_sizes[2].descriptorCount = 3;
+    pool_sizes[2].descriptorCount = 3 * k_frame_slots;
     pool_sizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    pool_sizes[3].descriptorCount = 1;
+    pool_sizes[3].descriptorCount = k_frame_slots;
     pool_sizes[4].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    pool_sizes[4].descriptorCount = 2;
+    pool_sizes[4].descriptorCount = 2 * k_frame_slots;
     pool_sizes[5].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    pool_sizes[5].descriptorCount = 1;
+    pool_sizes[5].descriptorCount = k_frame_slots;
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.maxSets = 1;
+    pool_info.maxSets = k_frame_slots;
     pool_info.poolSizeCount = 6;
     pool_info.pPoolSizes = pool_sizes;
     if (vkCreateDescriptorPool(dev, &pool_info, nullptr, &pool_) != VK_SUCCESS) {
@@ -314,9 +335,12 @@ bool VkRTPathTracePass::init(VulkanDevice* device) {
     VkDescriptorSetAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc_info.descriptorPool = pool_;
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &desc_layout_;
-    if (vkAllocateDescriptorSets(dev, &alloc_info, &set_) != VK_SUCCESS) {
+    alloc_info.descriptorSetCount = k_frame_slots;
+    // pSetLayouts 是数组：每套 set 都要一个 layout 句柄，只给单指针会让后两套
+    // 读到栈上的垃圾（验证层报 Invalid VkDescriptorSetLayout / VK_NULL_HANDLE）。
+    VkDescriptorSetLayout set_layouts[k_frame_slots] = {desc_layout_, desc_layout_, desc_layout_};
+    alloc_info.pSetLayouts = set_layouts;
+    if (vkAllocateDescriptorSets(dev, &alloc_info, set_) != VK_SUCCESS) {
         GLOG_ERROR("VkRTPathTracePass: vkAllocateDescriptorSets failed");
         return false;
     }
@@ -360,7 +384,9 @@ void VkRTPathTracePass::shutdown() {
     desc_layout_ = VK_NULL_HANDLE;
     module_ = VK_NULL_HANDLE;
     fallback_sampler_ = VK_NULL_HANDLE;
-    set_ = VK_NULL_HANDLE;
+    set_[0] = VK_NULL_HANDLE;
+    set_[1] = VK_NULL_HANDLE;
+    set_[2] = VK_NULL_HANDLE;
     device_ = nullptr;
     valid_ = false;
 }
@@ -531,56 +557,59 @@ void VkRTPathTracePass::render(VkCommandBuffer cmd,
     params_info.range = VK_WHOLE_SIZE;
 
     VkWriteDescriptorSet writes[9]{};
+    // 按帧槽取用独立描述符集：上一帧的 set 可能仍被在飞命令缓冲引用。
+    VkDescriptorSet set = set_[frame_slot % k_frame_slots];
+    if (set == VK_NULL_HANDLE) return;
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_info;
-    writes[0].dstSet = set_;
+    writes[0].dstSet = set;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = set_;
+    writes[1].dstSet = set;
     writes[1].dstBinding = 1;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[1].pBufferInfo = &ubo_info;
     writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = set_;
+    writes[2].dstSet = set;
     writes[2].dstBinding = 2;
     writes[2].descriptorCount = 1;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     writes[2].pImageInfo = &depth_info;
     writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = set_;
+    writes[3].dstSet = set;
     writes[3].dstBinding = 3;
     writes[3].descriptorCount = 1;
     writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     writes[3].pImageInfo = &lit_info;
     writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = set_;
+    writes[4].dstSet = set;
     writes[4].dstBinding = 4;
     writes[4].descriptorCount = 1;
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[4].pImageInfo = &out_info;
     writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[5].dstSet = set_;
+    writes[5].dstSet = set;
     writes[5].dstBinding = 5;
     writes[5].descriptorCount = 1;
     writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[5].pImageInfo = &env_desc;
     writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[6].dstSet = set_;
+    writes[6].dstSet = set;
     writes[6].dstBinding = 6;
     writes[6].descriptorCount = 1;
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[6].pImageInfo = &prefilter_desc;
     writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[7].dstSet = set_;
+    writes[7].dstSet = set;
     writes[7].dstBinding = 7;
     writes[7].descriptorCount = 1;
     writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[7].pBufferInfo = &params_info;
     writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[8].dstSet = set_;
+    writes[8].dstSet = set;
     writes[8].dstBinding = 13;
     writes[8].descriptorCount = 1;
     writes[8].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -594,7 +623,7 @@ void VkRTPathTracePass::render(VkCommandBuffer cmd,
     }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1, &set_, 0,
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1, &set, 0,
                             nullptr);
     const uint32_t gx = (width + 7) / 8;
     const uint32_t gy = (height + 7) / 8;

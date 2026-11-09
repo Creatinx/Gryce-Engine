@@ -1,6 +1,7 @@
 #include "d3d12_backend.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -171,24 +172,15 @@ bool D3D12Backend::init(void* native_window) {
         return false;
     }
 
-    // 6) 交换链（FLIP_DISCARD，3 缓冲）。尺寸取 HWND 客户区的**物理像素**：
-    // 进程已声明 per-monitor v2 DPI 感知，GetClientRect 返回逻辑像素（DIP），
-    // 必须乘窗口 DPI 翻到物理像素，否则 HiDPI 屏上后台缓冲是逻辑尺寸、UI 覆盖层
-    // 按物理尺寸绘制会整屏溢出。与 begin_frame 里每一帧的尺寸检测口径一致。
+    // 6) 交换链（FLIP_DISCARD，3 缓冲）。尺寸取 HWND 客户区尺寸，**不要再乘 DPI**：
+    // 本进程声明了 per-monitor v2 DPI 感知，GetClientRect 返回的已经是物理像素，
+    // 再乘一次 LOGPIXELSX/96 会让交换链（以及帧末 blit 的落点）比窗口大一圈，
+    // 表现为"画面只占窗口一角、其余全黑"（150% 缩放下正好差 1.5 倍）。
+    // 与 GL 后端的口径也对齐：那边用的是 glfwGetFramebufferSize，同样是物理像素。
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    const int init_logical_w = rc.right - rc.left;
-    const int init_logical_h = rc.bottom - rc.top;
-    int init_dpi = 96;
-    if (HDC dc = GetDC(hwnd_)) {
-        init_dpi = GetDeviceCaps(dc, LOGPIXELSX);
-        ReleaseDC(hwnd_, dc);
-    }
-    const float kInitDpiScale = (init_dpi > 0) ? static_cast<float>(init_dpi) / 96.0f : 1.0f;
-    const uint32_t w = std::max(1u, static_cast<uint32_t>(
-        static_cast<float>(init_logical_w) * kInitDpiScale + 0.5f));
-    const uint32_t h = std::max(1u, static_cast<uint32_t>(
-        static_cast<float>(init_logical_h) * kInitDpiScale + 0.5f));
+    const uint32_t w = std::max<LONG>(1, rc.right - rc.left);
+    const uint32_t h = std::max<LONG>(1, rc.bottom - rc.top);
     if (!swapchain_.init(loader_, device_, queue_, hwnd_, w, h, 3)) {
         GLOG_ERROR("D3D12::init: swapchain init failed");
         release_device_objects();
@@ -233,6 +225,10 @@ bool D3D12Backend::init(void* native_window) {
               ring_capacity / (1024 * 1024), swapchain_.buffer_count(),
               per_slot / 1024, hiz_bytes / 1024);
 
+    // 9) 硬件光追反射（DXR Tier 1.1）。失败即禁用（supports_ray_tracing 返回
+    //    false，上层回退 SSR），绝不阻断后端初始化。
+    rt_reflection_.init(this);
+
     initialized_ = true;
     GLOG_INFO("D3D12::init OK (FL=0x{:04x}, adapter={}, {}x{})",
               static_cast<unsigned>(feature_level_), adapter_desc_,
@@ -258,14 +254,18 @@ void D3D12Backend::release_device_objects() {
     // 资源池必须先于 device 释放：池内对象的析构会 Release 各自的 ID3D12Resource，
     // 设备提前释放会留下悬空引用。
     bound_framebuffer_ = RHIFramebufferHandle{};
+    // DXR 反射持有的 BLAS/TLAS/PSO/描述符区间必须先于描述符堆与设备释放。
+    rt_reflection_.shutdown();
     release_gpu_profiling_objects();
     mesh_pool_.clear();
     texture_pool_.clear();
     framebuffer_pool_.clear();
     buffer_pool_.clear();
 
-    // 延迟释放队列里剩余的网格缓冲：走到这里调用方已经 wait_gpu_idle
-    // （D3D12::shutdown 的既定顺序），可以安全销毁。
+    // 延迟释放队列里剩余的原始资源（网格缓冲、SSBO、present 目标……）：走到这里
+    // 调用方已经 wait_gpu_idle（D3D12::shutdown 的既定顺序），可以安全销毁。
+    // 注意顺序：必须在各资源池 clear() **之后** —— 池析构时 D3D12Buffer /
+    // D3D12Mesh 会把各自的资源投进这个队列。
     for (RetiredRawResource& r : retired_raw_resources_) {
         if (r.res) r.res->Release();
     }
@@ -344,28 +344,13 @@ void D3D12Backend::begin_frame() {
         }
     }
 
-    // 尺寸变化检测：客户区**物理像素**与交换链不一致则重建。
-    // 进程已声明 per-monitor v2 DPI 感知：GetClientRect 返回的是**逻辑**像素
-    // （DIP），但交换链/后台缓冲必须按**物理像素**建立——UI 覆盖层
-    // （begin_overlay_pass 用的 screen_w/h 来自 GLFW 帧缓冲，也是物理像素）
-    // 以物理像素为坐标系。HiDPI 屏上若交换链仍用逻辑尺寸，覆盖层按物理尺寸绘制
-    // 就会整屏向右下溢出（设备尺寸画进逻辑尺寸的后台缓冲）。这里用窗口 DC 的
-    // LOGPIXELSX 把逻辑客户区换算成物理像素，与 GL/VK 后端经由 GLFW/表面能力
-    // 拿到的帧缓冲尺寸口径一致。100% DPI 下 scale=1，与改动前完全等价。
+    // 尺寸变化检测：客户区尺寸与交换链不一致则重建。
+    // 客户区尺寸即物理像素（进程 per-monitor v2 DPI 感知，见 init 的说明），
+    // 不能再乘 DPI —— 那会让交换链恒比窗口大，帧末 blit 也只铺到一部分。
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    const int logical_w = rc.right - rc.left;
-    const int logical_h = rc.bottom - rc.top;
-    int dpi = 96;
-    if (HDC dc = GetDC(hwnd_)) {
-        dpi = GetDeviceCaps(dc, LOGPIXELSX);
-        ReleaseDC(hwnd_, dc);
-    }
-    const float kDpiScale = (dpi > 0) ? static_cast<float>(dpi) / 96.0f : 1.0f;
-    const uint32_t w = std::max(1u, static_cast<uint32_t>(
-        static_cast<float>(logical_w) * kDpiScale + 0.5f));
-    const uint32_t h = std::max(1u, static_cast<uint32_t>(
-        static_cast<float>(logical_h) * kDpiScale + 0.5f));
+    const uint32_t w = std::max<LONG>(1, rc.right - rc.left);
+    const uint32_t h = std::max<LONG>(1, rc.bottom - rc.top);
     if (w > 0 && h > 0 && (w != swapchain_.width() || h != swapchain_.height())) {
         if (!swapchain_.recreate(w, h)) {
             GLOG_ERROR("D3D12Backend::begin_frame: swapchain recreate failed");
@@ -481,7 +466,12 @@ void D3D12Backend::record_clear_if_dirty() {
 // ===========================================================================
 
 bool D3D12Backend::ensure_present_target() {
+    if (std::getenv("GRYCE_D3D12_DIRECT_PRESENT")) return false;
     if (!device_) return false;
+    // 尺寸恒等于交换链（= 窗口客户区）。**绝不能**跟着引擎的 set_viewport 走：
+    // 一帧里 shadow map / bloom 各级都会用不同的视口尺寸调 set_viewport，按它重建
+    // 会让 present 目标在帧中途被反复销毁重建，而命令列表里已录制的 barrier / RTV
+    // 指向的是旧资源 —— 实测直接崩在驱动里（OMSetRenderTargets 段错误）。
     const uint32_t w = swapchain_.width();
     const uint32_t h = swapchain_.height();
     if (w == 0 || h == 0) return false;
@@ -526,6 +516,7 @@ bool D3D12Backend::ensure_present_target() {
         present_tex_ = nullptr;
         return false;
     }
+    present_tex_->SetName(L"present_target");
     present_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     // RTV 堆：RTV 必须放在 NON_SHADER_VISIBLE 堆里（放 SHADER_VISIBLE 会被
@@ -551,8 +542,12 @@ bool D3D12Backend::ensure_present_target() {
 }
 
 void D3D12Backend::release_present_target() {
+    // ★ 只能延迟释放：present 目标刚被上一帧的翻转 blit 引用过，命令列表可能
+    //   还在 GPU 上跑（begin_frame 早于本帧的提交，wait_all 只保证队列空闲的那
+    //   一刻过去，但这里若直接 Release，驱动的延迟销毁窗口内仍是悬空引用）。
+    //   走 retire_gpu_resource 与纹理/缓冲同一套围栏机制，最省心也最安全。
     if (present_tex_) {
-        present_tex_->Release();
+        retire_gpu_resource(present_tex_);
         present_tex_ = nullptr;
     }
     if (present_rtv_heap_) {
@@ -743,8 +738,11 @@ void D3D12Backend::record_present_blit(ID3D12GraphicsCommandList* cmd) {
         present_state_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     }
 
-    // back buffer：PRESENT → RENDER_TARGET（本帧此前一直没动过它）。
-    if (!backbuffer_as_rt_) {
+    // back buffer 在本帧首次承担屏幕目标。注意 back_buffer_as_rt_ 表示
+    // “当前屏幕 RT 已绑定”，它也可能是内部 present target；不能用它判断
+    // 真实 back buffer 的 D3D12 资源状态。这里必须显式完成
+    // PRESENT → RENDER_TARGET，否则翻转 blit 会写进错误状态并导致截图全黑。
+    {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition.pResource = back;
@@ -784,15 +782,17 @@ void D3D12Backend::record_present_blit(ID3D12GraphicsCommandList* cmd) {
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = swapchain_.back_buffer_rtv();
     cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    // blit 视口铺满整个 back buffer（物理窗口尺寸），把较小（或较大）的 present
+    // 目标拉伸/压缩到全窗口 —— 这是"填充窗口、消除黑边"的关键一步。
     D3D12_VIEWPORT vp{};
-    vp.Width = static_cast<float>(present_w_);
-    vp.Height = static_cast<float>(present_h_);
+    vp.Width = static_cast<float>(swapchain_.width());
+    vp.Height = static_cast<float>(swapchain_.height());
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
     cmd->RSSetViewports(1, &vp);
     D3D12_RECT sr{};
-    sr.right = static_cast<LONG>(present_w_);
-    sr.bottom = static_cast<LONG>(present_h_);
+    sr.right = static_cast<LONG>(swapchain_.width());
+    sr.bottom = static_cast<LONG>(swapchain_.height());
     cmd->RSSetScissorRects(1, &sr);
 
     cmd->SetGraphicsRootSignature(blit_root_);
@@ -807,10 +807,66 @@ void D3D12Backend::record_present_blit(ID3D12GraphicsCommandList* cmd) {
 
 void D3D12Backend::flush_present_blit_for_overlay() {
     if (!initialized_ || present_flushed_) return;
-    if (!present_dirty_) return;
     ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
     if (!cmd) return;
-    record_present_blit(cmd);
+    if (present_dirty_) {
+        record_present_blit(cmd);
+        return;
+    }
+    // 离屏 3D 视口路径可能没有向 present target 写过任何东西。此时继续绑定
+    // present target 会让 UI overlay 渲染到一个最终不会参与呈现的中间纹理。
+    // 直接从离屏 RT 切回真实 back buffer，并标记本帧不再需要翻转 blit。
+    if (!back_buffer_as_rt_) {
+        if (bound_framebuffer_.is_valid()) {
+            D3D12Framebuffer* previous =
+                framebuffer_pool_.get_if_alive(bound_framebuffer_.index,
+                                               bound_framebuffer_.generation);
+            if (previous) previous->record_transition_to_shader_readable(cmd);
+            bound_framebuffer_ = RHIFramebufferHandle{};
+        }
+        present_flushed_ = true;
+        bind_swapchain_rt();
+    }
+}
+
+void D3D12Backend::prepare_gryce_ui_overlay() {
+    if (!initialized_ || frame_aborted_) return;
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+
+    if (!present_flushed_ && present_dirty_) record_present_blit(cmd);
+    if (bound_framebuffer_.is_valid()) {
+        D3D12Framebuffer* previous =
+            framebuffer_pool_.get_if_alive(bound_framebuffer_.index,
+                                           bound_framebuffer_.generation);
+        if (previous) previous->record_transition_to_shader_readable(cmd);
+        bound_framebuffer_ = RHIFramebufferHandle{};
+    }
+    if (!backbuffer_as_rt_) {
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = swapchain_.back_buffer();
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        cmd->ResourceBarrier(1, &barrier);
+    }
+    backbuffer_as_rt_ = true;
+    using_present_target_ = false;
+    rendered_buffer_index_ = swapchain_.current_back_buffer_index();
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = swapchain_.back_buffer_rtv();
+    cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    rt_w_ = swapchain_.width();
+    rt_h_ = swapchain_.height();
+    D3D12_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(rt_w_);
+    viewport.Height = static_cast<float>(rt_h_);
+    viewport.MaxDepth = 1.0f;
+    cmd->RSSetViewports(1, &viewport);
+    D3D12_RECT scissor{};
+    scissor.right = static_cast<LONG>(rt_w_);
+    scissor.bottom = static_cast<LONG>(rt_h_);
+    cmd->RSSetScissorRects(1, &scissor);
 }
 
 void D3D12Backend::end_frame() {
@@ -849,9 +905,12 @@ void D3D12Backend::end_frame() {
         record_present_blit(cmd);
     }
 
-    if (!screenshot_path_.empty() && frame_counter_ >= screenshot_frame_ && cmd &&
-        back_buffer_as_rt_) {
-        shot_now = begin_screenshot_copy(cmd);
+    if (!screenshot_path_.empty() && frame_counter_ >= screenshot_frame_ && cmd) {
+        const bool capture_present = !back_buffer_as_rt_ && present_flushed_ &&
+                                     present_dirty_ && present_tex_ != nullptr;
+        if (capture_present || back_buffer_as_rt_) {
+            shot_now = begin_screenshot_copy(cmd, capture_present);
+        }
     }
 
     if (cmd && backbuffer_as_rt_) {
@@ -869,6 +928,7 @@ void D3D12Backend::end_frame() {
 
     if (!swapchain_.end_frame()) {
         GLOG_ERROR("D3D12Backend::end_frame: swapchain end_frame failed");
+        dump_info_queue();
     }
 
     // 本帧已提交 → 等 GPU 跑完 → 从 readback 缓冲取回像素并落盘。
@@ -1287,19 +1347,21 @@ void D3D12Backend::request_screenshot(const std::string& path) {
     screenshot_frame_ = frame_counter_ + 1;
 }
 
-bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd) {
+bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd,
+                                         bool from_present_target) {
     if (!initialized_ || !device_ || !cmd) return false;
 
     // 只在本帧确实渲染进了交换链时才截（否则 back buffer 里没有本帧内容）。
-    const uint32_t w = swapchain_.width();
-    const uint32_t h = swapchain_.height();
+    const uint32_t w = from_present_target ? present_w_ : swapchain_.width();
+    const uint32_t h = from_present_target ? present_h_ : swapchain_.height();
     if (w == 0 || h == 0) return false;
 
     release_screenshot_staging();
 
-    ID3D12Resource* back = swapchain_.back_buffer_at(rendered_buffer_index_);
-    if (!back) back = swapchain_.back_buffer();
-    if (!back) {
+    ID3D12Resource* source = from_present_target
+                                 ? present_tex_
+                                 : swapchain_.back_buffer();
+    if (!source) {
         GLOG_ERROR("D3D12Backend::begin_screenshot_copy: swapchain back buffer is null");
         return false;
     }
@@ -1308,7 +1370,7 @@ bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd) {
     // D3D12 的纹理拷贝行距必须 256 对齐，所以缓冲要按 GetCopyableFootprints
     // 给出的 footprint（行距 + 总字节）分配。用 w*4*h 在宽度非 256 倍数时
     // 会被校验拒绝（或读到错位数据）。
-    const D3D12_RESOURCE_DESC tex_desc = back->GetDesc();
+    const D3D12_RESOURCE_DESC tex_desc = source->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
     UINT num_rows = 0;
     UINT64 row_size = 0;
@@ -1363,8 +1425,10 @@ bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd) {
         cmd->ResourceBarrier(1, &b);
     };
 
-    // 此刻 back buffer 处于本帧渲染留下的 RENDER_TARGET 态。
-    transition(back, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    const D3D12_RESOURCE_STATES original_state =
+        from_present_target ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                            : D3D12_RESOURCE_STATE_RENDER_TARGET;
+    transition(source, original_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
     // ★ 纹理 → 缓冲必须用 CopyTextureRegion + 显式 footprint，
     //   **不能用 CopyResource**：CopyResource 要求源与目标的描述完全一致
@@ -1377,7 +1441,7 @@ bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd) {
     dst.PlacedFootprint = layout;
 
     D3D12_TEXTURE_COPY_LOCATION src_loc{};
-    src_loc.pResource = back;
+    src_loc.pResource = source;
     src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     src_loc.SubresourceIndex = 0;
 
@@ -1385,7 +1449,7 @@ bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd) {
 
     // 拷完还原成 RENDER_TARGET —— 紧接着 end_frame 还要做 RT→PRESENT，
     // 这里不能越权直接改成 PRESENT（否则连着两条屏障态不符）。
-    transition(back, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE, original_state);
 
     // 拷贝所需信息留到 finish_screenshot（本帧提交并等 GPU 完成后）再用。
     shot_readback_ = readback;
@@ -1393,6 +1457,7 @@ bool D3D12Backend::begin_screenshot_copy(ID3D12GraphicsCommandList* cmd) {
     shot_total_ = total;
     shot_w_ = w;
     shot_h_ = h;
+    shot_flip_vertical_ = from_present_target;
     return true;
 }
 
@@ -1424,7 +1489,8 @@ void D3D12Backend::finish_screenshot() {
     const uint32_t row_pitch = shot_footprint_.Footprint.RowPitch;
     const uint32_t copy_bytes = w * 4;
     for (uint32_t y = 0; y < h; ++y) {
-        std::memcpy(rgba.data() + static_cast<size_t>(y) * copy_bytes,
+        const uint32_t dst_y = shot_flip_vertical_ ? (h - 1u - y) : y;
+        std::memcpy(rgba.data() + static_cast<size_t>(dst_y) * copy_bytes,
                     src + static_cast<size_t>(y) * row_pitch, copy_bytes);
     }
     // 回读堆不需要写回 CPU 侧的修改。
@@ -1433,6 +1499,11 @@ void D3D12Backend::finish_screenshot() {
     release_screenshot_staging();
 
     if (path.empty()) return;
+    std::size_t nonzero = 0;
+    for (std::size_t i = 0; i < rgba.size(); i += 4) {
+        if (rgba[i] || rgba[i + 1] || rgba[i + 2] || rgba[i + 3]) ++nonzero;
+    }
+    GLOG_INFO("D3D screenshot readback nonzero_pixels={}/{}", nonzero, rgba.size() / 4);
     if (d3d12_path_ends_with(path, ".png")) {
         if (stbi_write_png(path.c_str(), static_cast<int>(w), static_cast<int>(h), 4,
                            rgba.data(), static_cast<int>(w) * 4)) {
@@ -1454,6 +1525,7 @@ void D3D12Backend::release_screenshot_staging() {
     shot_total_ = 0;
     shot_w_ = 0;
     shot_h_ = 0;
+    shot_flip_vertical_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1784,6 +1856,7 @@ RHIMeshHandle D3D12Backend::create_mesh() {
     // 传入 retire sink：网格缓冲容量不足而重建时，旧资源要按围栏值延迟释放
     // （见 D3D12Mesh::update_or_create_buffer 的说明）。
     if (m) m->set_context(device_, queue_, this);
+    if (m) m->set_ray_tracing_capture(rt_reflection_.valid());
     return { index, mesh_pool_.generation(index) };
 }
 
@@ -1812,8 +1885,9 @@ RHIBufferHandle D3D12Backend::create_buffer() {
     const uint32_t index = buffer_pool_.allocate();
     D3D12Buffer* b = buffer_pool_.get(index);
     // 注入 UploadSink（this）：DEFAULT 堆 SSBO 的 update() 需要把拷贝录制进
-    // 当前帧命令列表，而不是"提交+等待"。
-    if (b) b->set_context(device_, queue_, this);
+    // 当前帧命令列表，而不是"提交+等待"。同时注入 ResourceRetireSink（也是 this）：
+    // 缓冲被重建/销毁时不能就地 Release（可能仍被在飞命令列表引用）。
+    if (b) b->set_context(device_, queue_, this, this);
     return { index, buffer_pool_.generation(index) };
 }
 
@@ -1829,20 +1903,22 @@ RHIBufferHandle D3D12Backend::create_buffer() {
 //    This is invalid and can result in application instability."
 // 实测后果是连锁的 DXGI_ERROR_DEVICE_HUNG（TDR）。
 //
-// 做法：销毁时先记下"当前已交给 GPU 的围栏值"，把槽位挂进 retire 队列；等到
+// 做法：销毁时先记下"**本帧将要提交**的围栏值"，把槽位挂进 retire 队列；等到
 // GPU 的已完成围栏值追过它，才真正释放。三帧在途 → 最多滞留 3 帧，代价可忽略。
+// （必须用 next 而不是"上一次已提交"，理由见 D3D12Swapchain::next_fence_value()：
+//   销毁几乎总发生在帧录制期间，本帧的命令列表已经引用过该资源。）
 // ---------------------------------------------------------------------------
 void D3D12Backend::retire_texture(uint32_t index, uint32_t generation) {
-    retired_textures_.push_back({swapchain_.last_submitted_value(), index, generation});
+    retired_textures_.push_back({swapchain_.next_fence_value(), index, generation});
 }
 void D3D12Backend::retire_framebuffer(uint32_t index, uint32_t generation) {
-    retired_framebuffers_.push_back({swapchain_.last_submitted_value(), index, generation});
+    retired_framebuffers_.push_back({swapchain_.next_fence_value(), index, generation});
 }
 void D3D12Backend::retire_mesh(uint32_t index, uint32_t generation) {
-    retired_meshes_.push_back({swapchain_.last_submitted_value(), index, generation});
+    retired_meshes_.push_back({swapchain_.next_fence_value(), index, generation});
 }
 void D3D12Backend::retire_buffer(uint32_t index, uint32_t generation) {
-    retired_buffers_.push_back({swapchain_.last_submitted_value(), index, generation});
+    retired_buffers_.push_back({swapchain_.next_fence_value(), index, generation});
 }
 
 void D3D12Backend::drain_retired() {
@@ -1862,7 +1938,9 @@ void D3D12Backend::drain_retired() {
         q.resize(keep);
     };
 
-    drain(retired_textures_, [this](uint32_t i, uint32_t g) { texture_pool_.deallocate(i, g); });
+    drain(retired_textures_, [this](uint32_t i, uint32_t g) {
+        texture_pool_.deallocate(i, g);
+    });
     drain(retired_framebuffers_,
           [this](uint32_t i, uint32_t g) { framebuffer_pool_.deallocate(i, g); });
     drain(retired_meshes_, [this](uint32_t i, uint32_t g) {
@@ -1874,7 +1952,8 @@ void D3D12Backend::drain_retired() {
     });
     drain(retired_buffers_, [this](uint32_t i, uint32_t g) { buffer_pool_.deallocate(i, g); });
 
-    // 被替换掉的网格缓冲（见 retire_gpu_resource）。
+    // 被替换掉的原始 GPU 资源（网格缓冲、SSBO、present 目标……，见
+    // retire_gpu_resource）。所有权的转移在这里落地：GPU 跑过记录时的围栏值后释放。
     {
         size_t keep = 0;
         for (size_t i = 0; i < retired_raw_resources_.size(); ++i) {
@@ -1910,10 +1989,10 @@ void D3D12Backend::drain_retired() {
 void D3D12Backend::retire_descriptor_range(uint32_t srv_base, uint32_t srv_count,
                                            uint32_t smp_base, uint32_t smp_count) {
     if (srv_count == 0 && smp_count == 0) return;
-    // 挂在"最近一次已提交"的围栏值上：GPU 跑过它，就说明引用这些描述符的
-    // 命令列表已经执行完，可以安全归还。
+    // 挂在"本帧将要提交"的围栏值上（描述符区间的归还同样发生在帧录制期间，
+    // 本帧的命令列表已经引用过这些槽位）：GPU 跑过它才安全归还。
     RetiredDescriptors r{};
-    r.fence_value = swapchain_.last_submitted_value();
+    r.fence_value = swapchain_.next_fence_value();
     r.srv_base = srv_base;
     r.srv_count = srv_count;
     r.smp_base = smp_base;
@@ -1923,10 +2002,12 @@ void D3D12Backend::retire_descriptor_range(uint32_t srv_base, uint32_t srv_count
 
 void D3D12Backend::retire_gpu_resource(ID3D12Resource* res) {
     if (!res) return;
-    // 与 retire_descriptor_range 同一时间基准：GPU 跑过"最近一次已提交"的围栏值，
-    // 就说明引用该资源的命令列表已经执行完，可以安全销毁。
+    // 时间戳必须取"本帧将要提交的围栏值"（next），而不是"上一次已提交的值"：
+    // 资源往往在帧**录制期间**被销毁（HiZ SSBO 随尺寸重建、网格缓冲换成新的…），
+    // 而本帧的命令列表此刻已经引用过它，要等本帧提交并跑完才安全。
+    // 详见 D3D12Swapchain::next_fence_value() 的注释。
     RetiredRawResource r{};
-    r.fence_value = swapchain_.last_submitted_value();
+    r.fence_value = swapchain_.next_fence_value();
     r.res = res;
     retired_raw_resources_.push_back(r);
 }
@@ -2005,9 +2086,24 @@ void D3D12Backend::dump_info_queue() {
     }
     const UINT64 count = iq->GetNumStoredMessages();
     GLOG_ERROR("D3D12 info queue: {} stored message(s)", static_cast<unsigned long long>(count));
-    // 打最后 120 条：设备移除前的尾部消息才是关键（前面多是资源创建噪声）。
-    const UINT64 begin = count > 120 ? count - 120 : 0;
-    for (UINT64 i = begin; i < count; ++i) {
+    // 只打 ERROR 及以上：WARNING（清屏色不匹配、状态冗余等）在设备移除前能刷满
+    // 整个队列，把真正那条非法调用挤出窗口。过滤后从**最早**的错误开始打。
+    UINT64 printed = 0;
+    for (UINT64 i = 0; i < count && printed < 200; ++i) {
+        SIZE_T probe = 0;
+        if (SUCCEEDED(iq->GetMessage(i, nullptr, &probe)) && probe > 0) {
+            std::vector<char> pb(probe);
+            auto* pm = reinterpret_cast<D3D12_MESSAGE*>(pb.data());
+            // 严重度枚举越小越严重（CORRUPTION=0, ERROR=1, WARNING=2, INFO=3），
+            // 因此 >= WARNING 的一律跳过。
+            if (SUCCEEDED(iq->GetMessage(i, pm, &probe)) &&
+                pm->Severity >= D3D12_MESSAGE_SEVERITY_WARNING) {
+                continue;   // INFO/WARNING 跳过
+            }
+        } else {
+            continue;
+        }
+        ++printed;
         SIZE_T len = 0;
         if (FAILED(iq->GetMessage(i, nullptr, &len)) || len == 0) continue;
         std::vector<char> buf(len);
@@ -2034,7 +2130,9 @@ void D3D12Backend::bind_swapchain_rt() {
 
     // 已经就是当前 RT 且已在 RT 态 → 什么都不做。**不能重复录 PRESENT→RT 的
     // 屏障**（StateBefore 与实际不符会让调试层报错，驱动侧也可能被判非法）。
-    if (back_buffer_as_rt_) return;
+    if (back_buffer_as_rt_) {
+        return;
+    }
 
     // ★ 引擎的"画到屏幕"落在后端内部的 present 目标上（帧末统一翻转 blit 进
     //   真实 back buffer），见 ensure_present_target 的详解。
@@ -2083,8 +2181,8 @@ void D3D12Backend::bind_swapchain_rt() {
                                                          : swapchain_.back_buffer_rtv();
     cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-    rt_w_ = swapchain_.width();
-    rt_h_ = swapchain_.height();
+    rt_w_ = use_present_target ? present_w_ : swapchain_.width();
+    rt_h_ = use_present_target ? present_h_ : swapchain_.height();
 
     D3D12_VIEWPORT vp{};
     vp.Width = static_cast<float>(rt_w_);
@@ -2234,7 +2332,7 @@ void D3D12Backend::unbind_framebuffer() {
 // ResolveSubresource 到单样本纹理，后续 pass 才能像往常一样采样它。
 //
 // 硬性约束（违反即 E_INVALIDARG / 调试层错误）：
-//   * src 必须处于 RENDER_TARGET 态、dst 必须处于 RESOLVE_DEST 态；
+//   * src 必须处于 RESOLVE_SOURCE 态、dst 必须处于 RESOLVE_DEST 态；
 //   * 两者同格式、同尺寸，dst 必须单样本；
 //   * 命令录在 pass 之外（D3D12 无 render pass 概念，天然满足）。
 // ---------------------------------------------------------------------------
@@ -2277,8 +2375,12 @@ void D3D12Backend::resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferH
         tex->set_current_state(after);
     };
 
-    // 1) 多样本源 → RENDER_TARGET（bind_framebuffer 通常已切过，幂等）。
-    transition(src_tex, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    // 1) 多样本源 → RESOLVE_SOURCE。
+    //    ★ 不是 RENDER_TARGET：D3D12 对 ResolveSubresource 的源要求是
+    //    RESOLVE_SOURCE（0x2000）。写成 RENDER_TARGET 时调试层直接判非法，
+    //    驱动侧则可能容忍到某一帧才 TDR —— 实测表现为"拖动窗口缩放几次后
+    //    device removed(0x887A0006)"，且崩溃点与 MSAA 毫无表面联系。
+    transition(src_tex, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
     // 2) 单样本目标 → RESOLVE_DEST。
     transition(dst_tex, D3D12_RESOURCE_STATE_RESOLVE_DEST);
     // 3) 解析。格式取源附件（两者同格式，调用方保证）。
@@ -2288,6 +2390,9 @@ void D3D12Backend::resolve_framebuffer(RHIFramebufferHandle src, RHIFramebufferH
     //    因此变成 no-op，不会补第二条屏障）。
     transition(dst_tex, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    // 5) 源转回 RENDER_TARGET：它仍是本帧/后续帧的颜色附件，下一次 bind 会
+    //    直接假定它处于 RT 态。
+    transition(src_tex, D3D12_RESOURCE_STATE_RENDER_TARGET);
 }
 
 // ---------------------------------------------------------------------------
@@ -2365,6 +2470,57 @@ const char* D3D12Backend::api_version() const { return adapter_desc_; }
 
 bool D3D12Backend::supports_compute_shaders() const {
     return initialized_ && device_ != nullptr;
+}
+
+bool D3D12Backend::supports_ray_tracing() const {
+    // 仅当 DXR 反射通道真正初始化成功（Tier 1.1 + PSO 就绪）时才为真：
+    // 否则上层会调用一个没有实现的入口，等于"开了 RT 却没效果"。
+    return initialized_ && rt_reflection_.valid();
+}
+
+void D3D12Backend::apply_ray_query_reflection(RHITextureHandle color_tex, RHITextureHandle depth_tex,
+                                              int width, int height,
+                                              const math::Matrix4f& view_proj,
+                                              const math::Matrix4f& inv_view_proj,
+                                              const math::Vector3f& camera_pos,
+                                              const PostProcessParams& pp,
+                                              const std::vector<RayTracingInstance>& instances,
+                                              RHITextureHandle env_tex,
+                                              RHITextureHandle env_prefilter_tex,
+                                              RHITextureHandle normal_tex) {
+    if (!rt_reflection_.valid() || !pp.rt_reflection_enabled) return;
+
+    D3D12Texture* color = texture_pool_.get_if_alive(color_tex.index, color_tex.generation);
+    D3D12Texture* depth = texture_pool_.get_if_alive(depth_tex.index, depth_tex.generation);
+    if (!color || !depth) return;
+    D3D12Texture* env =
+        env_tex.is_valid() ? texture_pool_.get_if_alive(env_tex.index, env_tex.generation) : nullptr;
+    D3D12Texture* normal = normal_tex.is_valid()
+                               ? texture_pool_.get_if_alive(normal_tex.index, normal_tex.generation)
+                               : nullptr;
+    D3D12Texture* prefilter =
+        env_prefilter_tex.is_valid()
+            ? texture_pool_.get_if_alive(env_prefilter_tex.index, env_prefilter_tex.generation)
+            : nullptr;
+
+    ID3D12GraphicsCommandList* cmd = swapchain_.command_list();
+    if (!cmd) return;
+
+    // 解析 IMesh*（BLAS 按网格缓存）。
+    std::vector<RtDrawInstance> draws;
+    draws.reserve(instances.size());
+    for (const auto& inst : instances) {
+        IMesh* im = mesh(inst.mesh);
+        if (!im) continue;
+        RtDrawInstance d;
+        d.mesh = im;
+        d.transform = inst.transform;
+        draws.push_back(d);
+    }
+    if (draws.empty()) return;
+
+    rt_reflection_.render(cmd, color, depth, normal, env, prefilter, width, height, view_proj,
+                          inv_view_proj, camera_pos, pp, draws);
 }
 
 RHIShaderHandle D3D12Backend::create_compute_shader(const char* name, const char* shader_dir) {
@@ -2730,7 +2886,18 @@ void D3D12Backend::drain_hiz_repacks() {
             p.staging->Unmap(0, &written);
 
             D3D12Buffer* b = buffer_pool_.get_if_alive(p.dst.index, p.dst.generation);
-            if (b && b->resource()) {
+            // ★ 目标缓冲可能已被**重建为更小的尺寸**（窗口缩小 → HiZ 金字塔级别与
+            //   分辨率全变，init_hiz 会用新尺寸重新 create 同一个句柄）。而本队列里
+            //   还挂着上一套金字塔的拷贝：它的 offset/size 属于旧布局，直接录进去
+            //   就是越界拷贝 —— 调试层报 CopyBufferRegion 越界（不带资源名），驱动
+            //   侧连锁 DXGI_ERROR_DEVICE_HUNG。旧数据对新金字塔也没有意义，直接丢弃。
+            const bool stale = (b && b->resource() && b->size() < p.dst_offset + tight_size);
+            if (stale) {
+                GLOG_DEBUG("drain_hiz_repacks: drop stale copy ({}x{}, off={}, size={}, dst_cap={})",
+                           p.w, p.h, static_cast<unsigned long long>(p.dst_offset),
+                           static_cast<unsigned long long>(tight_size),
+                           static_cast<unsigned long long>(b->size()));
+            } else if (b && b->resource()) {
                 D3D12_RESOURCE_STATES state = b->state();
                 if (record_copy(b->resource(), p.dst_offset, tight.data(), tight_size, state)) {
                     b->set_state(state);
@@ -2775,6 +2942,20 @@ bool D3D12Backend::record_copy(ID3D12Resource* dst, uint64_t dst_offset, const v
 
     const bool need_barrier = inout_state != D3D12_RESOURCE_STATE_COPY_DEST &&
                               inout_state != D3D12_RESOURCE_STATE_GENERIC_READ;
+    // 越界保护：目标 SSBO 容量不足时 D3D12 会静默接受录制，直到设备挂起
+    // （调试层报 CopyBufferRegion 越界，不带资源名，极难定位）。
+    {
+        const uint64_t cap = dst->GetDesc().Width;
+        if (dst_offset + size > cap) {
+            GLOG_ERROR("D3D12Backend::record_copy: overflow (cap={}, off={}, size={})",
+                       static_cast<unsigned long long>(cap),
+                       static_cast<unsigned long long>(dst_offset),
+                       static_cast<unsigned long long>(size));
+            // 返回 true 表示"已处理"：**不**录制这条越界拷贝，也不让调用方退到
+            // 同步路径（那条路径会做同样越界的拷贝，只是换成提交时炸）。
+            return true;
+        }
+    }
     if (need_barrier) barrier(inout_state, D3D12_RESOURCE_STATE_COPY_DEST);
     cmd->CopyBufferRegion(dst, dst_offset, upload_ring_.resource(), ring_offset, size);
     if (need_barrier) barrier(D3D12_RESOURCE_STATE_COPY_DEST, inout_state);

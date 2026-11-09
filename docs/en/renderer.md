@@ -22,6 +22,12 @@ Backends plug in through the `IRenderBackend` interface in `render/render.h`. Mi
 - A normal prepass (`prepass_normal`) redraws geometry for SSAO / SSR and follows the current LOD level.
 - GPU culling (frustum / occlusion) and a CPU fallback path coexist.
 
+Game rendering has three presentation paths: the 3D scene (`RenderPipeline`),
+the 2D canvas and the GryceUI overlay (`canvas2d_pipeline.*` / `ui_pipeline.*`).
+They share `RenderContext`; GryceUI emits a draw list and reuses the existing
+`IRenderer2D` overlay instead of duplicating graphics backends. The FPS/ImGui
+debug UI remains independent.
+
 ## 3. Shadows
 
 - Shadow atlas + cascaded shadow maps (CSM).
@@ -37,15 +43,27 @@ Hardware ray-traced reflections (Vulkan ray query, `GRender_SetRTReflection`) ru
 
 ## 5. Global Illumination and Environment
 
-SDFGI, VoxelGI, reflection probes, IBL (prefiltered environment maps + BRDF LUT), volumetric fog. The IBL specular convention (`F0*A + B`; `fresnel(NdotV)*A + B` is forbidden) is documented in [model-import.md](model-import.md) section 6.1.
+Reflection probes, IBL (prefiltered environment maps + BRDF LUT), and volumetric
+fog are the supported environment features. SDFGI/VoxelGI currently contain only
+resource scaffolding and empty update loops; they are experimental and not part
+of the supported feature surface. The IBL specular convention (`F0*A + B`;
+`fresnel(NdotV)*A + B` is forbidden) is documented in
+[model-import.md](model-import.md) section 6.1.
 
 ## 6. Post-Processing
 
 Bloom, TAA, motion blur, bokeh DOF, FSR2, subsurface scattering, water.
 
+Volumetric light scattering (Tyndall / god rays) is chained into the HDR path right before bloom: single scattering of the directional light is accumulated by ray marching along the view ray (Henyey-Greenstein phase), and sun visibility at each sample comes from the cascaded shadow map (cascade 0), so light shafts remain visible through windows, gaps and foliage. Controlled by `PostProcessParams::volumetric_*` (`set_volumetric_params` / `set_volumetric_enabled`), enabled by default at low density. Bloom upsampling adds slight radial dispersion, so bright reflections and shafts pick up a colored halo.
+
 ## 7. 2D Pipeline
 
 Sprites, tilemaps, parallax backgrounds, 2D particles, 2D skyboxes, text. Entry points are `render/render2d.cpp` and `render/renderer2d_impl.cpp`.
+
+The game frame is split into the 3D scene pipeline (`RenderPipeline`) and the
+2D canvas pipeline (`Canvas2DPipeline`). Rendering also keeps a built-in debug
+UI (FPS/frame-time overlay and F1 ImGui window); no general-purpose GUI API is
+provided.
 
 ## 8. 3D Extensions
 

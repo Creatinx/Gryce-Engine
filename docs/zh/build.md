@@ -38,7 +38,7 @@ build/GryceRenderSmoke.exe --api opengl --play
 | Assimp | 可选，系统包或 FetchContent | 模型导入（FBX / glTF / DAE / PLY / STL / 3DS / Blend；OBJ 走内置加载器），缺失时非 OBJ 格式不可用 |
 | Vulkan SDK | 可选 | 缺失时自动关闭 Vulkan 后端（CTest 不依赖它） |
 | Amplitude Audio SDK | 仓库内置 `third_party/amplitude` | 预编译静态库，随仓库分发 |
-| stb / tinyexr / nlohmann_json / imgui / quickjs | 仓库内置 `third_party` | 图像、EXR、JSON、编辑器 UI、脚本 |
+| stb / tinyexr / nlohmann_json / imgui / quickjs | 仓库内置 `third_party` | 图像、EXR、JSON、基础调试 UI、脚本 |
 
 ### 依赖的三种来源策略
 
@@ -77,9 +77,8 @@ Vulkan SDK 为可选项：装好 LunarG SDK 后 `VULKAN_SDK` 环境变量会指�
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
-| `GRYCE_ENABLE_IMGUI` | `ON` | ImGui 编辑器叠加层 |
+| `GRYCE_ENABLE_IMGUI` | `ON` | ImGui 调试 UI 后端 |
 | `BUILD_TESTING` | `ON` | CTest 用例 |
-| `GRYCE_BUILD_EDITOR` | `OFF` | 编辑器整套（`GryceEditor.exe` + `GryceEditorExtension.dll` + 项目，见 [../editor/README.md](../../editor/README.md)）。开发期工具，产物不进运行时目录、不参与门禁；界面走引擎内置轨 |
 | `GRYCE_BUILD_TOOLCHAIN` | `ON` | GryceGC 命令行工具链（见 [toolchain.md](toolchain.md)） |
 | `GRYCE_ENABLE_D3D12` | `ON` | D3D12 后端；Windows + GCC/Clang 时探测 mingw 自带或 Windows SDK 的 `d3d12.h`，都没有则静默跳过 |
 | `GRYCE_ENABLE_WEBGL` | `OFF` | WebGL（Emscripten）构建，检测到 Emscripten 工具链时自动启用 |
@@ -98,29 +97,19 @@ Vulkan SDK 为可选项：装好 LunarG SDK 后 `VULKAN_SDK` 环境变量会指�
 | `GrycePlatform.dll` | 窗口、输入、光标 |
 | `GryceRenderSmoke.exe` | 渲染演示台（人工运行，非 CTest 用例） |
 | `GryceApp.exe` | 应用运行时（`--project <dir>` 启动，入口 `res:/main.js`，见 [app-entry.md](app-entry.md)） |
+| `GryceIDE.exe` | GryceUI 最小编辑器宿主（见 [../ide/README.md](../../ide/README.md)） |
 | `GryceMathTests.exe` | 数学与资源规则测试宿主，仅 `BUILD_TESTING=ON` 时构建 |
 | `GryceGC.exe` | 工具链可执行文件，仅 `GRYCE_BUILD_TOOLCHAIN=ON` 时构建 |
 
-构建完成后，`GryceSyncRuntimeDlls` 目标把引擎 DLL、第三方运行库（Box2D / Jolt / GLFW / GLEW）以及 MinGW 运行时（`libstdc++-6.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll`）复制到 `GryceRenderSmoke.exe` 同目录，脱离 MinGW / MSYS2 终端也能直接运行。引擎 DLL 自身另挂 POST_BUILD 拷贝，单独构建某个引擎库时 exe 目录不会留下旧 DLL。
+产物布局：运行期产物（三个引擎 DLL 与宿主 exe）直接落在 `build/` 根目录，链接期产物（`libGryceCore.dll.a` 等导入库）收在 `build/lib/`。构建树根因此只有 DLL 与 exe，打包时整目录拷贝不会把导入库带进发布包。
+
+`GryceSyncRuntimeDlls` 目标把第三方运行库（Box2D / Jolt / GLFW / GLEW / 可选 Assimp）与 MinGW 运行时（`libstdc++-6.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll`）复制到 exe 同目录，脱离 MinGW / MSYS2 终端也能直接运行。单独构建某个引擎库（例如 `cmake --build build --target GryceCore`）时只产出 `build/GryceCore.dll` 一个运行期文件。
 
 工具链也可独立构建（不装 Python）：
 
 ```bash
 cmake -S toolchain -B toolchain/build -G Ninja
 ```
-
-编辑器同样可独立构建（先构建好引擎，它需要引擎的导入库）：
-
-```bash
-cmake -S . -B build -G Ninja && cmake --build build   # 先有引擎树
-cmake -S editor -B editor/build -G Ninja                # 再单独构建编辑器
-cmake --build editor/build --target GryceEditor
-```
-
-`editor/` 自带一整套 CMake 工程，与 `toolchain/` 同构：既能单独配置（上面那条），
-也能通过根工程的 `GRYCE_BUILD_EDITOR=ON` 接进根构建树（此时目标名与产物位置
-完全一致）。日常迭代编辑器只改 `editor/ext/` 下的源码时，独立构建不用重配整个
-引擎。
 
 ## 5. CI
 

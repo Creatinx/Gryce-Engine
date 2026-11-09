@@ -55,8 +55,13 @@ private:
     bool include_path_ = true;
 
     mutable bool name_map_ready_ = false;
+    mutable bool deep_map_ready_ = false;
     mutable std::map<std::string, std::filesystem::path> name_map_;
+
+    // 快速索引：仅 exe 同目录 / 显式 extra / PATH（平坦、便宜）。
     void build_name_map() const;
+    // 兑底索引：把 build_dir 全树递归也补进来（仅在快速索引 miss 后调用一次）。
+    void build_deep_map() const;
 };
 
 } // namespace grycegc

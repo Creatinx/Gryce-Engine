@@ -43,6 +43,7 @@
 - `ecs/world.h` 持有实体与组件存储；`ecs/component_store.h` 按组件类型密集存储。
 - 系统位于 `ecs/systems/`：`animator` / `audio` / `hierarchy` / `physics_2d` / `physics_3d` / `render_2d` / `render_3d` / `subviewport`。Play 模式驱动这些系统更新，退出后恢复编辑态快照。
 - 组件经 `reflection/` 注册，因此可被序列化、编辑器与脚本统一访问；组件创建走 `components/component_factory.h`。
+- 节点身份按 `Node → Node3D / Node2D → NodeUI` 组织。`NodeUI` 复用 2D 节点语义，但 UI 布局、输入和渲染仍走独立子系统；详见 [gryce-ui-plan.md](gryce-ui-plan.md)。
 
 ### 3.1 类型继承（基类 / 子类）
 
@@ -51,7 +52,7 @@
 实现方式是**类型视角**（`components/component.h`）：每个组件实例在挂载时展开出"自身类型 + 所有祖先类型"上各自的正确子对象指针，一次性登记进索引。查询热路径退化为一次哈希查找 + 一次指针重解释，零 `dynamic_cast`、零偏移计算。
 
 - 继承关系的真源是反射表：`GRYCE_REFLECT_CLASS(Class, Base)` 的 `Base` 就是真实的 C++ 基类。
-- 有派生类的基类必须覆写 `collect_type_views()`（当前是 `Component2D` 与 `BasicRect`），否则以它为基类的查询会静默返回空。反射表驱动的回归测试（`test/component_tests.cpp` 的 `hierarchy` 套件）会逐条校验，不会漏。
+- 有派生类的基类必须覆写 `collect_type_views()`（包括 `Node`、`Node2D`、`Component2D` 与 `BasicRect`），否则以它为基类的查询会静默返回空。反射表驱动的回归测试（`test/component_tests.cpp` 的 `hierarchy` 套件）会逐条校验，不会漏。
 - 组件索引与组件池都是**视角索引**（`type → 指针列表`），因此同类型多实例互不覆盖。
 
 ### 3.2 组件树（实例级父子挂载）
@@ -84,7 +85,22 @@ version 3 的组件数组元素新增 `parent`（父组件的槽位号）与 `lo
 
 - `render/render_context.h` 收集命令，`render/render_thread.cpp` 在独立线程执行；`sync_mode` 下命令在主线程内联执行（WebGL 构建即用此模式，见 [webgl-backend.md](webgl-backend.md)）。
 - 后端经 `render/render.h` 的 `IRenderBackend` 接口接入，能力缺失时按 `RenderBackendCapabilities` 声明式降级（例如无 compute shader 则回退 CPU 剔除）。
-- GPU 资源位于 `render/storage_rd/`，管线实现位于 `render/renderer_rd/`（`forward_clustered` / `shadow` / `effects` / `environment`）。
+- GPU 资源位于 `render/storage_rd/`，3D pass 与效果位于 `render/renderer_rd/`（`shadow` / `effects` / `environment`）。
+
+游戏渲染管线按职责拆为三条路径：
+
+- `RenderPipeline`：3D 场景管线，负责场景收集、阴影、几何、环境效果与后处理。
+- `Canvas2DPipeline`：拥有 `IRenderer2D`，负责 2D 场景批次、文本和屏幕覆盖层。
+- GryceUI overlay：读取 `UIRoot` 的 DrawList，复用 `IRenderer2D::begin_overlay_pass` 在 3D/2D 之后提交。
+
+通用 UI 的节点、布局、输入和控件位于 `components/node_ui.h`、
+`components/ui_root.h` 与 `engine/ui/`；最终合成位于
+`engine/render/ui_pipeline.*`。FPS/帧时间叠加和 F1 ImGui 调试窗口仍由
+`api/render_api.cpp` 独立维护，不依赖 GryceUI。
+
+旧的 `RenderingServer / RendererCompositor / RenderForwardBasic` 组合器路径未接入
+`GRender_*` 生产入口，默认不参与构建；可通过
+`GRYCE_ENABLE_LEGACY_RENDERER_COMPOSITOR=ON` 仅供迁移取证。
 
 ## 7. 平台层
 

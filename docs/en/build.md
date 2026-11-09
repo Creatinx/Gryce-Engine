@@ -38,7 +38,7 @@ build/GryceRenderSmoke.exe --api opengl --play
 | Assimp | Optional, system package or FetchContent | Model import (FBX / glTF / DAE / PLY / STL / 3DS / Blend; OBJ uses the built-in loader). Without it, non-OBJ formats are unavailable |
 | Vulkan SDK | Optional | If missing, the Vulkan backend is disabled automatically (CTest does not depend on it) |
 | Amplitude Audio SDK | Vendored in `third_party/amplitude` | Prebuilt static library, ships with the repository |
-| stb / tinyexr / nlohmann_json / imgui / quickjs | Vendored in `third_party` | Images, EXR, JSON, editor UI, scripting |
+| stb / tinyexr / nlohmann_json / imgui / quickjs | Vendored in `third_party` | Images, EXR, JSON, debug UI, scripting |
 
 ### Three Dependency Source Strategies
 
@@ -79,7 +79,6 @@ The Vulkan SDK is optional: after installing the LunarG SDK, the `VULKAN_SDK` en
 | --- | --- | --- |
 | `GRYCE_ENABLE_IMGUI` | `ON` | ImGui editor overlay |
 | `BUILD_TESTING` | `ON` | CTest cases |
-| `GRYCE_BUILD_EDITOR` | `OFF` | The whole editor (`GryceEditor.exe` + `GryceEditorExtension.dll` + project, see [../editor/README.md](../../editor/README.md)). A development-time tool: its outputs stay out of the runtime directory and out of the gates. Its UI runs on the engine's built-in track |
 | `GRYCE_BUILD_TOOLCHAIN` | `ON` | GryceGC command-line toolchain (see [toolchain.md](toolchain.md)) |
 | `GRYCE_ENABLE_D3D12` | `ON` | D3D12 backend; on Windows + GCC/Clang it probes for `d3d12.h` from the bundled MinGW or the Windows SDK, and skips silently if neither exists |
 | `GRYCE_ENABLE_WEBGL` | `OFF` | WebGL (Emscripten) build; enabled automatically when an Emscripten toolchain is detected |
@@ -98,30 +97,19 @@ Other common variables: `GRYCE_DEP_FETCH`, `GRYCE_DEP_PREFIX`, `GRYCE_DEP_GIT_BA
 | `GrycePlatform.dll` | Window, input, cursor |
 | `GryceRenderSmoke.exe` | Renderer harness (manual runs, not a CTest case) |
 | `GryceApp.exe` | Application runtime (started with `--project <dir>`, entry `res:/main.js`, see [app-entry.md](app-entry.md)) |
+| `GryceIDE.exe` | Minimal GryceUI editor host (see [../ide/README.md](../../ide/README.md)) |
 | `GryceMathTests.exe` | Math and resource-rule test host, built only with `BUILD_TESTING=ON` |
 | `GryceGC.exe` | Toolchain executable, built only with `GRYCE_BUILD_TOOLCHAIN=ON` |
 
-After a build, the `GryceSyncRuntimeDlls` target copies the engine DLLs, third-party runtime libraries (Box2D / Jolt / GLFW / GLEW), and the MinGW runtime (`libstdc++-6.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll`) next to `GryceRenderSmoke.exe`, so it runs outside a MinGW / MSYS2 terminal. The engine DLLs additionally have their own POST_BUILD copy so that building a single engine library never leaves a stale DLL next to the exe.
+Output layout: runtime artifacts (the three engine DLLs and the host executables) land directly in `build/`, while link-time artifacts (the `libGryceCore.dll.a` import libraries) live in `build/lib/`. The build root therefore contains only DLLs and EXEs, so copying it wholesale never ships import libraries.
+
+The `GryceSyncRuntimeDlls` target copies third-party runtime libraries (Box2D / Jolt / GLFW / GLEW / optional Assimp) and the MinGW runtime (`libstdc++-6.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll`) next to the executables, so they run outside a MinGW / MSYS2 terminal. Building a single engine library (for example `cmake --build build --target GryceCore`) produces exactly one runtime file: `build/GryceCore.dll`.
 
 The toolchain can also be built standalone (no Python needed):
 
 ```bash
 cmake -S toolchain -B toolchain/build -G Ninja
 ```
-
-The editor can be built standalone as well (it needs the engine's import libraries,
-so build the engine first):
-
-```bash
-cmake -S . -B build -G Ninja && cmake --build build   # engine tree first
-cmake -S editor -B editor/build -G Ninja                # then the editor alone
-cmake --build editor/build --target GryceEditor
-```
-
-`editor/` carries its own CMake project, structured like `toolchain/`: it can be
-configured standalone (the command above) or pulled into the root build tree via
-`GRYCE_BUILD_EDITOR=ON` (identical target names and output locations). When you
-only touch `editor/ext/`, the standalone build avoids reconfiguring the engine.
 
 ## 5. CI
 

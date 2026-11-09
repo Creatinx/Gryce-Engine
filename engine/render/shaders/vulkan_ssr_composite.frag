@@ -54,5 +54,9 @@ void main() {
     vec3  hue = scene_lum > 1e-4 ? scene.rgb / scene_lum : vec3(1.0);
     float refl_lum = dot(ssr.rgb, vec3(0.2126, 0.7152, 0.0722));
 
-    FragColor = vec4(mix(scene.rgb, hue * refl_lum, w), 1.0);
+    // 与 GL 版逐行一致：反射色主要来自被反射内容，只按表面色相轻微染色。
+    const float kSurfaceHueMix = 0.35;
+    vec3 refl_col = mix(ssr.rgb, hue * refl_lum, kSurfaceHueMix);
+
+    FragColor = vec4(mix(scene.rgb, refl_col, w), 1.0);
 }

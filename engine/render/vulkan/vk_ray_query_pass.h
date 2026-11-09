@@ -130,9 +130,13 @@ private:
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;  // 模式 2：全分辨率双边合成
     VkDescriptorSetLayout desc_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
-    VkDescriptorSet trace_set_ = VK_NULL_HANDLE;      // 槽 0：uOut=原始反射, uAuxOut=辅助
-    VkDescriptorSet temporal_set_ = VK_NULL_HANDLE;   // 槽 1：uOut=累积结果
-    VkDescriptorSet composite_set_ = VK_NULL_HANDLE;  // 槽 2：uOut=全分辨率输出
+    // 描述符集按"帧槽 x 阶段"轮转（3 x trace/temporal/composite）。每帧都会重写
+    // 整套 14 个 binding，而上一帧的命令缓冲可能仍在飞 —— 共用一份时验证层报
+    // "VkDescriptorSet ... is in use by VkCommandBuffer"（每条 binding 一条），
+    // 部分驱动会读到别的帧的贴图（反射闪黑白）。与 ubo_ 的帧槽保持一致。
+    VkDescriptorSet trace_set_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkDescriptorSet temporal_set_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkDescriptorSet composite_set_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     // uniform 缓冲按帧槽轮转（3 份）：host-visible 缓冲每帧被 CPU 覆写，而
     // frames_in_flight=3 时 GPU 可能仍在执行前两帧的 dispatch；单份缓冲会读到

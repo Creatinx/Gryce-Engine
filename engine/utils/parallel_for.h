@@ -17,6 +17,8 @@
 
 #include <functional>
 
+#include "export.h"
+
 namespace gryce_engine::utils {
 
 // 把 [begin, end) 切成若干连续区间，在 <= workers+1 个线程上并发执行
@@ -24,7 +26,7 @@ namespace gryce_engine::utils {
 //
 // 区间总数取 min(end-begin, workers+1)：块数少于线程数时多切只会增加调度
 // 开销；块数远多于线程数则不适合（这里按 z 切片，块数天然等于行数）。
-void parallel_for(int begin, int end, const std::function<void(int, int)>& range_fn);
+GRYCE_API void parallel_for(int begin, int end, const std::function<void(int, int)>& range_fn);
 
 // 固定分区 + 迭代间屏障：[begin, end) 切成固定块，每块由一个线程全程负责，
 // 每完成一轮 repeats 就与其余线程同步一次。range_fn(lo, hi, iter)。
@@ -34,10 +36,10 @@ void parallel_for(int begin, int end, const std::function<void(int, int)>& range
 // 几十微秒，240 次调度开销就能吃光并行省下的时间。
 //
 // 同一 iter 内不同块之间不允许有写冲突；跨 iter 的依赖由屏障保证。
-void parallel_region(int begin, int end, int repeats,
-                     const std::function<void(int, int, int)>& range_fn);
+GRYCE_API void parallel_region(int begin, int end, int repeats,
+                              const std::function<void(int, int, int)>& range_fn);
 
 // 线程池可用工作线程数（不含调用线程）。仅用于调用方自己决定分块策略。
-int parallel_worker_count();
+GRYCE_API int parallel_worker_count();
 
 } // namespace gryce_engine::utils

@@ -53,4 +53,16 @@ std::string user_host();
 // 临时目录（用于测试与中转文件）
 std::filesystem::path temp_dir();
 
+// 从当前目录向上查找第一个包含 CMakeLists.txt 的目录（引擎源码根）。
+// 找不到返回空 path。用于 build / run / package 统一把"引擎根"作为基准，
+// 这样无论从引擎根还是其任意子目录（含自身的 build/）调用都能定位到引擎。
+std::filesystem::path find_engine_root();
+
+// 解析默认构建目录：在引擎根下按序探测候选目录，取第一个存在的；
+// 优先选含 GryceApp.exe 的（多候选并存时准确定位可打包的那个）。
+// 全部不存在则返回第一个候选（调用方报错时至少给出约定俗成的名字）。
+// base 为空时取 find_engine_root()（再退化到 cwd）。
+std::filesystem::path find_build_dir(const std::vector<std::string>& candidates,
+                                     const std::filesystem::path& base = {});
+
 } // namespace grycegc
